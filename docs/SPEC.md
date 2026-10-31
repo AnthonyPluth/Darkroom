@@ -153,9 +153,9 @@ Each person gets one folder tree on Unraid and one Immich library over it, so ev
 - Add `*.xmp` to Unraid's `.stignore`, so the service's sidecars never sync to the Pixels.
 - During the switch, Unraid can join the existing Möbius Sync folders, so Immich works before the app ships. Möbius Sync comes off the iPhones once the app is uploading.
 
-**Shared Pixels**
+**Shared Pixels (optional)**
 
-- A Pixel can serve several people. Each person's `originals/` is its own Send Only folder on that Pixel, and each folder must be turned on for backup in Google Photos there.
+- By default each Pixel serves one person and backs up to that person's own Google account. Optionally, a Pixel can serve several people, set per Pixel in the web UI. Each person's `originals/` is its own Send Only folder on that Pixel, and each folder must be turned on for backup in Google Photos there.
 - Google Photos on a Pixel backs up to one Google account, so everything that Pixel uploads lands in that account.
 - No tags are written into files. Darkroom knows each original's owner from the iPhone that uploaded it, and Takeout copies match back by hash.
 
@@ -235,7 +235,7 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | --- | --- |
 | Person | name, Immich user ID, Immich API key (secret), originals path, google-only path |
 | Device | person, iPhone name, sign-in token (secret), last check-in |
-| Pixel | name, Syncthing device ID, Google account, people served |
+| Pixel | name, Syncthing device ID, Google account, people served (one by default, several optional) |
 | PhoneAsset | device, PhotoKit asset ID, resources (photo / Live Photo video / edit) with SHA-1 each, uploaded at, eligible at, deleted at |
 | GoogleAccount | email, default person (owns Google-only items), browser profile path, session state (ok / needs sign-in), schedule end date |
 | Export | account, kind (initial full / incremental), ready at, expires at, part count, status |
