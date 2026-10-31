@@ -117,7 +117,7 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 
 The phone original always wins. A Takeout copy only adds a file when nothing matches, plus any metadata the original lacks. Immich won't do this for us: external libraries deliberately allow identical files in different locations.
 
-Matching runs per person, in this order, and stops at the first hit:
+Matching runs against everyone the export's Google account serves, in this order, and stops at the first hit:
 
 | Order | Match when | Result |
 | --- | --- | --- |
@@ -130,7 +130,7 @@ Matching runs per person, in this order, and stops at the first hit:
 **Rules**
 
 - Nothing is auto-deleted. Every decision is stored with its tier and reason, and can be reversed from the review queue.
-- Dedupe is per person. The same photo can appear in two people's libraries, for example from a shared album.
+- A matched item belongs to whoever's iPhone uploaded the original. A Google-only item goes to the account's default person and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
 - A tier 1 or 2 match also proves Google has the original. That proof is what makes the photo eligible for deletion on the iPhone.
 
 ## Storage, Syncthing and Immich
@@ -152,6 +152,12 @@ Each person gets one folder tree on Unraid and one Immich library over it, so ev
 - Deleting a photo on an iPhone never reaches Unraid. The app only uploads.
 - Add `*.xmp` to Unraid's `.stignore`, so the service's sidecars never sync to the Pixels.
 - During the switch, Unraid can join the existing Möbius Sync folders, so Immich works before the app ships. Möbius Sync comes off the iPhones once the app is uploading.
+
+**Shared Pixels**
+
+- A Pixel can serve several people. Each person's `originals/` is its own Send Only folder on that Pixel, and each folder must be turned on for backup in Google Photos there.
+- Google Photos on a Pixel backs up to one Google account, so everything that Pixel uploads lands in that account.
+- No tags are written into files. Darkroom knows each original's owner from the iPhone that uploaded it, and Takeout copies match back by hash.
 
 **Immich**
 
@@ -208,6 +214,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 | --- | --- |
 | Sign-in or verification needed | Immediately, repeated at 24 hours and 4 days |
 | Export imported | Summary: added, skipped, in review, missing GPS |
+| Originals unmatched after a full export cycle | Per person and Pixel: check that their folder is backed up in Google Photos |
 | Schedule ending | About 3 weeks before, then a confirmation once renewed |
 | Failure (download, unpack, page change) | Immediately, with a link to the screenshot |
 
@@ -228,8 +235,9 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | --- | --- |
 | Person | name, Immich user ID, Immich API key (secret), originals path, google-only path |
 | Device | person, iPhone name, sign-in token (secret), last check-in |
+| Pixel | name, Syncthing device ID, Google account, people served |
 | PhoneAsset | device, PhotoKit asset ID, resources (photo / Live Photo video / edit) with SHA-1 each, uploaded at, eligible at, deleted at |
-| GoogleAccount | person, email, browser profile path, session state (ok / needs sign-in), schedule end date |
+| GoogleAccount | email, default person (owns Google-only items), browser profile path, session state (ok / needs sign-in), schedule end date |
 | Export | account, kind (initial full / incremental), ready at, expires at, part count, status |
 | ExportPart | export, part number, size, downloads used (of 5), status |
 | MediaItem | person, source (phone / Takeout), path, SHA-1, perceptual hash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no), raw sidecar JSON |
@@ -271,6 +279,7 @@ Deleting from the iPhones is the only step that can lose a photo, so it gets the
 | --- | --- |
 | A photo is deleted from an iPhone before both copies exist | Eligible only when every resource matches by hash on Unraid and in a Takeout export. The app re-checks right before deleting, and Recently Deleted keeps 30 days |
 | iCloud Photos is on, so a phone delete removes the photo everywhere | Confirm it is off before cleanup is turned on |
+| A person's folder isn't turned on for backup on a shared Pixel | Their photos never match in Takeout, so nothing is deleted from their iPhone. Darkroom alerts after a full export cycle with no match |
 | Google changes the Takeout pages and the worker breaks | Selectors in one module, screenshot on failure, alert. Fallback: download the parts by hand into the inbox |
 | Google flags the automation | Headed browser, saved profile, home IP, a few visits a week, no password automation |
 | An export expires before it's downloaded (about 7 days, 5 downloads per part) | Daily status check, alerts at 24 hours and 4 days, retries capped at 2 per part |
