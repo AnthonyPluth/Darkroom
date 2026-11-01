@@ -102,6 +102,18 @@ class ContractAndFeatureMapTests(unittest.TestCase):
         built = api_contract.build()
         self.assertIn("/healthz", built["paths"])
 
+    def test_every_worker_post_route_declares_its_json_body(self):
+        paths = api_contract.build()["paths"]
+        for path, methods in paths.items():
+            if path.startswith("/internal/browser/jobs/") and "post" in methods:
+                with self.subTest(path=path):
+                    self.assertIn("requestBody", methods["post"])
+
+    def test_a_body_with_no_fields_becomes_an_empty_record_type(self):
+        text = (ROOT / "frontend/src/lib/api-types.ts").read_text()
+        self.assertIn("export type HeartbeatBody = Record<string, never>;", text)
+        self.assertNotIn("interface HeartbeatBody", text)
+
     def test_lists_become_arrays_in_the_contract(self):
         from typing import TypedDict
 

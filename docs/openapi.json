@@ -117,6 +117,16 @@
         ],
         "type": "object"
       },
+      "ClaimBody": {
+        "additionalProperties": false,
+        "properties": {
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
       "DoneBody": {
         "additionalProperties": false,
         "properties": {
@@ -179,6 +189,12 @@
           "ok",
           "version"
         ],
+        "type": "object"
+      },
+      "HeartbeatBody": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
         "type": "object"
       },
       "Me": {
@@ -504,6 +520,16 @@
     "/internal/browser/jobs/claim": {
       "post": {
         "operationId": "claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "2XX": {
             "content": {
@@ -587,6 +613,16 @@
     "/internal/browser/jobs/{id}/heartbeat": {
       "post": {
         "operationId": "heartbeat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "2XX": {
             "content": {

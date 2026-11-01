@@ -56,6 +56,14 @@ class EnqueueBody(TypedDict):
     kind: str
 
 
+class ClaimBody(TypedDict):
+    worker: NotRequired[str]
+
+
+class HeartbeatBody(TypedDict):
+    pass
+
+
 class ProgressBody(TypedDict):
     message: str
 

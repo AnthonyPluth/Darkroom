@@ -62,7 +62,7 @@ def answer(request: Request, work: Callable[[Session, float], BrowserJob | None]
     return json_response({"job": browser_jobs.for_worker(job) if job is not None else None})
 
 
-def claim(request: Request) -> Annotated[Response, contract.WorkerReply]:
+def claim(request: Annotated[Request, contract.ClaimBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob | None:
         body_of(request)
         job = browser_jobs.claim(opened, moment)
@@ -73,7 +73,7 @@ def claim(request: Request) -> Annotated[Response, contract.WorkerReply]:
     return answer(request, work)
 
 
-def heartbeat(request: Request) -> Annotated[Response, contract.WorkerReply]:
+def heartbeat(request: Annotated[Request, contract.HeartbeatBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         body_of(request)
         return browser_jobs.heartbeat(opened, job_id_of(request), moment)

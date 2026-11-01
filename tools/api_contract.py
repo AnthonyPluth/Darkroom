@@ -151,6 +151,9 @@ def json_schema_of(operation: dict[str, Any], *keys: str) -> dict[str, Any] | No
 def render_ts(document: dict[str, Any]) -> str:
     lines: list[str] = []
     for name, schema in sorted(document["components"]["schemas"].items()):
+        if not schema["properties"]:
+            lines += [f"export type {name} = Record<string, never>;", ""]
+            continue
         lines.append(f"export interface {name} {{")
         lines += [f"  {ts_field(field, value, field in schema['required'])};" for field, value in schema["properties"].items()]
         lines += ["}", ""]

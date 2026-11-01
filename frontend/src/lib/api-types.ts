@@ -19,6 +19,10 @@ export interface BrowserJobs {
   jobs: BrowserJobView[];
 }
 
+export interface ClaimBody {
+  worker?: string;
+}
+
 export interface DoneBody {
   result?: Record<string, unknown>;
 }
@@ -38,6 +42,8 @@ export interface Health {
   ok: boolean;
   version: string;
 }
+
+export type HeartbeatBody = Record<string, never>;
 
 export interface Me {
   sub: string;
@@ -75,8 +81,8 @@ export interface Endpoints {
   "GET /api/status": { body: never; reply: Status };
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
-  "POST /internal/browser/jobs/claim": { body: never; reply: WorkerReply };
-  "POST /internal/browser/jobs/{id}/heartbeat": { body: never; reply: WorkerReply };
+  "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
+  "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/waiting": { body: WaitingBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/done": { body: DoneBody; reply: WorkerReply };
