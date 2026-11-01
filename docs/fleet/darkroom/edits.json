@@ -1,0 +1,145 @@
+[
+  {
+    "number": 12,
+    "append_section": "**fleet (shared tooling, consumed, never copied)**\n- `.fleet/version` holds the fleet release this repository uses (`v1.x.y`, the same tag the workflow pins carry). `tools/fleet sync --to v1.x.y` writes, and `tools/fleet drift` checks: `tools/fleet` (the CLI shim), `.claude/skills/fleet-fix-with-checks/`, `fleet-design-signoff/`, `fleet-agent-task/`, `fleet-review-guidance/`, `.claude/agents/fleet-reviewer.md`, `.claude/hooks/fleet-session-start.sh`, and the `AGENTS.md` blocks. None of them is edited here; a change goes to fleet.\n- `.claude/hooks/fleet.conf`: `PYTHON_VERSION=3.14`, `FRONTEND_DIRS=\"frontend\"`, `APT_PACKAGES=\"libimage-exiftool-perl libfaketime\"`. `.claude/settings.json`: SessionStart → `$CLAUDE_PROJECT_DIR/.claude/hooks/fleet-session-start.sh`; `\"extraKnownMarketplaces\": {\"fleet\": {\"source\": {\"source\": \"github\", \"repo\": \"AnthonyPluth/fleet\", \"ref\": \"v1.x.y\"}}}`; no `enabledPlugins` entry: cloud sessions don't install plugins a repository declares, so agents get the vendored copies, and enabling the plugin as well would load each skill twice in a local session.\n- `[tool.fleet]` in `pyproject.toml`: migrations `darkroom/storage/migrations/versions`, migration tests `tests/test_migrations.py`, tested-from `0001`, image homes `darkroom/static/`, `docs/design/` (signed-off designs, #16 and #34), `ios/Darkroom/Assets.xcassets/`, skills `.claude/skills`, no-comments over `darkroom`, `darkroom_browser`, `tests`, `tools` and `frontend/src`, coverage floors as in the Makefile bullet, `extra-checks = \"tools.app_checks:CHECKS\"`.\n- `AGENTS.md`: fleet's blocks for \"Starting work\", \"Working in a container\", \"Mistakes that keep coming back\" (it opens with the rule that a mistake that repeats gets a lint, Semgrep, type or test check and that the item names the check) and \"Git and PRs\", between `<!-- fleet:begin … -->` and `<!-- fleet:end … -->` markers; Darkroom's own text (layout, commands, conventions, the promises, its own mistakes after the block) outside them. Darkroom's first own mistake item: \"Deletion safety (checked: Semgrep `darkroom-confirmed-flag-single-writer` from #24 and `darkroom-eligibility-single-path` from #37; `tests/test_eligibility_invariants.py`)\". If this issue has an **AGENTS.md outline** section, its headings of the same names are filled by the fleet blocks and its Darkroom-specific bullets follow each block.\n- The agent review, merge gate, security scans and fleet sync callers, `CODEOWNERS` and the ruleset are {{P2-09}} (Fable), which merges right after this issue and before wave 2.\n",
+    "replace": [
+      {
+        "old": "New repo on the Waypoint/Runway conventions (`docs/SPEC.md#deployment-and-stack`): Python 3.14 + Poetry, ruff, mypy, import-linter, Semgrep, pre-commit, coverage floors, `AGENTS.md`/`CLAUDE.md`, CI that mirrors Waypoint's `docker.yml`/`security.yml`/`merge-gate.yml`. This issue fixes the package layout every later issue uses. Name per #10 item 5 (default Darkroom).",
+        "new": "New repo on the Waypoint/Runway conventions (`docs/SPEC.md#deployment-and-stack`): Python 3.14 + Poetry, ruff, mypy, import-linter, Semgrep, pre-commit, coverage floors, `AGENTS.md`/`CLAUDE.md`, and the shared tools, reusable workflows, vendored `.claude/` files and `AGENTS.md` blocks of `AnthonyPluth/fleet` v1, consumed by pinned reference and never copied. This issue fixes the package layout every later issue uses. Name per #10 item 5 (default Darkroom)."
+      },
+      {
+        "old": "tools/                         no_comments.py coverage_floor.py fleet_checks.py feature_map.py api_contract.py spikes/",
+        "new": "tools/                         fleet (vendored CLI shim) app_checks.py feature_map.py api_contract.py spikes/\n.fleet/version  .claude/       fleet release pin; settings.json, hooks/fleet.conf, vendored fleet skills, agent and hook"
+      },
+      {
+        "old": "- `Makefile`: `setup`, `check` (lint → fleet-checks → feature-map-check → api-contract-check → test-parallel → frontend-check), `lint`, `python-lint`, `semgrep`, `test`, `test-parallel` (coverage floor via `tools/coverage_floor.py`: 85% overall, 90% per module in `darkroom/domain/`, `darkroom/providers/`, `darkroom/server/api/`, `darkroom_browser/pages/`, `darkroom_browser/jobs/`), `fix`, `frontend-*` (no-ops guarded on `frontend/package.json` until #15).",
+        "new": "- `Makefile`: `setup`, `check` (lint → fleet-checks → feature-map-check → api-contract-check → test-parallel → frontend-check), `lint`, `python-lint`, `semgrep`, `test`, `test-parallel` (coverage floor via `tools/fleet coverage-floor` with the floors in `[tool.fleet.coverage]`: 85% overall, 90% per module in `darkroom/domain/`, `darkroom/providers/`, `darkroom/server/api/`, `darkroom_browser/pages/`, `darkroom_browser/jobs/`), `fleet-checks` (`tools/fleet checks --commits origin/main..HEAD` then `tools/fleet drift`), `fleet-sync`, `fix`, `frontend-*` (no-ops guarded on `frontend/package.json` until #15)."
+      },
+      {
+        "old": "- `tools/`: `no_comments.py`, `coverage_floor.py`, `fleet_checks.py` (one Alembic head; a `test_<revision>_…` per migration; workflow conventions: bash `-eo pipefail`, SHA-pinned actions with version comments, `persist-credentials: false`; `Co-Authored-By` trailer on agent commits), `feature_map.py` (route → handler, frontend callers, tests; every route has a test), `api_contract.py` placeholder generating `docs/openapi.json` from `contract.py` (extended by #15).",
+        "new": "- `tools/`: `fleet` (vendored shim running fleet's CLI at `.fleet/version`: `fleet checks` (one Alembic head; a `test_<revision>_…` per migration; workflow conventions; `Co-Authored-By` trailer on agent commits; `Removes-Test:`/`Skips-Test:` trailers; images only where they belong; skills well formed), `fleet no-comments`, `fleet coverage-floor`, `fleet next-version`, configured by `[tool.fleet]`), `app_checks.py` (Darkroom-only checks plugged into `fleet checks`; starts with an empty list), `feature_map.py` (route → handler, frontend callers, tests; every route has a test), `api_contract.py` placeholder generating `docs/openapi.json` from `contract.py` (extended by #15). No copy of fleet's tools lives here."
+      },
+      {
+        "old": "- `.github/workflows/`: `ci.yml` (changes filter; python job: `unittest-parallel` with coverage + floor, pip-audit, ruff, mypy, lint-imports; web job; fleet-checks; feature-map/api-contract job), `docker.yml` (main only: build both images, smoke `/healthz`, publish to ghcr with version tags, release), `security.yml` (Semgrep registry packs + own rules, Trivy, zizmor, CodeQL), `merge-gate.yml` + `.github/scripts/merge-gate.sh`; composite `.github/actions/setup-python-poetry` that also installs exiftool; Dependabot config.",
+        "new": "- `.github/workflows/`: `ci.yml` (\"CI\": changes filter; python job: `unittest-parallel` with coverage + `tools/fleet coverage-floor`, pip-audit, ruff, mypy, lint-imports; web job; a `fleet-checks` job calling fleet's reusable `checks.yml`, pinned by SHA with a `# v1.x.y` comment; feature-map/api-contract job), `docker.yml` (main only: build both images, smoke `/healthz`, publish to ghcr with version tags from `tools/fleet next-version`, release); composite `.github/actions/setup-python-poetry` that also installs exiftool; Dependabot config whose github-actions entry has a `fleet` group for `AnthonyPluth/fleet/*`. The agent review, merge gate, security scans (no CodeQL: not available for a private repository on a personal account) and fleet sync come with {{P2-09}}; `ios.yml` with #33."
+      },
+      {
+        "old": "- [ ] `make check` passes on a fresh clone with exiftool installed; CI green on the PR.",
+        "new": "- [ ] `make check` passes on a fresh clone with exiftool installed; CI green on the PR.\n- [ ] `tools/fleet drift` is clean, and editing one character inside a fleet block in `AGENTS.md` or a vendored file fails `make fleet-checks` (shown in the PR, then reverted).\n- [ ] A fresh cloud session runs `.claude/hooks/fleet-session-start.sh` and then `make check` with no manual setup (paste the hook's last lines)."
+      },
+      {
+        "old": "- [ ] `AGENTS.md` carries the layout above and the five promises.",
+        "new": "- [ ] `AGENTS.md` carries the layout above and the five promises, with fleet's blocks between their markers and Darkroom's own text outside them."
+      },
+      {
+        "old": "`tests/test_healthz.py`, `tests/test_config.py`, `tests/test_routes_table.py` (every route has an auth kind), `tests/test_tools.py` (no_comments, coverage_floor, fleet_checks on fixture inputs).",
+        "new": "`tests/test_healthz.py`, `tests/test_config.py`, `tests/test_routes_table.py` (every route has an auth kind), `tests/test_feature_map.py`, `tests/test_app_checks.py` (fleet's tools are tested in fleet)."
+      },
+      {
+        "old": "None (#10 item 5 should be answered first; default Darkroom).",
+        "new": "`AnthonyPluth/fleet` v1.0.0 released (fleet issue `FLEET-RELEASE`). #10 item 5 should be answered first (default Darkroom)."
+      }
+    ]
+  },
+  {
+    "number": 33,
+    "append_section": "**Required iOS check**\nAgents can't run Xcode, so the `iOS` workflow is their compile feedback and a required merge-gate check, not an option.\n- `.github/workflows/ios.yml`, workflow name `iOS`, on pull requests and pushes to `main`: a `changes` job (ubuntu) for `ios/**` and the workflow file, and a `build` job on a pinned macOS image (`macos-15`, not `-latest`, so Xcode doesn't change under a PR) that runs only when `ios/` changed: select the Xcode version in `ios/.xcode-version`, install XcodeGen at a pinned version, `xcodegen generate`, `swift test --package-path ios/Packages/DarkroomCore`, then `xcodebuild -project ios/Darkroom.xcodeproj -scheme Darkroom -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build` (no team id, certificate or secret), piped through `xcbeautify --renderer github-actions` so compile errors become file:line annotations an agent reads from the PR's checks; the `.xcresult` uploaded on failure; `contents: read`; SwiftPM and DerivedData cached on `ios/` lockfile hashes.\n- A PR that doesn't touch `ios/` skips the build job, and a skipped job counts as passed, so backend PRs never wait on macOS.\n- In this PR, add `iOS` to `required-workflows` and to the `workflow_run` list in `.github/workflows/merge-gate.yml` ({{P2-09}}'s caller). Adding it earlier would hold every PR waiting for a workflow that doesn't exist.\n- Cost: Darkroom is private, so macOS minutes count ten times against the account's included minutes. Note a cold and a cached run's duration in the PR and in `ios/README.md`.\n- The owner's Mac and device checks stay: signing, PhotoKit, background tasks and notifications can't run in CI.\n- The iOS agent brief in `docs/HANDOFF.md` gains: \"read the `iOS` check's annotations; a red `iOS` check blocks the merge\".\n",
+    "replace": [
+      {
+        "old": "- `ios/README.md`: `brew install xcodegen`, `xcodegen generate`, signing, run on device, TestFlight vs ad hoc steps; `.swiftformat`; optional `.github/workflows/ios.yml` running `swift test` for the package on `macos-latest` (owner enables; minutes cost noted).",
+        "new": "- `ios/README.md`: `brew install xcodegen`, `xcodegen generate`, signing, run on device, TestFlight vs ad hoc steps, what the `iOS` check runs and its measured minutes; `.swiftformat`; `ios/.xcode-version`; `.github/workflows/ios.yml` (required, see **Required iOS check**)."
+      },
+      {
+        "old": "- [ ] `swift test` passes for DarkroomCore where a toolchain exists (Linux CI if available; otherwise the owner runs it) and the tests are reviewed as part of the PR.",
+        "new": "- [ ] The `iOS` workflow runs `swift test` for DarkroomCore and an unsigned simulator build of the app; it is green on this PR, and `iOS` is a required workflow of the merge gate.\n- [ ] A deliberate compile error (pushed, shown, then reverted) fails `iOS` with a file:line annotation on the PR."
+      },
+      {
+        "old": "- [ ] `xcodegen generate` succeeds and the app builds (owner ticks).",
+        "new": "- [ ] `xcodegen generate` succeeds and the app builds and launches on a device (owner ticks)."
+      },
+      {
+        "old": "#12 (#10 item 7 for distribution).",
+        "new": "#12, {{P2-09}} (the merge gate caller) (#10 item 7 for distribution)."
+      }
+    ]
+  },
+  {
+    "number": 35,
+    "replace": [
+      {
+        "old": "- [ ] App code compiles and the owner's list above is ticked in this issue.",
+        "new": "- [ ] The required `iOS` check (unsigned simulator build and `swift test`) is green, and the owner's list above is ticked in this issue."
+      }
+    ]
+  },
+  {
+    "number": 24,
+    "append_section": "**Second review**\nThis issue is labelled `safety-critical`, so its PR gets fleet's Fable second review as the required status \"Second review\" beside \"Agent review\" ({{P2-09}}). Add invariants 1–6 to `.github/agent-review/invariants.md` (append-only, in this issue's section) with the checks that hold them (`tests/test_dedupe_invariants.py` and the Semgrep rule `darkroom-confirmed-flag-single-writer`), so the second review judges the change against them. Fix each second-review finding or answer it in the PR with a reason; the status clears only on a new push. Run the vendored `fleet-reviewer` agent before pushing. Never add or remove the label yourself.",
+    "replace": [
+      {
+        "old": "- [ ] Reversal tests for invariant 4; idempotency for 5; a property test over random items asserting flag ⇒ unreversed auto tier 1/2 decision.",
+        "new": "- [ ] Reversal tests for invariant 4; idempotency for 5; a property test over random items asserting flag ⇒ unreversed auto tier 1/2 decision.\n- [ ] \"Second review\" passes on the final head with every finding fixed or answered; invariants 1–6 and their checks listed in `.github/agent-review/invariants.md`."
+      },
+      {
+        "old": "#23.",
+        "new": "#23, {{P2-09}} (second review in place)."
+      }
+    ]
+  },
+  {
+    "number": 26,
+    "append_section": "**Fake Immich**\n`tests/test_immich.py` and the end-to-end import test run against `FakeImmich` from {{P3-09}} (`tests/fakes/immich.py`), including its `down`, `401` and `500` modes for the error path; no hand-rolled stub.",
+    "replace": [
+      {
+        "old": "- [ ] End-to-end test on a fixture export with a seeded phone index: expected counts per tier; Google-only files in the default person's folder; sidecars written; the Immich fake receives one scan per affected library; the summary alert is sent once.",
+        "new": "- [ ] End-to-end test on a fixture export with a seeded phone index: expected counts per tier; Google-only files in the default person's folder; sidecars written; `FakeImmich` ({{P3-09}}) records one scan per affected library; the summary alert is sent once."
+      },
+      {
+        "old": "#25, #18.",
+        "new": "#25, #18, {{P3-09}}."
+      }
+    ]
+  },
+  {
+    "number": 27,
+    "append_section": "**Second review and screenshots**\nThis issue is labelled `safety-critical`, so its PR gets the Fable \"Second review\" ({{P2-09}}): add \"resolve, undo and reassign never set `confirmed_in_google`; reverse clears it unless another unreversed tier 1/2 decision confirms the item\" with its tests to `.github/agent-review/invariants.md`. The PR's screenshots come from `make verify` ({{P2-11}}): add `imports` and `review` to `PAGES` only if {{P3-10}} hasn't yet (whichever lands second rebases).",
+    "replace": [
+      {
+        "old": "- [ ] UI matches the signed-off design in #16. Any change to layout, flow or visual style needs owner sign-off before merge; include screenshots in the PR.",
+        "new": "- [ ] UI matches the signed-off design in #16. Any change to layout, flow or visual style needs owner sign-off before merge; include screenshots in the PR (from `make verify`, phone and desktop).\n- [ ] \"Second review\" passes on the final head with every finding fixed or answered."
+      },
+      {
+        "old": "#26, #16 (signed-off web design).",
+        "new": "#26, #16 (signed-off web design), {{P2-11}} (make verify)."
+      }
+    ]
+  },
+  {
+    "number": 37,
+    "append_section": "**Second review**\nThis issue is labelled `safety-critical`, so its PR gets fleet's Fable second review as the required status \"Second review\" beside \"Agent review\" ({{P2-09}}). Add invariants 1–7 to `.github/agent-review/invariants.md` (append-only, in this issue's section) with the checks that hold them (`tests/test_eligibility_invariants.py` and the Semgrep rule `darkroom-eligibility-single-path`), so the second review judges the change against them. Fix each second-review finding or answer it in the PR with a reason; the status clears only on a new push. Run the vendored `fleet-reviewer` agent before pushing. Never add or remove the label yourself.",
+    "replace": [
+      {
+        "old": "- [ ] `no_leaks` on replies and logs; every-route guard; feature map.",
+        "new": "- [ ] `no_leaks` on replies and logs; every-route guard; feature map.\n- [ ] \"Second review\" passes on the final head with every finding fixed or answered; invariants 1–7 and their checks listed in `.github/agent-review/invariants.md`."
+      },
+      {
+        "old": "#24, #32, #27 (reverse API used in tests), #16 (signed-off web design).",
+        "new": "#24, #32, #27 (reverse API used in tests), #16 (signed-off web design), {{P2-09}} (second review in place)."
+      }
+    ]
+  },
+  {
+    "number": 38,
+    "append_section": "**Second review**\nThis issue is labelled `safety-critical`, so its PR gets fleet's Fable second review as the required status \"Second review\" beside \"Agent review\" ({{P2-09}}). Add the `CleanupFlow` rules (refetch a list older than 1 h, confirm exactly the ids shown, delete only confirmed ids, report only what iOS removed, cancel posts nothing) to `.github/agent-review/invariants.md` (append-only, in this issue's section) with the checks that hold them (the DarkroomCore `CleanupFlow` tests), so the second review judges the change against them. Fix each second-review finding or answer it in the PR with a reason; the status clears only on a new push. Run the vendored `fleet-reviewer` agent before pushing. Never add or remove the label yourself.",
+    "replace": [
+      {
+        "old": "- [ ] App compiles; owner's list ticked.",
+        "new": "- [ ] The required `iOS` check is green; owner's list ticked.\n- [ ] \"Second review\" passes on the final head with every finding fixed or answered; the `CleanupFlow` rules and their tests listed in `.github/agent-review/invariants.md`."
+      },
+      {
+        "old": "#37, #35, #34 (signed-off app design).",
+        "new": "#37, #35, #34 (signed-off app design), {{P2-09}} (second review in place)."
+      }
+    ]
+  }
+]
