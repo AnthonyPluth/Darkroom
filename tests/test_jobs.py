@@ -91,6 +91,28 @@ class BuildTests(unittest.TestCase):
         with db.session(engine) as opened:
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_disabled", "alert_sent"])
 
+    def test_the_index_job_indexes_each_person(self):
+        import tempfile
+        from pathlib import Path
+
+        from darkroom.storage.models import MediaItem
+        from darkroom.storage.paths import Photos
+        from tests.fixtures import media as fixtures
+        from tests.shared import add_person
+
+        engine = own_database(self)
+        with tempfile.TemporaryDirectory() as folder:
+            settings = config.Settings(**{**config.load().__dict__, "photos_root": Path(folder)})
+            with db.session(engine) as opened:
+                add_person(opened, "jo")
+            originals = Photos(Path(folder)).ensure_person_tree("jo")[0]
+            fixtures.make_jpeg(originals / "a.jpg", taken="2019:07:04 12:30:15")
+            scheduler = jobs.build(settings, engine)
+            self.assertEqual(scheduler.jobs["index"].interval, 3600.0)
+            scheduler.run_one("index", 5.0)
+            with db.session(engine) as opened:
+                self.assertEqual(opened.query(MediaItem).count(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

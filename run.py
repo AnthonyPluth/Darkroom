@@ -6,8 +6,11 @@ import sys
 from darkroom import config, monitoring
 from darkroom.providers import exiftool
 from darkroom.dates import utc_now
+from darkroom.domain import index
 from darkroom.server import handler, jobs
 from darkroom.storage import db
+from darkroom.storage.models import Person
+from darkroom.storage.paths import Photos
 
 
 def check_config() -> int:
@@ -46,6 +49,26 @@ def run_job(name: str) -> int:
     return 0
 
 
+def run_index(slug: str | None) -> int:
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    photos = Photos(settings.photos_root)
+    code = 0
+    with db.session(engine) as opened:
+        people = opened.query(Person).order_by(Person.id)
+        if slug:
+            people = people.filter(Person.slug == slug)
+        found = people.all()
+        if slug and not found:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        for person in found:
+            report = index.index_person(opened, photos, person, utc_now().timestamp())
+            monitoring.log("indexed", person=person.slug, new=report.new, unchanged=report.unchanged, changed=report.changed, failed=report.failed)
+    engine.dispose()
+    return code
+
+
 def serve() -> int:
     settings = config.load()
     migrate(settings)
@@ -64,9 +87,12 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index"])
     parser.add_argument("name", nargs="?")
+    parser.add_argument("--person")
     args = parser.parse_args(argv)
+    if args.command == "index":
+        return run_index(args.person)
     if args.command == "jobs":
         if not args.name:
             parser.error("jobs needs the name of a job")

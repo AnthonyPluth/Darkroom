@@ -40,7 +40,7 @@ def make_engine(url: str) -> Engine:
 
 @contextmanager
 def session(engine: Engine) -> Iterator[Session]:
-    with Session(engine) as opened:
+    with Session(engine, expire_on_commit=False) as opened:
         try:
             yield opened
             opened.commit()

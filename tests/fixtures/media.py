@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pillow_heif
+from PIL import Image
+
+pillow_heif.register_heif_opener()
+TINY_VIDEO = Path(__file__).resolve().parent / "tiny.mp4"
+
+
+def set_tags(path: Path, tags: dict[str, str]) -> None:
+    if not tags:
+        return
+    arguments = [f"-{name}={value}" for name, value in tags.items()]
+    subprocess.run(["exiftool", "-overwrite_original", "-q", *arguments, str(path)], check=True, capture_output=True)
+
+
+def exif_tags(taken: str | None, offset: str | None, gps: tuple[float, float] | None, make: str | None, model: str | None) -> dict[str, str]:
+    tags: dict[str, str] = {}
+    if taken:
+        tags["DateTimeOriginal"] = taken
+    if offset:
+        tags["OffsetTimeOriginal"] = offset
+    if gps:
+        tags["GPSLatitude"] = str(abs(gps[0]))
+        tags["GPSLatitudeRef"] = "N" if gps[0] >= 0 else "S"
+        tags["GPSLongitude"] = str(abs(gps[1]))
+        tags["GPSLongitudeRef"] = "E" if gps[1] >= 0 else "W"
+    if make:
+        tags["Make"] = make
+    if model:
+        tags["Model"] = model
+    return tags
+
+
+def make_jpeg(path: Path, taken: str | None = None, offset: str | None = None, gps: tuple[float, float] | None = None,
+              make: str | None = None, model: str | None = None, size: tuple[int, int] = (64, 48), colour: tuple[int, int, int] = (200, 40, 40)) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", size, colour)
+    for x in range(0, size[0], 4):
+        image.putpixel((x, x % size[1]), (255 - colour[0], 255 - colour[1], 255 - colour[2]))
+    image.save(path, format="JPEG")
+    set_tags(path, exif_tags(taken, offset, gps, make, model))
+    return path
+
+
+def make_heic(path: Path, taken: str | None = None, offset: str | None = None, gps: tuple[float, float] | None = None,
+              make: str | None = None, model: str | None = None, size: tuple[int, int] = (64, 48)) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, (30, 60, 200)).save(path, format="HEIF")
+    set_tags(path, exif_tags(taken, offset, gps, make, model))
+    return path
+
+
+def make_video(path: Path, creation: str | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(TINY_VIDEO, path)
+    if creation:
+        set_tags(path, {"QuickTime:CreateDate": creation, "Keys:CreationDate": creation})
+    return path
