@@ -88,7 +88,7 @@ class WriteOnceTests(unittest.TestCase):
             paths.write_once(self.folder / "a.bin", broken())
         self.assertEqual(list(self.folder.iterdir()), [])
 
-    def test_falls_back_to_a_move_when_hard_links_are_unavailable(self):
+    def test_falls_back_to_a_copy_when_hard_links_are_unavailable(self):
         from unittest import mock
 
         destination = self.folder / "a.bin"
@@ -96,6 +96,26 @@ class WriteOnceTests(unittest.TestCase):
             paths.write_once(destination, [b"data"])
         self.assertEqual(destination.read_bytes(), b"data")
         self.assertEqual([p.name for p in self.folder.iterdir()], ["a.bin"])
+
+    def test_fallback_never_overwrites_a_file_that_appears_late(self):
+        from unittest import mock
+
+        destination = self.folder / "a.bin"
+        destination.write_bytes(b"original")
+        with mock.patch("os.link", side_effect=OSError("cross-device")), mock.patch.object(Path, "exists", return_value=False):
+            with self.assertRaises(paths.AlreadyExists):
+                paths.write_once(destination, [b"new"])
+        self.assertEqual(destination.read_bytes(), b"original")
+        self.assertEqual([p.name for p in self.folder.iterdir()], ["a.bin"])
+
+    def test_fallback_removes_a_partial_copy_on_failure(self):
+        from unittest import mock
+
+        destination = self.folder / "a.bin"
+        with mock.patch("os.link", side_effect=OSError("cross-device")), mock.patch("os.fsync", side_effect=[None, OSError("disk")]):
+            with self.assertRaises(OSError):
+                paths.write_once(destination, [b"data"])
+        self.assertEqual(list(self.folder.iterdir()), [])
 
 
 if __name__ == "__main__":

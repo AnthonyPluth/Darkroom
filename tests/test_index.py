@@ -99,6 +99,50 @@ class IndexTests(unittest.TestCase):
         report = self.run_index(read=dies)
         self.assertEqual((report.new, report.failed), (0, 1))
 
+    def test_exiftool_failing_counts_only_the_files_it_was_given(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        self.run_index()
+
+        fixtures.make_jpeg(self.originals / "b.jpg")
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed")
+
+        report = self.run_index(now=200.0, read=dies)
+        self.assertEqual((report.unchanged, report.failed), (1, 1))
+
+    def test_a_file_that_vanishes_before_stat_is_a_failure_not_a_crash(self):
+        from unittest import mock
+
+        photo = fixtures.make_jpeg(self.originals / "a.jpg")
+        real = Path.stat
+
+        def stat(self, *args, **kwargs):
+            if self.name == photo.name:
+                raise FileNotFoundError(self.name)
+            return real(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", stat):
+            report = self.run_index()
+        self.assertEqual((report.new, report.failed), (0, 1))
+
+    def test_skipped_folders_are_pruned_not_walked(self):
+        from unittest import mock
+
+        fixtures.make_jpeg(self.originals / "keep" / "a.jpg")
+        fixtures.make_jpeg(self.originals / ".stversions" / "old" / "b.jpg")
+        visited = []
+        real = os.walk
+
+        def spy(top, *args, **kwargs):
+            for folder, names, files in real(top, *args, **kwargs):
+                visited.append(Path(folder).name)
+                yield folder, names, files
+
+        with mock.patch("os.walk", spy):
+            self.assertEqual([p.name for p in index.walk(self.originals)], ["a.jpg"])
+        self.assertNotIn("old", visited)
+
     def test_the_indexer_never_writes_under_originals(self):
         fixtures.make_jpeg(self.originals / "a.jpg", taken="2019:07:04 12:30:15", gps=(40.7, -74.0))
         fixtures.make_video(self.originals / "b.mov")

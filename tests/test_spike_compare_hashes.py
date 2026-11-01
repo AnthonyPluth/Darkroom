@@ -23,6 +23,45 @@ def sidecar(origin):
     return json.dumps({"title": "x", "photoTakenTime": {"timestamp": "1"}, "googlePhotosOrigin": origin}).encode()
 
 
+class SidecarMatchingTests(unittest.TestCase):
+    def match(self, media, sidecar_names):
+        folder = "Takeout/Google Photos/Photos from 2019"
+        entries = {folder: [compare_hashes.Entry(f"{folder}/{n}", 1, lambda: io.BytesIO(b"")) for n in sidecar_names]}
+        found = compare_hashes.sidecar_of(compare_hashes.Entry(f"{folder}/{media}", 1, lambda: io.BytesIO(b"")), entries)
+        return found.basename if found else None
+
+    def test_every_known_sidecar_form_is_matched(self):
+        self.assertEqual(self.match("a.jpg", ["a.jpg.json"]), "a.jpg.json")
+        self.assertEqual(self.match("a.jpg", ["a.jpg.supplemental-metadata.json"]), "a.jpg.supplemental-metadata.json")
+        self.assertEqual(self.match("a.jpg", ["a.jpg.supplemental-metada.json"]), "a.jpg.supplemental-metada.json")
+        self.assertEqual(self.match("a.jpg", ["a.jpg.s.json"]), "a.jpg.s.json")
+        self.assertEqual(self.match("a(1).jpg", ["a.jpg(1).json"]), "a.jpg(1).json")
+        self.assertEqual(self.match("a(1).jpg", ["a.jpg(1).supplemental-metadata.json"]), "a.jpg(1).supplemental-metadata.json")
+        self.assertEqual(self.match("a-edited.jpg", ["a.jpg.json"]), "a.jpg.json")
+        long_name = "a_very_long_original_file_name_from_a_camera_roll_0007.jpg"
+        self.assertEqual(self.match(long_name, [f"{long_name[:46]}.json"]), f"{long_name[:46]}.json")
+        self.assertIsNone(self.match("a.jpg", ["b.jpg.json", "a.jpg.other.json"]))
+
+    def test_mkv_and_webm_are_media_and_video(self):
+        for suffix in (".mkv", ".webm"):
+            self.assertIn(suffix, compare_hashes.MEDIA)
+            self.assertIn(suffix, compare_hashes.VIDEO)
+
+    def test_a_stem_shared_by_several_originals_is_not_proof(self):
+        stills = [Path("/a/IMG_1.heic"), Path("/b/IMG_1.heic"), Path("/a/IMG_2.heic")]
+        self.assertEqual(compare_hashes.unambiguous_stems(stills), {"img_2"})
+
+    def test_a_large_member_is_streamed_to_exiftool_without_being_read_whole(self):
+        class Source(io.BytesIO):
+            def read(self, size=-1):
+                if size is None or size < 0:
+                    raise AssertionError("read the whole member")
+                return super().read(size)
+
+        tags = compare_hashes.exiftool_tags(Source(fixtures.make_jpeg(Path(tempfile.mkdtemp()) / "a.jpg").read_bytes()))
+        self.assertEqual(tags.get("File:FileType"), "JPEG")
+
+
 class CompareTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
