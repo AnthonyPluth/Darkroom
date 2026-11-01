@@ -15,14 +15,13 @@ from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.orm import Session
 
 from darkroom import tls
-from darkroom.config import Settings, local_host, oidc_configured
+from darkroom.config import SESSION_MAX_DAYS, Settings, local_host, oidc_configured
 from darkroom.storage.models import AuthPending, AuthSession, User
 
 LOGIN_TTL = 600.0
 MAX_PENDING = 10_000
 DISCOVERY_TTL = 3600.0
 RENEW_AFTER = 86_400.0
-SESSION_MAX_DAYS = 30
 LEEWAY = 60
 MAX_REPLY = 1_000_000
 SCOPES = "openid email profile groups"
@@ -57,6 +56,7 @@ class Identity:
     email: str | None
     name: str | None
     groups: tuple[str, ...]
+    email_verified: bool = False
 
 
 def forget_caches() -> None:
@@ -281,7 +281,7 @@ def authorize(settings: Settings, info: Mapping[str, Any]) -> Identity:
     if not allowed(settings, email, verified, groups):
         raise NotAllowed(email or sub)
     name = info.get("name") or info.get("preferred_username")
-    return Identity(sub, email, name.strip() if isinstance(name, str) and name.strip() else None, groups)
+    return Identity(sub, email, name.strip() if isinstance(name, str) and name.strip() else None, groups, verified)
 
 
 def remember_user(opened: Session, who: Identity, now: float) -> User:
@@ -289,14 +289,19 @@ def remember_user(opened: Session, who: Identity, now: float) -> User:
     if user is None:
         user = User(sub=who.sub)
         opened.add(user)
-    user.email, user.name, user.groups, user.last_seen = who.email, who.name, json.dumps(list(who.groups)), now
+    user.email, user.email_verified, user.name = who.email, who.email_verified, who.name
+    user.groups, user.last_seen = json.dumps(list(who.groups)), now
     opened.flush()
     return user
 
 
+def session_life(settings: Settings) -> float:
+    return min(settings.session_days, SESSION_MAX_DAYS) * 86_400
+
+
 def new_session(opened: Session, settings: Settings, sub: str, now: float) -> str:
     token = secrets.token_urlsafe(32)
-    opened.add(AuthSession(token_hash=hash_token(token), sub=sub, created=now, expires=now + settings.session_days * 86_400))
+    opened.add(AuthSession(token_hash=hash_token(token), sub=sub, created=now, expires=now + session_life(settings)))
     opened.flush()
     return token
 
@@ -335,7 +340,7 @@ def stored_groups(user: User) -> tuple[str, ...]:
 
 
 def still_allowed(settings: Settings, user: User) -> bool:
-    return allowed(settings, email_of({"email": user.email}), True, stored_groups(user))
+    return allowed(settings, email_of({"email": user.email}), bool(user.email_verified), stored_groups(user))
 
 
 def find_session(opened: Session, token: str | None) -> AuthSession | None:
@@ -353,15 +358,15 @@ def session_user(opened: Session, settings: Settings, token: str | None, now: fl
         opened.delete(found)
         opened.flush()
         return None
-    return Identity(user.sub, user.email, user.name, stored_groups(user))
+    return Identity(user.sub, user.email, user.name, stored_groups(user), bool(user.email_verified))
 
 
 def renew_session(opened: Session, settings: Settings, token: str | None, now: float) -> int | None:
     found = find_session(opened, token)
-    life = settings.session_days * 86_400
+    life = session_life(settings)
     if found is None or found.expires <= now or found.expires > now + life - RENEW_AFTER:
         return None
-    expires = min(now + life, found.created + max(SESSION_MAX_DAYS, settings.session_days) * 86_400)
+    expires = min(now + life, found.created + SESSION_MAX_DAYS * 86_400)
     if expires <= found.expires:
         return None
     found.expires = expires
@@ -375,8 +380,8 @@ def access_lapsed(opened: Session, settings: Settings, sub: str | None, email: s
     user = opened.get(User, sub) if sub else None
     if user is None or not still_allowed(settings, user):
         return "user_removed"
-    by_email = allowed(settings, email_of({"email": email}), True, ())
-    if not by_email and (user.last_seen is None or now - user.last_seen > settings.session_days * 86_400):
+    by_email = allowed(settings, email_of({"email": user.email}), bool(user.email_verified), ())
+    if not by_email and (user.last_seen is None or now - user.last_seen > session_life(settings)):
         return "sign_in_lapsed"
     return None
 

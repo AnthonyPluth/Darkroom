@@ -166,6 +166,26 @@ class RoundTripTests(SignedInServer):
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(AuthSession).count(), 0)
 
+    def test_logging_out_of_a_renewable_session_leaves_no_cookie_behind(self):
+        _, headers, _ = self.sign_in()
+        token = cookies_set(headers)[auth.SESSION_COOKIE]
+        with db.session(self.engine) as opened:
+            created = opened.get(AuthSession, oidc.hash_token(token)).created
+        with mock.patch.object(auth, "now", return_value=created + 2 * 86_400):
+            status, headers, _ = self.call("POST", "/auth/logout", {auth.SESSION_COOKIE: token}, {"Origin": self.base})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get_all("Set-Cookie"), [f"{auth.SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"])
+        self.assertEqual(self.get("/api/me", {auth.SESSION_COOKIE: token})[0], 401)
+
+    def test_an_unverified_email_no_longer_lets_an_old_session_through_when_groups_narrow(self):
+        _, headers, _ = self.sign_in(groups=["parents"], email="kid@example.test", email_verified=False)
+        token = cookies_set(headers)[auth.SESSION_COOKIE]
+        self.assertEqual(self.get("/api/me", {auth.SESSION_COOKIE: token})[0], 200)
+        narrowed = dataclasses.replace(self.settings, oidc_allowed_groups=("admins",), oidc_allowed_emails=("kid@example.test",))
+        real = oidc.session_user
+        with mock.patch.object(oidc, "session_user", side_effect=lambda opened, settings, tok, now: real(opened, narrowed, tok, now)):
+            self.assertEqual(self.get("/api/me", {auth.SESSION_COOKIE: token})[0], 401)
+
     def test_a_session_ends_when_the_allowed_groups_change(self):
         _, headers, _ = self.sign_in()
         token = cookies_set(headers)[auth.SESSION_COOKIE]

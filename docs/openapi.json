@@ -18,7 +18,10 @@
                       "type": "string"
                     },
                     "groups": {
-                      "type": "object"
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "name": {
                       "type": "string"

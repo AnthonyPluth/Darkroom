@@ -33,6 +33,23 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "base")
         self.assertEqual(inspect(self.engine).get_table_names(), ["alembic_version"])
 
+    def test_0002_user_email_verified_adds_an_unverified_flag_to_existing_users_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0001")
+            connection.exec_driver_sql("INSERT INTO users (sub, email) VALUES ('u1', 'jo@example.test')")
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT email_verified FROM users").scalar(), 0)
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0001")
+        self.assertNotIn("email_verified", {column["name"] for column in inspect(self.engine).get_columns("users")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT sub FROM users").scalar(), "u1")
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

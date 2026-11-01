@@ -60,7 +60,8 @@
       "handler": "darkroom.server.auth.me",
       "frontend": [],
       "tests": [
-        "tests/test_auth_routes.py"
+        "tests/test_auth_routes.py",
+        "tests/test_tools.py"
       ]
     }
   ]

@@ -39,10 +39,14 @@ def dispatch(request: Request) -> Response:
     if principal is None:
         return error_response("sign in required", 401)
     response = route.handler(replace(request, user=principal))
-    if principal.renewed:
+    if principal.renewed and not sets_session_cookie(response):
         token = auth.cookies_of(request).get(auth.SESSION_COOKIE, "")
         response = replace(response, cookies=(*response.cookies, auth.session_cookie(request.settings, token, principal.renewed)))
     return response
+
+
+def sets_session_cookie(response: Response) -> bool:
+    return any(baked.startswith(auth.SESSION_COOKIE + "=") for baked in response.cookies)
 
 
 def line_breaks_in(response: Response) -> bool:

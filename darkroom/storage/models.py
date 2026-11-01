@@ -272,6 +272,7 @@ class User(Base):
     __tablename__ = "users"
     sub: Mapped[str] = mapped_column(String, primary_key=True)
     email: Mapped[str | None] = mapped_column(String)
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     name: Mapped[str | None] = mapped_column(String)
     groups: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[float | None] = mapped_column(Float)

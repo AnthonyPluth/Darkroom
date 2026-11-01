@@ -19,6 +19,9 @@ def env_flag(name: str) -> bool:
     return env(name) == "1"
 
 
+SESSION_MAX_DAYS = 30
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -134,6 +137,8 @@ def problems(settings: Settings) -> list[str]:
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
     if settings.session_days < 1:
         found.append("DARKROOM_SESSION_DAYS must be at least 1")
+    elif settings.session_days > SESSION_MAX_DAYS:
+        found.append(f"DARKROOM_SESSION_DAYS is capped at {SESSION_MAX_DAYS}; a session never outlives {SESSION_MAX_DAYS} days from signing in")
     return found + auth_problems(settings)
 
 

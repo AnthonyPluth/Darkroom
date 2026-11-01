@@ -399,9 +399,9 @@ class AuthorizeTests(unittest.TestCase):
 
     def test_groups_or_a_verified_email_let_someone_in(self):
         who = oidc.authorize(self.settings, {"sub": "u1", "groups": ["parents", " Family "], "email": "X@Example.test", "name": " Jo "})
-        self.assertEqual(who, oidc.Identity("u1", "x@example.test", "Jo", ("family", "parents")))
+        self.assertEqual(who, oidc.Identity("u1", "x@example.test", "Jo", ("family", "parents"), False))
         who = oidc.authorize(self.settings, {"sub": "u2", "email": "me@example.test", "email_verified": True, "preferred_username": "me"})
-        self.assertEqual((who.name, who.groups), ("me", ()))
+        self.assertEqual((who.name, who.groups, who.email_verified), ("me", (), True))
         self.assertEqual(oidc.authorize(self.settings, {"sub": "u3", "groups": "parents"}).groups, ("parents",))
 
     def test_everyone_else_is_refused(self):
@@ -426,8 +426,10 @@ class SessionTests(unittest.TestCase):
         self.engine = own_database(self)
         with db.session(self.engine) as opened:
             opened.add(User(sub="u1", email="jo@example.test", name="Jo", groups='["parents"]', last_seen=NOW))
-            opened.add(User(sub="u2", email="me@example.test", name="Me", groups="[]", last_seen=NOW))
+            opened.add(User(sub="u2", email="me@example.test", email_verified=True, name="Me", groups="[]", last_seen=NOW))
+            opened.add(User(sub="u3", email="me@example.test", email_verified=False, name="Unverified", groups='["parents"]', last_seen=NOW))
             opened.flush()
+            self.unverified = oidc.new_session(opened, self.settings, "u3", NOW)
             self.token = oidc.new_session(opened, self.settings, "u1", NOW)
             self.by_email = oidc.new_session(opened, self.settings, "u2", NOW)
 
@@ -468,6 +470,7 @@ class SessionTests(unittest.TestCase):
         with db.session(self.engine) as opened:
             self.assertIsNone(oidc.session_user(opened, narrowed, self.token, NOW + 1))
             self.assertIsNotNone(oidc.session_user(opened, narrowed, self.by_email, NOW + 1))
+            self.assertIsNone(oidc.session_user(opened, narrowed, self.unverified, NOW + 1))
         without_email = dataclasses.replace(self.settings, oidc_allowed_emails=())
         with db.session(self.engine) as opened:
             self.assertIsNone(oidc.session_user(opened, without_email, self.by_email, NOW + 1))
@@ -477,8 +480,10 @@ class SessionTests(unittest.TestCase):
 
     def test_still_allowed_reads_the_stored_groups_and_email(self):
         self.assertTrue(oidc.still_allowed(self.settings, User(sub="a", groups='["parents"]')))
-        self.assertTrue(oidc.still_allowed(self.settings, User(sub="a", email="ME@example.test")))
-        self.assertFalse(oidc.still_allowed(self.settings, User(sub="a", email="other@example.test", groups='["family"]')))
+        self.assertTrue(oidc.still_allowed(self.settings, User(sub="a", email="ME@example.test", email_verified=True)))
+        self.assertFalse(oidc.still_allowed(self.settings, User(sub="a", email="ME@example.test", email_verified=False)))
+        self.assertFalse(oidc.still_allowed(self.settings, User(sub="a", email="ME@example.test")))
+        self.assertFalse(oidc.still_allowed(self.settings, User(sub="a", email="other@example.test", email_verified=True, groups='["family"]')))
         self.assertFalse(oidc.still_allowed(self.settings, User(sub="a", groups="not json")))
         self.assertFalse(oidc.still_allowed(self.settings, User(sub="a")))
 
@@ -487,6 +492,8 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(oidc.access_lapsed(opened, self.settings, "u1", "jo@example.test", NOW + 86_400))
             self.assertEqual(oidc.access_lapsed(opened, self.settings, "u1", "jo@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
             self.assertIsNone(oidc.access_lapsed(opened, self.settings, "u2", "me@example.test", NOW + 80 * 86_400))
+            self.assertEqual(oidc.access_lapsed(opened, self.settings, "u3", "me@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
+            self.assertEqual(oidc.access_lapsed(opened, self.settings, "u1", "me@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
             self.assertEqual(oidc.access_lapsed(opened, self.settings, "nobody", None, NOW), "user_removed")
             self.assertEqual(oidc.access_lapsed(opened, self.settings, None, None, NOW), "user_removed")
             narrowed = dataclasses.replace(self.settings, oidc_allowed_groups=("admins",))
@@ -502,7 +509,27 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(oidc.logout(opened, unset, self.token, NOW), "/auth/signed-out")
             self.assertEqual(oidc.logout(opened, unset, None, NOW), "/auth/signed-out")
         with db.session(self.engine) as opened:
-            self.assertEqual({row.token_hash for row in opened.query(AuthSession)}, {oidc.hash_token(self.by_email)})
+            self.assertEqual({row.token_hash for row in opened.query(AuthSession)}, {oidc.hash_token(self.by_email), oidc.hash_token(self.unverified)})
+
+    def test_a_long_idle_window_never_outlives_the_hard_cap(self):
+        generous = dataclasses.replace(self.settings, session_days=90)
+        with db.session(self.engine) as opened:
+            token = oidc.new_session(opened, generous, "u1", NOW)
+        self.assertEqual(self.expires(token), NOW + oidc.SESSION_MAX_DAYS * 86_400)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(oidc.renew_session(opened, generous, token, NOW + 2 * 86_400))
+            self.assertIsNone(oidc.renew_session(opened, generous, token, NOW + 29 * 86_400))
+            self.assertIsNotNone(oidc.session_user(opened, generous, token, NOW + 30 * 86_400 - 1))
+            self.assertIsNone(oidc.session_user(opened, generous, token, NOW + 30 * 86_400))
+        self.assertEqual(oidc.SESSION_MAX_DAYS, 30)
+
+    def test_the_verified_flag_is_remembered_with_the_user(self):
+        with db.session(self.engine) as opened:
+            oidc.remember_user(opened, oidc.Identity("u9", "nine@example.test", "Nine", (), True), NOW)
+            self.assertTrue(opened.get(User, "u9").email_verified)
+            oidc.remember_user(opened, oidc.Identity("u9", "nine@example.test", "Nine", ("parents",), False), NOW + 1)
+            self.assertFalse(opened.get(User, "u9").email_verified)
+            self.assertFalse(oidc.session_user(opened, self.settings, oidc.new_session(opened, self.settings, "u9", NOW), NOW + 1).email_verified)
 
     def test_logout_goes_to_the_provider_end_session_when_it_has_one(self):
         with_end = {"end_session_endpoint": "https://id.example/end?x=1"}

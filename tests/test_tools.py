@@ -102,6 +102,25 @@ class ContractAndFeatureMapTests(unittest.TestCase):
         built = api_contract.build()
         self.assertIn("/healthz", built["paths"])
 
+    def test_lists_become_arrays_in_the_contract(self):
+        from typing import TypedDict
+
+        class Reply(TypedDict):
+            names: list[str]
+            counts: list[int]
+            nested: list[list[str]]
+            anything: list
+            other: dict
+
+        schema = api_contract.schema_of(Reply)["properties"]
+        self.assertEqual(schema["names"], {"type": "array", "items": {"type": "string"}})
+        self.assertEqual(schema["counts"], {"type": "array", "items": {"type": "integer"}})
+        self.assertEqual(schema["nested"], {"type": "array", "items": {"type": "array", "items": {"type": "string"}}})
+        self.assertEqual(schema["anything"], {"type": "array"})
+        self.assertEqual(schema["other"], {"type": "object"})
+        me = api_contract.build()["paths"]["/api/me"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(me["properties"]["groups"], {"type": "array", "items": {"type": "string"}})
+
 
 if __name__ == "__main__":
     unittest.main()

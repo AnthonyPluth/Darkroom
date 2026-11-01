@@ -94,6 +94,10 @@ class AuthProblemTests(unittest.TestCase):
                       "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_SESSION_DAYS": "0"}
             with mock.patch.dict(os.environ, values, clear=True):
                 self.assertEqual(config.problems(config.load()), ["DARKROOM_SESSION_DAYS must be at least 1"])
+            with mock.patch.dict(os.environ, {**values, "DARKROOM_SESSION_DAYS": "90"}, clear=True):
+                found = config.problems(config.load())
+            self.assertEqual(len(found), 1)
+            self.assertIn("capped at 30", found[0])
 
 
 if __name__ == "__main__":
