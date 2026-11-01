@@ -4,7 +4,6 @@ from sqlalchemy import select
 
 from darkroom import config
 from darkroom.domain import alerts, events
-from darkroom.providers import homeassistant
 from darkroom.storage import db
 from darkroom.storage.models import Alert
 from tests.shared import own_database
@@ -14,7 +13,7 @@ DAY = 24 * HOUR
 
 
 class Notifier:
-    def __init__(self, outcome=homeassistant.SENT):
+    def __init__(self, outcome=alerts.SENT):
         self.sent = []
         self.outcome = outcome
 
@@ -97,14 +96,14 @@ class AlertTests(unittest.TestCase):
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_sent", "alert_sent"])
 
     def test_a_failed_send_is_recorded_and_the_caller_goes_on(self):
-        self.notifier = Notifier(homeassistant.FAILED)
+        self.notifier = Notifier(alerts.FAILED)
         with db.session(self.engine) as opened:
             alert = self.open_sign_in(opened, 0.0)
             self.assertEqual(alert.sent_count, 1)
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_failed"])
 
     def test_disabled_home_assistant_is_recorded_too(self):
-        self.notifier = Notifier(homeassistant.DISABLED)
+        self.notifier = Notifier(alerts.DISABLED)
         with db.session(self.engine) as opened:
             self.open_sign_in(opened, 0.0)
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_disabled"])
