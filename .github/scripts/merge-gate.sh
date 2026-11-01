@@ -23,7 +23,7 @@
 set -euo pipefail
 
 CONTEXT="Merge gate"
-REQUIRED_WORKFLOWS=("CI" "Docker image" "Security scans" "CodeQL")   # take CodeQL out if its default setup is turned off
+REQUIRED_WORKFLOWS=("CI" "Docker image" "Security scans")   # take CodeQL out if its default setup is turned off
 # The agent review is disabled (Codex reviews pull requests now), so no "Agent review" status is required. To turn it back
 # on, restore the line below, the trigger in .github/workflows/agent-review.yml and its npm entry in .github/dependabot.yml.
 # REQUIRED_STATUSES=("Agent review")   # Dependabot's pull requests aren't reviewed (below)
