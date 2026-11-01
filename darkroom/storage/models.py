@@ -272,6 +272,7 @@ class User(Base):
     __tablename__ = "users"
     sub: Mapped[str] = mapped_column(String, primary_key=True)
     email: Mapped[str | None] = mapped_column(String)
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     name: Mapped[str | None] = mapped_column(String)
     groups: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[float | None] = mapped_column(Float)
@@ -282,7 +283,10 @@ class AuthSession(Base):
     token_hash: Mapped[str] = mapped_column(String, primary_key=True)
     sub: Mapped[str] = mapped_column(ForeignKey("users.sub", ondelete="CASCADE"), nullable=False)
     created: Mapped[float] = mapped_column(Float, nullable=False)
-    expires: Mapped[float] = mapped_column(Float, nullable=False)
+    expires: Mapped[float | None] = mapped_column(Float)
+    refresh_token_sealed: Mapped[str | None] = mapped_column(Text)
+    last_checked: Mapped[float | None] = mapped_column(Float)
+    cookie_renewed: Mapped[float | None] = mapped_column(Float)
 
 
 class Setting(Base):

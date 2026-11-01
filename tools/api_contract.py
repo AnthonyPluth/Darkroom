@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -15,9 +15,16 @@ OUTPUT = ROOT / "docs/openapi.json"
 JSON_TYPES = {bool: "boolean", int: "integer", float: "number", str: "string"}
 
 
+def type_schema(kind: object) -> dict[str, object]:
+    if kind is list or get_origin(kind) is list:
+        items = get_args(kind)
+        return {"type": "array", "items": type_schema(items[0])} if items else {"type": "array"}
+    return {"type": JSON_TYPES.get(kind, "object")} if isinstance(kind, type) else {"type": "object"}
+
+
 def schema_of(reply: type) -> dict[str, object]:
     hints = get_type_hints(reply)
-    return {"type": "object", "required": sorted(hints), "properties": {name: {"type": JSON_TYPES.get(kind, "object")} for name, kind in hints.items()}}
+    return {"type": "object", "required": sorted(hints), "properties": {name: type_schema(kind) for name, kind in hints.items()}}
 
 
 def build() -> dict[str, object]:

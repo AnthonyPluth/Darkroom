@@ -91,6 +91,22 @@ class BuildTests(unittest.TestCase):
         with db.session(engine) as opened:
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_disabled", "alert_sent"])
 
+    def test_the_session_recheck_runs_hourly_and_records_only_notable_outcomes(self):
+        from unittest import mock
+
+        from darkroom import oidc
+
+        engine = own_database(self)
+        scheduler = jobs.build(config.load(), engine)
+        self.assertEqual(scheduler.jobs["sessions.recheck"].interval, 3600.0)
+        with mock.patch.object(oidc, "recheck_due", return_value=oidc.RecheckSummary(checked=2, kept=2)):
+            scheduler.run_one("sessions.recheck", 10.0)
+        with mock.patch.object(oidc, "recheck_due", return_value=oidc.RecheckSummary(checked=3, kept=1, ended=1, unreachable=1)):
+            scheduler.run_one("sessions.recheck", 20.0)
+        with db.session(engine) as opened:
+            found = events.recent(opened)
+            self.assertEqual([(e.type, e.detail) for e in found], [("sessions_rechecked", "checked=3 kept=1 ended=1 capped=0 unreachable=1")])
+
     def test_the_index_job_indexes_each_person(self):
         import tempfile
         from pathlib import Path

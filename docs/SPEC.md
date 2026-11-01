@@ -257,7 +257,7 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 **Stack**
 
-- Backend: Python 3.14, Poetry, SQLAlchemy + Alembic on SQLite, in-app OIDC sign-in with Pocket ID (as Waypoint does).
+- Backend: Python 3.14, Poetry, SQLAlchemy + Alembic on SQLite, in-app OIDC sign-in with Pocket ID (as Waypoint does). A web session lasts until sign-out, an admin revoke (`run.py revoke-sessions`) or loss of access, which a daily background check against the provider's refresh token detects; a session the provider gave no refresh token for ends after 30 days.
 - Frontend: Svelte 5, Vite, Tailwind 4, bits-ui.
 - Browser: Playwright for Python.
 - iPhone: Swift and SwiftUI, PhotoKit, background URLSession, BGTaskScheduler.

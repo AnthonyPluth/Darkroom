@@ -5,6 +5,91 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/me": {
+      "get": {
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "email": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "sub": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email",
+                    "groups",
+                    "name",
+                    "sub"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/auth/callback": {
+      "get": {
+        "operationId": "callback",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "public"
+      }
+    },
+    "/auth/login": {
+      "get": {
+        "operationId": "login",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "public"
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/auth/signed-out": {
+      "get": {
+        "operationId": "signed_out",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "public"
+      }
+    },
     "/healthz": {
       "get": {
         "operationId": "healthz",

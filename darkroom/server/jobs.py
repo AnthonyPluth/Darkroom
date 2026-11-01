@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
 
-from darkroom import monitoring
+from darkroom import monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, index
+from darkroom.domain import alerts, events, index
 from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
@@ -78,6 +78,16 @@ class Scheduler:
 ALERT_TICK_SECONDS = 600.0
 INDEX_SECONDS = 3600.0
 INDEX_FIRST_AFTER_SECONDS = 120.0
+SESSION_RECHECK_SECONDS = 3600.0
+
+
+def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.RecheckSummary:
+    with db.session(engine) as opened:
+        summary = oidc.recheck_due(opened, settings, at)
+        if summary.notable():
+            events.record(opened, at, "sessions_rechecked", "sessions", summary.detail())
+    monitoring.log("sessions rechecked", checked=summary.checked, kept=summary.kept, ended=summary.ended, capped=summary.capped, unreachable=summary.unreachable)
+    return summary
 
 
 def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
@@ -87,6 +97,9 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
         with db.session(engine) as opened:
             alerts.tick(opened, settings, at)
 
+    def tick_sessions(at: float) -> None:
+        recheck_sessions(settings, engine, at)
+
     def index_originals(at: float) -> None:
         photos = Photos(settings.photos_root)
         with db.session(engine) as opened:
@@ -95,4 +108,5 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
 
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
+    scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     return scheduler

@@ -65,3 +65,20 @@ rules:
           regex: ^(bool|float|int)$
     paths:
       include: ["/darkroom/server/api/"]
+
+  - id: darkroom-log-through-monitoring
+    message: >-
+      Write log lines through darkroom/monitoring.py's log() (one JSON line, credentials and tokens scrubbed), not
+      print(), the logging module or a direct write to stderr. Log counts and fixed texts, never a file name, a
+      path, a location, an email, a key or a token (AGENTS.md, "Private data in logs").
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: print(...)
+      - pattern: logging.$F(...)
+      - pattern: logging.getLogger(...).$F(...)
+      - pattern: sys.stderr.write(...)
+      - pattern: sys.stdout.write(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/"]
+      exclude: ["/darkroom/monitoring.py"]

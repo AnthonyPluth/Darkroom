@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from darkroom import config, monitoring
+from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool
 from darkroom.dates import utc_now
 from darkroom.domain import index
@@ -22,6 +22,7 @@ def check_config() -> int:
         exiftool.version()
     except (exiftool.Missing, OSError) as error:
         found.append(str(error))
+    found += oidc.recheck_problems(settings, utc_now().timestamp())
     for line in found:
         print(f"config: {line}", file=sys.stderr)
     if not found:
@@ -107,13 +108,32 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
     return code
 
 
+def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
+    if not (email or sub or everyone):
+        print("revoke-sessions needs --email, --sub or --all", file=sys.stderr)
+        return 1
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    with db.session(engine) as opened:
+        ended = oidc.revoke_sessions(opened, email=email, sub=sub, everyone=everyone)
+    engine.dispose()
+    monitoring.log("sessions revoked", count=ended)
+    print(f"ended {ended} session{'' if ended == 1 else 's'}")
+    return 0
+
+
 def serve() -> int:
     settings = config.load()
+    refused = config.refuses_to_start(settings)
+    if refused:
+        for line in refused:
+            print(f"config: {line}", file=sys.stderr)
+        return 1
     migrate(settings)
     engine = db.make_engine(db.database_url(settings))
     scheduler = jobs.build(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
-    server = handler.make_server(settings)
+    server = handler.make_server(settings, engine=engine)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()
@@ -125,13 +145,18 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "revoke-sessions"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
     parser.add_argument("--account")
     parser.add_argument("--unpack-only", action="store_true")
+    parser.add_argument("--email")
+    parser.add_argument("--sub")
+    parser.add_argument("--all", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "revoke-sessions":
+        return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":
         return run_index(args.person)
     if args.command == "import-takeout":

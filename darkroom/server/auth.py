@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+from urllib.parse import urlsplit
+
+from sqlalchemy import Engine
+
+from darkroom import monitoring, oidc
+from darkroom.config import Settings, no_auth_allowed
+from darkroom.dates import utc_now
+from darkroom.server.common import Principal, Request, Response, error_response, first_query, header, json_response, page, redirect
+from darkroom.storage import db
+
+SESSION_COOKIE = "darkroom_session"
+LOGIN_COOKIE = "darkroom_login"
+LOCAL_OWNER = Principal("session", "local", None, "Local owner", ())
+MAX_COOKIE_HEADER = 8192
+
+
+def now() -> float:
+    return utc_now().timestamp()
+
+
+def engine_of(request: Request) -> Engine:
+    if request.engine is None:
+        raise RuntimeError("this route needs the database")
+    return request.engine
+
+
+def cookie(settings: Settings, name: str, value: str, max_age: int, path: str = "/") -> str:
+    secure = "; Secure" if oidc.secure_cookie(settings) else ""
+    return f"{name}={value}; Path={path}; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
+
+
+def cleared(settings: Settings, name: str, path: str = "/") -> str:
+    return cookie(settings, name, "", 0, path)
+
+
+def cookies_of(request: Request) -> dict[str, str]:
+    raw = header(request, "Cookie") or ""
+    found: dict[str, str] = {}
+    if len(raw) > MAX_COOKIE_HEADER:
+        return found
+    for part in raw.split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name and name not in found:
+            found[name] = value.strip()
+    return found
+
+
+def expected_origins(request: Request) -> set[str]:
+    origins = set()
+    public = urlsplit(request.settings.public_url)
+    if public.scheme and public.netloc:
+        origins.add(f"{public.scheme}://{public.netloc.lower()}")
+    host = header(request, "Host")
+    if host:
+        origins.update(f"{scheme}://{host.lower()}" for scheme in ("http", "https"))
+    return origins
+
+
+def same_origin(request: Request) -> bool:
+    site = (header(request, "Sec-Fetch-Site") or "").strip().lower()
+    if site and site != "same-origin":
+        return False
+    origin = header(request, "Origin")
+    if origin is None:
+        return True
+    parts = urlsplit(origin.strip())
+    if origin.strip().lower() == "null" or not parts.scheme or not parts.netloc:
+        return False
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}" in expected_origins(request)
+
+
+def session_principal(request: Request) -> Principal | None:
+    settings = request.settings
+    if no_auth_allowed(settings):
+        return LOCAL_OWNER
+    if not oidc.configured(settings):
+        return None
+    token = cookies_of(request).get(SESSION_COOKIE)
+    if not token:
+        return None
+    moment = now()
+    with db.session(engine_of(request)) as opened:
+        who = oidc.session_user(opened, settings, token, moment)
+        if who is None:
+            return None
+        renewed = oidc.renew_cookie(opened, token, moment)
+    return Principal("session", who.sub, who.email, who.name, who.groups, renewed)
+
+
+def session_cookie(settings: Settings, token: str, seconds: int) -> str:
+    return cookie(settings, SESSION_COOKIE, token, seconds)
+
+
+def login(request: Request) -> Response:
+    settings = request.settings
+    if no_auth_allowed(settings):
+        return redirect(oidc.safe_next(first_query(request, "next")))
+    if not oidc.configured(settings):
+        return page(503, "Sign-in is not set up", "Darkroom has no sign-in provider configured. Set OIDC_ISSUER and OIDC_CLIENT_ID.")
+    try:
+        with db.session(engine_of(request)) as opened:
+            target, state = oidc.start_login(opened, settings, first_query(request, "next"), now())
+    except oidc.SignInFailed as error:
+        monitoring.log("sign-in could not start", reason=type(error).__name__)
+        return page(502, "Can't reach sign-in", "Darkroom could not reach the sign-in provider. Try again in a moment.", ("/auth/login", "Try again"))
+    return redirect(target, (cookie(settings, LOGIN_COOKIE, state, int(oidc.LOGIN_TTL), "/auth"),))
+
+
+def callback(request: Request) -> Response:
+    settings = request.settings
+    if not oidc.configured(settings):
+        return error_response("not found", 404)
+    clear_login = cleared(settings, LOGIN_COOKIE, "/auth")
+    moment = now()
+    try:
+        with db.session(engine_of(request)) as opened:
+            signed = oidc.finish_login(opened, settings, request.query, cookies_of(request).get(LOGIN_COOKIE), moment)
+            life = oidc.cookie_life(oidc.find_session(opened, signed.token) or oidc.AuthSession(expires=None), moment)
+    except oidc.NotAllowed as error:
+        monitoring.log("sign-in refused", reason="not_allowed")
+        return page(403, "Not authorized", f"{error.who} is not allowed to use this Darkroom. Ask whoever runs it to add you, or sign in with a different account.",
+                    ("/auth/login", "Sign in again"), (clear_login,))
+    except oidc.ProviderUnreachable as error:
+        monitoring.log("sign-in failed", reason=type(error).__name__)
+        return page(502, "Can't reach sign-in", "Darkroom could not reach the sign-in provider. Try again in a moment.", ("/auth/login", "Try again"), (clear_login,))
+    except oidc.SignInFailed as error:
+        monitoring.log("sign-in failed", reason=type(error).__name__)
+        return page(403, "Couldn't sign you in", f"Something was wrong with this sign-in: {error}. Please try again.", ("/auth/login", "Try again"), (clear_login,))
+    if signed.rechecks:
+        monitoring.log("signed in", rechecks=True)
+    else:
+        monitoring.log("signed in; the provider granted no refresh token so this session cannot be re-checked and ends after the cap", rechecks=False, cap_days=oidc.NO_RECHECK_DAYS)
+    return redirect(signed.next_path, (session_cookie(settings, signed.token, life), clear_login))
+
+
+def logout(request: Request) -> Response:
+    settings = request.settings
+    token = cookies_of(request).get(SESSION_COOKIE)
+    with db.session(engine_of(request)) as opened:
+        target = oidc.logout(opened, settings, token, now())
+    monitoring.log("signed out")
+    return redirect(target, (cleared(settings, SESSION_COOKIE),))
+
+
+def signed_out(request: Request) -> Response:
+    return page(200, "Signed out", "You have signed out of Darkroom.", ("/auth/login", "Sign in again"))
+
+
+def me(request: Request) -> Response:
+    who = request.user
+    if who is None:
+        return error_response("sign in required", 401)
+    return json_response({"sub": who.sub, "email": who.email or "", "name": who.name or "", "groups": list(who.groups)})

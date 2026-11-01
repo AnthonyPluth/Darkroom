@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from sqlalchemy import Engine
+
 from darkroom import monitoring
 from darkroom.config import Settings
-from darkroom.server import routes, static
-from darkroom.server.common import CSP, Request, Response, error_response
+from darkroom.server import auth, routes, static
+from darkroom.server.common import CSP, Principal, Request, Response, error_response
+from darkroom.storage import db
 
-Authenticator = Callable[[Request], bool]
+Authenticator = Callable[[Request], Principal | None]
 
 MAX_BODY = 8 * 1024 * 1024
 
-AUTHENTICATORS: dict[str, Authenticator] = {}
+AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal}
 
 
-def allowed(route: routes.Route, request: Request) -> bool:
-    if route.auth == "public":
-        return True
+def authenticate(route: routes.Route, request: Request) -> Principal | None:
     check = AUTHENTICATORS.get(route.auth)
-    return check is not None and check(request)
+    return check(request) if check is not None else None
 
 
 def dispatch(request: Request) -> Response:
@@ -29,13 +31,44 @@ def dispatch(request: Request) -> Response:
         if request.method == "GET" and not request.path.startswith("/api/"):
             return static.serve(request.path)
         return error_response("not found", 404)
-    if not allowed(route, request):
+    if route.auth == "session" and request.method != "GET" and not auth.same_origin(request):
+        return error_response("cross-site requests are refused", 403)
+    if route.auth == "public":
+        return route.handler(request)
+    principal = authenticate(route, request)
+    if principal is None:
         return error_response("sign in required", 401)
-    return route.handler(request)
+    response = route.handler(replace(request, user=principal))
+    if principal.renewed and not sets_session_cookie(response):
+        token = auth.cookies_of(request).get(auth.SESSION_COOKIE, "")
+        response = replace(response, cookies=(*response.cookies, auth.session_cookie(request.settings, token, principal.renewed)))
+    return response
+
+
+def sets_session_cookie(response: Response) -> bool:
+    return any(baked.startswith(auth.SESSION_COOKIE + "=") for baked in response.cookies)
+
+
+def line_breaks_in(response: Response) -> bool:
+    lines = [*response.headers.keys(), *response.headers.values(), *response.cookies, response.content_type]
+    return any("\r" in line or "\n" in line for line in lines)
+
+
+def safe_dispatch(request: Request) -> Response:
+    try:
+        response = dispatch(request)
+    except Exception:
+        monitoring.report()
+        return error_response("something went wrong", 500)
+    if line_breaks_in(response):
+        monitoring.log("response header refused", path=request.path, reason="line break")
+        return error_response("something went wrong", 500)
+    return response
 
 
 class Handler(BaseHTTPRequestHandler):
     settings: Settings
+    engine: Engine | None = None
 
     def handle_any(self) -> None:
         parts = urlsplit(self.path)
@@ -47,8 +80,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reject(400 if length < 0 else 413)
             return
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
-                          self.rfile.read(length) if length else b"", self.settings)
-        response = dispatch(request)
+                          self.rfile.read(length) if length else b"", self.settings, self.engine)
+        response = safe_dispatch(request)
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Content-Length", str(len(response.body)))
@@ -57,6 +90,8 @@ class Handler(BaseHTTPRequestHandler):
         for name, value in response.headers.items():
             if name != "Content-Security-Policy":
                 self.send_header(name, value)
+        for baked in response.cookies:
+            self.send_header("Set-Cookie", baked)
         self.end_headers()
         self.wfile.write(response.body)
 
@@ -72,12 +107,22 @@ class Handler(BaseHTTPRequestHandler):
 
     do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = handle_any
 
+    def send_header(self, keyword: str, value: str) -> None:
+        if "\r" in f"{keyword}{value}" or "\n" in f"{keyword}{value}":
+            raise ValueError("a response header cannot contain a line break")
+        super().send_header(keyword, value)
+
     def log_message(self, format: str, *args: object) -> None:
         monitoring.log("request", method=self.command, status=str(args[1]) if len(args) > 1 else "")
 
 
-def make_server(settings: Settings, host: str | None = None, port: int | None = None) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"settings": settings})
-    server = ThreadingHTTPServer((host or settings.host, settings.port if port is None else port), handler)
-    server.daemon_threads = True
-    return server
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        monitoring.report()
+
+
+def make_server(settings: Settings, host: str | None = None, port: int | None = None, engine: Engine | None = None) -> ThreadingHTTPServer:
+    bound = type("BoundHandler", (Handler,), {"settings": settings, "engine": engine or db.make_engine(db.database_url(settings))})
+    return Server((host or settings.host, settings.port if port is None else port), bound)

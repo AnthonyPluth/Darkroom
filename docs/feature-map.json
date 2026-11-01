@@ -6,8 +6,61 @@
       "handler": "darkroom.server.api.status.healthz",
       "frontend": [],
       "tests": [
+        "tests/test_every_route.py",
         "tests/test_healthz.py",
         "tests/test_routes_table.py",
+        "tests/test_tools.py"
+      ]
+    },
+    {
+      "route": "GET /auth/login",
+      "auth": "public",
+      "handler": "darkroom.server.auth.login",
+      "frontend": [],
+      "tests": [
+        "tests/test_auth_routes.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /auth/callback",
+      "auth": "public",
+      "handler": "darkroom.server.auth.callback",
+      "frontend": [],
+      "tests": [
+        "tests/test_auth_routes.py",
+        "tests/test_every_route.py",
+        "tests/test_oidc.py"
+      ]
+    },
+    {
+      "route": "POST /auth/logout",
+      "auth": "session",
+      "handler": "darkroom.server.auth.logout",
+      "frontend": [],
+      "tests": [
+        "tests/test_auth_routes.py",
+        "tests/test_routes_table.py"
+      ]
+    },
+    {
+      "route": "GET /auth/signed-out",
+      "auth": "public",
+      "handler": "darkroom.server.auth.signed_out",
+      "frontend": [],
+      "tests": [
+        "tests/test_auth_routes.py",
+        "tests/test_every_route.py",
+        "tests/test_oidc.py"
+      ]
+    },
+    {
+      "route": "GET /api/me",
+      "auth": "session",
+      "handler": "darkroom.server.auth.me",
+      "frontend": [],
+      "tests": [
+        "tests/test_auth_routes.py",
         "tests/test_tools.py"
       ]
     }
