@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from darkroom import config, monitoring
 from darkroom.providers import exiftool
 from darkroom.dates import utc_now
 from darkroom.domain import index
+from darkroom.domain.ingest import unpack
 from darkroom.server import handler, jobs
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -69,6 +71,42 @@ def run_index(slug: str | None) -> int:
     return code
 
 
+def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, account: str | None = None) -> int:
+    if not slug:
+        print("import-takeout needs --person", file=sys.stderr)
+        return 1
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    photos = Photos(settings.photos_root)
+    code = 0
+    with db.session(engine) as opened:
+        person = opened.query(Person).filter(Person.slug == slug).one_or_none()
+        if person is None:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        else:
+            now = utc_now().timestamp()
+            try:
+                found = unpack.register_zips(opened, person, Path(folder), now, account) if folder else unpack.inspect_manual_inbox(opened, photos, person, now, account)
+            except unpack.UnpackFailed as error:
+                print(str(error), file=sys.stderr)
+                found = []
+                code = 1
+            if not found and not code:
+                print("no Takeout zip files found to import", file=sys.stderr)
+                code = 1
+            for export in found:
+                report = unpack.unpack(opened, photos, person, export, now)
+                monitoring.log("unpacked", person=person.slug, export=export.id, parts=report.parts_unpacked, skipped=report.parts_skipped, files=report.files, problems=len(report.problems))
+                for problem in report.problems:
+                    print(problem, file=sys.stderr)
+                    code = 1
+            if not unpack_only and not code:
+                print("Unpacked; pairing and import arrive with later steps.")
+    engine.dispose()
+    return code
+
+
 def serve() -> int:
     settings = config.load()
     migrate(settings)
@@ -87,12 +125,17 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
+    parser.add_argument("--dir")
+    parser.add_argument("--account")
+    parser.add_argument("--unpack-only", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "index":
         return run_index(args.person)
+    if args.command == "import-takeout":
+        return run_import_takeout(args.person, args.dir, args.unpack_only, args.account)
     if args.command == "jobs":
         if not args.name:
             parser.error("jobs needs the name of a job")
