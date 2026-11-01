@@ -11,7 +11,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - `storage/`: the database and the folder tree. It imports nothing above it, and only it imports the database drivers.
   - At the top, what everything shares: `config.py` (every environment variable, all listed in `.env.example`), `tls.py` (the only module that opens outbound connections), `validate.py`, `dates.py`, `monitoring.py`, `oidc.py`.
   - `static/`: the built web app, served as is.
-- `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs, and only `live.py` will import Playwright.
+- `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
 - `frontend/` (Svelte 5, Vite, Tailwind 4), `ios/` (XcodeGen, SwiftUI): added by later issues.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `no_comments.py`, `coverage_floor.py`, `fleet_checks.py`, `feature_map.py`, `api_contract.py`.
@@ -54,7 +54,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 ## Conventions
 
 - No comments or docstrings in code (Python, TypeScript, JavaScript, Svelte, CSS): name things so the code says what it does, and put the why in the commit message, the pull request or the docs. `tools/no_comments.py` fails on one; a tool's directive (`# noqa`, `# type:`) is not a comment.
-- One paved path; lint fails on the old way (`.semgrep/darkroom.yml`). Outbound HTTP through `darkroom/tls.py`; subprocesses only in `darkroom/providers/exiftool.py` (and the worker's runner); request bodies through `darkroom/validate.py`; time through `darkroom/dates.py` (never a naive `utcnow()`, never a bare `date.today()` in the domain, providers or jobs). Fix a finding with the helper, or justify an inline `nosemgrep` with a reason; don't switch the rule off.
+- One paved path; lint fails on the old way (`.semgrep/darkroom.yml`). Outbound HTTP through `darkroom/tls.py` (in the worker, through `darkroom_browser/client.py`, the only module that calls darkroom); subprocesses only in `darkroom/providers/exiftool.py` (and the worker's runner); request bodies through `darkroom/validate.py`; time through `darkroom/dates.py` (never a naive `utcnow()`, never a bare `date.today()` in the domain, providers or jobs). Fix a finding with the helper, or justify an inline `nosemgrep` with a reason; don't switch the rule off.
 - Every route declares an auth kind in `darkroom/server/routes.py`, is typed in `darkroom/server/contract.py` and has a test.
 - Schema changes need an Alembic migration in `darkroom/storage/migrations/`, numbered after main's newest, with its own `test_<revision>_…` in `tests/test_migrations.py` (checked).
 - Add or update tests with the change. Don't skip, disable or delete a test to get CI passing; when one really goes, a `Removes-Test:` or `Skips-Test:` trailer says why (checked).

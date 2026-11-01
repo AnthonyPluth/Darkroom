@@ -24,6 +24,15 @@ class RoutesTableTests(unittest.TestCase):
         self.assertIsNotNone(routes.find("POST", "/auth/logout"))
         self.assertIsNone(routes.find("GET", "/auth/logout"))
 
+    def test_match_fills_path_parameters(self):
+        route, params = routes.match("POST", "/internal/browser/jobs/42/heartbeat")
+        self.assertEqual((route.path, params), ("/internal/browser/jobs/{id}/heartbeat", {"id": "42"}))
+        self.assertIsNone(routes.match("POST", "/internal/browser/jobs//heartbeat"))
+        self.assertIsNone(routes.match("POST", "/internal/browser/jobs/42/heartbeat/extra"))
+        self.assertIsNone(routes.match("POST", "/internal/browser/jobs/42"))
+        self.assertEqual(routes.segments_match("/a/{x}/b", "/a/1/b"), {"x": "1"})
+        self.assertIsNone(routes.segments_match("/a/{x}/b", "/a/1/c"))
+
 
 if __name__ == "__main__":
     unittest.main()

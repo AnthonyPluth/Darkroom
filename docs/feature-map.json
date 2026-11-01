@@ -63,6 +63,107 @@
         "tests/test_auth_routes.py",
         "tests/test_tools.py"
       ]
+    },
+    {
+      "route": "GET /api/status",
+      "auth": "session",
+      "handler": "darkroom.server.api.status.status",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/browser/jobs",
+      "auth": "session",
+      "handler": "darkroom.server.api.browser.list_jobs",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/browser/jobs",
+      "auth": "session",
+      "handler": "darkroom.server.api.browser.enqueue",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/browser/failures/{id}/screenshot.png",
+      "auth": "session",
+      "handler": "darkroom.server.api.browser.screenshot",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/browser/failures/{id}/page.html",
+      "auth": "session",
+      "handler": "darkroom.server.api.browser.page_snapshot",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/claim",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.claim",
+      "frontend": [],
+      "tests": [
+        "tests/browser/fake_darkroom.py",
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/heartbeat",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.heartbeat",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py",
+        "tests/test_routes_table.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/progress",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.progress",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/waiting",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.waiting",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/done",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.done",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/failed",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.failed",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
     }
   ]
 }

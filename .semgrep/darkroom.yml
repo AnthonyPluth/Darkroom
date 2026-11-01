@@ -10,7 +10,7 @@ rules:
       - pattern: urllib.request.build_opener(...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/tls.py"]
+      exclude: ["/darkroom/tls.py", "/darkroom_browser/client.py"]
 
   - id: darkroom-subprocess-only-exiftool
     message: >-
@@ -81,4 +81,4 @@ rules:
       - pattern: sys.stdout.write(...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/"]
-      exclude: ["/darkroom/monitoring.py"]
+      exclude: ["/darkroom/monitoring.py", "/darkroom_browser/monitoring.py"]

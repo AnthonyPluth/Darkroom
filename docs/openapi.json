@@ -5,6 +5,81 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/browser/failures/{id}/page.html": {
+      "get": {
+        "operationId": "page_snapshot",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/browser/failures/{id}/screenshot.png": {
+      "get": {
+        "operationId": "screenshot",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/browser/jobs": {
+      "get": {
+        "operationId": "list_jobs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "jobs": {
+                      "items": {
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "jobs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      },
+      "post": {
+        "operationId": "enqueue",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/me": {
       "get": {
         "operationId": "me",
@@ -35,6 +110,32 @@
                     "groups",
                     "name",
                     "sub"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/status": {
+      "get": {
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "worker_last_seen": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "worker_last_seen"
                   ],
                   "type": "object"
                 }
@@ -118,6 +219,162 @@
           }
         },
         "x-auth": "public"
+      }
+    },
+    "/internal/browser/jobs/claim": {
+      "post": {
+        "operationId": "claim",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/done": {
+      "post": {
+        "operationId": "done",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/failed": {
+      "post": {
+        "operationId": "failed",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/heartbeat": {
+      "post": {
+        "operationId": "heartbeat",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/progress": {
+      "post": {
+        "operationId": "progress",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/waiting": {
+      "post": {
+        "operationId": "waiting",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "job": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "x-auth": "worker"
       }
     }
   }

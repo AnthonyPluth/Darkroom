@@ -35,6 +35,26 @@ services:
     image: ghcr.io/anthonypluth/darkroom-browser:latest
     restart: unless-stopped
     profiles: [browser]
+    depends_on:
+      - darkroom
+    expose:
+      - "6080"
+      - "5900"
+    volumes:
+      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}/_inbox:/photos/_inbox
+      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}/_browser:/photos/_browser
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DARKROOM_URL: http://darkroom:8000
+      DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
+      PHOTOS_ROOT: /photos
+      POLL_SECONDS: ${POLL_SECONDS:-15}
+      DISPLAY: ":99"
+      TZ: ${TZ:-UTC}
+    shm_size: 1g
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - seccomp:./deploy/browser/seccomp.json
