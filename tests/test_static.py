@@ -1,8 +1,15 @@
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from darkroom.server import static
+from tests.shared import fetch, settings_from, start_server
+
+ROOT = Path(__file__).resolve().parent.parent
+INDEX = b'<!doctype html><title>Darkroom</title><div id="app"></div><script type="module" src="/assets/app.js"></script>'
 
 
 class StaticTests(unittest.TestCase):
@@ -32,6 +39,84 @@ class StaticTests(unittest.TestCase):
             root.mkdir()
             (Path(folder) / "secret.txt").write_text("secret")
             self.assertEqual(static.serve("/../secret.txt", root).status, 404)
+
+    def test_a_missing_asset_is_404_rather_than_the_index(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "index.html").write_text("<p>home</p>")
+            response = static.serve("/assets/gone-1234.js", root)
+            self.assertEqual(response.status, 404)
+            self.assertEqual(json.loads(response.body), {"error": "not found"})
+
+    def test_the_built_app_lives_in_its_own_folder(self):
+        self.assertEqual(static.ROOT, ROOT / "darkroom/static/app")
+
+
+class ServedAppTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        (root / "assets").mkdir()
+        (root / "index.html").write_bytes(INDEX)
+        (root / "assets/app.js").write_text("export {};")
+        patch = mock.patch.object(static, "ROOT", root)
+        patch.start()
+        self.addCleanup(patch.stop)
+        settings = settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID="darkroom", DARKROOM_PUBLIC_URL="https://darkroom.example")
+        self.base, _ = start_server(self, settings)
+
+    def test_the_index_is_served_at_the_root_without_signing_in(self):
+        status, headers, body = fetch(self.base, "GET", "/")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, INDEX)
+        self.assertTrue(headers["Content-Type"].startswith("text/html"))
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+
+    def test_the_index_carries_a_csp_with_no_inline_script_and_same_origin_connect(self):
+        _, headers, _ = fetch(self.base, "GET", "/")
+        policy = {part.split()[0]: part.split()[1:] for part in headers["Content-Security-Policy"].split("; ")}
+        self.assertEqual(policy["script-src"], ["'self'"])
+        self.assertEqual(policy["connect-src"], ["'self'"])
+        self.assertEqual(policy["frame-ancestors"], ["'none'"])
+
+    def test_a_page_address_serves_the_index_so_the_app_can_route_it(self):
+        for path in ("/people", "/exports", "/review"):
+            with self.subTest(path=path):
+                status, _, body = fetch(self.base, "GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(body, INDEX)
+
+    def test_the_built_assets_are_served(self):
+        status, headers, body = fetch(self.base, "GET", "/assets/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers["Content-Type"])
+        self.assertEqual(body, b"export {};")
+
+    def test_unknown_api_and_internal_paths_answer_404_json_not_the_index(self):
+        for method, path in (("GET", "/api/nothing"), ("GET", "/api/people/1"), ("GET", "/internal/nothing"), ("POST", "/"), ("POST", "/api/nothing")):
+            with self.subTest(method=method, path=path):
+                status, headers, body = fetch(self.base, method, path, {"Origin": "https://darkroom.example"}, b"{}" if method == "POST" else None)
+                self.assertEqual(status, 404)
+                self.assertEqual(headers["Content-Type"], "application/json")
+                self.assertEqual(json.loads(body), {"error": "not found"})
+
+    def test_a_session_route_still_needs_sign_in(self):
+        status, _, body = fetch(self.base, "GET", "/api/me")
+        self.assertEqual(status, 401)
+        self.assertEqual(json.loads(body), {"error": "sign in required"})
+
+
+class FrontendIndexTests(unittest.TestCase):
+    def test_the_web_apps_index_has_no_inline_script(self):
+        source = (ROOT / "frontend/index.html").read_text()
+        scripts = re.findall(r"<script\b([^>]*)>([\s\S]*?)</script>", source)
+        self.assertEqual(len(scripts), 1)
+        attributes, body = scripts[0]
+        self.assertIn('type="module"', attributes)
+        self.assertIn("src=", attributes)
+        self.assertEqual(body.strip(), "")
+        self.assertIsNone(re.search(r"\son[a-z]+=", source))
 
 
 if __name__ == "__main__":

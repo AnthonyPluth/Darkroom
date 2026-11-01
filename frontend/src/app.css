@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  --design: "placeholder";
+  --design-replaced-by: "the design the owner signs off in #16, applied in #17";
+}
+
+@theme {
+  --color-placeholder-canvas: #f6f6f4;
+  --color-placeholder-surface: #ffffff;
+  --color-placeholder-ink: #1d1d1b;
+  --color-placeholder-ink-muted: #5c5c57;
+  --color-placeholder-line: #d9d9d4;
+  --color-placeholder-accent: #2b2b28;
+  --color-placeholder-accent-ink: #ffffff;
+  --font-placeholder-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html, body {
+  background: var(--color-placeholder-canvas);
+  color: var(--color-placeholder-ink);
+  font-family: var(--font-placeholder-sans);
+}

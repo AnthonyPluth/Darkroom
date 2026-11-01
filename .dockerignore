@@ -1,0 +1,6 @@
+**/node_modules
+**/__pycache__
+frontend/coverage
+darkroom/static/app
+.git
+.venv

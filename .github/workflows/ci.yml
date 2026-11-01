@@ -91,10 +91,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      - name: Web app checks (once frontend/package.json exists)
-        run: |
-          if [ -f frontend/package.json ]; then
-            cd frontend && npm ci --no-audit --no-fund && npm run check
-          else
-            echo "No frontend yet."
-          fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install the web app's dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Type-check (svelte-check, tsc)
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Lint (ESLint, with the paved-path rules)
+        working-directory: frontend
+        run: npm run lint
+      - name: Tests (Vitest) with the coverage floor
+        working-directory: frontend
+        run: npm run coverage
+      - name: Build
+        working-directory: frontend
+        run: npm run build

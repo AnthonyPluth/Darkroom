@@ -1,3 +1,11 @@
+FROM node:22-slim AS web
+
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN npm ci --no-audit --no-fund
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.14-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 POETRY_VERSION=2.5.1
@@ -12,6 +20,7 @@ COPY pyproject.toml poetry.lock ./
 RUN poetry config virtualenvs.create false && poetry install --only main --no-root --no-interaction
 
 COPY darkroom ./darkroom
+COPY --from=web /src/darkroom/static/app ./darkroom/static/app
 COPY run.py ./
 
 RUN useradd --system --uid 10001 --home-dir /app darkroom && mkdir -p /data /photos && chown darkroom /data

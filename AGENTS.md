@@ -1,6 +1,6 @@
 # Agent guide
 
-Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/` (both arrive in later issues). The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
+Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/` (arrives in a later issue). The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
@@ -10,9 +10,10 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - `providers/`: the outside things (`exiftool.py`, the only module that runs a subprocess; Immich). A provider doesn't import another; what they share has a module of its own.
   - `storage/`: the database and the folder tree. It imports nothing above it, and only it imports the database drivers.
   - At the top, what everything shares: `config.py` (every environment variable, all listed in `.env.example`), `tls.py` (the only module that opens outbound connections), `validate.py`, `dates.py`, `monitoring.py`, `oidc.py`.
-  - `static/`: the built web app, served as is.
+  - `static/app/`: the built web app (`make frontend-build`, not committed), served at `/` by `server/static.py` with the CSP in `server/common.py`.
 - `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
-- `frontend/` (Svelte 5, Vite, Tailwind 4), `ios/` (XcodeGen, SwiftUI): added by later issues.
+- `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` and the signed-out view are placeholders until the design signed off in #16 replaces them (#17).
+- `ios/` (XcodeGen, SwiftUI): added by a later issue.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `no_comments.py`, `coverage_floor.py`, `fleet_checks.py`, `feature_map.py`, `api_contract.py`.
 - `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and later the signed-off designs in `design/`.
@@ -23,13 +24,14 @@ A broken boundary fails `make lint`: move the code to where its import is allowe
 
 Python goes through Poetry (Python 3.14). `make setup` installs the dependencies; the image also needs `exiftool` (`libimage-exiftool-perl`).
 
-- `make check`: each tool once: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the feature map's and API contract's checks, the fleet checks, the Python tests in parallel with the coverage floor, and the web app's checks once `frontend/package.json` exists.
+- `make check`: each tool once: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the feature map's and API contract's checks, the fleet checks, the Python tests in parallel with the coverage floor, and the web app's checks (`make frontend-check`).
 - `make lint`: ruff, mypy, import-linter, the no-comments check and Darkroom's Semgrep rules (`.semgrep/darkroom.yml`, run with `semgrep`; install it with `pipx install semgrep==1.146.0` or `uv tool install semgrep==1.146.0` on a Python it supports).
 - `make test`: `poetry run python -m unittest discover tests`. `make test-parallel` runs the same across 4 processes with coverage and its floor (`tools/coverage_floor.py`: 85% overall, 90% for each module in `darkroom/domain/`, `darkroom/providers/`, `darkroom/server/api/`, `darkroom_browser/pages/` and `darkroom_browser/jobs/`).
 - `make fix`: apply ruff's safe fixes; review the diff afterward.
 - `make fleet-checks`: `tools/fleet_checks.py`: one Alembic head, a test for each migration, the workflows' conventions (bash with `-eo pipefail`, SHA-pinned actions with a version comment, `persist-credentials: false`), and on a pull request the `Co-Authored-By` trailer on your commits and no test removed or skipped without a `Removes-Test:` or `Skips-Test:` trailer.
 - `make feature-map` / `make feature-map-check`: regenerate and check `docs/feature-map.json`; every route has a test.
-- `make api-contract` / `make api-contract-check`: regenerate and check `docs/openapi.json` from `darkroom/server/contract.py`.
+- `make api-contract` / `make api-contract-check`: regenerate and check `docs/openapi.json` and `frontend/src/lib/api-types.ts` from the routes and their handlers' annotations: a handler's reply is `-> Annotated[Response, contract.X]` and its body `request: Annotated[Request, contract.Y]`, with `X` and `Y` TypedDicts in `darkroom/server/contract.py`.
+- `make frontend-check`: the web app's svelte-check, ESLint (with the paved-path rules, whose examples are `frontend/src/lint-rules.test.ts`), Vitest with the coverage floor in `frontend/vite.config.ts`, and the build. `make frontend-install`, `frontend-typecheck`, `frontend-lint`, `frontend-test` and `frontend-build` run one step each.
 - `python run.py serve` starts the service; `python run.py check-config` reports what is missing in the configuration.
 
 ## Starting work
@@ -53,7 +55,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 ## Conventions
 
-- No comments or docstrings in code (Python, TypeScript, JavaScript, Svelte, CSS): name things so the code says what it does, and put the why in the commit message, the pull request or the docs. `tools/no_comments.py` fails on one; a tool's directive (`# noqa`, `# type:`) is not a comment.
+- No comments or docstrings in code (Python, TypeScript, JavaScript, Svelte, CSS): name things so the code says what it does, and put the why in the commit message, the pull request or the docs. `tools/no_comments.py` fails on one, and so does ESLint's `darkroom/no-comments` in `frontend/`; a tool's directive (`# noqa`, `# type:`) is not a comment.
 - One paved path; lint fails on the old way (`.semgrep/darkroom.yml`). Outbound HTTP through `darkroom/tls.py` (in the worker, through `darkroom_browser/client.py`, the only module that calls darkroom); subprocesses only in `darkroom/providers/exiftool.py` (and the worker's runner); request bodies through `darkroom/validate.py`; time through `darkroom/dates.py` (never a naive `utcnow()`, never a bare `date.today()` in the domain, providers or jobs). Fix a finding with the helper, or justify an inline `nosemgrep` with a reason; don't switch the rule off.
 - Every route declares an auth kind in `darkroom/server/routes.py`, is typed in `darkroom/server/contract.py` and has a test.
 - Schema changes need an Alembic migration in `darkroom/storage/migrations/`, numbered after main's newest, with its own `test_<revision>_…` in `tests/test_migrations.py` (checked).

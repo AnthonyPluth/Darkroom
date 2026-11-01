@@ -1,7 +1,8 @@
 # `make check` runs, once each: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the fleet checks, the feature
-# map's and API contract's checks, the Python tests in parallel with the coverage floor, and the web app's checks once
-# frontend/package.json exists. The security scans (Semgrep's registry packs, Trivy, zizmor, pip-audit, CodeQL) run
-# only in CI. Python goes through Poetry.
+# map's and API contract's checks, the Python tests in parallel with the coverage floor, and the web app's checks
+# (svelte-check, ESLint, Vitest with the coverage floor in frontend/vite.config.ts, and the build into
+# darkroom/static/app). The security scans (Semgrep's registry packs, Trivy, zizmor, pip-audit, CodeQL) run only in CI.
+# Python goes through Poetry; the web app through npm (Node 22, frontend/.nvmrc).
 
 PYTHON ?= poetry run python
 RUFF ?= poetry run ruff
@@ -10,9 +11,10 @@ LINT_IMPORTS ?= poetry run lint-imports
 UNITTEST_PARALLEL_BASE ?= poetry run unittest-parallel -t . -s tests
 UNITTEST_PARALLEL ?= $(UNITTEST_PARALLEL_BASE) -j 4
 SEMGREP ?= semgrep
+NPM ?= npm
 
 .PHONY: setup check lint python-lint semgrep test test-parallel fix fleet-checks feature-map feature-map-check \
-	api-contract api-contract-check frontend-check
+	api-contract api-contract-check frontend-install frontend-check frontend-typecheck frontend-lint frontend-test frontend-build
 
 check: lint feature-map-check api-contract-check fleet-checks test-parallel frontend-check
 
@@ -57,5 +59,23 @@ api-contract:
 api-contract-check:
 	$(PYTHON) tools/api_contract.py --check
 
-frontend-check:
-	@if [ -f frontend/package.json ]; then cd frontend && npm run check; else echo "No frontend yet (frontend/package.json arrives with the frontend scaffold)."; fi
+frontend-install:
+	cd frontend && $(NPM) ci --no-audit --no-fund
+
+frontend/node_modules: frontend/package-lock.json
+	cd frontend && $(NPM) ci --no-audit --no-fund
+	touch frontend/node_modules
+
+frontend-check: frontend-typecheck frontend-lint frontend-test frontend-build
+
+frontend-typecheck: frontend/node_modules
+	cd frontend && $(NPM) run typecheck
+
+frontend-lint: frontend/node_modules
+	cd frontend && $(NPM) run lint
+
+frontend-test: frontend/node_modules
+	cd frontend && $(NPM) run coverage
+
+frontend-build: frontend/node_modules
+	cd frontend && $(NPM) run build
