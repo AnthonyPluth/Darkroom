@@ -28,8 +28,8 @@
         "new": "- [ ] `make check` passes on a fresh clone with exiftool installed; CI green on the PR.\n- [ ] `tools/fleet drift` is clean, and editing one character inside a fleet block in `AGENTS.md` or a vendored file fails `make fleet-checks` (shown in the PR, then reverted).\n- [ ] A fresh cloud session runs `.claude/hooks/fleet-session-start.sh` and then `make check` with no manual setup (paste the hook's last lines)."
       },
       {
-        "old": "- [ ] `AGENTS.md` carries the layout above and the five promises.",
-        "new": "- [ ] `AGENTS.md` carries the layout above and the five promises, with fleet's blocks between their markers and Darkroom's own text outside them."
+        "old": "- [ ] `AGENTS.md` follows the outline above and carries the six promises.",
+        "new": "- [ ] `AGENTS.md` follows the outline above and carries the six promises, with fleet's blocks between their markers and Darkroom's own text outside them."
       },
       {
         "old": "`tests/test_healthz.py`, `tests/test_config.py`, `tests/test_routes_table.py` (every route has an auth kind), `tests/test_tools.py` (no_comments, coverage_floor, fleet_checks on fixture inputs).",
