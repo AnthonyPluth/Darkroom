@@ -115,6 +115,7 @@
       "handler": "darkroom.server.api.browser_internal.claim",
       "frontend": [],
       "tests": [
+        "tests/browser/fake_darkroom.py",
         "tests/test_browser_internal_api.py"
       ]
     },

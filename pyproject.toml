@@ -43,11 +43,12 @@ ignore = ["E402", "E702", "E731", "E741", "RUF001", "RUF002", "RUF003", "RUF012"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*"]
+omit = ["tests/*", "darkroom_browser/live.py"]
 relative_files = true
 
 [tool.coverage.report]
 include = ["darkroom/*", "darkroom_browser/*"]
+omit = ["darkroom_browser/live.py"]
 skip_empty = true
 
 [tool.importlinter]
@@ -88,6 +89,28 @@ ignore_imports = [
     "darkroom.tls -> http",
 ]
 broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."
+
+[[tool.importlinter.contracts]]
+id = "worker-http-through-client"
+name = "In the browser worker only client.py talks to darkroom"
+type = "forbidden"
+source_modules = ["darkroom_browser.__main__", "darkroom_browser.capture", "darkroom_browser.config", "darkroom_browser.context", "darkroom_browser.jobs",
+                  "darkroom_browser.live", "darkroom_browser.monitoring", "darkroom_browser.pages", "darkroom_browser.runner", "darkroom_browser.scrub",
+                  "darkroom_browser.selectors"]
+forbidden_modules = ["urllib", "http", "socket", "ssl"]
+ignore_imports = [
+    "darkroom_browser.runner -> darkroom_browser.client",
+    "darkroom_browser.__main__ -> darkroom_browser.client",
+]
+broken_contract_guidance = "Call darkroom through darkroom_browser.client.Client."
+
+[[tool.importlinter.contracts]]
+id = "playwright-only-in-live"
+name = "Only darkroom_browser.live imports Playwright"
+type = "protected"
+protected_modules = ["playwright"]
+allowed_importers = ["darkroom_browser.live"]
+broken_contract_guidance = "Drive the browser through darkroom_browser.live; parsers work on saved HTML."
 
 [[tool.importlinter.contracts]]
 id = "providers-alone"

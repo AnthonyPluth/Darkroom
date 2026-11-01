@@ -1,7 +1,22 @@
-FROM python:3.14-slim
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DISPLAY=:99 PHOTOS_ROOT=/photos POLL_SECONDS=15 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NOVNC_PORT=6080 VNC_PORT=5900 SCREEN=1280x900x24
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify tini \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY darkroom_browser ./darkroom_browser
-RUN useradd --system --uid 10002 --home-dir /app darkroom-browser
+COPY deploy/browser/entrypoint.sh /app/entrypoint.sh
+
+RUN useradd --system --uid 10002 --home-dir /home/darkroom-browser --create-home darkroom-browser \
+    && mkdir -p /photos /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
+    && chmod 0755 /app/entrypoint.sh \
+    && chown -R darkroom-browser /app /home/darkroom-browser
+
 USER darkroom-browser
-CMD ["python", "-c", "print('darkroom-browser: the worker arrives with the browser worker scaffold')"]
+EXPOSE 6080 5900
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
