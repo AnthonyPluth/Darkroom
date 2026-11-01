@@ -15,6 +15,16 @@ HOUR = 3600.0
 DAY = 24 * HOUR
 REPEAT_AFTER = (0.0, DAY, 4 * DAY)
 ONCE = (0.0,)
+ONE_SHOT_KINDS = frozenset({"export_imported", "schedule_renewed", "failure"})
+TITLES = {
+    "sign_in_needed": "Google sign-in needed",
+    "export_imported": "Takeout import finished",
+    "originals_unmatched": "Some originals are not in Google Photos",
+    "schedule_ending": "Takeout schedule ending",
+    "schedule_renewed": "Takeout schedule renewed",
+    "export_expiring": "A Takeout export is about to expire",
+    "failure": "Darkroom needs a look",
+}
 
 Notifier = Callable[[Settings, str, str, str | None], str]
 
@@ -66,6 +76,8 @@ def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject
     existing = opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None))).scalars().first()
     if existing is not None:
         return existing
+    if kind in ONE_SHOT_KINDS:
+        repeats = ONCE
     alert = Alert(key=key, kind=kind, subject=subject, message=wording.message, link=link, opened=now)
     opened.add(alert)
     opened.flush()
@@ -81,7 +93,7 @@ def tick(opened: Session, settings: Settings, now: float, notifier: Notifier = h
         if alert.sent_count >= len(REPEAT_AFTER):
             continue
         if now >= alert.opened + REPEAT_AFTER[alert.sent_count]:
-            deliver(opened, settings, alert, Wording(alert.subject, alert.message), now, notifier)
+            deliver(opened, settings, alert, Wording(TITLES.get(alert.kind, alert.subject), alert.message), now, notifier)
             sent += 1
     return sent
 
