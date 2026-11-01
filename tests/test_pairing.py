@@ -130,6 +130,32 @@ class PairingTests(unittest.TestCase):
         self.assertTrue(item.in_year_folder)
         self.assertEqual(item.sidecar.name, "IMG_0012.JPG.json")
 
+    def test_identical_bytes_collapse_across_folders_even_when_takeout_renames_one(self):
+        folder = self.root / "renamed"
+        (folder / "Photos from 2019").mkdir(parents=True)
+        (folder / "Family").mkdir()
+        (folder / "Photos from 2019" / "IMG_1.JPG").write_bytes(b"same")
+        (folder / "Family" / "IMG_1(1).JPG").write_bytes(b"same")
+        (folder / "Family" / "IMG_1.JPG(1).json").write_text("{}")
+        report = pairing.pair(folder)
+        (item,) = report.items
+        self.assertEqual((item.albums, item.in_year_folder, len(item.copies)), (["Family"], True, 2))
+        self.assertEqual(item.sidecar.name, "IMG_1.JPG(1).json")
+
+    def test_identical_bytes_in_one_folder_stay_two_items(self):
+        folder = self.root / "twins"
+        folder.mkdir()
+        (folder / "a.JPG").write_bytes(b"same")
+        (folder / "b.JPG").write_bytes(b"same")
+        self.assertEqual(len(pairing.pair(folder).items), 2)
+
+    def test_a_video_with_two_possible_stills_is_left_unpaired(self):
+        folder = self.root / "ambiguous"
+        folder.mkdir()
+        for name, data in (("IMG_1.HEIC", b"a"), ("IMG_1.JPG", b"b"), ("IMG_1.MOV", b"c")):
+            (folder / name).write_bytes(data)
+        self.assertIsNone(self.only(pairing.pair(folder), "IMG_1.MOV").live_pair_of)
+
     def test_an_album_only_item_has_no_year_copy(self):
         folder = self.root / "only"
         (folder / "Holiday").mkdir(parents=True)

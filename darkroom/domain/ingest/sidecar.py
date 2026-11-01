@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 
 ORIGINS = {"mobileUpload": "mobile_upload", "webUpload": "web_upload", "fromSharedAlbum": "shared_album", "composition": "composition", "driveUpload": "drive_upload"}
@@ -17,12 +18,18 @@ class Sidecar:
     raw: str
 
 
+EARLIEST = -62135596800.0
+LATEST = 253402300799.0
+
+
 def whole_seconds(value: object) -> float | None:
     try:
         seconds = float(str(value))
     except (TypeError, ValueError):
         return None
-    return seconds if seconds > 0 else None
+    if not math.isfinite(seconds) or seconds == 0 or not EARLIEST <= seconds <= LATEST:
+        return None
+    return seconds
 
 
 def place(block: object) -> tuple[float, float] | None:

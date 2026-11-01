@@ -27,15 +27,24 @@ def summarize(report: PairingReport) -> Counts:
     )
 
 
+def moment_of(sidecar: Sidecar | None) -> datetime | None:
+    if sidecar is None or sidecar.photo_taken_utc is None:
+        return None
+    try:
+        return datetime.fromtimestamp(sidecar.photo_taken_utc, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | None, person_id: int, relative: str, now: float, export_id: int | None = None) -> MediaItem:
     print_ = media.fingerprint(item.path, tags)
     lat, lon, gps_source = print_.lat, print_.lon, print_.gps_source
     if gps_source == "none" and sidecar is not None and sidecar.lat is not None and sidecar.lon is not None:
         lat, lon, gps_source = sidecar.lat, sidecar.lon, "google"
     utc, local, offset, time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
-    if utc is None and sidecar is not None and sidecar.photo_taken_utc is not None:
+    moment = moment_of(sidecar) if utc is None else None
+    if moment is not None and sidecar is not None and sidecar.photo_taken_utc is not None:
         utc, time_source = sidecar.photo_taken_utc, "sidecar"
-        moment = datetime.fromtimestamp(utc, UTC)
         offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
         if local is None and offset is not None:
             local = (moment + timedelta(minutes=offset)).replace(tzinfo=None).isoformat(timespec="seconds")

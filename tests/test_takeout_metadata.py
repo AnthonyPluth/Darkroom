@@ -72,6 +72,17 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual((found.source, found.make, found.sidecar_json, found.export_id, found.path, found.person_id), ("takeout", "Apple", None, 7, "x/y.jpg", 1))
         self.assertEqual((found.sha1, found.bytes), (fixtures_sha(path), path.stat().st_size))
 
+    def test_an_out_of_range_sidecar_time_is_ignored_not_fatal(self):
+        path = fixtures.make_jpeg(self.root / "a.jpg")
+        side = sidecar.Sidecar(1e300, None, None, None, None, "none", "{}")
+        found = self.build(path, side)
+        self.assertEqual((found.captured_utc, found.time_source), (None, "unknown"))
+
+    def test_a_pre_1970_sidecar_time_fills_the_gap(self):
+        path = fixtures.make_jpeg(self.root / "a.jpg")
+        found = self.build(path, parsed(40.7, -74.0, taken=-86400))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes), (-86400.0, "sidecar", -300))
+
     def test_the_raw_sidecar_is_kept(self):
         path = fixtures.make_jpeg(self.root / "a.jpg")
         side = parsed(40.7, -74.0)

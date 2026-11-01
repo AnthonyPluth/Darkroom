@@ -41,9 +41,12 @@ class SidecarTests(unittest.TestCase):
                 self.assertEqual((parsed.lat, parsed.lon), (None, None))
 
     def test_missing_or_bad_time_is_none(self):
-        for value in ({}, {"timestamp": "abc"}, {"timestamp": "0"}, "x", None):
+        for value in ({}, {"timestamp": "abc"}, {"timestamp": "0"}, {"timestamp": "1e999"}, {"timestamp": "nan"}, {"timestamp": "-1e18"}, "x", None):
             with self.subTest(value=value):
                 self.assertIsNone(sidecar.parse(build(photoTakenTime=value)).photo_taken_utc)
+
+    def test_a_pre_1970_time_is_kept(self):
+        self.assertEqual(sidecar.parse(build(photoTakenTime={"timestamp": "-86400"})).photo_taken_utc, -86400.0)
 
     def test_origin_kinds(self):
         self.assertEqual(sidecar.parse(build(googlePhotosOrigin={"fromSharedAlbum": {}})).origin, "shared_album")

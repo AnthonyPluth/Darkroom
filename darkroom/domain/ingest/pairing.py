@@ -131,7 +131,7 @@ def scan(root: Path) -> dict[Path, list[str]]:
 def pair(staging_root: Path) -> PairingReport:
     folders = scan(staging_root)
     report = PairingReport()
-    groups: dict[tuple[str, str], list[tuple[Path, Path | None]]] = {}
+    found_copies: dict[str, list[tuple[Path, Path | None]]] = {}
     used: set[Path] = set()
     json_files: list[Path] = []
     for folder, files in folders.items():
@@ -144,9 +144,9 @@ def pair(staging_root: Path) -> PairingReport:
             found = sidecar_for(path, sidecars)
             if found is not None:
                 used.add(found)
-            groups.setdefault((name, media.sha1_of(path)[0]), []).append((path, found))
+            found_copies.setdefault(media.sha1_of(path)[0], []).append((path, found))
     by_copy: dict[Path, TakeoutItem] = {}
-    for (_, digest), copies in sorted(groups.items()):
+    for digest, copies in sorted((digest, slot) for digest, found in found_copies.items() for slot in slots_of(found)):
         copies.sort(key=lambda c: (album_of(c[0].parent) is not None, str(c[0])))
         first = copies[0]
         item = TakeoutItem(
@@ -170,8 +170,21 @@ def pair(staging_root: Path) -> PairingReport:
     return report
 
 
+def slots_of(copies: list[tuple[Path, Path | None]]) -> list[list[tuple[Path, Path | None]]]:
+    slots: list[list[tuple[Path, Path | None]]] = []
+    for copy in sorted(copies, key=lambda c: str(c[0])):
+        for slot in slots:
+            if all(other[0].parent != copy[0].parent for other in slot):
+                slot.append(copy)
+                break
+        else:
+            slots.append([copy])
+    return slots
+
+
 def live_still(video: TakeoutItem, by_copy: dict[Path, TakeoutItem]) -> Path | None:
-    for sibling, item in sorted(by_copy.items()):
-        if sibling.parent == video.path.parent and sibling.stem.lower() == video.path.stem.lower() and sibling.suffix.lower() in STILL_SUFFIXES:
-            return item.path
-    return None
+    stills = {
+        item.path for sibling, item in by_copy.items()
+        if sibling.parent == video.path.parent and sibling.stem.lower() == video.path.stem.lower() and sibling.suffix.lower() in STILL_SUFFIXES
+    }
+    return next(iter(stills)) if len(stills) == 1 else None
