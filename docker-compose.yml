@@ -1,0 +1,43 @@
+services:
+  darkroom:
+    build: .
+    image: ghcr.io/anthonypluth/darkroom:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DARKROOM_SECRET_KEY: ${DARKROOM_SECRET_KEY:-}
+      DARKROOM_PUBLIC_URL: ${DARKROOM_PUBLIC_URL:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_ALLOWED_GROUPS: ${OIDC_ALLOWED_GROUPS:-parents}
+      OIDC_DEVICE_GROUPS: ${OIDC_DEVICE_GROUPS:-family,parents}
+      HA_URL: ${HA_URL:-}
+      HA_TOKEN: ${HA_TOKEN:-}
+      HA_NOTIFY_SERVICE: ${HA_NOTIFY_SERVICE:-}
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_ADMIN_KEY: ${IMMICH_ADMIN_KEY:-}
+      DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
+      VNC_URL: ${VNC_URL:-}
+      TZ: ${TZ:-UTC}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  darkroom-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    image: ghcr.io/anthonypluth/darkroom-browser:latest
+    restart: unless-stopped
+    profiles: [browser]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

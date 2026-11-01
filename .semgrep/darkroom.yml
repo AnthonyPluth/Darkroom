@@ -1,0 +1,67 @@
+rules:
+  - id: darkroom-raw-urlopen
+    message: >-
+      Make outbound HTTP calls through darkroom/tls.py's urlopen (certificate checks, https only unless the address is
+      a LAN one the caller allows), not urllib.request's urlopen or build_opener.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: urllib.request.urlopen(...)
+      - pattern: urllib.request.build_opener(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/tls.py"]
+
+  - id: darkroom-subprocess-only-exiftool
+    message: >-
+      Run external programs only from darkroom/providers/exiftool.py (and the browser worker's runner), so every
+      subprocess has one place to check.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: subprocess.$F(...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/providers/exiftool.py", "/darkroom_browser/runner.py"]
+
+  - id: darkroom-no-utcnow
+    message: >-
+      datetime.utcnow() returns a naive datetime. Use darkroom/dates.py's utc_now(), which is timezone aware.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: datetime.utcnow()
+      - pattern: datetime.datetime.utcnow()
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+
+  - id: darkroom-no-bare-today
+    message: >-
+      A bare date.today() is the machine's local day, which a background job or provider must not assume. Take the
+      day as an argument, or use darkroom/dates.py's local_today(zone).
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: date.today()
+      - pattern: datetime.date.today()
+    paths:
+      include: ["/darkroom/domain/", "/darkroom/providers/", "/darkroom_browser/jobs/"]
+
+  - id: darkroom-validate-bodies
+    message: >-
+      Read a request body's fields through darkroom/validate.py (it rejects what isn't the right type with a message
+      the user sees), not bool(), float() or int() on the raw value.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $F(body)
+          - pattern: $F(body[...])
+          - pattern: $F(body.get(...))
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(bool|float|int)$
+    paths:
+      include: ["/darkroom/server/api/"]

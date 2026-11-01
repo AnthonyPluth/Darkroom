@@ -1,0 +1,144 @@
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      new: ${{ steps.next.outputs.new }}
+      newest: ${{ steps.next.outputs.newest }}
+      skip: ${{ steps.next.outputs.skip }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Work out the next version
+        id: next
+        if: github.event_name != 'pull_request'
+        run: .github/scripts/next-version.sh
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+      - name: Build the service image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: darkroom:smoke
+          cache-from: type=gha
+      - name: Build the browser worker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.browser
+          load: true
+          tags: darkroom-browser:smoke
+          cache-from: type=gha
+      - name: Check the service image answers /healthz
+        run: |
+          docker run -d --name smoke -p 8765:8000 darkroom:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/healthz; then docker rm -f smoke; exit 0; fi
+            sleep 1
+          done
+          docker logs smoke; exit 1
+      - name: Validate the compose file
+        env:
+          PHOTOS_ROOT: /tmp/photos
+        run: docker compose config --quiet
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Image names (registry names must be lowercase)
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom" >> "$GITHUB_ENV"
+          echo "BROWSER_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom-browser" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6   # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image tags (latest, 1.2.3, v1.2.3, 1.2 and 1)
+        id: tags
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          NEWEST: ${{ needs.build.outputs.newest }}
+        run: |
+          v="${VERSION#v}"
+          IFS=. read -r major minor patch <<< "$v"
+          for name in IMAGE BROWSER_IMAGE; do
+            image="${!name}"
+            {
+              echo "${name,,}<<EOF"
+              echo "$image:$v"
+              echo "$image:v$v"
+              if [ "$NEWEST" = true ]; then
+                echo "$image:latest"
+                echo "$image:$major.$minor"
+                echo "$image:$major"
+              fi
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          done
+      - name: Push the service image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.image }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Push the browser worker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.browser
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.browser_image }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+          cache-from: type=gha
+      - name: Tag and publish the release
+        if: needs.build.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: gh release create "$VERSION" --target "$GITHUB_SHA" --title "Darkroom $VERSION" --generate-notes
