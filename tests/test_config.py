@@ -30,21 +30,11 @@ class ConfigTests(unittest.TestCase):
 
     def test_an_incomplete_setup_is_reported(self):
         with tempfile.TemporaryDirectory() as folder:
-            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "OIDC_ISSUER": "https://id.example", "HA_URL": "https://ha.example"}
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "OIDC_ISSUER": "https://id.example"}
             with mock.patch.dict(os.environ, values, clear=True):
                 found = config.problems(config.load())
-        self.assertEqual(len(found), 4)
+        self.assertEqual(len(found), 3)
         self.assertTrue(any("OIDC_ISSUER" in line for line in found))
-        self.assertTrue(any("HA_URL" in line for line in found))
-
-    def test_home_assistant_needs_all_three_settings_or_none(self):
-        with tempfile.TemporaryDirectory() as folder:
-            base = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_SECRET_KEY": "k", "DARKROOM_PUBLIC_URL": "https://d.example"}
-            partial = {**base, "HA_URL": "https://ha.example", "HA_TOKEN": "t"}
-            with mock.patch.dict(os.environ, partial, clear=True):
-                self.assertTrue(any("HA_NOTIFY_SERVICE" in line for line in config.problems(config.load())))
-            with mock.patch.dict(os.environ, {**partial, "HA_NOTIFY_SERVICE": "mobile_app_x"}, clear=True):
-                self.assertEqual(config.problems(config.load()), [])
 
     def test_a_complete_setup_has_no_problems(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -7,7 +7,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
 - `darkroom/`: the backend, in packages whose imports `make lint` checks (import-linter's contracts in `pyproject.toml`):
   - `server/`: the HTTP handler, the route table (`routes.py`, where every route declares its `auth`), the reply helpers, `api/` and the static file server. Nothing else imports it.
   - `domain/`: what Darkroom works out from the data (people and accounts, media fingerprints, dedupe, eligibility, the ingest pipeline).
-  - `providers/`: the outside things (`exiftool.py`, the only module that runs a subprocess; Home Assistant; Immich). A provider doesn't import another; what they share has a module of its own.
+  - `providers/`: the outside things (`exiftool.py`, the only module that runs a subprocess; Immich). A provider doesn't import another; what they share has a module of its own.
   - `storage/`: the database and the folder tree. It imports nothing above it, and only it imports the database drivers.
   - At the top, what everything shares: `config.py` (every environment variable, all listed in `.env.example`), `tls.py` (the only module that opens outbound connections), `validate.py`, `dates.py`, `monitoring.py`, `oidc.py`.
   - `static/`: the built web app, served as is.
