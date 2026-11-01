@@ -37,3 +37,16 @@ updates:
       default-days: 7
     commit-message:
       prefix: deps
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 14
+    groups:
+      web:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps

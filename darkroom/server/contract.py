@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class Health(TypedDict):
@@ -51,16 +51,32 @@ class WorkerReply(TypedDict):
     job: WorkerJob | None
 
 
-REPLIES: dict[str, type] = {
-    "GET /healthz": Health,
-    "GET /api/me": Me,
-    "GET /api/status": Status,
-    "GET /api/browser/jobs": BrowserJobs,
-    "POST /api/browser/jobs": BrowserJobReply,
-    "POST /internal/browser/jobs/claim": WorkerReply,
-    "POST /internal/browser/jobs/{id}/heartbeat": WorkerReply,
-    "POST /internal/browser/jobs/{id}/progress": WorkerReply,
-    "POST /internal/browser/jobs/{id}/waiting": WorkerReply,
-    "POST /internal/browser/jobs/{id}/done": WorkerReply,
-    "POST /internal/browser/jobs/{id}/failed": WorkerReply,
-}
+class EnqueueBody(TypedDict):
+    account_id: int
+    kind: str
+
+
+class ClaimBody(TypedDict):
+    worker: NotRequired[str]
+
+
+class HeartbeatBody(TypedDict):
+    pass
+
+
+class ProgressBody(TypedDict):
+    message: str
+
+
+class WaitingBody(TypedDict):
+    reason: str
+
+
+class DoneBody(TypedDict):
+    result: NotRequired[dict[str, object]]
+
+
+class FailedBody(TypedDict):
+    message: str
+    failure_dir: NotRequired[str]
+    files: NotRequired[list[str]]

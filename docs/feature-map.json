@@ -19,7 +19,8 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_static.py"
       ]
     },
     {
@@ -58,9 +59,12 @@
       "route": "GET /api/me",
       "auth": "session",
       "handler": "darkroom.server.auth.me",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/lib/session.svelte.ts"
+      ],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_static.py",
         "tests/test_tools.py"
       ]
     },
@@ -70,7 +74,8 @@
       "handler": "darkroom.server.api.status.status",
       "frontend": [],
       "tests": [
-        "tests/test_browser_internal_api.py"
+        "tests/test_browser_internal_api.py",
+        "tests/test_tools.py"
       ]
     },
     {
@@ -79,7 +84,8 @@
       "handler": "darkroom.server.api.browser.list_jobs",
       "frontend": [],
       "tests": [
-        "tests/test_browser_internal_api.py"
+        "tests/test_browser_internal_api.py",
+        "tests/test_tools.py"
       ]
     },
     {
@@ -88,7 +94,8 @@
       "handler": "darkroom.server.api.browser.enqueue",
       "frontend": [],
       "tests": [
-        "tests/test_browser_internal_api.py"
+        "tests/test_browser_internal_api.py",
+        "tests/test_tools.py"
       ]
     },
     {
@@ -97,7 +104,8 @@
       "handler": "darkroom.server.api.browser.screenshot",
       "frontend": [],
       "tests": [
-        "tests/test_browser_internal_api.py"
+        "tests/test_browser_internal_api.py",
+        "tests/test_tools.py"
       ]
     },
     {
