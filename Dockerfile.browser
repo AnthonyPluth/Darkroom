@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DISPLAY=:99 PHOTOS_ROOT=/photos POLL_SECONDS=15 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NOVNC_PORT=6080 VNC_PORT=5900 SCREEN=1280x900x24
