@@ -10,8 +10,10 @@ from sqlalchemy import Engine
 
 from darkroom import monitoring
 from darkroom.config import Settings
-from darkroom.domain import alerts
+from darkroom.domain import alerts, index
 from darkroom.storage import db
+from darkroom.storage.models import Person
+from darkroom.storage.paths import Photos
 
 Job = Callable[[float], None]
 
@@ -74,6 +76,8 @@ class Scheduler:
 
 
 ALERT_TICK_SECONDS = 600.0
+INDEX_SECONDS = 3600.0
+INDEX_FIRST_AFTER_SECONDS = 120.0
 
 
 def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
@@ -83,5 +87,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
         with db.session(engine) as opened:
             alerts.tick(opened, settings, at)
 
+    def index_originals(at: float) -> None:
+        photos = Photos(settings.photos_root)
+        with db.session(engine) as opened:
+            for person in opened.query(Person).order_by(Person.id):
+                index.index_person(opened, photos, person, at)
+
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
+    scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
     return scheduler
