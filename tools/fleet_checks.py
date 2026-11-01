@@ -14,7 +14,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 ACTIONS = ROOT / ".github/actions"
 
 REVISION = re.compile(r"^(\d{4})_\w+\.py$")
-DOWN_REVISION = re.compile(r"^down_revision\s*=\s*(?:\"(\d{4})\"|None)", re.MULTILINE)
+DOWN_REVISION = re.compile(r"^down_revision\s*=\s*(?:[\"'](\d{4})[\"']|None)", re.MULTILINE)
 MODEL_FAMILIES = ("Opus", "Sonnet", "Haiku", "Fable")
 CO_AUTHOR = re.compile(r"^co-authored-by:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 SESSION = re.compile(r"^claude-session:\s*\S", re.IGNORECASE | re.MULTILINE)

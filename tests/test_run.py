@@ -29,9 +29,19 @@ class RunTests(unittest.TestCase):
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 1234)
         server.serve_forever.side_effect = KeyboardInterrupt
-        with mock.patch.object(run.handler, "make_server", return_value=server), contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(run.handler, "make_server", return_value=server), mock.patch.object(run, "migrate", return_value=0) as migrated, \
+                contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(run.main(["serve"]), 0)
         server.server_close.assert_called_once()
+        migrated.assert_called_once()
+
+    def test_migrate_creates_the_database(self):
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()):
+            values = {"DARKROOM_DATA_DIR": folder + "/data", "DARKROOM_PHOTOS_ROOT": folder}
+            with mock.patch.dict(os.environ, values, clear=True):
+                self.assertEqual(run.main(["migrate"]), 0)
+                self.assertEqual(run.main(["migrate"]), 0)
+            self.assertTrue(os.path.exists(folder + "/data/darkroom.db"))
 
 
 class ExiftoolTests(unittest.TestCase):

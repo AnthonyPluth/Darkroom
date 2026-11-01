@@ -21,6 +21,7 @@ class Settings:
     data_dir: Path
     public_url: str
     secret_key: str
+    database_url: str
     oidc_issuer: str
     oidc_client_id: str
     oidc_client_secret: str
@@ -45,6 +46,7 @@ def load() -> Settings:
         data_dir=Path(env("DARKROOM_DATA_DIR", "/data")),
         public_url=env("DARKROOM_PUBLIC_URL").rstrip("/"),
         secret_key=env("DARKROOM_SECRET_KEY"),
+        database_url=env("DATABASE_URL"),
         oidc_issuer=env("OIDC_ISSUER").rstrip("/"),
         oidc_client_id=env("OIDC_CLIENT_ID"),
         oidc_client_secret=env("OIDC_CLIENT_SECRET"),
