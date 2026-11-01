@@ -15,12 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-MEDIA = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".avi", ".3gp"}
-VIDEO = {".mov", ".mp4", ".m4v", ".avi", ".3gp"}
+MEDIA = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
+VIDEO = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
 STILL = MEDIA - VIDEO
 CHUNK = 1024 * 1024
 YEAR_FOLDER = re.compile(r"^Photos from \d{4}$")
-SIDECAR_SUFFIXES = (".supplemental-metadata.json", ".json")
+SIDECAR_NAME_LIMIT = 46
+SUPPLEMENTAL = ".supplemental-metadata"
+NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
+EDITED = "-edited"
 
 
 @dataclass(frozen=True)
@@ -89,11 +92,26 @@ def is_media(entry: Entry) -> bool:
     return entry.suffix in MEDIA
 
 
-def sidecar_of(entry: Entry, sidecars: dict[str, Entry]) -> Entry | None:
-    for suffix in SIDECAR_SUFFIXES:
-        found = sidecars.get(f"{entry.name}{suffix}") or sidecars.get(f"{entry.folder}/{entry.basename[:46]}{suffix}")
-        if found is not None:
-            return found
+def sidecar_bases(basename: str) -> list[str]:
+    path = Path(basename)
+    stem, extension = path.stem, path.suffix
+    names = [basename]
+    numbered = NUMBERED.match(stem)
+    if numbered:
+        names.append(f"{numbered.group('stem')}{extension}({numbered.group('number')})")
+        stem = numbered.group("stem")
+    if stem.endswith(EDITED):
+        names.append(f"{stem[:-len(EDITED)]}{extension}")
+    return names + [name[:SIDECAR_NAME_LIMIT] for name in names if len(name) > SIDECAR_NAME_LIMIT]
+
+
+def sidecar_of(entry: Entry, sidecars: dict[str, list[Entry]]) -> Entry | None:
+    candidates = sidecars.get(entry.folder, [])
+    for base in sidecar_bases(entry.basename):
+        for candidate in candidates:
+            name = candidate.basename
+            if name.startswith(base) and name.endswith(".json") and SUPPLEMENTAL.startswith(name[len(base):-len(".json")]):
+                return candidate
     return None
 
 
@@ -121,11 +139,23 @@ def exiftool_tags(source: IO[bytes] | Path) -> dict[str, object]:
     if isinstance(source, Path):
         done = subprocess.run([program, "-j", "-G1", "-n", str(source)], capture_output=True, text=True, timeout=120)
     else:
-        done = subprocess.run([program, "-j", "-G1", "-n", "-"], input=source.read(), capture_output=True, timeout=120)
-        done.stdout = done.stdout.decode() if isinstance(done.stdout, bytes) else done.stdout
+        with subprocess.Popen([program, "-j", "-G1", "-n", "-"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+            assert process.stdin is not None and process.stdout is not None
+            try:
+                shutil.copyfileobj(source, process.stdin, CHUNK)
+            except BrokenPipeError:
+                pass
+            finally:
+                process.stdin.close()
+            output = process.stdout.read().decode(errors="replace")
+        return parse_tags(output)
+    return parse_tags(done.stdout)
+
+
+def parse_tags(text: str) -> dict[str, object]:
     try:
-        return dict(json.loads(done.stdout)[0])
-    except (ValueError, IndexError):
+        return dict(json.loads(text)[0])
+    except (ValueError, IndexError, TypeError):
         return {}
 
 
@@ -161,6 +191,11 @@ def index_originals(root: Path) -> Originals:
     return Originals(by_sha1, by_name_size, by_name, stills, len(files))
 
 
+def unambiguous_stems(stills: list[Path]) -> set[str]:
+    counts = Counter(p.stem.lower() for p in stills)
+    return {stem for stem, number in counts.items() if number == 1}
+
+
 def percent(part: int, whole: int) -> str:
     return f"{part} ({100 * part / whole:.1f}%)" if whole else f"{part}"
 
@@ -177,7 +212,10 @@ def in_year_folder(entry: Entry) -> bool:
 def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
     entries = export_entries(export)
     media = [e for e in entries if is_media(e)]
-    sidecars = {e.name: e for e in entries if e.suffix == ".json"}
+    sidecars: dict[str, list[Entry]] = {}
+    for e in entries:
+        if e.suffix == ".json":
+            sidecars.setdefault(e.folder, []).append(e)
     originals = index_originals(originals_root)
     digests = {e.name: digest_of(e) for e in media}
     identical = different = resized = missing = 0
@@ -206,11 +244,12 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
             lacking.append(entry)
     export_hashes = set(digests.values())
     export_video_stems = {Path(e.basename).stem.lower() for e in media if e.suffix in VIDEO}
+    safe_stems = unambiguous_stems(originals.stills_with_video)
     present = absent = 0
     for still in originals.stills_with_video:
         video = next(p for p in still.parent.iterdir() if p.stem.lower() == still.stem.lower() and p.suffix.lower() in VIDEO)
         with video.open("rb") as handle:
-            found = sha1_stream(handle) in export_hashes or still.stem.lower() in export_video_stems
+            found = sha1_stream(handle) in export_hashes or (still.stem.lower() in safe_stems and still.stem.lower() in export_video_stems)
         present, absent = present + found, absent + (not found)
     total = len(media)
     print(f"Media files in the export: {total}; originals indexed: {originals.count}", file=out)
