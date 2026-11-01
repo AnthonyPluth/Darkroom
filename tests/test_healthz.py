@@ -58,3 +58,15 @@ class HealthzTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def raw(self, header):
+        import socket
+
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as connection:
+            connection.sendall(f"POST /api/healthz HTTP/1.1\r\nHost: x\r\n{header}\r\n\r\n".encode())
+            return connection.recv(4096).split(b"\r\n", 1)[0].decode()
+
+    def test_oversized_and_malformed_bodies_are_refused_before_reading(self):
+        self.assertIn("413", self.raw(f"Content-Length: {handler.MAX_BODY + 1}"))
+        self.assertIn("400", self.raw("Content-Length: -5"))
+        self.assertIn("400", self.raw("Content-Length: abc"))

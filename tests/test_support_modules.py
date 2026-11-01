@@ -54,6 +54,11 @@ class TlsTests(unittest.TestCase):
             tls.urlopen("http://192.168.1.2/x", allow_http=True)
         opener.open.assert_called_once()
 
+    def test_a_redirect_is_refused_instead_of_followed(self):
+        handler = tls.NoRedirects()
+        with self.assertRaises(tls.Refused):
+            handler.redirect_request(mock.Mock(), mock.Mock(), 302, "Found", {}, "http://elsewhere.example/")
+
 
 class DatesTests(unittest.TestCase):
     def test_utc_now_is_aware(self):

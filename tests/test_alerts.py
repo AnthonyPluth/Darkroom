@@ -76,6 +76,19 @@ class AlertTests(unittest.TestCase):
             self.assertEqual(alert.closed, 0.0)
         self.assertEqual(self.tick(10 * DAY), 0)
 
+    def test_one_shot_kinds_close_at_once_without_asking(self):
+        with db.session(self.engine) as opened:
+            for kind in ("export_imported", "schedule_renewed", "failure"):
+                alert = alerts.open_alert(opened, self.settings, f"k:{kind}", kind, "x", alerts.failure("x"), None, 0.0, notifier=self.notifier)
+                self.assertEqual(alert.closed, 0.0)
+        self.assertEqual(self.tick(10 * DAY), 0)
+
+    def test_repeats_keep_the_original_title(self):
+        with db.session(self.engine) as opened:
+            self.open_sign_in(opened, 0.0)
+        self.tick(DAY)
+        self.assertEqual({title for title, _, _ in self.notifier.sent}, {"Google sign-in needed"})
+
     def test_every_send_records_an_event(self):
         with db.session(self.engine) as opened:
             self.open_sign_in(opened, 0.0)

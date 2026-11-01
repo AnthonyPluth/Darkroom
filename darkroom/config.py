@@ -76,6 +76,6 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    if bool(settings.ha_url) != bool(settings.ha_token):
-        found.append("HA_URL and HA_TOKEN go together; set both or neither")
+    if 0 < sum(bool(value) for value in (settings.ha_url, settings.ha_token, settings.ha_notify_service)) < 3:
+        found.append("HA_URL, HA_TOKEN and HA_NOTIFY_SERVICE go together; set all three or none")
     return found

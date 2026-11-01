@@ -11,6 +11,8 @@ from darkroom.server.common import CSP, Request, Response, error_response
 
 Authenticator = Callable[[Request], bool]
 
+MAX_BODY = 8 * 1024 * 1024
+
 AUTHENTICATORS: dict[str, Authenticator] = {}
 
 
@@ -37,7 +39,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_any(self) -> None:
         parts = urlsplit(self.path)
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self.reject(400 if length < 0 else 413)
+            return
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
                           self.rfile.read(length) if length else b"", self.settings)
         response = dispatch(request)
@@ -49,6 +57,16 @@ class Handler(BaseHTTPRequestHandler):
         for name, value in response.headers.items():
             if name != "Content-Security-Policy":
                 self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(response.body)
+
+    def reject(self, status: int) -> None:
+        response = error_response("bad request" if status == 400 else "request too large", status)
+        self.close_connection = True
+        self.send_response(response.status)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Content-Length", str(len(response.body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(response.body)
 
