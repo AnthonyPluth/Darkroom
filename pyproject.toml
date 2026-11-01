@@ -93,7 +93,7 @@ broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead o
 id = "providers-alone"
 name = "Providers import no other provider"
 type = "independence"
-modules = ["darkroom.providers.exiftool", "darkroom.providers.homeassistant", "darkroom.providers.immich"]
+modules = ["darkroom.providers.exiftool", "darkroom.providers.immich"]
 
 [[tool.importlinter.contracts]]
 id = "subprocess-only-exiftool"
