@@ -78,3 +78,23 @@ class ImportTakeoutTests(unittest.TestCase):
         code, _, err = self.call("--person", "al")
         self.assertEqual(code, 1)
         self.assertIn("no Google account", err)
+
+    def test_an_empty_folder_is_an_error(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        code, out, err = self.call("--person", "jo", "--dir", str(empty))
+        self.assertEqual(code, 1)
+        self.assertIn("no Takeout zip files", err)
+        self.assertNotIn("Unpacked", out)
+
+    def test_account_option_picks_between_several(self):
+        with db.session(self.engine) as opened:
+            person_id = opened.query(GoogleAccount).one().default_person_id
+            opened.add(GoogleAccount(email="jo2@example.com", default_person_id=person_id, created=2.0))
+        elsewhere = self.root / "elsewhere"
+        standard_export(elsewhere)
+        code, _, err = self.call("--person", "jo", "--dir", str(elsewhere))
+        self.assertEqual(code, 1)
+        self.assertIn("--account", err)
+        code, _, _ = self.call("--person", "jo", "--dir", str(elsewhere), "--account", "jo2@example.com", "--unpack-only")
+        self.assertEqual(code, 0)

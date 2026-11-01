@@ -72,14 +72,13 @@ class UnpackTests(unittest.TestCase):
         manifest = standard_export(self.inbox)
         self.run_inbox()
         staging = self.staging()
-        (staging / unpack.UNPACKED_MARKER_FOLDER / "0002").unlink()
+        (staging.parent / unpack.UNPACKED_MARKER_FOLDER / "0002").unlink()
         before = {p: p.stat().st_mtime_ns for p in staging.rglob("*") if p.is_file()}
         ((_, again),) = self.run_inbox(now=20.0)
         self.assertEqual((again.parts_unpacked, again.parts_skipped), (1, 1))
         self.assertEqual(again.files, 0)
         for path, stamp in before.items():
-            if path.parent.name != unpack.UNPACKED_MARKER_FOLDER:
-                self.assertEqual(path.stat().st_mtime_ns, stamp)
+            self.assertEqual(path.stat().st_mtime_ns, stamp)
         self.assertEqual(len(manifest.parts), 2)
 
     def test_empty_part_fails_the_export_and_stages_nothing(self):
@@ -195,6 +194,51 @@ class UnpackTests(unittest.TestCase):
             archive.writestr("Takeout/a.txt", b"a")
         self.run_inbox()
         self.assertTrue((self.staging() / "Takeout/empty").is_dir())
+
+    def test_an_archive_cannot_forge_a_resume_marker(self):
+        first = self.inbox / "takeout-20260101T000000Z-001.zip"
+        second = self.inbox / "takeout-20260101T000000Z-002.zip"
+        with zipfile.ZipFile(first, "w") as archive:
+            archive.writestr(f"{unpack.UNPACKED_MARKER_FOLDER}/0002", b"done")
+            archive.writestr("Takeout/a.txt", b"a")
+        with zipfile.ZipFile(second, "w") as archive:
+            archive.writestr("Takeout/b.txt", b"b")
+        ((_, report),) = self.run_inbox()
+        self.assertEqual(report.parts_unpacked, 2)
+        self.assertTrue((self.staging() / "Takeout/b.txt").is_file())
+
+    def test_events_never_carry_archive_file_names(self):
+        (self.inbox / "private-holiday-name-001.zip").write_bytes(b"junk")
+        ((_, report),) = self.run_inbox()
+        self.assertIn("private-holiday-name", report.problems[0])
+        with db.session(self.engine) as opened:
+            details = [e.detail for e in opened.query(Event)]
+        self.assertTrue(details)
+        self.assertFalse(any("private" in (d or "") for d in details))
+
+    def test_a_disk_error_fails_the_export_and_records_an_event(self):
+        from unittest import mock
+
+        standard_export(self.inbox)
+        with mock.patch("shutil.copyfileobj", side_effect=OSError(28, "No space left on device")):
+            ((_, report),) = self.run_inbox()
+        self.assertEqual(self.export_state(), [("failed", "unpack")])
+        self.assertEqual(self.events(), ["unpack_failed"])
+        self.assertTrue(report.problems)
+
+    def test_several_accounts_need_an_explicit_choice(self):
+        with db.session(self.engine) as opened:
+            person = self.person(opened)
+            opened.add(GoogleAccount(email="jo2@example.com", default_person_id=person.id, created=2.0))
+        standard_export(self.inbox)
+        with db.session(self.engine) as opened:
+            person = self.person(opened)
+            with self.assertRaises(unpack.UnpackFailed):
+                unpack.inspect_manual_inbox(opened, self.photos, person, 1.0)
+            with self.assertRaises(unpack.UnpackFailed):
+                unpack.inspect_manual_inbox(opened, self.photos, person, 1.0, "nobody@example.com")
+            (export,) = unpack.inspect_manual_inbox(opened, self.photos, person, 1.0, "jo2@example.com")
+            self.assertEqual(opened.get(GoogleAccount, export.account_id).email, "jo2@example.com")
 
     def test_registering_twice_does_not_duplicate(self):
         standard_export(self.inbox)

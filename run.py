@@ -71,7 +71,7 @@ def run_index(slug: str | None) -> int:
     return code
 
 
-def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool) -> int:
+def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, account: str | None = None) -> int:
     if not slug:
         print("import-takeout needs --person", file=sys.stderr)
         return 1
@@ -87,10 +87,13 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool) 
         else:
             now = utc_now().timestamp()
             try:
-                found = unpack.register_zips(opened, person, Path(folder), now) if folder else unpack.inspect_manual_inbox(opened, photos, person, now)
+                found = unpack.register_zips(opened, person, Path(folder), now, account) if folder else unpack.inspect_manual_inbox(opened, photos, person, now, account)
             except unpack.UnpackFailed as error:
                 print(str(error), file=sys.stderr)
                 found = []
+                code = 1
+            if not found and not code:
+                print("no Takeout zip files found to import", file=sys.stderr)
                 code = 1
             for export in found:
                 report = unpack.unpack(opened, photos, person, export, now)
@@ -126,12 +129,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
+    parser.add_argument("--account")
     parser.add_argument("--unpack-only", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "index":
         return run_index(args.person)
     if args.command == "import-takeout":
-        return run_import_takeout(args.person, args.dir, args.unpack_only)
+        return run_import_takeout(args.person, args.dir, args.unpack_only, args.account)
     if args.command == "jobs":
         if not args.name:
             parser.error("jobs needs the name of a job")

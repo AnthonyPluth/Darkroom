@@ -20,7 +20,9 @@ SYMLINK_MODE = 0o120000
 
 
 class UnpackFailed(Exception):
-    pass
+    def __init__(self, message: str, public: str | None = None) -> None:
+        super().__init__(message)
+        self.public = public or message
 
 
 @dataclass
@@ -54,19 +56,19 @@ def check_parts(export: Export, parts: list[ExportPart]) -> list[tuple[ExportPar
         path = part_path(export, part)
         if not path.is_file():
             part.status = "failed"
-            raise UnpackFailed(f"part {part.number} ({path.name}) is not in the inbox")
+            raise UnpackFailed(f"part {part.number} ({path.name}) is not in the inbox", f"part {part.number} is not in the inbox")
         if path.stat().st_size == 0:
             part.status = "corrupt"
-            raise UnpackFailed(f"part {part.number} ({path.name}) is empty")
+            raise UnpackFailed(f"part {part.number} ({path.name}) is empty", f"part {part.number} is empty")
         try:
             with zipfile.ZipFile(path) as archive:
                 bad = archive.testzip()
         except zipfile.BadZipFile as error:
             part.status = "corrupt"
-            raise UnpackFailed(f"part {part.number} ({path.name}) is not a valid zip") from error
+            raise UnpackFailed(f"part {part.number} ({path.name}) is not a valid zip", f"part {part.number} is not a valid zip") from error
         if bad is not None:
             part.status = "corrupt"
-            raise UnpackFailed(f"part {part.number} ({path.name}) has a damaged file inside")
+            raise UnpackFailed(f"part {part.number} ({path.name}) has a damaged file inside", f"part {part.number} has a damaged file inside")
         checked.append((part, path))
     return checked
 
@@ -74,10 +76,10 @@ def check_parts(export: Export, parts: list[ExportPart]) -> list[tuple[ExportPar
 def safe_target(staging: Path, name: str) -> Path:
     pure = PurePosixPath(name.replace("\\", "/"))
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
-        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}")
+        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
     target = (staging / pure).resolve()
     if not target.is_relative_to(staging.resolve()):
-        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}")
+        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
     return target
 
 
@@ -86,7 +88,7 @@ def extract(path: Path, staging: Path) -> int:
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
             if (info.external_attr >> 16) & 0o170000 == SYMLINK_MODE:
-                raise UnpackFailed(f"an entry is a symbolic link: {PurePosixPath(info.filename).name}")
+                raise UnpackFailed(f"an entry is a symbolic link: {PurePosixPath(info.filename).name}", "an entry is a symbolic link")
             target = safe_target(staging, info.filename)
             if info.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
@@ -101,7 +103,7 @@ def extract(path: Path, staging: Path) -> int:
 
 
 def marker(staging: Path, part: ExportPart) -> Path:
-    return staging / UNPACKED_MARKER_FOLDER / f"{part.number:04d}"
+    return staging.parent / UNPACKED_MARKER_FOLDER / f"{part.number:04d}"
 
 
 def unpack(opened: Session, photos: Photos, person: Person, export: Export, now: float) -> UnpackReport:
@@ -122,10 +124,11 @@ def unpack(opened: Session, photos: Photos, person: Person, export: Export, now:
             flag.parent.mkdir(parents=True, exist_ok=True)
             flag.write_text("done")
             report.parts_unpacked += 1
-    except UnpackFailed as error:
+    except (UnpackFailed, OSError) as error:
         export.status = "failed"
-        report.problems.append(str(error))
-        events.record(opened, now, "unpack_failed", person.slug, str(error)[:200])
+        public = error.public if isinstance(error, UnpackFailed) else f"{type(error).__name__} while unpacking"
+        report.problems.append(str(error) if isinstance(error, UnpackFailed) else public)
+        events.record(opened, now, "unpack_failed", person.slug, public[:200])
         opened.flush()
         return report
     export.stage = "unpacked"
@@ -143,14 +146,25 @@ def group_manual_zips(folder: Path) -> dict[tuple[Path, str], dict[int, Path]]:
     return groups
 
 
-def default_account(opened: Session, person: Person) -> GoogleAccount | None:
-    return opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == person.id).order_by(GoogleAccount.id)).scalars().first()
+def accounts_of(opened: Session, person: Person) -> list[GoogleAccount]:
+    return list(opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == person.id).order_by(GoogleAccount.id)).scalars())
 
 
-def register_zips(opened: Session, person: Person, folder: Path, now: float) -> list[Export]:
-    account = default_account(opened, person)
-    if account is None:
+def chosen_account(opened: Session, person: Person, email: str | None) -> GoogleAccount:
+    found = accounts_of(opened, person)
+    if email:
+        found = [account for account in found if account.email == email]
+        if not found:
+            raise UnpackFailed(f"{person.slug} has no Google account {email}")
+    if not found:
         raise UnpackFailed(f"{person.slug} has no Google account to attach the export to")
+    if len(found) > 1:
+        raise UnpackFailed(f"{person.slug} has several Google accounts; say which one with --account")
+    return found[0]
+
+
+def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None) -> list[Export]:
+    account = chosen_account(opened, person, account_email)
     registered = []
     for (inbox, stamp), numbered in group_manual_zips(folder).items():
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp, Export.inbox_dir == str(inbox))).scalars().first()
@@ -168,5 +182,5 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float) -> 
     return registered
 
 
-def inspect_manual_inbox(opened: Session, photos: Photos, person: Person, now: float) -> list[Export]:
-    return register_zips(opened, person, photos.manual_inbox(person.slug), now)
+def inspect_manual_inbox(opened: Session, photos: Photos, person: Person, now: float, account_email: str | None = None) -> list[Export]:
+    return register_zips(opened, person, photos.manual_inbox(person.slug), now, account_email)
