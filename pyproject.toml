@@ -73,7 +73,7 @@ forbidden_modules = ["darkroom.domain", "darkroom.providers", "darkroom.server"]
 id = "database-through-storage"
 name = "Only darkroom.storage talks to the database drivers and Alembic"
 type = "protected"
-protected_modules = ["sqlite3"]
+protected_modules = ["sqlite3", "alembic"]
 allowed_importers = ["darkroom.storage"]
 broken_contract_guidance = "Reach the database through darkroom.storage.db."
 
