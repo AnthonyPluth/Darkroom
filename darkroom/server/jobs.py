@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, events, index
+from darkroom.domain import alerts, browser_jobs, events, index
 from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
@@ -79,6 +79,7 @@ ALERT_TICK_SECONDS = 600.0
 INDEX_SECONDS = 3600.0
 INDEX_FIRST_AFTER_SECONDS = 120.0
 SESSION_RECHECK_SECONDS = 3600.0
+BROWSER_LEASE_TICK_SECONDS = 60.0
 
 
 def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.RecheckSummary:
@@ -108,5 +109,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
 
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
+    def expire_browser_leases(at: float) -> None:
+        with db.session(engine) as opened:
+            expired = browser_jobs.expire_leases(opened, settings, at)
+        if expired:
+            monitoring.log("browser jobs lost their lease", count=len(expired))
+
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
+    scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
     return scheduler

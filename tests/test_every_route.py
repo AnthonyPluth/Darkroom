@@ -7,6 +7,7 @@ from tests.shared import fetch, settings_from, start_server
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"device", "worker", "mcp"}
+WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})
 
 
@@ -17,7 +18,8 @@ def never_runs(request):
 class EveryRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.settings = settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID="darkroom", DARKROOM_PUBLIC_URL="https://darkroom.example")
+        cls.settings = settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID="darkroom", DARKROOM_PUBLIC_URL="https://darkroom.example",
+                                     DARKROOM_BROWSER_TOKEN=WORKER_TOKEN)
 
     def setUp(self):
         guarded = tuple(routes.Route(route.method, route.path, never_runs, route.auth) for route in routes.ROUTES)
@@ -67,6 +69,33 @@ class EveryRouteTests(unittest.TestCase):
                 status, _, _ = fetch(self.base, route.method, route.path, {}, None if route.method == "GET" else b"{}")
                 self.assertEqual(status, 401)
 
+    def test_the_worker_token_is_never_accepted_on_session_routes(self):
+        found = [route for route in routes.ROUTES if route.auth == "session"]
+        self.assertTrue(found)
+        for route in found:
+            for headers in ({"Authorization": f"Bearer {WORKER_TOKEN}"}, {"Cookie": f"darkroom_session={WORKER_TOKEN}"}):
+                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
+                    sent = {**headers, "Origin": "https://darkroom.example"} if route.method != "GET" else headers
+                    status, _, body = fetch(self.base, route.method, route.path, sent, None if route.method == "GET" else b"{}")
+                    self.assertEqual(status, 401)
+                    self.assertEqual(json.loads(body), {"error": "sign in required"})
+
+    def test_a_session_cookie_is_never_accepted_on_worker_routes(self):
+        found = [route for route in routes.ROUTES if route.auth == "worker"]
+        self.assertTrue(found)
+        for route in found:
+            for headers in ({"Cookie": "darkroom_session=some-session-token"}, {"Cookie": f"darkroom_session={WORKER_TOKEN}"},
+                            {"Authorization": f"Bearer {WORKER_TOKEN[:-1]}"}, {"Authorization": WORKER_TOKEN}, {"X-Worker-Token": WORKER_TOKEN}):
+                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
+                    status, _, body = fetch(self.base, route.method, route.path, headers, None if route.method == "GET" else b"{}")
+                    self.assertEqual(status, 401)
+                    self.assertEqual(json.loads(body), {"error": "sign in required"})
+
+    def test_bearer_kinds_other_than_worker_have_no_authenticator_yet(self):
+        from darkroom.server import handler
+
+        self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker"})
+
     def test_a_new_unguarded_route_fails_this_test(self):
         extra = (*routes.ROUTES, routes.Route("GET", "/api/open", never_runs, "public"))
         with mock.patch.object(routes, "ROUTES", extra):
@@ -77,6 +106,21 @@ class EveryRouteTests(unittest.TestCase):
             self.assertFalse(all(route.auth in routes.AUTH_KINDS for route in routes.ROUTES))
             status, _, _ = fetch(self.base, "GET", "/api/odd")
         self.assertEqual(status, 401)
+
+
+class NoAuthModeTests(unittest.TestCase):
+    def setUp(self):
+        guarded = tuple(routes.Route(route.method, route.path, never_runs, route.auth) for route in routes.ROUTES)
+        patch = mock.patch.object(routes, "ROUTES", guarded)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_BROWSER_TOKEN=WORKER_TOKEN))
+
+    def test_the_local_owner_shortcut_never_opens_worker_routes(self):
+        for route in (route for route in routes.ROUTES if route.auth == "worker"):
+            with self.subTest(route=f"{route.method} {route.path}"):
+                status, _, _ = fetch(self.base, route.method, route.path, {"Cookie": "darkroom_session=anything"}, b"{}")
+                self.assertEqual(status, 401)
 
 
 if __name__ == "__main__":

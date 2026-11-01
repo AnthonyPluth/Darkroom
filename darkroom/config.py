@@ -81,6 +81,21 @@ def local_host(host: str) -> bool:
     return address.is_loopback or address.is_link_local or address.is_private or address in ipaddress.ip_network("100.64.0.0/10")
 
 
+MIN_BROWSER_TOKEN = 32
+
+
+def browser_token_usable(token: str) -> bool:
+    return len(token) >= MIN_BROWSER_TOKEN and token.isascii() and token.isprintable() and " " not in token
+
+
+def browser_token_problems(token: str) -> list[str]:
+    if not token:
+        return []
+    if not browser_token_usable(token):
+        return [f"DARKROOM_BROWSER_TOKEN must be at least {MIN_BROWSER_TOKEN} printable ASCII characters without spaces (try `openssl rand -hex 32`)"]
+    return []
+
+
 def oidc_configured(settings: Settings) -> bool:
     return bool(settings.oidc_issuer and settings.oidc_client_id)
 
@@ -130,7 +145,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token)
 
 
 def refuses_to_start(settings: Settings) -> list[str]:

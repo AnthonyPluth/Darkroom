@@ -17,7 +17,7 @@ Authenticator = Callable[[Request], Principal | None]
 
 MAX_BODY = 8 * 1024 * 1024
 
-AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal}
+AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal}
 
 
 def authenticate(route: routes.Route, request: Request) -> Principal | None:
@@ -26,11 +26,13 @@ def authenticate(route: routes.Route, request: Request) -> Principal | None:
 
 
 def dispatch(request: Request) -> Response:
-    route = routes.find(request.method, request.path)
-    if route is None:
-        if request.method == "GET" and not request.path.startswith("/api/"):
+    found = routes.match(request.method, request.path)
+    if found is None:
+        if request.method == "GET" and not request.path.startswith(("/api/", "/internal/")):
             return static.serve(request.path)
         return error_response("not found", 404)
+    route, params = found
+    request = replace(request, params=params)
     if route.auth == "session" and request.method != "GET" and not auth.same_origin(request):
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":

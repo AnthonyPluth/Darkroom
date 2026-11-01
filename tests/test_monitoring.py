@@ -21,6 +21,11 @@ class ScrubTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertNotIn(text.split("=")[-1].split(": ")[-1], monitoring.scrub(text))
 
+    def test_the_worker_token_is_removed_under_its_names(self):
+        for text in ("DARKROOM_BROWSER_TOKEN=worker-token-canary-0123456789abcdef", "browser_token: worker-token-canary-0123456789abcdef", "Bearer worker-token-canary-0123456789abcdef"):
+            with self.subTest(text=text):
+                self.assertNotIn("worker-token-canary", monitoring.scrub(text))
+
     def test_jwts_are_removed(self):
         token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl"
         self.assertEqual(monitoring.scrub(f"saw {token} here"), "saw [removed] here")

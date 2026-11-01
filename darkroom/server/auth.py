@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import secrets
 from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
-from darkroom.config import Settings, no_auth_allowed
+from darkroom.config import Settings, browser_token_usable, no_auth_allowed
 from darkroom.dates import utc_now
 from darkroom.server.common import Principal, Request, Response, error_response, first_query, header, json_response, page, redirect
 from darkroom.storage import db
@@ -14,6 +15,8 @@ SESSION_COOKIE = "darkroom_session"
 LOGIN_COOKIE = "darkroom_login"
 LOCAL_OWNER = Principal("session", "local", None, "Local owner", ())
 MAX_COOKIE_HEADER = 8192
+WORKER = Principal("worker", "browser-worker", None, "Browser worker", ())
+MAX_BEARER_HEADER = 1024
 
 
 def now() -> float:
@@ -87,6 +90,28 @@ def session_principal(request: Request) -> Principal | None:
             return None
         renewed = oidc.renew_cookie(opened, token, moment)
     return Principal("session", who.sub, who.email, who.name, who.groups, renewed)
+
+
+def bearer_of(request: Request) -> str | None:
+    raw = header(request, "Authorization") or ""
+    if len(raw) > MAX_BEARER_HEADER:
+        return None
+    scheme, _, token = raw.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+def worker_principal(request: Request) -> Principal | None:
+    expected = request.settings.browser_token
+    if not browser_token_usable(expected):
+        return None
+    presented = bearer_of(request)
+    if presented is None:
+        return None
+    if not secrets.compare_digest(presented.encode(), expected.encode()):
+        return None
+    return WORKER
 
 
 def session_cookie(settings: Settings, token: str, seconds: int) -> str:
