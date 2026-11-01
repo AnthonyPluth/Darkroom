@@ -85,7 +85,7 @@ def session_principal(request: Request) -> Principal | None:
         who = oidc.session_user(opened, settings, token, moment)
         if who is None:
             return None
-        renewed = oidc.renew_session(opened, settings, token, moment)
+        renewed = oidc.renew_cookie(opened, token, moment)
     return Principal("session", who.sub, who.email, who.name, who.groups, renewed)
 
 
@@ -113,9 +113,11 @@ def callback(request: Request) -> Response:
     if not oidc.configured(settings):
         return error_response("not found", 404)
     clear_login = cleared(settings, LOGIN_COOKIE, "/auth")
+    moment = now()
     try:
         with db.session(engine_of(request)) as opened:
-            token, next_path = oidc.finish_login(opened, settings, request.query, cookies_of(request).get(LOGIN_COOKIE), now())
+            signed = oidc.finish_login(opened, settings, request.query, cookies_of(request).get(LOGIN_COOKIE), moment)
+            life = oidc.cookie_life(oidc.find_session(opened, signed.token) or oidc.AuthSession(expires=None), moment)
     except oidc.NotAllowed as error:
         monitoring.log("sign-in refused", reason="not_allowed")
         return page(403, "Not authorized", f"{error.who} is not allowed to use this Darkroom. Ask whoever runs it to add you, or sign in with a different account.",
@@ -126,8 +128,11 @@ def callback(request: Request) -> Response:
     except oidc.SignInFailed as error:
         monitoring.log("sign-in failed", reason=type(error).__name__)
         return page(403, "Couldn't sign you in", f"Something was wrong with this sign-in: {error}. Please try again.", ("/auth/login", "Try again"), (clear_login,))
-    monitoring.log("signed in")
-    return redirect(next_path, (session_cookie(settings, token, settings.session_days * 86_400), clear_login))
+    if signed.rechecks:
+        monitoring.log("signed in", rechecks=True)
+    else:
+        monitoring.log("signed in; the provider granted no refresh token so this session cannot be re-checked and ends after the cap", rechecks=False, cap_days=oidc.NO_RECHECK_DAYS)
+    return redirect(signed.next_path, (session_cookie(settings, signed.token, life), clear_login))
 
 
 def logout(request: Request) -> Response:

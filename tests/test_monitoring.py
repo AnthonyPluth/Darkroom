@@ -17,7 +17,7 @@ class ScrubTests(unittest.TestCase):
         self.assertNotIn("CODE-1234", scrubbed)
         self.assertNotIn("STATE-5678", scrubbed)
         self.assertIn("https://id.example/callback?[removed]", scrubbed)
-        for text in ("code=CODE-1234", "id_token=tok.en.x", "Cookie: darkroom_session=SESSION-9999", "client_secret=S3CRET", "token: TOK-1"):
+        for text in ("code=CODE-1234", "id_token=tok.en.x", "Cookie: darkroom_session=SESSION-9999", "client_secret=S3CRET", "token: TOK-1", "refresh_token=refresh-canary-abcdef"):
             with self.subTest(text=text):
                 self.assertNotIn(text.split("=")[-1].split(": ")[-1], monitoring.scrub(text))
 

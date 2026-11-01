@@ -19,9 +19,6 @@ def env_flag(name: str) -> bool:
     return env(name) == "1"
 
 
-SESSION_MAX_DAYS = 30
-
-
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -37,7 +34,6 @@ class Settings:
     oidc_allowed_groups: tuple[str, ...]
     oidc_allowed_emails: tuple[str, ...]
     oidc_device_groups: tuple[str, ...]
-    session_days: int
     allow_no_auth: bool
     immich_url: str
     immich_admin_key: str
@@ -61,7 +57,6 @@ def load() -> Settings:
         oidc_allowed_groups=env_list("OIDC_ALLOWED_GROUPS", "parents"),
         oidc_allowed_emails=env_list("OIDC_ALLOWED_EMAILS"),
         oidc_device_groups=env_list("OIDC_DEVICE_GROUPS", "family,parents"),
-        session_days=int(env("DARKROOM_SESSION_DAYS", "14")),
         allow_no_auth=env_flag("DARKROOM_ALLOW_NO_AUTH"),
         immich_url=env("IMMICH_URL").rstrip("/"),
         immich_admin_key=env("IMMICH_ADMIN_KEY"),
@@ -135,10 +130,6 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    if settings.session_days < 1:
-        found.append("DARKROOM_SESSION_DAYS must be at least 1")
-    elif settings.session_days > SESSION_MAX_DAYS:
-        found.append(f"DARKROOM_SESSION_DAYS is capped at {SESSION_MAX_DAYS}; a session never outlives {SESSION_MAX_DAYS} days from signing in")
     return found + auth_problems(settings)
 
 

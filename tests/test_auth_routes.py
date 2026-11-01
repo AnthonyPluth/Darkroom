@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 import json
 import unittest
 from unittest import mock
@@ -24,9 +26,9 @@ class SignedInServer(unittest.TestCase):
 
     def setUp(self):
         oidc.forget_caches()
-        self.provider.issued.clear()
+        self.provider.reset()
         self.engine = own_database(self)
-        settings = settings_from(OIDC_ISSUER=self.provider.base, OIDC_CLIENT_ID=CLIENT_ID, OIDC_ALLOWED_GROUPS="parents", **self.env)
+        settings = settings_from(OIDC_ISSUER=self.provider.base, OIDC_CLIENT_ID=CLIENT_ID, OIDC_ALLOWED_GROUPS="parents", DARKROOM_SECRET_KEY="k", **self.env)
         self.base, self.settings = start_server(self, settings, self.engine)
         self.replies = []
 
@@ -68,7 +70,8 @@ class RoundTripTests(SignedInServer):
             self.assertEqual(len(baked), 2)
             token = cookies_set(headers)[auth.SESSION_COOKIE]
             canaries.add(token)
-            self.assertRegex(baked[0], rf"^{auth.SESSION_COOKIE}=[A-Za-z0-9_-]{{43,}}; Path=/; Max-Age={14 * 86_400}; HttpOnly; SameSite=Lax$")
+            canaries.update(self.provider.refresh_grants)
+            self.assertRegex(baked[0], rf"^{auth.SESSION_COOKIE}=[A-Za-z0-9_-]{{43,}}; Path=/; Max-Age={400 * 86_400}; HttpOnly; SameSite=Lax$")
             self.assertEqual(baked[1], f"{auth.LOGIN_COOKIE}=; Path=/auth; Max-Age=0; HttpOnly; SameSite=Lax")
             status, _, body = self.get("/api/me", {auth.SESSION_COOKIE: token})
             self.assertEqual(status, 200)
@@ -127,8 +130,8 @@ class RoundTripTests(SignedInServer):
         query = self.begin()
         with no_leaks(self, "code-canary-5544aabb", query["state"], replies=self.replies):
             status, _, body = self.call("GET", f"/auth/callback?code=code-canary-5544aabb&state={query['state']}", {auth.LOGIN_COOKIE: query["state"]})
-            self.assertEqual(status, 502)
-            self.assertIn("could not reach the sign-in provider", body.decode())
+            self.assertEqual(status, 403)
+            self.assertIn("the provider answered 400", body.decode())
             status, _, body = self.call("GET", f"/auth/callback?code=code-canary-5544aabb&state={query['state']}", {auth.LOGIN_COOKIE: "x"})
             self.assertEqual(status, 403)
             status, _, body = self.call("GET", "/auth/callback?error=access_denied&error_description=code-canary-5544aabb")
@@ -148,23 +151,45 @@ class RoundTripTests(SignedInServer):
         status, headers, _ = self.sign_in("//evil.example/phish", code="code-two-2222aaaa")
         self.assertEqual(headers["Location"], "/")
 
-    def test_an_expired_session_is_401_and_a_live_one_is_renewed(self):
+    def test_the_cookie_is_re_sent_once_a_day_and_the_session_does_not_expire(self):
         status, headers, _ = self.sign_in()
         token = cookies_set(headers)[auth.SESSION_COOKIE]
         with db.session(self.engine) as opened:
             created = opened.get(AuthSession, oidc.hash_token(token)).created
+        status, headers, _ = self.get("/api/me", {auth.SESSION_COOKIE: token})
+        self.assertEqual(status, 200)
+        self.assertIsNone(headers.get_all("Set-Cookie"))
         with mock.patch.object(auth, "now", return_value=created + 2 * 86_400):
             status, headers, _ = self.get("/api/me", {auth.SESSION_COOKIE: token})
             self.assertEqual(status, 200)
-            self.assertEqual(headers.get_all("Set-Cookie"), [f"{auth.SESSION_COOKIE}={token}; Path=/; Max-Age={14 * 86_400}; HttpOnly; SameSite=Lax"])
+            self.assertEqual(headers.get_all("Set-Cookie"), [f"{auth.SESSION_COOKIE}={token}; Path=/; Max-Age={400 * 86_400}; HttpOnly; SameSite=Lax"])
             status, headers, _ = self.get("/api/me", {auth.SESSION_COOKIE: token})
             self.assertIsNone(headers.get_all("Set-Cookie"))
+        with mock.patch.object(auth, "now", return_value=created + 700 * 86_400):
+            status, headers, _ = self.get("/api/me", {auth.SESSION_COOKIE: token})
+            self.assertEqual(status, 200)
+            self.assertEqual(len(headers.get_all("Set-Cookie")), 1)
         with db.session(self.engine) as opened:
-            self.assertEqual(opened.get(AuthSession, oidc.hash_token(token)).expires, created + 16 * 86_400)
-        with mock.patch.object(auth, "now", return_value=created + 17 * 86_400):
+            self.assertIsNone(opened.get(AuthSession, oidc.hash_token(token)).expires)
+
+    def test_without_a_refresh_token_the_session_is_capped_and_the_log_says_so(self):
+        self.provider.issue_refresh_tokens = False
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status, headers, _ = self.sign_in()
+        self.assertEqual(status, 303)
+        self.assertIn("cannot be re-checked", err.getvalue())
+        self.assertIn('"rechecks": false', err.getvalue())
+        self.assertRegex(headers.get_all("Set-Cookie")[0], rf"Max-Age={30 * 86_400}; HttpOnly")
+        token = cookies_set(headers)[auth.SESSION_COOKIE]
+        with db.session(self.engine) as opened:
+            row = opened.get(AuthSession, oidc.hash_token(token))
+            self.assertEqual((row.expires, row.refresh_token_sealed), (row.created + 30 * 86_400, None))
+        with mock.patch.object(auth, "now", return_value=row.created + 10 * 86_400):
+            status, headers, _ = self.get("/api/me", {auth.SESSION_COOKIE: token})
+            self.assertEqual(status, 200)
+            self.assertRegex(headers.get_all("Set-Cookie")[0], rf"Max-Age={20 * 86_400}; HttpOnly")
+        with mock.patch.object(auth, "now", return_value=row.created + 30 * 86_400):
             self.assertEqual(self.get("/api/me", {auth.SESSION_COOKIE: token})[0], 401)
-        with db.session(self.engine) as opened:
-            self.assertEqual(opened.query(AuthSession).count(), 0)
 
     def test_logging_out_of_a_renewable_session_leaves_no_cookie_behind(self):
         _, headers, _ = self.sign_in()

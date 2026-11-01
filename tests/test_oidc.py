@@ -12,9 +12,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from darkroom import oidc, tls
-from darkroom.storage import db
+from darkroom.storage import db, secretbox
 from darkroom.storage.models import AuthPending, AuthSession, User
-from tests.fakes.oidc_provider import CLIENT_ID, CLIENT_SECRET, FakeProvider
+from tests.fakes.oidc_provider import CLIENT_ID, CLIENT_SECRET, REFRESH_PREFIX, FakeProvider
 from tests.shared import own_database, settings_from
 
 NOW = 1_700_000_000.0
@@ -32,13 +32,9 @@ class ProviderCase(unittest.TestCase):
         oidc.forget_caches()
         self.settings = settings_from(OIDC_ISSUER=self.provider.base, OIDC_CLIENT_ID=CLIENT_ID, OIDC_CLIENT_SECRET=self.client_secret,
                                       DARKROOM_PUBLIC_URL="https://darkroom.example", OIDC_ALLOWED_GROUPS="parents",
-                                      OIDC_ALLOWED_EMAILS="allowed@example.test")
+                                      OIDC_ALLOWED_EMAILS="allowed@example.test", DARKROOM_SECRET_KEY="k")
         self.engine = own_database(self)
-        self.provider.issued.clear()
-        self.provider.token_requests.clear()
-        self.provider.userinfo_requests.clear()
-        self.provider.hits.clear()
-        self.provider.issuer_override = None
+        self.provider.reset()
 
     def document(self):
         return oidc.discovery(self.settings, NOW)
@@ -59,7 +55,8 @@ class ProviderCase(unittest.TestCase):
 
     def finish(self, query, state, code, cookie=None, now=NOW):
         with db.session(self.engine) as opened:
-            return oidc.finish_login(opened, self.settings, {"code": [code], "state": [state]}, state if cookie is None else cookie, now)
+            signed = oidc.finish_login(opened, self.settings, {"code": [code], "state": [state]}, state if cookie is None else cookie, now)
+        return signed.token, signed.next_path
 
 
 class DiscoveryTests(ProviderCase):
@@ -165,7 +162,10 @@ class FinishLoginTests(ProviderCase):
         with db.session(self.engine) as opened:
             session = opened.get(AuthSession, oidc.hash_token(token))
             self.assertEqual(session.sub, "user-1")
-            self.assertEqual(session.expires, NOW + 14 * 86_400)
+            self.assertIsNone(session.expires)
+            self.assertEqual((session.last_checked, session.cookie_renewed), (NOW, NOW))
+            self.assertTrue(session.refresh_token_sealed.startswith("enc:v1:"))
+            self.assertIn(secretbox.unseal(session.refresh_token_sealed, "k"), self.provider.refresh_grants)
             self.assertIsNone(opened.get(AuthPending, state))
             user = opened.get(User, "user-1")
             self.assertEqual((user.email, user.name, json.loads(user.groups), user.last_seen), ("jo@example.test", "Jo Example", ["family", "parents"], NOW))
@@ -214,7 +214,7 @@ class FinishLoginTests(ProviderCase):
     def test_a_wrong_verifier_is_refused_by_the_provider_and_the_sign_in_fails(self):
         query, state, _ = self.begin()
         self.provider.issue("code-bad-pkce", nonce=query["nonce"], challenge="not-the-challenge", groups=["parents"])
-        with self.assertRaises(oidc.ProviderUnreachable):
+        with self.assertRaises(oidc.ProviderRefused):
             self.finish(query, state, "code-bad-pkce")
 
     def test_a_tampered_id_token_is_refused(self):
@@ -419,51 +419,65 @@ class AuthorizeTests(unittest.TestCase):
             oidc.authorize(empty, {"sub": "u1", "groups": ["parents"], "email": "me@example.test", "email_verified": True})
 
 
-class SessionTests(unittest.TestCase):
+class SessionTests(ProviderCase):
     def setUp(self):
-        self.settings = settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID=CLIENT_ID, OIDC_ALLOWED_GROUPS="parents",
-                                      OIDC_ALLOWED_EMAILS="me@example.test", DARKROOM_SESSION_DAYS="7")
-        self.engine = own_database(self)
+        super().setUp()
+        self.settings = dataclasses.replace(self.settings, oidc_allowed_emails=("me@example.test",))
         with db.session(self.engine) as opened:
             opened.add(User(sub="u1", email="jo@example.test", name="Jo", groups='["parents"]', last_seen=NOW))
             opened.add(User(sub="u2", email="me@example.test", email_verified=True, name="Me", groups="[]", last_seen=NOW))
             opened.add(User(sub="u3", email="me@example.test", email_verified=False, name="Unverified", groups='["parents"]', last_seen=NOW))
             opened.flush()
+            self.token = oidc.new_session(opened, self.settings, "u1", NOW, "refresh-canary-u1")
+            self.by_email = oidc.new_session(opened, self.settings, "u2", NOW, "refresh-canary-u2")
             self.unverified = oidc.new_session(opened, self.settings, "u3", NOW)
-            self.token = oidc.new_session(opened, self.settings, "u1", NOW)
-            self.by_email = oidc.new_session(opened, self.settings, "u2", NOW)
 
-    def expires(self, token):
+    def row(self, token):
         with db.session(self.engine) as opened:
-            return opened.get(AuthSession, oidc.hash_token(token)).expires
+            return opened.get(AuthSession, oidc.hash_token(token))
 
-    def test_only_a_hash_is_stored(self):
-        with db.session(self.engine) as opened:
-            hashes = [row.token_hash for row in opened.query(AuthSession)]
-        self.assertNotIn(self.token, hashes)
-        self.assertIn(oidc.hash_token(self.token), hashes)
+    def signed_in(self, **grant):
+        query, state, _ = self.begin()
+        token, _ = self.finish(query, state, self.grant(query, **{"groups": ["parents"], **grant}))
+        return token
 
-    def test_a_session_expires(self):
+    def test_only_hashes_and_sealed_refresh_tokens_are_stored(self):
         with db.session(self.engine) as opened:
-            self.assertIsNotNone(oidc.session_user(opened, self.settings, self.token, NOW + 7 * 86_400 - 1))
-            self.assertIsNone(oidc.session_user(opened, self.settings, self.token, NOW + 7 * 86_400))
-            self.assertIsNone(opened.get(AuthSession, oidc.hash_token(self.token)))
+            rows = list(opened.query(AuthSession))
+        self.assertNotIn(self.token, [row.token_hash for row in rows])
+        self.assertIn(oidc.hash_token(self.token), [row.token_hash for row in rows])
+        for row in rows:
+            self.assertNotIn("refresh-canary", row.refresh_token_sealed or "")
+        self.assertEqual(secretbox.unseal(self.row(self.token).refresh_token_sealed, "k"), "refresh-canary-u1")
+        self.assertIsNone(self.row(self.unverified).refresh_token_sealed)
 
-    def test_a_session_in_use_is_extended_once_a_day_up_to_a_cap(self):
+    def test_a_session_with_a_refresh_token_never_expires_on_its_own(self):
+        self.assertIsNone(self.row(self.token).expires)
         with db.session(self.engine) as opened:
-            self.assertIsNone(oidc.renew_session(opened, self.settings, self.token, NOW + 3600))
-            self.assertEqual(oidc.renew_session(opened, self.settings, self.token, NOW + 2 * 86_400), 7 * 86_400)
-            self.assertIsNone(oidc.renew_session(opened, self.settings, self.token, NOW + 2 * 86_400 + 60))
-        self.assertEqual(self.expires(self.token), NOW + 9 * 86_400)
+            self.assertIsNotNone(oidc.session_user(opened, self.settings, self.token, NOW + 1000 * 86_400))
+
+    def test_a_session_without_a_refresh_token_ends_after_the_cap(self):
+        self.assertEqual(self.row(self.unverified).expires, NOW + oidc.NO_RECHECK_DAYS * 86_400)
         with db.session(self.engine) as opened:
-            for day in (8, 14, 20):
-                self.assertEqual(oidc.renew_session(opened, self.settings, self.token, NOW + day * 86_400), 7 * 86_400)
-            self.assertEqual(oidc.renew_session(opened, self.settings, self.token, NOW + 26 * 86_400), 4 * 86_400)
-            self.assertIsNone(oidc.renew_session(opened, self.settings, self.token, NOW + 29 * 86_400))
-            self.assertIsNone(oidc.renew_session(opened, self.settings, self.token, NOW + 31 * 86_400))
-            self.assertIsNone(oidc.renew_session(opened, self.settings, "unknown-token", NOW + 2 * 86_400))
-            self.assertIsNone(oidc.renew_session(opened, self.settings, None, NOW + 2 * 86_400))
-        self.assertEqual(self.expires(self.token), NOW + oidc.SESSION_MAX_DAYS * 86_400)
+            self.assertIsNotNone(oidc.session_user(opened, self.settings, self.unverified, NOW + 30 * 86_400 - 1))
+            self.assertIsNone(oidc.session_user(opened, self.settings, self.unverified, NOW + 30 * 86_400))
+            self.assertIsNone(opened.get(AuthSession, oidc.hash_token(self.unverified)))
+        without_key = dataclasses.replace(self.settings, secret_key="")
+        with db.session(self.engine) as opened:
+            token = oidc.new_session(opened, without_key, "u1", NOW, "refresh-canary-nokey")
+        self.assertEqual((self.row(token).expires, self.row(token).refresh_token_sealed), (NOW + 30 * 86_400, None))
+
+    def test_the_cookie_is_re_sent_once_a_day_for_400_days(self):
+        with db.session(self.engine) as opened:
+            self.assertIsNone(oidc.renew_cookie(opened, self.token, NOW + 3600))
+            self.assertEqual(oidc.renew_cookie(opened, self.token, NOW + 86_400), oidc.COOKIE_MAX_AGE)
+            self.assertIsNone(oidc.renew_cookie(opened, self.token, NOW + 86_400 + 60))
+            self.assertEqual(oidc.renew_cookie(opened, self.token, NOW + 500 * 86_400), 400 * 86_400)
+            self.assertEqual(oidc.renew_cookie(opened, self.unverified, NOW + 10 * 86_400), 20 * 86_400)
+            self.assertIsNone(oidc.renew_cookie(opened, self.unverified, NOW + 31 * 86_400))
+            self.assertIsNone(oidc.renew_cookie(opened, "unknown-token", NOW + 2 * 86_400))
+            self.assertIsNone(oidc.renew_cookie(opened, None, NOW + 2 * 86_400))
+        self.assertEqual(self.row(self.token).cookie_renewed, NOW + 500 * 86_400)
 
     def test_a_session_ends_when_its_owner_is_no_longer_allowed(self):
         narrowed = dataclasses.replace(self.settings, oidc_allowed_groups=("admins",))
@@ -488,40 +502,18 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(oidc.still_allowed(self.settings, User(sub="a")))
 
     def test_access_lapsed(self):
+        settings = dataclasses.replace(self.settings, oidc_allowed_emails=("me@example.test",))
         with db.session(self.engine) as opened:
-            self.assertIsNone(oidc.access_lapsed(opened, self.settings, "u1", "jo@example.test", NOW + 86_400))
-            self.assertEqual(oidc.access_lapsed(opened, self.settings, "u1", "jo@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
-            self.assertIsNone(oidc.access_lapsed(opened, self.settings, "u2", "me@example.test", NOW + 80 * 86_400))
-            self.assertEqual(oidc.access_lapsed(opened, self.settings, "u3", "me@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
-            self.assertEqual(oidc.access_lapsed(opened, self.settings, "u1", "me@example.test", NOW + 8 * 86_400), "sign_in_lapsed")
-            self.assertEqual(oidc.access_lapsed(opened, self.settings, "nobody", None, NOW), "user_removed")
-            self.assertEqual(oidc.access_lapsed(opened, self.settings, None, None, NOW), "user_removed")
-            narrowed = dataclasses.replace(self.settings, oidc_allowed_groups=("admins",))
+            self.assertIsNone(oidc.access_lapsed(opened, settings, "u1", "jo@example.test", NOW + 86_400))
+            self.assertEqual(oidc.access_lapsed(opened, settings, "u1", "jo@example.test", NOW + 31 * 86_400), "sign_in_lapsed")
+            self.assertIsNone(oidc.access_lapsed(opened, settings, "u2", "me@example.test", NOW + 80 * 86_400))
+            self.assertEqual(oidc.access_lapsed(opened, settings, "u3", "me@example.test", NOW + 31 * 86_400), "sign_in_lapsed")
+            self.assertEqual(oidc.access_lapsed(opened, settings, "nobody", None, NOW), "user_removed")
+            self.assertEqual(oidc.access_lapsed(opened, settings, None, None, NOW), "user_removed")
+            narrowed = dataclasses.replace(settings, oidc_allowed_groups=("admins",))
             self.assertEqual(oidc.access_lapsed(opened, narrowed, "u1", "jo@example.test", NOW), "user_removed")
-            unset = dataclasses.replace(self.settings, oidc_issuer="", oidc_client_id="")
+            unset = dataclasses.replace(settings, oidc_issuer="", oidc_client_id="")
             self.assertIsNone(oidc.access_lapsed(opened, unset, "nobody", None, NOW))
-
-    def test_logout_ends_the_session_and_sweeps_expired_ones(self):
-        with db.session(self.engine) as opened:
-            opened.add(AuthSession(token_hash="old", sub="u1", created=NOW - 20 * 86_400, expires=NOW - 1))
-        unset = dataclasses.replace(self.settings, oidc_issuer="", oidc_client_id="")
-        with db.session(self.engine) as opened:
-            self.assertEqual(oidc.logout(opened, unset, self.token, NOW), "/auth/signed-out")
-            self.assertEqual(oidc.logout(opened, unset, None, NOW), "/auth/signed-out")
-        with db.session(self.engine) as opened:
-            self.assertEqual({row.token_hash for row in opened.query(AuthSession)}, {oidc.hash_token(self.by_email), oidc.hash_token(self.unverified)})
-
-    def test_a_long_idle_window_never_outlives_the_hard_cap(self):
-        generous = dataclasses.replace(self.settings, session_days=90)
-        with db.session(self.engine) as opened:
-            token = oidc.new_session(opened, generous, "u1", NOW)
-        self.assertEqual(self.expires(token), NOW + oidc.SESSION_MAX_DAYS * 86_400)
-        with db.session(self.engine) as opened:
-            self.assertIsNone(oidc.renew_session(opened, generous, token, NOW + 2 * 86_400))
-            self.assertIsNone(oidc.renew_session(opened, generous, token, NOW + 29 * 86_400))
-            self.assertIsNotNone(oidc.session_user(opened, generous, token, NOW + 30 * 86_400 - 1))
-            self.assertIsNone(oidc.session_user(opened, generous, token, NOW + 30 * 86_400))
-        self.assertEqual(oidc.SESSION_MAX_DAYS, 30)
 
     def test_the_verified_flag_is_remembered_with_the_user(self):
         with db.session(self.engine) as opened:
@@ -531,6 +523,16 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(opened.get(User, "u9").email_verified)
             self.assertFalse(oidc.session_user(opened, self.settings, oidc.new_session(opened, self.settings, "u9", NOW), NOW + 1).email_verified)
 
+    def test_logout_ends_the_session_and_sweeps_expired_ones(self):
+        with db.session(self.engine) as opened:
+            opened.add(AuthSession(token_hash="old", sub="u1", created=NOW - 40 * 86_400, expires=NOW - 1))
+        unset = dataclasses.replace(self.settings, oidc_issuer="", oidc_client_id="")
+        with db.session(self.engine) as opened:
+            self.assertEqual(oidc.logout(opened, unset, self.token, NOW), "/auth/signed-out")
+            self.assertEqual(oidc.logout(opened, unset, None, NOW), "/auth/signed-out")
+        with db.session(self.engine) as opened:
+            self.assertEqual({row.token_hash for row in opened.query(AuthSession)}, {oidc.hash_token(self.by_email), oidc.hash_token(self.unverified)})
+
     def test_logout_goes_to_the_provider_end_session_when_it_has_one(self):
         with_end = {"end_session_endpoint": "https://id.example/end?x=1"}
         with mock.patch.object(oidc, "discovery", return_value=with_end), db.session(self.engine) as opened:
@@ -538,7 +540,7 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(target.startswith("https://id.example/end?x=1&"))
         query = parse_qs(urlsplit(target).query)
         self.assertEqual(query["client_id"], [CLIENT_ID])
-        self.assertEqual(query["post_logout_redirect_uri"], ["/auth/signed-out"])
+        self.assertEqual(query["post_logout_redirect_uri"], ["https://darkroom.example/auth/signed-out"])
         with mock.patch.object(oidc, "discovery", return_value={}), db.session(self.engine) as opened:
             self.assertEqual(oidc.logout(opened, self.settings, None, NOW), "/auth/signed-out")
         with mock.patch.object(oidc, "discovery", side_effect=oidc.ProviderUnreachable("down")), db.session(self.engine) as opened:
@@ -547,6 +549,145 @@ class SessionTests(unittest.TestCase):
     def test_an_absurdly_long_cookie_matches_nothing(self):
         with db.session(self.engine) as opened:
             self.assertIsNone(oidc.find_session(opened, "x" * 201))
+
+    def test_revoke_sessions_by_email_sub_or_everyone(self):
+        with db.session(self.engine) as opened:
+            self.assertEqual(oidc.revoke_sessions(opened, email="ME@Example.test"), 2)
+            self.assertEqual(oidc.revoke_sessions(opened, email="nobody@example.test"), 0)
+            self.assertEqual(oidc.revoke_sessions(opened), 0)
+            self.assertEqual(oidc.revoke_sessions(opened, sub="u1"), 1)
+            opened.add(AuthSession(token_hash="h", sub="u1", created=NOW, expires=None))
+            opened.flush()
+            self.assertEqual(oidc.revoke_sessions(opened, everyone=True), 1)
+            self.assertEqual(opened.query(AuthSession).count(), 0)
+
+
+class RecheckTests(ProviderCase):
+    def setUp(self):
+        super().setUp()
+        query, state, _ = self.begin()
+        self.token, _ = self.finish(query, state, self.grant(query, groups=["parents"]))
+        self.provider.token_requests.clear()
+
+    def row(self):
+        with db.session(self.engine) as opened:
+            return opened.get(AuthSession, oidc.hash_token(self.token))
+
+    def recheck(self, now=NOW + 2 * 86_400, settings=None):
+        with db.session(self.engine) as opened:
+            return oidc.recheck_due(opened, settings or self.settings, now)
+
+    def refresh_requests(self):
+        return [sent["form"] for sent in self.provider.token_requests if sent["form"].get("grant_type") == "refresh_token"]
+
+    def test_only_sessions_due_for_a_check_are_rechecked(self):
+        self.assertEqual(self.recheck(NOW + 3600).checked, 0)
+        self.assertEqual(self.refresh_requests(), [])
+        summary = self.recheck()
+        self.assertEqual((summary.checked, summary.kept), (1, 1))
+        self.assertEqual(len(self.refresh_requests()), 1)
+        self.assertEqual(self.recheck(NOW + 2 * 86_400 + 3600).checked, 0)
+        with db.session(self.engine) as opened:
+            opened.add(User(sub="capped", groups='["parents"]'))
+            opened.flush()
+            oidc.new_session(opened, self.settings, "capped", NOW)
+        self.assertEqual(self.recheck(NOW + 3 * 86_400 + 1).checked, 1)
+
+    def test_a_successful_recheck_updates_the_user_and_rotates_the_refresh_token(self):
+        self.provider.rotate_refresh_tokens = True
+        self.provider.change_user(name="Jo Renamed", groups=["parents", "family"])
+        before = self.row().refresh_token_sealed
+        summary = self.recheck()
+        self.assertEqual((summary.kept, summary.ended, summary.unreachable), (1, 0, 0))
+        after = self.row()
+        self.assertEqual(after.last_checked, NOW + 2 * 86_400)
+        self.assertIsNone(after.expires)
+        self.assertNotEqual(after.refresh_token_sealed, before)
+        self.assertIn(secretbox.unseal(after.refresh_token_sealed, "k"), self.provider.refresh_grants)
+        self.assertEqual(len(self.provider.refresh_grants), 1)
+        with db.session(self.engine) as opened:
+            user = opened.get(User, "user-1")
+            self.assertEqual((user.name, json.loads(user.groups), user.last_seen), ("Jo Renamed", ["family", "parents"], NOW + 2 * 86_400))
+        self.assertEqual(self.recheck(NOW + 4 * 86_400).kept, 1)
+
+    def test_a_refused_refresh_ends_the_session(self):
+        self.provider.revoke_all()
+        summary = self.recheck()
+        self.assertEqual((summary.checked, summary.ended), (1, 1))
+        self.assertIsNone(self.row())
+
+    def test_losing_the_group_ends_every_session_of_that_person(self):
+        with db.session(self.engine) as opened:
+            other = oidc.new_session(opened, self.settings, "user-1", NOW, "refresh-canary-other")
+        self.provider.change_user(groups=["family"])
+        self.assertEqual(self.recheck().ended, 1)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(AuthSession).count(), 0)
+            self.assertEqual(json.loads(opened.get(User, "user-1").groups), ["family"])
+        self.assertIsNone(oidc.find_session(opened, other))
+
+    def test_narrowing_the_allowed_groups_ends_the_session_at_the_next_check(self):
+        narrowed = dataclasses.replace(self.settings, oidc_allowed_groups=("admins",))
+        self.assertEqual(self.recheck(settings=narrowed).ended, 1)
+        self.assertIsNone(self.row())
+
+    def test_an_unreachable_provider_keeps_the_session_untouched(self):
+        self.provider.outage = True
+        oidc.forget_caches()
+        before = self.row()
+        summary = self.recheck()
+        self.assertEqual((summary.checked, summary.unreachable, summary.kept), (1, 1, 0))
+        after = self.row()
+        self.assertEqual((after.last_checked, after.expires, after.refresh_token_sealed), (before.last_checked, None, before.refresh_token_sealed))
+        self.provider.outage = False
+        self.assertEqual(self.recheck(NOW + 2 * 86_400 + 3600).kept, 1)
+
+    def test_groups_come_from_userinfo_when_the_refreshed_id_token_has_none(self):
+        self.provider.userinfo_groups = True
+        self.assertEqual(self.recheck().kept, 1)
+        self.assertEqual(len(self.provider.userinfo_requests), 1)
+        self.provider.refresh_id_token = False
+        self.assertEqual(self.recheck(NOW + 4 * 86_400).kept, 1)
+        self.provider.change_user(userinfo_sub="someone-else")
+        self.assertEqual(self.recheck(NOW + 6 * 86_400).capped, 1)
+        self.assertEqual(self.row().expires, NOW + 6 * 86_400 + oidc.NO_RECHECK_DAYS * 86_400)
+
+    def test_a_token_for_someone_else_or_an_unreadable_refresh_token_falls_back_to_the_cap(self):
+        self.provider.change_user(sub="user-2")
+        summary = self.recheck()
+        self.assertEqual((summary.capped, summary.ended), (1, 0))
+        self.assertEqual(self.row().expires, NOW + 32 * 86_400)
+        with db.session(self.engine) as opened:
+            opened.get(AuthSession, oidc.hash_token(self.token)).refresh_token_sealed = secretbox.seal("x", "another-key")
+            opened.get(AuthSession, oidc.hash_token(self.token)).last_checked = NOW
+        self.assertEqual(self.recheck(NOW + 4 * 86_400).capped, 1)
+        after = self.row()
+        self.assertEqual((after.refresh_token_sealed, after.expires), (None, NOW + 34 * 86_400))
+        self.assertEqual(self.recheck(NOW + 6 * 86_400).checked, 0)
+
+    def test_the_refresh_token_never_leaves_in_the_clear(self):
+        refresh_token = secretbox.unseal(self.row().refresh_token_sealed, "k")
+        self.assertTrue(refresh_token.startswith(REFRESH_PREFIX))
+        from tests.privacy import no_leaks
+
+        with no_leaks(self, refresh_token, database=self.engine):
+            self.provider.rotate_refresh_tokens = True
+            self.recheck()
+            with db.session(self.engine) as opened:
+                oidc.logout(opened, self.settings, self.token, NOW + 3 * 86_400)
+
+    def test_recheck_problems_name_a_provider_without_offline_access(self):
+        self.assertEqual(oidc.recheck_problems(self.settings, NOW), [])
+        self.assertEqual(oidc.recheck_problems(dataclasses.replace(self.settings, oidc_issuer="", oidc_client_id=""), NOW), [])
+        oidc.forget_caches()
+        self.provider.scopes_supported = ["openid", "email"]
+        self.addCleanup(setattr, self.provider, "scopes_supported", ["openid", "email", "profile", "groups", "offline_access"])
+        found = oidc.recheck_problems(self.settings, NOW)
+        self.assertEqual(len(found), 1)
+        self.assertIn("offline_access", found[0])
+        oidc.forget_caches()
+        self.provider.outage = True
+        self.assertIn("could not be read", oidc.recheck_problems(self.settings, NOW)[0])
 
 
 if __name__ == "__main__":

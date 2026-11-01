@@ -23,7 +23,8 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_SECRET_KEY": "k", "DARKROOM_PUBLIC_URL": "https://d.example",
                       "OIDC_ISSUER": "https://id.example", "OIDC_CLIENT_ID": "darkroom"}
-            with mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"):
+            with mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"), \
+                    mock.patch.object(run.oidc, "discovery", return_value={"scopes_supported": ["openid", "offline_access"]}):
                 self.assertEqual(run.main(["check-config"]), 0)
 
     def test_check_config_reports_a_misused_no_auth_flag(self):
@@ -33,6 +34,43 @@ class RunTests(unittest.TestCase):
             with mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"):
                 self.assertEqual(run.main(["check-config"]), 1)
         self.assertIn("DARKROOM_ALLOW_NO_AUTH=1 only works when DARKROOM_HOST is a local address", err.getvalue())
+
+    def test_check_config_warns_when_sessions_cannot_be_rechecked(self):
+        from darkroom import oidc
+
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err:
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_SECRET_KEY": "k", "DARKROOM_PUBLIC_URL": "https://d.example",
+                      "OIDC_ISSUER": "https://id.example", "OIDC_CLIENT_ID": "darkroom"}
+            with mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"), \
+                    mock.patch.object(oidc, "discovery", return_value={"scopes_supported": ["openid"]}):
+                self.assertEqual(run.main(["check-config"]), 1)
+        self.assertIn("offline_access", err.getvalue())
+
+    def test_revoke_sessions_ends_sessions_by_email_or_for_everyone(self):
+        from darkroom.storage import db
+        from darkroom.storage.models import AuthSession, User
+
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()) as out:
+            values = {"DARKROOM_DATA_DIR": folder, "DARKROOM_PHOTOS_ROOT": folder, "DATABASE_URL": f"sqlite:///{folder}/r.db"}
+            with mock.patch.dict(os.environ, values, clear=True):
+                self.assertEqual(run.main(["migrate"]), 0)
+                engine = db.make_engine(values["DATABASE_URL"])
+                with db.session(engine) as opened:
+                    opened.add_all([User(sub="u1", email="jo@example.test"), User(sub="u2", email="sam@example.test")])
+                    opened.flush()
+                    opened.add_all([AuthSession(token_hash="a", sub="u1", created=1.0), AuthSession(token_hash="b", sub="u1", created=1.0),
+                                    AuthSession(token_hash="c", sub="u2", created=1.0)])
+                engine.dispose()
+                self.assertEqual(run.main(["revoke-sessions"]), 1)
+                self.assertEqual(run.main(["revoke-sessions", "--email", "JO@example.test"]), 0)
+                self.assertEqual(run.main(["revoke-sessions", "--sub", "nobody"]), 0)
+                self.assertEqual(run.main(["revoke-sessions", "--all"]), 0)
+                engine = db.make_engine(values["DATABASE_URL"])
+                with db.session(engine) as opened:
+                    self.assertEqual(opened.query(AuthSession).count(), 0)
+                engine.dispose()
+        self.assertIn("needs --email, --sub or --all", err.getvalue())
+        self.assertEqual(out.getvalue().splitlines()[-3:], ["ended 2 sessions", "ended 0 sessions", "ended 1 session"])
 
     def test_serve_starts_a_server_and_stops_on_interrupt(self):
         server = mock.Mock()

@@ -24,7 +24,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.port, 8000)
         self.assertEqual(settings.oidc_allowed_groups, ("parents",))
         self.assertEqual(settings.oidc_device_groups, ("family", "parents"))
-        self.assertEqual(settings.session_days, 14)
         self.assertFalse(settings.allow_no_auth)
 
     def test_lists_are_split_and_trimmed(self):
@@ -88,16 +87,6 @@ class AuthProblemTests(unittest.TestCase):
         self.assertEqual(config.refuses_to_start(settings_from(DARKROOM_HOST="0.0.0.0")), [])
         self.assertEqual(config.auth_problems(settings_from(DARKROOM_HOST="0.0.0.0")), ["sign-in is not set up: set OIDC_ISSUER and OIDC_CLIENT_ID (or DARKROOM_ALLOW_NO_AUTH=1 on a local address) so someone can use the web UI"])
 
-    def test_session_days_must_be_positive(self):
-        with tempfile.TemporaryDirectory() as folder:
-            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_SECRET_KEY": "k", "DARKROOM_PUBLIC_URL": "http://localhost",
-                      "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_SESSION_DAYS": "0"}
-            with mock.patch.dict(os.environ, values, clear=True):
-                self.assertEqual(config.problems(config.load()), ["DARKROOM_SESSION_DAYS must be at least 1"])
-            with mock.patch.dict(os.environ, {**values, "DARKROOM_SESSION_DAYS": "90"}, clear=True):
-                found = config.problems(config.load())
-            self.assertEqual(len(found), 1)
-            self.assertIn("capped at 30", found[0])
 
 
 if __name__ == "__main__":

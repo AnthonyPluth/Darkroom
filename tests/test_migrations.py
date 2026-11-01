@@ -50,6 +50,27 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT sub FROM users").scalar(), "u1")
 
+    def test_0003_session_recheck_keeps_old_sessions_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0002")
+            connection.exec_driver_sql("INSERT INTO users (sub) VALUES ('u1')")
+            connection.exec_driver_sql("INSERT INTO auth_sessions (token_hash, sub, created, expires) VALUES ('h', 'u1', 1.0, 2.0)")
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            row = connection.exec_driver_sql("SELECT expires, refresh_token_sealed, last_checked, cookie_renewed FROM auth_sessions").one()
+            self.assertEqual(tuple(row), (2.0, None, None, None))
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO auth_sessions (token_hash, sub, created) VALUES ('open', 'u1', 3.0)")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0002")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("auth_sessions")}
+        self.assertEqual(columns, {"token_hash", "sub", "created", "expires"})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT token_hash FROM auth_sessions").scalars().all(), ["h"])
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

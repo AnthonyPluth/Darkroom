@@ -283,7 +283,10 @@ class AuthSession(Base):
     token_hash: Mapped[str] = mapped_column(String, primary_key=True)
     sub: Mapped[str] = mapped_column(ForeignKey("users.sub", ondelete="CASCADE"), nullable=False)
     created: Mapped[float] = mapped_column(Float, nullable=False)
-    expires: Mapped[float] = mapped_column(Float, nullable=False)
+    expires: Mapped[float | None] = mapped_column(Float)
+    refresh_token_sealed: Mapped[str | None] = mapped_column(Text)
+    last_checked: Mapped[float | None] = mapped_column(Float)
+    cookie_renewed: Mapped[float | None] = mapped_column(Float)
 
 
 class Setting(Base):
