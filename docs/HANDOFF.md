@@ -9,6 +9,16 @@ Covers the 41 GitHub issues (8 epics, 33 children). Each issue body starts with 
 - Two PRs that both regenerate the same generated files (`docs/feature-map.json`, `docs/openapi.json`, `frontend/src/lib/api-types.ts`) land one at a time: the second rebases on `main`, re-runs `make feature-map api-contract`, then `make check`.
 - Two PRs that both add an Alembic migration never run in the same wave. P2-02 (#13) defines the whole model up front so only P7-03 (#39) should need one; anything else that wants a migration says so in its PR.
 
+## Model per issue
+
+Opus by default. Fable for anything security-related. Sonnet only for mechanical work.
+
+| Model | Issues |
+| --- | --- |
+| Fable (security) | P2-03 (#14) Pocket ID sign-in and route guard · P4-01 (#27) cross-container API token and noVNC route · P5-01 (#31) device sign-in and upload API · P7-03 (#39) MCP OAuth grants |
+| Sonnet (mechanical) | Creating and updating GitHub issues · P3-02 (#20) agent part (sidecar test script) |
+| Opus (default) | Everything else, including the safety-critical deletion work (P3-05, P6-01, P6-02) |
+
 ## Waves
 
 | Wave | Issues (parallel) | Owner steps before the wave | Notes |
