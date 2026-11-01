@@ -1,0 +1,22 @@
+[
+  {
+    "key": "PHOTOS-DEMO",
+    "append_section": "## Driving photos without Immich\n\n`make verify` and `tools/control` (the verify-waypoint skill) run the demo server with outbound HTTP sent to a dead proxy, so anything that reaches for Immich must be answered locally for a `demo` source:\n\n- `GET /api/photos/{id}/original` for a `demo` source answers the 1280 px preview placeholder (`image/png`) with no connection attempt; the demo rows are images only (no video rows), so no page asks for a stream.\n- `POST /api/photo-sources/{id}/test` on a `demo` source answers success with the demo person's name and opens no connection; `POST /api/photo-sources/{id}/sync` answers 202 with `started: false` (nothing to sync), so a session can press Test and Sync now without a 503 or a console error.\n- `.claude/skills/verify-waypoint/references/feature-gotchas.md` gets a \"Photos\" entry: demo photos are generated placeholders; a demo library's Test and Sync now do nothing real; connecting a new library needs the `fake_immich` flow step (PHOTOS-UI-SETTINGS); then `make user-feature-map`.\n",
+    "replace": [
+      {
+        "old": "- [ ] `make verify` completes with the network blocked (no new notes about failed requests in `artifacts/verify/`).",
+        "new": "- [ ] `make verify` completes with the network blocked (no new notes about failed requests in `artifacts/verify/`).\n- [ ] With `tools/control start`, opening the road trip, a photo, Open original, and Settings → Photos → Test and Sync now on a demo library gives no 5xx in `tools/control network` and nothing in `console` (output pasted in the PR).\n- [ ] A test asserts `original`, `test` and `sync` on a `demo` source make no outbound request (`tls.urlopen` patched to fail)."
+      }
+    ]
+  },
+  {
+    "key": "PHOTOS-UI-SETTINGS",
+    "append_section": "## A make verify flow for Connect and Test\n\nThe demo server can't reach an Immich server, so the Connect form's success path needs a faked reply, the way `fake_labels` and `fake_destination` fake Gmail and the AI (`frontend/verify/flows/README.md`):\n\n- A flow step `{\"fake_immich\": \"Demo Person\"}` in `frontend/verify/verify.mjs`: answers the page's `POST /api/photo-sources` and `POST /api/photo-sources/{id}/test` with a made-up Immich user of that name (and a refused or unreachable answer for `{\"fake_immich\": \"refused\"}` / `\"unreachable\"`), lets everything else through to the demo data; documented in the flows README.\n- Flow `photos-connect.json` on page `settings`: open the Photos section, fill an address on `immich.example` and a made-up key, press Test, expect the made-up name, Save, expect the new card; screenshots at phone and desktop. A second flow `photos-connect-refused.json` shows the refused sentence on the key field.\n",
+    "replace": [
+      {
+        "old": "- [ ] Keyboard: every control reachable, the form's first field focused when it opens, the dialog returns focus on cancel; `make verify settings` shows the section at phone and desktop and the images are committed.",
+        "new": "- [ ] Keyboard: every control reachable, the form's first field focused when it opens, the dialog returns focus on cancel; `make verify settings` shows the section at phone and desktop and the images are committed.\n- [ ] The `photos-connect` and `photos-connect-refused` flows pass in `make verify` with the network blocked, and their images are committed."
+      }
+    ]
+  }
+]
