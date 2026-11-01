@@ -41,7 +41,7 @@ class Fingerprint:
 
 
 def sha1_of(path: Path) -> tuple[str, int]:
-    digest = hashlib.sha1(usedforsecurity=False)
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
     size = 0
     with path.open("rb") as handle:
         while chunk := handle.read(CHUNK):
