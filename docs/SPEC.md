@@ -31,7 +31,6 @@ New photos already pass through the home network on their way to Google, so the 
 | Google Photos | Off-site backup. Only copy of anything that never passed through Syncthing: older photos, shared albums, other devices |
 | Unraid | Docker host and storage. Becomes the Pixels' Syncthing peer in this design |
 | Traefik + Pocket ID | Reverse proxy and OIDC login. Groups: `parents`, `family` |
-| Home Assistant | Notifications |
 | Tailscale | Remote access to internal-only services |
 | Immich | New. Runs on Unraid, one user per person |
 
@@ -80,7 +79,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 **Limits it must respect**
 
 - Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest.
-- Google often asks you to verify it's you before a download. The job pauses, sends a Home Assistant alert linking to the noVNC view, and resumes after you sign in.
+- Google often asks you to verify it's you before a download. The job pauses, sends a push alert to the person's iPhone app linking to the noVNC view, and resumes after you sign in.
 - Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed.
 
 **Resilience**
@@ -208,7 +207,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 - **Review queue:** side-by-side thumbnails for likely re-encodes. Keep both, skip, or undo any past decision.
 - **Remote browser:** the noVNC view, embedded, for sign-ins.
 
-**Home Assistant alerts** — sent straight to a notify service through HA's API, so HA needs no helpers or automations.
+**Push alerts** — sent to the Darkroom iPhone app through Apple's push service (APNs, production, TestFlight builds), to the devices of the person an alert concerns; an alert about a Google account goes to the people that account serves. The push carries only the alert kind and an id, never an email address, name or file name; the app fetches the details from Darkroom when it can reach it. Delivery does not depend on being on home Wi-Fi; acting on an alert (for example the sign-in view) needs Darkroom reachable over home Wi-Fi or Tailscale. Until the app ships, alerts are recorded as events and not delivered.
 
 | Event | Alert |
 | --- | --- |
@@ -292,7 +291,7 @@ Deleting from the iPhones is the only step that can lose a photo, so it gets the
 Build ingest before the browser worker: a hand-downloaded export gives real data to build against, and the backfill lands sooner. Cleanup on the iPhones comes last, because it depends on Takeout matches.
 
 1. **Infrastructure (no code).** Immich on Unraid, Unraid joined to the Möbius Sync folders as each person's `originals/`, one external library per person, `.stignore` set. Done when each person's photos show in Immich with GPS.
-2. **Service skeleton.** New repo on the Waypoint conventions: people, accounts and devices, Pocket ID sign-in, status page, Home Assistant alerts, originals indexer.
+2. **Service skeleton.** New repo on the Waypoint conventions: people, accounts and devices, Pocket ID sign-in, status page, alert policy, originals indexer.
 3. **Ingest and dedupe.** Run on one hand-downloaded export: pairing, metadata, dedupe tiers, `google-only/` placement, XMP sidecars, review queue. Done when one account's history is fully imported.
 4. **Browser worker.** Connect account via noVNC, create the schedule, daily status check, downloads within Google's limits, re-auth alerts.
 5. **iPhone app: upload.** Upload API and the app's upload side. Unraid becomes the Pixels' Syncthing peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.

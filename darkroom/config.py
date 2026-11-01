@@ -28,9 +28,6 @@ class Settings:
     oidc_allowed_groups: tuple[str, ...]
     oidc_allowed_emails: tuple[str, ...]
     oidc_device_groups: tuple[str, ...]
-    ha_url: str
-    ha_token: str
-    ha_notify_service: str
     immich_url: str
     immich_admin_key: str
     browser_token: str
@@ -53,9 +50,6 @@ def load() -> Settings:
         oidc_allowed_groups=env_list("OIDC_ALLOWED_GROUPS", "parents"),
         oidc_allowed_emails=env_list("OIDC_ALLOWED_EMAILS"),
         oidc_device_groups=env_list("OIDC_DEVICE_GROUPS", "family,parents"),
-        ha_url=env("HA_URL").rstrip("/"),
-        ha_token=env("HA_TOKEN"),
-        ha_notify_service=env("HA_NOTIFY_SERVICE"),
         immich_url=env("IMMICH_URL").rstrip("/"),
         immich_admin_key=env("IMMICH_ADMIN_KEY"),
         browser_token=env("DARKROOM_BROWSER_TOKEN"),
@@ -76,6 +70,4 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    if 0 < sum(bool(value) for value in (settings.ha_url, settings.ha_token, settings.ha_notify_service)) < 3:
-        found.append("HA_URL, HA_TOKEN and HA_NOTIFY_SERVICE go together; set all three or none")
     return found
