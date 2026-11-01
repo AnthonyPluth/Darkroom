@@ -19,7 +19,8 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_static.py"
       ]
     },
     {
