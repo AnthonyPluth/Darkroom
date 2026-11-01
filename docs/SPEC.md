@@ -122,7 +122,7 @@ Matching runs against everyone the export's Google account serves, in this order
 | Order | Match when | Result |
 | --- | --- | --- |
 | 1. Exact | Same SHA-1 | Skip the Takeout copy. Copy Google-only metadata (location, description) to an XMP sidecar if the original lacks it |
-| 2. Same shot | Same capture time to the second, same camera make and model, and same dimensions (photos) or duration (videos) | Same as exact |
+| 2. Same shot | Same capture time to the second (sub-second when both have it), same camera make and model, and same dimensions (photos) or duration (videos), with exactly one candidate. Two or more candidates, such as a burst, go to review | Same as exact |
 | 3. Edited copy | A Takeout `-edited` file whose pair matched at 1 or 2 | Skip by default. Setting: keep as its own asset |
 | 4. Likely re-encode | Perceptual hash within threshold and capture time within 2 seconds | Review queue, never auto-skipped |
 | 5. No match | Nothing above | Google-only: placed in `google-only/` with sidecar metadata |
