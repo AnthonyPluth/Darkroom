@@ -1,0 +1,7 @@
+FROM python:3.14-slim
+
+WORKDIR /app
+COPY darkroom_browser ./darkroom_browser
+RUN useradd --system --uid 10002 --home-dir /app darkroom-browser
+USER darkroom-browser
+CMD ["python", "-c", "print('darkroom-browser: the worker arrives with the browser worker scaffold')"]

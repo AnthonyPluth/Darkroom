@@ -1,0 +1,131 @@
+[project]
+name = "darkroom"
+version = "0.1.0"
+description = "Brings the household's phone photos together on Unraid: originals from iPhones, Google-only extras from Takeout, one Immich library per person"
+readme = "README.md"
+requires-python = ">=3.14,<4.0"
+dependencies = [
+    "sqlalchemy (>=2.0,<3.0)",
+    "alembic (>=1.13,<2.0)",
+    "pyjwt[crypto] (>=2.8,<3.0)",
+    "pillow (>=11.0,<13.0)",
+    "imagehash (>=4.3,<5.0)",
+    "pillow-heif (>=0.20,<2.0)",
+    "timezonefinder (>=6.5,<9.0)",
+]
+
+[project.optional-dependencies]
+browser = ["playwright (>=1.48,<2.0)"]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+ruff = "0.17.2"
+mypy = "2.4.0"
+coverage = "7.17.0"
+unittest-parallel = "1.8.6"
+pip-audit = "2.10.1"
+zizmor = "1.31.1"
+import-linter = "2.15"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py314"
+extend-exclude = [".semgrep/examples"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "UP", "SIM", "RUF"]
+ignore = ["E402", "E702", "E731", "E741", "RUF001", "RUF002", "RUF003", "RUF012", "SIM117"]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*"]
+relative_files = true
+
+[tool.coverage.report]
+include = ["darkroom/*", "darkroom_browser/*"]
+skip_empty = true
+
+[tool.importlinter]
+root_packages = ["darkroom", "darkroom_browser"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "server-on-top"
+name = "Only the server imports the server"
+type = "forbidden"
+source_modules = ["darkroom.domain", "darkroom.providers", "darkroom.storage", "darkroom.tls", "darkroom.validate",
+                  "darkroom.dates", "darkroom.monitoring", "darkroom.oidc", "darkroom.config"]
+forbidden_modules = ["darkroom.server"]
+
+[[tool.importlinter.contracts]]
+id = "storage-at-the-bottom"
+name = "Storage imports nothing from the domain, the providers or the server"
+type = "forbidden"
+source_modules = ["darkroom.storage"]
+forbidden_modules = ["darkroom.domain", "darkroom.providers", "darkroom.server"]
+
+[[tool.importlinter.contracts]]
+id = "database-through-storage"
+name = "Only darkroom.storage talks to the database drivers and Alembic"
+type = "protected"
+protected_modules = ["sqlite3"]
+allowed_importers = ["darkroom.storage"]
+broken_contract_guidance = "Reach the database through darkroom.storage.db."
+
+[[tool.importlinter.contracts]]
+id = "network-through-tls"
+name = "Only darkroom.tls opens outbound connections"
+type = "protected"
+protected_modules = ["ssl", "http"]
+allowed_importers = ["darkroom.tls"]
+ignore_imports = [
+    "darkroom.server.handler -> http",
+    "darkroom.tls -> http",
+]
+broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."
+
+[[tool.importlinter.contracts]]
+id = "providers-alone"
+name = "Providers import no other provider"
+type = "independence"
+modules = ["darkroom.providers.exiftool", "darkroom.providers.homeassistant", "darkroom.providers.immich"]
+
+[[tool.importlinter.contracts]]
+id = "subprocess-only-exiftool"
+name = "Only the exiftool provider runs subprocesses"
+type = "protected"
+protected_modules = ["subprocess"]
+allowed_importers = ["darkroom.providers.exiftool", "darkroom_browser.runner"]
+broken_contract_guidance = "Run exiftool through darkroom.providers.exiftool."
+
+[tool.mypy]
+python_version = "3.14"
+files = ["darkroom", "darkroom_browser", "run.py"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["darkroom.domain.*", "darkroom.providers.*", "darkroom_browser.pages.*", "darkroom_browser.jobs.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["imagehash", "timezonefinder", "pillow_heif", "playwright.*"]
+ignore_missing_imports = true
+
+[[tool.importlinter.contracts]]
+id = "service-and-worker-apart"
+name = "darkroom and darkroom_browser never import each other"
+type = "independence"
+modules = ["darkroom", "darkroom_browser"]

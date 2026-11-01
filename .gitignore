@@ -1,0 +1,16 @@
+data/
+photos/
+*.db
+*.db-wal
+*.db-shm
+.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.coverage
+coverage.xml
+coverage.json
+artifacts/
+.claude/worktrees/
+darkroom/static/app/

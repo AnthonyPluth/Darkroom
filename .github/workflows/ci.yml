@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  python:
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install exiftool
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1
+      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
+      - name: Tests (parallel) with coverage
+        run: poetry run unittest-parallel -t . -s tests -j 4 --coverage --coverage-rcfile pyproject.toml
+      - name: Coverage floor (tools/coverage_floor.py)
+        run: |
+          poetry run coverage json -q -o coverage.json
+          poetry run python tools/coverage_floor.py coverage.json
+      - name: Check dependencies for known vulnerabilities
+        run: poetry run pip-audit
+      - name: Lint (ruff)
+        run: poetry run ruff check .
+      - name: Type-check (mypy)
+        run: poetry run mypy
+      - name: Check import boundaries (import-linter)
+        run: poetry run lint-imports
+      - name: No comments or docstrings
+        run: poetry run python tools/no_comments.py
+
+  checks:
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
+      - name: Feature map is current and every route has a test
+        run: poetry run python tools/feature_map.py --check
+      - name: API contract is current
+        run: poetry run python tools/api_contract.py --check
+      - name: Migrations, workflow conventions and (on a pull request) commit trailers
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$BASE" ]; then
+            poetry run python tools/fleet_checks.py --commits "$BASE..$HEAD"
+          else
+            poetry run python tools/fleet_checks.py
+          fi
+
+  semgrep-rules:
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
+      - name: Darkroom's own Semgrep rules, then the code
+        run: |
+          pipx run semgrep==1.146.0 --version
+          poetry run python .semgrep/check_examples.py pipx run semgrep==1.146.0
+          pipx run semgrep==1.146.0 scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser run.py
+
+  web:
+    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Web app checks (once frontend/package.json exists)
+        run: |
+          if [ -f frontend/package.json ]; then
+            cd frontend && npm ci --no-audit --no-fund && npm run check
+          else
+            echo "No frontend yet."
+          fi

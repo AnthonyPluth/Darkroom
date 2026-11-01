@@ -1,0 +1,15 @@
+{
+  "routes": [
+    {
+      "route": "GET /healthz",
+      "auth": "public",
+      "handler": "darkroom.server.api.status.healthz",
+      "frontend": [],
+      "tests": [
+        "tests/test_healthz.py",
+        "tests/test_routes_table.py",
+        "tests/test_tools.py"
+      ]
+    }
+  ]
+}
