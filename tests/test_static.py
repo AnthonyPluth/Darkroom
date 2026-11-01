@@ -107,6 +107,22 @@ class ServedAppTests(unittest.TestCase):
         self.assertEqual(json.loads(body), {"error": "sign in required"})
 
 
+class ServerPageTests(unittest.TestCase):
+    def test_a_server_page_allows_its_own_style_and_nothing_else_inline(self):
+        import base64
+        import hashlib
+
+        from darkroom.server import common
+
+        response = common.page(200, "Signed out", "You have signed out of Darkroom.", ("/auth/login", "Sign in again"))
+        style = re.search(r"<style>([\s\S]*?)</style>", response.body.decode())
+        assert style is not None
+        digest = base64.b64encode(hashlib.sha256(style.group(1).encode()).digest()).decode()
+        policy = {part.split()[0]: part.split()[1:] for part in response.headers["Content-Security-Policy"].split("; ")}
+        self.assertEqual(policy["style-src"], [f"'sha256-{digest}'"])
+        self.assertEqual(policy["script-src"], ["'self'"])
+
+
 class FrontendIndexTests(unittest.TestCase):
     def test_the_web_apps_index_has_no_inline_script(self):
         source = (ROOT / "frontend/index.html").read_text()

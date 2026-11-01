@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import html
 import json
 from collections.abc import Mapping
@@ -69,18 +71,21 @@ def redirect(location: str, cookies: tuple[str, ...] = ()) -> Response:
     return Response(303, b"", "text/plain; charset=utf-8", {"Location": location}, cookies)
 
 
+PAGE_STYLE = """
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 48px 16px; color: #222; background: #fafafa; }
+main { max-width: 32rem; margin: 0 auto; }
+h1 { font-size: 1.5rem; margin: 0 0 12px; }
+a.button { display: inline-block; margin-top: 16px; padding: 10px 16px; border-radius: 8px; background: #222; color: #fff; text-decoration: none; }
+"""
+PAGE_CSP = f"{CSP}; style-src 'sha256-{base64.b64encode(hashlib.sha256(PAGE_STYLE.encode()).digest()).decode()}'"
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · Darkroom</title>
-<style>
-body {{ font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 48px 16px; color: #222; background: #fafafa; }}
-main {{ max-width: 32rem; margin: 0 auto; }}
-h1 {{ font-size: 1.5rem; margin: 0 0 12px; }}
-a.button {{ display: inline-block; margin-top: 16px; padding: 10px 16px; border-radius: 8px; background: #222; color: #fff; text-decoration: none; }}
-</style>
+<style>{style}</style>
 </head>
 <body><main><h1>{title}</h1><p>{message}</p>{link}</main></body>
 </html>
@@ -89,5 +94,5 @@ a.button {{ display: inline-block; margin-top: 16px; padding: 10px 16px; border-
 
 def page(status: int, title: str, message: str, link: tuple[str, str] | None = None, cookies: tuple[str, ...] = ()) -> Response:
     button = f'<a class="button" href="{html.escape(link[0], quote=True)}">{html.escape(link[1])}</a>' if link else ""
-    body = PAGE.format(title=html.escape(title), message=html.escape(message), link=button).encode()
-    return Response(status, body, "text/html; charset=utf-8", {"Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff"}, cookies)
+    body = PAGE.format(title=html.escape(title), message=html.escape(message), link=button, style=PAGE_STYLE).encode()
+    return Response(status, body, "text/html; charset=utf-8", {"Content-Security-Policy": PAGE_CSP, "X-Content-Type-Options": "nosniff"}, cookies)
