@@ -13,8 +13,8 @@ Decides the sidecar filename form and whether a rescan picks up sidecar edits (#
 2. Copy the five files into a scratch person's `google-only/spike/` folder, which Immich mounts read-only.
 3. Trigger a library scan for that person's external library.
 4. In Immich, open each sample and record whether it shows the sidecar's date, location and description or the embedded ones.
-5. Edit one sidecar's date (for example `sample-a.jpg.xmp` to 2023-03-03 09:00:00) and rescan. Record whether Immich shows the new date.
-6. Delete that sidecar and rescan. Record what Immich shows (embedded values, stale sidecar values, or the asset gone).
+5. Pick a sidecar that step 4 showed Immich actually loaded (if neither form was read, skip steps 5 and 6 and say so in the Results). Edit its date to 2023-03-03 09:00:00 and rescan. Record whether Immich shows the new date.
+6. Delete that same sidecar and rescan. Record what Immich shows (embedded values, stale sidecar values, or the asset gone).
 7. Remove the scratch files from `google-only/spike/` and rescan.
 
 ## Results
