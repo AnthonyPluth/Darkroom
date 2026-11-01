@@ -126,6 +126,13 @@ class FakeImmichTests(unittest.TestCase):
         self.assertEqual(self.fake.server.server_address[0], "127.0.0.1")
         self.assertGreater(self.fake.port, 0)
 
+    def test_stopping_a_fake_that_never_started_or_twice_does_not_hang(self):
+        never = FakeImmich(PEOPLE)
+        never.stop()
+        never.stop()
+        self.fake.stop()
+        self.fake.stop()
+
     def test_it_works_as_a_context_manager(self):
         with FakeImmich(PEOPLE) as other:
             self.assertEqual(call(other, "GET", "/api/server/ping")[0], 200)

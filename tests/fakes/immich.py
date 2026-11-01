@@ -168,9 +168,10 @@ class FakeImmich:
         return self
 
     def stop(self) -> None:
-        self.server.shutdown()
+        if self.thread.is_alive():
+            self.server.shutdown()
+            self.thread.join(timeout=5)
         self.server.server_close()
-        self.thread.join(timeout=5)
 
     def mode(self, name: str) -> None:
         if name not in MODES:
