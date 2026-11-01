@@ -100,7 +100,7 @@ def copy_exclusive(source: Path, destination: Path) -> None:
 
 def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1(usedforsecurity=False)
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
     handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
     temp = Path(temp_name)
     try:

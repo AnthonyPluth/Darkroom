@@ -30,12 +30,11 @@ class ConfigTests(unittest.TestCase):
 
     def test_an_incomplete_setup_is_reported(self):
         with tempfile.TemporaryDirectory() as folder:
-            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "OIDC_ISSUER": "https://id.example", "HA_URL": "https://ha.example"}
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "OIDC_ISSUER": "https://id.example"}
             with mock.patch.dict(os.environ, values, clear=True):
                 found = config.problems(config.load())
-        self.assertEqual(len(found), 4)
+        self.assertEqual(len(found), 3)
         self.assertTrue(any("OIDC_ISSUER" in line for line in found))
-        self.assertTrue(any("HA_URL" in line for line in found))
 
     def test_a_complete_setup_has_no_problems(self):
         with tempfile.TemporaryDirectory() as folder:

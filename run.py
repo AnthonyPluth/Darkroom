@@ -5,7 +5,8 @@ import sys
 
 from darkroom import config, monitoring
 from darkroom.providers import exiftool
-from darkroom.server import handler
+from darkroom.dates import utc_now
+from darkroom.server import handler, jobs
 from darkroom.storage import db
 
 
@@ -33,22 +34,43 @@ def migrate(settings: config.Settings | None = None) -> int:
     return 0
 
 
+def run_job(name: str) -> int:
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    scheduler = jobs.build(settings, engine)
+    if name not in scheduler.jobs:
+        print(f"no job called {name}; known jobs: {', '.join(sorted(scheduler.jobs))}", file=sys.stderr)
+        return 1
+    scheduler.run_one(name, utc_now().timestamp())
+    engine.dispose()
+    return 0
+
+
 def serve() -> int:
     settings = config.load()
     migrate(settings)
+    engine = db.make_engine(db.database_url(settings))
+    scheduler = jobs.build(settings, engine, utc_now().timestamp())
+    scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        scheduler.stop()
         server.server_close()
     return 0
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs"])
+    parser.add_argument("name", nargs="?")
     args = parser.parse_args(argv)
+    if args.command == "jobs":
+        if not args.name:
+            parser.error("jobs needs the name of a job")
+        return run_job(args.name)
     if args.command == "migrate":
         return migrate()
     return serve() if args.command == "serve" else check_config()
