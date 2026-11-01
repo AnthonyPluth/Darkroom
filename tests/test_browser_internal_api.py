@@ -95,8 +95,12 @@ class WorkerRoundTripTests(WorkerApiServer):
         folder.mkdir(parents=True)
         (folder / "screenshot.png").write_bytes(b"\x89PNG not really")
         (folder / "page.html").write_text("<html><body>snapshot</body></html>")
-        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": "/etc"})[0], 400)
-        status, _ = self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": f"_browser/{self.account}/failures/{job_id}"})
+        folder_name = f"_browser/{self.account}/failures/{job_id}"
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": "/etc", "files": ["page.html"]})[0], 400)
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": folder_name, "files": ["../x"]})[0], 400)
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": folder_name, "files": "page.html"})[0], 400)
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": folder_name, "files": ["a", "b", "c"]})[0], 400)
+        status, _ = self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "TimeoutError", "failure_dir": folder_name, "files": ["screenshot.png", "page.html"]})
         self.assertEqual(status, 200)
         status, headers, body = self.owner("GET", f"/api/browser/failures/{job_id}/screenshot.png")
         self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG not really"))
@@ -115,11 +119,23 @@ class WorkerRoundTripTests(WorkerApiServer):
             alert = opened.execute(select(Alert)).scalar_one()
             self.assertEqual(alert.link, f"http://127.0.0.1/api/browser/failures/{job_id}/screenshot.png")
 
-    def test_a_capture_folder_that_is_missing_is_404(self):
+    def test_a_page_only_capture_links_to_the_page_and_a_missing_folder_is_404(self):
         job_id = self.enqueue()
         self.claim()
-        self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "Crashed", "failure_dir": f"_browser/{self.account}/failures/{job_id}"})
+        folder = Photos(self.photos).failures(str(self.account), str(job_id))
+        folder.mkdir(parents=True)
+        (folder / "page.html").write_text("<html><body>snapshot</body></html>")
+        self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "Crashed", "failure_dir": f"_browser/{self.account}/failures/{job_id}", "files": ["page.html"]})
         self.assertEqual(self.owner("GET", f"/api/browser/failures/{job_id}/screenshot.png")[0], 404)
+        self.assertEqual(self.owner("GET", f"/api/browser/failures/{job_id}/page.html")[0], 200)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(Alert)).scalar_one().link, f"http://127.0.0.1/api/browser/failures/{job_id}/page.html")
+        other = self.enqueue()
+        self.claim()
+        self.worker("POST", f"/internal/browser/jobs/{other}/failed", {"message": "Crashed", "failure_dir": f"_browser/{self.account}/failures/{other}", "files": ["screenshot.png"]})
+        self.assertEqual(self.owner("GET", f"/api/browser/failures/{other}/screenshot.png")[0], 404)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(BrowserJob, other).failure_dir)
         self.worker("POST", f"/internal/browser/jobs/{self.enqueue()}/failed", {"message": "Crashed"})
 
     def test_the_owner_queues_jobs(self):

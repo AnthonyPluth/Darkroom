@@ -117,8 +117,11 @@ def failed(request: Request) -> Response:
         body = body_of(request)
         message = validate.text(body, "message", limit=MAX_MESSAGE)
         folder = validate.text(body, "failure_dir", required=False, limit=MAX_MESSAGE)
-        job = browser_jobs.failed(opened, request.settings, job_id_of(request), message, folder or None, moment)
-        monitoring.log("browser job failed", kind=job.kind, captured=bool(folder))
+        files = body.get("files", [])
+        if not isinstance(files, list) or len(files) > len(browser_jobs.CAPTURE_FILES) or not all(isinstance(name, str) for name in files):
+            raise validate.Invalid("files must be a list of at most two file names")
+        job = browser_jobs.failed(opened, request.settings, job_id_of(request), message, folder or None, files, moment)
+        monitoring.log("browser job failed", kind=job.kind, captured=job.failure_dir is not None)
         return job
 
     return answer(request, work)

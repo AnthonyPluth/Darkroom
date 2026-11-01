@@ -7,6 +7,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify tini \
     && rm -rf /var/lib/apt/lists/*
 
+COPY deploy/browser/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/requirements.txt \
+    && python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.49.1'" \
+    && rm /tmp/requirements.txt
+
 WORKDIR /app
 COPY darkroom_browser ./darkroom_browser
 COPY deploy/browser/entrypoint.sh /app/entrypoint.sh

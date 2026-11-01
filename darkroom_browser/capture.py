@@ -17,6 +17,9 @@ class Captured:
     screenshot: bool
     page: bool
 
+    def files(self) -> list[str]:
+        return [name for name, written in ((SCREENSHOT, self.screenshot), (PAGE, self.page)) if written]
+
 
 def capture(browser: Browser | None, folder: Path) -> Captured | None:
     if browser is None:

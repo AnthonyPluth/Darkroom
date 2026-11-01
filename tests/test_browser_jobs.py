@@ -1,6 +1,8 @@
 import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -22,13 +24,22 @@ def add_account(opened, email="jo.takeout@example.test", slug="jo"):
 class BrowserJobTests(unittest.TestCase):
     def setUp(self):
         self.engine = own_database(self)
-        self.settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example", VNC_URL="https://browser.example/vnc.html")
+        photos = tempfile.TemporaryDirectory()
+        self.addCleanup(photos.cleanup)
+        self.photos = Path(photos.name)
+        self.settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example", VNC_URL="https://browser.example/vnc.html", DARKROOM_PHOTOS_ROOT=photos.name)
         with db.session(self.engine) as opened:
             self.account = add_account(opened)
 
     def enqueue(self, kind="noop", now=10.0):
         with db.session(self.engine) as opened:
             return browser_jobs.enqueue(opened, self.account, kind, {"n": 1}, now).id
+
+    def write_capture(self, job_id, *names):
+        folder = self.photos / "_browser" / str(self.account) / "failures" / str(job_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / name).write_bytes(b"x")
 
     def job(self, job_id):
         with db.session(self.engine) as opened:
@@ -94,7 +105,7 @@ class BrowserJobTests(unittest.TestCase):
             self.assertEqual(json.loads(done.result), {"ok": True})
             self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
             for action in (lambda: browser_jobs.heartbeat(opened, job_id, 41.0), lambda: browser_jobs.done(opened, job_id, {}, 41.0),
-                           lambda: browser_jobs.failed(opened, self.settings, job_id, "x", None, 41.0)):
+                           lambda: browser_jobs.failed(opened, self.settings, job_id, "x", None, [], 41.0)):
                 with self.assertRaises(browser_jobs.NotOpen):
                     action()
             with self.assertRaises(browser_jobs.NoSuchJob):
@@ -128,22 +139,45 @@ class BrowserJobTests(unittest.TestCase):
 
     def test_failed_records_the_capture_and_alerts_with_a_link_to_it(self):
         job_id = self.enqueue()
+        self.write_capture(job_id, "screenshot.png", "page.html")
+        folder = browser_jobs.failure_folder(self.account, job_id)
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
             with self.assertRaises(ValueError):
-                browser_jobs.failed(opened, self.settings, job_id, "boom", "../../etc", 6.0)
-            failed = browser_jobs.failed(opened, self.settings, job_id, "TimeoutError", browser_jobs.failure_folder(self.account, job_id), 6.0)
+                browser_jobs.failed(opened, self.settings, job_id, "boom", "../../etc", ["page.html"], 6.0)
+            with self.assertRaises(ValueError):
+                browser_jobs.failed(opened, self.settings, job_id, "boom", folder, ["../page.html"], 6.0)
+            with self.assertRaises(ValueError):
+                browser_jobs.failed(opened, self.settings, job_id, "boom", None, ["page.html"], 6.0)
+            failed = browser_jobs.failed(opened, self.settings, job_id, "TimeoutError", folder, ["page.html", "screenshot.png"], 6.0)
             self.assertEqual((failed.status, failed.message, failed.failure_dir), ("failed", "TimeoutError", f"_browser/{self.account}/failures/{job_id}"))
         self.assertEqual(self.open_alerts(), [("failure", f"https://darkroom.example/api/browser/failures/{job_id}/screenshot.png", 6.0)])
         with db.session(self.engine) as opened:
             alert = opened.execute(select(Alert)).scalar_one()
             self.assertEqual(alert.message, f"Browser job {job_id} (noop) for jo.takeout@example.test failed. Open Darkroom for details.")
 
+    def test_a_capture_without_a_screenshot_links_to_the_page_snapshot(self):
+        job_id = self.enqueue()
+        self.write_capture(job_id, "page.html")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            failed = browser_jobs.failed(opened, self.settings, job_id, "TimeoutError", browser_jobs.failure_folder(self.account, job_id), ["page.html"], 6.0)
+            self.assertIsNotNone(failed.failure_dir)
+        self.assertEqual(self.open_alerts(), [("failure", f"https://darkroom.example/api/browser/failures/{job_id}/page.html", 6.0)])
+
+    def test_files_the_worker_names_but_did_not_write_are_not_linked(self):
+        job_id = self.enqueue()
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            failed = browser_jobs.failed(opened, self.settings, job_id, "TimeoutError", browser_jobs.failure_folder(self.account, job_id), ["screenshot.png"], 6.0)
+            self.assertIsNone(failed.failure_dir)
+        self.assertEqual(self.open_alerts(), [("failure", None, 6.0)])
+
     def test_failed_without_a_capture_has_no_link(self):
         job_id = self.enqueue()
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
-            failed = browser_jobs.failed(opened, self.settings, job_id, "Crashed", None, 6.0)
+            failed = browser_jobs.failed(opened, self.settings, job_id, "Crashed", None, [], 6.0)
             self.assertIsNone(failed.failure_dir)
         self.assertEqual(self.open_alerts(), [("failure", None, 6.0)])
 

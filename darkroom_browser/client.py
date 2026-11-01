@@ -79,8 +79,9 @@ class Client:
     def done(self, job_id: int, result: dict[str, object]) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/done", {"result": result})
 
-    def failed(self, job_id: int, message: str, failure_dir: str | None) -> None:
+    def failed(self, job_id: int, message: str, failure_dir: str | None, files: list[str] | None = None) -> None:
         body: dict[str, object] = {"message": message}
         if failure_dir is not None:
             body["failure_dir"] = failure_dir
+            body["files"] = list(files or [])
         self.post(f"/internal/browser/jobs/{job_id}/failed", body)

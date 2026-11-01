@@ -97,7 +97,7 @@ class Runner:
             monitoring.log("failure capture failed", error=type(capture_error).__name__)
         folder = ctx.failure_folder_name() if captured is not None else None
         try:
-            self.client.failed(ctx.job_id, type(error).__name__, folder)
+            self.client.failed(ctx.job_id, type(error).__name__, folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
 

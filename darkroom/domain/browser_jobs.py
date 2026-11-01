@@ -11,6 +11,7 @@ from darkroom.config import Settings
 from darkroom.domain import alerts, events
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Setting
+from darkroom.storage.paths import OutsideRoot, Photos
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop",)
@@ -19,6 +20,7 @@ OPEN_STATUSES = ("running", "waiting_for_user")
 WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
+CAPTURE_FILES = ("screenshot.png", "page.html")
 
 
 class UnknownKind(ValueError):
@@ -138,31 +140,50 @@ def done(opened: Session, job_id: int, result: dict[str, object], now: float) ->
     return job
 
 
-def fail(opened: Session, settings: Settings, job: BrowserJob, message: str, captured: bool, now: float) -> BrowserJob:
+def captured_files(settings: Settings, job: BrowserJob, files: Sequence[str]) -> list[str]:
+    for name in files:
+        if name not in CAPTURE_FILES:
+            raise ValueError("files may only name screenshot.png or page.html")
+    try:
+        folder = Photos(settings.photos_root).failures(str(job.account_id), str(job.id))
+    except OutsideRoot:
+        return []
+    return [name for name in CAPTURE_FILES if name in files and (folder / name).is_file()]
+
+
+def capture_link(settings: Settings, job: BrowserJob, files: Sequence[str]) -> str | None:
+    if not files or not settings.public_url:
+        return None
+    return f"{settings.public_url}/api/browser/failures/{job.id}/{files[0]}"
+
+
+def fail(opened: Session, settings: Settings, job: BrowserJob, message: str, files: Sequence[str], now: float) -> BrowserJob:
+    present = captured_files(settings, job, files)
     job.status = "failed"
     job.message = message
     job.finished = now
-    job.failure_dir = failure_folder(job.account_id, job.id) if captured else None
-    link = f"{settings.public_url}/api/browser/failures/{job.id}/screenshot.png" if captured and settings.public_url else None
+    job.failure_dir = failure_folder(job.account_id, job.id) if present else None
+    link = capture_link(settings, job, present)
     account = account_of(opened, job.account_id)
     alerts.open_alert(opened, settings, f"browser:failed:{job.id}", "failure", str(job.id), alerts.failure(f"Browser job {job.id} ({job.kind}) for {account.email}"), link, now)
     events.record(opened, now, "browser_job_failed", str(job.id), message)
     return job
 
 
-def failed(opened: Session, settings: Settings, job_id: int, message: str, failure_dir: str | None, now: float) -> BrowserJob:
+def failed(opened: Session, settings: Settings, job_id: int, message: str, failure_dir: str | None, files: Sequence[str], now: float) -> BrowserJob:
     job = open_job(opened, job_id)
-    captured = failure_dir is not None
-    if captured and failure_dir != failure_folder(job.account_id, job.id):
+    if failure_dir is not None and failure_dir != failure_folder(job.account_id, job.id):
         raise ValueError("failure_dir is not this job's failure folder")
-    return fail(opened, settings, job, message, captured, now)
+    if files and failure_dir is None:
+        raise ValueError("files need the failure_dir they were written to")
+    return fail(opened, settings, job, message, files if failure_dir is not None else [], now)
 
 
 def expire_leases(opened: Session, settings: Settings, now: float) -> list[BrowserJob]:
     stale = now - LEASE_SECONDS
     expired = []
     for job in opened.execute(select(BrowserJob).where(BrowserJob.status.in_(OPEN_STATUSES), BrowserJob.heartbeat < stale)).scalars():
-        expired.append(fail(opened, settings, job, "the worker stopped reporting", False, now))
+        expired.append(fail(opened, settings, job, "the worker stopped reporting", [], now))
     return expired
 
 

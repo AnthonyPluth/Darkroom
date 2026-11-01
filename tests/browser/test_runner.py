@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import threading
@@ -65,7 +67,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
 
     def open_browser(self, profile_dir):
         self.assertEqual(profile_dir, self.photos / "_browser" / "1" / "profile")
-        browser = FakeBrowser()
+        browser = FakeBrowser(broken=getattr(self, "browsers_broken", False))
         self.browsers.append(browser)
         return browser
 
@@ -99,7 +101,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.fake.enqueue(3)
         self.assertEqual(self.make_runner(None).run_job(self.fake.queue.pop(0)), "done")
         self.assertEqual(self.fake.bodies("progress"), [{"message": "noop: nothing to do"}])
-        self.assertEqual(self.fake.bodies("done"), [{"result": {"ok": True, "kind": "noop"}}])
+        self.assertEqual(self.fake.bodies("done"), [{"result": {"ok": True, "kind": "noop", "playwright": None}}])
 
     def test_a_failing_job_captures_both_files_scrubbed_and_reports(self):
         def exploding(ctx):
@@ -115,8 +117,19 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         page = (folder / "page.html").read_text()
         self.assertIn("Manage your exports", page)
         self.assertNotIn("secret-form-value-canary", page)
-        self.assertEqual(self.fake.bodies("failed"), [{"message": "TimeoutError", "failure_dir": "_browser/1/failures/9"}])
+        self.assertEqual(self.fake.bodies("failed"), [{"message": "TimeoutError", "failure_dir": "_browser/1/failures/9", "files": ["screenshot.png", "page.html"]}])
         self.assertTrue(self.browsers[0].closed)
+
+    def test_a_failed_screenshot_reports_only_the_page_snapshot(self):
+        def exploding(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        self.browsers_broken = True
+        self.fake.enqueue(10)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.make_runner({"noop": exploding}).run_job(self.fake.queue.pop(0))
+        self.assertEqual(self.fake.bodies("failed"), [{"message": "TimeoutError", "failure_dir": "_browser/1/failures/10", "files": ["page.html"]}])
 
     def test_a_failure_before_the_browser_opened_reports_without_a_capture(self):
         def early(ctx):
@@ -317,7 +330,7 @@ class RunnerAgainstDarkroom(unittest.TestCase):
             self.assertFalse(worker.tick())
         with db.session(engine) as opened:
             done = opened.get(BrowserJob, first)
-            self.assertEqual((done.status, json.loads(done.result)), ("done", {"ok": True, "kind": "noop"}))
+            self.assertEqual((done.status, json.loads(done.result)), ("done", {"ok": True, "kind": "noop", "playwright": None}))
             self.assertEqual(browser_jobs.expire_leases(opened, settings, done.finished + browser_jobs.LEASE_SECONDS + 1)[0].id, second)
             self.assertEqual(opened.get(BrowserJob, second).status, "failed")
             self.assertEqual([alert.kind for alert in opened.query(Alert)], ["failure"])

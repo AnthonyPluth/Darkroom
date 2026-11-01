@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib import metadata
 
 from darkroom_browser.context import JobContext
 
@@ -11,9 +12,16 @@ class UnknownJob(LookupError):
     pass
 
 
+def playwright_version() -> str | None:
+    try:
+        return metadata.version("playwright")
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def noop(ctx: JobContext) -> dict[str, object]:
     ctx.progress("noop: nothing to do")
-    return {"ok": True, "kind": "noop"}
+    return {"ok": True, "kind": "noop", "playwright": playwright_version()}
 
 
 REGISTRY: dict[str, Job] = {"noop": noop}
