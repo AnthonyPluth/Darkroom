@@ -82,6 +82,22 @@ class Photos:
         return folders
 
 
+def copy_exclusive(source: Path, destination: Path) -> None:
+    try:
+        target = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError as error:
+        raise AlreadyExists(destination.name) from error
+    try:
+        with os.fdopen(target, "wb") as out, source.open("rb") as origin:
+            while chunk := origin.read(CHUNK):
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
 def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(usedforsecurity=False)
@@ -101,9 +117,7 @@ def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
         except OSError:
-            if destination.exists():
-                raise AlreadyExists(destination.name) from None
-            os.replace(temp, destination)
+            copy_exclusive(temp, destination)
     finally:
         temp.unlink(missing_ok=True)
     return digest.hexdigest()
