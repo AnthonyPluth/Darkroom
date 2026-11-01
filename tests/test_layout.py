@@ -17,7 +17,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(missing, [], "import-linter only sees regular packages: add an __init__.py")
 
     def test_every_package_folder_is_listed_here(self):
-        self.assertEqual(sorted(p.name for p in ROOT.iterdir() if p.is_dir() and (p / "__init__.py").exists()), [*sorted(PACKAGES), "tests"])
+        self.assertEqual(sorted(p.name for p in ROOT.iterdir() if p.is_dir() and (p / "__init__.py").exists()), [*sorted(PACKAGES), "tests", "tools"])
 
 
 if __name__ == "__main__":
