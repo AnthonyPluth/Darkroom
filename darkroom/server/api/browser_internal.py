@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Annotated
 
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from darkroom import monitoring, validate
 from darkroom.dates import utc_now
 from darkroom.domain import browser_jobs
+from darkroom.server import contract
 from darkroom.server.common import Request, Response, error_response, json_response
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob
@@ -60,7 +62,7 @@ def answer(request: Request, work: Callable[[Session, float], BrowserJob | None]
     return json_response({"job": browser_jobs.for_worker(job) if job is not None else None})
 
 
-def claim(request: Request) -> Response:
+def claim(request: Request) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob | None:
         body_of(request)
         job = browser_jobs.claim(opened, moment)
@@ -71,7 +73,7 @@ def claim(request: Request) -> Response:
     return answer(request, work)
 
 
-def heartbeat(request: Request) -> Response:
+def heartbeat(request: Request) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         body_of(request)
         return browser_jobs.heartbeat(opened, job_id_of(request), moment)
@@ -79,7 +81,7 @@ def heartbeat(request: Request) -> Response:
     return answer(request, work)
 
 
-def progress(request: Request) -> Response:
+def progress(request: Annotated[Request, contract.ProgressBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         message = validate.text(body_of(request), "message", limit=MAX_MESSAGE)
         return browser_jobs.progress(opened, job_id_of(request), message, moment)
@@ -87,7 +89,7 @@ def progress(request: Request) -> Response:
     return answer(request, work)
 
 
-def waiting(request: Request) -> Response:
+def waiting(request: Annotated[Request, contract.WaitingBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         reason = validate.text(body_of(request), "reason", limit=20)
         job = browser_jobs.waiting(opened, request.settings, job_id_of(request), reason, moment)
@@ -97,7 +99,7 @@ def waiting(request: Request) -> Response:
     return answer(request, work)
 
 
-def done(request: Request) -> Response:
+def done(request: Annotated[Request, contract.DoneBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         body = body_of(request)
         result = body.get("result", {})
@@ -112,7 +114,7 @@ def done(request: Request) -> Response:
     return answer(request, work)
 
 
-def failed(request: Request) -> Response:
+def failed(request: Annotated[Request, contract.FailedBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         body = body_of(request)
         message = validate.text(body, "message", limit=MAX_MESSAGE)

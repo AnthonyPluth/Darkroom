@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 from darkroom import validate
 from darkroom.domain import browser_jobs
 from darkroom.server.api.browser_internal import NotFound, engine_of, job_id_of, now
+from darkroom.server import contract
 from darkroom.server.common import Request, Response, error_response, first_query, json_response
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob
@@ -24,7 +26,7 @@ def account_filter(request: Request) -> int | None:
     return int(raw)
 
 
-def list_jobs(request: Request) -> Response:
+def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
     try:
         account = account_filter(request)
     except validate.Invalid as error:
@@ -34,7 +36,7 @@ def list_jobs(request: Request) -> Response:
     return json_response({"jobs": jobs})
 
 
-def enqueue(request: Request) -> Response:
+def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Response, contract.BrowserJobReply]:
     try:
         body = validate.json_object(request.body, limit=64 * 1024)
         account_id = validate.whole_number(body, "account_id", minimum=1)

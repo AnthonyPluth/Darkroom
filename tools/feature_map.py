@@ -24,7 +24,20 @@ def files_mentioning(directory: Path, patterns: tuple[str, ...], suffixes: tuple
     return sorted(str(p.relative_to(ROOT)) for p in directory.rglob("*") if p.suffix in suffixes and any(pattern in p.read_text() for pattern in patterns))
 
 
+def callers(directory: Path = FRONTEND) -> dict[str, list[str]]:
+    found: dict[str, set[str]] = {}
+    if not directory.is_dir():
+        return {}
+    for path in sorted(directory.rglob("*")):
+        if path.suffix not in (".ts", ".svelte") or path.name.endswith((".test.ts", ".d.ts")) or "node_modules" in path.parts:
+            continue
+        for key in CALL.findall(path.read_text()):
+            found.setdefault(key, set()).add(str(path.relative_to(ROOT)))
+    return {key: sorted(files) for key, files in found.items()}
+
+
 def build() -> dict[str, object]:
+    calls = callers()
     entries = []
     for route in routes.ROUTES:
         key = f"{route.method} {route.path}"
@@ -32,7 +45,7 @@ def build() -> dict[str, object]:
             "route": key,
             "auth": route.auth,
             "handler": f"{route.handler.__module__}.{route.handler.__name__}",
-            "frontend": files_mentioning(FRONTEND, (f'"{key}"', f"'{key}'"), (".ts", ".svelte")),
+            "frontend": calls.get(key, []),
             "tests": files_mentioning(TESTS, (route.path,), (".py",)),
         })
     return {"routes": entries}

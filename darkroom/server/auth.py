@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from typing import Annotated
 from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
@@ -8,6 +9,7 @@ from sqlalchemy import Engine
 from darkroom import monitoring, oidc
 from darkroom.config import Settings, browser_token_usable, no_auth_allowed
 from darkroom.dates import utc_now
+from darkroom.server import contract
 from darkroom.server.common import Principal, Request, Response, error_response, first_query, header, json_response, page, redirect
 from darkroom.storage import db
 
@@ -173,7 +175,7 @@ def signed_out(request: Request) -> Response:
     return page(200, "Signed out", "You have signed out of Darkroom.", ("/auth/login", "Sign in again"))
 
 
-def me(request: Request) -> Response:
+def me(request: Request) -> Annotated[Response, contract.Me]:
     who = request.user
     if who is None:
         return error_response("sign in required", 401)

@@ -1,5 +1,304 @@
 {
+  "components": {
+    "responses": {
+      "Error": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is."
+      }
+    },
+    "schemas": {
+      "BrowserJobReply": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/BrowserJobView"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
+      "BrowserJobView": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "created": {
+            "type": "number"
+          },
+          "finished": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_capture": {
+            "type": "boolean"
+          },
+          "heartbeat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "started": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "created",
+          "finished",
+          "has_capture",
+          "heartbeat",
+          "id",
+          "kind",
+          "message",
+          "started",
+          "status"
+        ],
+        "type": "object"
+      },
+      "BrowserJobs": {
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/BrowserJobView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "type": "object"
+      },
+      "DoneBody": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "EnqueueBody": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "FailedBody": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_dir": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "Health": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "version"
+        ],
+        "type": "object"
+      },
+      "Me": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sub": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "groups",
+          "name",
+          "sub"
+        ],
+        "type": "object"
+      },
+      "ProgressBody": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "Status": {
+        "additionalProperties": false,
+        "properties": {
+          "worker_last_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "worker_last_seen"
+        ],
+        "type": "object"
+      },
+      "WaitingBody": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WorkerJob": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "account",
+          "id",
+          "kind",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "WorkerReply": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkerJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      }
+    }
+  },
   "info": {
+    "description": "Generated by tools/api_contract.py (`make api-contract`) from the routes and their handlers' annotations; don't edit by hand.",
     "title": "Darkroom",
     "version": "1"
   },
@@ -9,8 +308,11 @@
       "get": {
         "operationId": "page_snapshot",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -20,8 +322,11 @@
       "get": {
         "operationId": "screenshot",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -31,50 +336,47 @@
       "get": {
         "operationId": "list_jobs",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "jobs": {
-                      "items": {
-                        "type": "object"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "jobs"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/BrowserJobs"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
       },
       "post": {
         "operationId": "enqueue",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnqueueBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/BrowserJobReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -84,38 +386,18 @@
       "get": {
         "operationId": "me",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "groups": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "sub": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "email",
-                    "groups",
-                    "name",
-                    "sub"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Me"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -125,23 +407,18 @@
       "get": {
         "operationId": "status",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "worker_last_seen": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "worker_last_seen"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Status"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -151,8 +428,11 @@
       "get": {
         "operationId": "callback",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "public"
@@ -162,8 +442,11 @@
       "get": {
         "operationId": "login",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "public"
@@ -173,8 +456,11 @@
       "post": {
         "operationId": "logout",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "session"
@@ -184,8 +470,11 @@
       "get": {
         "operationId": "signed_out",
         "responses": {
-          "200": {
+          "2XX": {
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "public"
@@ -195,27 +484,18 @@
       "get": {
         "operationId": "healthz",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    },
-                    "version": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "ok",
-                    "version"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Health"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "public"
@@ -225,23 +505,18 @@
       "post": {
         "operationId": "claim",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
@@ -250,24 +525,29 @@
     "/internal/browser/jobs/{id}/done": {
       "post": {
         "operationId": "done",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DoneBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
@@ -276,24 +556,29 @@
     "/internal/browser/jobs/{id}/failed": {
       "post": {
         "operationId": "failed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FailedBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
@@ -303,23 +588,18 @@
       "post": {
         "operationId": "heartbeat",
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
@@ -328,24 +608,29 @@
     "/internal/browser/jobs/{id}/progress": {
       "post": {
         "operationId": "progress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgressBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
@@ -354,24 +639,29 @@
     "/internal/browser/jobs/{id}/waiting": {
       "post": {
         "operationId": "waiting",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitingBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
+          "2XX": {
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "job": {
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "job"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkerReply"
                 }
               }
             },
             "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "x-auth": "worker"
