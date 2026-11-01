@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,11 @@ def wanted(root: Path, path: Path) -> bool:
 def walk(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    return sorted(p for p in root.rglob("*") if p.is_file() and wanted(root, p))
+    found: list[Path] = []
+    for folder, names, files in os.walk(root):
+        names[:] = [name for name in names if name not in SKIPPED_FOLDERS and not name.startswith(".")]
+        found.extend(Path(folder, name) for name in files)
+    return sorted(p for p in found if p.is_file() and wanted(root, p))
 
 
 def relative(photos: Photos, path: Path) -> str:
@@ -56,7 +61,11 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
     pending: list[tuple[Path, str, MediaItem | None, float]] = []
     for path in files:
         key = relative(photos, path)
-        stat = path.stat()
+        try:
+            stat = path.stat()
+        except OSError:
+            report.failed += 1
+            continue
         item = existing.get(key)
         if item is not None and item.bytes == stat.st_size and item.mtime == stat.st_mtime:
             report.unchanged += 1
@@ -64,7 +73,12 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
         pending.append((path, key, item, stat.st_mtime))
     if not pending:
         return
-    tags = read([path for path, *_ in pending])
+    try:
+        tags = read([path for path, *_ in pending])
+    except exiftool.Unreadable as error:
+        report.failed += len(pending)
+        events.record(opened, now, "index_failed", person.slug, str(error)[:200])
+        return
     for path, key, item, mtime in pending:
         entry = tags.get(path)
         try:
@@ -89,11 +103,7 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
 def index_person(opened: Session, photos: Photos, person: Person, now: float, read: Reader = exiftool.read) -> IndexReport:
     report = IndexReport()
     files = walk(photos.originals(person.slug))
-    try:
-        index_files(opened, photos, person, files, now, report, read)
-    except exiftool.Unreadable as error:
-        report.failed += len(files)
-        events.record(opened, now, "index_failed", person.slug, str(error)[:200])
+    index_files(opened, photos, person, files, now, report, read)
     opened.flush()
     return report
 

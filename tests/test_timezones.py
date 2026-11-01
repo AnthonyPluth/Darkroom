@@ -5,6 +5,11 @@ from darkroom.domain import timezones
 
 
 class OffsetTests(unittest.TestCase):
+    def test_ambiguous_and_nonexistent_wall_times_have_no_offset(self):
+        self.assertIsNone(timezones.offset_minutes(40.7, -74.0, datetime(2024, 11, 3, 1, 30)))
+        self.assertIsNone(timezones.offset_minutes(40.7, -74.0, datetime(2024, 3, 10, 2, 30)))
+        self.assertEqual(timezones.offset_minutes(40.7, -74.0, datetime(2024, 11, 3, 3, 30)), -300)
+
     def test_new_york_winter_and_summer(self):
         self.assertEqual(timezones.offset_minutes(40.7, -74.0, datetime(2024, 1, 15, 12)), -300)
         self.assertEqual(timezones.offset_minutes(40.7, -74.0, datetime(2024, 7, 15, 12)), -240)

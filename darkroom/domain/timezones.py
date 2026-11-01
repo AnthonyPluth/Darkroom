@@ -17,7 +17,11 @@ def offset_minutes(lat: float, lon: float, local: datetime) -> int | None:
     if name is None:
         return None
     try:
-        offset = local.replace(tzinfo=ZoneInfo(name)).utcoffset()
+        zone = ZoneInfo(name)
     except ZoneInfoNotFoundError:
         return None
-    return None if offset is None else int(offset.total_seconds() // 60)
+    first = local.replace(tzinfo=zone, fold=0).utcoffset()
+    second = local.replace(tzinfo=zone, fold=1).utcoffset()
+    if first is None or first != second:
+        return None
+    return int(first.total_seconds() // 60)
