@@ -8,6 +8,14 @@ class Health(TypedDict):
     version: str
 
 
+class Me(TypedDict):
+    sub: str
+    email: str
+    name: str
+    groups: list[str]
+
+
 REPLIES: dict[str, type] = {
     "GET /healthz": Health,
+    "GET /api/me": Me,
 }

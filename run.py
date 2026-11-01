@@ -109,11 +109,16 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
 
 def serve() -> int:
     settings = config.load()
+    refused = config.refuses_to_start(settings)
+    if refused:
+        for line in refused:
+            print(f"config: {line}", file=sys.stderr)
+        return 1
     migrate(settings)
     engine = db.make_engine(db.database_url(settings))
     scheduler = jobs.build(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
-    server = handler.make_server(settings)
+    server = handler.make_server(settings, engine=engine)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()
