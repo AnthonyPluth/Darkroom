@@ -11,6 +11,8 @@ python tools/spikes/compare_hashes.py phone --phone-files <folder of files expor
 
 `takeout` reads every photo and video in the export (zip members are streamed, never extracted) and compares SHA-1 with the originals, then by name and size, then by name alone. For files with the same name it compares the tags exiftool reads on each side and lists the ten tags that differ most often. It also reports Live Photos (a still in the originals with a video of the same name: is the video in the export, by hash or by name), items that sit only under album folders (no copy under a `Photos from YYYY` folder), and items whose sidecar lacks `googlePhotosOrigin.mobileUpload`, with up to five sidecars shown as key names and value types only.
 
+The `googlePhotosOrigin.mobileUpload` key as the marker of an item uploaded from a phone is assumed from the sidecar format; check it against your export's own sidecars and say so in the table if it is different.
+
 `phone` compares files exported unmodified from an iPhone (AirDrop or Files with "All Photos Data") with the copies Möbius Sync delivered.
 
 ## Results
