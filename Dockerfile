@@ -6,19 +6,27 @@ RUN npm ci --no-audit --no-fund
 COPY frontend ./
 RUN npm run build
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim AS deps
 
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 POETRY_VERSION=2.5.1
+ENV POETRY_VERSION=2.5.1 POETRY_VIRTUALENVS_IN_PROJECT=true POETRY_NO_INTERACTION=1
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir "poetry==$POETRY_VERSION"
+RUN pip install --no-cache-dir "poetry==$POETRY_VERSION"
 
 WORKDIR /app
 COPY pyproject.toml poetry.lock ./
-RUN poetry config virtualenvs.create false && poetry install --only main --no-root --no-interaction
+RUN poetry install --only main --no-root \
+    && .venv/bin/python -m pip uninstall -y pip setuptools wheel
 
+FROM python:3.14-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=deps /app/.venv ./.venv
 COPY darkroom ./darkroom
 COPY --from=web /src/darkroom/static/app ./darkroom/static/app
 COPY run.py ./
