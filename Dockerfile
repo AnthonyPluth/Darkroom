@@ -23,7 +23,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip
 
 WORKDIR /app
 COPY --from=deps /app/.venv ./.venv
