@@ -1,7 +1,7 @@
 # `make check` runs, once each: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the fleet checks, the feature
 # map's and API contract's checks, the Python tests in parallel with the coverage floor, and the web app's checks
 # (svelte-check, ESLint, Vitest with the coverage floor in frontend/vite.config.ts, and the build into
-# darkroom/static/app). The security scans (Semgrep's registry packs, Trivy, zizmor, pip-audit, CodeQL) run only in CI.
+# darkroom/static/app). The security scans (Semgrep's registry packs, npm audit, Trivy, zizmor, pip-audit) run only in CI.
 # Python goes through Poetry; the web app through npm (Node 22, frontend/.nvmrc).
 
 PYTHON ?= poetry run python

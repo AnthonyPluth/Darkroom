@@ -1,0 +1,10 @@
+# The files that decide how Darkroom is checked, reviewed and secured need the owner's review (the ruleset on main
+# requires a Code Owner review): the workflows and the agent review's instructions, Claude Code's settings, the agent
+# guides, the security policy, the paved-path Semgrep rules and the signed-off designs.
+/.github/ @AnthonyPluth
+/.claude/ @AnthonyPluth
+/AGENTS.md @AnthonyPluth
+/CLAUDE.md @AnthonyPluth
+/SECURITY.md @AnthonyPluth
+/.semgrep/ @AnthonyPluth
+/docs/design/ @AnthonyPluth

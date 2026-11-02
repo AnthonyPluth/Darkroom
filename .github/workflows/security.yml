@@ -1,5 +1,14 @@
 name: Security scans
 
+# The security scans, through fleet's reusable workflow: Semgrep (the registry packs plus Darkroom's own rules in
+# .semgrep/, after their example check), npm audit in frontend/, Trivy over the files and over the service image, and
+# zizmor over the workflows. A pull request runs only the scans its change can affect (a change under .github/ runs
+# everything; Trivy's file scan always runs); the weekly run and a manual one scan everything.
+#
+# Darkroom is private on a personal account, which has no code scanning: with sarif-upload off, Semgrep, Trivy and
+# zizmor fail their job on findings instead of uploading them, which the merge gate sees, and Scorecard (public
+# repositories only) is off. The permissions are the ones fleet's jobs declare; a called job can't ask for more than
+# its caller has, even one that is skipped.
 on:
   push:
     branches: [main]
@@ -9,61 +18,29 @@ on:
     - cron: "17 5 * * 1"
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
-permissions:
-  contents: read
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  semgrep:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
-    timeout-minutes: 15
+  scans:
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Semgrep (registry packs and Darkroom's own rules)
-        run: |
-          pipx run semgrep==1.146.0 scan --metrics=off --disable-version-check --error \
-            --config p/python --config p/security-audit --config p/secrets --config .semgrep/darkroom.yml darkroom darkroom_browser run.py
-
-  trivy:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Trivy (files - dependencies, secrets, misconfiguration)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
-        with:
-          scan-type: fs
-          scanners: vuln,secret,misconfig
-          format: table
-          exit-code: "1"
-          severity: CRITICAL,HIGH
-
-  zizmor:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
-        with:
-          cache-name: zizmor
-      - name: zizmor (GitHub Actions workflows)
-        run: poetry run zizmor --no-progress .github
+      pull-requests: read      # the pull request's changed files
+      security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
+      actions: read            # Scorecard, which scorecard: false skips
+      id-token: write          # Scorecard, which scorecard: false skips
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
+    with:
+      code-paths: ^(darkroom|darkroom_browser|frontend/src|\.semgrep)/
+      semgrep-paths: darkroom darkroom_browser run.py frontend/src
+      web-dirs: frontend
+      image-paths: ^(Dockerfile|Dockerfile\.browser|\.dockerignore|pyproject\.toml|poetry\.lock)$
+      sarif-upload: false
+      scorecard: false

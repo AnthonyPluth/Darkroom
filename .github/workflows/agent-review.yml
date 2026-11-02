@@ -1,0 +1,72 @@
+name: Agent review
+
+# The independent review of every agent's pull request, through fleet's reusable workflow (docs/agent-review.md
+# there): a fresh Claude Code session on Sonnet reads the change against main's AGENTS.md and
+# .github/agent-review/context.md and sets the "Agent review" status; a second review on a different model runs on
+# risky pull requests (labelled safety-critical or security, or changing .github/**, .claude/** or the paths listed
+# below, Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md) and sets
+# "Second review". A pull request that isn't risky gets a passing "Second review", so the merge gate requires both on
+# every pull request.
+#
+# This caller only declares the triggers (a called workflow can't), passes the two secrets by name (secrets: inherit
+# would hand over every secret) and grants exactly the permissions fleet's jobs ask for. On pull_request_target the
+# caller and fleet's workflow at the pinned commit are main's copies, so a pull request can't change how it is
+# reviewed; the pull request's code is only read, never run.
+on:  # zizmor: ignore[dangerous-triggers] -- runs main's workflow; the pull request's code is only read, never run
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  review:
+    permissions:
+      contents: read           # main's instructions and the pull request's code
+      pull-requests: write     # the comment
+      statuses: write          # the "Agent review" and "Second review" statuses
+      actions: write           # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
+    with:
+      generated: |
+        docs/openapi.json
+        frontend/src/lib/api-types.ts
+        docs/feature-map.json
+      budget-usd: ${{ vars.AGENT_REVIEW_BUDGET_USD || '3' }}
+      max-turns: ${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}
+      second-review-paths: |
+        darkroom/domain/dedupe.py
+        darkroom/domain/eligibility.py
+        darkroom/domain/review.py
+        darkroom/domain/ingest/cleanup.py
+        darkroom/domain/ingest/place.py
+        darkroom/domain/xmp.py
+        darkroom/providers/exiftool.py
+        darkroom/storage/paths.py
+        darkroom/storage/secretbox.py
+        darkroom/oidc.py
+        darkroom/tls.py
+        darkroom/server/handler.py
+        darkroom/server/routes.py
+        darkroom/server/api/cleanup.py
+        darkroom/server/api/review.py
+        darkroom/server/api/uploads.py
+        darkroom/server/api/devices.py
+        darkroom/server/api/browser_internal.py
+        darkroom/server/mcp_*.py
+        darkroom_browser/live.py
+        darkroom_browser/runner.py
+        ios/Packages/DarkroomCore/Sources/**/Cleanup*
+        ios/Darkroom/**/Cleanup*
+        ios/Darkroom/Keychain.swift
+        .semgrep/**
+        SECURITY.md
+        Dockerfile*
+        docker-compose.yml
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

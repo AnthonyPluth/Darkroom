@@ -1,0 +1,22 @@
+name: Cancel runs on close
+
+# When a pull request is merged or closed, stop its CI, Docker image and Security scans runs that are still going,
+# through fleet's reusable workflow: one job per concurrency group joins it with cancel-in-progress. The groups are
+# the ones ci.yml, docker.yml and security.yml use (<name>-${{ github.ref }}, which on a pull request is
+# refs/pull/<n>/merge), built from the pull request's number, never from github.ref: on a merged pull request's
+# closed event that is main's, and joining main's groups would cancel main's own release and scans.
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cancel:
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
+    with:
+      groups: '["ci-refs/pull/{0}/merge", "docker-refs/pull/{0}/merge", "security-refs/pull/{0}/merge"]'

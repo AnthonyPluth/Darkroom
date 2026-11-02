@@ -23,6 +23,8 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      fleet:
+        patterns: ["AnthonyPluth/fleet/*"]
       actions:
         patterns: ["*"]
     commit-message:

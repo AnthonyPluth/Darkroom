@@ -22,6 +22,8 @@ GOOD_CO_AUTHOR = re.compile(r"^Claude (" + "|".join(MODEL_FAMILIES) + r") \d+(\.
 CLAUDE = re.compile(r"\bclaude\b|anthropic\.com", re.IGNORECASE)
 USES = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*([^\s#]+)(.*)$", re.MULTILINE)
 PINNED = re.compile(r"@[0-9a-f]{40}$")
+FLEET_PIN = re.compile(r"^[ \t]*uses:[ \t]*AnthonyPluth/fleet/[^\s@#]+@([0-9a-f]{40})[ \t]+#[ \t]*(v\d+\.\d+\.\d+)[ \t]*$", re.MULTILINE)
+FLEET_VERSION = ROOT / ".fleet/version"
 BASH_DEFAULT = re.compile(r"^defaults:[ \t]*\n[ \t]+run:[ \t]*\n(?:[ \t]{4,}\S.*\n)*?[ \t]{4,}shell:[ \t]*bash[ \t]*(?:#.*)?$", re.MULTILINE)
 CHECKOUT = re.compile(r"uses:\s*actions/checkout@")
 PERSIST = re.compile(r"persist-credentials:\s*false")
@@ -93,12 +95,33 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     return problems
 
 
-def check_workflows(workflows: Path = WORKFLOWS, actions: Path = ACTIONS) -> list[str]:
+def fleet_pins(texts: dict[str, str]) -> list[tuple[str, str, str]]:
+    return [(name, m.group(1), m.group(2)) for name, text in sorted(texts.items()) for m in FLEET_PIN.finditer(text)]
+
+
+def check_fleet_pins(texts: dict[str, str], content_version: str | None) -> list[str]:
     problems = []
-    for path in sorted(workflows.glob("*.y*ml")):
-        problems += check_workflow(str(path.relative_to(ROOT)), path.read_text())
+    pins = fleet_pins(texts)
+    unpinned = [(name, line.strip()) for name, text in sorted(texts.items()) for line in text.splitlines()
+                if "uses:" in line and "AnthonyPluth/fleet/" in line and not FLEET_PIN.match(line)]
+    for name, line in unpinned:
+        problems.append(f"{name}: a fleet reference needs `@<40-hex commit>   # vX.Y.Z`: {line[:100]}")
+    if len({(sha, version) for _, sha, version in pins}) > 1:
+        found = ", ".join(f"{name} ({version} at {sha[:10]})" for name, sha, version in pins)
+        problems.append(f"the fleet references don't agree on one commit and version (sync.yml refuses to run): {found}")
+    elif pins and content_version is not None and content_version.strip() != pins[0][2]:
+        problems.append(f".fleet/version says {content_version.strip()!r} but the workflows pin fleet {pins[0][2]}")
+    return problems
+
+
+def check_workflows(workflows: Path = WORKFLOWS, actions: Path = ACTIONS, version: Path = FLEET_VERSION) -> list[str]:
+    problems = []
+    texts = {str(path.relative_to(ROOT)): path.read_text() for path in sorted(workflows.glob("*.y*ml"))}
+    for name, text in texts.items():
+        problems += check_workflow(name, text)
     for path in sorted(actions.glob("*/action.y*ml")):
         problems += check_workflow(str(path.relative_to(ROOT)), path.read_text(), workflow=False)
+    problems += check_fleet_pins(texts, version.read_text() if version.is_file() else None)
     return problems
 
 
@@ -171,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     for problem in problems:
         print(f"::error::{problem}" if "GITHUB_ACTIONS" in os.environ else problem, file=sys.stderr)
     if not problems:
-        print("Fleet checks passed: one migration head, migrations tested, workflow conventions"
+        print("Fleet checks passed: one migration head, migrations tested, workflow conventions, fleet pins agree"
               + (", commit trailers, no test removed or skipped without a reason." if args.commits else "."))
     return 1 if problems else 0
 
