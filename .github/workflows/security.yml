@@ -38,7 +38,7 @@ jobs:
       id-token: write          # Scorecard, which scorecard: false skips
     uses: AnthonyPluth/fleet/.github/workflows/security.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
     with:
-      code-paths: ^(darkroom|darkroom_browser|frontend/src|\.semgrep)/
+      code-paths: ^((darkroom|darkroom_browser|frontend/src|\.semgrep)/|run\.py$)
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       web-dirs: frontend
       image-paths: ^(Dockerfile|Dockerfile\.browser|\.dockerignore|pyproject\.toml|poetry\.lock)$

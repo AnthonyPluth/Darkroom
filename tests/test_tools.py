@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -98,6 +99,17 @@ class FleetChecksTests(unittest.TestCase):
         self.assertTrue(any("don't agree" in p for p in fleet_checks.check_fleet_pins(newer, None)))
         for bad in (pin.replace(sha, "v1.0.0"), pin.replace("   # v1.0.0", ""), pin.replace("# v1.0.0", "# 1.0.0")):
             self.assertEqual(len(fleet_checks.check_fleet_pins({"a.yml": bad}, None)), 1, bad)
+
+    def test_every_semgrep_target_is_in_the_security_scans_change_filter(self):
+        text = (ROOT / ".github/workflows/security.yml").read_text()
+        code_paths = re.search(r"^\s*code-paths:\s*(\S+)\s*$", text, re.MULTILINE).group(1)
+        targets = re.search(r"^\s*semgrep-paths:\s*(.+?)\s*$", text, re.MULTILINE).group(1).split()
+        self.assertIn("run.py", targets)
+        for target in targets:
+            changed = target if (ROOT / target).is_file() else f"{target}/changed.py"
+            self.assertTrue(re.search(code_paths, changed), f"a change to {changed} would not run Semgrep ({code_paths})")
+        self.assertIsNone(re.search(code_paths, "tools/run.py"))
+        self.assertIsNone(re.search(code_paths, "docs/SPEC.md"))
 
     def test_this_repositorys_fleet_pins_name_one_release(self):
         texts = {str(p.relative_to(ROOT)): p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml")}
