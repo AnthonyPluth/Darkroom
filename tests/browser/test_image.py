@@ -18,6 +18,7 @@ class BrowserImageTests(unittest.TestCase):
         self.assertIn(f"metadata.version('playwright') == '{version}'", DOCKERFILE, "the build must check the installed version")
         self.assertIn("import playwright.sync_api", DOCKERFILE, "the build must import the package it installed")
         self.assertIn("--require-hashes", DOCKERFILE)
+        self.assertIn("--ignore-installed", DOCKERFILE, "the base image ships its own copies of some packages, which pip cannot uninstall")
 
     def test_every_requirement_is_pinned_with_hashes(self):
         blocks = [block for block in REQUIREMENTS.replace("\\\n", " ").splitlines() if block.strip()]
