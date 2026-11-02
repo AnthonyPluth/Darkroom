@@ -9,7 +9,7 @@ RUN apt-get update \
 
 COPY deploy/browser/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/requirements.txt \
-    && python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.49.1'" \
+    && python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.64.1'" \
     && rm /tmp/requirements.txt
 
 WORKDIR /app
