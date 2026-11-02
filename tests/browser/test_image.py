@@ -24,7 +24,7 @@ class BrowserImageTests(unittest.TestCase):
         self.assertTrue(blocks)
         for block in blocks:
             with self.subTest(block=block.split()[0]):
-                self.assertRegex(block.split()[0], r"^[a-z]+==\d+\.\d+\.\d+$")
+                self.assertRegex(block.split()[0], r"^[a-z][a-z0-9-]*==\d+\.\d+\.\d+$")
                 self.assertRegex(block, r"--hash=sha256:[0-9a-f]{64}")
 
     def test_the_pyproject_extra_admits_the_pinned_version(self):
