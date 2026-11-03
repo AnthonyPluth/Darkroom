@@ -1,13 +1,12 @@
 name: Merge gate threads
 
-# The merge gate fails while a review thread opened by Codex with a P1 or P2 badge is unresolved. Resolving or
-# reopening a thread, or a new review or review comment, starts no workflow the gate listens to, so this asks fleet's
-# small reusable workflow to start merge-gate.yml on main with the pull request's number. It checks out nothing and
-# runs nothing of the pull request's. A pull request from a fork is skipped (its token is read-only there); its gate
+# The merge gate fails while a review thread opened by Codex with a P1 or P2 badge is unresolved. A new review or
+# review comment starts this, which asks fleet's small reusable workflow to start merge-gate.yml on main with the
+# pull request's number. Resolving a thread starts no workflow (GitHub Actions has no event for it), so after
+# resolving one, run "Merge gate" by hand with the pull request's number, or push. It checks out nothing and runs
+# nothing of the pull request's. A pull request from a fork is skipped (its token is read-only there); its gate
 # looks again on the next push or check, or by hand.
 on:
-  pull_request_review_thread:
-    types: [resolved, unresolved]
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:
