@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
+import string
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +21,8 @@ PHASH_MAX_DISTANCE = 8
 REVIEW_MAX_SECONDS = 2.0
 CONFIRMING_TIERS = (1, 2)
 TRUE_VALUES = {"1", "true", "yes", "on"}
+REVIEW_SPREAD = 3
+HEX = set(string.hexdigits)
 
 Action = Literal["skip", "review", "google_only"]
 DecidedBy = Literal["auto", "owner"]
@@ -81,6 +84,49 @@ class Decision:
         return self.decided_by == "auto" and self.tier in CONFIRMING_TIERS and self.matched_item_id is not None and self.matched_source == "phone"
 
 
+class Timed(Protocol):
+    @property
+    def captured_utc(self) -> float | None: ...
+    @property
+    def captured_local(self) -> str | None: ...
+
+
+def instant(value: float | None) -> float | None:
+    return value if value is not None and math.isfinite(value) else None
+
+
+def wall_clock(text: str | None) -> datetime | None:
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is None else None
+
+
+class Buckets[T: Timed]:
+    def __init__(self, entries: Iterable[T]) -> None:
+        self.by_second: dict[int, list[T]] = {}
+        self.by_local: dict[datetime, list[T]] = {}
+        for entry in entries:
+            utc, local = instant(entry.captured_utc), wall_clock(entry.captured_local)
+            if utc is not None:
+                self.by_second.setdefault(math.floor(utc), []).append(entry)
+            if local is not None:
+                self.by_local.setdefault(local.replace(microsecond=0), []).append(entry)
+
+    def near(self, timed: Timed, spread: int) -> list[T]:
+        found: dict[int, T] = {}
+        utc, local = instant(timed.captured_utc), wall_clock(timed.captured_local)
+        for step in range(-spread, spread + 1):
+            if utc is not None:
+                found.update((id(entry), entry) for entry in self.by_second.get(math.floor(utc) + step, []))
+            if local is not None:
+                found.update((id(entry), entry) for entry in self.by_local.get(local.replace(microsecond=0) + timedelta(seconds=step), []))
+        return list(found.values())
+
+
 @dataclass(frozen=True)
 class PersonIndex:
     account_id: int
@@ -90,6 +136,20 @@ class PersonIndex:
     takeout: tuple[Shot, ...] = ()
     peers: tuple[TakeoutCandidate, ...] = ()
     decided: Mapping[str, Decision] = field(default_factory=dict)
+    hashes: dict[str, list[Shot]] = field(init=False, repr=False, compare=False)
+    by_id: dict[int, Shot] = field(init=False, repr=False, compare=False)
+    phone_times: Buckets[Shot] = field(init=False, repr=False, compare=False)
+    peer_times: Buckets[TakeoutCandidate] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        known = [shot for shot in (*self.phone, *self.takeout) if shot.person_id in self.person_ids]
+        hashes: dict[str, list[Shot]] = {}
+        for shot in known:
+            hashes.setdefault(shot.sha1, []).append(shot)
+        object.__setattr__(self, "hashes", hashes)
+        object.__setattr__(self, "by_id", {shot.id: shot for shot in known})
+        object.__setattr__(self, "phone_times", Buckets(shot for shot in known if shot.source == "phone"))
+        object.__setattr__(self, "peer_times", Buckets(self.peers))
 
     @classmethod
     def load(cls, opened: Session, account_id: int) -> PersonIndex:
@@ -136,30 +196,21 @@ def subsecond_ms(utc: float) -> int | None:
     return None if millis in (0, 1000) else millis
 
 
-def wall_clock(text: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def same_second(item: TakeoutCandidate, shot: Shot) -> bool:
-    if item.captured_utc is not None and shot.captured_utc is not None:
-        if math.floor(item.captured_utc) != math.floor(shot.captured_utc):
+def same_second(item: Timed, shot: Timed) -> bool:
+    mine_utc, theirs_utc = instant(item.captured_utc), instant(shot.captured_utc)
+    if mine_utc is not None and theirs_utc is not None:
+        if math.floor(mine_utc) != math.floor(theirs_utc):
             return False
-        mine, theirs = subsecond_ms(item.captured_utc), subsecond_ms(shot.captured_utc)
+        mine, theirs = subsecond_ms(mine_utc), subsecond_ms(theirs_utc)
         return mine is None or theirs is None or mine == theirs
-    if item.captured_local is None or shot.captured_local is None:
-        return False
     mine_local, theirs_local = wall_clock(item.captured_local), wall_clock(shot.captured_local)
     return mine_local is not None and mine_local == theirs_local
 
 
-def seconds_apart(item: TakeoutCandidate, shot: Shot) -> float | None:
-    if item.captured_utc is not None and shot.captured_utc is not None:
-        return abs(item.captured_utc - shot.captured_utc)
-    if item.captured_local is None or shot.captured_local is None:
-        return None
+def seconds_apart(item: Timed, shot: Timed) -> float | None:
+    mine_utc, theirs_utc = instant(item.captured_utc), instant(shot.captured_utc)
+    if mine_utc is not None and theirs_utc is not None:
+        return abs(mine_utc - theirs_utc)
     mine, theirs = wall_clock(item.captured_local), wall_clock(shot.captured_local)
     if mine is None or theirs is None:
         return None
@@ -185,16 +236,16 @@ def same_shot(item: TakeoutCandidate, shot: Shot) -> bool:
 
 
 def phash_distance(mine: str | None, theirs: str | None) -> int | None:
-    if mine is None or theirs is None or len(mine) != len(theirs):
+    if mine is None or theirs is None or not mine or len(mine) != len(theirs) or not set(mine + theirs) <= HEX:
         return None
-    try:
-        return (int(mine, 16) ^ int(theirs, 16)).bit_count()
-    except ValueError:
-        return None
+    return (int(mine, 16) ^ int(theirs, 16)).bit_count()
 
 
-def qualifying_peers(index: PersonIndex, item: TakeoutCandidate) -> list[TakeoutCandidate]:
-    return [peer for peer in index.peers if peer.source_path != item.source_path and peer.sha1 != item.sha1 and not peer.is_edited]
+def rivals_of(index: PersonIndex, item: TakeoutCandidate, shots: list[Shot]) -> set[str]:
+    return {
+        peer.source_path for shot in shots for peer in index.peer_times.near(shot, 0)
+        if peer.source_path != item.source_path and peer.sha1 != item.sha1 and not peer.is_edited and same_shot(peer, shot)
+    }
 
 
 def owner_of(index: PersonIndex, shots: Iterable[Shot]) -> int:
@@ -202,17 +253,14 @@ def owner_of(index: PersonIndex, shots: Iterable[Shot]) -> int:
     return owners.pop() if len(owners) == 1 else index.default_person_id
 
 
-def served(index: PersonIndex, shots: Iterable[Shot]) -> list[Shot]:
-    return [shot for shot in shots if shot.person_id in index.person_ids]
-
-
 def by_sha1(index: PersonIndex, item: TakeoutCandidate) -> Shot | None:
-    return next((shot for shot in served(index, (*index.phone, *index.takeout)) if shot.sha1 == item.sha1), None)
+    found = index.hashes.get(item.sha1) if item.sha1 else None
+    return found[0] if found else None
 
 
 def nearest(index: PersonIndex, item: TakeoutCandidate) -> tuple[Shot, int, float] | None:
     found: list[tuple[int, float, int, Shot]] = []
-    for shot in served(index, index.phone):
+    for shot in index.phone_times.near(item, REVIEW_SPREAD):
         distance, apart = phash_distance(item.phash, shot.phash), seconds_apart(item, shot)
         if distance is not None and apart is not None and distance <= PHASH_MAX_DISTANCE and apart <= REVIEW_MAX_SECONDS:
             found.append((distance, apart, shot.id, shot))
@@ -230,8 +278,8 @@ def decide(index: PersonIndex, item: TakeoutCandidate, settings: DedupeSettings)
     if exact is not None:
         return made(1, "skip", f"same SHA-1 as a {exact.source} item", exact.person_id, exact)
     if not item.is_edited:
-        shots = [shot for shot in served(index, index.phone) if same_shot(item, shot)]
-        rivals = sum(1 for peer in qualifying_peers(index, item) if any(same_shot(peer, shot) for shot in shots))
+        shots = sorted((shot for shot in index.phone_times.near(item, 0) if same_shot(item, shot)), key=lambda shot: shot.id)
+        rivals = len(rivals_of(index, item, shots))
         if len(shots) == 1 and rivals == 0:
             return made(2, "skip", "same capture second, camera and size", shots[0].person_id, shots[0])
         if shots:
@@ -239,7 +287,7 @@ def decide(index: PersonIndex, item: TakeoutCandidate, settings: DedupeSettings)
             return made(4, "review", reason, owner_of(index, shots), shots[0])
     original = None if item.edited_of is None else index.decided.get(item.edited_of)
     if original is not None and original.decided_by == "auto" and original.tier in CONFIRMING_TIERS and not settings.keep_edited_copies:
-        matched = next((shot for shot in (*index.phone, *index.takeout) if shot.id == original.matched_item_id), None)
+        matched = None if original.matched_item_id is None else index.by_id.get(original.matched_item_id)
         return made(3, "skip", f"edited copy of an item matched at tier {original.tier}", original.person_id, matched)
     close = nearest(index, item)
     if close is not None:

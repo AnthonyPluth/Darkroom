@@ -1,5 +1,7 @@
+import random
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from darkroom.domain import dedupe
 from darkroom.domain.ingest.pairing import TakeoutItem
@@ -336,6 +338,71 @@ class PureIndexTests(unittest.TestCase):
         for sha1 in ("a" * 40, "b" * 40, "c" * 40):
             decision = dedupe.decide(index, world.candidate(sha1=sha1), OFF)
             self.assertEqual((decision.tier, decision.person_id, decision.matched_item_id), (5, 1, None))
+
+
+class OddValuesTests(SinglePerson):
+    def test_a_non_finite_utc_time_is_treated_as_missing(self):
+        self.world.item(self.jo, captured_utc=float("nan"))
+        self.assertEqual(self.decide(self.world.candidate()).tier, 2)
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=float("inf"), captured_local=None, phash=None)).tier, 5)
+
+    def test_a_wall_clock_with_an_offset_is_not_a_wall_clock(self):
+        self.world.item(self.jo, captured_utc=None, captured_local="2023-11-14T22:13:20+00:00")
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=None, captured_local="2023-11-14T22:13:20+00:00")).tier, 5)
+
+    def test_an_empty_sha1_never_matches(self):
+        self.world.item(self.jo, sha1="", phash=None, captured_utc=None, captured_local=None)
+        self.assertEqual(self.decide(self.world.candidate(sha1="", phash=None)).tier, 5)
+
+    def test_a_signed_phash_is_unreadable(self):
+        self.world.item(self.jo, width=1, phash="+" + PHASH[1:])
+        self.assertEqual(self.decide(self.world.candidate(phash="+" + PHASH[1:])).tier, 5)
+        self.assertEqual(self.decide(self.world.candidate(phash="")).tier, 5)
+
+    def test_review_reaches_across_a_second_boundary(self):
+        self.world.item(self.jo, width=1, captured_utc=MOMENT + 0.9)
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=MOMENT + 2.9)).tier, 4)
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=MOMENT - 1.1)).tier, 4)
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=MOMENT + 2.91)).tier, 5)
+
+    def test_review_reaches_two_wall_clock_seconds_with_fractions(self):
+        self.world.item(self.jo, width=1, captured_utc=None, captured_local="2023-11-14T22:13:20.900000")
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=None, captured_local="2023-11-14T22:13:22.900000")).tier, 4)
+        self.assertEqual(self.decide(self.world.candidate(captured_utc=None, captured_local="2023-11-14T22:13:18.900000")).tier, 4)
+
+
+def random_fields(rng):
+    return dict(
+        phash=rng.choice([PHASH, flip(PHASH, 4), flip(PHASH, 9), None]),
+        captured_utc=rng.choice([MOMENT, MOMENT + 0.4, MOMENT + 1.6, MOMENT + 2.5, MOMENT - 2, MOMENT + 3, None]),
+        captured_local=rng.choice([LOCAL, "2023-11-14T22:13:21", "2023-11-14T22:13:22.5", "2023-11-14T22:13:24", None]),
+        width=rng.choice([4032, 1]),
+    )
+
+
+class BucketsAgreeWithAFullScan(unittest.TestCase):
+    def test_decisions_match_a_scan_of_every_item(self):
+        def everything(buckets, timed, spread):
+            found = {}
+            for group in (*buckets.by_second.values(), *buckets.by_local.values()):
+                found.update((id(entry), entry) for entry in group)
+            return list(found.values())
+
+        for seed in range(15):
+            rng = random.Random(seed)
+            world = World(self)
+            jo, sam = world.person("jo"), world.person("sam")
+            account = world.account(f"a{seed}@x.test", jo, (sam,))
+
+            for _ in range(10):
+                world.item(rng.choice([jo, sam]), suffix=rng.choice([".HEIC", ".MOV"]), **random_fields(rng))
+            items = [world.candidate(**random_fields(rng)) for _ in range(10)]
+            index = world.index(account)
+            bucketed = dedupe.decide_all(index, items, OFF)
+            with mock.patch.object(dedupe.Buckets, "near", everything):
+                scanned = dedupe.decide_all(index, items, OFF)
+            self.assertEqual(bucketed, scanned, seed)
+            self.assertTrue({d.tier for d in bucketed} & {2, 4}, seed)
 
 
 class LoadTests(unittest.TestCase):
