@@ -6,16 +6,23 @@ name: Merge gate threads
 # resolving one, run "Merge gate" by hand with the pull request's number, or push. It checks out nothing and runs
 # nothing of the pull request's. A pull request from a fork is skipped (its token is read-only there); its gate
 # looks again on the next push or check, or by hand.
+#
+# merge-gate.yml passes require-codex-review: true, so the gate also waits for Codex's review of the head commit. A
+# review that finds nothing arrives as a conversation comment, which neither trigger above sees: the codex-comment job
+# starts the gate on Codex's own comments on a pull request only (a comment's workflow runs with the base repository's
+# token, so there is no fork to skip).
 on:
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  issue_comment:  # zizmor: ignore[dangerous-triggers] -- only starts merge-gate.yml by number; checks out and runs nothing of the pull request
+    types: [created, edited]
 
 permissions: {}
 
 concurrency:
-  group: merge-gate-threads-${{ github.event.pull_request.number }}
+  group: merge-gate-threads-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 defaults:
@@ -24,9 +31,16 @@ defaults:
 
 jobs:
   decide:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@acfb09312e648eb5dde4ace69e8c849c7a33e789   # v1.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@c5cafc050fda88714f1cb1fb1129487ef0f2b117   # v2.0.0
     with:
       pr: ${{ github.event.pull_request.number }}
+  codex-comment:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    permissions:
+      actions: write   # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@c5cafc050fda88714f1cb1fb1129487ef0f2b117   # v2.0.0
+    with:
+      pr: ${{ github.event.issue.number }}

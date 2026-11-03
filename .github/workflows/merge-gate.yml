@@ -7,8 +7,8 @@ name: Merge gate
 #
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
 # finishing (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
-# number (the agent review starts it this way once it has set its status, and merge-gate-threads.yml when a review
-# thread changes). It runs from main's copy with a write token and never checks out or runs a pull request's code.
+# number (the agent review starts it this way once it has set its status, and merge-gate-threads.yml when a review,
+# a review comment or a comment by Codex arrives). It runs from main's copy with a write token and never checks out or runs a pull request's code.
 # workflow_run is safe here: nothing of the pull request is checked out; fleet's script only reads its checks,
 # statuses and review threads through the API.
 on:  # zizmor: ignore[dangerous-triggers]
@@ -47,7 +47,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@acfb09312e648eb5dde4ace69e8c849c7a33e789   # v1.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@c5cafc050fda88714f1cb1fb1129487ef0f2b117   # v2.0.0
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -56,7 +56,7 @@ jobs:
         CI
         Docker image
         Security scans
-      # Owner decision of Nov 3 (issue #76): Codex reviews every pull request and the Claude review only risky ones (agent-review.yml passes first-review: false,
-      # so there is no "Agent review" status): to switch the first review back on, add "Agent review" above this line.
-      required-statuses: |
-        Second review
+      # Owner decision of Nov 3 (issue #76): Codex reviews every pull request. The gate stays pending until Codex has
+      # reviewed the head commit; fleet's defaults already require "Second review" alone and fail on an open Codex P1
+      # or P2 thread. merge-gate-threads.yml starts the gate when Codex's review or comment arrives.
+      require-codex-review: true
