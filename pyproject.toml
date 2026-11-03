@@ -21,7 +21,7 @@ browser = ["playwright (>=1.48,<2.0)"]
 package-mode = false
 
 [tool.poetry.group.dev.dependencies]
-ruff = "0.17.2"
+ruff = "0.17.3"
 mypy = "2.4.0"
 coverage = "7.17.0"
 unittest-parallel = "1.8.6"
