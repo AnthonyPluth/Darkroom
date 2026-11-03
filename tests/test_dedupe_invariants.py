@@ -158,9 +158,19 @@ class OnlyAutomaticTierOneAndTwoSetTheFlag(Household):
         self.apply(self.decide(self.world.candidate(sha1=placed.sha1)))
         self.assertEqual(self.world.confirmed(), set())
 
-    def test_a_decision_naming_a_takeout_source_never_flags_a_phone_item(self):
+    def test_a_decision_naming_a_takeout_source_for_a_phone_item_is_refused_and_flags_nothing(self):
         phone = self.world.item(self.jo)
-        self.apply(dedupe.Decision("a.jpg", self.account, self.jo, 1, "skip", "same SHA-1", phone.id, "takeout"))
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("a.jpg", self.account, self.jo, 1, "skip", "same SHA-1", phone.id, "takeout"))
+        self.assertEqual(self.world.confirmed(), set())
+        self.assertEqual(self.world.opened.query(DedupeDecision).count(), 0)
+
+    def test_a_refused_mismatched_decision_cannot_turn_into_a_flag_when_another_decision_is_reversed(self):
+        phone = self.world.item(self.jo)
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("a.jpg", self.account, self.jo, 2, "skip", "same second", phone.id, "takeout"))
+        review = self.apply(dedupe.Decision("b.jpg", self.account, self.jo, 4, "review", "looks alike", phone.id, "phone"))
+        dedupe.reverse(self.world.opened, review.id, 60.0, "owner")
         self.assertEqual(self.world.confirmed(), set())
 
 

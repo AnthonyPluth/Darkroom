@@ -318,6 +318,8 @@ def checked_match(opened: Session, decision: Decision, export: Export, people: s
         raise ValueError("the matched item does not exist")
     if matched.person_id not in people:
         raise ValueError("the matched item belongs to someone this account does not serve")
+    if decision.decided_by == "auto" and decision.tier in CONFIRMING_TIERS and decision.matched_source != matched.source:
+        raise ValueError("the decision names a different kind of item than the one it matched")
     if matched.source == "takeout":
         origin = None if matched.export_id is None else opened.get(Export, matched.export_id)
         if origin is None or origin.account_id != export.account_id:
