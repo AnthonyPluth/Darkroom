@@ -50,7 +50,7 @@ skills = ".claude/skills"
 extra-checks = "tools.app_checks:CHECKS"
 
 [tool.fleet.no-comments]
-paths = ["darkroom", "darkroom_browser", "tests", "tools", "frontend/src"]
+paths = ["darkroom", "darkroom_browser", "tests", "tools", "frontend/src", "run.py", ".semgrep"]
 
 [tool.fleet.coverage]
 overall = 85
