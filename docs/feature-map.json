@@ -9,7 +9,8 @@
         "tests/test_every_route.py",
         "tests/test_healthz.py",
         "tests/test_routes_table.py",
-        "tests/test_tools.py"
+        "tests/test_tools.py",
+        "tests/test_verify_env.py"
       ]
     },
     {
@@ -19,6 +20,7 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_demo_session.py",
         "tests/test_every_route.py",
         "tests/test_static.py"
       ]
@@ -41,6 +43,7 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_demo_session.py",
         "tests/test_routes_table.py"
       ]
     },
@@ -51,6 +54,7 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_demo_session.py",
         "tests/test_every_route.py",
         "tests/test_oidc.py"
       ]
@@ -64,8 +68,11 @@
       ],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_demo.py",
+        "tests/test_demo_session.py",
         "tests/test_static.py",
-        "tests/test_tools.py"
+        "tests/test_tools.py",
+        "tests/test_verify_env.py"
       ]
     },
     {
@@ -75,7 +82,10 @@
       "frontend": [],
       "tests": [
         "tests/test_browser_internal_api.py",
-        "tests/test_tools.py"
+        "tests/test_demo.py",
+        "tests/test_demo_session.py",
+        "tests/test_tools.py",
+        "tests/test_verify_env.py"
       ]
     },
     {

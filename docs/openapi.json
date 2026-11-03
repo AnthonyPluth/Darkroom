@@ -224,6 +224,26 @@
         ],
         "type": "object"
       },
+      "PersonStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "indexed": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "indexed",
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
       "ProgressBody": {
         "additionalProperties": false,
         "properties": {
@@ -239,6 +259,12 @@
       "Status": {
         "additionalProperties": false,
         "properties": {
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/PersonStatus"
+            },
+            "type": "array"
+          },
           "worker_last_seen": {
             "anyOf": [
               {
@@ -251,6 +277,7 @@
           }
         },
         "required": [
+          "people",
           "worker_last_seen"
         ],
         "type": "object"

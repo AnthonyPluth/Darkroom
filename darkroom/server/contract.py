@@ -15,8 +15,15 @@ class Me(TypedDict):
     groups: list[str]
 
 
+class PersonStatus(TypedDict):
+    slug: str
+    name: str
+    indexed: int
+
+
 class Status(TypedDict):
     worker_last_seen: float | None
+    people: list[PersonStatus]
 
 
 class BrowserJobView(TypedDict):

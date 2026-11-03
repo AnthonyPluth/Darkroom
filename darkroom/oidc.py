@@ -15,11 +15,12 @@ from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import tls
-from darkroom.config import Settings, local_host, oidc_configured
+from darkroom.config import Settings, demo_allowed, local_host, oidc_configured
 from darkroom.storage import secretbox
 from darkroom.storage.models import AuthPending, AuthSession, User
 
 LOGIN_TTL = 600.0
+DEMO_SUB = "demo:"
 MAX_PENDING = 10_000
 DISCOVERY_TTL = 3600.0
 RENEW_COOKIE_AFTER = 86_400.0
@@ -343,10 +344,20 @@ def allowed(settings: Settings, email: str | None, email_verified: bool, groups:
     return bool(email) and email_verified and email in emails
 
 
+def is_demo_sub(sub: str) -> bool:
+    return sub.startswith(DEMO_SUB)
+
+
+def accepted_here(settings: Settings, sub: str) -> bool:
+    return demo_allowed(settings) if is_demo_sub(sub) else configured(settings)
+
+
 def authorize(settings: Settings, info: Mapping[str, Any]) -> Identity:
     sub = info.get("sub")
     if not isinstance(sub, str) or not sub:
         raise SignInFailed("the provider did not say who signed in")
+    if is_demo_sub(sub):
+        raise SignInFailed("the provider named a demo user")
     email = email_of(info)
     groups = groups_of(info)
     verified = info.get("email_verified") is True
@@ -386,6 +397,15 @@ def new_session(opened: Session, settings: Settings, sub: str, now: float, refre
     return token
 
 
+def demo_session(opened: Session, settings: Settings, who: Identity, now: float) -> str:
+    if not is_demo_sub(who.sub):
+        raise ValueError("a demo session is only minted for a demo user")
+    if not demo_allowed(settings):
+        raise ValueError("a demo session is only minted for a server in demo mode")
+    remember_user(opened, who, now)
+    return new_session(opened, settings, who.sub, now)
+
+
 def finish_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float) -> SignedIn:
     first = {name: values[0] for name, values in query.items() if values}
     if first.get("error"):
@@ -416,6 +436,12 @@ def still_allowed(settings: Settings, user: User) -> bool:
     return allowed(settings, email_of({"email": user.email}), bool(user.email_verified), stored_groups(user))
 
 
+def session_accepted(settings: Settings, user: User) -> bool:
+    if not accepted_here(settings, user.sub):
+        return False
+    return is_demo_sub(user.sub) or still_allowed(settings, user)
+
+
 def find_session(opened: Session, token: str | None) -> AuthSession | None:
     if not token or len(token) > 200:
         return None
@@ -431,7 +457,7 @@ def session_user(opened: Session, settings: Settings, token: str | None, now: fl
     if found is None:
         return None
     user = opened.get(User, found.sub)
-    if expired(found, now) or user is None or not still_allowed(settings, user):
+    if expired(found, now) or user is None or not session_accepted(settings, user):
         opened.delete(found)
         opened.flush()
         return None

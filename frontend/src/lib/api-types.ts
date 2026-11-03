@@ -52,12 +52,19 @@ export interface Me {
   groups: string[];
 }
 
+export interface PersonStatus {
+  slug: string;
+  name: string;
+  indexed: number;
+}
+
 export interface ProgressBody {
   message: string;
 }
 
 export interface Status {
   worker_last_seen: number | null;
+  people: PersonStatus[];
 }
 
 export interface WaitingBody {

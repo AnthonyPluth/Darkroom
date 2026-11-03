@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.config import Settings
+from darkroom.config import Settings, demo_allowed
 from darkroom.domain import events
 from darkroom.storage.models import Alert
 
@@ -69,8 +69,22 @@ def undelivered(settings: Settings, title: str, message: str, link: str | None =
     return DISABLED
 
 
-def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording, now: float, notifier: Notifier) -> str:
-    outcome = notifier(settings, wording.title, wording.message, alert.link)
+RECORDED: list[tuple[str, str, str | None]] = []
+RECORDED_LIMIT = 100
+
+
+def recorded(settings: Settings, title: str, message: str, link: str | None = None) -> str:
+    RECORDED.append((title, message, link))
+    del RECORDED[:-RECORDED_LIMIT]
+    return SENT
+
+
+def notifier_for(settings: Settings) -> Notifier:
+    return recorded if demo_allowed(settings) else undelivered
+
+
+def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording, now: float, notifier: Notifier | None) -> str:
+    outcome = (notifier or notifier_for(settings))(settings, wording.title, wording.message, alert.link)
     alert.last_sent = now
     alert.sent_count += 1
     events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
@@ -78,7 +92,7 @@ def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording,
 
 
 def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject: str, wording: Wording, link: str | None, now: float,
-               repeats: tuple[float, ...] = REPEAT_AFTER, notifier: Notifier = undelivered) -> Alert:
+               repeats: tuple[float, ...] = REPEAT_AFTER, notifier: Notifier | None = None) -> Alert:
     existing = opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None))).scalars().first()
     if existing is not None:
         return existing
@@ -93,7 +107,7 @@ def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject
     return alert
 
 
-def tick(opened: Session, settings: Settings, now: float, notifier: Notifier = undelivered) -> int:
+def tick(opened: Session, settings: Settings, now: float, notifier: Notifier | None = None) -> int:
     sent = 0
     for alert in opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars():
         if alert.sent_count >= len(REPEAT_AFTER):

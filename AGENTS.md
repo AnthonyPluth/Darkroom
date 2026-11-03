@@ -34,6 +34,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 - `make api-contract` / `make api-contract-check`: regenerate and check `docs/openapi.json` and `frontend/src/lib/api-types.ts` from the routes and their handlers' annotations: a handler's reply is `-> Annotated[Response, contract.X]` and its body `request: Annotated[Request, contract.Y]`, with `X` and `Y` TypedDicts in `darkroom/server/contract.py`.
 - `make frontend-check`: the web app's svelte-check, ESLint (with the paved-path rules, whose examples are `frontend/src/lint-rules.test.ts`), Vitest with the coverage floor in `frontend/vite.config.ts`, and the build. `make frontend-install`, `frontend-typecheck`, `frontend-lint`, `frontend-test` and `frontend-build` run one step each.
 - `python run.py serve` starts the service; `python run.py check-config` reports what is missing in the configuration.
+- `python run.py demo --data DIR` seeds made-up people, accounts, Pixels, iPhones and photos (`darkroom/domain/demo.py`) into an empty folder, with a session for the demo member that a server accepts only with `DARKROOM_DEMO=1` on a loopback address. `tools/verify.py seed|serve|status` runs that seed and server under libfaketime at `FROZEN_NOW`, with an allowlisted environment and a dead outbound proxy, for the browser driver and `make verify` that a later issue adds.
 
 ## Starting work
 
