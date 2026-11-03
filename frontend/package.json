@@ -39,6 +39,6 @@
     "vitest": "5.0.5"
   },
   "dependencies": {
-    "bits-ui": "2.19.5"
+    "bits-ui": "2.20.0"
   }
 }
