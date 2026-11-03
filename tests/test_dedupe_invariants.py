@@ -72,6 +72,12 @@ class CandidateSetIsTheServedPeople(Household):
                 self.apply(dedupe.Decision(f"{item.id}.jpg", self.account, self.sam, 1, "skip", "same SHA-1", item.id, "takeout"))
         self.assertEqual(self.world.decisions(), [])
 
+    def test_apply_refuses_a_confirming_decision_that_assigns_the_item_to_someone_else(self):
+        sams = self.world.item(self.sam)
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("a.jpg", self.account, self.jo, 1, "skip", "same SHA-1", sams.id, "phone"))
+        self.assertEqual((self.world.decisions(), self.world.confirmed()), ([], set()))
+
     def test_apply_refuses_a_missing_matched_item_and_a_tier_two_takeout_match(self):
         placed = self.world.item(self.sam, source="takeout", export_id=self.export.id)
         with self.assertRaises(ValueError):

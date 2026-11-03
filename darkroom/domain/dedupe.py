@@ -324,6 +324,8 @@ def checked_match(opened: Session, decision: Decision, export: Export, people: s
             raise ValueError("the matched Takeout item came from another account")
     if decision.tier == 2 and matched.source != "phone":
         raise ValueError("tier 2 matches only phone items")
+    if decision.confirms and matched.person_id != decision.person_id:
+        raise ValueError("a confirming decision assigns the item to someone other than its uploader")
     return matched
 
 
