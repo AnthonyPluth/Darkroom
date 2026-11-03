@@ -172,7 +172,8 @@ def serve(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, ended)
     signal.signal(signal.SIGINT, ended)
     try:
-        return server.wait()
+        code = server.wait()
+        return 128 - code if code < 0 else code
     finally:
         log.close()
         if made:

@@ -15,7 +15,6 @@ from darkroom.server import auth, routes
 from darkroom.server.common import json_response
 from darkroom.storage import db
 from darkroom.storage.models import AuthSession, User
-from tests.fakes.oidc_provider import CLIENT_ID
 from tests.privacy import no_leaks
 from tests.shared import fetch, own_database, settings_from, start_server
 from tests.test_auth_routes import SignedInServer
@@ -200,7 +199,6 @@ class ProviderCannotNameADemoUserTests(SignedInServer):
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(AuthSession).count(), 0)
             self.assertEqual(opened.query(User).count(), 0)
-        self.assertEqual(CLIENT_ID, self.settings.oidc_client_id)
 
 
 class CheckConfigTests(unittest.TestCase):

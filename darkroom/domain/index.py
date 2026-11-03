@@ -108,10 +108,11 @@ def index_person(opened: Session, photos: Photos, person: Person, now: float, re
     return report
 
 
-def counts_by_person(opened: Session) -> list[tuple[Person, int]]:
+def counts_by_person(opened: Session) -> list[tuple[str, str, int]]:
     phone_items = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone")
-    rows = opened.execute(select(Person, func.count(MediaItem.id)).outerjoin(MediaItem, phone_items).group_by(Person.id).order_by(Person.id)).all()
-    return [(person, int(count)) for person, count in rows]
+    query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone_items)
+             .group_by(Person.id, Person.slug, Person.name).order_by(Person.id))
+    return [(slug, name, int(count)) for slug, name, count in opened.execute(query).all()]
 
 
 def index_file(opened: Session, photos: Photos, person: Person, path: Path, now: float, read: Reader = exiftool.read) -> IndexReport:

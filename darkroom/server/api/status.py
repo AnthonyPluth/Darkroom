@@ -18,5 +18,5 @@ def status(request: Request) -> Annotated[Response, contract.Status]:
         raise RuntimeError("this route needs the database")
     with db.session(request.engine) as opened:
         seen = browser_jobs.worker_last_seen(opened)
-        people = [{"slug": person.slug, "name": person.name, "indexed": count} for person, count in index.counts_by_person(opened)]
+        people = [{"slug": slug, "name": name, "indexed": count} for slug, name, count in index.counts_by_person(opened)]
     return json_response({"worker_last_seen": seen, "people": people})

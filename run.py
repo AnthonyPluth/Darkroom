@@ -140,6 +140,7 @@ def write_demo_session(settings: config.Settings, token: str) -> Path:
     body = json.dumps({"cookie": auth.SESSION_COOKIE, "token": token, "sub": demo.MEMBER.sub, "name": demo.MEMBER.name}).encode()
     handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(handle, "wb") as out:
+        os.fchmod(out.fileno(), 0o600)
         out.write(body)
     return target
 

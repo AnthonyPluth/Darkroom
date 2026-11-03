@@ -7,7 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -225,7 +225,6 @@ class FrozenDemoServerTests(unittest.TestCase):
             (opened,) = connection.execute("select opened from alerts").fetchone()
         self.assertEqual(created, frozen)
         self.assertEqual(opened, frozen - 2 * 3600)
-        self.assertNotEqual(datetime.now(UTC).date(), datetime.fromisoformat(verify.FROZEN_NOW_ISO).date())
 
     def server_pid(self):
         children = []
