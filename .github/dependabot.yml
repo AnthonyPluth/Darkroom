@@ -23,10 +23,10 @@ updates:
       interval: daily
     cooldown:
       default-days: 7
-      exclude: ["AnthonyPluth/fleet/*"]
+      exclude: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]   # by repository alone or with the workflow path
     groups:
       fleet:
-        patterns: ["AnthonyPluth/fleet/*"]
+        patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]
       actions:
         patterns: ["*"]
     commit-message:
