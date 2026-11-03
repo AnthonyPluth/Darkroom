@@ -27,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install exiftool
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
       - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
       - name: Tests (parallel) with coverage
         run: poetry run unittest-parallel -t . -s tests -j 4 --coverage --coverage-rcfile pyproject.toml
