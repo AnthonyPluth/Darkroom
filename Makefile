@@ -11,9 +11,10 @@ LINT_IMPORTS ?= poetry run lint-imports
 UNITTEST_PARALLEL_BASE ?= poetry run unittest-parallel -t . -s tests
 UNITTEST_PARALLEL ?= $(UNITTEST_PARALLEL_BASE) -j 4
 SEMGREP ?= semgrep
+FLEET ?= tools/fleet
 NPM ?= npm
 
-.PHONY: setup check lint python-lint semgrep test test-parallel fix fleet-checks feature-map feature-map-check \
+.PHONY: setup check lint python-lint semgrep test test-parallel fix fleet-checks fleet-sync feature-map feature-map-check \
 	api-contract api-contract-check frontend-install frontend-check frontend-typecheck frontend-lint frontend-test frontend-build
 
 check: lint feature-map-check api-contract-check fleet-checks test-parallel frontend-check
@@ -24,7 +25,7 @@ python-lint:
 	$(RUFF) check .
 	$(MYPY)
 	$(LINT_IMPORTS)
-	$(PYTHON) tools/no_comments.py
+	$(FLEET) no-comments
 
 semgrep:
 	$(PYTHON) .semgrep/check_examples.py $(SEMGREP)
@@ -36,7 +37,7 @@ test:
 test-parallel:
 	$(UNITTEST_PARALLEL) --coverage --coverage-rcfile pyproject.toml
 	poetry run coverage json -q -o coverage.json
-	$(PYTHON) tools/coverage_floor.py coverage.json
+	$(FLEET) coverage-floor coverage.json
 
 fix:
 	$(RUFF) check --fix .
@@ -44,8 +45,20 @@ fix:
 setup:
 	poetry install --no-root --no-interaction
 
+# The checks that replaced instructions (`fleet checks`, configured by [tool.fleet] in pyproject.toml, plus Darkroom's own in
+# tools/app_checks.py): one Alembic head, a test for each new migration, the workflows' conventions, the skills, and the
+# Co-Authored-By trailer on your commits since main, as CI checks a pull request's. Then `fleet drift`: the AGENTS.md
+# blocks, the vendored .claude/ files and tools/fleet are fleet's at .fleet/version.
 fleet-checks:
-	$(PYTHON) tools/fleet_checks.py
+	$(FLEET) checks --commits origin/main..HEAD
+	$(FLEET) drift
+
+# Moves fleet's content here (the AGENTS.md blocks, .claude/skills/fleet-*, .claude/agents/fleet-reviewer.md,
+# .claude/hooks/fleet-session-start.sh, tools/fleet and .fleet/version) to a fleet release: `make fleet-sync version=v1.2.3`.
+# The workflow pins in .github/workflows/ move with Dependabot, and fleet-sync.yml normally runs this after they do.
+fleet-sync:
+	@test -n "$(version)" || { echo "Say which release: make fleet-sync version=v1.2.3" >&2; exit 1; }
+	$(FLEET) sync --to $(version)
 
 feature-map:
 	$(PYTHON) tools/feature_map.py

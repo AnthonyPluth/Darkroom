@@ -1,12 +1,14 @@
 name: Agent review
 
-# The independent review of every agent's pull request, through fleet's reusable workflow (docs/agent-review.md
-# there): a fresh Claude Code session on Sonnet reads the change against main's AGENTS.md and
-# .github/agent-review/context.md and sets the "Agent review" status; a second review on a different model runs on
-# risky pull requests (labelled safety-critical or security, or changing .github/**, .claude/** or the paths listed
-# below, Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md) and sets
-# "Second review". A pull request that isn't risky gets a passing "Second review", so the merge gate requires both on
-# every pull request.
+# Fleet's reusable review workflow (docs/agent-review.md there), here for the second review only. The owner's decision
+# (Nov 3): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones. So the first
+# review is off (`first-review: false` below: no "Agent review" status and no comment, from either of its jobs). On a
+# risky pull request (labelled safety-critical or security, or changing .github/**, .claude/** or the paths listed below,
+# Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md) a fresh Claude Code
+# session on a different model reads the change against main's AGENTS.md and .github/agent-review/context.md and sets
+# "Second review". A pull request that isn't risky gets a passing "Second review", so the merge gate requires that one
+# status alone (merge-gate.yml). To bring the Claude first review back on every pull request, remove `first-review: false`
+# here and add `Agent review` to `required-statuses` in merge-gate.yml (docs/runbook.md).
 #
 # This caller only declares the triggers (a called workflow can't), passes the two secrets by name (secrets: inherit
 # would hand over every secret) and grants exactly the permissions fleet's jobs ask for. On pull_request_target the
@@ -28,10 +30,11 @@ jobs:
     permissions:
       contents: read           # main's instructions and the pull request's code
       pull-requests: write     # the comment
-      statuses: write          # the "Agent review" and "Second review" statuses
+      statuses: write          # the "Second review" status
       actions: write           # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@acfb09312e648eb5dde4ace69e8c849c7a33e789   # v1.1.0
     with:
+      first-review: false
       generated: |
         docs/openapi.json
         frontend/src/lib/api-types.ts
