@@ -174,11 +174,11 @@ class TierTwoAmbiguityTests(SinglePerson):
         self.assertEqual([(d.tier, d.matched_item_id) for d in decided], [(3, only.id), (2, only.id)])
 
     def test_burst_frames_owned_by_two_people_go_to_the_default_persons_review(self):
-        sam = self.world.person("sam")
-        shared = self.world.account("family@x.test", self.jo, (sam,))
+        sam, kim = self.world.person("sam"), self.world.person("kim")
+        shared = self.world.account("family@x.test", self.jo, (sam, kim))
         self.world.item(sam)
-        self.world.item(self.jo)
-        self.world.item(self.world.person("kim"))
+        self.world.item(kim)
+        self.world.item(self.world.person("lee"))
         decision = dedupe.decide(self.world.index(shared), self.world.candidate(), OFF)
         self.assertEqual((decision.tier, decision.person_id), (4, self.jo))
         self.assertIn("2 phone items", decision.reason)
@@ -325,6 +325,17 @@ class OverlappingAccountsTests(unittest.TestCase):
         for account in (self.a, self.b):
             decision = dedupe.decide(self.world.index(account), self.world.candidate(sha1=sams.sha1), OFF)
             self.assertEqual((decision.tier, decision.account_id, decision.matched_item_id), (1, account, sams.id))
+
+
+class PureIndexTests(unittest.TestCase):
+    def test_decide_ignores_items_of_people_outside_the_index_even_when_handed_them(self):
+        outsider = dedupe.Shot(7, 99, "phone", "a" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False)
+        placed = dedupe.Shot(8, 99, "takeout", "b" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False)
+        index = dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=(outsider,), takeout=(placed,))
+        world = World(self)
+        for sha1 in ("a" * 40, "b" * 40, "c" * 40):
+            decision = dedupe.decide(index, world.candidate(sha1=sha1), OFF)
+            self.assertEqual((decision.tier, decision.person_id, decision.matched_item_id), (5, 1, None))
 
 
 class LoadTests(unittest.TestCase):
