@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
-from darkroom.config import Settings, browser_token_usable, no_auth_allowed
+from darkroom.config import Settings, browser_token_usable, demo_allowed, no_auth_allowed
 from darkroom.dates import utc_now
 from darkroom.server import contract
 from darkroom.server.common import Principal, Request, Response, error_response, first_query, header, json_response, page, redirect
@@ -80,7 +80,7 @@ def session_principal(request: Request) -> Principal | None:
     settings = request.settings
     if no_auth_allowed(settings):
         return LOCAL_OWNER
-    if not oidc.configured(settings):
+    if not (oidc.configured(settings) or demo_allowed(settings)):
         return None
     token = cookies_of(request).get(SESSION_COOKIE)
     if not token:
@@ -124,6 +124,9 @@ def login(request: Request) -> Response:
     settings = request.settings
     if no_auth_allowed(settings):
         return redirect(oidc.safe_next(first_query(request, "next")))
+    if demo_allowed(settings):
+        return page(503, "Demo mode", "This Darkroom runs on made-up demo data and has no sign-in provider. "
+                    "Use the session that `run.py demo` wrote to demo-session.json in its data folder (tools/control sets it for you).")
     if not oidc.configured(settings):
         return page(503, "Sign-in is not set up", "Darkroom has no sign-in provider configured. Set OIDC_ISSUER and OIDC_CLIENT_ID.")
     try:

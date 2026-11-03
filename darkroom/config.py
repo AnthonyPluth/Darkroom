@@ -35,6 +35,7 @@ class Settings:
     oidc_allowed_emails: tuple[str, ...]
     oidc_device_groups: tuple[str, ...]
     allow_no_auth: bool
+    demo: bool
     immich_url: str
     immich_admin_key: str
     browser_token: str
@@ -58,6 +59,7 @@ def load() -> Settings:
         oidc_allowed_emails=env_list("OIDC_ALLOWED_EMAILS"),
         oidc_device_groups=env_list("OIDC_DEVICE_GROUPS", "family,parents"),
         allow_no_auth=env_flag("DARKROOM_ALLOW_NO_AUTH"),
+        demo=env_flag("DARKROOM_DEMO"),
         immich_url=env("IMMICH_URL").rstrip("/"),
         immich_admin_key=env("IMMICH_ADMIN_KEY"),
         browser_token=env("DARKROOM_BROWSER_TOKEN"),
@@ -81,6 +83,13 @@ def local_host(host: str) -> bool:
     return address.is_loopback or address.is_link_local or address.is_private or address in ipaddress.ip_network("100.64.0.0/10")
 
 
+def loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 MIN_BROWSER_TOKEN = 32
 
 
@@ -100,11 +109,16 @@ def oidc_configured(settings: Settings) -> bool:
     return bool(settings.oidc_issuer and settings.oidc_client_id)
 
 
+NO_AUTH_WITH_DEMO = "DARKROOM_ALLOW_NO_AUTH=1 cannot be combined with DARKROOM_DEMO=1; unset one of them"
+
+
 def no_auth_misused(settings: Settings) -> str | None:
     if not settings.allow_no_auth:
         return None
     if oidc_configured(settings):
         return "DARKROOM_ALLOW_NO_AUTH=1 cannot be combined with OIDC sign-in; unset one of them"
+    if settings.demo:
+        return NO_AUTH_WITH_DEMO
     if not local_host(settings.host):
         return f"DARKROOM_ALLOW_NO_AUTH=1 only works when DARKROOM_HOST is a local address, not {settings.host}"
     return None
@@ -114,11 +128,28 @@ def no_auth_allowed(settings: Settings) -> bool:
     return settings.allow_no_auth and no_auth_misused(settings) is None
 
 
+def demo_misused(settings: Settings) -> str | None:
+    if not settings.demo:
+        return None
+    if oidc_configured(settings):
+        return "DARKROOM_DEMO=1 cannot be combined with OIDC sign-in; the demo runs without a provider"
+    if settings.allow_no_auth:
+        return NO_AUTH_WITH_DEMO
+    if not loopback_host(settings.host):
+        return f"DARKROOM_DEMO=1 only works when DARKROOM_HOST is a loopback address (127.0.0.1 or ::1), not {settings.host}"
+    return None
+
+
+def demo_allowed(settings: Settings) -> bool:
+    return settings.demo and demo_misused(settings) is None
+
+
+def misused(settings: Settings) -> list[str]:
+    return list(dict.fromkeys(line for line in (no_auth_misused(settings), demo_misused(settings)) if line))
+
+
 def auth_problems(settings: Settings) -> list[str]:
-    found = []
-    misused = no_auth_misused(settings)
-    if misused:
-        found.append(misused)
+    found = misused(settings)
     if oidc_configured(settings):
         if not settings.public_url.startswith(("http://", "https://")):
             found.append("DARKROOM_PUBLIC_URL must start with http:// or https:// so the sign-in can come back to it")
@@ -128,7 +159,7 @@ def auth_problems(settings: Settings) -> list[str]:
             found.append("OIDC_ISSUER must use https:// unless the provider is on the LAN")
         if not (settings.oidc_allowed_groups or settings.oidc_allowed_emails):
             found.append("set OIDC_ALLOWED_GROUPS or OIDC_ALLOWED_EMAILS so someone can sign in")
-    elif not settings.allow_no_auth:
+    elif not (settings.allow_no_auth or settings.demo):
         found.append("sign-in is not set up: set OIDC_ISSUER and OIDC_CLIENT_ID (or DARKROOM_ALLOW_NO_AUTH=1 on a local address) so someone can use the web UI")
     return found
 
@@ -149,5 +180,4 @@ def problems(settings: Settings) -> list[str]:
 
 
 def refuses_to_start(settings: Settings) -> list[str]:
-    misused = no_auth_misused(settings)
-    return [misused] if misused else []
+    return misused(settings)
