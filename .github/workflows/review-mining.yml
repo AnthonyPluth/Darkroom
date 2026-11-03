@@ -1,0 +1,24 @@
+name: Review mining
+
+# The monthly "Repeated review findings" issue (label review-mining), through fleet's reusable workflow: the kinds of
+# review finding that came back on two or more pull requests in the last 90 days, each with the check it should
+# become, read from the reviews' hidden findings records and AGENTS.md's "Mistakes that keep coming back". No model,
+# no secrets: the workflow's own token.
+on:
+  schedule:
+    - cron: "17 6 1 * *"
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  mine:
+    permissions:
+      contents: read           # AGENTS.md
+      issues: write            # the one issue
+      pull-requests: read      # the pull requests in the window
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0

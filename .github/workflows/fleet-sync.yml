@@ -1,0 +1,44 @@
+name: Sync fleet content
+
+# Keeps fleet's content (the AGENTS.md blocks, the vendored .claude/ files, tools/fleet and .fleet/version) at the
+# version the workflow pins carry, through fleet's reusable sync. Dependabot bumps the pins; after a bump merges (a
+# push to main touching the workflows), weekly, or by hand, this reads every fleet pin (they must agree), compares
+# with .fleet/version and opens or updates the pull request "chore: fleet content vX.Y.Z" from the branch fleet/sync
+# with the fleet-bot GitHub App's token (a pull request opened with the workflow's own token would start no checks).
+# A newer major opens a migration issue instead. The App's id and key are passed by name and reach one step of
+# fleet's workflow; nothing merges by itself. Until #12 adds .fleet/version, a run fails at its plan step naming the
+# missing file, and nothing is pushed or opened.
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/**]
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Print the plan and the pull request instead of opening it"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: fleet-sync
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    permissions:
+      contents: read           # the checkout; the pull request is pushed with the App token
+      issues: write            # the migration issue
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@281821f17c9a84d59412c33badf5cfdf9cc31d3b   # v1.0.0
+    with:
+      app-id: ${{ vars.FLEET_BOT_APP_ID }}
+      dry-run: ${{ inputs.dry-run || false }}
+    secrets:
+      FLEET_BOT_PRIVATE_KEY: ${{ secrets.FLEET_BOT_PRIVATE_KEY }}

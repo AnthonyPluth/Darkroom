@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -83,6 +84,38 @@ class FleetChecksTests(unittest.TestCase):
 
     def test_this_repositorys_workflows_pass(self):
         self.assertEqual(fleet_checks.check_workflows(), [])
+
+    def test_fleet_pins_agree_and_match_the_content_version(self):
+        sha, other = "a" * 40, "b" * 40
+        pin = f"    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@{sha}   # v1.0.0\n"
+        same = {"a.yml": pin, "b.yml": pin.replace("merge-gate", "security")}
+        self.assertEqual(fleet_checks.check_fleet_pins(same, None), [])
+        self.assertEqual(fleet_checks.check_fleet_pins(same, "v1.0.0\n"), [])
+        self.assertEqual(len(fleet_checks.check_fleet_pins(same, "v1.1.0\n")), 1)
+        self.assertEqual(fleet_checks.check_fleet_pins({"a.yml": "    uses: actions/checkout@" + sha + "   # v7.0.1\n"}, "v1.1.0"), [])
+        disagree = {**same, "c.yml": pin.replace(sha, other)}
+        self.assertTrue(any("don't agree" in p for p in fleet_checks.check_fleet_pins(disagree, None)))
+        newer = {**same, "c.yml": pin.replace("v1.0.0", "v1.0.1")}
+        self.assertTrue(any("don't agree" in p for p in fleet_checks.check_fleet_pins(newer, None)))
+        for bad in (pin.replace(sha, "v1.0.0"), pin.replace("   # v1.0.0", ""), pin.replace("# v1.0.0", "# 1.0.0")):
+            self.assertEqual(len(fleet_checks.check_fleet_pins({"a.yml": bad}, None)), 1, bad)
+
+    def test_every_semgrep_target_is_in_the_security_scans_change_filter(self):
+        text = (ROOT / ".github/workflows/security.yml").read_text()
+        code_paths = re.search(r"^\s*code-paths:\s*(\S+)\s*$", text, re.MULTILINE).group(1)
+        targets = re.search(r"^\s*semgrep-paths:\s*(.+?)\s*$", text, re.MULTILINE).group(1).split()
+        self.assertIn("run.py", targets)
+        for target in targets:
+            changed = target if (ROOT / target).is_file() else f"{target}/changed.py"
+            self.assertTrue(re.search(code_paths, changed), f"a change to {changed} would not run Semgrep ({code_paths})")
+        self.assertIsNone(re.search(code_paths, "tools/run.py"))
+        self.assertIsNone(re.search(code_paths, "docs/SPEC.md"))
+
+    def test_this_repositorys_fleet_pins_name_one_release(self):
+        texts = {str(p.relative_to(ROOT)): p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml")}
+        pins = fleet_checks.fleet_pins(texts)
+        self.assertGreaterEqual(len(pins), 6)
+        self.assertEqual(len({(sha, version) for _, sha, version in pins}), 1)
 
     def test_removed_tests_need_a_reason(self):
         self.assertEqual(fleet_checks.test_names("def test_a(self): pass\n    def test_b(self): pass"), {"test_a", "test_b"})

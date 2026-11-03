@@ -46,7 +46,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 ## Working in a container
 
 - Run Python through `poetry run` or `make`, never the bare `python3`: Darkroom needs Python 3.14 and its locked dependencies.
-- Some checks only run in CI: the Semgrep registry packs, Trivy, pip-audit, CodeQL, the image build and its `/healthz` smoke test, and zizmor's online checks (locally, `poetry run zizmor --offline .github`).
+- Some checks only run in CI: the Semgrep registry packs, npm audit, Trivy, pip-audit, the image build and its `/healthz` smoke test, and zizmor's online checks (locally, `poetry run zizmor --offline .github`).
 - A session whose working directory isn't a git repository can't make a worktree; start it in the repository.
 
 ## Start from the feature map
@@ -102,7 +102,7 @@ Review findings on agents' pull requests fall into a few kinds. Check your chang
 - Keep commits focused, with a clear message. An agent's commit ends with a `Co-Authored-By: Claude <Model> <version> <noreply@anthropic.com>` trailer naming the model that wrote it (checked on every pull request).
 - Open a pull request for every change you're asked to make, once it's pushed, and summarize what changed and why in a few bullets, with how it was tested.
 - A pull request's title decides the next version when it's merged: `feat: …` releases a minor version, `fix: …` or anything else a patch, and `feat!: …` (or a `BREAKING CHANGE:` line) a major one.
-- A pull request is ready when its "Merge gate" check passes: every check green (`.github/scripts/merge-gate.sh`).
+- A pull request is ready when its "Merge gate" check passes: every check green, including the independent "Agent review" and, on a risky pull request (labelled `safety-critical` or `security`, or changing a path `.github/workflows/agent-review.yml` lists), the "Second review" (fleet's merge gate and agent review, called from `.github/workflows/`). A blocking finding fails the review's status until a push clears it.
 - Don't hard-wrap lines in pull request descriptions, comments, issues or commit message bodies: write each paragraph or list item as one line. Only code and repo files keep their own wrapping.
 
 ## Model routing
