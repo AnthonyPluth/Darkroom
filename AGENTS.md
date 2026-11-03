@@ -15,7 +15,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
 - `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` and the signed-out view are placeholders until the design signed off in #16 replaces them (#17).
 - `ios/` (XcodeGen, SwiftUI): added by a later issue.
 - `tests/`: backend tests, run with `unittest`.
-- `tools/`: scripts for the repo itself: `no_comments.py`, `coverage_floor.py`, `fleet_checks.py`, `feature_map.py`, `api_contract.py`.
+- `tools/`: scripts for the repo itself: `fleet` (the shim that runs fleet's tools at the version in `.fleet/version`), `app_checks.py` (Darkroom's own checks, run by `fleet checks`), `feature_map.py`, `api_contract.py`, `scrub_snapshot.py`.
 - `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and later the signed-off designs in `design/`.
 
 A broken boundary fails `make lint`: move the code to where its import is allowed rather than adding an exception. A new provider module gets added to the `providers-alone` contract.
@@ -26,9 +26,10 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 - `make check`: each tool once: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the feature map's and API contract's checks, the fleet checks, the Python tests in parallel with the coverage floor, and the web app's checks (`make frontend-check`).
 - `make lint`: ruff, mypy, import-linter, the no-comments check and Darkroom's Semgrep rules (`.semgrep/darkroom.yml`, run with `semgrep`; install it with `pipx install semgrep==1.146.0` or `uv tool install semgrep==1.146.0` on a Python it supports).
-- `make test`: `poetry run python -m unittest discover tests`. `make test-parallel` runs the same across 4 processes with coverage and its floor (`tools/coverage_floor.py`: 85% overall, 90% for each module in `darkroom/domain/`, `darkroom/providers/`, `darkroom/server/api/`, `darkroom_browser/pages/` and `darkroom_browser/jobs/`).
+- `make test`: `poetry run python -m unittest discover tests`. `make test-parallel` runs the same across 4 processes with coverage and its floor (`tools/fleet coverage-floor`, from `[tool.fleet.coverage]` in `pyproject.toml`: 85% overall, 90% for each module in `darkroom/domain/`, `darkroom/providers/`, `darkroom/server/api/`, `darkroom_browser/pages/` and `darkroom_browser/jobs/`).
 - `make fix`: apply ruff's safe fixes; review the diff afterward.
-- `make fleet-checks`: `tools/fleet_checks.py`: one Alembic head, a test for each migration, the workflows' conventions (bash with `-eo pipefail`, SHA-pinned actions with a version comment, `persist-credentials: false`), and on a pull request the `Co-Authored-By` trailer on your commits and no test removed or skipped without a `Removes-Test:` or `Skips-Test:` trailer.
+- `make fleet-checks`: `tools/fleet checks --commits origin/main..HEAD` (configured by `[tool.fleet]` in `pyproject.toml`, plus Darkroom's own checks in `tools/app_checks.py`) then `tools/fleet drift`: one Alembic head, a test for each migration, the workflows' conventions (bash with `-eo pipefail`, SHA-pinned actions with a version comment, `persist-credentials: false`), the `Co-Authored-By` trailer on your commits and no test removed or skipped without a `Removes-Test:` or `Skips-Test:` trailer, and that the `AGENTS.md` blocks, the vendored `.claude/` files and `tools/fleet` equal fleet's at `.fleet/version`.
+- `make fleet-sync version=vX.Y.Z`: moves fleet's content (the `AGENTS.md` blocks, `.claude/skills/fleet-*`, `.claude/agents/fleet-reviewer.md`, `.claude/hooks/fleet-session-start.sh`, `tools/fleet`, `.fleet/version`) to a fleet release; `fleet-sync.yml` normally does it after Dependabot bumps the workflow pins.
 - `make feature-map` / `make feature-map-check`: regenerate and check `docs/feature-map.json`; every route has a test.
 - `make api-contract` / `make api-contract-check`: regenerate and check `docs/openapi.json` and `frontend/src/lib/api-types.ts` from the routes and their handlers' annotations: a handler's reply is `-> Annotated[Response, contract.X]` and its body `request: Annotated[Request, contract.Y]`, with `X` and `Y` TypedDicts in `darkroom/server/contract.py`.
 - `make frontend-check`: the web app's svelte-check, ESLint (with the paved-path rules, whose examples are `frontend/src/lint-rules.test.ts`), Vitest with the coverage floor in `frontend/vite.config.ts`, and the build. `make frontend-install`, `frontend-typecheck`, `frontend-lint`, `frontend-test` and `frontend-build` run one step each.
@@ -36,18 +37,27 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 ## Starting work
 
-- **One issue, one session.** Work starts from an issue made with the "Agent task" template (`.github/ISSUE_TEMPLATE/agent-task.md`): its scope, acceptance criteria, dependencies and the model to use (see [CLAUDE.md](CLAUDE.md)). Start only when everything under "Depends on" is merged.
-- **Decisions belong in the issue.** If the issue doesn't settle something the owner would notice, ask instead of choosing; where it names a default from #10, use it.
-- **Done means checked.** An issue says how its result is checked; the pull request shows that output, not a description of it.
-- **A correction becomes a check.** When a mistake is pointed out, fix it and add what would have caught it (a Semgrep rule with examples in `.semgrep/`, a test, or a check in `tools/fleet_checks.py`).
+<!-- fleet:begin starting-work v1.1.0 -->
+- **One issue, one session, one pull request.** Work starts from an issue written as an agent task: its scope, acceptance criteria, dependencies and the model to use (see [CLAUDE.md](CLAUDE.md)). Start a fresh session for each one, on that model, rather than running many pieces of work through one long session.
+- **Decisions belong in the issue.** If the issue doesn't settle something a user would notice, ask instead of choosing. Otherwise keep existing behaviour exactly; a change that isn't asked for is a regression.
+- **Done means checked.** An issue says how its result is checked (`make check`, a test that fails before the change, `make verify` for anything on screen where the repository has it); the pull request shows that output, not a description of it.
+- **Verify in proportion.** Run the tests your change touches while working, and `make check` once before pushing.
+- **A correction becomes a check.** When a mistake is pointed out, fix it and add what would have caught it: a lint rule, a type, a test, or a check `fleet checks` runs ("Mistakes that keep coming back" says how). A sentence in this file is the last resort, for what no check can express.
 - **Parallel work stays apart.** Agents working at once take separate areas. Two pull requests that change the same files, or both add a migration, land one at a time: the second merges `main` in and re-runs its checks.
+<!-- fleet:end starting-work -->
+- **Issues come from the "Agent task" template** (`.github/ISSUE_TEMPLATE/agent-task.md`). Start only when everything under "Depends on" is merged.
 - **No design ships without sign-off.** Any web page or iPhone screen is built only against a design the owner has signed off in `docs/design/`.
 
 ## Working in a container
 
-- Run Python through `poetry run` or `make`, never the bare `python3`: Darkroom needs Python 3.14 and its locked dependencies.
-- Some checks only run in CI: the Semgrep registry packs, npm audit, Trivy, pip-audit, the image build and its `/healthz` smoke test, and zizmor's online checks (locally, `poetry run zizmor --offline .github`).
-- A session whose working directory isn't a git repository can't make a worktree; start it in the repository.
+<!-- fleet:begin working-in-a-container v1.1.0 -->
+- **Start the session in the repository.** The session-start hook (in `.claude/hooks/`) sets up the toolchain, Poetry's environment and the web app's packages, but only for a session whose project directory is this repository. A session started one level up has none of it: the system `python3` lacks the dependencies, and the tests fail on their imports.
+- **Run Python through `poetry run` or `make`** (`make test`, or `poetry run python -m unittest tests.test_x`), never the bare `python3`. `make setup` installs the dependencies by hand.
+- **Subagents make their own worktree** under `.claude/worktrees/` (ignored by `.gitignore`), from the session's checkout, and push from there. A session whose working directory isn't a git repository can't create one for them.
+- **Skills have two homes.** fleet's skills are under `.claude/skills/fleet-*` and are changed in fleet; the app's own are under `.claude/skills/`; skills go nowhere else (`fleet checks` checks it: `skill-homes`).
+<!-- fleet:end working-in-a-container -->
+- **Some checks only run in CI**: the Semgrep registry packs, npm audit, Trivy, pip-audit, the image build and its `/healthz` smoke test, and zizmor's online checks (locally, `poetry run zizmor --offline .github`).
+- **The hook is configured, not edited.** The session-start hook is fleet's (`.claude/hooks/fleet-session-start.sh`, vendored); what it installs here is in `.claude/hooks/fleet.conf` (Python 3.14, the web app's packages, exiftool and libfaketime).
 
 ## Start from the feature map
 
@@ -55,7 +65,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 ## Conventions
 
-- No comments or docstrings in code (Python, TypeScript, JavaScript, Svelte, CSS): name things so the code says what it does, and put the why in the commit message, the pull request or the docs. `tools/no_comments.py` fails on one, and so does ESLint's `darkroom/no-comments` in `frontend/`; a tool's directive (`# noqa`, `# type:`) is not a comment.
+- No comments or docstrings in code (Python, TypeScript, JavaScript, Svelte, CSS): name things so the code says what it does, and put the why in the commit message, the pull request or the docs. `tools/fleet no-comments` (over the paths `[tool.fleet.no-comments]` lists) fails on one, and so does ESLint's `darkroom/no-comments` in `frontend/`; a tool's directive (`# noqa`, `# type:`) is not a comment.
 - One paved path; lint fails on the old way (`.semgrep/darkroom.yml`). Outbound HTTP through `darkroom/tls.py` (in the worker, through `darkroom_browser/client.py`, the only module that calls darkroom); subprocesses only in `darkroom/providers/exiftool.py` (and the worker's runner); request bodies through `darkroom/validate.py`; time through `darkroom/dates.py` (never a naive `utcnow()`, never a bare `date.today()` in the domain, providers or jobs). Fix a finding with the helper, or justify an inline `nosemgrep` with a reason; don't switch the rule off.
 - Every route declares an auth kind in `darkroom/server/routes.py`, is typed in `darkroom/server/contract.py` and has a test.
 - Schema changes need an Alembic migration in `darkroom/storage/migrations/`, numbered after main's newest, with its own `test_<revision>_…` in `tests/test_migrations.py` (checked).
@@ -76,17 +86,25 @@ These are what the service is for; a change that breaks one is a blocking bug, w
 
 ## Mistakes that keep coming back
 
-Review findings on agents' pull requests fall into a few kinds. Check your change for each before you push. When one can be checked, it moves out of this list into a check.
+<!-- fleet:begin mistakes v1.1.0 -->
+**A mistake that repeats gets a check.** When review flags the same kind of mistake on a second pull request, the fix adds a check that would have caught it: a lint rule (ESLint, or Semgrep in `.semgrep/` with a failing and a passing example), a type (strict mypy, a `NewType` or `Literal`), or a test. The item below then names that check in its parenthesis (`checked: waypoint-trip-visibility`, `checked: tests/test_offline.py`). An item stays *human-judged* only when no check can express it, and says why. Every month the "Repeated review findings" issue lists the kinds that came back; a row there is closed by a check, not by a new sentence here.
 
-- **Failure paths** (human-judged). For every new error, rejection or early return, know what the user sees, and test it. Don't leave stale state that says things are fine: a run that half-fails must not clear the last good status or an alert that is still true.
+Review findings on agents' pull requests fall into the same few kinds: check your change for each before you push. The independent review ("Agent review", and "Second review" on a risky pull request) reads every agent's pull request for the *human-judged* ones, and a blocking finding fails the merge gate.
+
+- **Failure paths** (human-judged: what a person should see when something fails is a product decision, which no rule can see). For every new error, rejection or early return, know what the user sees, and test it. Don't leave stale state that says things are fine: a scan or sync that half-fails must not clear the last warning, a failed reload must not leave old data on screen looking current, and a job that couldn't start isn't a failed run.
+- **Access that outlives the person** (human-judged: each new kind of credential is new code that no existing check knows; its own test holds it once written). A new kind of session, grant, token, key or connection must end when its owner can no longer sign in, like browser sessions do; test that it does.
+- **Undo and restore** (human-judged: which values are awkward depends on the data; the round-trip test holds each case once written). Putting something back restores exactly what was there, without normalizing it on the way; test the round trip with awkward values.
+- **GitHub Actions** (partly checked: `fleet checks` checks bash by default, SHA pins with a version comment, paginated `gh api` lists, step-only contexts in a workflow's or job's `env:` and every `runs-on:`; zizmor checks `persist-credentials`, template injection and pinning; concurrency groups and agents' allowed commands are human-judged, because the right group and the commands an agent needs depend on what the workflow does). Workflows run bash with `-eo pipefail` (each file's `defaults`); keep it. On a pull request's `closed` event `github.ref` is main's, so build concurrency groups from `github.event.pull_request.number`. Check out with `persist-credentials: false`, pin actions by SHA with the version in a comment, pass event values to scripts as environment variables, paginate `gh api` lists, and allow an agent only the exact commands it needs. Run zizmor on a workflow you change.
+- **Layout** (human-judged: whether a page reads well at a width is a judgement, which no rule can make; the screenshots at both widths show it). A layout change is checked at phone and desktop widths, not only the one it was written at.
+- **Verification that doesn't cover the change** (partly checked: `fleet checks verification`; coverage is judged by the review). Where the app sets `[tool.fleet.verification]`, the pull request's Verification table names every behaviour the change touches as a dimension: `verified` with evidence that exists in the diff or the tree and exercises the change, or `not verified` with why and what would close the gap. A `verified` claim whose evidence doesn't exist, or a changed behaviour missing from the table, is blocking; a vague gap reason is advisory.
+<!-- fleet:end mistakes -->
+
+Darkroom's own, after fleet's:
+
 - **Private data in logs** (partly checked: Semgrep sends log lines through `monitoring.log`, which scrubs credentials). Log counts and fixed texts, never a file name, a path beyond the person's folder, a location, an API key or a token. Test with canary values (`tests/privacy.py`'s `no_leaks`, from #14).
 - **Personal data in the repo** (human-judged). Fixtures are generated and made up. Never put a real photo, file name, location, email or Google export in a test, a fixture, an issue or a pull request.
-- **Access that outlives the person** (human-judged). A new kind of session, grant, token or device registration must end when its owner can no longer sign in.
 - **Time zones** (partly checked: lint rejects a bare `date.today()` in the domain, providers and jobs, and `datetime.utcnow()`). A photo's time is a UTC instant plus the offset where it was taken; never compare a wall-clock time to an instant, and never invent an offset.
-- **Undo and restore** (human-judged). Putting something back restores exactly what was there, without normalizing it on the way; test the round trip with awkward values.
 - **Deleting is the one thing that can lose a photo** (checked for eligibility; human-judged elsewhere). Anything that touches a file on Unraid or a flag that feeds eligibility gets a negative test for each way it must not act.
-- **GitHub Actions** (checked: `tools/fleet_checks.py` and zizmor). Bash with `-eo pipefail`, actions pinned by SHA with a version comment, `persist-credentials: false`, paginated `gh api` lists.
-- **Layout** (human-judged). A layout change is checked at phone and desktop widths, not only the one it was written at.
 
 ## Before you push
 
@@ -98,12 +116,18 @@ Review findings on agents' pull requests fall into a few kinds. Check your chang
 
 ## Git and PRs
 
-- Work on the branch you were given; don't push to `main`.
+<!-- fleet:begin git-and-prs v1.1.0 -->
+- Work on the branch you were given; never push to `main`.
 - Keep commits focused, with a clear message. An agent's commit ends with a `Co-Authored-By: Claude <Model> <version> <noreply@anthropic.com>` trailer naming the model that wrote it (checked on every pull request).
-- Open a pull request for every change you're asked to make, once it's pushed, and summarize what changed and why in a few bullets, with how it was tested.
-- A pull request's title decides the next version when it's merged: `feat: …` releases a minor version, `fix: …` or anything else a patch, and `feat!: …` (or a `BREAKING CHANGE:` line) a major one.
-- A pull request is ready when its "Merge gate" check passes: every check green, including the independent "Agent review" and, on a risky pull request (labelled `safety-critical` or `security`, or changing a path `.github/workflows/agent-review.yml` lists), the "Second review" (fleet's merge gate and agent review, called from `.github/workflows/`). A blocking finding fails the review's status until a push clears it.
-- Don't hard-wrap lines in pull request descriptions, comments, issues or commit message bodies: write each paragraph or list item as one line. Only code and repo files keep their own wrapping.
+- Before pushing to a pull request, run `make check`.
+- Open a pull request for every change, once it's pushed, as a draft, and summarize what changed and why. Keep the description short and professional: a few bullets on the change and how it was tested, not an essay. Don't say who asked for it or reported it.
+- Keep a pull request a draft until every check is green, every review has finished and every comment is addressed. Right after opening the draft, comment `@codex review` on it if the repository uses that reviewer (it doesn't review a draft by itself, but that comment asks it to), and again after a substantive push. Mark it ready for review only when every check is green, the independent "Agent review", the "Second review" where it applies and any such reviewer have all finished, and every review comment has been fixed or answered and resolved. Then watch it until it merges.
+- A pull request's title decides the next version when it's merged: `feat: …` releases a minor version, `fix: …` or anything else a patch, and `feat!: …` (or a `BREAKING CHANGE:` line) a major one, for a change that breaks an existing setup.
+- Where the app sets `[tool.fleet.verification]`, a pull request's description carries a Verification block (the table between the `fleet-verification` markers: each dimension of the change `verified` with its evidence, or `not verified` with why) before it is marked ready, written with the `fleet-verify-change` skill; `fleet checks` reads it.
+- A pull request is ready when its "Merge gate" check passes: every check green, including, on an agent's pull request, the independent "Agent review" with no blocking finding and, on a risky one (labelled `safety-critical` or `security`, or touching the paths the review lists), the "Second review". Dependabot's updates merge themselves through it.
+- Don't hard-wrap lines in pull request descriptions, comments, issues or the body of a commit message: write each paragraph or list item as one line, and let GitHub wrap it to the screen. Only code and repo files keep their own wrapping. Keep the commit subject to one short line.
+<!-- fleet:end git-and-prs -->
+- **Codex reviews every pull request; the Claude review is only for risky ones** (the owner's decision of Nov 3). Comment `@codex review` on the draft as the block says. `.github/workflows/agent-review.yml` passes `first-review: false`, so there is no "Agent review" status or comment, and the merge gate requires "Second review" alone: fleet's second review on a risky pull request (labelled `safety-critical` or `security`, or changing a path that workflow lists), a passing "Not a risky pull request" otherwise. The gate also fails while a thread opened by Codex with a P1 or P2 badge is unresolved; resolving a thread starts no workflow, so afterwards run "Merge gate" by hand with the pull request's number, or push. To switch the first review back on, see `docs/runbook.md`.
 
 ## Model routing
 

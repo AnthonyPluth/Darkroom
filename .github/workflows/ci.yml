@@ -31,10 +31,10 @@ jobs:
       - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
       - name: Tests (parallel) with coverage
         run: poetry run unittest-parallel -t . -s tests -j 4 --coverage --coverage-rcfile pyproject.toml
-      - name: Coverage floor (tools/coverage_floor.py)
+      - name: Coverage floor (fleet coverage-floor, [tool.fleet.coverage] in pyproject.toml)
         run: |
           poetry run coverage json -q -o coverage.json
-          poetry run python tools/coverage_floor.py coverage.json
+          tools/fleet coverage-floor coverage.json
       - name: Check dependencies for known vulnerabilities
         run: poetry run pip-audit
       - name: Lint (ruff)
@@ -43,10 +43,10 @@ jobs:
         run: poetry run mypy
       - name: Check import boundaries (import-linter)
         run: poetry run lint-imports
-      - name: No comments or docstrings
-        run: poetry run python tools/no_comments.py
+      - name: No comments or docstrings (fleet no-comments)
+        run: tools/fleet no-comments
 
-  checks:
+  generated:
     runs-on: ubuntu-latest   # hosted: the repository is private and small
     timeout-minutes: 15
     steps:
@@ -59,16 +59,16 @@ jobs:
         run: poetry run python tools/feature_map.py --check
       - name: API contract is current
         run: poetry run python tools/api_contract.py --check
-      - name: Migrations, workflow conventions and (on a pull request) commit trailers
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ -n "$BASE" ]; then
-            poetry run python tools/fleet_checks.py --commits "$BASE..$HEAD"
-          else
-            poetry run python tools/fleet_checks.py
-          fi
+
+  # Checks that replaced instructions agents kept getting wrong, run by fleet's reusable workflow (AnthonyPluth/fleet,
+  # .github/workflows/checks.yml) from fleet at the pin below, never from a ref the pull request names: `fleet checks`
+  # ([tool.fleet] in pyproject.toml, plus Darkroom's own tools/app_checks.py; on a pull request also the commits'
+  # trailers and removed or skipped tests) and `fleet drift` (the AGENTS.md blocks and the vendored .claude/ files equal
+  # to fleet's at .fleet/version). The job reads the repository and nothing else.
+  fleet-checks:
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@acfb09312e648eb5dde4ace69e8c849c7a33e789   # v1.1.0
 
   semgrep-rules:
     runs-on: ubuntu-latest   # hosted: the repository is private and small

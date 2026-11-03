@@ -41,6 +41,21 @@ extend-exclude = [".semgrep/examples"]
 select = ["E4", "E7", "E9", "F", "B", "UP", "SIM", "RUF"]
 ignore = ["E402", "E702", "E731", "E741", "RUF001", "RUF002", "RUF003", "RUF012", "SIM117"]
 
+[tool.fleet]
+migrations = "darkroom/storage/migrations/versions"
+migration-tests = "tests/test_migrations.py"
+tested-from = "0001"
+image-homes = ["darkroom/static/", "docs/design/", "ios/Darkroom/Assets.xcassets/"]
+skills = ".claude/skills"
+extra-checks = "tools.app_checks:CHECKS"
+
+[tool.fleet.no-comments]
+paths = ["darkroom", "darkroom_browser", "tests", "tools", "frontend/src"]
+
+[tool.fleet.coverage]
+overall = 85
+modules = { "darkroom/domain/" = 90, "darkroom/providers/" = 90, "darkroom/server/api/" = 90, "darkroom_browser/pages/" = 90, "darkroom_browser/jobs/" = 90 }
+
 [tool.coverage.run]
 source = ["."]
 omit = ["tests/*", "darkroom_browser/live.py"]
