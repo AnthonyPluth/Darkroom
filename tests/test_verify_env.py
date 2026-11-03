@@ -130,6 +130,27 @@ class CommandTests(unittest.TestCase):
             self.assertFalse(set(SECRETS.values()) & set(env.values()))
             self.assertEqual({call.args[0] for call in handlers.call_args_list}, {signal.SIGTERM, signal.SIGINT})
 
+    def test_a_server_that_cannot_start_leaves_no_copy_and_no_open_log(self):
+        logs = []
+        real_fdopen = os.fdopen
+
+        def remembering(*args, **kwargs):
+            opened = real_fdopen(*args, **kwargs)
+            logs.append(opened)
+            return opened
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(verify, "find_faketime", return_value="/lib/f.so"), \
+                mock.patch.object(verify, "die_with_parent"), mock.patch("subprocess.Popen", side_effect=OSError(2, "No such file")), \
+                mock.patch("os.fdopen", side_effect=remembering), mock.patch("signal.signal"), mock.patch("sys.stderr"):
+            seed = os.path.join(tmp, "seed")
+            os.makedirs(os.path.join(seed, "data"))
+            data = os.path.join(tmp, "live")
+            self.assertEqual(verify.serve(["--parent", "42", "--seed", seed, "--data", data, "--port", "9200"]), 2)
+            self.assertFalse(os.path.exists(data))
+            self.assertEqual([log.closed for log in logs], [True])
+            with mock.patch("subprocess.Popen", return_value=mock.Mock(spec=REAL_POPEN, wait=mock.Mock(return_value=0))):
+                self.assertEqual(verify.serve(["--parent", "42", "--seed", seed, "--data", data, "--port", "9200"]), 0)
+
     def test_serve_refuses_a_folder_that_exists_and_does_not_remove_it(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(verify, "find_faketime", return_value="/lib/f.so"), \
                 mock.patch.object(verify, "die_with_parent"), mock.patch("subprocess.Popen") as popen, mock.patch("signal.signal"), mock.patch("sys.stderr"):

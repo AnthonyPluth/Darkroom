@@ -436,6 +436,12 @@ def still_allowed(settings: Settings, user: User) -> bool:
     return allowed(settings, email_of({"email": user.email}), bool(user.email_verified), stored_groups(user))
 
 
+def session_accepted(settings: Settings, user: User) -> bool:
+    if not accepted_here(settings, user.sub):
+        return False
+    return is_demo_sub(user.sub) or still_allowed(settings, user)
+
+
 def find_session(opened: Session, token: str | None) -> AuthSession | None:
     if not token or len(token) > 200:
         return None
@@ -451,7 +457,7 @@ def session_user(opened: Session, settings: Settings, token: str | None, now: fl
     if found is None:
         return None
     user = opened.get(User, found.sub)
-    if expired(found, now) or user is None or not accepted_here(settings, user.sub) or not still_allowed(settings, user):
+    if expired(found, now) or user is None or not session_accepted(settings, user):
         opened.delete(found)
         opened.flush()
         return None

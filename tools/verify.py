@@ -140,7 +140,7 @@ def seed(argv: list[str]) -> int:
         shutil.rmtree(a.data, ignore_errors=True)
         print(f"verify: couldn't fill the demo database:\n{done.stdout}{done.stderr}", file=sys.stderr)
         return 2
-    print(f"verify: demo data seeded in {a.data}; the demo member's session is in {os.path.join(data_dir(a.data), DEMO_SESSION_FILE)}")
+    print(f"verify: demo data seeded in {a.data}; the demo member's session cookie is in {os.path.join(data_dir(a.data), DEMO_SESSION_FILE)}")
     return 0
 
 
@@ -164,18 +164,20 @@ def serve(argv: list[str]) -> int:
             shutil.rmtree(a.data, ignore_errors=True)
         print(f"verify: couldn't copy the demo data into {a.data}: {e.strerror or e}", file=sys.stderr)
         return 2
-    log = os.fdopen(os.open(os.path.join(a.data, "server.log"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb")
-    server = subprocess.Popen(server_command(), cwd=ROOT, env=frozen_env(clean_env(a.data, port=a.port), library), stdout=log, stderr=subprocess.STDOUT)
-
-    def ended(signum: int, _frame: object) -> None:
-        server.terminate()
-    signal.signal(signal.SIGTERM, ended)
-    signal.signal(signal.SIGINT, ended)
     try:
-        code = server.wait()
-        return 128 - code if code < 0 else code
+        with os.fdopen(os.open(os.path.join(a.data, "server.log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as log:
+            server = subprocess.Popen(server_command(), cwd=ROOT, env=frozen_env(clean_env(a.data, port=a.port), library), stdout=log, stderr=subprocess.STDOUT)
+
+            def ended(signum: int, _frame: object) -> None:
+                server.terminate()
+            signal.signal(signal.SIGTERM, ended)
+            signal.signal(signal.SIGINT, ended)
+            code = server.wait()
+            return 128 - code if code < 0 else code
+    except OSError as e:
+        print(f"verify: couldn't start the demo server: {e.strerror or e}", file=sys.stderr)
+        return 2
     finally:
-        log.close()
         if made:
             shutil.rmtree(a.data, ignore_errors=True)
 
@@ -203,8 +205,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["status"]:
         print(json.dumps(status()))
         return 0
-    print("usage: python tools/verify.py seed --data D, serve --parent PID --seed S --data D --port P, or status (frontend/verify/control.mjs runs those)",
-          file=sys.stderr)
+    print("usage: python tools/verify.py seed --data D (D must not exist yet), serve --parent PID --seed S --data D --port P, or status", file=sys.stderr)
     return 1
 
 

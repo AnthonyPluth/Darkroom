@@ -126,7 +126,7 @@ def login(request: Request) -> Response:
         return redirect(oidc.safe_next(first_query(request, "next")))
     if demo_allowed(settings):
         return page(503, "Demo mode", "This Darkroom runs on made-up demo data and has no sign-in provider. "
-                    "Use the session that `run.py demo` wrote to demo-session.json in its data folder (tools/control sets it for you).")
+                    "Open it with the session cookie that `run.py demo` wrote to demo-session.json in its data folder.")
     if not oidc.configured(settings):
         return page(503, "Sign-in is not set up", "Darkroom has no sign-in provider configured. Set OIDC_ISSUER and OIDC_CLIENT_ID.")
     try:

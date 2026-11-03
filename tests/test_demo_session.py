@@ -57,6 +57,20 @@ class DemoSessionTests(DemoSessionCase):
                 self.assertEqual(fetch(base, "GET", "/api/me")[0], 401)
                 self.assertEqual(fetch(base, "GET", "/api/me", {"Cookie": f"{auth.SESSION_COOKIE}={self.token[:-1]}x"})[0], 401)
 
+    def test_an_inherited_oidc_allowlist_does_not_lock_the_demo_member_out_nor_let_a_production_server_in(self):
+        for groups in ("admins", ""):
+            with self.subTest(groups=groups):
+                base = self.server(settings_from(DARKROOM_DEMO="1", OIDC_ALLOWED_GROUPS=groups, OIDC_ALLOWED_EMAILS=""))
+                status, _, body = fetch(base, "GET", "/api/me", self.cookie)
+                self.assertEqual((status, json.loads(body)["sub"]), (200, "demo:avery"))
+                self.assertEqual(self.sessions(), 1)
+        for extra in ({}, {"OIDC_ALLOWED_GROUPS": "parents"}, {"OIDC_ALLOWED_GROUPS": "", "OIDC_ALLOWED_EMAILS": "avery@example.com"}):
+            with self.subTest(extra=extra):
+                with db.session(self.engine) as opened:
+                    token = demo.sign_in(opened, self.demo, NOW)
+                base = self.server(settings_from(**PRODUCTION, **extra))
+                self.assertEqual(fetch(base, "GET", "/api/me", {"Cookie": f"{auth.SESSION_COOKIE}={token}"})[0], 401)
+
     def test_without_darkroom_demo_the_same_database_refuses_the_demo_cookie(self):
         base = self.server(settings_from())
         status, _, body = fetch(base, "GET", "/api/me", self.cookie)

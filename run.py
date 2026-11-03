@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -14,7 +15,7 @@ from darkroom.domain import demo, index
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
 from darkroom.storage import db
-from darkroom.storage.models import Person, User
+from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
@@ -127,51 +128,72 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     return 0
 
 
-def demo_settings(folder: str | None) -> config.Settings:
-    settings = config.load()
-    if folder:
-        root = Path(folder)
-        settings = dataclasses.replace(settings, data_dir=root / "data", photos_root=root / "photos", database_url="")
-    return dataclasses.replace(settings, demo=True)
+def demo_settings(folder: str) -> config.Settings:
+    root = Path(folder)
+    return dataclasses.replace(config.load(), data_dir=root / "data", photos_root=root / "photos", database_url="", demo=True)
+
+
+def occupied(folder: Path) -> bool:
+    return folder.exists() and (not folder.is_dir() or any(folder.iterdir()))
 
 
 def write_demo_session(settings: config.Settings, token: str) -> Path:
     target = settings.data_dir / DEMO_SESSION_FILE
     body = json.dumps({"cookie": auth.SESSION_COOKIE, "token": token, "sub": demo.MEMBER.sub, "name": demo.MEMBER.name}).encode()
-    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(handle, "wb") as out:
-        os.fchmod(out.fileno(), 0o600)
         out.write(body)
     return target
 
 
+def seed_demo(settings: config.Settings) -> tuple[demo.Summary, Path]:
+    migrate(settings)
+    engine = db.make_engine(db.database_url(settings))
+    try:
+        with db.session(engine) as opened:
+            now = utc_now()
+            summary = demo.seed(opened, Photos(settings.photos_root), settings, now.date())
+            token = demo.sign_in(opened, settings, now.timestamp())
+            return summary, write_demo_session(settings, token)
+    finally:
+        engine.dispose()
+
+
+def unseed(settings: config.Settings) -> None:
+    for root in (settings.photos_root, settings.data_dir):
+        entries = sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True) if root.is_dir() else []
+        for path in entries:
+            if path.is_dir():
+                with contextlib.suppress(OSError):
+                    path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+
+
 def run_demo(folder: str | None) -> int:
+    if not folder:
+        print("demo needs --data DIR, an empty folder for its made-up data; it never uses the configured data folder or photo root", file=sys.stderr)
+        return 1
     settings = demo_settings(folder)
     refused = config.demo_misused(settings)
     if refused:
         print(f"demo: {refused}", file=sys.stderr)
         return 1
+    for where in (settings.data_dir, settings.photos_root):
+        if occupied(where):
+            print(f"demo: {where} already holds something; point --data at an empty folder", file=sys.stderr)
+            return 1
     settings.photos_root.mkdir(parents=True, exist_ok=True)
-    migrate(settings)
-    engine = db.make_engine(db.database_url(settings))
     try:
-        with db.session(engine) as opened:
-            if opened.query(Person).count() or opened.query(User).count():
-                print(f"demo: {settings.data_dir} already holds data; point --data at an empty folder", file=sys.stderr)
-                return 1
-            now = utc_now()
-            summary = demo.seed(opened, Photos(settings.photos_root), settings, now.date())
-            token = demo.sign_in(opened, settings, now.timestamp())
-    except exiftool.Missing as error:
-        print(f"demo: {error}", file=sys.stderr)
+        summary, session_file = seed_demo(settings)
+    except (exiftool.Missing, OSError) as error:
+        unseed(settings)
+        print(f"demo: {error}; nothing was left under {folder}, so the same folder can be used again", file=sys.stderr)
         return 1
-    finally:
-        engine.dispose()
-    session_file = write_demo_session(settings, token)
     print(f"Seeded {summary.people} made-up people with {summary.accounts} Google accounts, {summary.pixels} Pixels, {summary.devices} iPhones, "
           f"{summary.originals} originals ({summary.indexed} indexed, {summary.failed} failed) and {summary.alerts} open alert.")
     print(f"Serve it with: DARKROOM_DEMO=1 DARKROOM_DATA_DIR={settings.data_dir} DARKROOM_PHOTOS_ROOT={settings.photos_root} python run.py serve")
-    print(f"The demo member's session cookie is in {session_file} (tools/control sets it for you); "
+    print(f"The demo member's session cookie is in {session_file} (the browser driver of a later issue sets it for you); "
           f"or add DARKROOM_ALLOW_NO_AUTH=1 instead of DARKROOM_DEMO=1 to browse as the local owner.")
     return 1 if summary.failed else 0
 

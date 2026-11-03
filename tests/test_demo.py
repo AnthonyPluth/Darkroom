@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -169,12 +170,82 @@ class SeededDemo(unittest.TestCase):
                 self.assertEqual(newest[:10], "2026-12-29")
 
 
+def tree_digests(root):
+    return {str(path.relative_to(root)): (hashlib.sha1(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns) for path in sorted(Path(root).rglob("*")) if path.is_file()}
+
+
 class RunDemoTests(unittest.TestCase):
     def run_demo(self, folder, **env):
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err, \
                 mock.patch.dict(os.environ, env, clear=True), mock.patch.object(tls, "urlopen", side_effect=no_network):
-            code = run.main(["demo", "--data", folder])
+            code = run.main(["demo", "--data", folder] if folder else ["demo"])
         return code, out.getvalue(), err.getvalue()
+
+    def populated(self, folder):
+        root = Path(folder)
+        originals = root / "photos" / "avery" / "originals"
+        originals.mkdir(parents=True)
+        (originals / "IMG_0001.JPG").write_bytes(b"a real original, not to be touched")
+        (root / "data").mkdir()
+        (root / "data" / "darkroom.db").write_bytes(b"a real database")
+        return tree_digests(root)
+
+    def test_run_demo_without_data_refuses_and_touches_neither_the_configured_photos_nor_the_database(self):
+        with tempfile.TemporaryDirectory() as folder:
+            before = self.populated(folder)
+            code, _, err = self.run_demo(None, DARKROOM_PHOTOS_ROOT=f"{folder}/photos", DARKROOM_DATA_DIR=f"{folder}/data", DATABASE_URL=f"sqlite:///{folder}/data/darkroom.db")
+            self.assertEqual(code, 1)
+            self.assertIn("needs --data", err)
+            self.assertEqual(tree_digests(folder), before)
+
+    def test_run_demo_refuses_a_folder_whose_photos_or_data_already_hold_anything(self):
+        with tempfile.TemporaryDirectory() as folder:
+            before = self.populated(folder)
+            code, _, err = self.run_demo(folder)
+            self.assertEqual((code, "already holds something" in err), (1, True))
+            self.assertEqual(tree_digests(folder), before)
+            shutil.rmtree(Path(folder) / "data")
+            before = tree_digests(folder)
+            code, _, err = self.run_demo(folder)
+            self.assertEqual((code, "already holds something" in err), (1, True))
+            self.assertEqual(tree_digests(folder), before)
+            self.assertFalse((Path(folder) / "data").exists())
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "data").mkdir()
+            (Path(folder) / "data" / "notes.txt").write_text("mine")
+            self.assertEqual(self.run_demo(folder)[0], 1)
+            self.assertEqual(os.listdir(folder), ["data"])
+            self.assertEqual(os.listdir(Path(folder) / "data"), ["notes.txt"])
+
+    def test_the_writer_itself_never_replaces_a_file_even_without_the_guards(self):
+        from darkroom.storage.paths import AlreadyExists
+
+        with tempfile.TemporaryDirectory() as folder:
+            originals = Path(folder)
+            real = originals / "IMG_0003.HEIC"
+            real.write_bytes(b"a real original")
+            os.utime(real, (1_000_000_000, 1_000_000_000))
+            before = tree_digests(folder)
+            live = next(shot for shot in demo.SHOTS["avery"] if shot.stem == "IMG_0003")
+            with self.assertRaises(AlreadyExists):
+                demo.write_shot(originals, live, TODAY)
+            self.assertEqual(tree_digests(folder), before)
+            plain = next(shot for shot in demo.SHOTS["avery"] if shot.stem == "IMG_0001")
+            (written,) = demo.write_shot(originals, plain, TODAY)
+            self.assertEqual(written.name, "IMG_0001.JPG")
+            with self.assertRaises(AlreadyExists):
+                demo.write_shot(originals, plain, TODAY)
+
+    def test_a_session_file_that_cannot_be_written_leaves_an_empty_folder_for_a_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(run, "write_demo_session", side_effect=OSError(28, "No space left on device")):
+                code, _, err = self.run_demo(folder)
+            self.assertEqual(code, 1)
+            self.assertIn("No space left", err)
+            self.assertIn("can be used again", err)
+            self.assertEqual(tree_digests(folder), {})
+            self.assertEqual(self.run_demo(folder)[0], 0)
+            self.assertTrue((Path(folder) / "data" / "demo-session.json").is_file())
 
     def test_run_demo_seeds_an_empty_folder_and_the_status_route_shows_three_people_with_counts(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -207,7 +278,7 @@ class RunDemoTests(unittest.TestCase):
             self.assertEqual(fetch(base, "GET", "/api/status")[0], 401)
             code, _, err = self.run_demo(folder)
             self.assertEqual(code, 1)
-            self.assertIn("already holds data", err)
+            self.assertIn("already holds something", err)
 
     def test_run_demo_refuses_a_production_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -219,9 +290,10 @@ class RunDemoTests(unittest.TestCase):
             self.assertIn("loopback", err)
             self.assertEqual(os.listdir(folder), [])
 
-    def test_run_demo_without_exiftool_says_so_and_fails(self):
+    def test_run_demo_without_exiftool_says_so_fails_and_leaves_the_folder_empty(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(exiftool, "executable", side_effect=exiftool.Missing("exiftool is not installed")):
             code, _, err = self.run_demo(folder)
+            self.assertEqual(tree_digests(folder), {})
         self.assertEqual(code, 1)
         self.assertIn("exiftool is not installed", err)
 

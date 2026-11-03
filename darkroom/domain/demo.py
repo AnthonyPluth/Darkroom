@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from fractions import Fraction
+from io import BytesIO
 from pathlib import Path
 
 from PIL import ExifTags, Image
@@ -15,7 +16,7 @@ from darkroom import oidc
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, index, media
 from darkroom.storage.models import Device, GoogleAccount, Person, Pixel, PixelPerson
-from darkroom.storage.paths import Photos
+from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
 
@@ -186,20 +187,27 @@ def quicktime(created_utc: float, created_local: str, seconds: float, width: int
     return ftyp + atom(b"moov", mvhd + track + creation_keys(created_local)) + atom(b"mdat", bytes(4))
 
 
+def encoded(shot: Shot, local: datetime, fmt: str) -> bytes:
+    out = BytesIO()
+    picture(shot.colour).save(out, format=fmt, exif=exif_for(shot, local))
+    return out.getvalue()
+
+
+def create_only(path: Path, content: bytes, utc: float) -> Path:
+    write_once(path, [content])
+    os.utime(path, (utc, utc))
+    return path
+
+
 def write_shot(folder: Path, shot: Shot, today: date) -> list[Path]:
     local, utc = taken_at(shot, today)
     written: list[Path] = []
     if shot.kind in ("jpeg", "heic", "live"):
         suffix, fmt = (".JPG", "JPEG") if shot.kind == "jpeg" else (".HEIC", "HEIF")
-        still = folder / f"{shot.stem}{suffix}"
-        picture(shot.colour).save(still, format=fmt, exif=exif_for(shot, local))
-        written.append(still)
+        written.append(create_only(folder / f"{shot.stem}{suffix}", encoded(shot, local, fmt), utc))
     if shot.kind in ("live", "video"):
-        clip = folder / f"{shot.stem}.MOV"
-        clip.write_bytes(quicktime(utc, local.strftime("%Y-%m-%dT%H:%M:%S") + (shot.offset or "+00:00").replace(":", ""), shot.seconds, *SIZE))
-        written.append(clip)
-    for path in written:
-        os.utime(path, (utc, utc))
+        created_local = local.strftime("%Y-%m-%dT%H:%M:%S") + (shot.offset or "+00:00").replace(":", "")
+        written.append(create_only(folder / f"{shot.stem}.MOV", quicktime(utc, created_local, shot.seconds, *SIZE), utc))
     return written
 
 
