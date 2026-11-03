@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from darkroom import VERSION
-from darkroom.domain import browser_jobs
+from darkroom.domain import browser_jobs, index
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, json_response
 from darkroom.storage import db
@@ -18,4 +18,5 @@ def status(request: Request) -> Annotated[Response, contract.Status]:
         raise RuntimeError("this route needs the database")
     with db.session(request.engine) as opened:
         seen = browser_jobs.worker_last_seen(opened)
-    return json_response({"worker_last_seen": seen})
+        people = [{"slug": person.slug, "name": person.name, "indexed": count} for person, count in index.counts_by_person(opened)]
+    return json_response({"worker_last_seen": seen, "people": people})

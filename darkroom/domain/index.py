@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events, media
@@ -106,6 +106,12 @@ def index_person(opened: Session, photos: Photos, person: Person, now: float, re
     index_files(opened, photos, person, files, now, report, read)
     opened.flush()
     return report
+
+
+def counts_by_person(opened: Session) -> list[tuple[Person, int]]:
+    phone_items = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone")
+    rows = opened.execute(select(Person, func.count(MediaItem.id)).outerjoin(MediaItem, phone_items).group_by(Person.id).order_by(Person.id)).all()
+    return [(person, int(count)) for person, count in rows]
 
 
 def index_file(opened: Session, photos: Photos, person: Person, path: Path, now: float, read: Reader = exiftool.read) -> IndexReport:

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import json
+import os
 import sys
 from pathlib import Path
 
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool
 from darkroom.dates import utc_now
-from darkroom.domain import index
+from darkroom.domain import demo, index
 from darkroom.domain.ingest import unpack
-from darkroom.server import handler, jobs
+from darkroom.server import auth, handler, jobs
 from darkroom.storage import db
-from darkroom.storage.models import Person
+from darkroom.storage.models import Person, User
 from darkroom.storage.paths import Photos
+
+DEMO_SESSION_FILE = "demo-session.json"
 
 
 def check_config() -> int:
@@ -122,6 +127,54 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     return 0
 
 
+def demo_settings(folder: str | None) -> config.Settings:
+    settings = config.load()
+    if folder:
+        root = Path(folder)
+        settings = dataclasses.replace(settings, data_dir=root / "data", photos_root=root / "photos", database_url="")
+    return dataclasses.replace(settings, demo=True)
+
+
+def write_demo_session(settings: config.Settings, token: str) -> Path:
+    target = settings.data_dir / DEMO_SESSION_FILE
+    body = json.dumps({"cookie": auth.SESSION_COOKIE, "token": token, "sub": demo.MEMBER.sub, "name": demo.MEMBER.name}).encode()
+    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "wb") as out:
+        out.write(body)
+    return target
+
+
+def run_demo(folder: str | None) -> int:
+    settings = demo_settings(folder)
+    refused = config.demo_misused(settings)
+    if refused:
+        print(f"demo: {refused}", file=sys.stderr)
+        return 1
+    settings.photos_root.mkdir(parents=True, exist_ok=True)
+    migrate(settings)
+    engine = db.make_engine(db.database_url(settings))
+    try:
+        with db.session(engine) as opened:
+            if opened.query(Person).count() or opened.query(User).count():
+                print(f"demo: {settings.data_dir} already holds data; point --data at an empty folder", file=sys.stderr)
+                return 1
+            now = utc_now()
+            summary = demo.seed(opened, Photos(settings.photos_root), settings, now.date())
+            token = demo.sign_in(opened, settings, now.timestamp())
+    except exiftool.Missing as error:
+        print(f"demo: {error}", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    session_file = write_demo_session(settings, token)
+    print(f"Seeded {summary.people} made-up people with {summary.accounts} Google accounts, {summary.pixels} Pixels, {summary.devices} iPhones, "
+          f"{summary.originals} originals ({summary.indexed} indexed, {summary.failed} failed) and {summary.alerts} open alert.")
+    print(f"Serve it with: DARKROOM_DEMO=1 DARKROOM_DATA_DIR={settings.data_dir} DARKROOM_PHOTOS_ROOT={settings.photos_root} python run.py serve")
+    print(f"The demo member's session cookie is in {session_file} (tools/control sets it for you); "
+          f"or add DARKROOM_ALLOW_NO_AUTH=1 instead of DARKROOM_DEMO=1 to browse as the local owner.")
+    return 1 if summary.failed else 0
+
+
 def serve() -> int:
     settings = config.load()
     refused = config.refuses_to_start(settings)
@@ -145,16 +198,19 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "revoke-sessions"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "revoke-sessions", "demo"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
+    parser.add_argument("--data")
     parser.add_argument("--account")
     parser.add_argument("--unpack-only", action="store_true")
     parser.add_argument("--email")
     parser.add_argument("--sub")
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "demo":
+        return run_demo(args.data)
     if args.command == "revoke-sessions":
         return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":

@@ -11,6 +11,9 @@ make setup          # Python 3.14 + Poetry; exiftool must be installed too
 make check          # lint, checks, tests with the coverage floor
 python run.py check-config
 python run.py serve # GET /healthz
+python run.py demo --data demo   # made-up people, Pixels, iPhones and photos in ./demo, to look at without a Google account
 ```
+
+`run.py demo` prints how to serve what it seeded: `DARKROOM_DEMO=1` on a loopback address, with the demo member's session cookie in `demo/data/demo-session.json`. A server with sign-in configured, or listening beyond loopback, refuses that session and refuses to start in demo mode. `tools/verify.py` runs the same seed and server under libfaketime on a frozen clock with an allowlisted environment and a dead outbound proxy, for `make verify` and `tools/control`.
 
 `AGENTS.md` is the guide for anyone (human or agent) changing the code. Configuration is in `.env.example`.
