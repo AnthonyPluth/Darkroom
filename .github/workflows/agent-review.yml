@@ -1,14 +1,15 @@
 name: Agent review
 
 # Fleet's reusable review workflow (docs/agent-review.md there), here for the second review only. The owner's decision
-# (Nov 3, issue #76): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones. So the first
-# review is off (`first-review: false` below: no "Agent review" status and no comment, from either of its jobs). On a
-# risky pull request (labelled safety-critical or security, or changing .github/**, .claude/** or the paths listed below,
-# Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md) a fresh Claude Code
-# session on a different model reads the change against main's AGENTS.md and .github/agent-review/context.md and sets
-# "Second review". A pull request that isn't risky gets a passing "Second review", so the merge gate requires that one
-# status alone (merge-gate.yml). To bring the Claude first review back on every pull request, remove `first-review: false`
-# here and add `Agent review` to `required-statuses` in merge-gate.yml (docs/runbook.md).
+# (Nov 3, issue #76): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones.
+# That is fleet's default since v2.0.0, so this caller passes no `first-review` (no "Agent review" status and no
+# comment). On a risky pull request (labelled safety-critical or security, or changing .github/**, .claude/** or the
+# paths listed below, Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md)
+# a fresh Claude Code session reads the change against main's AGENTS.md and .github/agent-review/context.md and sets
+# "Second review". A pull request that isn't risky gets a passing "Second review", which is the one status fleet's merge
+# gate requires by default (merge-gate.yml). To bring the Claude first review back on every pull request, pass
+# `first-review: true` here and list `Agent review` and `Second review` in `required-statuses` in merge-gate.yml
+# (docs/runbook.md).
 #
 # This caller only declares the triggers (a called workflow can't), passes the two secrets by name (secrets: inherit
 # would hand over every secret) and grants exactly the permissions fleet's jobs ask for. On pull_request_target the
@@ -32,9 +33,8 @@ jobs:
       pull-requests: write     # the comment
       statuses: write          # the "Second review" status
       actions: write           # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@acfb09312e648eb5dde4ace69e8c849c7a33e789   # v1.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@c5cafc050fda88714f1cb1fb1129487ef0f2b117   # v2.0.0
     with:
-      first-review: false
       generated: |
         docs/openapi.json
         frontend/src/lib/api-types.ts
