@@ -131,6 +131,7 @@ Matching runs against everyone the export's Google account serves, in this order
 - Nothing is auto-deleted. Every decision is stored with its tier and reason, and can be reversed from the review queue.
 - A matched item belongs to whoever's iPhone uploaded the original. A Google-only item goes to the account's default person and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
 - A tier 1 or 2 match also proves Google has the original. That proof is what makes the photo eligible for deletion on the iPhone.
+- Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same phone item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
 
 ## Storage, Syncthing and Immich
 

@@ -82,3 +82,24 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/"]
       exclude: ["/darkroom/monitoring.py", "/darkroom_browser/monitoring.py"]
+
+  - id: darkroom-confirmed-flag-single-writer
+    message: >-
+      confirmed_in_google is the proof that Google has a photo's original and feeds deletion from the iPhone. Only
+      darkroom/domain/dedupe.py sets it (apply for an automatic tier 1 or 2 match, reverse when recomputing). Go
+      through dedupe.apply or dedupe.reverse instead of writing the flag here.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $X.confirmed_in_google = $V
+      - pattern: $X.confirmed_in_google |= $V
+      - pattern: setattr($X, "confirmed_in_google", ...)
+      - patterns:
+          - pattern: $F(..., confirmed_in_google=$V, ...)
+          - pattern-not: $Q.filter_by(...)
+      - pattern: |
+          {..., "confirmed_in_google": $V, ...}
+      - pattern: $D["confirmed_in_google"] = $V
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/dedupe.py"]
