@@ -17,16 +17,15 @@ updates:
     directories:
       - /
       - /.github/actions/*
-    # Daily, and fleet's pins (the owner's own repository, never merged by the gate) skip the cooldown, so a fleet
-    # release gets its bump within a weekday; other actions still wait the week.
+    # Daily, with the 7-day cooldown for every action, fleet's pins included: a fleet release gets its bump PR about a
+    # week after it rather than up to two weeks.
     schedule:
       interval: daily
     cooldown:
       default-days: 7
-      exclude: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]   # by repository alone or with the workflow path
     groups:
       fleet:
-        patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]
+        patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]   # by repository alone or with the workflow path
       actions:
         patterns: ["*"]
     commit-message:
