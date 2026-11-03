@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DISPLAY=:99 PHOTOS_ROOT=/photos POLL_SECONDS=15 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NOVNC_PORT=6080 VNC_PORT=5900 SCREEN=1280x900x24
@@ -8,8 +8,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deploy/browser/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/requirements.txt \
-    && python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.49.1'" \
+RUN pip install --no-cache-dir --break-system-packages --ignore-installed --require-hashes -r /tmp/requirements.txt \
+    && python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.64.1'" \
     && rm /tmp/requirements.txt
 
 WORKDIR /app
