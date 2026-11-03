@@ -17,14 +17,15 @@ updates:
     directories:
       - /
       - /.github/actions/*
+    # Daily, with the 7-day cooldown for every action, fleet's pins included: a fleet release gets its bump PR about a
+    # week after it rather than up to two weeks.
     schedule:
-      interval: weekly
-      day: monday
+      interval: daily
     cooldown:
       default-days: 7
     groups:
       fleet:
-        patterns: ["AnthonyPluth/fleet/*"]
+        patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]   # by repository alone or with the workflow path
       actions:
         patterns: ["*"]
     commit-message:
