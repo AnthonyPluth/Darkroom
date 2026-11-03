@@ -56,7 +56,7 @@ jobs:
         CI
         Docker image
         Security scans
-      # Codex reviews every pull request and the Claude review only risky ones (agent-review.yml passes first-review: false,
+      # Owner decision of Nov 3 (issue #76): Codex reviews every pull request and the Claude review only risky ones (agent-review.yml passes first-review: false,
       # so there is no "Agent review" status): to switch the first review back on, add "Agent review" above this line.
       required-statuses: |
         Second review

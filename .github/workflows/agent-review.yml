@@ -1,7 +1,7 @@
 name: Agent review
 
 # Fleet's reusable review workflow (docs/agent-review.md there), here for the second review only. The owner's decision
-# (Nov 3): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones. So the first
+# (Nov 3, issue #76): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones. So the first
 # review is off (`first-review: false` below: no "Agent review" status and no comment, from either of its jobs). On a
 # risky pull request (labelled safety-critical or security, or changing .github/**, .claude/** or the paths listed below,
 # Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md) a fresh Claude Code
