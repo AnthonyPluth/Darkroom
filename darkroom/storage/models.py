@@ -173,10 +173,13 @@ class DedupeDecision(Base):
     __table_args__ = (
         CheckConstraint("tier BETWEEN 1 AND 5", name="ck_dedupe_decisions_tier"),
         one_of("decided_by", ("auto", "owner"), "ck_dedupe_decisions_decided_by"),
+        UniqueConstraint("export_id", "source_path", name="uq_dedupe_decisions_export_source"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     export_id: Mapped[int] = mapped_column(ForeignKey("exports.id", ondelete="CASCADE"), nullable=False)
     account_id: Mapped[int] = mapped_column(ForeignKey("google_accounts.id", ondelete="CASCADE"), nullable=False)
+    source_path: Mapped[str | None] = mapped_column(String)
+    person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
     takeout_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     matched_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     tier: Mapped[int] = mapped_column(Integer, nullable=False)

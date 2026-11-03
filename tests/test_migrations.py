@@ -6,6 +6,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.schema import metadata
@@ -70,6 +71,33 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(columns, {"token_hash", "sub", "created", "expires"})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT token_hash FROM auth_sessions").scalars().all(), ["h"])
+
+    def test_0004_dedupe_decision_source_keeps_old_decisions_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0003")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (export_id, account_id, tier, reason, decided_by, decided_at) VALUES (1, 1, 5, 'no match', 'auto', 2.0)")
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            row = connection.exec_driver_sql("SELECT tier, source_path, person_id FROM dedupe_decisions").one()
+            self.assertEqual(tuple(row), (5, None, None))
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (export_id, account_id, source_path, person_id, tier, reason, decided_by, decided_at) VALUES (1, 1, 'a.jpg', 1, 1, 'same SHA-1', 'auto', 3.0)")
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (export_id, account_id, source_path, tier, reason, decided_by, decided_at) VALUES (1, 1, 'a.jpg', 5, 'no match', 'auto', 4.0)")
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0003")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("dedupe_decisions")}
+        self.assertNotIn("source_path", columns)
+        self.assertNotIn("person_id", columns)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT tier FROM dedupe_decisions ORDER BY id").scalars().all(), [5, 1])
 
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
