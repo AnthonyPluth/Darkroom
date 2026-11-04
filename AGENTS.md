@@ -1,6 +1,6 @@
 # Agent guide
 
-Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/` (arrives in a later issue). The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
+Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/`. The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
@@ -13,7 +13,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - `static/app/`: the built web app (`make frontend-build`, not committed), served at `/` by `server/static.py` with the CSP in `server/common.py`.
 - `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
 - `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` are the dark set from the design signed off in #16 (`docs/design/web/00-tokens.dc.html`); the app is dark only, and a new colour or token goes back to #16 first.
-- `ios/` (XcodeGen, SwiftUI): added by a later issue.
+- `ios/` (XcodeGen, SwiftUI): `project.yml` generates the Xcode project (`xcodegen generate`, see `ios/README.md`); `Darkroom/` is the app, `Packages/DarkroomCore/` the SwiftPM package with the logic and its `swift test` tests. The `iOS` workflow builds it unsigned on macOS and is a required check; read its annotations.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `fleet` (the shim that runs fleet's tools at the version in `.fleet/version`), `app_checks.py` (Darkroom's own checks, run by `fleet checks`), `feature_map.py`, `api_contract.py`, `scrub_snapshot.py`.
 - `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and the signed-off designs in `design/` (`design/web/` for the web UI, with its README).
@@ -38,7 +38,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 ## Starting work
 
-<!-- fleet:begin starting-work v2.2.0 -->
+<!-- fleet:begin starting-work v2.3.0 -->
 - **One issue, one session, one pull request.** Work starts from an issue written as an agent task: its scope, acceptance criteria, dependencies and the model to use (see [CLAUDE.md](CLAUDE.md)). Start a fresh session for each one, on that model, rather than running many pieces of work through one long session.
 - **Decisions belong in the issue.** If the issue doesn't settle something a user would notice, ask instead of choosing. Otherwise keep existing behaviour exactly; a change that isn't asked for is a regression.
 - **Done means checked.** An issue says how its result is checked (`make check`, a test that fails before the change, `make verify` for anything on screen where the repository has it); the pull request shows that output, not a description of it.
@@ -51,7 +51,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 ## Working in a container
 
-<!-- fleet:begin working-in-a-container v2.2.0 -->
+<!-- fleet:begin working-in-a-container v2.3.0 -->
 - **Start the session in the repository.** The session-start hook (in `.claude/hooks/`) sets up the toolchain, Poetry's environment and the web app's packages, but only for a session whose project directory is this repository. A session started one level up has none of it: the system `python3` lacks the dependencies, and the tests fail on their imports.
 - **Run Python through `poetry run` or `make`** (`make test`, or `poetry run python -m unittest tests.test_x`), never the bare `python3`. `make setup` installs the dependencies by hand.
 - **Subagents make their own worktree** under `.claude/worktrees/` (ignored by `.gitignore`), from the session's checkout, and push from there. A session whose working directory isn't a git repository can't create one for them.
@@ -87,7 +87,7 @@ These are what the service is for; a change that breaks one is a blocking bug, w
 
 ## Mistakes that keep coming back
 
-<!-- fleet:begin mistakes v2.2.0 -->
+<!-- fleet:begin mistakes v2.3.0 -->
 **A mistake that repeats gets a check.** When review flags the same kind of mistake on a second pull request, the fix adds a check that would have caught it: a lint rule (ESLint, or Semgrep in `.semgrep/` with a failing and a passing example), a type (strict mypy, a `NewType` or `Literal`), or a test. The item below then names that check in its parenthesis (`checked: waypoint-trip-visibility`, `checked: tests/test_offline.py`). An item stays *human-judged* only when no check can express it, and says why. Every month the "Repeated review findings" issue lists the kinds that came back; a row there is closed by a check, not by a new sentence here.
 
 Review findings on agents' pull requests fall into the same few kinds: check your change for each before you push. The reviews read agents' pull requests for the *human-judged* ones: the "Second review" on a risky pull request, the independent "Agent review" on every agent's pull request where the app turns it on, and the code-review bot the repository uses. A blocking finding fails the merge gate, and so does an open P1 or P2 review thread from that bot (the gate counts only the authors in its `blocking-thread-authors`).
@@ -117,7 +117,7 @@ Darkroom's own, after fleet's:
 
 ## Git and PRs
 
-<!-- fleet:begin git-and-prs v2.2.0 -->
+<!-- fleet:begin git-and-prs v2.3.0 -->
 - Work on the branch you were given; never push to `main`.
 - Keep commits focused, with a clear message. An agent's commit ends with a `Co-Authored-By: Claude <Model> <version> <noreply@anthropic.com>` trailer naming the model that wrote it (checked on every pull request).
 - Before pushing to a pull request, run `make check`.
