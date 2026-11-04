@@ -98,7 +98,7 @@ describe("the People page with data", () => {
     expect(within(table).getByRole("columnheader", { name: "Last sync" })).toBeInTheDocument();
     const [synced, never] = within(table).getAllByRole("row").slice(1);
     const cell = (row: HTMLElement) => row.querySelector('td[data-label="Last sync"]') as HTMLElement;
-    expect(cell(synced)).toHaveTextContent("just now");
+    expect(cell(synced)).toHaveTextContent("1 minute ago");
     expect(cell(synced)).not.toHaveClass("text-ink-muted");
     expect(cell(never)).toHaveTextContent("Not synced yet");
     expect(cell(never)).toHaveClass("text-ink-muted");
