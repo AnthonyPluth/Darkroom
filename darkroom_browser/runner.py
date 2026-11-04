@@ -13,6 +13,7 @@ from darkroom_browser.context import Browser, Cancelled, JobContext
 
 HEARTBEAT_SECONDS = 30.0
 BACKOFF_SECONDS = 60.0
+JOIN_SECONDS = 40.0
 
 OpenBrowser = Callable[[Path], Browser]
 
@@ -23,6 +24,7 @@ class Heartbeat:
         self.ctx = ctx
         self.every = every
         self.stopping = threading.Event()
+        self.gave_up = False
         self.thread = threading.Thread(target=self.loop, daemon=True, name=f"heartbeat-{ctx.job_id}")
 
     def start(self) -> None:
@@ -41,8 +43,13 @@ class Heartbeat:
 
     def stop(self) -> None:
         self.stopping.set()
+        if self.gave_up:
+            return
         if self.thread.is_alive():
-            self.thread.join(timeout=5)
+            self.thread.join(timeout=JOIN_SECONDS)
+        if self.thread.is_alive():
+            self.gave_up = True
+            monitoring.log("heartbeat still in flight; reporting without waiting for it", job=self.ctx.job_id)
 
 
 class Runner:
@@ -73,6 +80,7 @@ class Runner:
                 raise jobs.UnknownJob(f"no job called {ctx.kind!r}")
             result = work(ctx)
             ctx.check()
+            beat.stop()
             self.client.done(ctx.job_id, result)
             outcome = "done"
         except Cancelled:
