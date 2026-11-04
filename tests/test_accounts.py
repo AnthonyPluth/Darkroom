@@ -4,6 +4,9 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import OperationalError
+
 from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
@@ -139,6 +142,52 @@ class DeleteTests(unittest.TestCase):
         with mock.patch.object(browser_jobs, "holds_profile", claim_meanwhile):
             self.deleted(account)
         self.assertEqual(seen, ["database is locked"])
+
+    def test_a_write_committed_after_the_deletes_first_statement_waits_for_the_delete(self):
+        account = self.account_with_job("queued")
+        database = self.engine.url.database
+        seen = []
+
+        def write_meanwhile(conn, cursor, statement, parameters, context, executemany):
+            if seen:
+                return
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE browser_jobs SET heartbeat = 3.0 WHERE account_id = ?", (account,))
+                other.commit()
+                seen.append("committed")
+            except sqlite3.OperationalError as error:
+                seen.append(str(error))
+            finally:
+                other.close()
+
+        event.listen(self.engine, "after_cursor_execute", write_meanwhile)
+        self.addCleanup(event.remove, self.engine, "after_cursor_execute", write_meanwhile)
+        with db.session(self.engine) as opened:
+            accounts.delete(opened, self.photos, account, 2.0)
+        self.assertEqual(seen, ["database is locked"])
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(GoogleAccount, account))
+
+    def test_a_delete_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
+        account = self.account_with_job("done")
+        impatient = create_engine(str(self.engine.url), connect_args={"timeout": 0.05})
+        event.listen(impatient, "connect", db.set_sqlite_pragmas)
+        self.addCleanup(impatient.dispose)
+        holder = sqlite3.connect(self.engine.url.database, timeout=0)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            with db.session(impatient) as opened:
+                with self.assertRaisesRegex(accounts.Busy, "try deleting the account again in a moment"):
+                    accounts.delete(opened, self.photos, account, 2.0)
+        finally:
+            holder.rollback()
+            holder.close()
+        with db.session(self.engine) as opened:
+            self.assertIsNotNone(opened.get(GoogleAccount, account))
+        with db.session(self.engine) as opened, mock.patch.object(opened, "execute", side_effect=OperationalError("UPDATE", {}, sqlite3.OperationalError("disk I/O error"))):
+            with self.assertRaises(OperationalError):
+                accounts.delete(opened, self.photos, account, 2.0)
 
     def test_finished_and_queued_jobs_do_not_block_the_delete(self):
         for status in ("done", "failed", "queued"):

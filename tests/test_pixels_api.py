@@ -1,10 +1,11 @@
 import time
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.domain import alerts, browser_jobs
+from darkroom.domain import accounts, alerts, browser_jobs
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
@@ -328,6 +329,14 @@ class AccountsApiTests(ApiCase):
         self.assertIn("stopped reporting less than 3 minutes ago", reply["error"])
         self.assertNotIn("has not finished", reply["error"])
         self.assertTrue(profile.exists())
+
+    def test_a_delete_that_cannot_get_the_write_lock_answers_503_to_try_again(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        with mock.patch.object(accounts, "delete", side_effect=accounts.Busy("Darkroom is busy with another change; try deleting the account again in a moment")):
+            status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual((status_code, reply), (503, {"error": "Darkroom is busy with another change; try deleting the account again in a moment"}))
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 
     def test_finished_and_queued_browser_jobs_do_not_block_deleting_an_account(self):
         jo = self.person("Jo")

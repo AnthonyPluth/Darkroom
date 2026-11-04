@@ -70,6 +70,8 @@ def delete_account(request: Request) -> Annotated[Response, contract.Ok]:
         return error_response(NO_ACCOUNT, 404)
     except accounts.InUse as error:
         return error_response(str(error), 409)
+    except accounts.Busy as error:
+        return error_response(str(error), 503)
     except ProfileNotRemoved as error:
         return error_response(f"{error}, so the account was not deleted", 500)
     return json_response({"ok": True})
