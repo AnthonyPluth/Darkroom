@@ -75,7 +75,7 @@ def create_tree(photos: Photos, slug: str) -> None:
     inbox_root = inbox_folder.parent
     inbox_root_existed = inbox_root.exists()
     try:
-        create_tree(photos, slug)
+        photos.ensure_person_tree(slug)
     except OSError:
         made = [photos.originals(slug), photos.inside(slug, "google-only"), person_folder, photos.manual_inbox(slug), inbox_folder]
         remove_empty([*made, *([] if inbox_root_existed else [inbox_root])])
@@ -95,7 +95,7 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
                     immich_api_key_sealed=sealed_key, originals_path=f"{slug}/originals", google_only_path=f"{slug}/google-only", created=now)
     opened.add(person)
     opened.flush()
-    photos.ensure_person_tree(slug)
+    create_tree(photos, slug)
     events.record(opened, now, "person_created", slug)
     if sealed_key:
         events.record(opened, now, "immich_key_set", slug)
