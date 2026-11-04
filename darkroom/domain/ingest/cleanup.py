@@ -14,6 +14,7 @@ from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
 KEEP_FOR = 14 * DAY
+VERIFIED = "cleanup_holds_verified"
 
 
 @dataclass
@@ -93,20 +94,39 @@ def remove(photos: Photos, path: Path, folder: bool, report: CleanupReport) -> b
         return False
 
 
+def staging_trees(opened: Session, photos: Photos, export: Export) -> list[Path]:
+    found = []
+    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
+        try:
+            found.append(photos.export_tree(slug, unpack.staging_name(export)))
+        except paths.OutsideRoot:
+            continue
+    return found
+
+
+def holds_verified(opened: Session, export: Export) -> bool:
+    return opened.execute(select(Event.id).where(Event.type == VERIFIED, Event.subject == f"export {export.id}").limit(1)).first() is not None
+
+
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:
         report.kept += 1
         note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
         return
-    if unsafe_reviews(opened, photos, export):
+    trees = staging_trees(opened, photos, export)
+    verified = holds_verified(opened, export)
+    if any(tree.exists() or tree.is_symlink() for tree in trees):
+        if unsafe_reviews(opened, photos, export):
+            report.kept += 1
+            return
+        if not verified:
+            events.record(opened, now, VERIFIED, f"export {export.id}", "every pending review has a verified held copy")
+            opened.commit()
+    elif not verified:
         report.kept += 1
         return
-    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
-        try:
-            tree = photos.export_tree(slug, unpack.staging_name(export))
-        except paths.OutsideRoot:
-            continue
+    for tree in trees:
         if remove(photos, tree, True, report):
             report.staging += 1
     inbox = photos.inbox_root()
