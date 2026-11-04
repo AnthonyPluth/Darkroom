@@ -65,15 +65,18 @@ public enum UploadPlanner {
     }
 
     public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
-        let checkedKeys = Set(batch.assets.flatMap { asset in
-            asset.resources.map { ResourceKey(assetID: asset.id, kind: $0.kind) }
-        })
+        var checked: [ResourceKey: ResourceDescriptor] = [:]
+        for asset in batch.assets {
+            for descriptor in asset.resources {
+                checked[ResourceKey(assetID: asset.id, kind: descriptor.kind)] = descriptor
+            }
+        }
         let needed = Set(reply.needed.map(\.key))
         var assetOrder: [String: Int] = [:]
         for resource in resources where assetOrder[resource.key.assetID] == nil {
             assetOrder[resource.key.assetID] = assetOrder.count
         }
-        let hashed = resources.filter { $0.state == .hashed && checkedKeys.contains($0.key) }
+        let hashed = resources.filter { $0.state == .hashed && checked[$0.key] == $0.descriptor }
         let queue = hashed
             .filter { needed.contains($0.key) }
             .sorted {

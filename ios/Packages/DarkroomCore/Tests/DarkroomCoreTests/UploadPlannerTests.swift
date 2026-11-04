@@ -93,4 +93,25 @@ final class UploadPlannerTests: XCTestCase {
         let firstBatchIDs = Set(batches[0].assets.map(\.id))
         XCTAssertTrue(plan.markUploaded.allSatisfy { firstBatchIDs.contains($0.assetID) })
     }
+
+    func testResourceRehashedAfterTheRequestIsLeftForTheNextCheck() {
+        let original = [resource("a", .photo), resource("b", .photo)]
+        let batch = whole(original)
+        var changed = original
+        changed[0] = LocalResource(key: original[0].key, sha1: "new-bytes", bytes: 99, filename: "a.photo", state: .hashed)
+        let plan = UploadPlanner.plan(resources: changed, checked: batch, reply: CheckReply(needed: []))
+        XCTAssertEqual(plan.markUploaded, [ResourceKey(assetID: "b", kind: .photo)])
+        XCTAssertTrue(plan.queue.isEmpty)
+    }
+
+    func testResourceWithChangedFilenameOrSizeIsNotTreatedAsChecked() {
+        let original = [resource("a", .photo), resource("b", .photo)]
+        let batch = whole(original)
+        var changed = original
+        changed[0] = LocalResource(key: original[0].key, sha1: original[0].sha1, bytes: 11, filename: "a.photo", state: .hashed)
+        changed[1] = LocalResource(key: original[1].key, sha1: original[1].sha1, bytes: 10, filename: "renamed", state: .hashed)
+        let plan = UploadPlanner.plan(resources: changed, checked: batch, reply: CheckReply(needed: [NeededResource(id: "a", kind: .photo)]))
+        XCTAssertTrue(plan.queue.isEmpty)
+        XCTAssertTrue(plan.markUploaded.isEmpty)
+    }
 }
