@@ -106,10 +106,37 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(StubProtocol.requests[0].url?.path, "/api/device/checkin")
     }
 
-    func testProbeIsAGetOnMe() async throws {
+    func testProbeIsAnUnauthenticatedGetOnHealthz() async throws {
+        StubProtocol.reset(json: #"{"ok":true,"version":"1"}"#)
         try await client().probe()
         XCTAssertEqual(StubProtocol.requests[0].httpMethod, "GET")
-        XCTAssertEqual(StubProtocol.requests[0].url?.path, "/api/me")
+        XCTAssertEqual(StubProtocol.requests[0].url?.path, "/healthz")
+        XCTAssertNil(StubProtocol.requests[0].value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testProbeWorksWithoutAToken() async throws {
+        try await client(token: nil).probe()
+        XCTAssertEqual(StubProtocol.requests.count, 1)
+    }
+
+    func testServerProbeReachableOn200() async {
+        StubProtocol.reset()
+        let reachable = await ServerProbe(client: client())()
+        XCTAssertTrue(reachable)
+    }
+
+    func testServerProbeUnreachableOnNetworkError() async {
+        StubProtocol.reset(error: URLError(.cannotConnectToHost))
+        let reachable = await ServerProbe(client: client())()
+        XCTAssertFalse(reachable)
+    }
+
+    func testServerProbeTreatsAnyNon2xxAsUnreachable() async {
+        for status in [401, 403, 502, 503] {
+            StubProtocol.reset(status: status)
+            let reachable = await ServerProbe(client: client())()
+            XCTAssertFalse(reachable, "status \(status)")
+        }
     }
 
     func testEligibleConfirmAndDeletedRoundTrip() async throws {

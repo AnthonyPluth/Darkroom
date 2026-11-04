@@ -20,7 +20,7 @@ public struct APIClient: Sendable {
     }
 
     public func probe() async throws {
-        _ = try await send(path: "/api/me", method: "GET", body: Optional<Data>.none)
+        _ = try await send(path: "/healthz", method: "GET", body: nil, authenticated: false)
     }
 
     public func check(_ request: CheckRequest) async throws -> CheckReply {
@@ -72,11 +72,13 @@ public struct APIClient: Sendable {
         }
     }
 
-    private func send(path: String, method: String, body: Data?) async throws -> Data {
-        guard let token = await tokenProvider() else { throw APIError.notSignedIn }
+    private func send(path: String, method: String, body: Data?, authenticated: Bool = true) async throws -> Data {
         var request = URLRequest(url: try url(for: path))
         request.httpMethod = method
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if authenticated {
+            guard let token = await tokenProvider() else { throw APIError.notSignedIn }
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
