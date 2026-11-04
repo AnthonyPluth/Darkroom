@@ -103,3 +103,79 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/dedupe.py"]
+
+  - id: darkroom-originals-read-only
+    message: >-
+      An original is written once (AGENTS.md, promise 1). Nothing outside darkroom/storage/paths.py opens a file under
+      a person's originals/ for writing, removes, renames, replaces, moves, copies onto or changes it. Save a new
+      original through paths.write_once, and a sidecar through providers/exiftool.write_xmp.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: $P.originals(...)
+      - pattern: $P.original(...)
+      - pattern: $P.uploads_tmp(...)
+      - pattern: $X.originals_path
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: open($D, $MODE, ...)
+              - pattern: open($D, mode=$MODE, ...)
+              - pattern: io.open($D, $MODE, ...)
+              - pattern: os.open($D, $MODE, ...)
+              - pattern: $D.open($MODE, ...)
+              - pattern: $D.open(mode=$MODE, ...)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: (?s).*([wax+]|O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND).*
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($D, ...)
+              - pattern: os.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(remove|unlink|rmdir|removedirs|rename|renames|replace|truncate|chmod|chown|utime|link|symlink)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: shutil.move($D, ...)
+              - pattern: shutil.move($A, $D, ...)
+              - pattern: shutil.rmtree($D, ...)
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: shutil.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(copy|copy2|copyfile|copytree|copymode|copystat)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: $D.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(write_bytes|write_text|unlink|rmdir|rename|replace|touch|chmod|lchmod|symlink_to|hardlink_to|link_to|move|move_into|copy|copy_into)$
+          - focus-metavariable: $D
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-xmp-only-sidecars
+    message: >-
+      Metadata gaps are filled with XMP sidecars, never by rewriting media (AGENTS.md, promise 5). exiftool writes
+      only through darkroom/providers/exiftool.py's write_xmp, which refuses any target not ending in .xmp, and never
+      with -overwrite_original.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern-regex: -overwrite_original
+      - patterns:
+          - pattern-either:
+              - pattern-regex: (["'])-(o|out|tagsFromFile|TagsFromFile|tagsfromfile|srcfile|W|w|w!|w\+)\1
+              - pattern-regex: (["'])-[A-Za-z0-9-]*:?[A-Za-z0-9]+[+<-]?=
+              - pattern-regex: (["'])-\{[^}]*\}[+<-]?=
+          - pattern-not-inside: |
+              def write_xmp(...):
+                  ...
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
