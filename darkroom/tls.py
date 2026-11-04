@@ -3,10 +3,11 @@ from __future__ import annotations
 import ssl
 import urllib.request
 from collections.abc import Mapping
-from http.client import HTTPResponse
+from http.client import HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT = 15.0
+CONNECTION_PROBLEMS: tuple[type[Exception], ...] = (OSError, HTTPException)
 
 
 class Refused(Exception):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -22,6 +23,10 @@ class AlreadyExists(FileExistsError):
 
 
 class NotASidecar(ValueError):
+    pass
+
+
+class NotInTheInbox(ValueError):
     pass
 
 
@@ -86,6 +91,32 @@ class Photos:
         if not NAME.match(name) or name in {".", ".."} or name.startswith("."):
             raise OutsideRoot(f"{name!r} is not a valid folder name")
         return name
+
+    def inbox_root(self) -> Path:
+        return self.inside("_inbox")
+
+    def export_tree(self, person: str, export: str) -> Path:
+        return self.inside("_inbox", self.person_part(person), self.name_part(export))
+
+    def kept_folders(self) -> list[Path]:
+        found = []
+        for child in sorted(self.root.iterdir()) if self.root.is_dir() else []:
+            if child.name.startswith("_"):
+                continue
+            found += [child / "originals", child / "google-only"]
+        return found
+
+    def removable(self, path: Path) -> Path:
+        if path.is_symlink():
+            raise NotInTheInbox("a link is never removed through")
+        resolved = path.resolve()
+        inbox = self.inbox_root()
+        if not resolved.is_relative_to(inbox) or resolved == inbox or resolved.parent == inbox:
+            raise NotInTheInbox("only what is inside a person's inbox folder is removed")
+        for kept in self.kept_folders():
+            if resolved.is_relative_to(kept.resolve()) or kept.resolve().is_relative_to(resolved):
+                raise NotInTheInbox("originals and google-only folders are never removed")
+        return resolved
 
     def ensure_person_tree(self, person: str) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
@@ -168,3 +199,23 @@ def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]
             raise AlreadyExists(destination.name) from error
         except OSError:
             copy_exclusive(temp, destination)
+
+
+def remove_inbox_tree(photos: Photos, path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    target = photos.removable(path)
+    if not target.is_dir():
+        raise NotInTheInbox("not a folder")
+    shutil.rmtree(target)
+    return True
+
+
+def remove_inbox_file(photos: Photos, path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    target = photos.removable(path)
+    if not target.is_file():
+        raise NotInTheInbox("not a file")
+    target.unlink()
+    return True
