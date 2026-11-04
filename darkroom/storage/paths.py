@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -23,6 +24,10 @@ class AlreadyExists(FileExistsError):
 
 
 class NotASidecar(ValueError):
+    pass
+
+
+class ProfileNotRemoved(OSError):
     pass
 
 
@@ -87,6 +92,21 @@ class Photos:
         if not NAME.match(name) or name in {".", ".."} or name.startswith("."):
             raise OutsideRoot(f"{name!r} is not a valid folder name")
         return name
+
+    def retire_browser_account(self, account: str) -> None:
+        name = self.name_part(account)
+        parent = self.root / "_browser"
+        target = parent / name
+        if parent.is_symlink() or target.is_symlink():
+            raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
+        if not target.exists():
+            return
+        if target.resolve() != self.browser_profile(name).parent:
+            raise ProfileNotRemoved("the account's browser folder is not where it should be, so it was not removed")
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise ProfileNotRemoved("the account's browser folder could not be removed") from error
 
     def ensure_person_tree(self, person: str) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]

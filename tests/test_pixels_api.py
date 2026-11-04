@@ -3,8 +3,8 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.domain import alerts
-from darkroom.storage.models import Alert, Export, Pixel, PixelPerson
+from darkroom.domain import alerts, browser_jobs
+from darkroom.storage.models import Alert, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -203,6 +203,85 @@ class AccountsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", "/api/accounts/abc", {"email": "x@example.test"}), (404, {"error": "no such Google account"}))
         self.assertEqual(self.call("DELETE", "/api/accounts/999"), (404, {"error": "no such Google account"}))
         self.assertEqual(self.call("DELETE", "/api/accounts/abc"), (404, {"error": "no such Google account"}))
+
+    def make_profile(self, account_id):
+        profile = self.photos / "_browser" / str(account_id) / "profile"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").write_bytes(b"signed-in session")
+        failures = self.photos / "_browser" / str(account_id) / "failures" / "1"
+        failures.mkdir(parents=True)
+        (failures / "page.html").write_bytes(b"snapshot")
+        return profile
+
+    def bystanders(self):
+        files = {self.photos / "_browser" / "99" / "profile" / "Cookies": b"other", self.photos / "jo" / "originals" / "a.jpg": b"photo",
+                 self.photos / "jo" / "google-only" / "b.jpg": b"g", self.photos / "_inbox" / "jo" / "c.zip": b"zip"}
+        for path, content in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        return files
+
+    def test_deleting_an_account_retires_its_browser_profile_so_a_new_account_inherits_nothing(self):
+        jo = self.person("Jo")
+        keep = self.bystanders()
+        account = self.account(jo["id"], "gone@example.test")
+        profile = self.make_profile(account["id"])
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}"), (200, {"ok": True}))
+        self.assertFalse(profile.exists())
+        self.assertFalse((self.photos / "_browser" / str(account["id"])).exists())
+        fresh = self.account(jo["id"], "fresh@example.test")
+        self.assertFalse((self.photos / "_browser" / str(fresh["id"]) / "profile").exists())
+        for path, content in keep.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_an_account_without_a_browser_folder_deletes_cleanly(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 200)
+
+    def test_a_browser_folder_that_is_a_link_is_never_followed_and_the_account_stays(self):
+        jo = self.person("Jo")
+        keep = self.bystanders()
+        account = self.account(jo["id"])
+        (self.photos / "_browser").mkdir(exist_ok=True)
+        (self.photos / "_browser" / str(account["id"])).symlink_to(self.photos / "jo")
+        status, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual(status, 500)
+        self.assertIn("is a link", reply["error"])
+        self.assertIn("so the account was not deleted", reply["error"])
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+        for path, content in keep.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_a_profile_that_cannot_be_removed_keeps_the_account(self):
+        from unittest import mock
+
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        profile = self.make_profile(account["id"])
+        with mock.patch("shutil.rmtree", side_effect=PermissionError("no")):
+            status, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual((status, reply), (500, {"error": "the account's browser folder could not be removed, so the account was not deleted"}))
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+        self.assertTrue(profile.exists())
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 200)
+
+    def test_deleting_an_account_closes_its_alerts_so_status_and_the_ticker_drop_them(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"], "gone@example.test")
+        other = self.account(jo["id"], "stay@example.test")
+        with db.session(self.engine) as opened:
+            alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(account["id"]), "sign_in_needed", "gone@example.test",
+                              alerts.sign_in_needed("gone@example.test"), None, 10.0)
+            alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(other["id"]), "sign_in_needed", "stay@example.test",
+                              alerts.sign_in_needed("stay@example.test"), None, 10.0)
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 200)
+        self.assertEqual([a["subject"] for a in self.call("GET", "/api/status")[1]["alerts"]], ["stay@example.test"])
+        with db.session(self.engine) as opened:
+            sent = alerts.tick(opened, self.settings, 10.0 + 10 * 86_400, notifier=lambda *args: "sent")
+            subjects = [e.detail for e in opened.execute(select(Event).where(Event.type == "alert_sent")).scalars()]
+        self.assertEqual(sent, 1)
+        self.assertNotIn("gone@example.test", subjects)
 
     def test_an_account_with_pixels_or_exports_is_not_deleted(self):
         jo = self.person("Jo")

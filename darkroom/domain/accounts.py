@@ -3,7 +3,8 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events
+from darkroom.domain import alerts, browser_jobs, events
+from darkroom.storage.paths import Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
 
 CONFIRMING_TIERS = (1, 2)
@@ -145,7 +146,7 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
     return account
 
 
-def delete(opened: Session, account_id: int, now: float) -> None:
+def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
     account = get(opened, account_id)
     found = []
     if opened.execute(select(func.count(Pixel.id)).where(Pixel.google_account_id == account_id)).scalar_one():
@@ -154,6 +155,11 @@ def delete(opened: Session, account_id: int, now: float) -> None:
         found.append("exports")
     if found:
         raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
+    email = account.email
     opened.delete(account)
     opened.flush()
+    alerts.close(opened, browser_jobs.sign_in_key(account_id), now)
+    for alert in opened.execute(select(Alert).where(Alert.closed.is_(None), Alert.subject == email)).scalars():
+        alert.closed = now
+    photos.retire_browser_account(str(account_id))
     events.record(opened, now, "account_deleted", str(account_id))
