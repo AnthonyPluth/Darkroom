@@ -52,6 +52,7 @@ class Live:
         self.page.screenshot(path=str(path), full_page=True)
 
     def close(self) -> None:
+        failure: Exception | None = None
         for closable in (self.context, self.playwright):
             if closable is None:
                 continue
@@ -60,8 +61,10 @@ class Live:
                     closable.stop()
                 else:
                     closable.close()
-            except Exception:
-                pass
+            except Exception as error:
+                failure = failure or error
+        if failure is not None:
+            raise failure
 
 
 def open_context(profile_dir: Path) -> Live:

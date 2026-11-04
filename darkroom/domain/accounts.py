@@ -157,8 +157,12 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None
         found.append("exports")
     if found:
         raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
-    if browser_jobs.holds_profile(opened, account_id, now):
+    hold = browser_jobs.holds_profile(opened, account_id, now)
+    if hold == "open":
         raise InUse(f"{account.email} has a browser job that has not finished; wait for it to finish, then delete the account")
+    if hold == "lease_expired":
+        raise InUse(f"{account.email} had a browser job that failed when its worker stopped reporting less than {int(browser_jobs.LEASE_SECONDS // 60)} minutes ago, "
+                    "and that worker may still be closing its browser; try again in a few minutes")
     email = account.email
     opened.delete(account)
     opened.flush()

@@ -1,6 +1,8 @@
+import sqlite3
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
 from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
@@ -91,9 +93,9 @@ class DeleteTests(unittest.TestCase):
             job.message = message
         return account
 
-    def refused(self, account, now=2.0):
+    def refused(self, account, now=2.0, says="browser job that has not finished"):
         with db.session(self.engine) as opened:
-            with self.assertRaisesRegex(accounts.InUse, "browser job that has not finished"):
+            with self.assertRaisesRegex(accounts.InUse, says):
                 accounts.delete(opened, self.photos, account, now)
         with db.session(self.engine) as opened:
             self.assertIsNotNone(opened.get(GoogleAccount, account))
@@ -113,8 +115,30 @@ class DeleteTests(unittest.TestCase):
 
     def test_a_job_the_lease_expired_still_refuses_until_the_lease_window_has_passed(self):
         account = self.account_with_job("failed", finished=1000.0, message=browser_jobs.EXPIRED_MESSAGE)
-        self.refused(account, now=1000.0 + browser_jobs.LEASE_SECONDS - 1)
+        self.refused(account, now=1000.0 + browser_jobs.LEASE_SECONDS - 1, says="failed when its worker stopped reporting less than 3 minutes ago.*try again in a few minutes")
         self.deleted(account, now=1000.0 + browser_jobs.LEASE_SECONDS + 1)
+
+    def test_the_delete_holds_the_write_lock_before_it_checks_for_browser_jobs(self):
+        account = self.account_with_job("queued")
+        database = self.engine.url.database
+        checked = browser_jobs.holds_profile
+        seen = []
+
+        def claim_meanwhile(opened, account_id, now):
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE browser_jobs SET status = 'running', started = 2.0, heartbeat = 2.0 WHERE account_id = ?", (account_id,))
+                other.commit()
+                seen.append("claimed")
+            except sqlite3.OperationalError as error:
+                seen.append(str(error))
+            finally:
+                other.close()
+            return checked(opened, account_id, now)
+
+        with mock.patch.object(browser_jobs, "holds_profile", claim_meanwhile):
+            self.deleted(account)
+        self.assertEqual(seen, ["database is locked"])
 
     def test_finished_and_queued_jobs_do_not_block_the_delete(self):
         for status in ("done", "failed", "queued"):

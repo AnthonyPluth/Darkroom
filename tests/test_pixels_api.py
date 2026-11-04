@@ -323,7 +323,10 @@ class AccountsApiTests(ApiCase):
             job.status = "failed"
             job.message = browser_jobs.EXPIRED_MESSAGE
             job.finished = time.time()
-        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 409)
+        status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual(status_code, 409)
+        self.assertIn("stopped reporting less than 3 minutes ago", reply["error"])
+        self.assertNotIn("has not finished", reply["error"])
         self.assertTrue(profile.exists())
 
     def test_finished_and_queued_browser_jobs_do_not_block_deleting_an_account(self):

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from typing import Literal
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
@@ -223,13 +224,11 @@ def for_worker(job: BrowserJob) -> dict[str, object]:
     return {"id": job.id, "kind": job.kind, "account": str(job.account_id), "payload": json.loads(job.payload or "{}")}
 
 
-def holds_profile(opened: Session, account_id: int, now: float) -> bool:
-    recently = now - LEASE_SECONDS
-    query = select(func.count(BrowserJob.id)).where(
-        BrowserJob.account_id == account_id,
-        or_(
-            BrowserJob.status.in_(OPEN_STATUSES),
-            and_(BrowserJob.status == "failed", BrowserJob.message == EXPIRED_MESSAGE, BrowserJob.finished > recently),
-        ),
-    )
-    return bool(opened.execute(query).scalar_one())
+def holds_profile(opened: Session, account_id: int, now: float) -> Literal["open", "lease_expired"] | None:
+    mine = BrowserJob.account_id == account_id
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, BrowserJob.status.in_(OPEN_STATUSES))).scalar_one():
+        return "open"
+    expired = and_(BrowserJob.status == "failed", BrowserJob.message == EXPIRED_MESSAGE, BrowserJob.finished > now - LEASE_SECONDS)
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, expired)).scalar_one():
+        return "lease_expired"
+    return None
