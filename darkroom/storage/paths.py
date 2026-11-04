@@ -351,13 +351,21 @@ def set_aside_name(path: Path) -> Path | None:
     return None if match is None else path.with_name(match.group(1))
 
 
-def put_back(path: Path, original: Path) -> bool:
-    if original.exists() or original.is_symlink():
+def move_without_replacing(path: Path, destination: Path) -> bool:
+    try:
+        os.link(path, destination)
+    except OSError:
         return False
-    os.rename(path, original)
-    sidecar, original_sidecar = sidecar_of(path), sidecar_of(original)
-    if sidecar.is_file() and not sidecar.is_symlink() and not original_sidecar.exists() and not original_sidecar.is_symlink():
-        os.rename(sidecar, original_sidecar)
+    path.unlink()
+    return True
+
+
+def put_back(path: Path, original: Path) -> bool:
+    if not move_without_replacing(path, original):
+        return False
+    sidecar = sidecar_of(path)
+    if sidecar.is_file() and not sidecar.is_symlink():
+        move_without_replacing(sidecar, sidecar_of(original))
     return True
 
 
@@ -377,7 +385,9 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
                 swept.dropped += 1
         for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
-            if not photo.exists() and not photo.is_symlink():
-                path.unlink()
-                swept.dropped += 1
+            original = set_aside_name(photo)
+            if photo.exists() or photo.is_symlink() or (original is not None and (original.exists() or original.is_symlink())):
+                continue
+            path.unlink()
+            swept.dropped += 1
     return swept

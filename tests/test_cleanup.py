@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
 from tests.import_world import DAY, NOW, World, tree
 
 LATER = NOW + 14 * DAY
@@ -370,6 +370,66 @@ class InterruptedRemovalTests(Imported):
         self.assertEqual((report.restored, report.dropped), (1, 0))
         details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
         self.assertTrue(any(detail.endswith("1 interrupted removals put back") for detail in details))
+
+    def set_aside(self, name="IMG_2001.JPG"):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        photo, sidecar = folder / name, folder / f"{name}.xmp"
+        aside, sidecar_aside = folder / f"{paths.DROPPING}0123456789abcdef-{name}", folder / f"{paths.DROPPING}0123456789abcdef-{name}.xmp"
+        data, xmp_data = photo.read_bytes(), sidecar.read_bytes()
+        os.rename(photo, aside)
+        os.rename(sidecar, sidecar_aside)
+        return photo, sidecar, aside, sidecar_aside, data, xmp_data
+
+    def test_a_put_back_never_replaces_what_is_at_the_original_path(self):
+        outside = self.root.parent / "outside.JPG"
+        outside.write_bytes(b"a file outside the photo folder")
+        for kind in ("file", "link"):
+            with self.subTest(kind=kind):
+                photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+                if kind == "file":
+                    photo.write_bytes(b"a different photo now at that path")
+                else:
+                    photo.symlink_to(outside)
+                report = self.clean(at=TOO_SOON)
+                self.assertEqual(report.restored, 0)
+                if kind == "file":
+                    self.assertEqual(photo.read_bytes(), b"a different photo now at that path")
+                else:
+                    self.assertEqual((photo.is_symlink(), outside.read_bytes()), (True, b"a file outside the photo folder"))
+                self.assertEqual((aside.read_bytes(), sidecar_aside.read_bytes()), (data, xmp_data))
+                self.assertFalse(sidecar.exists())
+                photo.unlink()
+                os.rename(aside, photo)
+                os.rename(sidecar_aside, sidecar)
+
+    def test_a_row_with_a_different_sha1_gets_no_put_back(self):
+        photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+        row = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%/IMG_2001.JPG"))).scalar_one()
+        row.sha1 = "0" * 40
+        self.world.opened.commit()
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (0, 0))
+        self.assertFalse(photo.exists())
+        self.assertFalse(sidecar.exists())
+        self.assertEqual((aside.read_bytes(), sidecar_aside.read_bytes()), (data, xmp_data))
+
+    def test_a_dropping_name_no_row_records_is_not_put_back(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        stale = self.leftover("IMG_77.JPG")
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (0, 1))
+        self.assertFalse((folder / "IMG_77.JPG").exists())
+        self.assertFalse(stale.exists())
+
+    def test_a_sidecar_whose_photo_was_put_back_without_it_is_kept(self):
+        photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+        sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+        for _ in range(2):
+            self.clean(at=TOO_SOON)
+            self.assertEqual(photo.read_bytes(), data)
+            self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+            self.assertEqual(sidecar_aside.read_bytes(), xmp_data)
+            self.assertFalse(aside.exists())
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")
