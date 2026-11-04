@@ -34,12 +34,18 @@ describe("the Remote browser page", () => {
     expect(screen.getByText(/Tailscale/)).toBeInTheDocument();
   });
 
-  it("shows the sign-in task for an account that needs it", async () => {
+  it("shows no sign-in task for a signed-out account while no job is waiting for it", async () => {
     show({ "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995 }, "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [] } });
+    await screen.findByText("Connected");
+    expect(screen.queryByRole("region", { name: "Sign-in task" })).not.toBeInTheDocument();
+  });
+
+  it("shows the sign-in task for an account with a job waiting for a sign-in", async () => {
+    show({ "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995 }, "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [waitingConnect] } });
     const task = await screen.findByRole("region", { name: "Sign-in task" });
     expect(within(task).getByText("Sign-in needed")).toBeInTheDocument();
     expect(within(task).getByText("Sign in to family.photos@example.com")).toBeInTheDocument();
-    expect(within(task).getByText(/This account is signed out of Google\./)).toBeInTheDocument();
+    expect(within(task).getByText(/This account needs a Google sign-in\./)).toBeInTheDocument();
     expect(within(task).queryByRole("button")).not.toBeInTheDocument();
   });
 

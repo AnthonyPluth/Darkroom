@@ -39,7 +39,7 @@
   {:else}
     {@const data = loader.current.data}
     {@const chip = workerChip(data.view.worker_last_seen, data.now)}
-    {@const waiting = data.accounts.filter((a) => a.session_state === "needs_sign_in" || data.jobs.some((j) => j.account_id === a.id && j.status === "waiting_for_user"))}
+    {@const waiting = data.accounts.filter((a) => data.jobs.some((j) => j.account_id === a.id && j.status === "waiting_for_user"))}
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div class="flex flex-col gap-1">
         <h1 class="text-xl font-bold tracking-tight">Remote browser</h1>
@@ -57,7 +57,7 @@
             <b class="text-md">Sign in to {account.email}</b>
           </div>
           <p>
-            {verifying ? "Google asked to verify this account." : "This account is signed out of Google."}
+            {verifying ? "Google asked to verify this account." : "This account needs a Google sign-in."}
             Sign in in the window below as you normally would and finish any verification. When you can see the Google Takeout page, Darkroom notices within a minute, keeps the session and carries on.
           </p>
         </div>
