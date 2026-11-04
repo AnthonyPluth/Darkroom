@@ -131,6 +131,14 @@ Darkroom's own, after fleet's:
 - **Codex reviews every pull request; the Claude review is only for risky ones** (the owner's decision of Nov 3, recorded in #76). Comment `@codex review` on the draft as the block says. The merge gate (`.github/workflows/merge-gate.yml`, `require-codex-review: true`) stays pending until Codex has reviewed the head commit, so ask again after each substantive push. The Claude "Second review" runs on a pull request labelled `safety-critical` or `security`, or changing `.github/**`, `.claude/**` or a path `.github/workflows/agent-review.yml` lists; any other gets a passing "Not a risky pull request". Resolving a Codex thread starts no workflow, so afterwards run "Merge gate" by hand with the pull request's number, or push. Who reviews what, and how to turn the first review back on, is in `docs/runbook.md`.
 - A pull request description always describes what the code does at its current head, and is updated with every push that changes behavior, so it never drifts.
 
+## Deep security scans
+
+The owner runs them by hand with the claude-security plugin, on `claude-fable-5-1`, following fleet's [docs/deep-scan.md](https://github.com/AnthonyPluth/fleet/blob/main/docs/deep-scan.md) (the procedure and the reminder are fleet's; what follows is Darkroom's own).
+
+- **When:** before the first deploy to Unraid (#54; an open HIGH or CRITICAL finding blocks the deploy), and before iPhone cleanup is turned on on any device (#55; also a scoped scan of the deletion path, where any finding of MEDIUM or above blocks enabling cleanup). Darkroom has no quarterly scan: it doesn't call fleet's `deep-scan-due` reminder workflow.
+- **Where findings go:** Darkroom is public, so one draft security advisory per confirmed finding (Security, Advisories, New draft advisory), never a public issue, and no pull request text that describes the exploit. A fix goes through the advisory's private fork, or a pull request with a neutral title labelled `security` once the owner decides disclosure doesn't matter for that finding. The report directory (`CLAUDE-SECURITY-*/`) is never committed.
+- **The record:** each milestone issue is the tracker for its scan. Each scan records the revision stamp's file name (`CLAUDE-SECURITY-REVISION-<sha12>.json`), the effort, the counts by severity and the stamp's `verification.status`, and nothing else from the report. The issue closes only when its own conditions are met as well: for #55 both scans (the whole repository and the scoped scan of the deletion path) are recorded, no MEDIUM or higher finding on the deletion path is open, and the four deletion-safety pull requests' Second review threads (#24, #27, #37, #38) are checked; for #54 no HIGH or CRITICAL finding is open. Turning cleanup on, or deploying, happens after the issue closes.
+
 ## Model routing
 
 See [CLAUDE.md](CLAUDE.md): Opus by default, Fable for security-related issues, Sonnet only for mechanical work.
