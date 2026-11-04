@@ -196,7 +196,7 @@ The app replaces Möbius Sync. It uploads each new photo once, then deletes it f
 - Needs a paid Apple Developer account. Installed on the family's iPhones through TestFlight or ad hoc.
 - Cleanup assumes iCloud Photos is off on these iPhones. With it on, a delete on the phone also removes the photo from iCloud and every other device.
 
-## Web UI, notifications and MCP
+## Web UI and notifications
 
 Day to day you only hear from the service when it needs a sign-in or has finished an import. Everything else lives on its status page.
 
@@ -208,6 +208,8 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 - **Review queue:** side-by-side thumbnails for likely re-encodes. Keep both, skip, or undo any past decision.
 - **Remote browser:** the noVNC view, embedded, for sign-ins.
 
+The web UI is dark mode only: one theme, with no light theme and no theme switch.
+
 **Push alerts** — sent to the Darkroom iPhone app through Apple's push service (APNs, production, TestFlight builds), to the devices of the person an alert concerns; an alert about a Google account goes to the people that account serves. The push carries only the alert kind and an id, never an email address, name or file name; the app fetches the details from Darkroom when it can reach it. Delivery does not depend on being on home Wi-Fi; acting on an alert (for example the sign-in view) needs Darkroom reachable over home Wi-Fi or Tailscale. Until the app ships, alerts are recorded as events and not delivered.
 
 | Event | Alert |
@@ -217,15 +219,6 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 | Originals unmatched after a full export cycle | Per person and Pixel: check that their folder is backed up in Google Photos |
 | Schedule ending | About 3 weeks before, then a confirmation once renewed |
 | Failure (download, unpack, page change) | Immediately, with a link to the screenshot |
-
-**MCP server** — same pattern as Runway and Waypoint.
-
-- `status`: health per person and account, schedule end, last import
-- `device_status`: per iPhone, last check-in, uploads pending, photos eligible to delete
-- `list_exports`, `check_exports_now`
-- `review_queue`, `resolve_review_item`
-- `missing_gps`: items with no location, by person and date range
-- `rescan_library`
 
 ## Data model
 
@@ -250,7 +243,7 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 | Component | Runs | Access |
 | --- | --- | --- |
-| `darkroom` | Web UI, API (including uploads and cleanup), MCP, ingest worker, scheduler | `photos/` read-write |
+| `darkroom` | Web UI, API (including uploads and cleanup), ingest worker, scheduler | `photos/` read-write |
 | `darkroom-browser` | Playwright job runner, Chromium on Xvfb, noVNC | `_inbox/` and `_browser/` read-write |
 | Syncthing on Unraid | Sends each person's `originals/` to their Pixel, Send Only | `originals/` read-only |
 | Immich (existing stack) | Library, search, map | `photos/` read-only |
@@ -297,7 +290,7 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 4. **Browser worker.** Connect account via noVNC, create the schedule, daily status check, downloads within Google's limits, re-auth alerts.
 5. **iPhone app: upload.** Upload API and the app's upload side. Unraid becomes the Pixels' Syncthing peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.
 6. **iPhone app: cleanup.** Eligibility API, notification and batch delete. Turned on only after iCloud Photos is confirmed off.
-7. **Steady state.** Incremental imports, schedule renewal, MCP server.
+7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
 
 ## Open questions

@@ -172,14 +172,14 @@ class WriteXmpTests(Folder):
         self.assertEqual(self.listing(), {})
 
     def test_no_fields_writes_nothing(self):
-        with mock.patch("subprocess.run") as run:
+        with mock.patch.object(exiftool, "run") as run:
             self.assertFalse(exiftool.write_xmp(self.folder / "a.xmp", {}))
         run.assert_not_called()
         self.assertEqual(self.listing(), {})
 
     def test_a_failed_write_leaves_no_file_behind(self):
         done = mock.Mock(returncode=1, stderr="Error: private/path.jpg")
-        with mock.patch("subprocess.run", return_value=done), self.assertRaises(exiftool.WriteFailed) as raised:
+        with mock.patch.object(exiftool, "run", return_value=done), self.assertRaises(exiftool.WriteFailed) as raised:
             exiftool.write_xmp(self.folder / "a.xmp", {"XMP-dc:Description": "x"})
         self.assertNotIn("private", str(raised.exception))
         self.assertEqual(list(self.folder.iterdir()), [])
@@ -191,13 +191,13 @@ class WriteXmpTests(Folder):
 
     def test_never_passes_overwrite_original(self):
         calls = []
-        real = exiftool.subprocess.run
+        real = exiftool.run
 
-        def spy(args, **kwargs):
+        def spy(args, *rest):
             calls.append(list(args))
-            return real(args, **kwargs)
+            return real(args, *rest)
 
-        with mock.patch.object(exiftool.subprocess, "run", side_effect=spy):
+        with mock.patch.object(exiftool, "run", side_effect=spy):
             exiftool.write_xmp(self.folder / "a.xmp", {"XMP-dc:Description": "x"})
             exiftool.write_xmp(self.folder / "a.xmp", {"XMP-dc:Title": "y"})
         self.assertEqual(len(calls), 2)

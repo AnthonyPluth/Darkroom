@@ -72,7 +72,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 - Schema changes need an Alembic migration in `darkroom/storage/migrations/`, numbered after main's newest, with its own `test_<revision>_…` in `tests/test_migrations.py` (checked).
 - Add or update tests with the change. Don't skip, disable or delete a test to get CI passing; when one really goes, a `Removes-Test:` or `Skips-Test:` trailer says why (checked).
 - Never commit secrets or anyone's photos, file names, locations or Google data. `.env.example` lists configuration; real values stay in `.env`. Fixtures are generated and made up.
-- Read `SECURITY.md` before touching sign-in, tokens, encryption, the worker, the MCP server or eligibility.
+- Read `SECURITY.md` before touching sign-in, tokens, encryption, the worker or eligibility.
 
 ## Darkroom's promises
 
