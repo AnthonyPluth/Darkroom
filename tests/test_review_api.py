@@ -213,6 +213,17 @@ class UndoTests(ReviewCase):
         self.assertEqual(status, 200, body)
         return review_id, body["review"]["resolved_at"]
 
+    def test_past_decisions_list_every_pair_still_inside_its_undo_window(self):
+        review_id, _ = self.resolve("keep_both")
+        with mock.patch.object(review, "LIST_LIMIT", 0):
+            status, body = self.call("GET", "/api/review?status=kept_both")
+        self.assertEqual((status, [listed["id"] for listed in body["reviews"]]), (200, [review_id]))
+        opened = self.opened
+        opened.get(ReviewItem, review_id).resolved_at = 1.0
+        opened.commit()
+        with mock.patch.object(review, "LIST_LIMIT", 0):
+            self.assertEqual(self.call("GET", "/api/review?status=kept_both")[1]["reviews"], [])
+
     def test_undoing_keep_both_takes_the_copy_back_out_and_returns_the_pair(self):
         before_tree, before_flags = self.tree(), self.confirmed()
         review_id, _ = self.resolve("keep_both")

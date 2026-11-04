@@ -293,7 +293,25 @@ def carry_sidecar(source: Path, destination: Path) -> bool:
     return True
 
 
+class SetAside:
+    def __init__(self, staged: list[tuple[Path, Path]]) -> None:
+        self.staged = staged
+
+    def finish(self) -> None:
+        for _, aside in self.staged:
+            with contextlib.suppress(OSError):
+                aside.unlink()
+
+    def restore(self) -> None:
+        for path, aside in reversed(self.staged):
+            os.rename(aside, path)
+
+
 def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> None:
+    set_library_copy_aside(photos, relative, kept, with_sidecar).finish()
+
+
+def set_library_copy_aside(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> SetAside:
     target = photos.google_only_file(relative)
     if kept.is_symlink() or not kept.is_file() or kept.resolve() == target or not kept.resolve().is_relative_to(photos.root):
         raise NotALibraryCopy("no other copy of the file is kept")
@@ -309,12 +327,9 @@ def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: b
             os.rename(path, aside)
             staged.append((path, aside))
     except OSError:
-        for path, aside in reversed(staged):
-            os.rename(aside, path)
+        SetAside(staged).restore()
         raise
-    for _, aside in staged:
-        with contextlib.suppress(OSError):
-            aside.unlink()
+    return SetAside(staged)
 
 
 def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool]) -> int:
@@ -322,11 +337,15 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
     for folder in photos.kept_folders():
         if folder.name != "google-only" or folder.is_symlink() or not folder.is_dir():
             continue
-        for path in sorted(folder.rglob(f"{DROPPING}*")):
-            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(folder.resolve()):
-                continue
-            if path.stat().st_ctime >= older_than or not copy_kept(path, file_sha1(path)):
-                continue
-            path.unlink()
-            swept += 1
+        found = [path for path in sorted(folder.rglob(f"{DROPPING}*"))
+                 if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
+        for path in [path for path in found if path.suffix != SIDECAR_SUFFIX]:
+            if copy_kept(path, file_sha1(path)):
+                path.unlink()
+                swept += 1
+        for path in [path for path in found if path.suffix == SIDECAR_SUFFIX]:
+            photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
+            if not photo.exists() and not photo.is_symlink():
+                path.unlink()
+                swept += 1
     return swept

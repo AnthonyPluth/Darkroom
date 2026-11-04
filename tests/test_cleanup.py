@@ -327,10 +327,36 @@ class InterruptedRemovalTests(Imported):
                 self.assertTrue(stale.is_file())
                 self.assertEqual(report.dropped, 0)
 
-    def test_a_dropping_file_whose_copy_is_a_review_hold_is_swept(self):
+    def test_a_dropping_file_whose_copy_is_a_pending_review_hold_is_swept(self):
         stale = self.leftover("IMG_1005.JPG", self.hold.read_bytes())
         self.assertEqual(self.clean(at=TOO_SOON).dropped, 1)
         self.assertFalse(stale.exists())
+
+    def test_a_dropping_file_whose_only_copy_is_a_decided_pairs_hold_is_kept(self):
+        review = self.review()
+        review.status, review.resolved_at = "kept_both", TOO_SOON - DAY
+        self.world.opened.commit()
+        stale = self.leftover("IMG_1005.JPG", self.hold.read_bytes())
+        self.assertEqual(self.clean(at=TOO_SOON).dropped, 0)
+        self.assertTrue(stale.is_file())
+        self.assertTrue(self.hold.is_file())
+
+    def test_a_dropping_sidecar_goes_only_when_its_photo_is_gone_or_goes_too(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        for photo_data, expected in ((None, False), (b"the only copy of this photo", True), (b"", False)):
+            with self.subTest(photo_data=photo_data):
+                sidecar = folder / f"{paths.DROPPING}0123456789abcdef-IMG_9.JPG.xmp"
+                sidecar.write_bytes(b"<x:xmpmeta>a sidecar whose delete failed</x:xmpmeta>")
+                photo = folder / f"{paths.DROPPING}0123456789abcdef-IMG_9.JPG"
+                if photo_data == b"":
+                    photo.write_bytes((folder / "IMG_2001.JPG").read_bytes())
+                elif photo_data is not None:
+                    photo.write_bytes(photo_data)
+                self.clean(at=TOO_SOON)
+                self.assertEqual(sidecar.is_file(), expected)
+                self.assertEqual(photo.is_file(), expected)
+                sidecar.unlink(missing_ok=True)
+                photo.unlink(missing_ok=True)
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")

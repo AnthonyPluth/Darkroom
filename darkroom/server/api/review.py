@@ -68,7 +68,7 @@ def list_reviews(request: Request) -> Annotated[Response, contract.Reviews]:
     if after is not None and status != "pending":
         return error_response("after is only for status=pending", 400)
     with db.session(engine_of(request)) as opened:
-        reply = {"reviews": review.listing(opened, status, after), "pending": review.pending_count(opened),
+        reply = {"reviews": review.listing(opened, status, now(), after), "pending": review.pending_count(opened),
                  "before": 0 if after is None else review.pending_count(opened, after)}
     return json_response(reply)
 
@@ -178,7 +178,12 @@ def reassign(request: Annotated[Request, contract.ReassignBody]) -> Annotated[Re
         with db.session(engine_of(request)) as opened:
             item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at)
             reply = review.media_view(item)
-            opened.commit()
+            try:
+                opened.commit()
+            except BaseException:
+                changed.commit_failed()
+                raise
+            changed.after_commit()
             rescan(opened, request.settings, changed, at)
     except validate.Invalid as error:
         return error_response(str(error), 400)

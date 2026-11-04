@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -56,6 +57,8 @@ class NotServed(ValueError):
 class Changed:
     export: Export
     people: set[int] = field(default_factory=set)
+    after_commit: Callable[[], None] = lambda: None
+    commit_failed: Callable[[], None] = lambda: None
 
 
 @dataclass(frozen=True)
@@ -99,14 +102,22 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     }
 
 
-def listing(opened: Session, status: str | None, after: int | None = None) -> list[dict[str, object]]:
+def undoable_count(opened: Session, status: str | None, now: float) -> int:
+    query = select(func.count(ReviewItem.id)).where(ReviewItem.status.in_(RESOLVED), ReviewItem.resolved_at > now - UNDO_WINDOW)
+    if status is not None:
+        query = query.where(ReviewItem.status == status)
+    return int(opened.execute(query).scalar_one())
+
+
+def listing(opened: Session, status: str | None, now: float, after: int | None = None) -> list[dict[str, object]]:
     query = select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
     if status is not None:
         query = query.where(ReviewItem.status == status)
     if after is not None:
         query = query.where(ReviewItem.id > after)
     order = (ReviewItem.id,) if status == "pending" else (ReviewItem.resolved_at.desc(), ReviewItem.id.desc())
-    rows = opened.execute(query.order_by(*order).limit(LIST_LIMIT)).all()
+    limit = LIST_LIMIT if status == "pending" else max(LIST_LIMIT, undoable_count(opened, status, now))
+    rows = opened.execute(query.order_by(*order).limit(limit)).all()
     return [summary(opened, review, decision) for review, decision in rows]
 
 
@@ -412,19 +423,26 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
         item.person_id, item.path = target.id, new_path
-        for row in opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)).scalars():
-            row.person_id = target.id
         opened.flush()
         events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}")
         opened.flush()
-        paths.drop_library_copy(photos, old_path, placed.path)
+        aside = paths.set_library_copy_aside(photos, old_path, placed.path)
     except Exception as error:
         if placed.copied:
             paths.drop_library_copy(photos, new_path, source, with_sidecar=not had_sidecar)
         if isinstance(error, MOVE_FAILURES):
             raise WrongState("the photo could not be moved; it was left where it was") from error
         raise
-    return item, Changed(export, {current.id, target.id})
+
+    def put_back() -> None:
+        try:
+            aside.restore()
+            if placed.copied:
+                paths.drop_library_copy(photos, new_path, source, with_sidecar=not had_sidecar)
+        except MOVE_FAILURES as error:
+            monitoring.log("reassign could not be put back", error=type(error).__name__)
+
+    return item, Changed(export, {current.id, target.id}, aside.finish, put_back)
 
 
 def media_view(item: MediaItem) -> dict[str, object]:

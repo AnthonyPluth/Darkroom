@@ -230,7 +230,7 @@ def copy_kept(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
             except paths.OutsideRoot:
                 continue
         held = (select(ReviewItem, Export).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
-                .join(Export, Export.id == DedupeDecision.export_id).where(ReviewItem.hold_path.is_not(None)))
+                .join(Export, Export.id == DedupeDecision.export_id).where(ReviewItem.hold_path.is_not(None), ReviewItem.status == "pending"))
         for review, export in opened.execute(held).all():
             hold = hold_file(photos, export, review)
             if hold is not None and same_file_elsewhere(hold, sha1, dropping):

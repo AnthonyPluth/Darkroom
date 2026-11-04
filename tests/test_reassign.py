@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from darkroom.domain import review
 from darkroom.providers import exiftool
@@ -39,7 +40,7 @@ class SharedAccountTests(ReviewCase):
         self.assertEqual(sorted(self.world.scanned()[scans:]), ["lib-jo", "lib-sam"])
         self.assertEqual(self.confirmed(), before_flags)
         self.assertFalse(self.opened.get(MediaItem, item.id).confirmed_in_google)
-        self.assertEqual(self.decision_of(GOOGLE_ONLY_NAME).person_id, self.world.ids["sam"])
+        self.assertEqual(self.decision_of(GOOGLE_ONLY_NAME).person_id, self.world.ids["jo"])
         events = [(row.type, row.detail) for row in self.opened.execute(select(Event).where(Event.type == "media_reassigned")).scalars()]
         self.assertEqual(events, [("media_reassigned", f"person {self.world.ids['jo']} to person {self.world.ids['sam']}")])
 
@@ -74,7 +75,7 @@ class SharedAccountTests(ReviewCase):
         item = self.item_named(GOOGLE_ONLY_NAME)
         before_tree, before_flags = self.tree(), self.confirmed()
         sidecar = (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp")
-        for patched, without_sidecar in (("drop_library_copy", False), ("carry_sidecar", False), ("drop_library_copy", True)):
+        for patched, without_sidecar in (("set_library_copy_aside", False), ("carry_sidecar", False), ("set_library_copy_aside", True)):
             with self.subTest(patched=patched, without_sidecar=without_sidecar):
                 kept = sidecar.read_bytes()
                 if without_sidecar:
@@ -165,7 +166,7 @@ class SharedAccountTests(ReviewCase):
         self.assertEqual(self.reassign(kept, self.world.ids["sam"])[0], 200)
         self.assertTrue((self.world.root / "sam" / "google-only" / "2019" / "08" / PAIR_NAME).is_file())
         listed = self.call("GET", "/api/review?status=kept_both")[1]["reviews"][0]
-        self.assertEqual(listed["kept_person_id"], self.world.ids["sam"])
+        self.assertEqual((listed["person_id"], listed["kept_person_id"]), (self.world.ids["jo"], self.world.ids["sam"]))
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before)
 
@@ -255,6 +256,24 @@ class SharedAccountTests(ReviewCase):
             with self.assertRaises(RuntimeError):
                 review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
         self.assertEqual(self.tree(), before)
+
+    def test_a_commit_that_fails_puts_the_photo_back(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        before_tree, before_flags = self.tree(), self.confirmed()
+        real = Session.commit
+
+        def failing(session):
+            if session is not self.world.opened:
+                raise OSError("disk full")
+            return real(session)
+
+        with mock.patch.object(Session, "commit", autospec=True, side_effect=failing):
+            self.assertEqual(self.reassign(item.id, self.world.ids["sam"])[0], 500)
+        self.assertEqual(self.tree(), before_tree)
+        self.assertEqual(self.confirmed(), before_flags)
+        row = self.opened.get(MediaItem, item.id)
+        self.assertEqual((row.person_id, row.path), (item.person_id, item.path))
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
 
     def test_a_copy_that_changed_on_disk_is_left_alone(self):
         item = self.item_named(GOOGLE_ONLY_NAME)
