@@ -256,6 +256,59 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(Client.error_text(b"not json"), "unreadable error")
         self.assertEqual(Client.error_text(b"[1]"), "unknown error")
 
+    def test_a_reply_that_drips_past_the_deadline_is_cut_off(self):
+        class Dripping:
+            def __init__(self):
+                self.reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                self.reads += 1
+                time.sleep(0.02)
+                return b" "
+
+        class Opener:
+            def __init__(self, response):
+                self.response = response
+
+            def open(self, request, timeout):
+                return self.response
+
+        dripping = Dripping()
+        client = Client("http://darkroom.test", TOKEN)
+        client.opener = Opener(dripping)
+        with self.assertRaises(Unreachable):
+            client.post("/x", {}, deadline=time.monotonic() + 0.1)
+        self.assertGreater(dripping.reads, 0)
+        self.assertLess(dripping.reads, 50)
+
+    def test_a_heartbeat_reply_is_read_in_chunks_and_parsed(self):
+        class Reply:
+            def __init__(self):
+                self.parts = [b'{"ok"', b": true}"]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                return self.parts.pop(0) if self.parts else b""
+
+        class Opener:
+            def open(self, request, timeout):
+                return Reply()
+
+        client = Client("http://darkroom.test", TOKEN)
+        client.opener = Opener()
+        self.assertEqual(client.post("/x", {}, deadline=time.monotonic() + 5), {"ok": True})
+
     def test_the_client_follows_no_redirects(self):
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
