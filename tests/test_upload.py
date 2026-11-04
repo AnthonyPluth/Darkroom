@@ -151,6 +151,23 @@ class UploadTests(DeviceCase):
         self.assertEqual(len(self.files_under_originals()), 2)
         self.assertEqual(list(self.photos.uploads_tmp("jo").iterdir()), [])
 
+    def test_a_resource_changed_by_a_check_during_the_upload_stays_needed(self):
+        data, newer = b"first export" * 10, b"second export" * 10
+        self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG")]}])
+        saving = uploads.save
+
+        def recheck_meanwhile(*args):
+            saved = saving(*args)
+            self.check([{"id": ASSET, "resources": [resource("photo", newer, "IMG_0001.JPG")]}])
+            return saved
+
+        with mock.patch.object(uploads, "save", side_effect=recheck_meanwhile):
+            status, reply = self.put(data)
+        self.assertEqual(status, 409, reply)
+        row = self.resource_row()
+        self.assertEqual((row.sha1, row.uploaded_at, row.media_item_id), (sha1(newer), None, None))
+        self.assertEqual(self.check([{"id": ASSET, "resources": [resource("photo", newer, "IMG_0001.JPG")]}])[1], {"needed": [{"id": ASSET, "kind": "photo"}]})
+
     def test_an_upload_must_be_checked_first_and_match_what_was_checked(self):
         data = b"checked bytes" * 10
         self.assertEqual(self.put(data)[0], 404)

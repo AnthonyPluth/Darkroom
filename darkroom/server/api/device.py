@@ -8,7 +8,7 @@ from darkroom.domain import devices, uploads
 from darkroom.server import contract
 from darkroom.server.common import Principal, Request, Response, engine_of, error_response, header, json_response, now
 from darkroom.storage import db, paths
-from darkroom.storage.models import Person, PhoneResource
+from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
 MAX_BODY = 4 * 1024 * 1024
@@ -93,7 +93,7 @@ def upload_resource(request: Request) -> Annotated[Response, contract.UploadRepl
     try:
         with db.session(engine) as opened:
             row = uploads.expected(opened, who.device_id, photokit_id, kind, sha1, filename)
-            row_id, uploaded, linked = row.id, row.uploaded_at is not None, row.media_item_id is not None
+            uploaded, linked = row.uploaded_at is not None, row.media_item_id is not None
             person = opened.get(Person, who.person_id)
             slug = person.slug if person is not None else None
     except uploads.NotChecked as error:
@@ -116,9 +116,14 @@ def upload_resource(request: Request) -> Annotated[Response, contract.UploadRepl
     except TimeoutError:
         monitoring.log("upload refused", reason="read timeout", kind=kind)
         return error_response("the upload stopped sending", 408)
-    with db.session(engine) as opened:
-        found, person = opened.get(PhoneResource, row_id), opened.get(Person, who.person_id)
-        indexed = uploads.record(opened, photos, person, found, target, now()) if found is not None and person is not None else False
+    try:
+        with db.session(engine) as opened:
+            current = uploads.expected(opened, who.device_id, photokit_id, kind, sha1, filename)
+            person = opened.get(Person, who.person_id)
+            indexed = uploads.record(opened, photos, person, current, target, now()) if person is not None else False
+    except (uploads.NotChecked, uploads.NotWhatWasChecked):
+        monitoring.log("upload not recorded", reason="changed while uploading", kind=kind)
+        return error_response("the asset changed while this upload was sent; check it again", 409)
     monitoring.log("upload received", kind=kind, already=already, indexed=indexed)
     return upload_reply(photokit_id, kind, sha1, already, indexed)
 
