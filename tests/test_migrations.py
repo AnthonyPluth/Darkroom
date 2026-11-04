@@ -99,6 +99,29 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT tier FROM dedupe_decisions ORDER BY id").scalars().all(), [5, 1])
 
+    def test_0005_import_run_failed_and_libraries_keeps_old_runs_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0004")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO import_runs (export_id, started, added) VALUES (1, 2.0, 3)")
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            row = connection.exec_driver_sql("SELECT added, failed, changed_people FROM import_runs").one()
+            self.assertEqual(tuple(row), (3, 0, None))
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0004")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("import_runs")}
+        self.assertNotIn("failed", columns)
+        self.assertNotIn("changed_people", columns)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT added FROM import_runs").scalar(), 3)
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)
