@@ -3,7 +3,8 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.storage.models import Export, Pixel, PixelPerson
+from darkroom.domain import alerts
+from darkroom.storage.models import Alert, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -143,6 +144,48 @@ class AccountsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", f"/api/accounts/{second['id']}", {"email": "\u00e4@EXAMPLE.test"})[0], 409)
         self.assertEqual(self.call("PATCH", f"/api/accounts/{first['id']}", {"email": "\u00e4@example.test"})[0], 200)
         self.assertEqual(self.call("GET", "/api/accounts")[1]["accounts"][0]["email"], "\u00e4@example.test")
+
+    def sign_in_alert(self, email):
+        with db.session(self.engine) as opened:
+            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", email, alerts.sign_in_needed(email), None, 10.0)
+
+    def alerts_of_jo(self):
+        status, reply = self.call("GET", "/api/status")
+        self.assertEqual(status, 200)
+        (card,) = reply["people"]
+        return [(a["subject"], a["message"]) for a in card["alerts"]], [(a["subject"]) for a in reply["alerts"]]
+
+    def test_editing_an_accounts_email_keeps_its_open_sign_in_alert_on_the_people_it_serves(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"], "old@example.test")
+        self.sign_in_alert("old@example.test")
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{account['id']}", {"email": "new@example.test"})[0], 200)
+        shown, overall = self.alerts_of_jo()
+        self.assertEqual([subject for subject, _ in shown], ["new@example.test"])
+        self.assertIn("new@example.test", shown[0][1])
+        self.assertNotIn("old@example.test", shown[0][1])
+        self.assertEqual(overall, ["new@example.test"])
+
+    def test_a_case_only_email_edit_keeps_the_alert_too(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"], "jo@example.test")
+        self.sign_in_alert("jo@example.test")
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{account['id']}", {"email": "Jo@Example.test"})[0], 200)
+        self.assertEqual([subject for subject, _ in self.alerts_of_jo()[0]], ["Jo@Example.test"])
+
+    def test_editing_an_email_leaves_other_accounts_and_closed_alerts_alone(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"], "a@example.test")
+        other = self.account(jo["id"], "b@example.test")
+        self.sign_in_alert("b@example.test")
+        with db.session(self.engine) as opened:
+            alerts.open_alert(opened, self.settings, "k2", "sign_in_needed", "a@example.test", alerts.sign_in_needed("a@example.test"), None, 11.0)
+            alerts.close(opened, "k2", 12.0)
+        self.call("PATCH", f"/api/accounts/{account['id']}", {"email": "c@example.test"})
+        self.assertEqual([subject for subject, _ in self.alerts_of_jo()[0]], ["b@example.test"])
+        with db.session(self.engine) as opened:
+            self.assertEqual(sorted(a.subject for a in opened.execute(select(Alert)).scalars()), ["a@example.test", "b@example.test"])
+        self.assertEqual(other["email"], "b@example.test")
 
     def test_validation_errors_and_404s(self):
         jo = self.person("Jo")

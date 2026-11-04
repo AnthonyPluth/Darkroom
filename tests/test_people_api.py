@@ -153,11 +153,27 @@ class PeopleApiTests(ApiCase):
         self.assertEqual(self.call("POST", "/api/people", {"name": "Kai"})[0], 409)
         self.assertFalse((self.photos / "kai").exists())
 
-    def test_a_folder_that_cannot_be_made_is_a_clear_500_and_no_person(self):
+    def test_a_folder_that_cannot_be_made_is_a_clear_500_and_no_person_and_a_retry_works(self):
         (self.photos / "_inbox").write_bytes(b"in the way")
+        before = sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*"))
         status, reply = self.call("POST", "/api/people", {"name": "Jo"})
         self.assertEqual((status, reply), (500, {"error": "Darkroom could not create the person's folders"}))
         self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+        self.assertEqual(sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*")), before)
+        self.assertFalse((self.photos / "jo").exists())
+        (self.photos / "_inbox").unlink()
+        self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 201)
+        self.assertTrue((self.photos / "jo" / "originals").is_dir())
+
+    def test_a_failed_creation_removes_only_the_empty_folders_it_made(self):
+        (self.photos / "_inbox").mkdir()
+        (self.photos / "_inbox" / "jo").write_bytes(b"in the way")
+        self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 409)
+        (self.photos / "_inbox" / "jo").unlink()
+        (self.photos / "_inbox" / "jo").mkdir()
+        (self.photos / "_inbox" / "jo" / "manual").write_bytes(b"in the way")
+        self.assertEqual(self.call("POST", "/api/people", {"name": "Kai"})[0], 201)
+        self.assertTrue((self.photos / "_inbox").is_dir())
 
     def test_devices_of_a_person_are_listed_without_their_token(self):
         person = self.person("Jo")

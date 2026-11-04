@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -59,6 +61,25 @@ def as_dict(person: Person) -> dict[str, object]:
         "has_immich_key": bool(person.immich_api_key_sealed),
         "created": person.created,
     }
+
+
+def remove_empty(folders: list[Path]) -> None:
+    for folder in folders:
+        with contextlib.suppress(OSError):
+            folder.rmdir()
+
+
+def create_tree(photos: Photos, slug: str) -> None:
+    person_folder = photos.inside(photos.person_part(slug))
+    inbox_folder = photos.inbox(slug)
+    inbox_root = inbox_folder.parent
+    inbox_root_existed = inbox_root.exists()
+    try:
+        create_tree(photos, slug)
+    except OSError:
+        made = [photos.originals(slug), photos.inside(slug, "google-only"), person_folder, photos.manual_inbox(slug), inbox_folder]
+        remove_empty([*made, *([] if inbox_root_existed else [inbox_root])])
+        raise
 
 
 def create(opened: Session, photos: Photos, name: str, slug: str, email: str | None, immich_user_id: str | None,

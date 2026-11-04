@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
 
 CONFIRMING_TIERS = (1, 2)
 
@@ -121,6 +121,12 @@ def create(opened: Session, email: str, default_person_id: int, now: float) -> G
     return account
 
 
+def follow_alerts(opened: Session, old: str, new: str) -> None:
+    for alert in opened.execute(select(Alert).where(Alert.closed.is_(None), Alert.subject == old)).scalars():
+        alert.subject = new
+        alert.message = alert.message.replace(old, new)
+
+
 def update(opened: Session, account_id: int, email: str | None, default_person_id: int | None, now: float) -> GoogleAccount:
     account = get(opened, account_id)
     if email is not None:
@@ -129,6 +135,8 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
         require_person(opened, default_person_id)
         require_confirmations_kept(opened, account.id, {default_person_id} | served_by_pixels(opened, account.id))
     if email is not None:
+        if email != account.email:
+            follow_alerts(opened, account.email, email)
         account.email = email
     if default_person_id is not None:
         account.default_person_id = default_person_id
