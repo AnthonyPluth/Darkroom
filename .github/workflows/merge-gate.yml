@@ -52,11 +52,11 @@ jobs:
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
-      # No CodeQL: a private repository on a personal account has none.
       required-workflows: |
         CI
         Docker image
         Security scans
+        CodeQL
       # Owner decision of Nov 3 (issue #76): Codex reviews every pull request. The gate stays pending until Codex has
       # reviewed the head commit; fleet's defaults already require "Second review" alone and fail on an open Codex P1
       # or P2 thread. merge-gate-threads.yml starts the gate when Codex's review or comment arrives.

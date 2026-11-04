@@ -5,10 +5,9 @@ name: Security scans
 # zizmor over the workflows. A pull request runs only the scans its change can affect (a change under .github/ runs
 # everything; Trivy's file scan always runs); the weekly run and a manual one scan everything.
 #
-# Darkroom is private on a personal account, which has no code scanning: with sarif-upload off, Semgrep, Trivy and
-# zizmor fail their job on findings instead of uploading them, which the merge gate sees, and Scorecard (public
-# repositories only) is off. The permissions are the ones fleet's jobs declare; a called job can't ask for more than
-# its caller has, even one that is skipped.
+# Darkroom is public, so code scanning is available: with sarif-upload on, Semgrep and Trivy upload their findings as
+# SARIF (categories semgrep and trivy) to the Security tab. The permissions are the ones fleet's jobs declare; a called
+# job can't ask for more than its caller has, even one that is skipped. Scorecard stays off.
 on:
   push:
     branches: [main]
@@ -33,7 +32,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read      # the pull request's changed files
-      security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
+      security-events: write   # the SARIF upload steps, in the Semgrep and Trivy jobs only
       actions: read            # Scorecard, which scorecard: false skips
       id-token: write          # Scorecard, which scorecard: false skips
     uses: AnthonyPluth/fleet/.github/workflows/security.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
@@ -42,5 +41,5 @@ jobs:
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       web-dirs: frontend
       image-paths: ^(Dockerfile|Dockerfile\.browser|\.dockerignore|pyproject\.toml|poetry\.lock)$
-      sarif-upload: false
+      sarif-upload: true
       scorecard: false
