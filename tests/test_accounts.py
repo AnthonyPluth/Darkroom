@@ -81,33 +81,45 @@ class DeleteTests(unittest.TestCase):
         self.engine = own_database(self)
         self.photos = Photos(Path(self.enterContext(tempfile.TemporaryDirectory())))
 
-    def account_with_job(self, status):
+    def account_with_job(self, status, finished=None, message=None):
         with db.session(self.engine) as opened:
-            name = f"jo{status.replace('_', '')}"
+            name = f"jo{status.replace('_', '')}{finished}"
             account = add_account(opened, f"{name}@x.test", add_person(opened, name))
             job = browser_jobs.enqueue(opened, account, "noop", None, 1.0)
             job.status = status
+            job.finished = finished
+            job.message = message
         return account
 
-    def test_every_unfinished_job_status_refuses_the_delete_and_changes_nothing(self):
-        for status in browser_jobs.UNFINISHED_STATUSES:
-            with self.subTest(status=status):
-                account = self.account_with_job(status)
-                with db.session(self.engine) as opened:
-                    with self.assertRaisesRegex(accounts.InUse, "browser job that has not finished"):
-                        accounts.delete(opened, self.photos, account, 2.0)
-                with db.session(self.engine) as opened:
-                    self.assertIsNotNone(opened.get(GoogleAccount, account))
-                    self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 1)
+    def refused(self, account, now=2.0):
+        with db.session(self.engine) as opened:
+            with self.assertRaisesRegex(accounts.InUse, "browser job that has not finished"):
+                accounts.delete(opened, self.photos, account, now)
+        with db.session(self.engine) as opened:
+            self.assertIsNotNone(opened.get(GoogleAccount, account))
+            self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 1)
 
-    def test_finished_jobs_do_not_block_the_delete(self):
-        for status in ("done", "failed"):
+    def deleted(self, account, now=2.0):
+        with db.session(self.engine) as opened:
+            accounts.delete(opened, self.photos, account, now)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(GoogleAccount, account))
+            self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 0)
+
+    def test_a_running_or_waiting_job_refuses_the_delete_and_changes_nothing(self):
+        for status in browser_jobs.OPEN_STATUSES:
             with self.subTest(status=status):
-                account = self.account_with_job(status)
-                with db.session(self.engine) as opened:
-                    accounts.delete(opened, self.photos, account, 2.0)
-                with db.session(self.engine) as opened:
-                    self.assertIsNone(opened.get(GoogleAccount, account))
+                self.refused(self.account_with_job(status))
+
+    def test_a_job_the_lease_expired_still_refuses_until_the_lease_window_has_passed(self):
+        account = self.account_with_job("failed", finished=1000.0, message=browser_jobs.EXPIRED_MESSAGE)
+        self.refused(account, now=1000.0 + browser_jobs.LEASE_SECONDS - 1)
+        self.deleted(account, now=1000.0 + browser_jobs.LEASE_SECONDS + 1)
+
+    def test_finished_and_queued_jobs_do_not_block_the_delete(self):
+        for status in ("done", "failed", "queued"):
+            with self.subTest(status=status):
+                self.deleted(self.account_with_job(status, finished=1000.0, message="TimeoutError"))
 
 
 if __name__ == "__main__":

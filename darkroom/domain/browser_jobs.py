@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
@@ -17,7 +17,7 @@ LEASE_SECONDS = 180.0
 KINDS = ("noop",)
 WAITING_REASONS = ("sign_in", "verify")
 OPEN_STATUSES = ("running", "waiting_for_user")
-UNFINISHED_STATUSES = ("queued", *OPEN_STATUSES)
+EXPIRED_MESSAGE = "the worker stopped reporting"
 WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
@@ -184,7 +184,7 @@ def expire_leases(opened: Session, settings: Settings, now: float) -> list[Brows
     stale = now - LEASE_SECONDS
     expired = []
     for job in opened.execute(select(BrowserJob).where(BrowserJob.status.in_(OPEN_STATUSES), BrowserJob.heartbeat < stale)).scalars():
-        expired.append(fail(opened, settings, job, "the worker stopped reporting", [], now))
+        expired.append(fail(opened, settings, job, EXPIRED_MESSAGE, [], now))
     return expired
 
 
@@ -221,3 +221,15 @@ def as_dict(job: BrowserJob) -> dict[str, object]:
 
 def for_worker(job: BrowserJob) -> dict[str, object]:
     return {"id": job.id, "kind": job.kind, "account": str(job.account_id), "payload": json.loads(job.payload or "{}")}
+
+
+def holds_profile(opened: Session, account_id: int, now: float) -> bool:
+    recently = now - LEASE_SECONDS
+    query = select(func.count(BrowserJob.id)).where(
+        BrowserJob.account_id == account_id,
+        or_(
+            BrowserJob.status.in_(OPEN_STATUSES),
+            and_(BrowserJob.status == "failed", BrowserJob.message == EXPIRED_MESSAGE, BrowserJob.finished > recently),
+        ),
+    )
+    return bool(opened.execute(query).scalar_one())

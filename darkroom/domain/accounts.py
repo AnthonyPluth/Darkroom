@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events
 from darkroom.storage.paths import Photos
-from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
 
 CONFIRMING_TIERS = (1, 2)
 
@@ -148,6 +149,7 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
 
 def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
     account = get(opened, account_id)
+    opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
     found = []
     if opened.execute(select(func.count(Pixel.id)).where(Pixel.google_account_id == account_id)).scalar_one():
         found.append("Pixels")
@@ -155,8 +157,7 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None
         found.append("exports")
     if found:
         raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
-    unfinished = select(func.count(BrowserJob.id)).where(BrowserJob.account_id == account_id, BrowserJob.status.in_(browser_jobs.UNFINISHED_STATUSES))
-    if opened.execute(unfinished).scalar_one():
+    if browser_jobs.holds_profile(opened, account_id, now):
         raise InUse(f"{account.email} has a browser job that has not finished; wait for it to finish, then delete the account")
     email = account.email
     opened.delete(account)

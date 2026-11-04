@@ -174,6 +174,30 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertEqual(self.fake.bodies("failed"), [{"message": "TimeoutError", "failure_dir": "_browser/1/failures/9", "files": ["screenshot.png", "page.html"]}])
         self.assertTrue(self.browsers[0].closed)
 
+    def test_the_browser_is_closed_before_done_or_failed_is_reported(self):
+        seen = []
+
+        def opens(ctx):
+            ctx.browser()
+            return {"ok": True}
+
+        def explodes(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        for registry, report in (({"noop": opens}, "done"), ({"noop": explodes}, "failed")):
+            self.fake.enqueue(11)
+            worker = self.make_runner(registry)
+            original = getattr(worker.client, report)
+
+            def spy(*args, original=original):
+                seen.append(self.browsers[-1].closed)
+                return original(*args)
+
+            setattr(worker.client, report, spy)
+            worker.run_job(self.fake.queue.pop(0))
+        self.assertEqual(seen, [True, True])
+
     def test_a_failed_screenshot_reports_only_the_page_snapshot(self):
         def exploding(ctx):
             ctx.browser()

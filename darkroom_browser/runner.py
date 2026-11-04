@@ -81,6 +81,7 @@ class Runner:
             result = work(ctx)
             ctx.check()
             beat.stop()
+            ctx.close_browser()
             self.client.done(ctx.job_id, result)
             outcome = "done"
         except Cancelled:
@@ -104,6 +105,10 @@ class Runner:
         except Exception as capture_error:
             monitoring.log("failure capture failed", error=type(capture_error).__name__)
         folder = ctx.failure_folder_name() if captured is not None else None
+        try:
+            ctx.close_browser()
+        except Exception as close_error:
+            monitoring.log("browser did not close cleanly", error=type(close_error).__name__)
         try:
             self.client.failed(ctx.job_id, type(error).__name__, folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
