@@ -1,13 +1,15 @@
 name: Sync fleet content
 
 # Keeps fleet's content (the AGENTS.md blocks, the vendored .claude/ files, tools/fleet and .fleet/version) at the
-# version the workflow pins carry, through fleet's reusable sync. Dependabot bumps the pins; after a bump merges (a
-# push to main touching the workflows), weekly, or by hand, this reads every fleet pin (they must agree), compares
-# with .fleet/version and opens or updates the pull request "chore: fleet content vX.Y.Z" from the branch fleet/sync
-# with the fleet-bot GitHub App's token (a pull request opened with the workflow's own token would start no checks).
-# A newer major opens a migration issue instead. The App's id and key are passed by name and reach one step of
-# fleet's workflow; nothing merges by itself. Until #12 adds .fleet/version, a run fails at its plan step naming the
-# missing file, and nothing is pushed or opened.
+# version the workflow pins carry, through fleet's reusable sync. Dependabot bumps the pins and the merge gate merges
+# the bump once it passes (automerge-fleet-bumps, #82), then starts this workflow (after-merge-workflows); it also
+# runs on a push to main touching the workflows (a bump merged by hand), weekly, or by hand. It reads every fleet pin
+# (they must agree), compares with .fleet/version and opens or updates the pull request "chore: fleet content vX.Y.Z"
+# from the branch fleet/sync with the fleet-bot GitHub App's token (a pull request opened with the workflow's own
+# token would start no checks). A newer major opens a migration issue instead. The App's id and key are passed by name
+# and reach one step of fleet's workflow; nothing merges the content's pull request by itself: the owner merges it by
+# hand. Until #12 adds .fleet/version, a run fails at its plan step naming the missing file, and nothing is pushed or
+# opened.
 on:
   push:
     branches: [main]
@@ -36,7 +38,7 @@ jobs:
     permissions:
       contents: read           # the checkout; the pull request is pushed with the App token
       issues: write            # the migration issue
-    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@538cdc73efd8604dc3e5e19284ae363dabf640a4   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
     with:
       app-id: ${{ vars.FLEET_BOT_APP_ID }}
       dry-run: ${{ inputs.dry-run || false }}
