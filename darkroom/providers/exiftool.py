@@ -14,6 +14,9 @@ from darkroom.storage import paths
 
 BATCH = 100
 TIMEOUT = 300
+PREVIEW_TIMEOUT = 30
+PREVIEW_TAGS = ("PreviewImage", "ThumbnailImage", "CoverArt")
+IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG")
 XMP_TAG = re.compile(r"^XMP-[A-Za-z]+:[A-Za-z]+$")
 
 
@@ -37,6 +40,11 @@ def executable() -> str:
 
 
 def run(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess[str]:
+    done = run_binary(command, timeout)
+    return subprocess.CompletedProcess(command, done.returncode, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace"))
+
+
+def run_binary(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess[bytes]:
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         deadline = time.monotonic() + timeout
@@ -51,7 +59,7 @@ def run(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedPro
                 process.wait()
         out.seek(0)
         err.seek(0)
-        return subprocess.CompletedProcess(command, process.returncode, out.read().decode(errors="replace"), err.read().decode(errors="replace"))
+        return subprocess.CompletedProcess(command, process.returncode, out.read(), err.read())
 
 
 def version() -> str:
@@ -79,6 +87,15 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
         for entry in json.loads(done.stdout):
             found[Path(entry["SourceFile"])] = entry
     return found
+
+
+def embedded_preview(path: Path) -> bytes | None:
+    program = executable()
+    for name in PREVIEW_TAGS:
+        done = run_binary([program, "-b", f"-{name}", "-api", "largefilesupport=1", str(path)], PREVIEW_TIMEOUT)
+        if done.returncode == 0 and done.stdout.startswith(IMAGE_MAGIC):
+            return done.stdout
+    return None
 
 
 def write_xmp(sidecar_path: Path, fields: Mapping[str, str]) -> bool:

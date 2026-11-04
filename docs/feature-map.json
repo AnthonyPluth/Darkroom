@@ -70,6 +70,9 @@
         "tests/test_auth_routes.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_every_route.py",
+        "tests/test_reassign.py",
+        "tests/test_review_api.py",
         "tests/test_static.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
@@ -328,6 +331,7 @@
       "handler": "darkroom.server.api.imports.request",
       "frontend": [],
       "tests": [
+        "tests/test_every_route.py",
         "tests/test_imports_api.py"
       ]
     },
@@ -337,6 +341,7 @@
       "handler": "darkroom.server.api.imports.list_imports",
       "frontend": [],
       "tests": [
+        "tests/test_every_route.py",
         "tests/test_imports_api.py"
       ]
     },
@@ -346,7 +351,101 @@
       "handler": "darkroom.server.api.imports.one",
       "frontend": [],
       "tests": [
+        "tests/test_every_route.py",
         "tests/test_imports_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/review",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.list_reviews",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_reassign.py",
+        "tests/test_review_api.py",
+        "tests/test_thumbs.py"
+      ]
+    },
+    {
+      "route": "GET /api/review/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.one",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/review/{id}/thumb/{side}",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.thumb",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/review/{id}/resolve",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.resolve",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/review/{id}/undo",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.undo",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/decisions",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.list_decisions",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/decisions/{id}/reverse",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.reverse",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/media",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.list_media",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_reassign.py",
+        "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/media/{id}/reassign",
+      "auth": "session",
+      "handler": "darkroom.server.api.review.reassign",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_review_api.py"
       ]
     },
     {

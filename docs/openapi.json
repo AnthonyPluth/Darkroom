@@ -321,6 +321,158 @@
         "required": [],
         "type": "object"
       },
+      "DecisionReply": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionView"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      "DecisionView": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "decided_at": {
+            "type": "number"
+          },
+          "decided_by": {
+            "type": "string"
+          },
+          "export_id": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "matched_item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reversed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "takeout_item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tier": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account_id",
+          "decided_at",
+          "decided_by",
+          "export_id",
+          "id",
+          "matched_item_id",
+          "name",
+          "path",
+          "person_id",
+          "reason",
+          "reversed_at",
+          "review_status",
+          "takeout_item_id",
+          "tier"
+        ],
+        "type": "object"
+      },
+      "Decisions": {
+        "additionalProperties": false,
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionView"
+            },
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decisions",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "type": "object"
+      },
       "DeviceReply": {
         "additionalProperties": false,
         "properties": {
@@ -532,6 +684,159 @@
         ],
         "type": "object"
       },
+      "ExportPartView": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ExportSide": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_local": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_utc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "held": {
+            "type": "boolean"
+          },
+          "is_video": {
+            "type": "boolean"
+          },
+          "make": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "captured_local",
+          "captured_utc",
+          "duration_ms",
+          "height",
+          "held",
+          "is_video",
+          "make",
+          "model",
+          "name",
+          "offset_minutes",
+          "path",
+          "width"
+        ],
+        "type": "object"
+      },
       "FailedBody": {
         "additionalProperties": false,
         "properties": {
@@ -618,7 +923,14 @@
         "additionalProperties": false,
         "properties": {
           "account_id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "added": {
             "type": "integer"
@@ -633,8 +945,28 @@
               }
             ]
           },
+          "export_created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "export_id": {
             "type": "integer"
+          },
+          "export_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "failed": {
             "type": "integer"
@@ -654,6 +986,22 @@
           },
           "missing_gps": {
             "type": "integer"
+          },
+          "part_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/ExportPartView"
+            },
+            "type": "array"
           },
           "review": {
             "type": "integer"
@@ -694,11 +1042,15 @@
           "account_id",
           "added",
           "error",
+          "export_created_at",
           "export_id",
+          "export_kind",
           "failed",
           "finished",
           "id",
           "missing_gps",
+          "part_count",
+          "parts",
           "review",
           "skipped_t1",
           "skipped_t2",
@@ -722,6 +1074,151 @@
         },
         "required": [
           "imports"
+        ],
+        "type": "object"
+      },
+      "LibrarySide": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_local": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_utc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_video": {
+            "type": "boolean"
+          },
+          "item_id": {
+            "type": "integer"
+          },
+          "make": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "person_id": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "captured_local",
+          "captured_utc",
+          "duration_ms",
+          "height",
+          "is_video",
+          "item_id",
+          "make",
+          "model",
+          "name",
+          "offset_minutes",
+          "path",
+          "person_id",
+          "source",
+          "width"
         ],
         "type": "object"
       },
@@ -752,6 +1249,227 @@
         ],
         "type": "object"
       },
+      "MediaList": {
+        "additionalProperties": false,
+        "properties": {
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/MediaView"
+            },
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "media",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "type": "object"
+      },
+      "MediaReply": {
+        "additionalProperties": false,
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/MediaView"
+          }
+        },
+        "required": [
+          "media"
+        ],
+        "type": "object"
+      },
+      "MediaView": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_local": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_utc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "export_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "is_video": {
+            "type": "boolean"
+          },
+          "item_id": {
+            "type": "integer"
+          },
+          "lat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lon": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "make": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "person_id": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "captured_local",
+          "captured_utc",
+          "duration_ms",
+          "export_id",
+          "height",
+          "id",
+          "is_video",
+          "item_id",
+          "lat",
+          "lon",
+          "make",
+          "model",
+          "name",
+          "offset_minutes",
+          "path",
+          "person_id",
+          "source",
+          "width"
+        ],
+        "type": "object"
+      },
       "Ok": {
         "additionalProperties": false,
         "properties": {
@@ -776,6 +1494,22 @@
         },
         "required": [
           "people"
+        ],
+        "type": "object"
+      },
+      "PersonChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ],
         "type": "object"
       },
@@ -1212,6 +1946,241 @@
         ],
         "type": "object"
       },
+      "ReassignBody": {
+        "additionalProperties": false,
+        "properties": {
+          "person_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person_id"
+        ],
+        "type": "object"
+      },
+      "ResolveBody": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "keep_both",
+              "skip"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "ReviewDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "default_person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "export": {
+            "$ref": "#/components/schemas/ExportSide"
+          },
+          "library": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LibrarySide"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phash_distance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          },
+          "served_people": {
+            "items": {
+              "$ref": "#/components/schemas/PersonChoice"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "default_person_id",
+          "export",
+          "library",
+          "phash_distance",
+          "review",
+          "served_people"
+        ],
+        "type": "object"
+      },
+      "ReviewReply": {
+        "additionalProperties": false,
+        "properties": {
+          "review": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          }
+        },
+        "required": [
+          "review"
+        ],
+        "type": "object"
+      },
+      "ReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "decided_at": {
+            "type": "number"
+          },
+          "decision_id": {
+            "type": "integer"
+          },
+          "export_id": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "kept_item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kept_person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "library_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reversed": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "integer"
+          },
+          "undo_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "decided_at",
+          "decision_id",
+          "export_id",
+          "id",
+          "kept_item_id",
+          "kept_person_id",
+          "library_name",
+          "name",
+          "person_id",
+          "reason",
+          "resolved_at",
+          "reversed",
+          "status",
+          "tier",
+          "undo_until"
+        ],
+        "type": "object"
+      },
+      "Reviews": {
+        "additionalProperties": false,
+        "properties": {
+          "pending": {
+            "type": "integer"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pending",
+          "reviews"
+        ],
+        "type": "object"
+      },
       "Status": {
         "additionalProperties": false,
         "properties": {
@@ -1488,6 +2457,48 @@
         "x-auth": "session"
       }
     },
+    "/api/decisions": {
+      "get": {
+        "operationId": "list_decisions",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Decisions"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/decisions/{id}/reverse": {
+      "post": {
+        "operationId": "reverse",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/devices/{id}": {
       "delete": {
         "operationId": "revoke_device",
@@ -1602,6 +2613,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/media": {
+      "get": {
+        "operationId": "list_media",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/media/{id}/reassign": {
+      "post": {
+        "operationId": "reassign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReassignBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaReply"
                 }
               }
             },
@@ -1823,6 +2886,114 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/review": {
+      "get": {
+        "operationId": "list_reviews",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reviews"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/review/{id}": {
+      "get": {
+        "operationId": "one",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/review/{id}/resolve": {
+      "post": {
+        "operationId": "resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/review/{id}/thumb/{side}": {
+      "get": {
+        "operationId": "thumb",
+        "responses": {
+          "2XX": {
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/review/{id}/undo": {
+      "post": {
+        "operationId": "undo",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewReply"
                 }
               }
             },

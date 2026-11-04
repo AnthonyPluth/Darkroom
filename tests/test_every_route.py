@@ -13,6 +13,11 @@ PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
     "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events",
 }
+REVIEW_AND_IMPORT_ROUTES = {
+    "GET /api/imports", "GET /api/imports/{id}", "POST /api/exports/{id}/import", "GET /api/review", "GET /api/review/{id}",
+    "GET /api/review/{id}/thumb/{side}", "POST /api/review/{id}/resolve", "POST /api/review/{id}/undo", "GET /api/decisions",
+    "POST /api/decisions/{id}/reverse", "GET /api/media", "POST /api/media/{id}/reassign",
+}
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})
 
 
@@ -45,6 +50,12 @@ class EveryRouteTests(unittest.TestCase):
     def test_the_people_accounts_pixels_devices_and_status_routes_are_session_routes(self):
         found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
         for key in PEOPLE_AND_STATUS_ROUTES:
+            with self.subTest(route=key):
+                self.assertEqual(found.get(key), "session")
+
+    def test_the_review_imports_decisions_and_media_routes_are_session_routes(self):
+        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
+        for key in REVIEW_AND_IMPORT_ROUTES:
             with self.subTest(route=key):
                 self.assertEqual(found.get(key), "session")
 

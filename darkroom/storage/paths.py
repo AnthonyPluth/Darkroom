@@ -35,6 +35,10 @@ class NotInTheInbox(ValueError):
     pass
 
 
+class NotALibraryCopy(ValueError):
+    pass
+
+
 class Photos:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -117,6 +121,16 @@ class Photos:
 
     def export_tree(self, person: str, export: str) -> Path:
         return self.inside("_inbox", self.person_part(person), self.name_part(export))
+
+    def google_only_file(self, relative: str) -> Path:
+        parts = relative.split("/")
+        if len(parts) < 3 or parts[1] != "google-only" or any(part in {"", ".", ".."} for part in parts):
+            raise NotALibraryCopy("not a file in a person's google-only folder")
+        folder = self.inside(self.person_part(parts[0]), "google-only")
+        path = self.root.joinpath(*parts)
+        if path.is_symlink() or not path.is_file() or path.resolve() != path or not path.is_relative_to(folder):
+            raise NotALibraryCopy("not a file in a person's google-only folder")
+        return path
 
     def kept_folders(self) -> list[Path]:
         found = []
@@ -253,3 +267,23 @@ def remove_inbox_file(photos: Photos, path: Path) -> bool:
         raise NotInTheInbox("not a file")
     target.unlink()
     return True
+
+
+def file_sha1(path: Path) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    with path.open("rb") as handle:
+        while chunk := handle.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def drop_library_copy(photos: Photos, relative: str, kept: Path) -> None:
+    target = photos.google_only_file(relative)
+    if kept.is_symlink() or not kept.is_file() or kept.resolve() == target or not kept.resolve().is_relative_to(photos.root):
+        raise NotALibraryCopy("no other copy of the file is kept")
+    if file_sha1(kept) != file_sha1(target):
+        raise NotALibraryCopy("the kept copy is not the same file")
+    sidecar = sidecar_of(target)
+    target.unlink()
+    if sidecar.is_file() and not sidecar.is_symlink():
+        sidecar.unlink()
