@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from darkroom import validate
-from darkroom.domain import accounts
+from darkroom.domain import accounts, browser_jobs
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
 from darkroom.storage import db
@@ -54,7 +54,7 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         return error_response(NO_ACCOUNT, 404)
     except accounts.NoSuchPerson:
         return error_response(NO_PERSON, 404)
-    except (accounts.EmailTaken, accounts.StillConfirming) as error:
+    except (accounts.EmailTaken, accounts.StillConfirming, accounts.JobOpen) as error:
         return error_response(str(error), 409)
     return json_response({"account": reply})
 
@@ -75,3 +75,39 @@ def delete_account(request: Request) -> Annotated[Response, contract.Ok]:
     except ProfileNotRemoved as error:
         return error_response(f"{error}, so the account was not deleted", 500)
     return json_response({"ok": True})
+
+
+def start_job(request: Request, kind: str) -> Response:
+    account_id = path_id(request)
+    if account_id is None:
+        return error_response(NO_ACCOUNT, 404)
+    try:
+        with db.session(engine_of(request)) as opened:
+            reply = browser_jobs.as_dict(browser_jobs.enqueue_once(opened, account_id, kind, now()), request.settings)
+    except browser_jobs.UnknownAccount:
+        return error_response(NO_ACCOUNT, 404)
+    except browser_jobs.AlreadyOpen as error:
+        return error_response(str(error), 409)
+    return json_response({"job": reply}, 201)
+
+
+def schedule_checked(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+    account_id = path_id(request)
+    if account_id is None:
+        return error_response(NO_ACCOUNT, 404)
+    try:
+        with db.session(engine_of(request)) as opened:
+            reply = browser_jobs.as_dict(browser_jobs.mark_schedule_checked(opened, account_id, now()), request.settings)
+    except browser_jobs.UnknownAccount:
+        return error_response(NO_ACCOUNT, 404)
+    except browser_jobs.NothingToCheck as error:
+        return error_response(str(error), 409)
+    return json_response({"job": reply})
+
+
+def connect(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+    return start_job(request, "connect")
+
+
+def create_schedule(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+    return start_job(request, "schedule")

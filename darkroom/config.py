@@ -182,7 +182,23 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + upload_timeout_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + upload_timeout_problems(settings) + vnc_url_problems(settings)
+
+
+def usable_viewer_url(vnc_url: str) -> str | None:
+    try:
+        parts = urlsplit(vnc_url)
+    except ValueError:
+        return None
+    if parts.scheme in ("http", "https") and parts.netloc and not parts.username and not parts.password:
+        return vnc_url
+    return None
+
+
+def vnc_url_problems(settings: Settings) -> list[str]:
+    if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
+        return []
+    return ["VNC_URL is not usable: it must be an http:// or https:// address without a username or password, so the Remote browser page shows no viewer"]
 
 
 def upload_timeout_problems(settings: Settings) -> list[str]:

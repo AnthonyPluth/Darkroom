@@ -81,11 +81,9 @@ describe("signed in", () => {
     await screen.findByText("No one has been added yet.");
     for (const label of ["People", "Exports", "Imports", "Review", "Browser", "Status"]) {
       await userEvent.click(within(nav).getByRole("link", { name: label }));
-      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(label);
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(label === "Browser" ? "Remote browser" : label);
       expect(within(nav).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
     }
-    await userEvent.click(within(nav).getByRole("link", { name: "Exports" }));
-    expect(screen.getByText("This page arrives in a later issue.")).toBeInTheDocument();
     await userEvent.click(within(nav).getByRole("link", { name: "Browser" }));
     await userEvent.click(screen.getAllByRole("link", { name: "Darkroom" })[0]);
     expect(location.pathname).toBe("/");

@@ -7,7 +7,7 @@ from darkroom import validate
 from darkroom.domain import browser_jobs
 from darkroom.server.api.browser_internal import NotFound, engine_of, job_id_of, now
 from darkroom.server import contract
-from darkroom.server.common import Request, Response, error_response, first_query, json_response
+from darkroom.server.common import Request, Response, error_response, first_query, json_response, viewer_url
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob
 from darkroom.storage.paths import OutsideRoot, Photos
@@ -32,8 +32,16 @@ def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
     except validate.Invalid as error:
         return error_response(str(error), 400)
     with db.session(engine_of(request)) as opened:
-        jobs = [browser_jobs.as_dict(job) for job in browser_jobs.list_jobs(opened, account)]
+        listed = {job.id: job for job in (*browser_jobs.list_jobs(opened, account), *browser_jobs.unresolved_jobs(opened, account))}
+        stuck = {job.id for job in listed.values() if job.kind == "schedule" and browser_jobs.is_unchecked(opened, job)}
+        jobs = [browser_jobs.as_dict(listed[job_id], request.settings, job_id in stuck) for job_id in sorted(listed, reverse=True)]
     return json_response({"jobs": jobs})
+
+
+def view(request: Request) -> Annotated[Response, contract.BrowserView]:
+    with db.session(engine_of(request)) as opened:
+        seen = browser_jobs.worker_last_seen(opened)
+    return json_response({"vnc_url": viewer_url(request.settings.vnc_url), "worker_last_seen": seen})
 
 
 def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Response, contract.BrowserJobReply]:
@@ -43,11 +51,11 @@ def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Resp
         kind = validate.text(body, "kind", limit=40)
         with db.session(engine_of(request)) as opened:
             job = browser_jobs.enqueue(opened, account_id, kind, None, now())
-            reply = browser_jobs.as_dict(job)
+            reply = browser_jobs.as_dict(job, request.settings)
     except validate.Invalid as error:
         return error_response(str(error), 400)
     except browser_jobs.UnknownKind:
-        return error_response(f"kind must be one of {', '.join(browser_jobs.KINDS)}", 400)
+        return error_response(f"kind must be one of {', '.join(kind for kind in browser_jobs.KINDS if kind not in browser_jobs.GUARDED_KINDS)}", 400)
     except browser_jobs.UnknownAccount:
         return error_response("no such account", 404)
     return json_response({"job": reply}, 201)

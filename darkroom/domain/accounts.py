@@ -36,6 +36,10 @@ class StillConfirming(ValueError):
     pass
 
 
+class JobOpen(ValueError):
+    pass
+
+
 def served_people(opened: Session, account_id: int) -> set[int]:
     account = opened.get(GoogleAccount, account_id)
     if account is None:
@@ -100,6 +104,7 @@ def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
         "default_person_id": account.default_person_id,
         "session_state": account.session_state,
         "session_checked": account.session_checked,
+        "schedule_created": account.schedule_created,
         "schedule_end": account.schedule_end,
         "served_people": sorted(served_people(opened, account.id)),
         "created": account.created,
@@ -138,6 +143,8 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
     account = get(opened, account_id)
     if email is not None:
         require_free_email(opened, email, account.id)
+        if email != account.email and browser_jobs.has_open_onboarding_job(opened, account.id):
+            raise JobOpen("a connect or schedule job is still open for this account; change the email once it has finished")
     if default_person_id is not None:
         require_person(opened, default_person_id)
         require_confirmations_kept(opened, account.id, {default_person_id} | served_by_pixels(opened, account.id))

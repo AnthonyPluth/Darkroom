@@ -113,6 +113,7 @@ class AccountView(TypedDict):
     default_person_id: int
     session_state: str
     session_checked: float | None
+    schedule_created: float | None
     schedule_end: float | None
     served_people: list[int]
     created: float
@@ -210,7 +211,14 @@ class BrowserJobView(TypedDict):
     heartbeat: float | None
     finished: float | None
     message: str
+    needs_check: bool
     has_capture: bool
+    capture_files: list[str]
+
+
+class BrowserView(TypedDict):
+    vnc_url: str | None
+    worker_last_seen: float | None
 
 
 class BrowserJobs(TypedDict):

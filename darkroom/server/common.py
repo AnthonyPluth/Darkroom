@@ -6,14 +6,27 @@ import html
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
 
-from darkroom.config import Settings
+from darkroom.config import Settings, usable_viewer_url
 from darkroom.dates import utc_now
 from darkroom.storage.paths import Readable
 
 CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
+
+
+def viewer_url(vnc_url: str) -> str | None:
+    return usable_viewer_url(vnc_url)
+
+
+def app_csp(vnc_url: str = "") -> str:
+    viewer = viewer_url(vnc_url)
+    if viewer is None:
+        return CSP
+    parts = urlsplit(viewer)
+    return f"{CSP}; frame-src 'self' {parts.scheme}://{parts.netloc}"
 
 
 @dataclass(frozen=True)

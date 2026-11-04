@@ -4,6 +4,8 @@
   import { followLink, pageFor, PAGES, router } from "$lib/nav.svelte";
   import { displayName } from "$lib/session.svelte";
   import Imports from "./pages/Imports.svelte";
+  import Browser from "./pages/Browser.svelte";
+  import Exports from "./pages/Exports.svelte";
   import People from "./pages/People.svelte";
   import Placeholder from "./pages/Placeholder.svelte";
   import Review from "./pages/Review.svelte";
@@ -70,6 +72,10 @@
         <Imports />
       {:else if page?.path === "/review"}
         <Review />
+      {:else if page?.path === "/exports"}
+        <Exports />
+      {:else if page?.path === "/browser"}
+        <Browser />
       {:else if page}
         <Placeholder title={page.label} />
       {:else}

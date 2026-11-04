@@ -119,6 +119,16 @@
           "id": {
             "type": "integer"
           },
+          "schedule_created": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schedule_end": {
             "anyOf": [
               {
@@ -154,6 +164,7 @@
           "default_person_id",
           "email",
           "id",
+          "schedule_created",
           "schedule_end",
           "served_people",
           "session_checked",
@@ -233,6 +244,12 @@
           "account_id": {
             "type": "integer"
           },
+          "capture_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "created": {
             "type": "number"
           },
@@ -268,6 +285,9 @@
           "message": {
             "type": "string"
           },
+          "needs_check": {
+            "type": "boolean"
+          },
           "started": {
             "anyOf": [
               {
@@ -284,6 +304,7 @@
         },
         "required": [
           "account_id",
+          "capture_files",
           "created",
           "finished",
           "has_capture",
@@ -291,6 +312,7 @@
           "id",
           "kind",
           "message",
+          "needs_check",
           "started",
           "status"
         ],
@@ -308,6 +330,36 @@
         },
         "required": [
           "jobs"
+        ],
+        "type": "object"
+      },
+      "BrowserView": {
+        "additionalProperties": false,
+        "properties": {
+          "vnc_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "worker_last_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "vnc_url",
+          "worker_last_seen"
         ],
         "type": "object"
       },
@@ -2519,6 +2571,69 @@
         "x-auth": "session"
       }
     },
+    "/api/accounts/{id}/connect": {
+      "post": {
+        "operationId": "connect",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/accounts/{id}/schedule": {
+      "post": {
+        "operationId": "create_schedule",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/accounts/{id}/schedule/checked": {
+      "post": {
+        "operationId": "schedule_checked",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/browser/failures/{id}/page.html": {
       "get": {
         "operationId": "page_snapshot",
@@ -2585,6 +2700,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/browser/view": {
+      "get": {
+        "operationId": "view",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserView"
                 }
               }
             },

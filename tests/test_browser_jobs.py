@@ -33,7 +33,7 @@ class BrowserJobTests(unittest.TestCase):
 
     def enqueue(self, kind="noop", now=10.0):
         with db.session(self.engine) as opened:
-            return browser_jobs.enqueue(opened, self.account, kind, {"n": 1}, now).id
+            return (browser_jobs.queue if kind in browser_jobs.GUARDED_KINDS else browser_jobs.enqueue)(opened, self.account, kind, {"n": 1}, now).id
 
     def write_capture(self, job_id, *names):
         folder = self.photos / "_browser" / str(self.account) / "failures" / str(job_id)
@@ -55,6 +55,9 @@ class BrowserJobTests(unittest.TestCase):
                 browser_jobs.enqueue(opened, self.account, "rm -rf", None, 1.0)
             with self.assertRaises(browser_jobs.UnknownKind):
                 browser_jobs.enqueue(opened, self.account, "download", None, 1.0)
+            for guarded in ("connect", "schedule"):
+                with self.assertRaises(browser_jobs.UnknownKind):
+                    browser_jobs.enqueue(opened, self.account, guarded, None, 1.0)
             with self.assertRaises(browser_jobs.UnknownAccount):
                 browser_jobs.enqueue(opened, self.account + 7, "noop", None, 1.0)
 
@@ -94,6 +97,31 @@ class BrowserJobTests(unittest.TestCase):
         self.assertEqual(len(claimed), wanted)
         self.assertEqual(len(set(claimed)), wanted)
 
+    def race(self, kind):
+        made, refused, errors = [], [], []
+        start = threading.Barrier(8)
+
+        def request():
+            start.wait()
+            try:
+                with db.session(self.engine) as opened:
+                    made.append(browser_jobs.enqueue_once(opened, self.account, kind, 1.0).id)
+            except browser_jobs.AlreadyOpen:
+                refused.append(kind)
+            except Exception as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=request) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return errors, len(made), len(refused)
+
+    def test_simultaneous_requests_queue_one_job_per_kind(self):
+        for kind in ("connect", "schedule"):
+            self.assertEqual(self.race(kind), ([], 1, 7), kind)
+
     def test_heartbeat_progress_and_done(self):
         job_id, queued = self.enqueue(), self.enqueue()
         with db.session(self.engine) as opened:
@@ -126,16 +154,196 @@ class BrowserJobTests(unittest.TestCase):
         with db.session(self.engine) as opened:
             resumed = browser_jobs.progress(opened, job_id, "signed in", 60.0)
             self.assertEqual(resumed.status, "running")
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, account.session_checked), ("ok", 60.0))
         self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 60.0)])
 
-    def test_verify_waits_without_touching_the_session_state(self):
+    def test_verify_needs_sign_in_attention_and_done_sets_the_session_ok(self):
+        job_id = self.enqueue()
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, account.session_checked), ("needs_sign_in", 6.0))
+            browser_jobs.done(opened, job_id, {}, 7.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
+        self.assertEqual(self.open_alerts()[0][2], 7.0)
+
+    def test_a_resume_after_verification_sets_the_session_ok(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
+            browser_jobs.progress(opened, job_id, "signed in", 8.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, account.session_checked), ("ok", 8.0))
+
+    def test_a_verification_that_times_out_leaves_needs_sign_in_with_connect_available(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.failed(opened, self.settings, job_id, "SignInTimedOut: nobody signed in", None, [], 9.0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "needs_sign_in")
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "connect", 10.0).status, "queued")
+        self.assertEqual([closed for kind, _, closed in self.open_alerts() if kind == "sign_in_needed"], [9.0])
+
+    def test_progress_after_verifying_marks_the_session_ok(self):
         job_id = self.enqueue()
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
             browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
-            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "unknown")
-            browser_jobs.done(opened, job_id, {}, 7.0)
-        self.assertEqual(self.open_alerts()[0][2], 7.0)
+            browser_jobs.progress(opened, job_id, "verified", 7.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
+
+    def test_a_schedule_job_records_when_it_was_created_and_when_it_ends(self):
+        job_id = self.enqueue("schedule")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.done(opened, job_id, {"schedule_created": 100.0, "schedule_end": 31_536_100}, 8.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.schedule_created, account.schedule_end, account.session_state), (100.0, 31_536_100.0, "ok"))
+
+    def test_a_schedule_job_without_proper_dates_is_refused_and_stays_open(self):
+        job_id = self.enqueue("schedule")
+        bad = ({}, {"schedule_created": 100.0}, {"schedule_created": "x", "schedule_end": 200.0}, {"schedule_created": True, "schedule_end": 200.0},
+               {"schedule_created": 300.0, "schedule_end": 200.0})
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            for result in bad:
+                with self.subTest(result=result), self.assertRaises(ValueError):
+                    browser_jobs.done(opened, job_id, result, 8.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.schedule_created, account.schedule_end, opened.get(BrowserJob, job_id).status), (None, None, "running"))
+
+    def test_a_connect_job_leaves_the_schedule_alone(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_end = 500.0
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.done(opened, job_id, {"session_state": "ok"}, 8.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).schedule_end, 500.0)
+
+    def test_enqueue_once_tells_the_worker_which_google_account_the_job_is_for(self):
+        with db.session(self.engine) as opened:
+            job = browser_jobs.enqueue_once(opened, self.account, "connect", 1.0)
+            self.assertEqual(json.loads(job.payload), {"email": "jo.takeout@example.test"})
+            self.assertEqual(browser_jobs.for_worker(job)["payload"], {"email": "jo.takeout@example.test"})
+
+    def test_enqueue_once_refuses_a_second_open_job_of_the_same_kind_only(self):
+        with db.session(self.engine) as opened:
+            first = browser_jobs.enqueue_once(opened, self.account, "connect", 1.0)
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "connect", 2.0)
+            browser_jobs.enqueue_once(opened, self.account, "schedule", 2.0)
+            with self.assertRaises(browser_jobs.UnknownAccount):
+                browser_jobs.enqueue_once(opened, self.account + 9, "connect", 2.0)
+            first.status = "failed"
+            opened.flush()
+            browser_jobs.enqueue_once(opened, self.account, "connect", 3.0)
+
+    def test_enqueue_once_refuses_a_second_schedule_once_one_exists_or_was_done(self):
+        with db.session(self.engine) as opened:
+            first = browser_jobs.enqueue_once(opened, self.account, "schedule", 1.0)
+            first.status = "done"
+            opened.flush()
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 2.0)
+            first.status = "failed"
+            opened.flush()
+            browser_jobs.enqueue_once(opened, self.account, "schedule", 3.0)
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_created = 5.0
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 4.0)
+            browser_jobs.enqueue_once(opened, self.account, "connect", 4.0)
+
+    def test_a_wrong_account_wait_replaces_the_sign_in_alert_and_a_resume_closes_it(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 7.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, opened.get(BrowserJob, job_id).message), ("needs_sign_in", "wrong_account"))
+        self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 7.0), ("wrong_account", "https://browser.example/vnc.html", None)])
+        with db.session(self.engine) as opened:
+            self.assertIn("jo.takeout@example.test", opened.execute(select(Alert).where(Alert.kind == "wrong_account")).scalar_one().message)
+            browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 8.0)
+            browser_jobs.progress(opened, job_id, "signed in", 9.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
+        self.assertEqual([closed for _, _, closed in self.open_alerts()], [7.0, 9.0])
+
+    def fail_schedule(self, message, now=20.0):
+        job_id = self.enqueue("schedule")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, now)
+            browser_jobs.failed(opened, self.settings, job_id, message, None, [], now + 1)
+        return job_id
+
+    def test_an_unconfirmed_schedule_blocks_a_retry_until_the_person_says_they_checked(self):
+        self.fail_schedule("ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again")
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.AlreadyOpen) as caught:
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 30.0)
+            self.assertIn("check Takeout", str(caught.exception))
+            browser_jobs.enqueue_once(opened, self.account, "connect", 30.0)
+            checked = browser_jobs.mark_schedule_checked(opened, self.account, 31.0)
+            self.assertTrue(checked.message.startswith("ScheduleNotConfirmed"))
+            self.assertEqual(json.loads(checked.result), {"checked": True})
+            with self.assertRaises(browser_jobs.NothingToCheck):
+                browser_jobs.mark_schedule_checked(opened, self.account, 32.0)
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "schedule", 33.0).status, "queued")
+
+    def test_other_schedule_failures_may_be_retried_at_once(self):
+        self.fail_schedule("UnexpectedPage: the page stayed unrecognised for more than 5 minutes")
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.NothingToCheck):
+                browser_jobs.mark_schedule_checked(opened, self.account, 31.0)
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "schedule", 33.0).status, "queued")
+
+    def test_an_unconfirmed_schedule_of_one_account_does_not_block_another(self):
+        self.fail_schedule("ScheduleNotConfirmed: check Takeout")
+        with db.session(self.engine) as opened:
+            other = add_account(opened, "other.takeout@example.test", "sam")
+            self.assertEqual(browser_jobs.enqueue_once(opened, other, "schedule", 33.0).status, "queued")
+            with self.assertRaises(browser_jobs.UnknownAccount):
+                browser_jobs.mark_schedule_checked(opened, other + 9, 1.0)
+
+    def test_a_schedule_job_whose_worker_vanished_may_have_created_the_export(self):
+        job_id = self.enqueue("schedule", now=1.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.expire_leases(opened, self.settings, 5.0 + browser_jobs.LEASE_SECONDS + 1)
+        self.assertEqual(self.job(job_id).message, browser_jobs.EXPIRED_MESSAGE)
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 500.0)
+
+    def test_a_waiting_job_that_fails_closes_the_sign_in_alert_and_frees_the_account_to_reconnect(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.failed(opened, self.settings, job_id, "SignInTimedOut", None, [], 7.0)
+        kinds = {(kind, closed is not None) for kind, _, closed in self.open_alerts()}
+        self.assertEqual(kinds, {("sign_in_needed", True), ("failure", True)})
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "needs_sign_in")
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "connect", 8.0).status, "queued")
+
+    def test_a_running_job_that_fails_leaves_other_sign_in_alerts_alone(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.failed(opened, self.settings, job_id, "UnexpectedPage", None, [], 7.0)
+        self.assertEqual([kind for kind, _, _ in self.open_alerts()], ["failure"])
 
     def test_failed_records_the_capture_and_alerts_with_a_link_to_it(self):
         job_id = self.enqueue()

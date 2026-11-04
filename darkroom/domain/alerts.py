@@ -20,6 +20,7 @@ FAILED = "failed"
 ONE_SHOT_KINDS = frozenset({"export_imported", "schedule_renewed", "failure"})
 TITLES = {
     "sign_in_needed": "Google sign-in needed",
+    "wrong_account": "Wrong Google account",
     "export_imported": "Takeout import finished",
     "originals_unmatched": "Some originals are not in Google Photos",
     "schedule_ending": "Takeout schedule ending",
@@ -39,6 +40,10 @@ class Wording:
 
 def sign_in_needed(account: str) -> Wording:
     return Wording("Google sign-in needed", f"{account} needs someone to sign in to Google again. Open Darkroom's browser view to do it.")
+
+
+def wrong_account(account: str) -> Wording:
+    return Wording("Wrong Google account", f"The browser is signed in to a different Google account than {account}. Open Darkroom's browser view and switch to {account}.")
 
 
 def export_imported(summary: str) -> Wording:
@@ -131,6 +136,14 @@ def tick(opened: Session, settings: Settings, now: float, notifier: Notifier | N
             deliver(opened, settings, alert, Wording(TITLES.get(alert.kind, alert.subject), alert.message), now, notifier)
             sent += 1
     return sent
+
+
+def close_other_kinds(opened: Session, key: str, kind: str, now: float) -> int:
+    closed = 0
+    for alert in opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None), Alert.kind != kind)).scalars():
+        alert.closed = now
+        closed += 1
+    return closed
 
 
 def close(opened: Session, key: str, now: float) -> int:
