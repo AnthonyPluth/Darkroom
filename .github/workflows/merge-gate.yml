@@ -2,8 +2,9 @@ name: Merge gate
 
 # One commit status, "Merge gate", on each pull request's head: passing once every check on it has passed, through
 # fleet's reusable merge gate (its .github/scripts/merge-gate.sh, fetched at the pinned commit). The ruleset on main
-# requires that one status and nothing else. It also merges Dependabot's pull requests once it passes, except one
-# that bumps a fleet reference, which the owner merges.
+# requires that one status and nothing else. It also merges Dependabot's pull requests once it passes, fleet's pin
+# bumps included (automerge-fleet-bumps, the owner's decision in #82), then starts fleet-sync.yml on main, whose
+# "chore: fleet content" pull request the owner still merges by hand.
 #
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
 # finishing (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
@@ -47,7 +48,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@538cdc73efd8604dc3e5e19284ae363dabf640a4   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -60,3 +61,8 @@ jobs:
       # reviewed the head commit; fleet's defaults already require "Second review" alone and fail on an open Codex P1
       # or P2 thread. merge-gate-threads.yml starts the gate when Codex's review or comment arrives.
       require-codex-review: true
+      # Owner decision (issue #82): Dependabot's fleet pin bumps merge through the gate like any other Dependabot
+      # pull request. A merge made with the gate's token starts no push workflow, so the gate starts fleet-sync.yml
+      # (beside fleet's default docker.yml and security.yml) to open the content's pull request, merged by hand.
+      automerge-fleet-bumps: true
+      after-merge-workflows: docker.yml security.yml fleet-sync.yml

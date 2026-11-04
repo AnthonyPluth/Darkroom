@@ -18,7 +18,8 @@ updates:
       - /
       - /.github/actions/*
     # Daily, with a 3-day cooldown for every action, fleet's pins included (the owner's decision, #82): a fleet release
-    # gets its bump PR 3 days after it.
+    # gets its bump PR 3 days after it, and the merge gate merges that PR once it passes (automerge-fleet-bumps), like
+    # any other Dependabot PR; fleet-sync.yml then opens the "chore: fleet content" PR, which the owner merges by hand.
     schedule:
       interval: daily
     cooldown:
