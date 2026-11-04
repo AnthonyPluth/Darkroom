@@ -1,8 +1,11 @@
+import tempfile
+from pathlib import Path
 import unittest
 
-from darkroom.domain import accounts
+from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
-from darkroom.storage.models import GoogleAccount, Pixel, PixelPerson
+from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
+from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
 
 
@@ -71,6 +74,40 @@ class ServedPeopleTests(unittest.TestCase):
             add_pixel(opened, shared, [jo])
             self.assertEqual(accounts.accounts_serving(opened, jo), {own, shared})
             self.assertEqual(accounts.accounts_serving(opened, sam), {shared})
+
+
+class DeleteTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = own_database(self)
+        self.photos = Photos(Path(self.enterContext(tempfile.TemporaryDirectory())))
+
+    def account_with_job(self, status):
+        with db.session(self.engine) as opened:
+            name = f"jo{status.replace('_', '')}"
+            account = add_account(opened, f"{name}@x.test", add_person(opened, name))
+            job = browser_jobs.enqueue(opened, account, "noop", None, 1.0)
+            job.status = status
+        return account
+
+    def test_every_unfinished_job_status_refuses_the_delete_and_changes_nothing(self):
+        for status in browser_jobs.UNFINISHED_STATUSES:
+            with self.subTest(status=status):
+                account = self.account_with_job(status)
+                with db.session(self.engine) as opened:
+                    with self.assertRaisesRegex(accounts.InUse, "browser job that has not finished"):
+                        accounts.delete(opened, self.photos, account, 2.0)
+                with db.session(self.engine) as opened:
+                    self.assertIsNotNone(opened.get(GoogleAccount, account))
+                    self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 1)
+
+    def test_finished_jobs_do_not_block_the_delete(self):
+        for status in ("done", "failed"):
+            with self.subTest(status=status):
+                account = self.account_with_job(status)
+                with db.session(self.engine) as opened:
+                    accounts.delete(opened, self.photos, account, 2.0)
+                with db.session(self.engine) as opened:
+                    self.assertIsNone(opened.get(GoogleAccount, account))
 
 
 if __name__ == "__main__":

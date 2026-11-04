@@ -17,6 +17,7 @@ LEASE_SECONDS = 180.0
 KINDS = ("noop",)
 WAITING_REASONS = ("sign_in", "verify")
 OPEN_STATUSES = ("running", "waiting_for_user")
+UNFINISHED_STATUSES = ("queued", *OPEN_STATUSES)
 WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
