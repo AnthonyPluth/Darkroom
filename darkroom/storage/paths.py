@@ -4,12 +4,13 @@ import hashlib
 import os
 import re
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
 CHUNK = 1024 * 1024
+SIDECAR_SUFFIX = ".xmp"
 
 
 class OutsideRoot(ValueError):
@@ -17,6 +18,10 @@ class OutsideRoot(ValueError):
 
 
 class AlreadyExists(FileExistsError):
+    pass
+
+
+class NotASidecar(ValueError):
     pass
 
 
@@ -37,6 +42,13 @@ class Photos:
 
     def originals(self, person: str) -> Path:
         return self.inside(self.person_part(person), "originals")
+
+    def original(self, person: str, relative: str) -> Path:
+        folder = self.originals(person)
+        path = self.inside(relative)
+        if not path.is_relative_to(folder) or path == folder:
+            raise OutsideRoot("not a file in the person's originals folder")
+        return path
 
     def google_only(self, person: str, year: int, month: int) -> Path:
         if not (1900 <= year <= 2200 and 1 <= month <= 12):
@@ -121,3 +133,35 @@ def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
     finally:
         temp.unlink(missing_ok=True)
     return digest.hexdigest()
+
+
+def sidecar_of(media: Path) -> Path:
+    return media.with_name(f"{media.name}{SIDECAR_SUFFIX}")
+
+
+def checked_sidecar(destination: Path) -> Path:
+    if destination.suffix != SIDECAR_SUFFIX or destination.name == SIDECAR_SUFFIX:
+        raise NotASidecar("a sidecar's name ends in .xmp")
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        raise NotASidecar("the sidecar's place holds something that is not a sidecar")
+    return destination
+
+
+def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]) -> None:
+    checked_sidecar(destination)
+    source = destination if destination.exists() else None
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".xmp-") as folder:
+        temp = Path(folder) / destination.name
+        render(temp, source)
+        if not temp.is_file():
+            raise NotASidecar("no sidecar was written")
+        checked_sidecar(destination)
+        if source is not None:
+            os.replace(temp, destination)
+            return
+        try:
+            os.link(temp, destination)
+        except FileExistsError as error:
+            raise AlreadyExists(destination.name) from error
+        except OSError:
+            copy_exclusive(temp, destination)

@@ -6,7 +6,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
 
 - `darkroom/`: the backend, in packages whose imports `make lint` checks (import-linter's contracts in `pyproject.toml`):
   - `server/`: the HTTP handler, the route table (`routes.py`, where every route declares its `auth`), the reply helpers, `api/` and the static file server. Nothing else imports it.
-  - `domain/`: what Darkroom works out from the data (people and accounts, media fingerprints, dedupe, eligibility, the ingest pipeline).
+  - `domain/`: what Darkroom works out from the data (people and accounts, media fingerprints, dedupe, XMP sidecars, eligibility, the ingest pipeline).
   - `providers/`: the outside things (`exiftool.py`, the only module that runs a subprocess; Immich). A provider doesn't import another; what they share has a module of its own.
   - `storage/`: the database and the folder tree. It imports nothing above it, and only it imports the database drivers.
   - At the top, what everything shares: `config.py` (every environment variable, all listed in `.env.example`), `tls.py` (the only module that opens outbound connections), `validate.py`, `dates.py`, `monitoring.py`, `oidc.py`.
@@ -77,11 +77,11 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 These are what the service is for; a change that breaks one is a blocking bug, whatever else it does. Each is held by a check that is in place before the code it guards (the issue that adds it is named).
 
-1. **An original is written once.** Nothing under a person's `originals/` is modified, moved or deleted by the service. Checked by Semgrep's `darkroom-originals-read-only` and a before/after listing test (#25).
+1. **An original is written once.** Nothing under a person's `originals/` is modified, moved or deleted by the service. Checked by Semgrep's `darkroom-originals-read-only` (examples in `.semgrep/examples/darkroom/domain/originals.py`) and the whole-tree SHA-1 before/after test, `tests/test_place.py`'s `FixtureExportRun` (#25).
 2. **Dedupe deletes nothing on Unraid.** It decides and records. Cleanup removes only staging, archives and resolved review holds, 14 days after the fact. Checked by `tests/test_cleanup.py` and the dedupe invariants (#24, #26).
 3. **A photo is eligible for deletion from an iPhone only when** every resource of it (photo, Live Photo video, adjusted version) is on Unraid with a verified SHA-1 and matched in a Takeout export by an unreversed automatic tier 1 or 2 decision, from a Google account that serves its owner, re-checked right before deleting. Checked by Semgrep's `darkroom-eligibility-single-path` and `tests/test_eligibility_invariants.py` (#37).
 4. **The browser worker never types a Google password or 2FA code.** A person signs in. Checked by `tests/browser/test_no_credentials.py` (#28).
-5. **Metadata gaps are filled with XMP sidecars, never by rewriting media.** Checked by Semgrep's `darkroom-xmp-only-sidecars` (#25).
+5. **Metadata gaps are filled with XMP sidecars, never by rewriting media.** Checked by Semgrep's `darkroom-xmp-only-sidecars` (examples in `.semgrep/examples/darkroom/providers/exiftool.py`) and `tests/test_xmp.py`, which holds `providers/exiftool.write_xmp` to refusing any target not ending in `.xmp` (#25).
 6. **No design changes without the owner's sign-off.** No web UI or iPhone screen merges unless it matches the design the owner signed off in `docs/design/` (#16, #34); a UI pull request carries screenshots. Held by review.
 
 ## Mistakes that keep coming back
