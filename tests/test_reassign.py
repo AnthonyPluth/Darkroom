@@ -3,14 +3,13 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from darkroom.domain import review
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
 from tests.import_world import sha1_of
-from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase
+from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
 
 NOT_SERVED = {"error": "the Google account this photo came from doesn't serve that person"}
 
@@ -105,7 +104,9 @@ class SharedAccountTests(ReviewCase):
         before = self.tree()
         with mock.patch.object(review.xmp, "fill", side_effect=RuntimeError("exiftool broke")):
             with self.assertRaises(RuntimeError):
-                review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
+                opened = self.opened
+                with review.saving(opened) as effects:
+                    review.reassign(opened, self.world.photos, item.id, self.world.ids["sam"], 1.0, effects)
         self.assertEqual(self.tree(), before)
 
     def test_a_failing_sidecar_removal_leaves_the_tree_and_database_unchanged(self):
@@ -254,26 +255,35 @@ class SharedAccountTests(ReviewCase):
         before = self.tree()
         with mock.patch.object(review.events, "record", side_effect=RuntimeError("database went away")):
             with self.assertRaises(RuntimeError):
-                review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
+                opened = self.opened
+                with review.saving(opened) as effects:
+                    review.reassign(opened, self.world.photos, item.id, self.world.ids["sam"], 1.0, effects)
         self.assertEqual(self.tree(), before)
 
     def test_a_commit_that_fails_puts_the_photo_back(self):
         item = self.item_named(GOOGLE_ONLY_NAME)
         before_tree, before_flags = self.tree(), self.confirmed()
-        real = Session.commit
-
-        def failing(session):
-            if session is not self.world.opened:
-                raise OSError("disk full")
-            return real(session)
-
-        with mock.patch.object(Session, "commit", autospec=True, side_effect=failing):
-            self.assertEqual(self.reassign(item.id, self.world.ids["sam"])[0], 500)
+        with failing_commit(self.world.opened):
+            self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "the change could not be saved, so it was undone"}))
         self.assertEqual(self.tree(), before_tree)
         self.assertEqual(self.confirmed(), before_flags)
         row = self.opened.get(MediaItem, item.id)
         self.assertEqual((row.person_id, row.path), (item.person_id, item.path))
         self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_a_sidecar_made_beside_an_identical_file_already_there_goes_when_the_move_fails(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        old = self.world.root / item.path
+        old.with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        target = self.world.root / "sam" / "google-only" / old.parent.parent.name / old.parent.name / GOOGLE_ONLY_NAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(old.read_bytes())
+        before = self.tree()
+        with mock.patch.object(paths, "set_library_copy_aside", side_effect=paths.NotALibraryCopy("made to fail")):
+            self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "the photo could not be moved; it was left where it was"}))
+        self.assertEqual(self.tree(), before)
+        self.assertTrue(target.is_file())
+        self.assertFalse(target.with_name(f"{GOOGLE_ONLY_NAME}.xmp").exists())
 
     def test_a_copy_that_changed_on_disk_is_left_alone(self):
         item = self.item_named(GOOGLE_ONLY_NAME)

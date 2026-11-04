@@ -8,6 +8,7 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -15,6 +16,7 @@ NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
 CHUNK = 1024 * 1024
 SIDECAR_SUFFIX = ".xmp"
 DROPPING = ".dropping-"
+SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 
 
 class OutsideRoot(ValueError):
@@ -307,6 +309,12 @@ class SetAside:
             os.rename(aside, path)
 
 
+def drop_new_sidecar(photos: Photos, relative: str) -> None:
+    sidecar = sidecar_of(photos.google_only_file(relative))
+    if sidecar.is_file() and not sidecar.is_symlink():
+        sidecar.unlink()
+
+
 def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> None:
     set_library_copy_aside(photos, relative, kept, with_sidecar).finish()
 
@@ -332,20 +340,44 @@ def set_library_copy_aside(photos: Photos, relative: str, kept: Path, with_sidec
     return SetAside(staged)
 
 
-def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool]) -> int:
-    swept = 0
+@dataclass
+class Swept:
+    dropped: int = 0
+    restored: int = 0
+
+
+def set_aside_name(path: Path) -> Path | None:
+    match = SET_ASIDE.match(path.name)
+    return None if match is None else path.with_name(match.group(1))
+
+
+def put_back(path: Path, original: Path) -> bool:
+    if original.exists() or original.is_symlink():
+        return False
+    os.rename(path, original)
+    sidecar, original_sidecar = sidecar_of(path), sidecar_of(original)
+    if sidecar.is_file() and not sidecar.is_symlink() and not original_sidecar.exists() and not original_sidecar.is_symlink():
+        os.rename(sidecar, original_sidecar)
+    return True
+
+
+def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> Swept:
+    swept = Swept()
     for folder in photos.kept_folders():
         if folder.name != "google-only" or folder.is_symlink() or not folder.is_dir():
             continue
         found = [path for path in sorted(folder.rglob(f"{DROPPING}*"))
                  if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
         for path in [path for path in found if path.suffix != SIDECAR_SUFFIX]:
-            if copy_kept(path, file_sha1(path)):
+            sha1, original = file_sha1(path), set_aside_name(path)
+            if original is not None and recorded(original, sha1) and put_back(path, original):
+                swept.restored += 1
+            elif copy_kept(path, sha1):
                 path.unlink()
-                swept += 1
-        for path in [path for path in found if path.suffix == SIDECAR_SUFFIX]:
+                swept.dropped += 1
+        for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
             if not photo.exists() and not photo.is_symlink():
                 path.unlink()
-                swept += 1
+                swept.dropped += 1
     return swept

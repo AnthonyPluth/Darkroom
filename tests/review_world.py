@@ -4,8 +4,10 @@ import dataclasses
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from darkroom.storage.models import DedupeDecision, MediaItem, Person, ReviewItem
 from tests.import_world import World, tree
@@ -13,6 +15,17 @@ from tests.shared import add_person, fetch, settings_from, start_server
 
 PAIR_NAME = "IMG_1005.JPG"
 GOOGLE_ONLY_NAME = "IMG_2001.JPG"
+
+
+def failing_commit(kept):
+    real = Session.commit
+
+    def commit(session):
+        if session is not kept:
+            raise OSError("disk full")
+        return real(session)
+
+    return mock.patch.object(Session, "commit", autospec=True, side_effect=commit)
 
 
 class ReviewCase(unittest.TestCase):

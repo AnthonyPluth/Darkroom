@@ -13,7 +13,7 @@ from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem, ReviewItem
 from tests.import_world import NOW, sha1_of
 from tests.privacy import no_leaks
-from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase
+from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
 
 DAY = 24 * 3600.0
 ROUTES = (
@@ -107,7 +107,7 @@ class ResolveTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "skip"}),
                          (400, {"error": "action is keep_both; skip leaves the pair for later and saves nothing"}))
         with self.assertRaises(review.WrongState):
-            review.resolve(self.opened, self.world.photos, review_id, "skip", 1.0)
+            review.resolve(self.opened, self.world.photos, review_id, "skip", 1.0, review.FileEffects())
         self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
         row = self.opened.get(ReviewItem, review_id)
         self.assertEqual((row.status, row.resolved_at), ("pending", None))
@@ -156,7 +156,8 @@ class ResolveTests(ReviewCase):
                 self.assertEqual(self.confirmed(), before_flags)
                 self.assertEqual(self.pending().id, review_id)
         with mock.patch.object(place.xmp, "fill", side_effect=RuntimeError("unexpected")), self.assertRaises(RuntimeError):
-            review.resolve(self.opened, self.world.photos, review_id, "keep_both", 1.0)
+            with review.saving(self.opened) as effects:
+                review.resolve(self.opened, self.world.photos, review_id, "keep_both", 1.0, effects)
         self.assertEqual(self.tree(), before_tree)
 
     def test_keep_both_rollback_skips_a_file_it_did_not_place_and_still_answers_409(self):
@@ -184,10 +185,34 @@ class ResolveTests(ReviewCase):
                 mock.patch.object(review.paths, "drop_library_copy", side_effect=PermissionError("read-only")), \
                 mock.patch.object(review.monitoring, "log") as logged:
             self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
-                             (409, {"error": "the held copy could not be placed in google-only, and the copy it made there could not be removed"}))
+                             (409, {"error": "the change failed, and 1 file it made could not be removed"}))
         self.assertTrue((folder / PAIR_NAME).is_file())
         self.assertEqual(self.pending().id, review_id)
-        self.assertEqual([c for c in logged.call_args_list if c.args[0].startswith("keep both")], [mock.call("keep both rollback left files", left=1)])
+        self.assertEqual([c for c in logged.call_args_list if c.args[0].startswith("file changes")], [mock.call("file changes not undone", left=1)])
+
+    def test_keep_both_rollback_leaves_an_identical_file_someone_else_added(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        other = folder / "AAA_identical_meanwhile.JPG"
+        review_id, hold = self.pending().id, self.hold()
+
+        def fill_and_race(*args, **kwargs):
+            other.write_bytes(hold.read_bytes())
+            raise exiftool.WriteFailed("bad tag")
+
+        with mock.patch.object(place.xmp, "fill", side_effect=fill_and_race):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the held copy could not be placed in google-only; nothing was changed"}))
+        self.assertEqual(other.read_bytes(), hold.read_bytes())
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.pending().id, review_id)
+
+    def test_keep_both_whose_commit_fails_leaves_no_files(self):
+        before_tree, before_flags = self.tree(), self.confirmed()
+        review_id = self.pending().id
+        with failing_commit(self.world.opened):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}), (409, {"error": "the change could not be saved, so it was undone"}))
+        self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
+        self.assertEqual(self.pending().id, review_id)
 
     def test_keep_both_works_once_staging_is_cleaned(self):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
@@ -203,7 +228,7 @@ class ResolveTests(ReviewCase):
             with self.subTest(body=body):
                 self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", body), (400, {"error": message}))
         with self.assertRaises(review.WrongState):
-            review.resolve(self.opened, self.world.photos, review_id, "delete", 1.0)
+            review.resolve(self.opened, self.world.photos, review_id, "delete", 1.0, review.FileEffects())
 
 
 class UndoTests(ReviewCase):
@@ -234,6 +259,16 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.confirmed(), before_flags)
         self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[0], 200)
+
+    def test_an_undo_whose_commit_fails_keeps_the_copy_and_can_be_tried_again(self):
+        review_id, _ = self.resolve("keep_both")
+        kept_tree, kept_flags = self.tree(), self.confirmed()
+        with failing_commit(self.world.opened):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"), (409, {"error": "the change could not be saved, so it was undone"}))
+        self.assertEqual((self.tree(), self.confirmed()), (kept_tree, kept_flags))
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "kept_both")
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
 
     def test_undo_is_allowed_inside_the_window_and_refused_after(self):
         review_id, resolved = self.resolve("keep_both")

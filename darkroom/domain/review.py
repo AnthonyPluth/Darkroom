@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -53,12 +54,64 @@ class NotServed(ValueError):
     pass
 
 
+class NotSaved(WrongState):
+    pass
+
+
 @dataclass
 class Changed:
     export: Export
     people: set[int] = field(default_factory=set)
-    after_commit: Callable[[], None] = lambda: None
-    commit_failed: Callable[[], None] = lambda: None
+
+
+@dataclass
+class FileEffects:
+    undo: list[Callable[[], None]] = field(default_factory=list)
+    done: list[Callable[[], None]] = field(default_factory=list)
+
+    def made(self, photos: Photos, placed: place.Placed, kept: Path, had_sidecar: bool) -> None:
+        relative = place.relative(photos, placed.path)
+        if placed.copied:
+            self.undo.append(lambda: paths.drop_library_copy(photos, relative, kept, with_sidecar=not had_sidecar))
+        elif not had_sidecar:
+            self.undo.append(lambda: paths.drop_new_sidecar(photos, relative))
+
+    def set_aside(self, aside: paths.SetAside) -> None:
+        self.undo.append(aside.restore)
+        self.done.append(aside.finish)
+
+    def undone(self) -> int:
+        left = 0
+        for step in reversed(self.undo):
+            try:
+                step()
+            except MOVE_FAILURES:
+                left += 1
+        if left:
+            monitoring.log("file changes not undone", left=left)
+        return left
+
+    def finished(self) -> None:
+        for step in self.done:
+            step()
+
+
+@contextmanager
+def saving(opened: Session) -> Iterator[FileEffects]:
+    effects = FileEffects()
+    try:
+        yield effects
+        try:
+            opened.commit()
+        except Exception as error:
+            raise NotSaved("the change could not be saved, so it was undone") from error
+    except BaseException as error:
+        opened.rollback()
+        left = effects.undone()
+        if left and isinstance(error, WrongState):
+            raise WrongState(f"the change failed, and {left} file{'' if left == 1 else 's'} it made could not be removed") from error
+        raise
+    effects.finished()
 
 
 @dataclass(frozen=True)
@@ -233,7 +286,7 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     return item, fields
 
 
-def keep_both(opened: Session, photos: Photos, hit: Found, now: float, read: xmp.Reader, write: xmp.Writer) -> set[int]:
+def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader, write: xmp.Writer) -> set[int]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     account = opened.get(GoogleAccount, hit.export.account_id)
     if hold is None or account is None:
@@ -242,39 +295,18 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, read: xmp
     if person is None:
         raise WrongState("the export's account has no default person")
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
-    folder = place.google_only_folder(photos, person.slug, fields)
-    before = set(folder.iterdir()) if folder.is_dir() else set()
+
+    def copied(placed: place.Placed) -> None:
+        effects.made(photos, placed, hold, paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink())
+
     try:
-        row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write)
-    except Exception as error:
-        left = take_out_new_copies(photos, folder, before, hold)
-        if left:
-            monitoring.log("keep both rollback left files", left=left)
-        if isinstance(error, (place.PlaceFailed, *MOVE_FAILURES)):
-            if left:
-                raise WrongState("the held copy could not be placed in google-only, and the copy it made there could not be removed") from error
-            raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
-        raise
+        row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write, copied)
+    except (place.PlaceFailed, *MOVE_FAILURES) as error:
+        raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
     return {row.person_id}
 
 
-def take_out_new_copies(photos: Photos, folder: Path, before: set[Path], hold: Path) -> int:
-    if not folder.is_dir():
-        return 0
-    left = 0
-    for path in sorted(set(folder.iterdir()) - before):
-        if path.suffix == paths.SIDECAR_SUFFIX or path.name.startswith("."):
-            continue
-        try:
-            paths.drop_library_copy(photos, place.relative(photos, path), hold, with_sidecar=paths.sidecar_of(path) not in before)
-        except paths.NotALibraryCopy:
-            continue
-        except OSError:
-            left += 1
-    return left
-
-
-def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float,
+def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> Changed:
     if action not in ACTIONS:
         raise WrongState("the only action is keep_both; skip leaves the pair for later and saves nothing")
@@ -285,7 +317,7 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
         raise WrongState("this pair's dedupe decision was reversed")
     changed = Changed(hit.export)
     if action == "keep_both":
-        changed.people |= keep_both(opened, photos, hit, now, read, write)
+        changed.people |= keep_both(opened, photos, hit, now, effects, read, write)
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
     events.record(opened, now, "review_resolved", f"review {hit.review.id}", action)
@@ -302,7 +334,7 @@ def still_referenced(opened: Session, item: MediaItem, decision: DedupeDecision)
     return matched, shared
 
 
-def take_back(opened: Session, photos: Photos, hit: Found, hold: Path) -> set[int]:
+def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: FileEffects) -> set[int]:
     item = None if hit.decision.takeout_item_id is None else opened.get(MediaItem, hit.decision.takeout_item_id)
     if item is None:
         return set()
@@ -313,7 +345,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path) -> set[in
         hit.decision.takeout_item_id = None
         return set()
     try:
-        paths.drop_library_copy(photos, item.path, hold)
+        effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold))
     except paths.NotALibraryCopy as error:
         raise WrongState("the kept copy is not where it was placed, so it was left alone") from error
     except OSError as error:
@@ -324,7 +356,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path) -> set[in
     return {owner}
 
 
-def undo(opened: Session, photos: Photos, review_id: int, now: float) -> Changed:
+def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects) -> Changed:
     hit = found(opened, review_id)
     if hit.review.status not in RESOLVED or hit.review.resolved_at is None:
         raise WrongState("only a kept pair can be undone")
@@ -337,7 +369,7 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float) -> Changed
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
     changed = Changed(hit.export)
     if hit.review.status == "kept_both":
-        changed.people |= take_back(opened, photos, hit, hold)
+        changed.people |= take_back(opened, photos, hit, hold, effects)
     hit.review.status, hit.review.resolved_at = "pending", None
     opened.flush()
     events.record(opened, now, "review_undone", f"review {hit.review.id}")
@@ -391,7 +423,7 @@ def reassign_checks(opened: Session, item: MediaItem, person_id: int) -> tuple[E
     return export, current, target
 
 
-def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now: float,
+def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now: float, effects: FileEffects,
              read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> tuple[MediaItem, Changed]:
     item = opened.get(MediaItem, item_id)
     if item is None:
@@ -411,11 +443,9 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState(f"{target.name} already has this photo")
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
-    except place.PlaceFailed as error:
-        raise WrongState("the photo could not be moved; it was left where it was") from error
-    had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
-    old_path, new_path = item.path, place.relative(photos, placed.path)
-    try:
+        had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
+        effects.made(photos, placed, source, had_sidecar)
+        old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
         if not paths.carry_sidecar(source, placed.path):
@@ -426,23 +456,10 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         opened.flush()
         events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}")
         opened.flush()
-        aside = paths.set_library_copy_aside(photos, old_path, placed.path)
-    except Exception as error:
-        if placed.copied:
-            paths.drop_library_copy(photos, new_path, source, with_sidecar=not had_sidecar)
-        if isinstance(error, MOVE_FAILURES):
-            raise WrongState("the photo could not be moved; it was left where it was") from error
-        raise
-
-    def put_back() -> None:
-        try:
-            aside.restore()
-            if placed.copied:
-                paths.drop_library_copy(photos, new_path, source, with_sidecar=not had_sidecar)
-        except MOVE_FAILURES as error:
-            monitoring.log("reassign could not be put back", error=type(error).__name__)
-
-    return item, Changed(export, {current.id, target.id}, aside.finish, put_back)
+        effects.set_aside(paths.set_library_copy_aside(photos, old_path, placed.path))
+    except (place.PlaceFailed, *MOVE_FAILURES) as error:
+        raise WrongState("the photo could not be moved; it was left where it was") from error
+    return item, Changed(export, {current.id, target.id})
 
 
 def media_view(item: MediaItem) -> dict[str, object]:

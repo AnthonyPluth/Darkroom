@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,13 +126,15 @@ def counted(report: PlaceReport, placed: Placed) -> None:
         report.already_there += 1
 
 
-def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> MediaItem:
+def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
+                      copied: Callable[[Placed], None] = lambda placed: None) -> MediaItem:
     account = opened.get(GoogleAccount, export.account_id)
     person = None if account is None else opened.get(Person, account.default_person_id)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
     folder = google_only_folder(photos, person.slug, entry.fields)
     placed = copy_into(folder, entry.item.path, entry.fields.sha1)
+    copied(placed)
     counted(report, placed)
     path = relative(photos, placed.path)
     row = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.path == path)).scalar_one_or_none()

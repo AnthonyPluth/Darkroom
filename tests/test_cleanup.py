@@ -358,6 +358,19 @@ class InterruptedRemovalTests(Imported):
                 sidecar.unlink(missing_ok=True)
                 photo.unlink(missing_ok=True)
 
+    def test_a_dropping_file_a_row_still_records_is_put_back_with_its_sidecar(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
+        data, xmp_data = photo.read_bytes(), sidecar.read_bytes()
+        os.rename(photo, folder / f"{paths.DROPPING}0123456789abcdef-IMG_2001.JPG")
+        os.rename(sidecar, folder / f"{paths.DROPPING}0123456789abcdef-IMG_2001.JPG.xmp")
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((photo.read_bytes(), sidecar.read_bytes()), (data, xmp_data))
+        self.assertEqual(list(folder.glob(f"{paths.DROPPING}*")), [])
+        self.assertEqual((report.restored, report.dropped), (1, 0))
+        details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
+        self.assertTrue(any(detail.endswith("1 interrupted removals put back") for detail in details))
+
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")
         report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1)

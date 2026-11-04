@@ -108,10 +108,10 @@ def resolve(request: Annotated[Request, contract.ResolveBody]) -> Annotated[Resp
             raise validate.Invalid("action is keep_both; skip leaves the pair for later and saves nothing")
         at = now()
         with db.session(engine_of(request)) as opened:
-            changed = review.resolve(opened, photos_of(request), wanted, action, at)
-            hit = review.found(opened, wanted)
-            reply = review.summary(opened, hit.review, hit.decision)
-            opened.commit()
+            with review.saving(opened) as effects:
+                changed = review.resolve(opened, photos_of(request), wanted, action, at, effects)
+                hit = review.found(opened, wanted)
+                reply = review.summary(opened, hit.review, hit.decision)
             rescan(opened, request.settings, changed, at)
     except validate.Invalid as error:
         return error_response(str(error), 400)
@@ -129,10 +129,10 @@ def undo(request: Request) -> Annotated[Response, contract.ReviewReply]:
     try:
         at = now()
         with db.session(engine_of(request)) as opened:
-            changed = review.undo(opened, photos_of(request), wanted, at)
-            hit = review.found(opened, wanted)
-            reply = review.summary(opened, hit.review, hit.decision)
-            opened.commit()
+            with review.saving(opened) as effects:
+                changed = review.undo(opened, photos_of(request), wanted, at, effects)
+                hit = review.found(opened, wanted)
+                reply = review.summary(opened, hit.review, hit.decision)
             rescan(opened, request.settings, changed, at)
     except review.NoSuchReview:
         return error_response(NO_REVIEW, 404)
@@ -176,14 +176,9 @@ def reassign(request: Annotated[Request, contract.ReassignBody]) -> Annotated[Re
         person_id = validate.whole_number(body, "person_id", minimum=1)
         at = now()
         with db.session(engine_of(request)) as opened:
-            item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at)
-            reply = review.media_view(item)
-            try:
-                opened.commit()
-            except BaseException:
-                changed.commit_failed()
-                raise
-            changed.after_commit()
+            with review.saving(opened) as effects:
+                item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at, effects)
+                reply = review.media_view(item)
             rescan(opened, request.settings, changed, at)
     except validate.Invalid as error:
         return error_response(str(error), 400)

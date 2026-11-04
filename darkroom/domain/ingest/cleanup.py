@@ -29,6 +29,7 @@ class CleanupReport:
     refused: int = 0
     failed: int = 0
     dropped: int = 0
+    restored: int = 0
 
 
 def imported_at(opened: Session, export: Export) -> float | None:
@@ -239,6 +240,13 @@ def copy_kept(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
     return kept
 
 
+def still_recorded(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
+    def recorded(original: Path, sha1: str) -> bool:
+        relative = str(original.relative_to(photos.root))
+        return opened.execute(select(MediaItem.id).where(MediaItem.path == relative, MediaItem.sha1 == sha1).limit(1)).first() is not None
+    return recorded
+
+
 def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
@@ -253,14 +261,16 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
     try:
-        report.dropped = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos))
+        swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos))
+        report.dropped, report.restored = swept.dropped, swept.restored
     except OSError as error:
         report.failed += 1
         events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)
     opened.flush()
-    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped:
+    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped or report.restored:
         detail = (f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
                   + (f", {report.failed} failed" if report.failed else "")
-                  + (f", {report.dropped} interrupted removals cleared" if report.dropped else ""))
+                  + (f", {report.dropped} interrupted removals cleared" if report.dropped else "")
+                  + (f", {report.restored} interrupted removals put back" if report.restored else ""))
         events.record(opened, now, "cleanup", "inbox", detail)
     return report
