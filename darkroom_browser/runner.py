@@ -42,7 +42,7 @@ class Heartbeat:
     def stop(self) -> None:
         self.stopping.set()
         if self.thread.is_alive():
-            self.thread.join(timeout=5)
+            self.thread.join()
 
 
 class Runner:

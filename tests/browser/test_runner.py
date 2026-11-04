@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from darkroom.domain import browser_jobs
@@ -111,6 +112,22 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         for position, action in enumerate(actions):
             if action == "done":
                 self.assertNotEqual(actions[position + 1:position + 2], ["heartbeat"])
+
+    def test_stopping_waits_for_a_heartbeat_that_is_still_in_flight(self):
+        started = threading.Event()
+
+        class Slow:
+            def heartbeat(self, job_id):
+                started.set()
+                time.sleep(0.3)
+
+        beat = runner.Heartbeat(Slow(), mock.Mock(job_id=1), 0.001)
+        beat.start()
+        self.assertTrue(started.wait(5))
+        with mock.patch.object(beat.thread, "join", wraps=beat.thread.join) as joined:
+            beat.stop()
+        joined.assert_called_once_with()
+        self.assertFalse(beat.thread.is_alive())
 
     def test_the_bundled_noop_job_runs_end_to_end(self):
         self.fake.enqueue(3)
