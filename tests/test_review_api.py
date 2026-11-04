@@ -7,10 +7,11 @@ from sqlalchemy import select
 from darkroom.domain import review
 from darkroom.domain.ingest import cleanup, place, run
 from darkroom.providers import exiftool
-from darkroom.server import routes
+from darkroom.server import auth, routes
+from darkroom.server.common import Principal
 from darkroom.server.api import review as review_api
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, MediaItem, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, MediaItem, Person, ReviewItem
 from tests.import_world import NOW, sha1_of
 from tests.privacy import no_leaks
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
@@ -655,3 +656,59 @@ class PrivacyTests(ReviewCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecidedByTests(ReviewCase):
+    def sign_in_as(self, slug):
+        opened = self.opened
+        opened.get(Person, self.world.ids[slug]).email = f"{slug}@example.com"
+        opened.commit()
+        return mock.patch.object(auth, "LOCAL_OWNER", Principal("session", slug, f"{slug}@example.com", slug.title(), ()))
+
+    def listed(self):
+        return self.call("GET", "/api/review?status=kept_both")[1]["reviews"]
+
+    def test_a_decision_names_the_person_who_made_it(self):
+        review_id = self.pending().id
+        with self.sign_in_as("sam"):
+            status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual((status, body["review"]["decided_by_person_id"]), (200, self.world.ids["sam"]))
+        self.assertEqual([row["decided_by_person_id"] for row in self.listed()], [self.world.ids["sam"]])
+        with self.sign_in_as("jo"):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[1]["review"]["decided_by_person_id"], self.world.ids["jo"])
+        self.assertEqual([row["decided_by_person_id"] for row in self.listed()], [self.world.ids["jo"]])
+
+    def test_a_decision_by_someone_no_person_matches_has_no_name(self):
+        review_id = self.pending().id
+        with mock.patch.object(auth, "LOCAL_OWNER", Principal("session", "x", "nobody@example.com", "Nobody", ())):
+            status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual((status, body["review"]["decided_by_person_id"]), (200, None))
+
+    def test_a_decision_recorded_before_people_were_named_has_no_name(self):
+        review_id = self.pending().id
+        with self.sign_in_as("jo"):
+            self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        opened = self.opened
+        opened.execute(select(Event).where(Event.type == "review_resolved")).scalar_one().detail = "keep_both"
+        opened.commit()
+        self.assertEqual([row["decided_by_person_id"] for row in self.listed()], [None])
+
+    def test_a_reassigned_copy_names_the_person_who_moved_it(self):
+        review_id = self.pending().id
+        with self.sign_in_as("jo"):
+            kept = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[1]["review"]
+        with self.sign_in_as("sam"):
+            status, _ = self.call("POST", f"/api/media/{kept['kept_item_id']}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 200)
+        (row,) = self.listed()
+        self.assertEqual((row["kept_person_id"], row["decided_by_person_id"]), (self.world.ids["sam"], self.world.ids["sam"]))
+
+    def test_the_name_is_taken_from_the_latest_decision_by_id(self):
+        review_id = self.pending().id
+        with mock.patch.object(review_api, "now", return_value=NOW + 2 * DAY), self.sign_in_as("jo"):
+            self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+            self.call("POST", f"/api/review/{review_id}/undo")
+        with mock.patch.object(review_api, "now", return_value=NOW + DAY), self.sign_in_as("sam"):
+            self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual([row["decided_by_person_id"] for row in self.listed()], [self.world.ids["sam"]])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ UNPLACED = "unplaced"
 PAGE_SIZE = 50
 LIST_LIMIT = 500
 ADOPTED = "; adopted what was already there: "
+BY_PERSON = re.compile(r"(?:^|, )by person (\d+)$|^by person (\d+): ")
 
 
 MOVE_FAILURES = (paths.NotALibraryCopy, paths.NotASidecar, OSError, exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)
@@ -156,6 +158,7 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
         "resolved_at": review.resolved_at, "undo_until": undo_until(review), "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
+        "decided_by_person_id": decided_by(opened, review, kept),
     }
 
 
@@ -321,6 +324,35 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
     return {row.person_id}, adopted
 
 
+def by_prefix(by: int | None) -> str:
+    return "" if by is None else f"by person {by}: "
+
+
+def person_with_email(opened: Session, email: str | None) -> int | None:
+    if not email:
+        return None
+    return opened.execute(select(Person.id).where(func.lower(Person.email) == email.lower()).order_by(Person.id).limit(1)).scalar_one_or_none()
+
+
+def actor_of(detail: str | None) -> int | None:
+    found_by = None if detail is None else BY_PERSON.search(detail)
+    return None if found_by is None else int(found_by.group(1) or found_by.group(2))
+
+
+def decided_by(opened: Session, review: ReviewItem, kept: MediaItem | None) -> int | None:
+    if review.status != "kept_both":
+        return None
+    kept_event = opened.execute(
+        select(Event.id, Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
+    ).first()
+    if kept_event is None:
+        return None
+    moved = None if kept is None else opened.execute(
+        select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept.id}", Event.id > kept_event.id).order_by(Event.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    return actor_of(moved) if moved is not None else actor_of(kept_event.detail)
+
+
 def adopted_by(opened: Session, review: ReviewItem) -> set[str]:
     detail = opened.execute(
         select(Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
@@ -331,7 +363,7 @@ def adopted_by(opened: Session, review: ReviewItem) -> set[str]:
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
-            read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> Changed:
+            read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, by: int | None = None) -> Changed:
     if action not in ACTIONS:
         raise WrongState("the only action is keep_both; skip leaves the pair for later and saves nothing")
     hit = found(opened, review_id)
@@ -345,7 +377,8 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
         changed.people |= people
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
-    events.record(opened, now, "review_resolved", f"review {hit.review.id}", action + (f"{ADOPTED}{', '.join(adopted)}" if adopted else ""))
+    events.record(opened, now, "review_resolved", f"review {hit.review.id}",
+                  by_prefix(by) + action + (f"{ADOPTED}{', '.join(adopted)}" if adopted else ""))
     return changed
 
 
@@ -386,7 +419,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     return set() if {"row", "photo", "sidecar"} <= adopted else {owner}
 
 
-def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects) -> Changed:
+def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects, by: int | None = None) -> Changed:
     hit = found(opened, review_id)
     if hit.review.status not in RESOLVED or hit.review.resolved_at is None:
         raise WrongState("only a kept pair can be undone")
@@ -402,7 +435,7 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
         changed.people |= take_back(opened, photos, hit, hold, effects)
     hit.review.status, hit.review.resolved_at = "pending", None
     opened.flush()
-    events.record(opened, now, "review_undone", f"review {hit.review.id}")
+    events.record(opened, now, "review_undone", f"review {hit.review.id}", None if by is None else by_prefix(by).rstrip(": "))
     return changed
 
 
@@ -454,7 +487,7 @@ def reassign_checks(opened: Session, item: MediaItem, person_id: int) -> tuple[E
 
 
 def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now: float, effects: FileEffects,
-             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> tuple[MediaItem, Changed]:
+             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, by: int | None = None) -> tuple[MediaItem, Changed]:
     item = opened.get(MediaItem, item_id)
     if item is None:
         raise NoSuchItem("no such photo")
@@ -484,7 +517,7 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
         item.person_id, item.path = target.id, new_path
         opened.flush()
-        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}")
+        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}" + ("" if by is None else f", by person {by}"))
         opened.flush()
         effects.set_aside(paths.set_library_copy_aside(photos, old_path, placed.path))
     except (place.PlaceFailed, *MOVE_FAILURES) as error:

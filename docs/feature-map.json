@@ -435,6 +435,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.review.list_reviews",
       "frontend": [
+        "frontend/src/lib/pending.svelte.ts",
         "frontend/src/pages/Review.svelte"
       ],
       "tests": [

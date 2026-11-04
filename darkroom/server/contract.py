@@ -330,6 +330,7 @@ class ReviewSummary(TypedDict):
     person_id: int | None
     kept_item_id: int | None
     kept_person_id: int | None
+    decided_by_person_id: int | None
 
 
 class Reviews(TypedDict):

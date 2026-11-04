@@ -74,15 +74,30 @@ export function personName(people: readonly Pick<PersonView, "id" | "name">[], i
   return people.find((person) => person.id === id)?.name ?? "Unknown";
 }
 
-export function decisionChip(review: ReviewSummary, people: readonly Pick<PersonView, "id" | "name">[]): { tone: Tone; label: string } {
+type Names = readonly Pick<PersonView, "id" | "name">[];
+
+export function movedTo(review: ReviewSummary, people: Names): string | null {
+  if (review.status !== "kept_both" || review.kept_person_id === null || review.kept_person_id === review.person_id) return null;
+  return personName(people, review.kept_person_id);
+}
+
+export function decidedBy(review: ReviewSummary, people: Names): string | null {
+  return review.decided_by_person_id === null ? null : personName(people, review.decided_by_person_id);
+}
+
+export function decisionChip(review: ReviewSummary, people: Names, short = false): { tone: Tone; label: string } {
   if (review.status === "kept_both") {
-    if (review.kept_person_id !== null && review.kept_person_id !== review.person_id) {
-      return { tone: "ok", label: `Kept both, moved to ${personName(people, review.kept_person_id)}` };
-    }
+    const moved = movedTo(review, people);
+    if (moved !== null) return { tone: "ok", label: short ? "Reassigned" : `Reassigned to ${moved}` };
     return { tone: "ok", label: "Kept both" };
   }
   if (review.status === "pending") return { tone: "warn", label: "Waiting" };
   return { tone: "neutral", label: "Undone" };
+}
+
+export function decisionDetail(review: ReviewSummary, people: Names, whenText: string): string {
+  const moved = movedTo(review, people);
+  return [whenText, decidedBy(review, people), moved === null ? null : `moved to ${moved}`].filter((part) => part !== null && part !== "").join(", ");
 }
 
 export function canUndo(review: ReviewSummary, now: number): boolean {

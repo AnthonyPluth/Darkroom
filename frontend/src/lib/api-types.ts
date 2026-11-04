@@ -453,6 +453,7 @@ export interface ReviewSummary {
   person_id: number | null;
   kept_item_id: number | null;
   kept_person_id: number | null;
+  decided_by_person_id: number | null;
 }
 
 export interface Reviews {

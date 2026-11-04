@@ -5,7 +5,9 @@
   import { apiCall } from "$lib/contract";
   import { nowSeconds, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
-  import { camera, canUndo, compared, decisionChip, frame, pairLabel, personName, savedSentence, size, undoUnavailable, wallClock } from "$lib/review";
+  import { pending as waiting } from "$lib/pending.svelte";
+  import { viewport } from "$lib/viewport.svelte";
+  import { camera, canUndo, compared, decidedBy, decisionChip, decisionDetail, frame, pairLabel, personName, savedSentence, size, undoUnavailable, wallClock } from "$lib/review";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -48,6 +50,7 @@
     const position = first ? pending.before + pending.reviews.indexOf(first) + 1 : 0;
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
     reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
+    waiting.count = pending.pending;
     const past = [...resolved.reviews].sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
     return { pending: pending.reviews, pendingCount: pending.pending, position, detail, past, people: people.people, now: nowSeconds() };
   });
@@ -203,23 +206,46 @@
 
     <section class="card md:p-5" aria-label="Past decisions">
       <h2 class="text-md font-semibold">Past decisions</h2>
-      <Table label="Past decisions" columns={["When", "Pair", "Decision", ""]} rows={data.past} empty="No decisions yet.">
-        {#snippet row(review)}
-          {@const chip = decisionChip(review, data.people)}
-          <tr>
-            <td data-label="When">{review.resolved_at === null ? "" : when(review.resolved_at, data.now)}</td>
-            <td data-label="Pair"><span class="font-mono text-sm break-all">{pairLabel(review)}</span></td>
-            <td data-label="Decision"><Chip tone={chip.tone} label={chip.label} /></td>
-            <td class="md:text-right">
+      {#if viewport.desktop}
+        <Table label="Past decisions" columns={["When", "Pair", "Decision", "By", ""]} rows={data.past} empty="No decisions yet.">
+          {#snippet row(review)}
+            {@const chip = decisionChip(review, data.people)}
+            <tr>
+              <td data-label="When">{review.resolved_at === null ? "" : when(review.resolved_at, data.now)}</td>
+              <td data-label="Pair"><span class="font-mono text-sm break-all">{pairLabel(review)}</span></td>
+              <td data-label="Decision"><Chip tone={chip.tone} label={chip.label} /></td>
+              <td data-label="By" class:text-ink-muted={decidedBy(review, data.people) === null}>{decidedBy(review, data.people) ?? "—"}</td>
+              <td class="md:text-right">
+                {#if canUndo(review, data.now)}
+                  <button type="button" class="btn w-full md:w-auto" disabled={busy} aria-label="Undo {pairLabel(review)}" onclick={() => undo(review.id)}>Undo</button>
+                {:else}
+                  <span class="text-ink-muted">{undoUnavailable(review)}</span>
+                {/if}
+              </td>
+            </tr>
+          {/snippet}
+        </Table>
+      {:else if data.past.length === 0}
+        <p class="text-ink-muted">No decisions yet.</p>
+      {:else}
+        <ul class="flex flex-col" aria-label="Past decisions">
+          {#each data.past as review (review.id)}
+            {@const chip = decisionChip(review, data.people, true)}
+            <li class="flex flex-col gap-2 border-t border-raised py-3 first:border-0 first:pt-0">
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-mono text-sm break-all">{pairLabel(review)}</span>
+                <Chip tone={chip.tone} label={chip.label} />
+              </div>
+              <p class="text-sm text-ink-muted">{decisionDetail(review, data.people, review.resolved_at === null ? "" : when(review.resolved_at, data.now))}</p>
               {#if canUndo(review, data.now)}
-                <button type="button" class="btn w-full md:w-auto" disabled={busy} aria-label="Undo {pairLabel(review)}" onclick={() => undo(review.id)}>Undo</button>
+                <button type="button" class="btn w-full" disabled={busy} aria-label="Undo {pairLabel(review)}" onclick={() => undo(review.id)}>Undo</button>
               {:else}
                 <span class="text-ink-muted">{undoUnavailable(review)}</span>
               {/if}
-            </td>
-          </tr>
-        {/snippet}
-      </Table>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </section>
 
   {/if}

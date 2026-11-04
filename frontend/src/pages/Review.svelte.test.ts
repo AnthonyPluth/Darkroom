@@ -3,6 +3,8 @@ import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewDetail, ReviewSummary } from "$lib/api-types";
+import { pending as waiting } from "$lib/pending.svelte";
+import { viewport } from "$lib/viewport.svelte";
 import { jo, reply, sam, serve } from "../test/server";
 import Review from "./Review.svelte";
 
@@ -13,13 +15,14 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW * 1000));
 });
 afterEach(() => {
+  viewport.desktop = true;
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 const pending: ReviewSummary = {
   id: 7, status: "pending", decision_id: 70, export_id: 1, account_id: 11, tier: 4, reason: "perceptual distance 2, 1 s apart", decided_at: NOW - 100,
-  reversed: false, resolved_at: null, undo_until: null, name: "IMG_2431.jpg", library_name: "IMG_2431.HEIC", person_id: 1, kept_item_id: null, kept_person_id: null,
+  reversed: false, resolved_at: null, undo_until: null, name: "IMG_2431.jpg", library_name: "IMG_2431.HEIC", person_id: 1, kept_item_id: null, kept_person_id: null, decided_by_person_id: null,
 };
 const kept: ReviewSummary = { ...pending, id: 5, status: "kept_both", name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", resolved_at: NOW - 60, undo_until: NOW + 1000, kept_item_id: 50, kept_person_id: 1 };
 const old: ReviewSummary = { ...pending, id: 4, status: "kept_both", name: "PXL_1.jpg", library_name: "IMG_1.HEIC", resolved_at: NOW - 20 * 86_400, undo_until: NOW - 6 * 86_400 };
@@ -185,6 +188,15 @@ describe("the current pair", () => {
   });
 });
 
+describe("the count in the navigation", () => {
+  it("follows the queue this page loaded", async () => {
+    waiting.count = 0;
+    show({ "GET /api/review?status=pending": { reviews: [pending], pending: 3, before: 0 } });
+    await screen.findByRole("heading", { name: "Pair 1 of 3" });
+    expect(waiting.count).toBe(3);
+  });
+});
+
 describe("past decisions", () => {
   it("lists them newest first with undo only inside the window", async () => {
     const server = show({ "POST /api/review/5/undo": { review: pending } });
@@ -196,6 +208,38 @@ describe("past decisions", () => {
     expect(rows[1]).toHaveTextContent("Too late to undo");
     await userEvent.click(within(rows[0]).getByRole("button", { name: "Undo IMG_2102.HEIC / .jpg" }));
     expect(server.sent("POST /api/review/5/undo")).toHaveLength(1);
+  });
+
+  it("shows who decided in a By column, a dash when nobody is recorded, and a moved copy as Reassigned", async () => {
+    const moved = { ...kept, id: 6, resolved_at: NOW - 30, kept_person_id: 2, decided_by_person_id: 1 };
+    show({ "GET /api/review?status=kept_both": { reviews: [{ ...kept, decided_by_person_id: 2 }, moved, old], pending: 1, before: 0 } });
+    const table = await screen.findByRole("table", { name: "Past decisions" });
+    expect(within(table).getByRole("columnheader", { name: "By" })).toBeInTheDocument();
+    const cells = (row: HTMLElement) => within(row).getAllByRole("cell").map((cell) => cell.textContent);
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(cells(rows[0]).slice(2, 4)).toEqual(["Reassigned to Sam Example", "Jo Example"]);
+    expect(cells(rows[1]).slice(2, 4)).toEqual(["Kept both", "Sam Example"]);
+    expect(cells(rows[2]).slice(2, 4)).toEqual(["Kept both", "—"]);
+  });
+
+  it("on a phone lists each decision with its chip and the when, who and move beside it", async () => {
+    viewport.desktop = false;
+    const moved = { ...kept, id: 6, resolved_at: NOW - 30, kept_person_id: 2, decided_by_person_id: 1 };
+    show({ "GET /api/review?status=kept_both": { reviews: [moved, { ...old, decided_by_person_id: 2 }], pending: 1, before: 0 } });
+    const list = await screen.findByRole("list", { name: "Past decisions" });
+    const [first, second] = within(list).getAllByRole("listitem");
+    expect(first).toHaveTextContent("Reassigned");
+    expect(first).not.toHaveTextContent("Reassigned to");
+    expect(first).toHaveTextContent(/Yesterday \d\d:\d\d, Jo Example, moved to Sam Example|Today \d\d:\d\d, Jo Example, moved to Sam Example/);
+    expect(within(first).getByRole("button", { name: "Undo IMG_2102.HEIC / .jpg" })).toBeInTheDocument();
+    expect(second).toHaveTextContent("Sam Example");
+    expect(second).toHaveTextContent("Too late to undo");
+  });
+
+  it("says so on a phone when there are no decisions", async () => {
+    viewport.desktop = false;
+    show({ "GET /api/review?status=kept_both": { reviews: [], pending: 1, before: 0 } });
+    expect(await screen.findByText("No decisions yet.")).toBeInTheDocument();
   });
 
   it("offers no undo for a decision that was reversed and says why", async () => {

@@ -2210,6 +2210,16 @@
           "decided_at": {
             "type": "number"
           },
+          "decided_by_person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "decision_id": {
             "type": "integer"
           },
@@ -2305,6 +2315,7 @@
         "required": [
           "account_id",
           "decided_at",
+          "decided_by_person_id",
           "decision_id",
           "export_id",
           "id",

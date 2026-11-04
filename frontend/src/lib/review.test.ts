@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ImportView, ReviewSummary } from "./api-types";
 import {
-  camera, canUndo, compared, counted, decisionChip, frame, pairLabel, partsSentence, personName, rangeStart, runChip, savedSentence, size, skipped,
+  camera, canUndo, compared, counted, decidedBy, decisionChip, decisionDetail, frame, pairLabel, partsSentence, personName, rangeStart, runChip, savedSentence, size, skipped,
   undoUnavailable, unmatchedNames, unmatchedTotal, wallClock,
 } from "./review";
 
 const people = [{ id: 1, name: "Jo", slug: "jo" }, { id: 2, name: "Sam", slug: "sam" }];
 const summary: ReviewSummary = {
   id: 1, status: "kept_both", decision_id: 6, export_id: 1, account_id: 1, tier: 4, reason: "close", decided_at: 1, reversed: false,
-  resolved_at: 100, undo_until: 200, name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", person_id: 1, kept_item_id: 9, kept_person_id: 1,
+  resolved_at: 100, undo_until: 200, name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", person_id: 1, kept_item_id: 9, kept_person_id: 1, decided_by_person_id: 1,
 };
 const run = { stage: "done", status: "done", skipped_t1: 3, skipped_t2: 1, skipped_t3: 1, unmatched_by_person: { jo: 2, sam: 0 }, parts: [], part_count: null } as unknown as ImportView;
 const side = { name: "a", bytes: 1, captured_local: null, make: "Apple", model: "iPhone 15", width: 4032, height: 3024, duration_ms: null, is_video: false };
@@ -56,10 +56,21 @@ describe("review rows", () => {
 
   it("chips each decision and says who a kept copy moved to", () => {
     expect(decisionChip(summary, people)).toEqual({ tone: "ok", label: "Kept both" });
-    expect(decisionChip({ ...summary, kept_person_id: 2 }, people)).toEqual({ tone: "ok", label: "Kept both, moved to Sam" });
+    expect(decisionChip({ ...summary, kept_person_id: 2 }, people)).toEqual({ tone: "ok", label: "Reassigned to Sam" });
+    expect(decisionChip({ ...summary, kept_person_id: 2 }, people, true)).toEqual({ tone: "ok", label: "Reassigned" });
     expect(decisionChip({ ...summary, status: "pending" }, people)).toEqual({ tone: "warn", label: "Waiting" });
     expect(decisionChip({ ...summary, status: "undone" }, people)).toEqual({ tone: "neutral", label: "Undone" });
     expect(personName(people, 9)).toBe("Unknown");
+  });
+
+  it("names who decided and builds the phone line the board shows", () => {
+    const moved = { ...summary, kept_person_id: 2 };
+    expect(decidedBy(summary, people)).toBe("Jo");
+    expect(decidedBy({ ...summary, decided_by_person_id: null }, people)).toBeNull();
+    expect(decisionDetail(summary, people, "Today 10:05")).toBe("Today 10:05, Jo");
+    expect(decisionDetail(moved, people, "Yesterday 20:39")).toBe("Yesterday 20:39, Jo, moved to Sam");
+    expect(decisionDetail({ ...moved, decided_by_person_id: null }, people, "Yesterday 20:39")).toBe("Yesterday 20:39, moved to Sam");
+    expect(decisionDetail({ ...summary, decided_by_person_id: null }, people, "")).toBe("");
   });
 
   it("offers undo only inside the window", () => {

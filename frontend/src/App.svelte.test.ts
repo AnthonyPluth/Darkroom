@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { render, screen, within } from "@testing-library/svelte";
+import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
+import { pending } from "$lib/pending.svelte";
 import { session } from "$lib/session.svelte";
 import { emptyStatus, joAccount, me, reply, serve } from "./test/server";
 import App from "./App.svelte";
@@ -19,6 +20,7 @@ function start(routes: Parameters<typeof serve>[0]) {
 
 beforeEach(() => {
   session.current = { kind: "loading" };
+  pending.count = 0;
   history.replaceState(null, "", "/");
   router.sync();
 });
@@ -73,6 +75,31 @@ describe("signed in", () => {
     expect(form).toHaveAttribute("action", "/auth/logout");
     expect(form).toHaveAttribute("method", "post");
     expect(form?.querySelector("button")).toHaveTextContent("Sign out");
+  });
+
+  it("shows the number of pairs waiting for review on the Review item of both navigations, and nothing when none wait", async () => {
+    let waiting = 4;
+    const count = "GET /api/review?status=pending&after=2147483647";
+    start({ ...quiet, [count]: () => ({ reviews: [], pending: waiting, before: waiting }) });
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    const tabs = screen.getByRole("navigation", { name: "Main tabs" });
+    for (const nav of [rail, tabs]) {
+      expect(await within(nav).findByLabelText("4 waiting")).toHaveTextContent("4");
+      expect(within(nav).getByRole("link", { name: /^Review/ })).toHaveTextContent("Review4");
+      expect(within(nav).getByRole("link", { name: "Status" })).toHaveTextContent(/^Status$/);
+    }
+    waiting = 0;
+    await userEvent.click(within(rail).getByRole("link", { name: "People" }));
+    await waitFor(() => expect(screen.queryByLabelText(/waiting/)).not.toBeInTheDocument());
+    expect(within(rail).getByRole("link", { name: "Review" })).toHaveTextContent(/^Review$/);
+  });
+
+  it("shows no count and no error when the count cannot be fetched", async () => {
+    start(quiet);
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    await screen.findByText("No one has been added yet.");
+    expect(within(rail).getByRole("link", { name: "Review" })).toHaveTextContent(/^Review$/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("moves between the pages without reloading", async () => {
