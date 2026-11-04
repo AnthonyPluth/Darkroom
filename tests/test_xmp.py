@@ -242,6 +242,19 @@ class WriteSidecarTests(Folder):
             paths.write_sidecar(target, racing)
         self.assertEqual(target.read_text(), "theirs")
 
+    def test_a_sidecar_edited_while_rendering_is_not_overwritten(self):
+        target = self.folder / "a.xmp"
+        target.write_text("old")
+
+        def racing(temp, source):
+            temp.write_text("stale")
+            target.write_text("edited by someone else")
+
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_sidecar(target, racing)
+        self.assertEqual(target.read_text(), "edited by someone else")
+        self.assertEqual([p.name for p in self.folder.iterdir()], ["a.xmp"])
+
     def test_without_hard_links_the_sidecar_is_copied(self):
         target = self.folder / "a.xmp"
         with mock.patch.object(paths.os, "link", side_effect=OSError("no links")):
