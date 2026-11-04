@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign-in Not Allowed Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.btn{min-height:48px;padding:0 20px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.btn:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+</style>
+</helmet>
+<div style="width:100%;min-height:844px;padding:24px 16px 32px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700"><span style="width:14px;height:14px;border-radius:50%;background:#E2693F;display:block"></span>Darkroom</div>
+<div style="background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:16px;margin-top:48px">
+<h1 style="margin:0;font-size:24px;line-height:1.2">Sign in</h1>
+<div role="alert" style="background:#3A1A1A;color:#F08A84;border:1px solid #F08A84;border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;gap:8px;font-weight:700"><span style="width:10px;height:10px;background:#F08A84;border-radius:1px;display:block"></span>Not allowed</div>
+<div style="color:#F1ECE2">You signed in as <b>visitor@example.com</b>, which is not in the parents group. Darkroom shows nothing to this account.</div>
+</div>
+<p style="margin:0;color:#B3AB9D">If this is your account, ask Jo or Sam to add it to the parents group in Pocket ID, then try again.</p>
+<a class="btn p" href="01-signin-phone.dc.html">Sign in with a different account</a>
+<a class="btn" href="01-signin-phone.dc.html">Back to sign-in</a>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

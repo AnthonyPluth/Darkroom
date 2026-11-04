@@ -108,6 +108,29 @@ class ServedAppTests(unittest.TestCase):
 
 
 class ServerPageTests(unittest.TestCase):
+    def test_a_server_page_uses_only_the_signed_off_dark_colours(self):
+        from pathlib import Path
+
+        from darkroom.server import common
+
+        theme = (Path(__file__).resolve().parent.parent / "frontend/src/app.css").read_text()
+        tokens = set(re.findall(r"--color-[\w-]+:\s*(#[0-9a-f]{6});", theme))
+        used = set(re.findall(r"#[0-9a-f]{6}", common.PAGE_STYLE))
+        self.assertTrue(used)
+        self.assertEqual(used - tokens, set())
+        self.assertIn("color-scheme:dark", common.PAGE_STYLE)
+
+    def test_an_error_page_has_an_alert_and_an_ordinary_one_does_not(self):
+        from darkroom.server import common
+
+        failed = common.page(403, "Not allowed", "No <b>way</b>.", ("/auth/login", "Back"), hint="Ask someone.").body.decode()
+        self.assertIn('role="alert"', failed)
+        self.assertIn("No &lt;b&gt;way&lt;/b&gt;.", failed)
+        self.assertIn("Ask someone.", failed)
+        fine = common.page(200, "Signed out", "Bye.").body.decode()
+        self.assertNotIn('role="alert"', fine)
+        self.assertNotIn('class="button"', fine)
+
     def test_a_server_page_allows_its_own_style_and_nothing_else_inline(self):
         import base64
         import hashlib

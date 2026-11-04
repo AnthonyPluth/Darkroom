@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Imports Desktop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.app{display:flex;width:100%;min-height:1400px}
+.rail{width:232px;flex:none;background:#1B1813;border-right:1px solid #3A352C;padding:24px 16px;display:flex;flex-direction:column;gap:24px}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;padding:0 8px}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;justify-content:space-between;min-height:40px;padding:0 12px;border-radius:8px;color:#F1ECE2;text-decoration:none;font-weight:500}
+.nav a:hover{background:#2B2721}
+.nav a.on{background:#F1ECE2;color:#1F1C17}
+.nav a:focus-visible,.btn:focus-visible,select:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:12px;font-weight:700;padding:1px 8px;min-width:22px;text-align:center}
+.who{margin-top:auto;padding:12px;font-size:13px;color:#B3AB9D}
+.main{flex:1;min-width:0;padding:32px 40px;display:flex;flex-direction:column;gap:24px}
+h1{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.01em}
+h2{margin:0;font-size:16px;line-height:1.3}
+.sub{color:#B3AB9D}
+.card{background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.btn{min-height:40px;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;white-space:nowrap}
+.btn[aria-pressed="true"]{background:#F1ECE2;border-color:#F1ECE2;color:#1F1C17}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D;padding:0 12px 8px 0}
+td{padding:12px 12px 12px 0;border-top:1px solid #2B2721;vertical-align:middle}
+.n{text-align:right;font-variant-numeric:tabular-nums}
+th.n{text-align:right}
+.th{width:44px;height:44px;border-radius:6px;background:linear-gradient(135deg,#4A4439,#2F2B24);display:block}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+select{min-height:40px;border:1px solid #7A7260;border-radius:8px;background:#1F1C17;color:#F1ECE2;font:inherit;padding:0 12px}
+label{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+</style>
+</helmet>
+<div class="app">
+<nav class="rail" aria-label="Primary">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<div class="nav">
+<a href="02-status-desktop.dc.html">Status</a>
+<a href="03-people-desktop.dc.html">People</a>
+<a href="04-exports-desktop.dc.html">Exports</a>
+<a class="on" href="05-imports-desktop.dc.html" aria-current="page">Imports</a>
+<a href="06-review-desktop.dc.html">Review <span class="badge">4</span></a>
+<a href="07-browser-desktop.dc.html">Browser</a>
+</div>
+<div class="who">Signed in as<br><b style="color:#F1ECE2">jo@example.com</b></div>
+</nav>
+<main class="main">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1>Imports</h1>
+<div class="sub">What each export part added to the library, and what needs a look.</div>
+</div>
+
+<section class="card" aria-label="Import runs">
+<h2>Runs</h2>
+<table>
+<thead><tr><th>Run</th><th class="n">Added</th><th class="n">Skipped as duplicates</th><th class="n">Sent to review</th><th class="n">Missing GPS</th><th class="n">Unmatched by person</th></tr></thead>
+<tbody>
+<tr><td><b>Part 3 of 5</b><br><span class="sub">Today 09:42, export of 2 Nov</span></td><td class="n">1,204</td><td class="n">311</td><td class="n"><a href="06-review-desktop.dc.html" style="color:#F1ECE2;font-weight:600">4</a></td><td class="n">37</td><td class="n">2</td></tr>
+<tr><td><b>Part 2 of 5</b><br><span class="sub">Yesterday 19:20, export of 2 Nov</span></td><td class="n">982</td><td class="n">405</td><td class="n">0</td><td class="n">21</td><td class="n">0</td></tr>
+<tr><td><b>Part 1 of 5</b><br><span class="sub">Yesterday 14:05, export of 2 Nov</span></td><td class="n">1,317</td><td class="n">266</td><td class="n">3</td><td class="n">52</td><td class="n">5</td></tr>
+<tr><td><b>Part 4 of 4</b><br><span class="sub">3 Oct 08:31, export of 2 Oct</span></td><td class="n">1,090</td><td class="n">298</td><td class="n">2</td><td class="n">18</td><td class="n">0</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card" aria-label="Missing GPS">
+<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap">
+<div style="display:flex;flex-direction:column;gap:2px"><h2>Missing GPS</h2><span class="sub">128 photos have no location. Newest first.</span></div>
+<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+<div role="group" aria-label="Person" style="display:flex;gap:6px">
+<button class="btn" type="button" aria-pressed="true">All</button>
+<button class="btn" type="button" aria-pressed="false">Jo</button>
+<button class="btn" type="button" aria-pressed="false">Sam</button>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px"><label for="mg-range">Taken</label>
+<select id="mg-range"><option>Last 12 months</option><option>Last 30 days</option><option>All time</option></select></div>
+</div>
+</div>
+<table>
+<thead><tr><th style="width:56px"><span style="position:absolute;left:-9999px">Preview</span></th><th>File</th><th>Person</th><th>Taken</th><th>Camera</th></tr></thead>
+<tbody>
+<tr><td><span class="th"></span></td><td class="mono">IMG_2418.HEIC</td><td>Jo</td><td>29 Oct 2026, 17:42</td><td>iPhone 15</td></tr>
+<tr><td><span class="th"></span></td><td class="mono">PXL_20261026_081422.jpg</td><td>Sam</td><td>26 Oct 2026, 08:14</td><td>Pixel 8</td></tr>
+<tr><td><span class="th"></span></td><td class="mono">IMG_2396.HEIC</td><td>Jo</td><td>24 Oct 2026, 12:03</td><td>iPhone 15</td></tr>
+<tr><td><span class="th"></span></td><td class="mono">PXL_20261019_154011.jpg</td><td>Sam</td><td>19 Oct 2026, 15:40</td><td>Pixel 9a</td></tr>
+<tr><td><span class="th"></span></td><td class="mono">IMG_2371.HEIC</td><td>Jo</td><td>17 Oct 2026, 09:55</td><td>iPhone 15</td></tr>
+</tbody>
+</table>
+<div style="display:flex;justify-content:space-between;align-items:center"><span class="sub">Showing 5 of 128</span><button class="btn" type="button">Show more</button></div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1400}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

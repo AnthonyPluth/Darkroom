@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Remote Browser Desktop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.app{display:flex;width:100%;min-height:960px}
+.rail{width:232px;flex:none;background:#1B1813;border-right:1px solid #3A352C;padding:24px 16px;display:flex;flex-direction:column;gap:24px}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;padding:0 8px}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;justify-content:space-between;min-height:40px;padding:0 12px;border-radius:8px;color:#F1ECE2;text-decoration:none;font-weight:500}
+.nav a:hover{background:#2B2721}
+.nav a.on{background:#F1ECE2;color:#1F1C17}
+.nav a:focus-visible,.btn:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:12px;font-weight:700;padding:1px 8px;min-width:22px;text-align:center}
+.who{margin-top:auto;padding:12px;font-size:13px;color:#B3AB9D}
+.main{flex:1;min-width:0;padding:32px 40px;display:flex;flex-direction:column;gap:20px}
+h1{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.01em}
+.sub{color:#B3AB9D}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.ok{color:#7CC38F;background:#1D2B20}.bad{color:#F08A84;background:#3A1A1A}.bad i{border-radius:1px}
+.btn{min-height:44px;padding:0 20px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;white-space:nowrap}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.banner{background:#1F1C17;border:1px solid #E2693F;border-radius:12px;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;gap:20px}
+.vnc{border-radius:12px;border:1px solid #3A352C;background:#2B2721;overflow:hidden;display:flex;flex-direction:column}
+.vbar{background:#16140F;color:#B3AB9D;padding:8px 14px;display:flex;align-items:center;gap:12px;font-size:12px}
+.vbar span.u{flex:1;background:#2B2721;border-radius:999px;padding:4px 12px;color:#D8D1C3;font-family:ui-monospace,Menlo,monospace}
+.vview{height:520px;display:flex;align-items:center;justify-content:center;color:#D8D1C3;text-align:center;padding:24px}
+</style>
+</helmet>
+<div class="app">
+<nav class="rail" aria-label="Primary">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<div class="nav">
+<a href="02-status-desktop.dc.html">Status</a>
+<a href="03-people-desktop.dc.html">People</a>
+<a href="04-exports-desktop.dc.html">Exports</a>
+<a href="05-imports-desktop.dc.html">Imports</a>
+<a href="06-review-desktop.dc.html">Review <span class="badge">4</span></a>
+<a class="on" href="07-browser-desktop.dc.html" aria-current="page">Browser</a>
+</div>
+<div class="who">Signed in as<br><b style="color:#F1ECE2">jo@example.com</b></div>
+</nav>
+<main class="main">
+<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1>Remote browser</h1>
+<div class="sub">A browser running inside Darkroom, used to sign in to Google.</div>
+</div>
+<span class="chip ok"><i></i>Connected</span>
+</div>
+
+<section class="banner" aria-label="Sign-in task">
+<div style="display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;gap:10px"><span class="chip bad"><i></i>Sign-in needed</span><b style="font-size:16px">Sign in to family@example.com</b></div>
+<div>Google asked to verify this account. Sign in in the window below as you normally would and finish any verification. When you can see the Google account page, press Done. Darkroom then keeps the session and carries on.</div>
+</div>
+<button class="btn p" type="button">Done</button>
+</section>
+
+<section class="vnc" aria-label="Remote browser view">
+<div class="vbar"><span>Back</span><span>Reload</span><span class="u">accounts.example.com</span><span>noVNC, 1024 x 640</span></div>
+<div class="vview">
+<div style="max-width:420px;display:flex;flex-direction:column;gap:8px">
+<div style="font-size:16px;font-weight:600">Live remote browser appears here</div>
+<div style="color:#B3AB9D">The embedded noVNC view fills this area. Keyboard and mouse go to the remote browser while it is focused.</div>
+</div>
+</div>
+</section>
+<div class="sub" style="font-size:13px">This view needs Darkroom reachable on home Wi-Fi or Tailscale.</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

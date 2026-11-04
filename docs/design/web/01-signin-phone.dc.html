@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign-in Signed Out Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.btn{min-height:48px;padding:0 20px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.btn:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+</style>
+</helmet>
+<div style="width:100%;min-height:844px;padding:24px 16px 32px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700"><span style="width:14px;height:14px;border-radius:50%;background:#E2693F;display:block"></span>Darkroom</div>
+<div style="display:flex;flex-direction:column;gap:12px;margin-top:48px">
+<div style="font-size:30px;line-height:1.12;font-weight:700;letter-spacing:-.01em">Photos leave the phone only after Google Photos has them.</div>
+<div style="color:#B3AB9D;font-size:16px">Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</div>
+</div>
+<div style="background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:16px">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1 style="margin:0;font-size:24px;line-height:1.2">Sign in</h1>
+<p style="margin:0;color:#B3AB9D">You are signed out. Darkroom is for the family's parents only.</p>
+</div>
+<a class="btn p" href="02-status-phone.dc.html">Continue with Pocket ID</a>
+<p style="margin:0;color:#B3AB9D;font-size:13px">Away from home, turn Tailscale on first.</p>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

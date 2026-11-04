@@ -88,10 +88,35 @@ def redirect(location: str, cookies: tuple[str, ...] = ()) -> Response:
 
 
 PAGE_STYLE = """
-body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 48px 16px; color: #222; background: #fafafa; }
-main { max-width: 32rem; margin: 0 auto; }
-h1 { font-size: 1.5rem; margin: 0 0 12px; }
-a.button { display: inline-block; margin-top: 16px; padding: 10px 16px; border-radius: 8px; background: #222; color: #fff; text-decoration: none; }
+*{box-sizing:border-box}
+:root{color-scheme:dark}
+body{margin:0;background:#16140f;color:#f1ece2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:grid;min-height:100vh}
+.side{display:flex;flex-direction:column;gap:32px;padding:24px 16px 0}
+.brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700}
+.dot{width:14px;height:14px;border-radius:50%;background:#e2693f;display:block}
+.pitch{display:none}
+main{display:flex;align-items:flex-start;justify-content:center;padding:32px 16px}
+.card{width:100%;max-width:400px;background:#1f1c17;border:1px solid #3a352c;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:16px}
+h1{margin:0;font-size:24px;line-height:1.2}
+p{margin:0}
+.muted{color:#b3ab9d}
+.alert{background:#3a1a1a;color:#f08a84;border:1px solid #f08a84;border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.alert b{display:flex;align-items:center;gap:8px}
+.alert i{width:10px;height:10px;background:#f08a84;border-radius:1px;display:block}
+.alert span{color:#f1ece2}
+a.button{display:flex;align-items:center;justify-content:center;min-height:48px;padding:0 20px;border-radius:8px;border:1px solid #e2693f;background:#e2693f;color:#1a0e08;font-weight:600;text-decoration:none}
+a.button:focus-visible{outline:3px solid #f1ece2;outline-offset:2px}
+@media (min-width:768px){
+.wrap{grid-template-columns:1fr 1fr}
+.side{background:#1b1813;padding:64px;justify-content:space-between;gap:0}
+.pitch{display:flex;flex-direction:column;gap:16px;max-width:420px}
+.pitch strong{font-size:36px;line-height:1.1;letter-spacing:-.01em}
+.pitch span{color:#b3ab9d;font-size:16px}
+main{align-items:center;padding:48px}
+.card{padding:32px;gap:20px}
+h1{font-size:28px}
+}
 """
 PAGE_CSP = f"{CSP}; style-src 'sha256-{base64.b64encode(hashlib.sha256(PAGE_STYLE.encode()).digest()).decode()}'"
 
@@ -103,12 +128,28 @@ PAGE = """<!doctype html>
 <title>{title} · Darkroom</title>
 <style>{style}</style>
 </head>
-<body><main><h1>{title}</h1><p>{message}</p>{link}</main></body>
+<body>
+<div class="wrap">
+<div class="side">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<div class="pitch"><strong>Photos leave the phone only after Google Photos has them.</strong><span>Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</span></div>
+</div>
+<main><div class="card">
+<h1>Sign in</h1>
+{body}{hint}{link}
+</div></main>
+</div>
+</body>
 </html>
 """
 
 
-def page(status: int, title: str, message: str, link: tuple[str, str] | None = None, cookies: tuple[str, ...] = ()) -> Response:
+def page(status: int, title: str, message: str, link: tuple[str, str] | None = None, cookies: tuple[str, ...] = (), hint: str = "") -> Response:
     button = f'<a class="button" href="{html.escape(link[0], quote=True)}">{html.escape(link[1])}</a>' if link else ""
-    body = PAGE.format(title=html.escape(title), message=html.escape(message), link=button, style=PAGE_STYLE).encode()
-    return Response(status, body, "text/html; charset=utf-8", {"Content-Security-Policy": PAGE_CSP, "X-Content-Type-Options": "nosniff"}, cookies)
+    if status >= 400:
+        body = f'<div role="alert" class="alert"><b><i></i>{html.escape(title)}</b><span>{html.escape(message)}</span></div>'
+    else:
+        body = f'<p class="muted"><b>{html.escape(title)}.</b> {html.escape(message)}</p>'
+    note = f'<p class="muted">{html.escape(hint)}</p>' if hint else ""
+    document = PAGE.format(title=html.escape(title), body=body, hint=note, link=button, style=PAGE_STYLE).encode()
+    return Response(status, document, "text/html; charset=utf-8", {"Content-Security-Policy": PAGE_CSP, "X-Content-Type-Options": "nosniff"}, cookies)

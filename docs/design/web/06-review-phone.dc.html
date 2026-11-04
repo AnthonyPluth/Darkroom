@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Review Queue Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ph{width:100%;min-height:2000px;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;min-height:56px;background:#1B1813;border-bottom:1px solid #3A352C}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.pg{flex:1;padding:20px 16px 28px;display:flex;flex-direction:column;gap:20px}
+.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:#1B1813;border-top:1px solid #3A352C}
+.tabs a{min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:11px;font-weight:600;color:#F1ECE2;text-decoration:none}
+.tabs a.on{background:#F1ECE2;color:#1F1C17}
+.tabs a:focus-visible,.btn:focus-visible,select:focus-visible{outline:3px solid #E2693F;outline-offset:-3px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:11px;font-weight:700;padding:0 6px;line-height:16px}
+h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.01em}
+h2{margin:0;font-size:17px;line-height:1.3}
+.sub{color:#B3AB9D}
+.card{background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.ok{color:#7CC38F;background:#1D2B20}.idle{color:#D8D1C3;background:#2B2721}.warn{color:#E0B253;background:#332A12}
+.warn i{border-radius:0;transform:rotate(45deg)}.idle i{background:none;border:2px solid currentColor}
+.btn{min-height:48px;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.img{height:150px;border-radius:8px;background:linear-gradient(135deg,#4A4439,#2F2B24);border:1px solid #3A352C;display:flex;align-items:flex-end;padding:8px}
+.img span{background:#F1ECE2;color:#1F1C17;border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600}
+.kv{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:0;font-size:14px}
+.kv dt{color:#B3AB9D;font-size:12px;margin-top:6px}.kv dd{margin:0;overflow-wrap:anywhere}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+select{min-height:48px;width:100%;border:1px solid #7A7260;border-radius:8px;background:#1F1C17;color:#F1ECE2;font:inherit;padding:0 12px}
+label{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.dec{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-top:1px solid #2B2721}
+.dec:first-of-type{border-top:0}
+</style>
+</helmet>
+<div class="ph">
+<header class="top">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<button class="btn" type="button" style="width:auto;min-width:44px" aria-label="Account: jo@example.com">Jo</button>
+</header>
+<main class="pg">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1>Review queue</h1>
+<div class="sub">4 pairs look like the same photo saved twice. Nothing is removed until you decide.</div>
+</div>
+
+<div role="status" style="background:#1D2B20;border:1px solid #7CC38F;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<span style="display:flex;align-items:center;gap:8px;font-weight:600"><span style="width:8px;height:8px;border-radius:50%;background:#7CC38F;display:block;flex:none"></span>Decision saved: kept both for IMG_2102.HEIC.</span>
+<button class="btn" type="button">Undo</button>
+</div>
+
+<section class="card" aria-label="Current pair">
+<div class="row"><h2>Pair 1 of 4</h2><span class="chip warn"><i></i>Likely re-encode</span></div>
+<div class="pair">
+<div>
+<div class="img" role="img" aria-label="Placeholder for the photo already in the library"><span>In library</span></div>
+<dl class="kv"><dt>File</dt><dd class="mono">IMG_2431.HEIC</dd><dt>Size</dt><dd>3.2 MB</dd><dt>Capture time</dt><dd>12 Sep 2026, 14:03:22</dd><dt>Camera</dt><dd>iPhone 15</dd></dl>
+</div>
+<div>
+<div class="img" role="img" aria-label="Placeholder for the photo from the export"><span>From export</span></div>
+<dl class="kv"><dt>File</dt><dd class="mono">IMG_2431.jpg</dd><dt>Size</dt><dd>1.1 MB, smaller</dd><dt>Capture time</dt><dd>12 Sep 2026, 14:03:22</dd><dt>Camera</dt><dd>iPhone 15</dd></dl>
+</div>
+</div>
+<button class="btn p" type="button">Keep both</button>
+<button class="btn" type="button">Skip</button>
+<div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid #2B2721;padding-top:12px"><label for="rp">Reassign to</label>
+<select id="rp"><option>Jo</option><option>Sam</option></select></div>
+<button class="btn" type="button">Reassign</button>
+<div class="sub" style="font-size:13px">Keep both stores the two files. Skip leaves the pair for later.</div>
+</section>
+
+<section class="card" aria-label="Past decisions">
+<h2>Past decisions</h2>
+<div>
+<div class="dec"><div class="row"><span class="mono">IMG_2102.HEIC / .jpg</span><span class="chip ok"><i></i>Kept both</span></div><div class="sub">Today 10:05, Jo</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">PXL_20260822_101530.jpg</span><span class="chip idle"><i></i>Skipped</span></div><div class="sub">Yesterday 20:41, Sam</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">IMG_1988.HEIC / .jpg</span><span class="chip ok"><i></i>Reassigned</span></div><div class="sub">Yesterday 20:39, Jo, moved to Sam</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">IMG_1744.HEIC / .jpg</span><span class="chip ok"><i></i>Kept both</span></div><div class="sub">3 Oct 09:12, Jo</div><button class="btn" type="button">Undo</button></div>
+</div>
+</section>
+</main>
+<nav class="tabs" aria-label="Primary">
+<a href="02-status-phone.dc.html">Status</a>
+<a href="03-people-phone.dc.html">People</a>
+<a href="04-exports-phone.dc.html">Exports</a>
+<a href="05-imports-phone.dc.html">Imports</a>
+<a class="on" href="06-review-phone.dc.html" aria-current="page">Review<span class="badge">4</span></a>
+<a href="07-browser-phone.dc.html">Browser</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":2000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
