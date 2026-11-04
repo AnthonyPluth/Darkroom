@@ -312,6 +312,7 @@ export interface Endpoints {
   "DELETE /api/accounts/{id}": { body: never; reply: Ok };
   "POST /api/accounts/{id}/connect": { body: never; reply: BrowserJobReply };
   "POST /api/accounts/{id}/schedule": { body: never; reply: BrowserJobReply };
+  "POST /api/accounts/{id}/schedule/checked": { body: never; reply: BrowserJobReply };
   "GET /api/pixels": { body: never; reply: Pixels };
   "POST /api/pixels": { body: PixelCreateBody; reply: PixelReply };
   "PATCH /api/pixels/{id}": { body: PixelPatchBody; reply: PixelReply };

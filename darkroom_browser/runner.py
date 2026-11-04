@@ -9,13 +9,18 @@ from typing import Any
 from darkroom_browser import capture, jobs, monitoring
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from darkroom_browser.config import Settings
-from darkroom_browser.context import Browser, Cancelled, JobContext
+from darkroom_browser.context import Browser, Cancelled, JobContext, JobFailure
 
 HEARTBEAT_SECONDS = 30.0
 BACKOFF_SECONDS = 60.0
 JOIN_SECONDS = 40.0
 
 OpenBrowser = Callable[[Path], Browser]
+
+
+def failure_message(error: BaseException) -> str:
+    name = type(error).__name__
+    return f"{name}: {error}" if isinstance(error, JobFailure) else name
 
 
 class Heartbeat:
@@ -105,7 +110,7 @@ class Runner:
             monitoring.log("failure capture failed", error=type(capture_error).__name__)
         folder = ctx.failure_folder_name() if captured is not None else None
         try:
-            self.client.failed(ctx.job_id, type(error).__name__, folder, captured.files() if captured is not None else None)
+            self.client.failed(ctx.job_id, failure_message(error), folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
 

@@ -258,6 +258,17 @@
       ]
     },
     {
+      "route": "POST /api/accounts/{id}/schedule/checked",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.schedule_checked",
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
       "route": "GET /api/pixels",
       "auth": "session",
       "handler": "darkroom.server.api.pixels.list_pixels",

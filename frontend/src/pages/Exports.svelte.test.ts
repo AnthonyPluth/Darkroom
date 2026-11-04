@@ -95,8 +95,41 @@ describe("the Exports page", () => {
     await userEvent.click(within(family).getByRole("link", { name: "Open remote browser" }));
     expect(router.path).toBe("/browser");
     const jo = screen.getByRole("region", { name: "jo.photos@example.com" });
-    expect(within(jo).getByText("Create schedule: failed. Open Status for details.")).toBeInTheDocument();
+    expect(within(jo).getByText("Create schedule: failed (UnexpectedPage).")).toBeInTheDocument();
     expect(within(jo).getByRole("button", { name: "Create schedule" })).toBeEnabled();
+  });
+
+  it("shows why a job failed, with links to its capture", async () => {
+    const failed = { ...failedSchedule, message: "WrongAccount: Takeout is signed in to a different Google account than the one this job is for." };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });
+    expect(await screen.findByText("Create schedule: failed, Takeout is signed in to a different Google account than the one this job is for.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "screenshot" })).toHaveAttribute("href", "/api/browser/failures/4/screenshot.png");
+    expect(screen.getByRole("link", { name: "page snapshot" })).toHaveAttribute("href", "/api/browser/failures/4/page.html");
+  });
+
+  it("holds back Create schedule after an unconfirmed attempt until the person says they checked Takeout", async () => {
+    let message = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again";
+    const server = show({
+      "GET /api/accounts": { accounts: [joAccount] },
+      "GET /api/browser/jobs": () => ({ jobs: [{ ...failedSchedule, message }] }),
+      "POST /api/accounts/10/schedule/checked": () => {
+        message += " [checked]";
+        return { job: { ...failedSchedule, message } };
+      },
+    });
+    const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+    expect(within(region).getByText(/Takeout may already have this schedule/)).toBeInTheDocument();
+    expect(within(region).getByRole("button", { name: "Create schedule" })).toBeDisabled();
+    await userEvent.click(within(region).getByRole("button", { name: "I checked Takeout, there is no schedule" }));
+    expect(server.sent("POST /api/accounts/10/schedule/checked")).toHaveLength(1);
+    await vi.waitFor(() => expect(within(region).getByRole("button", { name: "Create schedule" })).toBeEnabled());
+    expect(within(region).queryByText(/Takeout may already have this schedule/)).not.toBeInTheDocument();
+  });
+
+  it("says when a job waits for a switch of account", async () => {
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [{ ...waitingConnect, account_id: 10, message: "wrong_account" }] } });
+    expect(await screen.findByText("Connect: waiting for you to switch to the right Google account.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open remote browser" })).toBeInTheDocument();
   });
 
   it("refreshes on a timer", async () => {

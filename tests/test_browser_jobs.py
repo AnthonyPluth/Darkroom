@@ -237,6 +237,68 @@ class BrowserJobTests(unittest.TestCase):
                 browser_jobs.enqueue_once(opened, self.account, "schedule", 4.0)
             browser_jobs.enqueue_once(opened, self.account, "connect", 4.0)
 
+    def test_a_wrong_account_wait_replaces_the_sign_in_alert_and_a_resume_closes_it(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 7.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, opened.get(BrowserJob, job_id).message), ("needs_sign_in", "wrong_account"))
+        self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 7.0), ("wrong_account", "https://browser.example/vnc.html", None)])
+        with db.session(self.engine) as opened:
+            self.assertIn("jo.takeout@example.test", opened.execute(select(Alert).where(Alert.kind == "wrong_account")).scalar_one().message)
+            browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 8.0)
+            browser_jobs.progress(opened, job_id, "signed in", 9.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
+        self.assertEqual([closed for _, _, closed in self.open_alerts()], [7.0, 9.0])
+
+    def fail_schedule(self, message, now=20.0):
+        job_id = self.enqueue("schedule")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, now)
+            browser_jobs.failed(opened, self.settings, job_id, message, None, [], now + 1)
+        return job_id
+
+    def test_an_unconfirmed_schedule_blocks_a_retry_until_the_person_says_they_checked(self):
+        self.fail_schedule("ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again")
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.AlreadyOpen) as caught:
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 30.0)
+            self.assertIn("check Takeout", str(caught.exception))
+            browser_jobs.enqueue_once(opened, self.account, "connect", 30.0)
+            checked = browser_jobs.mark_schedule_checked(opened, self.account, 31.0)
+            self.assertTrue(checked.message.endswith(" [checked]"))
+            self.assertTrue(checked.message.startswith("ScheduleNotConfirmed"))
+            with self.assertRaises(browser_jobs.NothingToCheck):
+                browser_jobs.mark_schedule_checked(opened, self.account, 32.0)
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "schedule", 33.0).status, "queued")
+
+    def test_other_schedule_failures_may_be_retried_at_once(self):
+        self.fail_schedule("UnexpectedPage: the page stayed unrecognised for more than 5 minutes")
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.NothingToCheck):
+                browser_jobs.mark_schedule_checked(opened, self.account, 31.0)
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "schedule", 33.0).status, "queued")
+
+    def test_an_unconfirmed_schedule_of_one_account_does_not_block_another(self):
+        self.fail_schedule("ScheduleNotConfirmed: check Takeout")
+        with db.session(self.engine) as opened:
+            other = add_account(opened, "other.takeout@example.test", "sam")
+            self.assertEqual(browser_jobs.enqueue_once(opened, other, "schedule", 33.0).status, "queued")
+            with self.assertRaises(browser_jobs.UnknownAccount):
+                browser_jobs.mark_schedule_checked(opened, other + 9, 1.0)
+
+    def test_a_schedule_job_whose_worker_vanished_may_have_created_the_export(self):
+        job_id = self.enqueue("schedule", now=1.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.expire_leases(opened, self.settings, 5.0 + browser_jobs.LEASE_SECONDS + 1)
+        self.assertTrue(self.job(job_id).message.startswith("ScheduleNotConfirmed"))
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 500.0)
+
     def test_a_waiting_job_that_fails_closes_the_sign_in_alert_and_frees_the_account_to_reconnect(self):
         job_id = self.enqueue("connect")
         with db.session(self.engine) as opened:

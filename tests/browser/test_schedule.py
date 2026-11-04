@@ -66,7 +66,7 @@ class ScheduleJobTests(unittest.TestCase):
     def test_a_sign_in_page_after_create_is_a_definitive_failure(self):
         browser = ScriptedBrowser([SIGNED_IN], after_click={selectors.EXPORT_CREATE: [SIGN_IN_NEEDED]})
         ctx, clock, _ = context_for(browser, wall=CREATED)
-        with self.assertRaises(schedule.UnexpectedPage):
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
             schedule.create_schedule(ctx)
         self.assertEqual(clock.slept, [])
 
@@ -111,10 +111,17 @@ class ScheduleJobTests(unittest.TestCase):
 
     def test_a_schedule_is_never_created_in_a_different_account(self):
         browser = export_page()
-        ctx, _, _ = context_for(browser, wall=CREATED, email="someone.else@example.test")
-        with self.assertRaises(session.WrongAccount):
+        ctx, _, reporter = context_for(browser, wall=CREATED, email="someone.else@example.test")
+        with self.assertRaises(session.SignInTimedOut):
             schedule.create_schedule(ctx)
-        self.assertEqual(browser.clicks, [])
+        self.assertEqual((browser.clicks, reporter.kinds("waiting")), ([], ["wrong_account"]))
+
+    def test_after_the_person_switches_to_the_right_account_the_schedule_is_created(self):
+        wrong = SIGNED_IN.replace("jo@example.test", "someone.else@example.test")
+        browser = ScriptedBrowser([wrong, SIGNED_IN], after_click={selectors.EXPORT_CREATE: [CONFIRMED]})
+        ctx, _, reporter = context_for(browser, wall=CREATED)
+        schedule.create_schedule(ctx)
+        self.assertEqual((browser.clicks, reporter.kinds("waiting")), (RECORDED_CLICKS, ["wrong_account"]))
 
     def test_the_job_is_registered(self):
         self.assertIs(REGISTRY["schedule"], schedule.create_schedule)

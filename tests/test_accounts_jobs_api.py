@@ -56,6 +56,22 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(status, 409, reply)
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/connect")[0], 201)
 
+    def test_after_an_unconfirmed_schedule_the_person_must_say_they_checked_takeout(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "ScheduleNotConfirmed: check Takeout before trying again"})
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        self.assertEqual(status, 409)
+        self.assertIn("check Takeout", reply["error"])
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")
+        self.assertEqual((status, reply["job"]["message"]), (200, "ScheduleNotConfirmed: check Takeout before trying again [checked]"))
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")[0], 409)
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+
+    def test_checking_an_unknown_account_is_404(self):
+        for path in (f"/api/accounts/{self.account_id + 50}/schedule/checked", "/api/accounts/abc/schedule/checked"):
+            self.assertEqual(self.call("POST", path)[0], 404)
+
     def test_a_failed_schedule_job_may_be_retried(self):
         self.call("POST", f"/api/accounts/{self.account_id}/schedule")
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]

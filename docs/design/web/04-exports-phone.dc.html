@@ -48,33 +48,58 @@ h2{margin:0;font-size:17px;line-height:1.3}
 <main class="pg">
 <div style="display:flex;flex-direction:column;gap:4px">
 <h1>Exports</h1>
-<div class="sub">Google Takeout for each Google account: whether its browser session works and when its export schedule ends.</div>
+<div class="sub">Google Takeout for family@example.com.</div>
 </div>
+<button class="btn p" type="button">Check exports now</button>
 
-<section class="card" aria-label="family@example.com">
-<div class="row"><b>family@example.com</b><span class="chip ok"><i></i>Session ok</span></div>
+<section class="card" aria-label="Schedule">
 <dl class="kv">
-<dt>Session checked</dt><dd>Today 09:12</dd>
-<dt>Schedule created</dt><dd>4 Nov 2026</dd>
-<dt>Schedule ends</dt><dd>4 Nov 2027</dd>
+<dt>Schedule ends</dt><dd><b>12 Jan 2027</b>, in 10 weeks</dd>
+<dt>Last export</dt><dd><b>2 Oct 2026</b>, 4 parts, all imported</dd>
+<dt>Next export</dt><dd><b>2 Dec 2026</b></dd>
 </dl>
-<div class="sub">Create schedule: done.</div>
-<button class="btn" type="button">Connect</button>
-<button class="btn" type="button" disabled style="opacity:.6">Create schedule</button>
-<div class="sub" style="font-size:13px">The schedule exports Google Photos every 2 months for 1 year.</div>
 </section>
-<section class="card" aria-label="jo.photos@example.com">
-<div class="row"><b>jo.photos@example.com</b><span class="chip bad"><i></i>Sign-in needed</span></div>
-<dl class="kv">
-<dt>Session checked</dt><dd>Yesterday 18:40</dd>
-<dt>Schedule created</dt><dd>Not created</dd>
-<dt>Schedule ends</dt><dd>No schedule</dd>
-</dl>
-<div class="sub">Connect: waiting for you to sign in.</div>
-<a class="btn p" href="07-browser-phone.dc.html">Open remote browser</a>
-<button class="btn" type="button" disabled style="opacity:.6">Connect</button>
-<button class="btn" type="button">Create schedule</button>
-<div class="sub" style="font-size:13px">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every 2 months for 1 year.</div>
+
+<section style="display:flex;flex-direction:column;gap:10px" aria-label="Current export parts">
+<div class="row"><div class="lbl">Export started 2 Nov, 5 parts</div><span class="chip idle"><i></i>Downloading</span></div>
+<div class="card">
+<div class="row"><b>Part 1</b><span class="chip ok"><i></i>Imported</span></div>
+<div class="mono">takeout-20261102-001.zip</div>
+<div class="row" style="gap:10px"><div class="bar" role="progressbar" aria-label="Part 1 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span>100%</span></div>
+<div class="sub">Downloads used: 3 of 5</div>
+</div>
+<div class="card">
+<div class="row"><b>Part 2</b><span class="chip ok"><i></i>Imported</span></div>
+<div class="mono">takeout-20261102-002.zip</div>
+<div class="row" style="gap:10px"><div class="bar" role="progressbar" aria-label="Part 2 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span>100%</span></div>
+<div class="sub">Downloads used: 2 of 5</div>
+</div>
+<div class="card">
+<div class="row"><b>Part 3</b><span class="chip ok"><i></i>Imported</span></div>
+<div class="mono">takeout-20261102-003.zip</div>
+<div class="row" style="gap:10px"><div class="bar" role="progressbar" aria-label="Part 3 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span>100%</span></div>
+<div class="sub">Downloads used: 1 of 5</div>
+</div>
+<div class="card">
+<div class="row"><b>Part 4</b><span class="chip idle"><i></i>Downloading</span></div>
+<div class="mono">takeout-20261102-004.zip</div>
+<div class="row" style="gap:10px"><div class="bar" role="progressbar" aria-label="Part 4 download" aria-valuenow="62" aria-valuemin="0" aria-valuemax="100"><b style="width:62%"></b></div><span>62%</span></div>
+<div class="sub">Downloads used: 1 of 5</div>
+</div>
+<div class="card">
+<div class="row"><b>Part 5</b><span class="chip idle"><i></i>Waiting</span></div>
+<div class="mono">takeout-20261102-005.zip</div>
+<div class="row" style="gap:10px"><div class="bar" role="progressbar" aria-label="Part 5 download" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"><b style="width:0%"></b></div><span>0%</span></div>
+<div class="sub">Downloads used: 0 of 5</div>
+</div>
+<div class="sub" style="font-size:13px">Google allows each part to be downloaded 5 times. Darkroom downloads each part once.</div>
+</section>
+
+<section class="card" aria-label="Earlier exports">
+<h2>Earlier exports</h2>
+<div class="row"><span>2 Oct 2026, 4 parts</span><span class="chip ok"><i></i>Imported</span></div>
+<div class="row"><span>2 Sep 2026, 4 parts</span><span class="chip ok"><i></i>Imported</span></div>
+<div class="row"><span>2 Aug 2026, 3 parts</span><span class="chip bad"><i></i>Failed, retried</span></div>
 </section>
 </main>
 <nav class="tabs" aria-label="Primary">

@@ -89,6 +89,20 @@ def start_job(request: Request, kind: str) -> Response:
     return json_response({"job": reply}, 201)
 
 
+def schedule_checked(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+    account_id = path_id(request)
+    if account_id is None:
+        return error_response(NO_ACCOUNT, 404)
+    try:
+        with db.session(engine_of(request)) as opened:
+            reply = browser_jobs.as_dict(browser_jobs.mark_schedule_checked(opened, account_id, now()))
+    except browser_jobs.UnknownAccount:
+        return error_response(NO_ACCOUNT, 404)
+    except browser_jobs.NothingToCheck as error:
+        return error_response(str(error), 409)
+    return json_response({"job": reply})
+
+
 def connect(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
     return start_job(request, "connect")
 

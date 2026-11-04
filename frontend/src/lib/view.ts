@@ -14,6 +14,7 @@ export function needsAttention(person: PersonStatus): boolean {
 export function alertChip(kind: string): { tone: Tone; label: string } {
   switch (kind) {
     case "sign_in_needed": return { tone: "bad", label: "Sign-in needed" };
+    case "wrong_account": return { tone: "bad", label: "Wrong account" };
     case "failure": return { tone: "bad", label: "Failed" };
     case "originals_unmatched": return { tone: "warn", label: "Check backup" };
     case "schedule_ending": return { tone: "warn", label: "Schedule ending" };
@@ -49,13 +50,31 @@ export function latestJob(jobs: readonly BrowserJobView[], accountId: number, ki
   return jobs.find((job) => job.account_id === accountId && job.kind === kind);
 }
 
+const CHECKED = " [checked]";
+
+export function failureReason(job: BrowserJobView): string {
+  const message = job.message.endsWith(CHECKED) ? job.message.slice(0, -CHECKED.length) : job.message;
+  const at = message.indexOf(": ");
+  return message === "" ? "" : at === -1 ? ` (${message})` : `, ${message.slice(at + 2).replace(/[.]$/, "")}`;
+}
+
+export function failedCaptures(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView[] {
+  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule")];
+  return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.has_capture ? [job] : []));
+}
+
+export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
+  const latest = latestJob(jobs, accountId, "schedule");
+  return latest !== undefined && latest.status === "failed" && latest.message.startsWith("ScheduleNotConfirmed") && !latest.message.endsWith(CHECKED) ? latest : undefined;
+}
+
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
   if (job === undefined) return null;
   switch (job.status) {
     case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
-    case "waiting_for_user": return `${doing}: waiting for you to sign in.`;
-    case "failed": return `${doing}: failed. Open Status for details.`;
+    case "waiting_for_user": return job.message === "wrong_account" ? `${doing}: waiting for you to switch to the right Google account.` : `${doing}: waiting for you to sign in.`;
+    case "failed": return `${doing}: failed${failureReason(job)}.`;
     default: return `${doing}: done.`;
   }
 }

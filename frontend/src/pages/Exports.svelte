@@ -5,7 +5,7 @@
   import { nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { jobSentence, latestJob, openJob, sessionChip } from "$lib/view";
+  import { failedCaptures, jobSentence, latestJob, maybeCreated, openJob, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
 
@@ -35,6 +35,7 @@
   }
 
   const connect = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
+  const checked = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST" }));
   const schedule = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule">(`/api/accounts/${id}/schedule`, { method: "POST" }));
 </script>
 
@@ -64,6 +65,8 @@
       {@const chip = sessionChip(account.session_state)}
       {@const connecting = openJob(data.jobs, account.id, "connect")}
       {@const scheduling = openJob(data.jobs, account.id, "schedule")}
+      {@const maybe = maybeCreated(data.jobs, account.id)}
+      {@const failed = failedCaptures(data.jobs, account.id)}
       {@const notes = [jobSentence(connecting ?? latestJob(data.jobs, account.id, "connect"), "Connect"), jobSentence(scheduling ?? latestJob(data.jobs, account.id, "schedule"), "Create schedule")].filter((note) => note !== null)}
       <section class="card" aria-label={account.email}>
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -87,12 +90,25 @@
         {#each notes as note (note)}
           <p class="text-ink-muted">{note}</p>
         {/each}
+        {#each failed as job (job.id)}
+          <p class="text-ink-muted">
+            Capture of the failed {job.kind === "schedule" ? "Create schedule" : "Connect"}:
+            <a class="font-semibold underline" href="/api/browser/failures/{job.id}/screenshot.png" target="_blank" rel="noopener">screenshot</a>,
+            <a class="font-semibold underline" href="/api/browser/failures/{job.id}/page.html" target="_blank" rel="noopener">page snapshot</a>.
+          </p>
+        {/each}
+        {#if maybe}
+          <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
+            <p>Takeout may already have this schedule. Open Takeout's export list and look before creating another.</p>
+            <button type="button" class="btn self-start" disabled={busy > 0} onclick={() => checked(account.id)}>I checked Takeout, there is no schedule</button>
+          </div>
+        {/if}
         <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
           {#if connecting?.status === "waiting_for_user" || scheduling?.status === "waiting_for_user"}
             <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>
-          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || account.schedule_created !== null} onclick={() => schedule(account.id)}>Create schedule</button>
+          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || account.schedule_created !== null || maybe !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
         </div>
         {#if account.schedule_created !== null}
           <p class="text-ink-muted">The schedule exports Google Photos every 2 months for 1 year.</p>

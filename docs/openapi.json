@@ -1493,6 +1493,27 @@
         "x-auth": "session"
       }
     },
+    "/api/accounts/{id}/schedule/checked": {
+      "post": {
+        "operationId": "schedule_checked",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/browser/failures/{id}/page.html": {
       "get": {
         "operationId": "page_snapshot",

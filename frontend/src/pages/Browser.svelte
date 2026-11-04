@@ -49,16 +49,21 @@
     </div>
 
     {#each waiting as account (account.id)}
-      {@const verifying = data.jobs.some((j) => j.account_id === account.id && j.status === "waiting_for_user" && j.message === "verify")}
+      {@const reason = data.jobs.find((j) => j.account_id === account.id && j.status === "waiting_for_user")?.message}
       <section class="flex flex-col gap-2.5 rounded-lg border border-accent bg-surface p-4 md:flex-row md:items-center md:justify-between md:gap-5 md:px-5" aria-label="Sign-in task">
         <div class="flex flex-col gap-1">
           <div class="flex flex-wrap items-center gap-2.5">
-            <Chip tone="bad" label="Sign-in needed" />
-            <b class="text-md">Sign in to {account.email}</b>
+            <Chip tone="bad" label={reason === "wrong_account" ? "Wrong account" : "Sign-in needed"} />
+            <b class="text-md">{reason === "wrong_account" ? `Switch to ${account.email}` : `Sign in to ${account.email}`}</b>
           </div>
           <p>
-            {verifying ? "Google asked to verify this account." : "This account needs a Google sign-in."}
-            Sign in in the window below as you normally would and finish any verification. When you can see the Google Takeout page, Darkroom notices within a minute, keeps the session and carries on.
+            {#if reason === "wrong_account"}
+              The browser is signed in to a different Google account. Sign out of it in the window below and sign in as {account.email}.
+            {:else}
+              {reason === "verify" ? "Google asked to verify this account." : "This account needs a Google sign-in."}
+              Sign in in the window below as you normally would and finish any verification.
+            {/if}
+            When you can see the Google Takeout page, Darkroom notices within a minute, keeps the session and carries on.
           </p>
         </div>
       </section>

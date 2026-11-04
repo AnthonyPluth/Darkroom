@@ -36,6 +36,10 @@ class Cancelled(Exception):
     pass
 
 
+class JobFailure(Exception):
+    pass
+
+
 @dataclass
 class JobContext:
     job_id: int

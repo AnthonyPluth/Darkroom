@@ -52,7 +52,7 @@ def await_confirmation(ctx: JobContext, browser: Browser) -> None:
         if takeout.parse_schedule_confirmation(page) is not None:
             return
         if takeout.classify(page) in (takeout.SIGN_IN_NEEDED, takeout.VERIFY_ITS_YOU):
-            raise UnexpectedPage("Takeout asked for a sign-in after the export was created")
+            raise ScheduleNotConfirmed("Takeout showed a sign-in page after Create export; check Takeout before trying again")
         if attempt < CONFIRM_POLLS:
             ctx.sleep(CONFIRM_POLL_SECONDS)
             ctx.check()

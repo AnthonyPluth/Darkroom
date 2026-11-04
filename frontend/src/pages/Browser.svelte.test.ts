@@ -56,6 +56,15 @@ describe("the Remote browser page", () => {
     expect(within(task).getByText(/Google asked to verify this account\./)).toBeInTheDocument();
   });
 
+  it("asks for a switch of account when the browser is signed in to the wrong one", async () => {
+    const wrong = { ...waitingConnect, account_id: 10, message: "wrong_account" };
+    show({ "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995 }, "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [wrong] } });
+    const task = await screen.findByRole("region", { name: "Sign-in task" });
+    expect(within(task).getByText("Wrong account")).toBeInTheDocument();
+    expect(within(task).getByText("Switch to jo.photos@example.com")).toBeInTheDocument();
+    expect(within(task).getByText(/signed in to a different Google account/)).toBeInTheDocument();
+  });
+
   it("says so when no viewer address is configured", async () => {
     show({ "GET /api/browser/view": { vnc_url: null, worker_last_seen: null }, "GET /api/accounts": { accounts: [] }, "GET /api/browser/jobs": { jobs: [] } });
     expect(await screen.findByText("The remote browser is not set up")).toBeInTheDocument();

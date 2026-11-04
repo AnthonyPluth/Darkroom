@@ -16,8 +16,10 @@ from darkroom.storage.paths import OutsideRoot, Photos
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
 GUARDED_KINDS = ("connect", "schedule")
+MAYBE_CREATED = "ScheduleNotConfirmed"
+CHECKED = " [checked]"
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
-WAITING_REASONS = ("sign_in", "verify")
+WAITING_REASONS = ("sign_in", "verify", "wrong_account")
 OPEN_STATUSES = ("running", "waiting_for_user")
 WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -42,6 +44,10 @@ class NotOpen(ValueError):
 
 
 class AlreadyOpen(ValueError):
+    pass
+
+
+class NothingToCheck(LookupError):
     pass
 
 
@@ -79,6 +85,24 @@ def queue(opened: Session, account_id: int, kind: str, payload: dict[str, object
     return job
 
 
+def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
+    latest = opened.execute(select(BrowserJob).where(BrowserJob.account_id == account_id, BrowserJob.kind == "schedule").order_by(BrowserJob.id.desc()).limit(1)).scalar_one_or_none()
+    message = latest.message or "" if latest is not None else ""
+    if latest is not None and latest.status == "failed" and message.startswith(MAYBE_CREATED) and not message.endswith(CHECKED):
+        return latest
+    return None
+
+
+def mark_schedule_checked(opened: Session, account_id: int, now: float) -> BrowserJob:
+    account_of(opened, account_id)
+    job = unchecked_schedule(opened, account_id)
+    if job is None:
+        raise NothingToCheck("there is no schedule attempt waiting to be checked")
+    job.message = (job.message or "") + CHECKED
+    events.record(opened, now, "schedule_checked", str(job.id))
+    return job
+
+
 def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
     locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
     if locked is None:
@@ -86,6 +110,8 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     account = account_of(opened, account_id)
     if kind == "schedule" and account.schedule_created is not None:
         raise AlreadyOpen("this account already has an export schedule")
+    if kind == "schedule" and unchecked_schedule(opened, account_id) is not None:
+        raise AlreadyOpen("the last schedule attempt may have created an export; check Takeout and say so before trying again")
     statuses = (*QUEUED_STATUSES, "done") if kind == "schedule" else QUEUED_STATUSES
     busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(statuses)).limit(1)).first()
     if busy is not None:
@@ -130,7 +156,7 @@ def progress(opened: Session, job_id: int, message: str, now: float) -> BrowserJ
     previous = job.message
     job.message = message
     if job.status == "waiting_for_user":
-        resumed_from_sign_in = previous == "sign_in"
+        resumed_from_sign_in = previous in ("sign_in", "wrong_account")
         job.status = "running"
         alerts.close(opened, sign_in_key(job.account_id), now)
         if resumed_from_sign_in:
@@ -147,11 +173,12 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     job.status = "waiting_for_user"
     job.message = reason
     account = account_of(opened, job.account_id)
-    if reason == "sign_in":
+    if reason in ("sign_in", "wrong_account"):
         account.session_state = "needs_sign_in"
         account.session_checked = now
-    alerts.open_alert(opened, settings, sign_in_key(job.account_id), "sign_in_needed", account.email, alerts.sign_in_needed(account.email),
-                      settings.vnc_url or None, now)
+    kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
+    alerts.close_other_kinds(opened, sign_in_key(job.account_id), kind, now)
+    alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now)
     events.record(opened, now, "browser_job_waiting", str(job.id), reason)
     return job
 
@@ -227,7 +254,7 @@ def expire_leases(opened: Session, settings: Settings, now: float) -> list[Brows
     stale = now - LEASE_SECONDS
     expired = []
     for job in opened.execute(select(BrowserJob).where(BrowserJob.status.in_(OPEN_STATUSES), BrowserJob.heartbeat < stale)).scalars():
-        expired.append(fail(opened, settings, job, "the worker stopped reporting", [], now))
+        expired.append(fail(opened, settings, job, f"{MAYBE_CREATED}: the worker stopped reporting; check Takeout before trying again" if job.kind == "schedule" else "the worker stopped reporting", [], now))
     return expired
 
 

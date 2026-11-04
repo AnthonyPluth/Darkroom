@@ -335,6 +335,15 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(entry.main(), 0)
 
 
+class FailureMessageTests(unittest.TestCase):
+    def test_only_the_worker_own_failures_carry_their_text(self):
+        from darkroom_browser.jobs import schedule, session
+
+        self.assertEqual(runner.failure_message(schedule.ScheduleNotConfirmed("check Takeout")), "ScheduleNotConfirmed: check Takeout")
+        self.assertEqual(runner.failure_message(session.WrongAccount("a different account")), "WrongAccount: a different account")
+        self.assertEqual(runner.failure_message(TimeoutError("waiting for selector https://takeout.example/secret")), "TimeoutError")
+
+
 class RegistryTests(unittest.TestCase):
     def test_the_registry_holds_noop_and_find_names_the_missing_kind(self):
         from darkroom_browser import jobs

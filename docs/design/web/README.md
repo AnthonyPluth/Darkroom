@@ -21,4 +21,6 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), and the account part of Exports and the Remote browser page (#29: session state, schedule dates, Connect and Create schedule; the export parts, earlier exports and "Check exports now" arrive with #30 and #31, and the Done button is left out because the worker notices the sign-in itself; the owner approved these departures from the boards on 2026-11-04 in #16, and boards 04 and 07 are edited by hand to show what was approved, not re-exported from the canvas). Imports and Review arrive with their own issues.
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17). Exports, Imports, Review and Browser arrive with their own issues.
+
+Approved departures (#29): the Exports and Remote browser pages are built with three departures from boards 04 and 07: no "Done" button on the Remote browser (the worker notices the sign-in itself), Exports as one card per Google account, and no export parts, earlier exports or "Check exports now" yet (they arrive with #30 and #31). The sign-off is recorded on #16: https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6635767164. The boards are re-exported from the canvas when the design session next touches them.
