@@ -226,6 +226,29 @@ class UndoTests(ReviewCase):
                          (409, {"error": "a later import matched the kept copy; reverse that decision before undoing this one"}))
         self.assertEqual(self.tree(), before)
 
+    def test_a_reversed_pair_cannot_go_back_to_the_queue(self):
+        review_id, _ = self.resolve("skip")
+        self.assertEqual(self.call("POST", f"/api/decisions/{self.decision_of(PAIR_NAME).id}/reverse")[0], 200)
+        before = self.tree()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"),
+                         (409, {"error": "this pair's dedupe decision was reversed, so the pair can no longer go back to the queue"}))
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "skipped")
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.call("GET", "/api/review?status=pending")[1]["reviews"], [])
+
+    def test_undo_proceeds_once_the_later_match_is_reversed(self):
+        review_id, _ = self.resolve("keep_both")
+        opened = self.opened
+        kept = self.item_named(PAIR_NAME)
+        later = DedupeDecision(export_id=self.export.id, account_id=self.world.account, source_path="later/IMG.JPG", person_id=kept.person_id,
+                               matched_item_id=kept.id, tier=1, reason="same SHA-1 as a takeout item", decided_by="auto", decided_at=2.0)
+        opened.add(later)
+        opened.commit()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 409)
+        self.assertEqual(self.call("POST", f"/api/decisions/{later.id}/reverse")[0], 200)
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertFalse((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).exists())
+
     def test_undo_detaches_a_kept_copy_that_another_decision_also_placed(self):
         review_id, _ = self.resolve("keep_both")
         opened = self.opened

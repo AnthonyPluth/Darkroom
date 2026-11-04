@@ -2,7 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DecisionView, ReviewDetail, ReviewSummary } from "$lib/api-types";
+import type { ReviewDetail, ReviewSummary } from "$lib/api-types";
 import { jo, reply, sam, serve } from "../test/server";
 import Review from "./Review.svelte";
 
@@ -29,13 +29,6 @@ const detail: ReviewDetail = {
   export: { name: "IMG_2431.jpg", path: "Takeout/IMG_2431.jpg", held: true, bytes: 1_153_434, captured_utc: 1, captured_local: "2026-09-12T14:03:22", offset_minutes: 120, make: "Apple", model: "iPhone 15", width: 4032, height: 3024, duration_ms: null, is_video: false },
   phash_distance: 2, served_people: [{ id: 1, name: "Jo Example" }, { id: 2, name: "Sam Example" }], default_person_id: 1,
 };
-const tierOne: DecisionView = {
-  id: 80, export_id: 1, account_id: 11, name: "IMG_1001.JPG", path: "Takeout/IMG_1001.JPG", person_id: 1, tier: 1, reason: "same SHA-1", decided_by: "auto",
-  decided_at: NOW - 100, reversed_at: null, matched_item_id: 1, takeout_item_id: null, review_status: null,
-};
-const queued: DecisionView = { ...tierOne, id: 70, name: "IMG_2431.jpg", tier: 4, review_status: "pending" };
-const gone: DecisionView = { ...tierOne, id: 81, name: "IMG_1002.JPG", reversed_at: NOW - 10 };
-
 function routes(extra: Record<string, unknown> = {}) {
   return {
     "GET /api/review?status=pending": { reviews: [pending], pending: 1 },
@@ -43,7 +36,6 @@ function routes(extra: Record<string, unknown> = {}) {
     "GET /api/review?status=skipped": { reviews: [old], pending: 1 },
     "GET /api/people": { people: [jo, sam] },
     "GET /api/review/7": detail,
-    "GET /api/decisions?page=0": { decisions: [tierOne, queued, gone], total: 3, page: 0, page_size: 50 },
     ...extra,
   };
 }
@@ -178,49 +170,5 @@ describe("past decisions", () => {
     const table = await screen.findByRole("table", { name: "Past decisions" });
     await userEvent.click(within(table).getByRole("button", { name: "Undo IMG_2102.HEIC / .jpg" }));
     expect(await screen.findByText("this decision is more than 14 days old")).toBeInTheDocument();
-  });
-});
-
-describe("dedupe decisions", () => {
-  it("reverses a decision after asking", async () => {
-    const server = show({ "POST /api/decisions/80/reverse": { decision: { ...tierOne, reversed_at: NOW } } });
-    const table = await screen.findByRole("table", { name: "Dedupe decisions" });
-    const rows = within(table).getAllByRole("row").slice(1);
-    expect(rows[0]).toHaveTextContent("1 · Exact");
-    expect(rows[1]).toHaveTextContent("In the review queue");
-    expect(within(rows[1]).queryByRole("button")).not.toBeInTheDocument();
-    expect(rows[2]).toHaveTextContent("Reversed");
-    await userEvent.click(within(rows[0]).getByRole("button", { name: "Reverse IMG_1001.JPG" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("stops being safe to delete");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Reverse decision" }));
-    await waitFor(() => expect(server.sent("POST /api/decisions/80/reverse")).toHaveLength(1));
-  });
-
-  it("filters by tier and loads more", async () => {
-    const server = show({
-      "GET /api/decisions?page=0": { decisions: [tierOne], total: 2, page: 0, page_size: 1 },
-      "GET /api/decisions?page=1": { decisions: [gone], total: 2, page: 1, page_size: 1 },
-      "GET /api/decisions?page=0&tier=4": { decisions: [queued], total: 1, page: 0, page_size: 50 },
-    });
-    expect(await screen.findByText("Showing 1 of 2")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Show more" }));
-    const table = screen.getByRole("table", { name: "Dedupe decisions" });
-    await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(3));
-    await userEvent.selectOptions(screen.getByLabelText("Tier"), "4");
-    await waitFor(() => expect(server.sent("GET /api/decisions?page=0&tier=4")).toHaveLength(1));
-    await waitFor(() => expect(within(screen.getByRole("table", { name: "Dedupe decisions" })).getAllByRole("row")).toHaveLength(2));
-  });
-
-  it("explains a reversal that only marks the record", async () => {
-    show({ "GET /api/decisions?page=0": { decisions: [{ ...tierOne, tier: 5, name: null }], total: 1, page: 0, page_size: 50 } });
-    const table = await screen.findByRole("table", { name: "Dedupe decisions" });
-    await userEvent.click(within(table).getByRole("button", { name: "Reverse decision" }));
-    expect(await screen.findByRole("dialog")).toHaveTextContent("The record for this photo is marked reversed.");
-  });
-
-  it("offers a retry when the decisions can't load", async () => {
-    show({ "GET /api/decisions?page=0": reply(500, {}) });
-    expect(await screen.findByText("Couldn't load the decisions (500)")).toBeInTheDocument();
   });
 });

@@ -140,15 +140,3 @@ export function rangeStart(key: RangeKey, now: number): number | null {
   const found = RANGES.find((range) => range.key === key);
   return found?.days ? Math.floor(now - found.days * DAY) : null;
 }
-
-export const TIERS = [
-  { tier: 1, label: "1 · Exact" },
-  { tier: 2, label: "2 · Same shot" },
-  { tier: 3, label: "3 · Edited copy" },
-  { tier: 4, label: "4 · Likely re-encode" },
-  { tier: 5, label: "5 · Google only" },
-] as const;
-
-export function tierLabel(tier: number): string {
-  return TIERS.find((found) => found.tier === tier)?.label ?? String(tier);
-}

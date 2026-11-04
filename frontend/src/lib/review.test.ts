@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ImportView, ReviewSummary } from "./api-types";
 import {
   camera, canUndo, compared, counted, decisionChip, frame, pairLabel, partsSentence, personName, rangeStart, runChip, savedSentence, size, skipped,
-  tierLabel, unmatchedNames, unmatchedTotal, wallClock,
+  unmatchedNames, unmatchedTotal, wallClock,
 } from "./review";
 
 const people = [{ id: 1, name: "Jo", slug: "jo" }, { id: 2, name: "Sam", slug: "sam" }];
@@ -98,11 +98,9 @@ describe("import runs", () => {
     expect(runChip({ status: "done" })).toBeNull();
   });
 
-  it("turns a range into a start time and a tier into its name", () => {
+  it("turns a range into a start time", () => {
     expect(rangeStart("year", 400 * 86_400)).toBe(35 * 86_400);
     expect(rangeStart("month", 40 * 86_400)).toBe(10 * 86_400);
     expect(rangeStart("all", 5)).toBeNull();
-    expect(tierLabel(4)).toBe("4 · Likely re-encode");
-    expect(tierLabel(9)).toBe("9");
   });
 });

@@ -219,6 +219,22 @@ class DropLibraryCopyTests(unittest.TestCase):
                 paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", kept)
         self.assertEqual(self.copy.read_bytes(), b"same bytes")
 
+    def test_a_sidecar_is_carried_byte_for_byte_and_never_over_another(self):
+        target = self.root / "sam" / "google-only" / "2020" / "01" / "c.jpg"
+        self.assertTrue(paths.carry_sidecar(self.copy, target))
+        self.assertEqual(target.with_name("c.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertTrue(paths.carry_sidecar(self.copy, target))
+        target.with_name("c.jpg.xmp").write_bytes(b"other")
+        with self.assertRaises(paths.AlreadyExists):
+            paths.carry_sidecar(self.copy, target)
+        self.assertEqual(target.with_name("c.jpg.xmp").read_bytes(), b"other")
+        self.assertFalse(paths.carry_sidecar(self.kept, target))
+
+    def test_the_sidecar_can_be_left_in_place(self):
+        paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept, with_sidecar=False)
+        self.assertFalse(self.copy.exists())
+        self.assertTrue(self.copy.with_name("a.jpg.xmp").is_file())
+
     def test_a_linked_copy_is_never_followed(self):
         target = self.base / "elsewhere.jpg"
         target.write_bytes(b"same bytes")

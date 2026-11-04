@@ -423,9 +423,7 @@
       "route": "GET /api/decisions",
       "auth": "session",
       "handler": "darkroom.server.api.review.list_decisions",
-      "frontend": [
-        "frontend/src/pages/Review.svelte"
-      ],
+      "frontend": [],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -435,9 +433,7 @@
       "route": "POST /api/decisions/{id}/reverse",
       "auth": "session",
       "handler": "darkroom.server.api.review.reverse",
-      "frontend": [
-        "frontend/src/pages/Review.svelte"
-      ],
+      "frontend": [],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"

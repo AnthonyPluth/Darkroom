@@ -245,7 +245,9 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
 
 
 def still_referenced(opened: Session, item: MediaItem, decision: DedupeDecision) -> tuple[bool, bool]:
-    matched = opened.execute(select(DedupeDecision.id).where(DedupeDecision.matched_item_id == item.id).limit(1)).first() is not None
+    matched = opened.execute(
+        select(DedupeDecision.id).where(DedupeDecision.matched_item_id == item.id, DedupeDecision.reversed_at.is_(None)).limit(1)
+    ).first() is not None
     shared = opened.execute(
         select(DedupeDecision.id).where(DedupeDecision.takeout_item_id == item.id, DedupeDecision.id != decision.id).limit(1)
     ).first() is not None
@@ -275,6 +277,8 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float) -> Changed
     hit = found(opened, review_id)
     if hit.review.status not in RESOLVED or hit.review.resolved_at is None:
         raise WrongState("only a kept or skipped pair can be undone")
+    if hit.decision.reversed_at is not None:
+        raise WrongState("this pair's dedupe decision was reversed, so the pair can no longer go back to the queue")
     if now - hit.review.resolved_at >= UNDO_WINDOW:
         raise TooLate("this decision is more than 14 days old and its held copy is cleaned up, so it can no longer be undone")
     hold = cleanup.hold_file(photos, hit.export, hit.review)
@@ -356,10 +360,19 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState(f"{target.name} already has this photo")
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
-        xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
-        paths.drop_library_copy(photos, item.path, placed.path)
-    except (place.PlaceFailed, paths.NotALibraryCopy) as error:
+    except place.PlaceFailed as error:
         raise WrongState("the photo could not be moved; it was left where it was") from error
+    had_sidecar = paths.sidecar_of(placed.path).exists()
+    try:
+        if not paths.carry_sidecar(source, placed.path):
+            xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
+        paths.drop_library_copy(photos, item.path, placed.path)
+    except Exception as error:
+        if placed.copied:
+            paths.drop_library_copy(photos, place.relative(photos, placed.path), source, with_sidecar=not had_sidecar)
+        if isinstance(error, (paths.NotALibraryCopy, paths.NotASidecar, paths.AlreadyExists)):
+            raise WrongState("the photo could not be moved; it was left where it was") from error
+        raise
     item.person_id, item.path = target.id, place.relative(photos, placed.path)
     for row in opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)).scalars():
         row.person_id = target.id

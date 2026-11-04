@@ -1,29 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { DecisionView, ReviewSummary } from "$lib/api-types";
+  import type { ReviewSummary } from "$lib/api-types";
   import { act } from "$lib/act";
   import { apiCall } from "$lib/contract";
   import { nowSeconds, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
-  import { camera, canUndo, compared, decisionChip, frame, pairLabel, personName, savedSentence, size, TIERS, tierLabel, wallClock } from "$lib/review";
+  import { camera, canUndo, compared, decisionChip, frame, pairLabel, personName, savedSentence, size, wallClock } from "$lib/review";
   import Chip from "../components/Chip.svelte";
-  import Confirm from "../components/Confirm.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
   import FormError from "../forms/FormError.svelte";
 
   type Saved = { id: number; message: string };
 
-  let tier = $state("");
-  let decisionPage = $state(0);
-  let decisionRows = $state<DecisionView[]>([]);
-  let decisionTotal = $state(0);
   let saved = $state<Saved | null>(null);
   let busy = $state(false);
   let error = $state("");
   let reassignTo = $state("");
-  let reversing = $state<DecisionView | null>(null);
-  let confirmOpen = $state(false);
 
   const loader = new Loader(async () => {
     const [pending, resolved, people] = await Promise.all([
@@ -41,28 +34,10 @@
     return { pending: pending.reviews, detail, past, people: people.people, now: nowSeconds() };
   });
 
-  const decisionsLoader = new Loader(async () => {
-    const query = tier ? `&tier=${tier}` : "";
-    return apiCall<"GET /api/decisions">(`/api/decisions?page=${decisionPage}${query}`, { failed: "Couldn't load the decisions" });
-  });
-
-  async function loadDecisions(more = false): Promise<void> {
-    decisionPage = more ? decisionPage + 1 : 0;
-    await decisionsLoader.load(more);
-    if (decisionsLoader.current.kind === "ready") {
-      const data = decisionsLoader.current.data;
-      decisionRows = more ? [...decisionRows, ...data.decisions] : data.decisions;
-      decisionTotal = data.total;
-    }
-  }
-
-  onMount(() => {
-    void loader.load();
-    void loadDecisions();
-  });
+  onMount(() => void loader.load());
 
   async function refresh(): Promise<void> {
-    await Promise.all([loader.load(true), loadDecisions()]);
+    await loader.load(true);
   }
 
   async function resolve(id: number, action: "keep_both" | "skip", name: string | null): Promise<void> {
@@ -100,21 +75,6 @@
     }
   }
 
-  function askReverse(decision: DecisionView): void {
-    reversing = decision;
-    confirmOpen = true;
-  }
-
-  function reversed(): void {
-    confirmOpen = false;
-    void refresh();
-  }
-
-  function decisionState(decision: DecisionView): string {
-    if (decision.reversed_at !== null) return "Reversed";
-    if (decision.review_status === "pending") return "In the review queue";
-    return "";
-  }
 </script>
 
 <div class="flex flex-col gap-6">
@@ -238,61 +198,6 @@
       </Table>
     </section>
 
-    <section class="card md:p-5" aria-label="Dedupe decisions">
-      <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div class="flex flex-col gap-0.5">
-          <h2 class="text-md font-semibold">Dedupe decisions</h2>
-          <span class="text-ink-muted">Every match an import made. Reversing one puts the photo back to unmatched.</span>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="label" for="tier-filter">Tier</label>
-          <select id="tier-filter" class="input md:w-auto" bind:value={tier} onchange={() => loadDecisions()}>
-            <option value="">All tiers</option>
-            {#each TIERS as option (option.tier)}
-              <option value={String(option.tier)}>{option.label}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-      {#if decisionsLoader.current.kind === "error"}
-        <LoadFailed message={decisionsLoader.current.message} retry={() => loadDecisions()} />
-      {:else}
-        <Table label="Dedupe decisions" columns={["When", "File", "Tier", "Person", ""]} rows={decisionRows} empty="No decisions yet.">
-          {#snippet row(decision)}
-            {@const state = decisionState(decision)}
-            <tr>
-              <td data-label="When">{when(decision.decided_at, data.now)}</td>
-              <td data-label="File"><span class="font-mono text-sm break-all">{decision.name ?? "Unknown file"}</span></td>
-              <td data-label="Tier">{tierLabel(decision.tier)}</td>
-              <td data-label="Person">{personName(data.people, decision.person_id)}</td>
-              <td class="md:text-right">
-                {#if state}
-                  <span class="text-ink-muted">{state}</span>
-                {:else}
-                  <button type="button" class="btn w-full md:w-auto" aria-label="Reverse {decision.name ?? 'decision'}" onclick={() => askReverse(decision)}>Reverse</button>
-                {/if}
-              </td>
-            </tr>
-          {/snippet}
-        </Table>
-        {#if decisionRows.length < decisionTotal}
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-ink-muted">Showing {decisionRows.length} of {decisionTotal}</span>
-            <button type="button" class="btn" onclick={() => loadDecisions(true)}>Show more</button>
-          </div>
-        {/if}
-      {/if}
-    </section>
   {/if}
 
-  {#if reversing}
-    {@const target = reversing}
-    <Confirm bind:open={confirmOpen} title="Reverse this decision?"
-      message={target.tier <= 2
-        ? `${target.name ?? "This photo"} will count as not yet in Google, so its iPhone original stops being safe to delete until another match confirms it. Files stay where they are.`
-        : `The record for ${target.name ?? "this photo"} is marked reversed. Files stay where they are.`}
-      confirm="Reverse decision"
-      run={() => apiCall<"POST /api/decisions/{id}/reverse">(`/api/decisions/${target.id}/reverse`, { method: "POST" })}
-      done={reversed} />
-  {/if}
 </div>

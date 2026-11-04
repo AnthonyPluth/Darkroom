@@ -1,7 +1,10 @@
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
+from darkroom.domain import review
+from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
 from tests.import_world import sha1_of
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase
@@ -37,6 +40,70 @@ class SharedAccountTests(ReviewCase):
         self.assertEqual(self.decision_of(GOOGLE_ONLY_NAME).person_id, self.world.ids["sam"])
         events = [(row.type, row.detail) for row in self.opened.execute(select(Event).where(Event.type == "media_reassigned")).scalars()]
         self.assertEqual(events, [("media_reassigned", f"person {self.world.ids['jo']} to person {self.world.ids['sam']}")])
+
+    def test_the_existing_sidecar_moves_byte_for_byte(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        sidecar = (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp")
+        sidecar.write_bytes(b"<x:xmpmeta>edited by hand, kept as is</x:xmpmeta>")
+        self.assertEqual(self.reassign(item.id, self.world.ids["sam"])[0], 200)
+        moved = self.world.root / self.opened.get(MediaItem, item.id).path
+        self.assertEqual(moved.with_name(f"{GOOGLE_ONLY_NAME}.xmp").read_bytes(), b"<x:xmpmeta>edited by hand, kept as is</x:xmpmeta>")
+        self.assertFalse(sidecar.exists())
+
+    def test_a_different_sidecar_already_at_the_target_stops_the_move(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        old = self.world.root / item.path
+        clash = self.world.root / "sam" / "google-only" / old.parent.parent.name / old.parent.name / f"{GOOGLE_ONLY_NAME}.xmp"
+        clash.parent.mkdir(parents=True, exist_ok=True)
+        clash.write_bytes(b"someone else's sidecar")
+        self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "the photo could not be moved; it was left where it was"}))
+        self.assertTrue(old.is_file())
+        self.assertTrue(old.with_name(f"{GOOGLE_ONLY_NAME}.xmp").is_file())
+        self.assertEqual(clash.read_bytes(), b"someone else's sidecar")
+
+    def test_a_photo_without_a_sidecar_gets_one_from_its_takeout_metadata(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        self.assertEqual(self.reassign(item.id, self.world.ids["sam"])[0], 200)
+        moved = self.world.root / self.opened.get(MediaItem, item.id).path
+        self.assertTrue(moved.with_name(f"{GOOGLE_ONLY_NAME}.xmp").is_file())
+
+    def test_a_move_that_fails_after_copying_leaves_nothing_behind(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        before_tree, before_flags = self.tree(), self.confirmed()
+        sidecar = (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp")
+        for patched, without_sidecar in (("drop_library_copy", False), ("carry_sidecar", False), ("drop_library_copy", True)):
+            with self.subTest(patched=patched, without_sidecar=without_sidecar):
+                kept = sidecar.read_bytes()
+                if without_sidecar:
+                    sidecar.unlink()
+                real = getattr(paths, patched)
+                calls = []
+
+                def failing(*args, real=real, calls=calls, **kwargs):
+                    calls.append(args)
+                    if len(calls) == 1:
+                        raise paths.NotALibraryCopy("made to fail")
+                    return real(*args, **kwargs)
+
+                with mock.patch.object(paths, patched, side_effect=failing):
+                    self.assertEqual(self.reassign(item.id, self.world.ids["sam"]),
+                                     (409, {"error": "the photo could not be moved; it was left where it was"}))
+                expected = before_tree if not without_sidecar else {k: v for k, v in before_tree.items() if not k.endswith(f"{GOOGLE_ONLY_NAME}.xmp")}
+                self.assertEqual(self.tree(), expected)
+                self.assertEqual(self.confirmed(), before_flags)
+                self.assertEqual(self.opened.get(MediaItem, item.id).person_id, self.world.ids["jo"])
+                if without_sidecar:
+                    sidecar.write_bytes(kept)
+
+    def test_a_sidecar_writer_failure_leaves_nothing_behind(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        before = self.tree()
+        with mock.patch.object(review.xmp, "fill", side_effect=RuntimeError("exiftool broke")):
+            with self.assertRaises(RuntimeError):
+                review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
+        self.assertEqual(self.tree(), before)
 
     def test_reassigning_back_returns_the_file(self):
         item = self.item_named(GOOGLE_ONLY_NAME)

@@ -277,7 +277,21 @@ def file_sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
-def drop_library_copy(photos: Photos, relative: str, kept: Path) -> None:
+def carry_sidecar(source: Path, destination: Path) -> bool:
+    found = sidecar_of(source)
+    if found.is_symlink() or not found.is_file():
+        return False
+    target = checked_sidecar(sidecar_of(destination))
+    data = found.read_bytes()
+    if target.exists():
+        if target.read_bytes() == data:
+            return True
+        raise AlreadyExists(target.name)
+    write_once(target, [data])
+    return True
+
+
+def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> None:
     target = photos.google_only_file(relative)
     if kept.is_symlink() or not kept.is_file() or kept.resolve() == target or not kept.resolve().is_relative_to(photos.root):
         raise NotALibraryCopy("no other copy of the file is kept")
@@ -285,5 +299,5 @@ def drop_library_copy(photos: Photos, relative: str, kept: Path) -> None:
         raise NotALibraryCopy("the kept copy is not the same file")
     sidecar = sidecar_of(target)
     target.unlink()
-    if sidecar.is_file() and not sidecar.is_symlink():
+    if with_sidecar and sidecar.is_file() and not sidecar.is_symlink():
         sidecar.unlink()
