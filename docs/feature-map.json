@@ -84,6 +84,7 @@
         "tests/test_browser_internal_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_imports_api.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
       ]
@@ -126,6 +127,29 @@
       "tests": [
         "tests/test_browser_internal_api.py"
       ]
+    },
+    {
+      "route": "POST /api/exports/{id}/import",
+      "auth": "session",
+      "handler": "darkroom.server.api.imports.request",
+      "frontend": [],
+      "tests": []
+    },
+    {
+      "route": "GET /api/imports",
+      "auth": "session",
+      "handler": "darkroom.server.api.imports.list_imports",
+      "frontend": [],
+      "tests": [
+        "tests/test_imports_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/imports/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.imports.one",
+      "frontend": [],
+      "tests": []
     },
     {
       "route": "POST /internal/browser/jobs/claim",
