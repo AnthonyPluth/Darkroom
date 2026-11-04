@@ -20,9 +20,10 @@ from tests.test_browser_jobs import add_account
 
 
 class FakeBrowser:
-    def __init__(self, html="<html><body>Manage your exports <input value='secret-form-value-canary'></body></html>", broken=False):
+    def __init__(self, html="<html><body>Manage your exports <input value='secret-form-value-canary'></body></html>", broken=False, close=None):
         self.html = html
         self.broken = broken
+        self.on_close = close
         self.closed = False
         self.visited = []
 
@@ -50,6 +51,8 @@ class FakeBrowser:
         path.write_bytes(b"\x89PNG")
 
     def close(self):
+        if self.on_close is not None:
+            self.on_close()
         self.closed = True
 
 
@@ -66,16 +69,97 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.photos = Path(folder.name)
         self.browsers = []
         self.sleeps = []
+        self.abandoned = threading.Event()
 
     def open_browser(self, profile_dir):
         self.assertEqual(profile_dir, self.photos / "_browser" / "1" / "profile")
-        browser = FakeBrowser(broken=getattr(self, "browsers_broken", False))
+        browser = FakeBrowser(broken=getattr(self, "browsers_broken", False), close=getattr(self, "browser_close", None))
         self.browsers.append(browser)
         return browser
 
-    def make_runner(self, registry, heartbeat=0.05):
+    def make_runner(self, registry, heartbeat=0.05, give_up=30.0):
         settings = settings_for(self.fake.base, self.photos)
-        return runner.Runner(settings, Client(self.fake.base, TOKEN), self.open_browser, registry, sleep=self.sleeps.append, heartbeat_seconds=heartbeat)
+        return runner.Runner(settings, Client(self.fake.base, TOKEN), self.open_browser, registry, sleep=self.sleeps.append, heartbeat_seconds=heartbeat,
+                             give_up_seconds=give_up, abandon=self.abandoned.set)
+
+    def reported(self):
+        return [action for action in self.fake.actions() if action in ("done", "failed")]
+
+    def test_a_worker_cut_off_from_darkroom_exits_with_its_browser_before_the_lease_runs_out(self):
+        def long_running(ctx):
+            ctx.browser()
+            self.fake.outage = True
+            self.abandoned.wait(5)
+            return {"ok": True}
+
+        self.fake.enqueue(21)
+        with contextlib.redirect_stderr(io.StringIO()):
+            outcome = self.make_runner({"noop": long_running}, heartbeat=0.01, give_up=0.3).run_job(self.fake.queue.pop(0))
+        self.assertEqual(outcome, "abandoned")
+        self.assertTrue(self.abandoned.is_set())
+        self.assertIn("heartbeat", self.fake.actions())
+        self.assertEqual(self.reported(), [])
+
+    def test_acknowledged_heartbeats_keep_a_long_job_alive(self):
+        def long_running(ctx):
+            ctx.browser()
+            time.sleep(0.6)
+            return {"ok": True}
+
+        self.fake.enqueue(22)
+        self.assertEqual(self.make_runner({"noop": long_running}, heartbeat=0.01, give_up=0.3).run_job(self.fake.queue.pop(0)), "done")
+        self.assertFalse(self.abandoned.is_set())
+        self.assertTrue(self.browsers[0].closed)
+
+    def test_a_browser_that_does_not_close_is_never_reported_closed(self):
+        def broken_close():
+            raise RuntimeError("chromium did not exit")
+
+        def opens(ctx):
+            ctx.browser()
+            return {"ok": True}
+
+        def explodes(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        self.browser_close = broken_close
+        for number, work in ((23, opens), (24, explodes)):
+            with self.subTest(job=number):
+                self.abandoned.clear()
+                self.fake.enqueue(number)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.make_runner({"noop": work}).run_job(self.fake.queue.pop(0)), "abandoned")
+                self.assertTrue(self.abandoned.is_set())
+                self.assertEqual(self.reported(), [])
+
+    def test_a_browser_close_that_hangs_ends_in_the_worker_exiting_not_in_a_report(self):
+        self.browser_close = lambda: self.abandoned.wait(5)
+
+        def opens(ctx):
+            ctx.browser()
+            return {"ok": True}
+
+        def explodes(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        for number, work in ((25, opens), (26, explodes)):
+            with self.subTest(job=number):
+                self.abandoned.clear()
+                self.fake.enqueue(number)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.make_runner({"noop": work}, heartbeat=0.01, give_up=0.3).run_job(self.fake.queue.pop(0)), "abandoned")
+                self.assertTrue(self.abandoned.is_set())
+                self.assertEqual(self.reported(), [])
+
+    def test_the_worker_gives_up_well_inside_darkrooms_lease(self):
+        self.assertLessEqual(runner.GIVE_UP_SECONDS + 2 * runner.HEARTBEAT_SECONDS, browser_jobs.LEASE_SECONDS)
+        worker = runner.Runner(settings_for(self.fake.base, self.photos), Client(self.fake.base, TOKEN), self.open_browser, {})
+        self.assertIs(worker.abandon, runner.exit_now)
+        with mock.patch.object(runner.os, "_exit") as exits:
+            runner.exit_now()
+        exits.assert_called_once_with(runner.ABANDONED_EXIT)
 
     def test_claim_run_heartbeat_done(self):
         waited = threading.Event()
@@ -173,6 +257,30 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertNotIn("secret-form-value-canary", page)
         self.assertEqual(self.fake.bodies("failed"), [{"message": "TimeoutError", "failure_dir": "_browser/1/failures/9", "files": ["screenshot.png", "page.html"]}])
         self.assertTrue(self.browsers[0].closed)
+
+    def test_the_browser_is_closed_before_done_or_failed_is_reported(self):
+        seen = []
+
+        def opens(ctx):
+            ctx.browser()
+            return {"ok": True}
+
+        def explodes(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        for registry, report in (({"noop": opens}, "done"), ({"noop": explodes}, "failed")):
+            self.fake.enqueue(11)
+            worker = self.make_runner(registry)
+            original = getattr(worker.client, report)
+
+            def spy(*args, original=original):
+                seen.append(self.browsers[-1].closed)
+                return original(*args)
+
+            setattr(worker.client, report, spy)
+            worker.run_job(self.fake.queue.pop(0))
+        self.assertEqual(seen, [True, True])
 
     def test_a_failed_screenshot_reports_only_the_page_snapshot(self):
         def exploding(ctx):
@@ -346,6 +454,16 @@ class RegistryTests(unittest.TestCase):
 
 
 class ContextTests(unittest.TestCase):
+    def test_a_live_browser_that_fails_to_close_says_so_after_stopping_playwright(self):
+        from darkroom_browser import live
+
+        context_part, playwright_part = mock.Mock(), mock.Mock()
+        context_part.close.side_effect = RuntimeError("chromium did not exit")
+        with self.assertRaisesRegex(RuntimeError, "did not exit"):
+            live.Live(mock.Mock(), context_part, playwright_part).close()
+        playwright_part.stop.assert_called_once_with()
+        live.Live(mock.Mock(), mock.Mock(), mock.Mock()).close()
+
     def test_paths_and_cancellation(self):
         reporter = FakeDarkroom()
         ctx = context.JobContext(5, "noop", "2", {}, Path("/photos"), reporter, lambda folder: FakeBrowser())

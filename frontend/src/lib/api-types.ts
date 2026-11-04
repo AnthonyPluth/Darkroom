@@ -97,8 +97,33 @@ export interface Decisions {
   page_size: number;
 }
 
+export interface DeviceAssetDecl {
+  id: string;
+  resources: DeviceResourceDecl[];
+}
+
+export interface DeviceCheckBody {
+  assets: DeviceAssetDecl[];
+}
+
+export interface DeviceCheckReply {
+  needed: NeededResource[];
+}
+
+export interface DeviceCheckinBody {
+  pending_uploads: number;
+  app_version?: string | null;
+}
+
 export interface DeviceReply {
   device: DeviceView;
+}
+
+export interface DeviceResourceDecl {
+  kind: string;
+  sha1: string;
+  bytes: number;
+  filename: string;
 }
 
 export interface DeviceState {
@@ -275,6 +300,11 @@ export interface MediaView {
   lon: number | null;
 }
 
+export interface NeededResource {
+  id: string;
+  kind: string;
+}
+
 export interface Ok {
   ok: boolean;
 }
@@ -429,6 +459,14 @@ export interface Status {
   alerts: AlertView[];
 }
 
+export interface UploadReply {
+  id: string;
+  kind: string;
+  sha1: string;
+  already: boolean;
+  indexed: boolean;
+}
+
 export interface WaitingBody {
   reason: string;
 }
@@ -476,6 +514,9 @@ export interface Endpoints {
   "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
   "GET /api/media": { body: never; reply: MediaList };
   "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
+  "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
+  "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
+  "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

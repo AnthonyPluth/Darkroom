@@ -32,6 +32,7 @@ class Device(Base):
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    sub: Mapped[str | None] = mapped_column(String)
     cleanup_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     last_checkin: Mapped[float | None] = mapped_column(Float)
     app_version: Mapped[str | None] = mapped_column(String)

@@ -1,10 +1,12 @@
+import time
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.domain import alerts, browser_jobs
-from darkroom.storage.models import Alert, Event, Export, Pixel, PixelPerson
+from darkroom.domain import accounts, alerts, browser_jobs
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -295,6 +297,56 @@ class AccountsApiTests(ApiCase):
             opened.add(Export(account_id=account["id"], kind="manual"))
         self.assertIn("exports", self.call("DELETE", f"/api/accounts/{account['id']}")[1]["error"])
         self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_an_account_with_a_running_or_waiting_browser_job_is_not_deleted_until_it_finishes(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        profile = self.make_profile(account["id"])
+        for status in browser_jobs.OPEN_STATUSES:
+            with db.session(self.engine) as opened:
+                job = browser_jobs.enqueue(opened, account["id"], "noop", None, 1.0)
+                job.status = status
+                job_id = job.id
+            status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+            self.assertEqual(status_code, 409, status)
+            self.assertIn("browser job that has not finished", reply["error"])
+            self.assertTrue(profile.exists())
+            with db.session(self.engine) as opened:
+                opened.get(BrowserJob, job_id).status = "done"
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_a_job_the_lease_just_expired_blocks_the_delete_for_the_lease_window(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        profile = self.make_profile(account["id"])
+        with db.session(self.engine) as opened:
+            job = browser_jobs.enqueue(opened, account["id"], "noop", None, 1.0)
+            job.status = "failed"
+            job.message = browser_jobs.EXPIRED_MESSAGE
+            job.finished = time.time()
+        status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual(status_code, 409)
+        self.assertIn("stopped reporting less than 3 minutes ago", reply["error"])
+        self.assertNotIn("has not finished", reply["error"])
+        self.assertTrue(profile.exists())
+
+    def test_a_delete_that_cannot_get_the_write_lock_answers_503_to_try_again(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        with mock.patch.object(accounts, "delete", side_effect=accounts.Busy("Darkroom is busy with another change; try deleting the account again in a moment")):
+            status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+        self.assertEqual((status_code, reply), (503, {"error": "Darkroom is busy with another change; try deleting the account again in a moment"}))
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_finished_and_queued_browser_jobs_do_not_block_deleting_an_account(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        for status in ("done", "failed", "queued"):
+            with db.session(self.engine) as opened:
+                browser_jobs.enqueue(opened, account["id"], "noop", None, 1.0).status = status
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}"), (200, {"ok": True}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(BrowserJob).count(), 0)
 
 
 if __name__ == "__main__":
