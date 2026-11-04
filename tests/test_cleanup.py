@@ -300,9 +300,10 @@ class ReviewHoldTests(Imported):
 
 
 class InterruptedRemovalTests(Imported):
-    def leftover(self, name):
-        path = self.root / "jo" / "google-only" / "2017" / "07" / f"{paths.DROPPING}0123456789abcdef-{name}"
-        path.write_bytes(b"left behind by an interrupted removal")
+    def leftover(self, name, data=None):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        path = folder / f"{paths.DROPPING}0123456789abcdef-{name}"
+        path.write_bytes((folder / "IMG_2001.JPG").read_bytes() if data is None else data)
         return path
 
     def test_an_old_dropping_file_in_google_only_is_swept_and_counted(self):
@@ -315,6 +316,21 @@ class InterruptedRemovalTests(Imported):
         details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
         self.assertTrue(any(detail.endswith("1 interrupted removals cleared") for detail in details))
         self.assertFalse(any("IMG_9" in detail for detail in details))
+
+    def test_a_dropping_file_with_no_identical_copy_left_is_kept(self):
+        for data in (b"the only copy of this photo", None):
+            with self.subTest(identical_copy_is_a_library_row=data is None):
+                stale = self.leftover("IMG_9.JPG", data)
+                if data is None:
+                    (self.root / "jo" / "google-only" / "2017" / "07" / "IMG_2001.JPG").unlink()
+                report = self.clean(at=TOO_SOON)
+                self.assertTrue(stale.is_file())
+                self.assertEqual(report.dropped, 0)
+
+    def test_a_dropping_file_whose_copy_is_a_review_hold_is_swept(self):
+        stale = self.leftover("IMG_1005.JPG", self.hold.read_bytes())
+        self.assertEqual(self.clean(at=TOO_SOON).dropped, 1)
+        self.assertFalse(stale.exists())
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")

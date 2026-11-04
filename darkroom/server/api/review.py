@@ -61,8 +61,15 @@ def list_reviews(request: Request) -> Annotated[Response, contract.Reviews]:
     status = first_query(request, "status") or None
     if status is not None and status not in review.STATUSES:
         return error_response(f"status is one of {', '.join(review.STATUSES)}", 400)
+    try:
+        after = whole(request, "after")
+    except BadQuery as error:
+        return error_response(str(error), 400)
+    if after is not None and status != "pending":
+        return error_response("after is only for status=pending", 400)
     with db.session(engine_of(request)) as opened:
-        reply = {"reviews": review.listing(opened, status), "pending": review.pending_count(opened)}
+        reply = {"reviews": review.listing(opened, status, after), "pending": review.pending_count(opened),
+                 "before": 0 if after is None else review.pending_count(opened, after)}
     return json_response(reply)
 
 

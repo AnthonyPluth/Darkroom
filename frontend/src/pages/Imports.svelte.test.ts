@@ -152,6 +152,30 @@ describe("missing GPS", () => {
     expect(screen.queryByText("IMG_2418.HEIC")).not.toBeInTheDocument();
   });
 
+  it("hides the last filter's photos and count while a new filter loads", async () => {
+    const sams = `/api/media?gps=none&page=0&person=2&from=${YEAR_AGO}`;
+    const server = serve({
+      "GET /api/imports": { imports: [done] },
+      "GET /api/people": { people: [jo, sam] },
+      [`GET /api/media?gps=none&page=0&from=${YEAR_AGO}`]: { media: [photo], total: 1, page: 0, page_size: 50 },
+      [`GET ${sams}`]: { media: [undated], total: 1, page: 0, page_size: 50 },
+    });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url === sams ? held.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(Imports);
+    expect(await screen.findByText("IMG_2418.HEIC")).toBeInTheDocument();
+    const group = screen.getByRole("group", { name: "Person" });
+    await userEvent.click(within(group).getByRole("button", { name: "Sam Example" }));
+    const section = screen.getByRole("region", { name: "Missing GPS" });
+    expect(within(section).queryByText("IMG_2418.HEIC")).not.toBeInTheDocument();
+    expect(within(section).queryByText(/no location\. Newest first\./)).not.toBeInTheDocument();
+    expect(within(section).getByRole("status")).toHaveTextContent("Loading...");
+    release();
+    expect(await within(section).findByText("PXL_1.jpg")).toBeInTheDocument();
+    expect(within(section).getByText("1 photo has no location. Newest first.")).toBeInTheDocument();
+  });
+
   it("offers a retry when the list can't load", async () => {
     show({ [`GET /api/media?gps=none&page=0&from=${YEAR_AGO}`]: reply(500, {}) });
     expect(await screen.findByText("Couldn't load the photos without a location (500)")).toBeInTheDocument();

@@ -420,6 +420,7 @@ export interface ReviewSummary {
 export interface Reviews {
   reviews: ReviewSummary[];
   pending: number;
+  before: number;
 }
 
 export interface Status {

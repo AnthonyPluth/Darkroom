@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from darkroom import monitoring
 from darkroom.domain import accounts, dedupe, events, media, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
@@ -98,17 +99,22 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     }
 
 
-def listing(opened: Session, status: str | None) -> list[dict[str, object]]:
+def listing(opened: Session, status: str | None, after: int | None = None) -> list[dict[str, object]]:
     query = select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
     if status is not None:
         query = query.where(ReviewItem.status == status)
+    if after is not None:
+        query = query.where(ReviewItem.id > after)
     order = (ReviewItem.id,) if status == "pending" else (ReviewItem.resolved_at.desc(), ReviewItem.id.desc())
     rows = opened.execute(query.order_by(*order).limit(LIST_LIMIT)).all()
     return [summary(opened, review, decision) for review, decision in rows]
 
 
-def pending_count(opened: Session) -> int:
-    return int(opened.execute(select(func.count(ReviewItem.id)).where(ReviewItem.status == "pending")).scalar_one())
+def pending_count(opened: Session, up_to: int | None = None) -> int:
+    query = select(func.count(ReviewItem.id)).where(ReviewItem.status == "pending")
+    if up_to is not None:
+        query = query.where(ReviewItem.id <= up_to)
+    return int(opened.execute(query).scalar_one())
 
 
 def library_view(item: MediaItem | None) -> dict[str, object] | None:
@@ -230,19 +236,31 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, read: xmp
     try:
         row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write)
     except Exception as error:
-        take_out_new_copies(photos, folder, before, hold)
+        left = take_out_new_copies(photos, folder, before, hold)
+        if left:
+            monitoring.log("keep both rollback left files", left=left)
         if isinstance(error, (place.PlaceFailed, *MOVE_FAILURES)):
+            if left:
+                raise WrongState("the held copy could not be placed in google-only, and the copy it made there could not be removed") from error
             raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
         raise
     return {row.person_id}
 
 
-def take_out_new_copies(photos: Photos, folder: Path, before: set[Path], hold: Path) -> None:
+def take_out_new_copies(photos: Photos, folder: Path, before: set[Path], hold: Path) -> int:
     if not folder.is_dir():
-        return
+        return 0
+    left = 0
     for path in sorted(set(folder.iterdir()) - before):
-        if path.suffix != paths.SIDECAR_SUFFIX and not path.name.startswith("."):
+        if path.suffix == paths.SIDECAR_SUFFIX or path.name.startswith("."):
+            continue
+        try:
             paths.drop_library_copy(photos, place.relative(photos, path), hold, with_sidecar=paths.sidecar_of(path) not in before)
+        except paths.NotALibraryCopy:
+            continue
+        except OSError:
+            left += 1
+    return left
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float,
@@ -385,23 +403,27 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     except place.PlaceFailed as error:
         raise WrongState("the photo could not be moved; it was left where it was") from error
     had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
+    old_path, new_path = item.path, place.relative(photos, placed.path)
     try:
+        if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
+            raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
         if not paths.carry_sidecar(source, placed.path):
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
-        paths.drop_library_copy(photos, item.path, placed.path)
+        item.person_id, item.path = target.id, new_path
+        for row in opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)).scalars():
+            row.person_id = target.id
+        opened.flush()
+        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}")
+        opened.flush()
+        paths.drop_library_copy(photos, old_path, placed.path)
     except Exception as error:
         if placed.copied:
-            paths.drop_library_copy(photos, place.relative(photos, placed.path), source, with_sidecar=not had_sidecar)
+            paths.drop_library_copy(photos, new_path, source, with_sidecar=not had_sidecar)
         if isinstance(error, MOVE_FAILURES):
             raise WrongState("the photo could not be moved; it was left where it was") from error
         raise
-    item.person_id, item.path = target.id, place.relative(photos, placed.path)
-    for row in opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)).scalars():
-        row.person_id = target.id
-    opened.flush()
-    events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}")
     return item, Changed(export, {current.id, target.id})
 
 

@@ -327,6 +327,7 @@ class ReviewSummary(TypedDict):
 class Reviews(TypedDict):
     reviews: list[ReviewSummary]
     pending: int
+    before: int
 
 
 class ReviewSide(TypedDict):

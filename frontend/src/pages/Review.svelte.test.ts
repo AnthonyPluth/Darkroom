@@ -31,8 +31,8 @@ const detail: ReviewDetail = {
 };
 function routes(extra: Record<string, unknown> = {}) {
   return {
-    "GET /api/review?status=pending": { reviews: [pending], pending: 1 },
-    "GET /api/review?status=kept_both": { reviews: [old, kept], pending: 1 },
+    "GET /api/review?status=pending": { reviews: [pending], pending: 1, before: 0 },
+    "GET /api/review?status=kept_both": { reviews: [old, kept], pending: 1, before: 0 },
     "GET /api/people": { people: [jo, sam] },
     "GET /api/review/7": detail,
     ...extra,
@@ -64,7 +64,7 @@ describe("the current pair", () => {
   });
 
   it("counts every pending pair the server has, not just the ones it listed", async () => {
-    show({ "GET /api/review?status=pending": { reviews: [pending], pending: 640 } });
+    show({ "GET /api/review?status=pending": { reviews: [pending], pending: 640, before: 0 } });
     expect(await screen.findByRole("heading", { name: "Pair 1 of 640" })).toBeInTheDocument();
     expect(screen.getByText("640 pairs look like the same photo saved twice. Nothing is removed until you decide.")).toBeInTheDocument();
   });
@@ -83,7 +83,7 @@ describe("the current pair", () => {
   it("skip leaves the pair for later: it moves on to the next pair and saves nothing", async () => {
     const second: ReviewSummary = { ...pending, id: 8, name: "IMG_3000.jpg", library_name: "IMG_3000.HEIC" };
     const server = show({
-      "GET /api/review?status=pending": { reviews: [pending, second], pending: 2 },
+      "GET /api/review?status=pending": { reviews: [pending, second], pending: 2, before: 0 },
       "GET /api/review/8": { ...detail, review: second, library: { ...detail.library!, name: "IMG_3000.HEIC" } },
     });
     expect(await screen.findByRole("heading", { name: "Pair 1 of 2" })).toBeInTheDocument();
@@ -96,6 +96,23 @@ describe("the current pair", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByText(/Skip leaves the pair for later\./)).toBeInTheDocument();
     expect(screen.queryByText(/14 days/)).not.toBeInTheDocument();
+  });
+
+  it("skipping past the last listed pair fetches the pairs after it, then wraps back to the first", async () => {
+    const second: ReviewSummary = { ...pending, id: 8, name: "IMG_3000.jpg", library_name: "IMG_3000.HEIC" };
+    const server = show({
+      "GET /api/review?status=pending": { reviews: [pending], pending: 2, before: 0 },
+      "GET /api/review?status=pending&after=7": { reviews: [second], pending: 2, before: 1 },
+      "GET /api/review/8": { ...detail, review: second, library: { ...detail.library!, name: "IMG_3000.HEIC" } },
+    });
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 2" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(await screen.findByRole("heading", { name: "Pair 2 of 2" })).toBeInTheDocument();
+    expect(screen.getByText("IMG_3000.HEIC")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 2" })).toBeInTheDocument();
+    expect(server.sent("GET /api/review?status=pending&after=8")).toEqual([]);
+    expect(server.calls.filter((call) => !call.key.startsWith("GET "))).toEqual([]);
   });
 
   it("shows why an action was refused", async () => {
@@ -149,7 +166,7 @@ describe("the current pair", () => {
   });
 
   it("says when there is nothing to review", async () => {
-    show({ "GET /api/review?status=pending": { reviews: [], pending: 0 } });
+    show({ "GET /api/review?status=pending": { reviews: [], pending: 0, before: 0 } });
     expect(await screen.findByText("Nothing to review. Pairs that look like the same photo saved twice show up here.")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Current pair" })).not.toBeInTheDocument();
   });

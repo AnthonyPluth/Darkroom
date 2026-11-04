@@ -39,8 +39,18 @@ class ReviewQueueTests(ReviewCase):
         self.assertEqual({key: listed[key] for key in ("status", "tier", "name", "library_name", "resolved_at", "undo_until", "kept_item_id")},
                          {"status": "pending", "tier": 4, "name": PAIR_NAME, "library_name": PAIR_NAME, "resolved_at": None, "undo_until": None,
                           "kept_item_id": None})
-        self.assertEqual(self.call("GET", "/api/review?status=kept_both"), (200, {"reviews": [], "pending": 1}))
+        self.assertEqual(self.call("GET", "/api/review?status=kept_both"), (200, {"reviews": [], "pending": 1, "before": 0}))
         self.assertEqual(self.call("GET", "/api/review")[1]["reviews"], [listed])
+
+    def test_the_pending_queue_pages_on_from_the_last_pair_seen(self):
+        pair = self.pending().id
+        self.assertEqual(self.call("GET", f"/api/review?status=pending&after={pair}"), (200, {"reviews": [], "pending": 1, "before": 1}))
+        status, body = self.call("GET", f"/api/review?status=pending&after={pair - 1}")
+        self.assertEqual((status, [listed["id"] for listed in body["reviews"]], body["before"]), (200, [pair], 0))
+        for query, message in (("status=kept_both&after=1", "after is only for status=pending"), ("after=1", "after is only for status=pending"),
+                               ("status=pending&after=x", "after must be a whole number")):
+            with self.subTest(query=query):
+                self.assertEqual(self.call("GET", f"/api/review?{query}"), (400, {"error": message}))
 
     def test_an_unknown_status_is_refused(self):
         self.assertEqual(self.call("GET", "/api/review?status=gone"), (400, {"error": "status is one of pending, kept_both, skipped, undone"}))
@@ -148,6 +158,36 @@ class ResolveTests(ReviewCase):
         with mock.patch.object(place.xmp, "fill", side_effect=RuntimeError("unexpected")), self.assertRaises(RuntimeError):
             review.resolve(self.opened, self.world.photos, review_id, "keep_both", 1.0)
         self.assertEqual(self.tree(), before_tree)
+
+    def test_keep_both_rollback_skips_a_file_it_did_not_place_and_still_answers_409(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        stray = folder / "AAA_arrived_meanwhile.JPG"
+        before_flags, review_id = self.confirmed(), self.pending().id
+
+        def fill_and_race(*args, **kwargs):
+            stray.write_bytes(b"a file someone else put here")
+            raise exiftool.WriteFailed("bad tag")
+
+        with mock.patch.object(place.xmp, "fill", side_effect=fill_and_race), mock.patch.object(review.monitoring, "log") as logged:
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the held copy could not be placed in google-only; nothing was changed"}))
+        self.assertEqual(stray.read_bytes(), b"a file someone else put here")
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.confirmed(), before_flags)
+        self.assertEqual(self.pending().id, review_id)
+        self.assertEqual([c for c in logged.call_args_list if c.args[0].startswith("keep both")], [])
+
+    def test_keep_both_rollback_that_cannot_remove_its_copy_still_answers_409(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        review_id = self.pending().id
+        with mock.patch.object(place.xmp, "fill", side_effect=exiftool.WriteFailed("bad tag")), \
+                mock.patch.object(review.paths, "drop_library_copy", side_effect=PermissionError("read-only")), \
+                mock.patch.object(review.monitoring, "log") as logged:
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the held copy could not be placed in google-only, and the copy it made there could not be removed"}))
+        self.assertTrue((folder / PAIR_NAME).is_file())
+        self.assertEqual(self.pending().id, review_id)
+        self.assertEqual([c for c in logged.call_args_list if c.args[0].startswith("keep both")], [mock.call("keep both rollback left files", left=1)])
 
     def test_keep_both_works_once_staging_is_cleaned(self):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"

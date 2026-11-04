@@ -33,7 +33,11 @@
   async function loadMissing(more = false): Promise<void> {
     const mine = ++generation;
     const wanted = more ? page + 1 : 0;
-    if (!more) gps = { kind: "loading" };
+    if (!more) {
+      gps = { kind: "loading" };
+      missing = [];
+      missingTotal = 0;
+    }
     const start = rangeStart(range, nowSeconds());
     const query = [`gps=none`, `page=${wanted}`, ...(person === null ? [] : [`person=${person}`]), ...(start === null ? [] : [`from=${start}`])].join("&");
     let message = "";
@@ -165,7 +169,9 @@
       <div class="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-end md:justify-between md:gap-4">
         <div class="flex flex-col gap-0.5">
           <h2 class="text-md font-semibold">Missing GPS</h2>
-          <span class="text-ink-muted">{missingTotal === 1 ? "1 photo has" : `${missingTotal} photos have`} no location. Newest first.</span>
+          {#if gps.kind === "ready"}
+            <span class="text-ink-muted">{missingTotal === 1 ? "1 photo has" : `${missingTotal} photos have`} no location. Newest first.</span>
+          {/if}
         </div>
         <div class="flex flex-col gap-3 md:flex-row md:items-end">
           <div role="group" aria-label="Person" class="grid grid-cols-3 gap-2 md:flex md:gap-1.5">
@@ -186,7 +192,7 @@
       </div>
       {#if gps.kind === "error"}
         <LoadFailed message={gps.message} retry={() => loadMissing()} />
-      {:else if gps.kind === "loading" && missing.length === 0}
+      {:else if gps.kind === "loading"}
         <p role="status" class="text-ink-muted">Loading...</p>
       {:else if missing.length === 0}
         <p class="text-ink-muted">Every photo in this range has a location.</p>

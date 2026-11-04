@@ -18,19 +18,34 @@
   let error = $state("");
   let reassignTo = $state("");
   let skipped: number[] = [];
+  let after: number | null = null;
+
+  function pendingPage(from: number | null) {
+    return apiCall<"GET /api/review">(`/api/review?status=pending${from === null ? "" : `&after=${from}`}`, { failed: "Couldn't load the review queue" });
+  }
 
   const loader = new Loader(async () => {
-    const [pending, resolved, people] = await Promise.all([
-      apiCall<"GET /api/review">("/api/review?status=pending", { failed: "Couldn't load the review queue" }),
+    const [firstPage, resolved, people] = await Promise.all([
+      pendingPage(after),
       apiCall<"GET /api/review">("/api/review?status=kept_both", { failed: "Couldn't load the past decisions" }),
       apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
     ]);
+    let pending = firstPage;
     let first = pending.reviews.find((review) => !skipped.includes(review.id));
+    while (!first && pending.reviews.length > 0 && pending.before + pending.reviews.length < pending.pending) {
+      after = pending.reviews[pending.reviews.length - 1].id;
+      pending = await pendingPage(after);
+      first = pending.reviews.find((review) => !skipped.includes(review.id));
+    }
     if (!first) {
       skipped = [];
+      if (after !== null) {
+        after = null;
+        pending = await pendingPage(null);
+      }
       first = pending.reviews[0];
     }
-    const position = first ? pending.reviews.indexOf(first) + 1 : 0;
+    const position = first ? pending.before + pending.reviews.indexOf(first) + 1 : 0;
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
     reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
     const past = [...resolved.reviews].sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));

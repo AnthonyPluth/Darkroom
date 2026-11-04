@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import events, media
 from darkroom.domain.ingest import unpack
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -216,6 +217,28 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
             review.hold_path = None
 
 
+def same_file_elsewhere(path: Path, sha1: str, dropping: Path) -> bool:
+    return path != dropping and path.is_file() and not path.is_symlink() and paths.file_sha1(path) == sha1
+
+
+def copy_kept(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
+    def kept(dropping: Path, sha1: str) -> bool:
+        for item in opened.execute(select(MediaItem).where(MediaItem.sha1 == sha1)).scalars():
+            try:
+                if same_file_elsewhere(photos.inside(item.path), sha1, dropping):
+                    return True
+            except paths.OutsideRoot:
+                continue
+        held = (select(ReviewItem, Export).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+                .join(Export, Export.id == DedupeDecision.export_id).where(ReviewItem.hold_path.is_not(None)))
+        for review, export in opened.execute(held).all():
+            hold = hold_file(photos, export, review)
+            if hold is not None and same_file_elsewhere(hold, sha1, dropping):
+                return True
+        return False
+    return kept
+
+
 def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
@@ -230,7 +253,7 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
     try:
-        report.dropped = paths.sweep_dropping(photos, now - DROPPING_GRACE)
+        report.dropped = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos))
     except OSError as error:
         report.failed += 1
         events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)

@@ -220,6 +220,42 @@ class SharedAccountTests(ReviewCase):
         opened.commit()
         self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "Sam already has this photo"}))
 
+    def test_a_stale_row_at_the_target_place_stops_the_move_before_the_source_goes(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        old = self.world.root / item.path
+        target = self.world.root / "sam" / "google-only" / old.parent.parent.name / old.parent.name / GOOGLE_ONLY_NAME
+        for file_there in (False, True):
+            with self.subTest(file_there=file_there):
+                opened = self.opened
+                stale = MediaItem(person_id=self.world.ids["sam"], source="takeout", path=str(target.relative_to(self.world.root)),
+                                  sha1="0" * 40, bytes=1, indexed_at=1.0)
+                opened.add(stale)
+                opened.commit()
+                if file_there:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(old.read_bytes())
+                before_tree, before_flags = self.tree(), self.confirmed()
+                self.assertEqual(self.reassign(item.id, self.world.ids["sam"]),
+                                 (409, {"error": "another photo of Sam's is recorded at that place, so the photo was left where it was"}))
+                self.assertEqual(self.tree(), before_tree)
+                self.assertEqual(self.confirmed(), before_flags)
+                self.assertTrue(old.is_file())
+                self.assertTrue(old.with_name(f"{GOOGLE_ONLY_NAME}.xmp").is_file())
+                row = self.opened.get(MediaItem, item.id)
+                self.assertEqual((row.person_id, row.path), (item.person_id, item.path))
+                opened = self.opened
+                opened.delete(opened.get(MediaItem, stale.id))
+                opened.commit()
+                target.unlink(missing_ok=True)
+
+    def test_a_database_failure_after_copying_keeps_the_source(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        before = self.tree()
+        with mock.patch.object(review.events, "record", side_effect=RuntimeError("database went away")):
+            with self.assertRaises(RuntimeError):
+                review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
+        self.assertEqual(self.tree(), before)
+
     def test_a_copy_that_changed_on_disk_is_left_alone(self):
         item = self.item_named(GOOGLE_ONLY_NAME)
         (self.world.root / item.path).write_bytes(b"changed by someone else")
