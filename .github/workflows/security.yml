@@ -5,10 +5,11 @@ name: Security scans
 # zizmor over the workflows. A pull request runs only the scans its change can affect (a change under .github/ runs
 # everything; Trivy's file scan always runs); the weekly run and a manual one scan everything.
 #
-# Darkroom is private on a personal account, which has no code scanning: with sarif-upload off, Semgrep, Trivy and
-# zizmor fail their job on findings instead of uploading them, which the merge gate sees, and Scorecard (public
-# repositories only) is off. The permissions are the ones fleet's jobs declare; a called job can't ask for more than
-# its caller has, even one that is skipped.
+# Darkroom is public (the owner's decision, #90). CodeQL's default setup scans it and the ruleset's code scanning rule
+# enforces its results. With sarif-upload off, Semgrep, Trivy and zizmor fail their job on findings, which the merge gate
+# sees; turning the upload on waits until the ruleset also lists those tools (docs/runbook.md). Scorecard is off. The
+# permissions are the ones fleet's jobs declare; a called job can't ask for more than its caller has, even one that is
+# skipped.
 on:
   push:
     branches: [main]

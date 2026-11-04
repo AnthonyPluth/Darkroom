@@ -7,14 +7,14 @@ name: Merge gate
 # "chore: fleet content" pull request the owner still merges by hand.
 #
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
-# finishing (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
+# finishing, CodeQL's default setup included (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
 # number (the agent review starts it this way once it has set its status, and merge-gate-threads.yml when a review,
 # a review comment or a comment by Codex arrives). It runs from main's copy with a write token and never checks out or runs a pull request's code.
 # workflow_run is safe here: nothing of the pull request is checked out; fleet's script only reads its checks,
 # statuses and review threads through the API.
 on:  # zizmor: ignore[dangerous-triggers]
   workflow_run:
-    workflows: [CI, Docker image, Security scans]
+    workflows: [CI, Docker image, Security scans, CodeQL]
     types: [completed]
   check_suite:
     types: [completed]
@@ -41,6 +41,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'CodeQL' && github.event.workflow_run.event == 'dynamic' && join(github.event.workflow_run.pull_requests.*.number, '') != '') ||
       (github.event_name == 'check_suite' && github.event.check_suite.app.slug != 'github-actions')
     permissions:
       contents: write          # merge Dependabot's pull requests
@@ -52,11 +53,11 @@ jobs:
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
-      # No CodeQL: a private repository on a personal account has none.
       required-workflows: |
         CI
         Docker image
         Security scans
+        ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository) && 'Security scans' || 'CodeQL' }}
       # Owner decision of Nov 3 (issue #76): Codex reviews every pull request. The gate stays pending until Codex has
       # reviewed the head commit; fleet's defaults already require "Second review" alone and fail on an open Codex P1
       # or P2 thread. merge-gate-threads.yml starts the gate when Codex's review or comment arrives.
