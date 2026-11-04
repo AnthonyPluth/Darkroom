@@ -73,6 +73,7 @@ class Runner:
                 raise jobs.UnknownJob(f"no job called {ctx.kind!r}")
             result = work(ctx)
             ctx.check()
+            beat.stop()
             self.client.done(ctx.job_id, result)
             outcome = "done"
         except Cancelled:

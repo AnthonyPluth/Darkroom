@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -96,6 +97,20 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertEqual(self.fake.bodies("done"), [{"result": {"ok": True}}])
         self.assertEqual(self.fake.bodies("claim")[0], {"worker": "test-worker"})
         self.assertEqual(self.browsers, [], "a noop job opens no browser")
+
+    def test_no_heartbeat_reaches_darkroom_after_done(self):
+        def quick(ctx):
+            time.sleep(0.05)
+            return {"ok": True}
+
+        for number in range(5):
+            self.fake.enqueue(number + 1, payload={})
+            worker = self.make_runner({"noop": quick}, heartbeat=0.001)
+            self.assertTrue(worker.tick())
+        actions = self.fake.actions()
+        for position, action in enumerate(actions):
+            if action == "done":
+                self.assertNotEqual(actions[position + 1:position + 2], ["heartbeat"])
 
     def test_the_bundled_noop_job_runs_end_to_end(self):
         self.fake.enqueue(3)
