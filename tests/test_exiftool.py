@@ -1,10 +1,15 @@
+import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from darkroom.providers import exiftool
 from tests.fixtures import media as fixtures
+from tools import verify
 
 
 class ReadTests(unittest.TestCase):
@@ -31,19 +36,19 @@ class ReadTests(unittest.TestCase):
             self.assertEqual(set(exiftool.read(files)), set(files))
 
     def test_no_files_no_call(self):
-        with mock.patch("subprocess.run") as run:
+        with mock.patch.object(exiftool, "run") as run:
             self.assertEqual(exiftool.read([]), {})
         run.assert_not_called()
 
     def test_a_failed_run_with_no_output_is_unreadable(self):
         done = mock.Mock(stdout="", stderr="boom\n", returncode=1)
-        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch("subprocess.run", return_value=done), \
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", return_value=done), \
                 self.assertRaises(exiftool.Unreadable):
             exiftool.read([self.folder / "x.jpg"])
 
     def test_an_empty_answer_with_success_means_nothing_found(self):
         done = mock.Mock(stdout="", stderr="", returncode=0)
-        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch("subprocess.run", return_value=done):
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", return_value=done):
             self.assertEqual(exiftool.read([self.folder / "x.jpg"]), {})
 
     def test_missing(self):
@@ -51,9 +56,50 @@ class ReadTests(unittest.TestCase):
             exiftool.version()
 
     def test_version(self):
-        done = mock.Mock(stdout="13.00\n")
-        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch("subprocess.run", return_value=done):
+        done = mock.Mock(stdout="13.00\n", returncode=0)
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", return_value=done):
             self.assertEqual(exiftool.version(), "13.00")
+
+    def test_version_failure_raises_called_process_error(self):
+        done = mock.Mock(stdout="", stderr="bad", returncode=2)
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", return_value=done), \
+                self.assertRaises(subprocess.CalledProcessError):
+            exiftool.version()
+
+
+class RunTests(unittest.TestCase):
+    def test_returns_output_error_and_status(self):
+        done = exiftool.run([sys.executable, "-c", "import sys; print('out'); sys.stderr.write('err'); sys.exit(3)"])
+        self.assertEqual((done.stdout, done.stderr, done.returncode), ("out\n", "err", 3))
+
+    def test_large_output_does_not_block(self):
+        done = exiftool.run([sys.executable, "-c", "print('x' * 1000000)"])
+        self.assertEqual(len(done.stdout.strip()), 1000000)
+
+    def test_a_command_that_outlives_the_timeout_is_killed(self):
+        for timeout in (0.1, 0.3):
+            with self.subTest(timeout=timeout):
+                started = time.monotonic()
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    exiftool.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout)
+                self.assertLess(time.monotonic() - started, 10)
+
+    def test_never_sleeps(self):
+        with mock.patch("time.sleep", side_effect=OSError(22, "Invalid argument")):
+            done = exiftool.run([sys.executable, "-c", "import time; time.sleep(0.2); print('ok')"])
+        self.assertEqual(done.stdout, "ok\n")
+
+
+class FrozenClockTests(unittest.TestCase):
+    def test_repeated_runs_under_the_frozen_clock_never_fail(self):
+        library = verify.find_faketime()
+        if not library:
+            self.skipTest(verify.missing_faketime_message())
+        env = verify.frozen_env(dict(os.environ), library)
+        with mock.patch.dict(os.environ, env):
+            for _ in range(20):
+                done = exiftool.run([sys.executable, "-c", "print('ok')"])
+                self.assertEqual((done.stdout, done.returncode), ("ok\n", 0))
 
 
 if __name__ == "__main__":

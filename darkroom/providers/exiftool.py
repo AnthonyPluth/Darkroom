@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import select
 import shutil
 import subprocess
+import tempfile
+import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -33,8 +36,29 @@ def executable() -> str:
     return path
 
 
+def run(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                if time.monotonic() > deadline:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                select.select([], [], [], 0.02)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(command, process.returncode, out.read().decode(errors="replace"), err.read().decode(errors="replace"))
+
+
 def version() -> str:
-    done = subprocess.run([executable(), "-ver"], capture_output=True, text=True, check=True, timeout=30)
+    command = [executable(), "-ver"]
+    done = run(command, 30)
+    if done.returncode != 0:
+        raise subprocess.CalledProcessError(done.returncode, command, done.stdout, done.stderr)
     return done.stdout.strip()
 
 
@@ -47,8 +71,7 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
     found: dict[Path, dict[str, object]] = {}
     program = executable()
     for group in batches(paths):
-        done = subprocess.run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)],
-                              capture_output=True, text=True, timeout=TIMEOUT)
+        done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)])
         if not done.stdout.strip():
             if done.returncode != 0:
                 raise Unreadable(done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "exiftool failed")
@@ -70,7 +93,7 @@ def write_xmp(sidecar_path: Path, fields: Mapping[str, str]) -> bool:
     def render(temp: Path, source: Path | None) -> None:
         assignments = [f"-{name}={value}" for name, value in sorted(fields.items())]
         sources = [] if source is None else [str(source)]
-        done = subprocess.run([program, "-q", "-n", "-o", str(temp), *assignments, *sources], capture_output=True, text=True, timeout=TIMEOUT)
+        done = run([program, "-q", "-n", "-o", str(temp), *assignments, *sources])
         if done.returncode != 0:
             raise WriteFailed("exiftool could not write the sidecar")
 
