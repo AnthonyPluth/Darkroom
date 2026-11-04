@@ -84,7 +84,7 @@ describe("signed in", () => {
       expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(label);
       expect(within(nav).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
     }
-    await userEvent.click(within(nav).getByRole("link", { name: "Review" }));
+    await userEvent.click(within(nav).getByRole("link", { name: "Exports" }));
     expect(screen.getByText("This page arrives in a later issue.")).toBeInTheDocument();
     await userEvent.click(within(nav).getByRole("link", { name: "Browser" }));
     await userEvent.click(screen.getAllByRole("link", { name: "Darkroom" })[0]);

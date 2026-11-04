@@ -3,8 +3,10 @@
   import type { Me } from "$lib/api-types";
   import { followLink, pageFor, PAGES, router } from "$lib/nav.svelte";
   import { displayName } from "$lib/session.svelte";
+  import Imports from "./pages/Imports.svelte";
   import People from "./pages/People.svelte";
   import Placeholder from "./pages/Placeholder.svelte";
+  import Review from "./pages/Review.svelte";
   import Status from "./pages/Status.svelte";
 
   let { me }: { me: Me } = $props();
@@ -64,6 +66,10 @@
         <Status />
       {:else if page?.path === "/people"}
         <People />
+      {:else if page?.path === "/imports"}
+        <Imports />
+      {:else if page?.path === "/review"}
+        <Review />
       {:else if page}
         <Placeholder title={page.label} />
       {:else}
