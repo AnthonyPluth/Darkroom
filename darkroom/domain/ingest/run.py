@@ -422,6 +422,8 @@ def request_import(opened: Session, export_id: int) -> Export:
         raise NotReady("this export has not been downloaded yet")
     if export.stage in EARLY_STAGES:
         export.stage = "queued"
+        if export.status == "failed":
+            export.status = "downloaded"
     else:
         run = latest_run(opened, export.id)
         if run is not None and run.status != "running":

@@ -133,7 +133,9 @@
       "auth": "session",
       "handler": "darkroom.server.api.imports.request",
       "frontend": [],
-      "tests": []
+      "tests": [
+        "tests/test_imports_api.py"
+      ]
     },
     {
       "route": "GET /api/imports",
@@ -149,7 +151,9 @@
       "auth": "session",
       "handler": "darkroom.server.api.imports.one",
       "frontend": [],
-      "tests": []
+      "tests": [
+        "tests/test_imports_api.py"
+      ]
     },
     {
       "route": "POST /internal/browser/jobs/claim",

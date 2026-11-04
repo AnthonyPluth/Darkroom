@@ -9,6 +9,7 @@ from tests.privacy import no_leaks
 from tests.shared import fetch, settings_from, start_server
 
 PRIVATE_NAME = "IMG_2001.JPG"
+ROUTES = (("POST", "/api/exports/{id}/import"), ("GET", "/api/imports"), ("GET", "/api/imports/{id}"))
 
 
 class ImportsApiTests(unittest.TestCase):
@@ -30,6 +31,13 @@ class ImportsApiTests(unittest.TestCase):
     def import_now(self):
         opened = self.world.reopen()
         run.run_waiting(opened, self.settings, NOW, self.world.tools)
+
+    def test_the_routes_need_a_signed_in_session(self):
+        from darkroom.server import routes
+
+        for method, path in ROUTES:
+            with self.subTest(route=path):
+                self.assertEqual(routes.find(method, path.replace("{id}", "1")).auth, "session")
 
     def test_requesting_an_import_queues_it_for_the_scheduler(self):
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")

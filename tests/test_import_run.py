@@ -288,7 +288,9 @@ class QueueTests(unittest.TestCase):
         self.export.status, self.export.stage = "failed", "unpack"
         self.world.opened.commit()
         run.request_import(self.world.opened, self.export.id)
-        self.assertEqual(self.world.opened.get(Export, self.export.id).stage, "queued")
+        export = self.world.opened.get(Export, self.export.id)
+        self.assertEqual((export.status, export.stage), ("downloaded", "queued"))
+        self.assertEqual(run.waiting_exports(self.world.opened), [self.export.id])
 
     def test_the_scheduler_skips_an_account_that_is_busy(self):
         run.request_import(self.world.opened, self.export.id)
