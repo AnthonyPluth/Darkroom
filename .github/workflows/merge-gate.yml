@@ -7,14 +7,14 @@ name: Merge gate
 # "chore: fleet content" pull request the owner still merges by hand.
 #
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
-# finishing (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
+# finishing, CodeQL's default setup included (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
 # number (the agent review starts it this way once it has set its status, and merge-gate-threads.yml when a review,
 # a review comment or a comment by Codex arrives). It runs from main's copy with a write token and never checks out or runs a pull request's code.
 # workflow_run is safe here: nothing of the pull request is checked out; fleet's script only reads its checks,
 # statuses and review threads through the API.
 on:  # zizmor: ignore[dangerous-triggers]
   workflow_run:
-    workflows: [CI, Docker image, Security scans]
+    workflows: [CI, Docker image, Security scans, CodeQL]
     types: [completed]
   check_suite:
     types: [completed]

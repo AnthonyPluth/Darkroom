@@ -5,7 +5,7 @@ name: Security scans
 # zizmor over the workflows. A pull request runs only the scans its change can affect (a change under .github/ runs
 # everything; Trivy's file scan always runs); the weekly run and a manual one scan everything.
 #
-# Darkroom is public, so code scanning is available: with sarif-upload on, Semgrep and Trivy upload their findings as
+# Darkroom is public (the owner's decision, #90), so code scanning is available: with sarif-upload on, Semgrep and Trivy upload their findings as
 # SARIF (categories semgrep and trivy) to the Security tab. The permissions are the ones fleet's jobs declare; a called
 # job can't ask for more than its caller has, even one that is skipped. Scorecard stays off.
 on:

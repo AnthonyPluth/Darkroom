@@ -141,7 +141,7 @@ What #12 and #33 say for item 3: #12's workflows line names `ios.yml` as #33's. 
 | Review prompt | Travel wording | Finance wording | One generic prompt plus each app's `context.md` | One prompt to maintain |
 | Review model | Sonnet | Sonnet ("never Opus", owner decision) | Sonnet first; Fable second on risky PRs | The owner's new rule; recorded in the workflow header |
 | `merge-gate.sh` | Requires no status | Requires Agent review; ignores Preview and Screenshot diff | One script; required and ignored lists are inputs; triggers stay in the caller | Called workflows can't declare triggers |
-| `security.yml` | `vars.RUNS_ON` option | Hosted only; adds `extension/` | Inputs for paths and the runner; `sarif-upload`/`scorecard` switches | Darkroom can't upload SARIF |
+| `security.yml` | `vars.RUNS_ON` option | Hosted only; adds `extension/` | Inputs for paths and the runner; `sarif-upload`/`scorecard` switches | Darkroom uploads SARIF since #90 |
 | `fleet_checks.py` | Test-removal trailers, `# hosted:` rule, parser fixtures | `EARLY_ENV` rule, a11y baseline, flow inheritance | The union of shared checks; app-only checks via `extra-checks` | Each gains the other's general checks |
 | `no_comments.py`, `coverage_floor.py` | Present | Absent | Opt-in | Runway's convention allows comments |
 | Session-start hook | Venv-version guard, `npm install --no-save` | `node_modules` completeness check | Union, with `--no-save` | A session must not rewrite a lockfile |
@@ -155,7 +155,7 @@ What #12 and #33 say for item 3: #12's workflows line names `ios.yml` as #33's. 
 1. **Waypoint has no review gate today.** `agent-review.yml`'s trigger is commented out ("Codex reviews pull requests now"), `merge-gate.sh` has `REQUIRED_STATUSES=()`, and AGENTS.md tells agents to watch Codex comments.
 2. **Cloud sessions ignore repo-declared plugins**, so the marketplace plan alone wouldn't reach the agents. The vendoring decision above follows from that.
 3. **claude-security refuses unattended runs** by design.
-4. **Darkroom can't have CodeQL or SARIF uploads** as a private repo on a personal account. #12 planned CodeQL.
+4. **Darkroom had no CodeQL or SARIF uploads** while it was a private repo on a personal account. It is public now and both are back (#90).
 5. **Runway records an owner decision against non-Sonnet reviews** ("never Opus, security-sensitive changes included"). The Fable second review supersedes it, and the adoption issue says so.
 6. **Waypoint's `CLAUDE.md` defaults to Sonnet** for everything, security work included. Runway's says cheapest-first. Both differ from the owner's Opus/Fable rule these issues follow. `CLAUDE.md` is left untouched as asked.
 7. **The photos issues already exist** (Waypoint #482–#499), so the PHOTOS edits apply to live issues.
