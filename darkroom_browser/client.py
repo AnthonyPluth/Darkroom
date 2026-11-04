@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.request
 from typing import Any
 
 TIMEOUT = 30.0
 MAX_REPLY = 1024 * 1024
-CHUNK = 4096
-HEARTBEAT_SECONDS = 10.0
 
 
 class Unreachable(Exception):
@@ -38,12 +35,12 @@ class Client:
         self.timeout = timeout
         self.opener = urllib.request.build_opener(NoRedirects())
 
-    def post(self, path: str, body: dict[str, object], deadline: float | None = None) -> dict[str, Any]:
+    def post(self, path: str, body: dict[str, object]) -> dict[str, Any]:
         request = urllib.request.Request(self.base_url + path, data=json.dumps(body).encode(), method="POST",
                                          headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
-                raw = self.read_reply(response, deadline)
+                raw = response.read(MAX_REPLY)
         except urllib.error.HTTPError as error:
             with error:
                 detail = error.read(MAX_REPLY)
@@ -59,22 +56,6 @@ class Client:
         return parsed
 
     @staticmethod
-    def read_reply(response: Any, deadline: float | None) -> bytes:
-        if deadline is None:
-            return bytes(response.read(MAX_REPLY))
-        parts: list[bytes] = []
-        size = 0
-        while size < MAX_REPLY:
-            if time.monotonic() > deadline:
-                raise TimeoutError("the reply did not finish in time")
-            chunk = response.read1(CHUNK)
-            if not chunk:
-                break
-            parts.append(chunk)
-            size += len(chunk)
-        return b"".join(parts)
-
-    @staticmethod
     def error_text(raw: bytes) -> str:
         try:
             parsed = json.loads(raw or b"{}")
@@ -87,7 +68,7 @@ class Client:
         return job if isinstance(job, dict) else None
 
     def heartbeat(self, job_id: int) -> None:
-        self.post(f"/internal/browser/jobs/{job_id}/heartbeat", {}, deadline=time.monotonic() + HEARTBEAT_SECONDS)
+        self.post(f"/internal/browser/jobs/{job_id}/heartbeat", {})
 
     def progress(self, job_id: int, message: str) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/progress", {"message": message})
