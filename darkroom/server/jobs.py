@@ -125,7 +125,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
     def clean_inbox(at: float) -> None:
         with db.session(engine) as opened:
             report = cleanup.clean(opened, Photos(settings.photos_root), at)
-        monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused)
+        monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
 
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)

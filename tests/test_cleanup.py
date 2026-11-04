@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
@@ -95,6 +96,7 @@ class StagingAndPartsTests(Imported):
         self.assertEqual(len(list(elsewhere.glob("*.zip"))), 2)
 
     def test_a_staging_folder_that_is_a_link_to_originals_is_refused(self):
+        self.resolve(NOW)
         os.rename(self.staging, self.world.base / "moved-staging")
         os.symlink(self.root / "jo/originals", self.staging)
         report = self.clean()
@@ -102,6 +104,7 @@ class StagingAndPartsTests(Imported):
         self.assertEqual(self.kept_tree(), self.kept)
 
     def test_a_zip_part_that_points_into_originals_or_google_only_is_refused(self):
+        self.resolve(NOW)
         export = self.world.opened.get(Export, self.export_id)
         for target in ("jo/originals", "jo/google-only/2017/07"):
             for part in self.zips:
@@ -114,6 +117,66 @@ class StagingAndPartsTests(Imported):
                 report = self.clean()
                 self.assertEqual((report.parts, report.refused), (0, 2))
                 self.assertEqual(self.kept_tree(), self.kept)
+
+    def test_a_run_with_items_that_could_not_be_imported_keeps_staging_and_parts(self):
+        self.world.opened.execute(ImportRun.__table__.update().values(failed=2))
+        self.world.opened.commit()
+        for at in (LATER, LATER + DAY, LATER + 365 * DAY):
+            report = self.clean(at)
+            self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 1))
+        self.assertTrue(self.staging.is_dir())
+        self.assertTrue(all(part.is_file() for part in self.zips))
+        kept = list(self.world.opened.execute(select(Event).where(Event.type == "cleanup_kept")).scalars())
+        self.assertEqual([(e.subject, e.detail) for e in kept], [("export 1", "staging and zip parts kept: 2 items could not be imported")])
+
+    def test_a_pending_hold_that_is_missing_a_link_or_different_keeps_staging_and_parts(self):
+        good = self.hold.read_bytes()
+        for broken in ("missing", "link", "different", "elsewhere"):
+            with self.subTest(hold=broken):
+                review = self.review()
+                review.hold_path = "_inbox/jo/review/export-1/IMG_1005.JPG"
+                self.hold.unlink(missing_ok=True)
+                if broken == "link":
+                    os.symlink(self.staging / "staging/Takeout/Google Photos/Photos from 2019/IMG_1005.JPG", self.hold)
+                elif broken == "different":
+                    self.hold.write_bytes(b"not the held photo")
+                elif broken == "elsewhere":
+                    self.hold.write_bytes(good)
+                    (self.root / "_inbox/jo/review/export-2").mkdir(exist_ok=True)
+                    (self.root / "_inbox/jo/review/export-2/IMG_1005.JPG").write_bytes(good)
+                    review.hold_path = "_inbox/jo/review/export-2/IMG_1005.JPG"
+                self.world.opened.commit()
+                report = self.clean()
+                self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 1))
+                self.assertTrue(self.staging.is_dir())
+                self.assertTrue(all(part.is_file() for part in self.zips))
+        self.hold.unlink()
+        self.hold.write_bytes(good)
+        self.review().hold_path = "_inbox/jo/review/export-1/IMG_1005.JPG"
+        self.world.opened.commit()
+        self.assertEqual(self.clean().staging, 1)
+
+    def test_a_filesystem_error_is_recorded_and_the_rest_of_cleanup_goes_on(self):
+        self.resolve(NOW)
+        with mock.patch.object(paths, "remove_inbox_tree", side_effect=PermissionError("/private/path")):
+            report = self.clean(NOW + 100 * DAY)
+        self.assertEqual((report.failed, report.holds), (1, 1))
+        self.assertFalse(self.hold.exists())
+        self.assertIsNone(self.review().hold_path)
+        failed = list(self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed")).scalars())
+        self.assertEqual([(e.subject, e.detail) for e in failed], [("export 1", "PermissionError")])
+        self.assertIn("1 failed", self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalar_one().detail)
+        self.assertEqual(self.clean(NOW + 101 * DAY).staging, 1)
+
+    def test_a_filesystem_error_on_a_hold_is_recorded_and_the_hold_kept(self):
+        review = self.resolve(NOW)
+        with mock.patch.object(paths, "remove_inbox_file", side_effect=OSError("/private/path")):
+            report = self.clean(NOW + 100 * DAY)
+        self.assertEqual((report.holds, report.failed), (0, 2))
+        self.assertEqual(review.hold_path, "_inbox/jo/review/export-1/IMG_1005.JPG")
+        self.assertTrue(self.hold.is_file())
+        failed = [(e.subject, e.detail) for e in self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed").order_by(Event.id)).scalars()]
+        self.assertEqual(failed, [("export 1", "OSError"), (f"review {review.id}", "OSError")])
 
     def test_a_second_cleanup_finds_nothing_more(self):
         self.clean()
@@ -147,7 +210,7 @@ class ReviewHoldTests(Imported):
         self.world.opened.add(ReviewItem(decision_id=twin.id, status="pending", hold_path=review.hold_path))
         self.world.opened.commit()
         report = self.clean(NOW + 100 * DAY)
-        self.assertEqual((report.holds, report.kept), (0, 1))
+        self.assertEqual((report.holds, report.kept, report.staging), (0, 2, 0))
         self.assertTrue(self.hold.is_file())
 
     def test_a_hold_path_into_originals_or_google_only_is_refused(self):

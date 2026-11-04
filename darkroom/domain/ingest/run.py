@@ -46,6 +46,10 @@ class StageFailed(RuntimeError):
     pass
 
 
+class ReportPending(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class Tools:
     read: xmp.Reader = exiftool.read
@@ -341,10 +345,18 @@ def summary_of(export: Export, run: ImportRun) -> str:
 
 def stage_report(opened: Session, settings: config.Settings, export: Export, run: ImportRun, now: float, tools: Tools) -> None:
     key = f"export_imported:{export.id}"
-    sent = opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first()
-    if sent is None:
-        alerts.open_alert(opened, settings, key, "export_imported", f"export {export.id}", alerts.export_imported(summary_of(export, run)), None, now,
-                          notifier=tools.notifier)
+    if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
+        wording = alerts.export_imported(summary_of(export, run))
+        alert = Alert(key=key, kind="export_imported", subject=f"export {export.id}", message=wording.message, link=None, opened=now, closed=now)
+        opened.add(alert)
+        opened.commit()
+        alerts.deliver(opened, settings, alert, wording, now, tools.notifier)
+        try:
+            mark(opened, export, run, "reported")
+        except Exception as error:
+            opened.rollback()
+            raise ReportPending("the summary was sent but its stage was not saved") from error
+        return
     mark(opened, export, run, "reported")
 
 
@@ -386,6 +398,11 @@ def run_stages(opened: Session, settings: config.Settings, export: Export, now: 
             stage_rescan(opened, settings, export, run, now, tools)
         if before(export, "reported"):
             stage_report(opened, settings, export, run, now, tools)
+    except ReportPending:
+        monitoring.log("import left to resume", export=export_id, stage="reported")
+        found = opened.get(ImportRun, run_id)
+        assert found is not None
+        return found
     except Exception as error:
         failed(opened, settings, export_id, run_id, error, now, tools)
         found = opened.get(ImportRun, run_id)

@@ -6,10 +6,10 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events
+from darkroom.domain import events, media
 from darkroom.domain.ingest import unpack
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, ExportPart, ImportRun, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -23,6 +23,7 @@ class CleanupReport:
     holds: int = 0
     kept: int = 0
     refused: int = 0
+    failed: int = 0
 
 
 def imported_at(opened: Session, export: Export) -> float | None:
@@ -32,11 +33,56 @@ def imported_at(opened: Session, export: Export) -> float | None:
     return None if found is None else float(found)
 
 
-def unheld_reviews(opened: Session, export: Export) -> int:
-    return int(opened.execute(
-        select(func.count(ReviewItem.id)).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
-        .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending", ReviewItem.hold_path.is_(None))
-    ).scalar_one())
+def latest_done_run(opened: Session, export: Export) -> ImportRun | None:
+    return opened.execute(
+        select(ImportRun).where(ImportRun.export_id == export.id, ImportRun.status == "done").order_by(ImportRun.finished.desc(), ImportRun.id.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def note_once(opened: Session, now: float, type: str, subject: str, detail: str) -> None:
+    seen = opened.execute(select(Event.id).where(Event.type == type, Event.subject == subject).limit(1)).first()
+    if seen is None:
+        events.record(opened, now, type, subject, detail)
+
+
+def staged_copy(opened: Session, photos: Photos, export: Export, source_path: str) -> Path | None:
+    relative = PurePosixPath(source_path)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        return None
+    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
+        try:
+            staging = photos.staging(slug, unpack.staging_name(export))
+        except paths.OutsideRoot:
+            continue
+        candidate = staging.joinpath(*relative.parts)
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
+def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision) -> bool:
+    if review.hold_path is None or decision.source_path is None:
+        return False
+    relative = PurePosixPath(review.hold_path)
+    if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 5 or relative.parts[0] != "_inbox":
+        return False
+    try:
+        folder = photos.review_hold(relative.parts[1], unpack.staging_name(export))
+    except paths.OutsideRoot:
+        return False
+    hold = photos.root.joinpath(*relative.parts)
+    if hold.parent != folder or hold.is_symlink() or not hold.is_file() or hold.resolve().parent != folder:
+        return False
+    staged = staged_copy(opened, photos, export, decision.source_path)
+    return staged is not None and media.sha1_of(hold)[0] == media.sha1_of(staged)[0]
+
+
+def unsafe_reviews(opened: Session, photos: Photos, export: Export) -> int:
+    pending = opened.execute(
+        select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+        .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending")
+    ).all()
+    return sum(1 for review, decision in pending if not hold_is_safe(opened, photos, export, review, decision))
 
 
 def remove(photos: Photos, path: Path, folder: bool, report: CleanupReport) -> bool:
@@ -47,8 +93,13 @@ def remove(photos: Photos, path: Path, folder: bool, report: CleanupReport) -> b
         return False
 
 
-def clean_export(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
-    if unheld_reviews(opened, export):
+def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+    done = latest_done_run(opened, export)
+    if done is not None and done.failed > 0:
+        report.kept += 1
+        note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
+        return
+    if unsafe_reviews(opened, photos, export):
         report.kept += 1
         return
     for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
@@ -89,7 +140,13 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
             report.refused += 1
             continue
         path = photos.root.joinpath(*relative.parts)
-        if remove(photos, path, False, report) or not path.exists():
+        try:
+            removed = remove(photos, path, False, report) or not path.exists()
+        except OSError as error:
+            report.failed += 1
+            events.record(opened, now, "cleanup_failed", f"review {review.id}", type(error).__name__)
+            continue
+        if removed:
             report.holds += 1
             review.hold_path = None
 
@@ -101,10 +158,15 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
         finished = imported_at(opened, export)
         if finished is None or finished > cutoff:
             continue
-        clean_export(opened, photos, export, report)
+        try:
+            clean_export(opened, photos, export, now, report)
+        except OSError as error:
+            report.failed += 1
+            events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
     opened.flush()
-    if report.staging or report.parts or report.holds or report.refused:
-        detail = f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
+    if report.staging or report.parts or report.holds or report.refused or report.failed:
+        detail = (f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
+                  + (f", {report.failed} failed" if report.failed else ""))
         events.record(opened, now, "cleanup", "inbox", detail)
     return report

@@ -3,11 +3,12 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import dedupe
+from darkroom.domain import alerts, dedupe
 from darkroom.domain.ingest import metadata, place, run
 from darkroom.storage import locks
-from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
 from tests.import_world import NOW, World, sha1_of, tree
 from tests.privacy import no_leaks
 
@@ -124,6 +125,39 @@ class CrashTests(unittest.TestCase):
             with self.subTest(call=number):
                 self.assertEqual(self.crashed_state(place, "place", kill_on_call(place.place, number, after=True)), clean)
                 self.assertEqual(self.crashed_state(place, "place", kill_on_call(place.place, number)), clean)
+
+    def test_killing_the_run_between_sending_the_summary_and_saving_it_sends_it_once(self):
+        world = World(self)
+        export_id = world.hand_dropped().id
+        with mock.patch.object(alerts, "deliver", kill_on_call(alerts.deliver, 2, after=True)), self.assertRaises(KeyboardInterrupt):
+            world.run_import(export_id)
+        self.assertEqual(world.sent(SUMMARY), 1)
+        world.reopen()
+        self.assertEqual(world.run_import(export_id).status, "done")
+        self.assertEqual(world.sent(SUMMARY), 1)
+        self.assertEqual(world.opened.execute(select(Alert).where(Alert.kind == "export_imported")).scalar_one().closed, NOW)
+
+    def test_a_failed_save_after_the_summary_is_sent_leaves_the_run_to_resume_not_failed(self):
+        world = World(self)
+        export_id = world.hand_dropped().id
+        real = run.mark
+        calls = {"reported": 0}
+
+        def failing(opened, export, run_row, stage):
+            if stage == "reported" and not calls["reported"]:
+                calls["reported"] += 1
+                raise OperationalError("COMMIT", {}, Exception("disk I/O error"))
+            return real(opened, export, run_row, stage)
+
+        with mock.patch.object(run, "mark", failing):
+            done = world.run_import(export_id)
+        self.assertEqual((done.status, done.error), ("running", None))
+        self.assertEqual(world.opened.get(Export, export_id).status, "importing")
+        self.assertEqual((world.sent(SUMMARY), world.sent(FAILURE)), (1, 0))
+        self.assertEqual(run.waiting_exports(world.opened), [export_id])
+        run.run_waiting(world.opened, world.settings, NOW, world.tools)
+        self.assertEqual(world.opened.get(Export, export_id).status, "imported")
+        self.assertEqual(world.sent(SUMMARY), 1)
 
     def test_the_stage_is_recorded_on_the_export_as_the_run_goes(self):
         world = World(self)
