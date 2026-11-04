@@ -32,6 +32,7 @@
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
+        "tests/test_device_auth.py",
         "tests/test_every_route.py",
         "tests/test_oidc.py"
       ]
@@ -60,6 +61,16 @@
       ]
     },
     {
+      "route": "GET /auth/device/start",
+      "auth": "public",
+      "handler": "darkroom.server.auth.device_start",
+      "frontend": [],
+      "tests": [
+        "tests/test_device_auth.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
       "route": "GET /api/me",
       "auth": "session",
       "handler": "darkroom.server.auth.me",
@@ -70,6 +81,7 @@
         "tests/test_auth_routes.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_device_auth.py",
         "tests/test_static.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
@@ -86,6 +98,7 @@
         "tests/test_browser_internal_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_imports_api.py",
         "tests/test_pixels_api.py",
@@ -116,6 +129,8 @@
       ],
       "tests": [
         "tests/api_world.py",
+        "tests/test_device_auth.py",
+        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
@@ -131,6 +146,8 @@
       ],
       "tests": [
         "tests/api_world.py",
+        "tests/test_device_auth.py",
+        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
@@ -347,6 +364,40 @@
       "frontend": [],
       "tests": [
         "tests/test_imports_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/assets/check",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.check_assets",
+      "frontend": [],
+      "tests": [
+        "tests/device_world.py",
+        "tests/test_device_auth.py",
+        "tests/test_device_checkin.py",
+        "tests/test_every_route.py",
+        "tests/test_upload.py"
+      ]
+    },
+    {
+      "route": "PUT /api/device/assets/{id}/resources/{kind}",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.upload_resource",
+      "frontend": [],
+      "tests": [
+        "tests/device_world.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/checkin",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.checkin",
+      "frontend": [],
+      "tests": [
+        "tests/test_device_auth.py",
+        "tests/test_device_checkin.py",
+        "tests/test_every_route.py"
       ]
     },
     {

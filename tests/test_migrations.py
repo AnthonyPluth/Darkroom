@@ -148,6 +148,25 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT name FROM pixels").scalars().all(), ["Pixel"])
 
+    def test_0007_device_sub_leaves_old_devices_unbound_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0006")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created) VALUES (1, 1, 'iPhone', 'h', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertIsNone(connection.exec_driver_sql("SELECT sub FROM devices").scalar_one())
+            connection.exec_driver_sql("UPDATE devices SET sub = 'user-1'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0006")
+        self.assertNotIn("sub", {column["name"] for column in inspect(self.engine).get_columns("devices")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT name FROM devices").scalars().all(), ["iPhone"])
+
 
 if __name__ == "__main__":
     unittest.main()
