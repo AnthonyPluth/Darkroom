@@ -129,6 +129,7 @@ Darkroom's own, after fleet's:
 - Don't hard-wrap lines in pull request descriptions, comments, issues or the body of a commit message: write each paragraph or list item as one line, and let GitHub wrap it to the screen. Only code and repo files keep their own wrapping. Keep the commit subject to one short line.
 <!-- fleet:end git-and-prs -->
 - **Codex reviews every pull request; the Claude review is only for risky ones** (the owner's decision of Nov 3, recorded in #76). Comment `@codex review` on the draft as the block says. The merge gate (`.github/workflows/merge-gate.yml`, `require-codex-review: true`) stays pending until Codex has reviewed the head commit, so ask again after each substantive push. The Claude "Second review" runs on a pull request labelled `safety-critical` or `security`, or changing `.github/**`, `.claude/**` or a path `.github/workflows/agent-review.yml` lists; any other gets a passing "Not a risky pull request". Resolving a Codex thread starts no workflow, so afterwards run "Merge gate" by hand with the pull request's number, or push. Who reviews what, and how to turn the first review back on, is in `docs/runbook.md`.
+- A pull request description always describes what the code does at its current head, and is updated with every push that changes behavior, so it never drifts.
 
 ## Model routing
 
