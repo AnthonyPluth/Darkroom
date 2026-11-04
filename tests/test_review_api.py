@@ -242,10 +242,31 @@ class ResolveTests(ReviewCase):
         self.assertEqual((self.tree(), self.confirmed()), (before, before_flags))
         self.assertEqual(self.pending().id, review_id)
 
+    def test_a_pair_kept_before_cleanup_and_undone_after_it_can_be_kept_again(self):
+        review_id = self.pending().id
+        staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
+        with mock.patch.object(review_api, "now", return_value=NOW + 5 * DAY):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[0], 200)
+        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY)
+        self.world.opened.commit()
+        self.assertFalse(staging.exists())
+        with mock.patch.object(review_api, "now", return_value=NOW + 16 * DAY):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+            status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["review"]["status"], "kept_both")
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+            self.hold().write_bytes(b"changed after it was held")
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the held copy no longer matches the file in the export, so it was not kept"}))
+
     def test_keep_both_refuses_a_hold_nothing_can_check_any_more(self):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
         for path in sorted(staging.rglob("*"), reverse=True):
             path.rmdir() if path.is_dir() else path.unlink()
+        opened = self.opened
+        opened.get(ReviewItem, self.pending().id).hold_sha1 = None
+        opened.commit()
         before, review_id = self.tree(), self.pending().id
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
                          (409, {"error": "the held copy can no longer be checked against the export, so it was not kept"}))
@@ -339,6 +360,20 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before)
         self.assertEqual(len(self.opened.execute(select(MediaItem).where(MediaItem.path == str(photo.relative_to(self.world.root)))).all()), 1)
+
+    def test_undo_follows_the_latest_keep_both_even_when_the_clock_went_back(self):
+        photo, sidecar = self.already_there(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        with mock.patch.object(review_api, "now", return_value=NOW + 2 * DAY):
+            review_id, _ = self.resolve("keep_both")
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        photo.unlink()
+        sidecar.unlink()
+        before = self.tree()
+        with mock.patch.object(review_api, "now", return_value=NOW + DAY):
+            self.resolve("keep_both")
+            self.assertTrue(photo.is_file())
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(self.tree(), before)
 
     def test_undo_after_keep_both_over_a_stale_row_restores_the_stale_state(self):
         folder = self.world.root / "jo" / "google-only" / "2019" / "08"

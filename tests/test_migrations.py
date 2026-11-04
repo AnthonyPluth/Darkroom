@@ -180,13 +180,13 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO review_items (id, decision_id, status) VALUES (1, 1, 'pending')")
         db.migrate(self.engine)
         with self.engine.begin() as connection:
-            self.assertIsNone(connection.exec_driver_sql("SELECT sidecar_json FROM review_items").scalar_one())
-            connection.exec_driver_sql("""UPDATE review_items SET sidecar_json = '{"title": "a.jpg"}'""")
+            self.assertEqual(connection.exec_driver_sql("SELECT sidecar_json, hold_sha1 FROM review_items").one(), (None, None))
+            connection.exec_driver_sql("""UPDATE review_items SET sidecar_json = '{"title": "a.jpg"}', hold_sha1 = 'abc'""")
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0007")
-        self.assertNotIn("sidecar_json", {column["name"] for column in inspect(self.engine).get_columns("review_items")})
+        self.assertFalse({"sidecar_json", "hold_sha1"} & {column["name"] for column in inspect(self.engine).get_columns("review_items")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT status FROM review_items").scalars().all(), ["pending"])
 

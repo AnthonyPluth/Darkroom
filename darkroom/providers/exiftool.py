@@ -92,7 +92,10 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
 def embedded_preview(path: Path) -> bytes | None:
     program = executable()
     for name in PREVIEW_TAGS:
-        done = run_binary([program, "-b", f"-{name}", "-api", "largefilesupport=1", str(path)], PREVIEW_TIMEOUT)
+        try:
+            done = run_binary([program, "-b", f"-{name}", "-api", "largefilesupport=1", str(path)], PREVIEW_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            raise Unreadable("exiftool took too long to read the preview") from error
         if done.returncode == 0 and done.stdout.startswith(IMAGE_MAGIC):
             return done.stdout
     return None

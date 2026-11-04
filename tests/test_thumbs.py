@@ -109,6 +109,14 @@ class EmbeddedPreviewTests(unittest.TestCase):
             self.assertEqual(exiftool.embedded_preview(Path("/x/clip.mov")), image)
         self.assertEqual([call.args[0][2] for call in run.call_args_list], ["-PreviewImage", "-ThumbnailImage"])
 
+    def test_a_preview_that_takes_too_long_gives_the_placeholder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = fixtures.make_video(Path(folder) / "slow.mov")
+            with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), \
+                    mock.patch.object(exiftool, "run_binary", side_effect=subprocess.TimeoutExpired(["exiftool"], exiftool.PREVIEW_TIMEOUT)) as run:
+                self.assertEqual(decoded(thumbs.render(source, exiftool.embedded_preview)).size, thumbs.PLACEHOLDER_SIZE)
+            self.assertEqual(run.call_count, 1)
+
     def test_no_image_in_any_tag_is_none(self):
         with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), \
                 mock.patch.object(exiftool, "run_binary", return_value=subprocess.CompletedProcess([], 1, b"junk", b"")):
@@ -141,6 +149,21 @@ class ThumbRouteTests(ReviewCase):
         original = self.world.root / "jo" / "originals" / "IMG_1005.JPG"
         original.unlink()
         original.symlink_to(secret)
+        self.assertEqual(self.call("GET", f"/api/review/{row.id}/thumb/library"), (404, {"error": "no such picture"}))
+
+    def test_a_link_to_another_file_in_the_persons_folder_is_404(self):
+        row = self.pending()
+        original = self.world.root / "jo" / "originals" / "IMG_1005.JPG"
+        other = self.world.root / "jo" / "originals" / "IMG_1001.JPG"
+        self.assertTrue(other.is_file())
+        original.unlink()
+        original.symlink_to(other)
+        self.assertEqual(self.call("GET", f"/api/review/{row.id}/thumb/library"), (404, {"error": "no such picture"}))
+        folder = self.world.root / "jo" / "originals" / "linked"
+        folder.symlink_to(self.world.root / "jo" / "originals")
+        opened = self.opened
+        opened.get(MediaItem, self.decision_of("IMG_1005.JPG").matched_item_id).path = "jo/originals/linked/IMG_1001.JPG"
+        opened.commit()
         self.assertEqual(self.call("GET", f"/api/review/{row.id}/thumb/library"), (404, {"error": "no such picture"}))
 
     def test_a_missing_hold_or_side_is_404(self):

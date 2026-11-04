@@ -200,6 +200,7 @@ class ReviewItem(Base):
     hold_path: Mapped[str | None] = mapped_column(String)
     resolved_at: Mapped[float | None] = mapped_column(Float)
     sidecar_json: Mapped[str | None] = mapped_column(Text)
+    hold_sha1: Mapped[str | None] = mapped_column(String)
 
 
 class ImportRun(Base):

@@ -250,7 +250,10 @@ def library_file(opened: Session, photos: Photos, item: MediaItem) -> tuple[str,
         raise thumbs.NotAPhoto("the file is outside the photo folder") from error
     if not path.is_relative_to(photos.root / person.slug):
         raise thumbs.NotAPhoto("the file is outside the person's folder")
-    return person.slug, path
+    recorded = photos.root.joinpath(*PurePosixPath(item.path).parts)
+    if recorded != path:
+        raise thumbs.NotAPhoto("the recorded path goes through a link")
+    return person.slug, recorded
 
 
 def thumb(opened: Session, photos: Photos, review_id: int, side: str, preview: thumbs.Preview = exiftool.embedded_preview) -> bytes:
@@ -285,7 +288,7 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     parsed = sidecar.parse(raw) if raw else None
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
     fields = metadata.candidate(item, read_tags(read, hold), parsed, person_id, UNPLACED, now, hit.export.id)
-    expected = media.sha1_of(staged)[0] if staged is not None else (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
+    expected = media.sha1_of(staged)[0] if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
     if expected is None:
         raise WrongState("the held copy can no longer be checked against the export, so it was not kept")
     if expected != fields.sha1:
@@ -320,7 +323,7 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
 
 def adopted_by(opened: Session, review: ReviewItem) -> set[str]:
     detail = opened.execute(
-        select(Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.time.desc(), Event.id.desc()).limit(1)
+        select(Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
     ).scalar_one_or_none()
     if detail is None or ADOPTED not in detail:
         return set()
