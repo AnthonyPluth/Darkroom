@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -234,6 +235,26 @@ class DropLibraryCopyTests(unittest.TestCase):
         paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept, with_sidecar=False)
         self.assertFalse(self.copy.exists())
         self.assertTrue(self.copy.with_name("a.jpg.xmp").is_file())
+
+    def test_a_failure_part_way_restores_both_files(self):
+        real = os.rename
+
+        def rename(source, target):
+            if str(source).endswith(".xmp"):
+                raise PermissionError("made to fail")
+            return real(source, target)
+
+        with mock.patch.object(paths.os, "rename", side_effect=rename), self.assertRaises(PermissionError):
+            paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        self.assertEqual(self.copy.read_bytes(), b"same bytes")
+        self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertEqual(sorted(path.name for path in self.copy.parent.iterdir()), ["a.jpg", "a.jpg.xmp"])
+
+    def test_a_staged_file_that_cannot_be_deleted_still_counts_as_gone(self):
+        with mock.patch.object(paths.Path, "unlink", side_effect=PermissionError("made to fail")):
+            paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        self.assertFalse(self.copy.exists())
+        self.assertFalse(self.copy.with_name("a.jpg.xmp").exists())
 
     def test_a_linked_copy_is_never_followed(self):
         target = self.base / "elsewhere.jpg"

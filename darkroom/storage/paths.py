@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import tempfile
 from collections.abc import Callable, Iterable
@@ -13,6 +14,7 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
 CHUNK = 1024 * 1024
 SIDECAR_SUFFIX = ".xmp"
+DROPPING = ".dropping-"
 
 
 class OutsideRoot(ValueError):
@@ -298,6 +300,18 @@ def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: b
     if file_sha1(kept) != file_sha1(target):
         raise NotALibraryCopy("the kept copy is not the same file")
     sidecar = sidecar_of(target)
-    target.unlink()
-    if with_sidecar and sidecar.is_file() and not sidecar.is_symlink():
-        sidecar.unlink()
+    going = [target, sidecar] if with_sidecar and sidecar.is_file() and not sidecar.is_symlink() else [target]
+    token = secrets.token_hex(8)
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for path in going:
+            aside = path.with_name(f"{DROPPING}{token}-{path.name}")
+            os.rename(path, aside)
+            staged.append((path, aside))
+    except OSError:
+        for path, aside in reversed(staged):
+            os.rename(aside, path)
+        raise
+    for _, aside in staged:
+        with contextlib.suppress(OSError):
+            aside.unlink()

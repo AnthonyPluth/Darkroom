@@ -3,7 +3,8 @@
   import type { ImportView, MediaView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
   import { nowSeconds, onDay, when } from "$lib/format";
-  import { Loader } from "$lib/loader.svelte";
+  import { Loader, type Loaded } from "$lib/loader.svelte";
+  import { actGet } from "$lib/act";
   import { followLink } from "$lib/nav.svelte";
   import { camera, counted, partsSentence, personName, RANGES, rangeStart, type RangeKey, runChip, skipped, unmatchedNames, unmatchedTotal, wallClock } from "$lib/review";
   import { NOT_CHECKED } from "$lib/view";
@@ -26,19 +27,27 @@
     return { runs: imports.imports, people: people.people, now: nowSeconds() };
   });
 
-  const gps = new Loader(async () => {
-    const start = rangeStart(range, nowSeconds());
-    const query = [`gps=none`, `page=${page}`, ...(person === null ? [] : [`person=${person}`]), ...(start === null ? [] : [`from=${start}`])].join("&");
-    return apiCall<"GET /api/media">(`/api/media?${query}`, { failed: "Couldn't load the photos without a location" });
-  });
+  let gps = $state<Loaded<null>>({ kind: "loading" });
+  let generation = 0;
 
   async function loadMissing(more = false): Promise<void> {
-    page = more ? page + 1 : 0;
-    await gps.load(more);
-    if (gps.current.kind === "ready") {
-      missing = more ? [...missing, ...gps.current.data.media] : gps.current.data.media;
-      missingTotal = gps.current.data.total;
+    const mine = ++generation;
+    const wanted = more ? page + 1 : 0;
+    if (!more) gps = { kind: "loading" };
+    const start = rangeStart(range, nowSeconds());
+    const query = [`gps=none`, `page=${wanted}`, ...(person === null ? [] : [`person=${person}`]), ...(start === null ? [] : [`from=${start}`])].join("&");
+    let message = "";
+    const data = await actGet(() => apiCall<"GET /api/media">(`/api/media?${query}`, { failed: "Couldn't load the photos without a location" }),
+      { onError: (m) => (message = m) });
+    if (mine !== generation) return;
+    if (data === null) {
+      gps = { kind: "error", message };
+      return;
     }
+    page = wanted;
+    missing = more ? [...missing, ...data.media] : data.media;
+    missingTotal = data.total;
+    gps = { kind: "ready", data: null };
   }
 
   onMount(() => {
@@ -175,9 +184,9 @@
           </div>
         </div>
       </div>
-      {#if gps.current.kind === "error"}
-        <LoadFailed message={gps.current.message} retry={() => loadMissing()} />
-      {:else if gps.current.kind === "loading" && missing.length === 0}
+      {#if gps.kind === "error"}
+        <LoadFailed message={gps.message} retry={() => loadMissing()} />
+      {:else if gps.kind === "loading" && missing.length === 0}
         <p role="status" class="text-ink-muted">Loading...</p>
       {:else if missing.length === 0}
         <p class="text-ink-muted">Every photo in this range has a location.</p>

@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 
@@ -7,6 +8,7 @@ from darkroom.domain import review
 from darkroom.domain.ingest import cleanup, run
 from darkroom.server import routes
 from darkroom.server.api import review as review_api
+from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem, ReviewItem
 from tests.import_world import NOW, sha1_of
 from tests.privacy import no_leaks
@@ -248,6 +250,30 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/decisions/{later.id}/reverse")[0], 200)
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertFalse((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).exists())
+
+    def test_a_failing_sidecar_removal_on_undo_changes_nothing(self):
+        review_id, _ = self.resolve("keep_both")
+        kept = self.item_named(PAIR_NAME)
+        sidecar = (self.world.root / kept.path).with_name(f"{PAIR_NAME}.xmp")
+        if not sidecar.exists():
+            sidecar.write_bytes(b"<x:xmpmeta/>")
+        before = self.tree()
+        real = os.rename
+
+        def rename(source, target):
+            if str(source).endswith(".xmp"):
+                raise PermissionError("made to fail")
+            return real(source, target)
+
+        with mock.patch.object(paths.os, "rename", side_effect=rename):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"),
+                             (409, {"error": "the kept copy could not be removed, so nothing was changed"}))
+        self.assertEqual(self.tree(), before)
+        row = self.opened.get(ReviewItem, review_id)
+        self.assertEqual(row.status, "kept_both")
+        self.assertEqual(self.opened.get(DedupeDecision, row.decision_id).takeout_item_id, kept.id)
+        self.assertIsNotNone(self.opened.get(MediaItem, kept.id))
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
 
     def test_undo_detaches_a_kept_copy_that_another_decision_also_placed(self):
         review_id, _ = self.resolve("keep_both")

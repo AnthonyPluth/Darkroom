@@ -31,7 +31,7 @@
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
     reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
     const past = resolved.flatMap((list) => list.reviews).sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
-    return { pending: pending.reviews, detail, past, people: people.people, now: nowSeconds() };
+    return { pending: pending.reviews, pendingCount: pending.pending, detail, past, people: people.people, now: nowSeconds() };
   });
 
   onMount(() => void loader.load());
@@ -81,7 +81,7 @@
   <div class="flex flex-col gap-1">
     <h1 class="text-xl font-bold tracking-tight">Review queue</h1>
     {#if loader.current.kind === "ready"}
-      {@const count = loader.current.data.pending.length}
+      {@const count = loader.current.data.pendingCount}
       <p class="text-ink-muted">
         {count === 0
           ? "Nothing to review. Pairs that look like the same photo saved twice show up here."
@@ -112,7 +112,7 @@
       {@const choices = pair.served_people}
       <section class="card md:p-5" aria-label="Current pair">
         <div class="flex items-center justify-between gap-2">
-          <h2 class="text-md font-semibold">Pair 1 of {data.pending.length}</h2>
+          <h2 class="text-md font-semibold">Pair 1 of {data.pendingCount}</h2>
           <Chip tone="warn" label="Likely re-encode" />
         </div>
         <div class="grid grid-cols-2 gap-2.5 md:gap-6">

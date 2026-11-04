@@ -1,9 +1,11 @@
+import os
 import unittest
 from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.domain import review
+from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
 from tests.import_world import sha1_of
@@ -103,6 +105,50 @@ class SharedAccountTests(ReviewCase):
         with mock.patch.object(review.xmp, "fill", side_effect=RuntimeError("exiftool broke")):
             with self.assertRaises(RuntimeError):
                 review.reassign(self.opened, self.world.photos, item.id, self.world.ids["sam"], 1.0)
+        self.assertEqual(self.tree(), before)
+
+    def test_a_failing_sidecar_removal_leaves_the_tree_and_database_unchanged(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        before_tree, before_flags = self.tree(), self.confirmed()
+        real, failed = os.rename, []
+
+        def rename(source, target):
+            if str(source).endswith(".xmp") and not failed:
+                failed.append(source)
+                raise PermissionError("made to fail")
+            return real(source, target)
+
+        with mock.patch.object(paths.os, "rename", side_effect=rename):
+            self.assertEqual(self.reassign(item.id, self.world.ids["sam"]),
+                             (409, {"error": "the photo could not be moved; it was left where it was"}))
+        self.assertTrue(failed)
+        self.assertEqual(self.tree(), before_tree)
+        self.assertEqual(self.confirmed(), before_flags)
+        row = self.opened.get(MediaItem, item.id)
+        self.assertEqual((row.person_id, row.path), (item.person_id, item.path))
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_a_sidecar_writer_failure_is_a_409_and_changes_nothing(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        (self.world.root / item.path).with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        before = self.tree()
+        for failure in (exiftool.Missing("no exiftool"), exiftool.WriteFailed("bad tag")):
+            with self.subTest(failure=failure), mock.patch.object(review.xmp, "fill", side_effect=failure):
+                self.assertEqual(self.reassign(item.id, self.world.ids["sam"]),
+                                 (409, {"error": "the photo could not be moved; it was left where it was"}))
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(self.opened.get(MediaItem, item.id).person_id, self.world.ids["jo"])
+
+    def test_a_stray_sidecar_at_the_target_is_never_changed(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        old = self.world.root / item.path
+        old.with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        stray = self.world.root / "sam" / "google-only" / old.parent.parent.name / old.parent.name / f"{GOOGLE_ONLY_NAME}.xmp"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_bytes(b"<x:xmpmeta>a stray sidecar, left untouched</x:xmpmeta>")
+        before = self.tree()
+        self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "the photo could not be moved; it was left where it was"}))
+        self.assertEqual(stray.read_bytes(), b"<x:xmpmeta>a stray sidecar, left untouched</x:xmpmeta>")
         self.assertEqual(self.tree(), before)
 
     def test_reassigning_back_returns_the_file(self):

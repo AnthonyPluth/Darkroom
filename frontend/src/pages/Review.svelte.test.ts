@@ -64,6 +64,12 @@ describe("the current pair", () => {
     expect(screen.getByText("1 pair looks like the same photo saved twice. Nothing is removed until you decide.")).toBeInTheDocument();
   });
 
+  it("counts every pending pair the server has, not just the ones it listed", async () => {
+    show({ "GET /api/review?status=pending": { reviews: [pending], pending: 640 } });
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 640" })).toBeInTheDocument();
+    expect(screen.getByText("640 pairs look like the same photo saved twice. Nothing is removed until you decide.")).toBeInTheDocument();
+  });
+
   it("keeps both, says so and offers undo", async () => {
     const server = show({ "POST /api/review/7/resolve": { review: { ...pending, status: "kept_both" } }, "POST /api/review/7/undo": { review: pending } });
     await userEvent.click(await screen.findByRole("button", { name: "Keep both" }));

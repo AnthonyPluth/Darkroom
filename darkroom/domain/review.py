@@ -24,6 +24,9 @@ PAGE_SIZE = 50
 LIST_LIMIT = 500
 
 
+MOVE_FAILURES = (paths.NotALibraryCopy, paths.NotASidecar, OSError, exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)
+
+
 class NoSuchReview(LookupError):
     pass
 
@@ -261,13 +264,16 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path) -> set[in
     matched, shared = still_referenced(opened, item, hit.decision)
     if matched:
         raise WrongState("a later import matched the kept copy; reverse that decision before undoing this one")
-    hit.decision.takeout_item_id = None
     if shared:
+        hit.decision.takeout_item_id = None
         return set()
     try:
         paths.drop_library_copy(photos, item.path, hold)
     except paths.NotALibraryCopy as error:
         raise WrongState("the kept copy is not where it was placed, so it was left alone") from error
+    except OSError as error:
+        raise WrongState("the kept copy could not be removed, so nothing was changed") from error
+    hit.decision.takeout_item_id = None
     owner = item.person_id
     opened.delete(item)
     return {owner}
@@ -362,15 +368,17 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
     except place.PlaceFailed as error:
         raise WrongState("the photo could not be moved; it was left where it was") from error
-    had_sidecar = paths.sidecar_of(placed.path).exists()
+    had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
     try:
         if not paths.carry_sidecar(source, placed.path):
+            if had_sidecar:
+                raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
         paths.drop_library_copy(photos, item.path, placed.path)
     except Exception as error:
         if placed.copied:
             paths.drop_library_copy(photos, place.relative(photos, placed.path), source, with_sidecar=not had_sidecar)
-        if isinstance(error, (paths.NotALibraryCopy, paths.NotASidecar, paths.AlreadyExists)):
+        if isinstance(error, MOVE_FAILURES):
             raise WrongState("the photo could not be moved; it was left where it was") from error
         raise
     item.person_id, item.path = target.id, place.relative(photos, placed.path)

@@ -130,6 +130,28 @@ describe("missing GPS", () => {
     expect(server.sent("GET /api/media?gps=none&page=0&person=2")).toHaveLength(1);
   });
 
+  it("never lets an older, slower answer replace a newer filter's list", async () => {
+    const first = `/api/media?gps=none&page=0&from=${YEAR_AGO}`;
+    const server = serve({
+      "GET /api/imports": { imports: [done] },
+      "GET /api/people": { people: [jo, sam] },
+      [`GET ${first}`]: { media: [photo], total: 1, page: 0, page_size: 50 },
+      [`GET /api/media?gps=none&page=0&person=2&from=${YEAR_AGO}`]: { media: [undated], total: 1, page: 0, page_size: 50 },
+    });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url === first ? held.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(Imports);
+    const group = await screen.findByRole("group", { name: "Person" });
+    await userEvent.click(within(group).getByRole("button", { name: "Sam Example" }));
+    expect(await screen.findByText("PXL_1.jpg")).toBeInTheDocument();
+    release();
+    await held;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("PXL_1.jpg")).toBeInTheDocument();
+    expect(screen.queryByText("IMG_2418.HEIC")).not.toBeInTheDocument();
+  });
+
   it("offers a retry when the list can't load", async () => {
     show({ [`GET /api/media?gps=none&page=0&from=${YEAR_AGO}`]: reply(500, {}) });
     expect(await screen.findByText("Couldn't load the photos without a location (500)")).toBeInTheDocument();
