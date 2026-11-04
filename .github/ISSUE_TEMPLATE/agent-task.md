@@ -5,7 +5,7 @@ title: ""
 labels: []
 ---
 
-<!-- One issue, one session, one pull request. Write each paragraph or list item as one line. The repository is private, but keep personal data out of it all the same: no names, photos, file names or locations from anyone's real library, here or in the work. -->
+<!-- One issue, one session, one pull request. Write each paragraph or list item as one line. The repository is public: keep personal data out of it: no names, photos, file names or locations from anyone's real library, here or in the work. -->
 
 ## Scope
 

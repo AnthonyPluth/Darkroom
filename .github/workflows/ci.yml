@@ -20,7 +20,7 @@ defaults:
 
 jobs:
   python:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    runs-on: ubuntu-latest   # hosted: small repository
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -47,7 +47,7 @@ jobs:
         run: tools/fleet no-comments
 
   generated:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    runs-on: ubuntu-latest   # hosted: small repository
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -71,7 +71,7 @@ jobs:
     uses: AnthonyPluth/fleet/.github/workflows/checks.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
 
   semgrep-rules:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    runs-on: ubuntu-latest   # hosted: small repository
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -85,7 +85,7 @@ jobs:
           pipx run semgrep==1.146.0 scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser run.py
 
   web:
-    runs-on: ubuntu-latest   # hosted: the repository is private and small
+    runs-on: ubuntu-latest   # hosted: small repository
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
