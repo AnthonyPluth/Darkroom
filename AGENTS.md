@@ -1,6 +1,6 @@
 # Agent guide
 
-Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/` (arrives in a later issue). The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
+Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/`. The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
@@ -13,7 +13,7 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - `static/app/`: the built web app (`make frontend-build`, not committed), served at `/` by `server/static.py` with the CSP in `server/common.py`.
 - `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
 - `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` are the dark set from the design signed off in #16 (`docs/design/web/00-tokens.dc.html`); the app is dark only, and a new colour or token goes back to #16 first.
-- `ios/` (XcodeGen, SwiftUI): added by a later issue.
+- `ios/` (XcodeGen, SwiftUI): `project.yml` generates the Xcode project (`xcodegen generate`, see `ios/README.md`); `Darkroom/` is the app, `Packages/DarkroomCore/` the SwiftPM package with the logic and its `swift test` tests. The `iOS` workflow builds it unsigned on macOS and is a required check; read its annotations.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `fleet` (the shim that runs fleet's tools at the version in `.fleet/version`), `app_checks.py` (Darkroom's own checks, run by `fleet checks`), `feature_map.py`, `api_contract.py`, `scrub_snapshot.py`.
 - `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and the signed-off designs in `design/` (`design/web/` for the web UI, with its README).
