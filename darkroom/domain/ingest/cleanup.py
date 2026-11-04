@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -61,29 +62,71 @@ def staged_copy(opened: Session, photos: Photos, export: Export, source_path: st
     return None
 
 
-def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision) -> bool:
-    if review.hold_path is None or decision.source_path is None:
-        return False
+def hold_file(photos: Photos, export: Export, review: ReviewItem) -> Path | None:
+    if review.hold_path is None:
+        return None
     relative = PurePosixPath(review.hold_path)
     if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 5 or relative.parts[0] != "_inbox":
-        return False
+        return None
     try:
         folder = photos.review_hold(relative.parts[1], unpack.staging_name(export))
     except paths.OutsideRoot:
-        return False
+        return None
     hold = photos.root.joinpath(*relative.parts)
     if hold.parent != folder or hold.is_symlink() or not hold.is_file() or hold.resolve().parent != folder:
+        return None
+    return hold
+
+
+def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision) -> bool:
+    hold = hold_file(photos, export, review)
+    if hold is None or decision.source_path is None:
         return False
     staged = staged_copy(opened, photos, export, decision.source_path)
     return staged is not None and media.sha1_of(hold)[0] == media.sha1_of(staged)[0]
 
 
+def pending_reviews(opened: Session, export: Export) -> list[ReviewItem]:
+    return list(opened.execute(
+        select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+        .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending").order_by(ReviewItem.id)
+    ).scalars())
+
+
+def verified_hashes(opened: Session, photos: Photos, export: Export) -> dict[str, str]:
+    found = {}
+    for review in pending_reviews(opened, export):
+        hold = hold_file(photos, export, review)
+        if hold is not None:
+            found[str(review.id)] = media.sha1_of(hold)[0]
+    return found
+
+
+def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
+    saved = opened.execute(
+        select(Event.detail).where(Event.type == VERIFIED, Event.subject == f"export {export.id}").order_by(Event.id).limit(1)
+    ).scalar_one_or_none()
+    try:
+        expected = json.loads(saved) if saved else None
+    except ValueError:
+        return False
+    if not isinstance(expected, dict):
+        return False
+    for review in pending_reviews(opened, export):
+        hold = hold_file(photos, export, review)
+        if hold is None or expected.get(str(review.id)) != media.sha1_of(hold)[0]:
+            return False
+    return True
+
+
 def unsafe_reviews(opened: Session, photos: Photos, export: Export) -> int:
-    pending = opened.execute(
-        select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
-        .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending")
-    ).all()
-    return sum(1 for review, decision in pending if not hold_is_safe(opened, photos, export, review, decision))
+    return sum(
+        1 for review, decision in opened.execute(
+            select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+            .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending")
+        ).all()
+        if not hold_is_safe(opened, photos, export, review, decision)
+    )
 
 
 def remove(photos: Photos, path: Path, folder: bool, report: CleanupReport) -> bool:
@@ -121,9 +164,9 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
             report.kept += 1
             return
         if not verified:
-            events.record(opened, now, VERIFIED, f"export {export.id}", "every pending review has a verified held copy")
+            events.record(opened, now, VERIFIED, f"export {export.id}", json.dumps(verified_hashes(opened, photos, export), sort_keys=True))
             opened.commit()
-    elif not verified:
+    elif not verified or not holds_still_match(opened, photos, export):
         report.kept += 1
         return
     for tree in trees:

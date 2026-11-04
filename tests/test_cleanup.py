@@ -193,6 +193,27 @@ class StagingAndPartsTests(Imported):
         self.assertEqual(len(list(self.world.opened.execute(select(Event).where(Event.type == cleanup.VERIFIED)).scalars())), 1)
         self.assertEqual(self.kept_tree(), self.kept)
 
+    def test_parts_stay_when_a_pending_hold_went_bad_after_staging_was_removed(self):
+        good = self.hold.read_bytes()
+        with mock.patch.object(paths, "remove_inbox_file", side_effect=OSError("/private/path")):
+            self.clean()
+        self.assertFalse(self.staging.exists())
+        for broken in ("missing", "link", "different"):
+            with self.subTest(hold=broken):
+                self.hold.unlink(missing_ok=True)
+                if broken == "link":
+                    other = self.root / "_inbox/jo/other.jpg"
+                    other.write_bytes(good)
+                    os.symlink(other, self.hold)
+                elif broken == "different":
+                    self.hold.write_bytes(b"not the held photo")
+                report = self.clean(LATER + DAY)
+                self.assertEqual((report.parts, report.kept), (0, 1))
+                self.assertTrue(all(part.is_file() for part in self.zips))
+        self.hold.unlink(missing_ok=True)
+        self.hold.write_bytes(good)
+        self.assertEqual(self.clean(LATER + 2 * DAY).parts, 2)
+
     def test_without_the_verification_record_parts_stay_once_staging_is_gone(self):
         import shutil
 
