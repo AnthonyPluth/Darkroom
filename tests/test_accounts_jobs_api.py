@@ -106,6 +106,21 @@ class AccountJobsApiTests(ApiCase):
         self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
 
+    def test_an_unresolved_schedule_attempt_stays_in_the_job_list_beyond_the_history_cap(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "ScheduleNotConfirmed: check Takeout"})
+        with db.session(self.engine) as opened:
+            for number in range(60):
+                opened.add(BrowserJob(account_id=self.account_id, kind="noop", status="done", payload="{}", created=float(number)))
+        for path in ("/api/browser/jobs", f"/api/browser/jobs?account={self.account_id}"):
+            listed = self.call("GET", path)[1]["jobs"]
+            self.assertEqual(len(listed), 51, path)
+            self.assertIn(job["id"], [entry["id"] for entry in listed])
+            self.assertEqual([entry["id"] for entry in listed], sorted((entry["id"] for entry in listed), reverse=True))
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")
+        self.assertNotIn(job["id"], [entry["id"] for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"]])
+
     def test_a_failed_job_lists_only_the_capture_files_that_exist(self):
         self.call("POST", f"/api/accounts/{self.account_id}/connect")
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]

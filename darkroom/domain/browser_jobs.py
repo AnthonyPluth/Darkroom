@@ -279,6 +279,19 @@ def worker_last_seen(opened: Session) -> float | None:
     return float(setting.value) if setting is not None and setting.value else None
 
 
+def unresolved_jobs(opened: Session, account_id: int | None) -> list[BrowserJob]:
+    query = select(BrowserJob).where(BrowserJob.status.in_(QUEUED_STATUSES))
+    if account_id is not None:
+        query = query.where(BrowserJob.account_id == account_id)
+    found = list(opened.execute(query).scalars())
+    accounts = {account_id} if account_id is not None else set(opened.execute(select(BrowserJob.account_id).where(BrowserJob.kind == "schedule", BrowserJob.status == "failed").distinct()).scalars())
+    for each in accounts:
+        stuck = unchecked_schedule(opened, each)
+        if stuck is not None:
+            found.append(stuck)
+    return found
+
+
 def as_dict(job: BrowserJob, settings: Settings | None = None) -> dict[str, object]:
     return {
         "id": job.id,

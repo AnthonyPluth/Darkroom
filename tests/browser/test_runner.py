@@ -335,6 +335,66 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(entry.main(), 0)
 
 
+class UnrecordedScheduleTests(unittest.TestCase):
+    def test_a_schedule_whose_done_report_is_refused_blocks_a_second_schedule(self):
+        engine = own_database(self)
+        settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example")
+        with db.session(engine) as opened:
+            account = add_account(opened)
+            job_id = browser_jobs.queue(opened, account, "schedule", {"email": "jo.takeout@example.test"}, 1.0).id
+            browser_jobs.claim(opened, 2.0)
+
+        class Stub:
+            def heartbeat(self, job):
+                return None
+
+            def progress(self, job, message):
+                return None
+
+            def waiting(self, job, reason):
+                return None
+
+            def done(self, job, result):
+                raise Refused(500, "database is locked")
+
+            def failed(self, job, message, folder, files=None):
+                with db.session(engine) as opened:
+                    browser_jobs.failed(opened, settings, job, message, folder, files or [], 5.0)
+
+        worker = runner.Runner(settings_for("http://unused", Path("/photos-unused")), Stub(), lambda profile: FakeBrowser(), {"schedule": lambda ctx: {"schedule_created": 1.0, "schedule_end": 2.0}})
+        self.assertEqual(worker.run_job({"id": job_id, "kind": "schedule", "account": str(account), "payload": {}}), "failed")
+        with db.session(engine) as opened:
+            self.assertTrue(opened.get(BrowserJob, job_id).message.startswith("ScheduleNotConfirmed: the work finished"))
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, account, "schedule", 9.0)
+
+    def test_other_kinds_and_failures_inside_the_work_keep_their_own_message(self):
+        sent = []
+
+        class Stub:
+            def heartbeat(self, job):
+                return None
+
+            def progress(self, job, message):
+                return None
+
+            def done(self, job, result):
+                raise Refused(500, "database is locked")
+
+            def failed(self, job, message, folder, files=None):
+                sent.append(message)
+
+        settings = settings_for("http://unused", Path("/photos-unused"))
+
+        def broken(ctx):
+            raise RuntimeError("page crashed")
+
+        worker = runner.Runner(settings, Stub(), lambda profile: FakeBrowser(), {"noop": lambda ctx: {}, "schedule": broken})
+        worker.run_job({"id": 1, "kind": "noop", "account": "1", "payload": {}})
+        worker.run_job({"id": 2, "kind": "schedule", "account": "1", "payload": {}})
+        self.assertEqual(sent, ["Refused", "RuntimeError"])
+
+
 class FailureMessageTests(unittest.TestCase):
     def test_only_the_worker_own_failures_carry_their_text(self):
         from darkroom_browser.jobs import schedule, session

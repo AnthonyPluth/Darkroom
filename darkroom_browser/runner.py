@@ -23,6 +23,10 @@ def failure_message(error: BaseException) -> str:
     return f"{name}: {error}" if isinstance(error, JobFailure) else name
 
 
+def unrecorded_message(error: BaseException) -> str:
+    return f"ScheduleNotConfirmed: the work finished but Darkroom could not record it ({type(error).__name__}); check Takeout before trying again"
+
+
 class Heartbeat:
     def __init__(self, client: Client, ctx: JobContext, every: float) -> None:
         self.client = client
@@ -79,11 +83,13 @@ class Runner:
         beat = Heartbeat(self.client, ctx, self.heartbeat_seconds)
         beat.start()
         outcome = "failed"
+        worked = False
         try:
             work = self.registry.get(ctx.kind)
             if work is None:
                 raise jobs.UnknownJob(f"no job called {ctx.kind!r}")
             result = work(ctx)
+            worked = True
             ctx.check()
             beat.stop()
             self.client.done(ctx.job_id, result)
@@ -95,14 +101,14 @@ class Runner:
             monitoring.log("browser job lost its lease", job=ctx.job_id)
             outcome = "cancelled"
         except Exception as error:
-            self.report_failure(ctx, error)
+            self.report_failure(ctx, error, worked)
         finally:
             beat.stop()
             ctx.close_browser()
         monitoring.log("browser job finished", job=ctx.job_id, kind=ctx.kind, outcome=outcome)
         return outcome
 
-    def report_failure(self, ctx: JobContext, error: BaseException) -> None:
+    def report_failure(self, ctx: JobContext, error: BaseException, worked: bool = False) -> None:
         captured = None
         try:
             captured = capture.capture(ctx.browser_open, ctx.failure_dir())
@@ -110,7 +116,7 @@ class Runner:
             monitoring.log("failure capture failed", error=type(capture_error).__name__)
         folder = ctx.failure_folder_name() if captured is not None else None
         try:
-            self.client.failed(ctx.job_id, failure_message(error), folder, captured.files() if captured is not None else None)
+            self.client.failed(ctx.job_id, unrecorded_message(error) if worked and ctx.kind == "schedule" else failure_message(error), folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
 
