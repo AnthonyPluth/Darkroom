@@ -17,12 +17,28 @@ class SignInTimedOut(Exception):
     pass
 
 
+class WrongAccount(Exception):
+    pass
+
+
+def check_identity(ctx: JobContext, page: str) -> None:
+    expected = str(ctx.payload.get("email", "")).strip().lower()
+    if not expected:
+        raise WrongAccount("the job does not say which Google account it is for")
+    actual = takeout.signed_in_email(page)
+    if actual is None:
+        raise WrongAccount("could not read which Google account Takeout is signed in to")
+    if actual != expected:
+        raise WrongAccount("Takeout is signed in to a different Google account than the one this job is for")
+
+
 def ensure_signed_in(ctx: JobContext, browser: Browser) -> None:
     browser.goto(selectors.TAKEOUT_URL)
     started = ctx.clock()
     unknown_since: float | None = None
     reported = False
-    state = takeout.classify(browser.content())
+    page = browser.content()
+    state = takeout.classify(page)
     while state != takeout.SIGNED_IN:
         now = ctx.clock()
         if state == takeout.UNKNOWN:
@@ -38,6 +54,8 @@ def ensure_signed_in(ctx: JobContext, browser: Browser) -> None:
             raise SignInTimedOut("nobody signed in within 48 hours")
         ctx.sleep(POLL_SECONDS)
         ctx.check()
-        state = takeout.classify(browser.content())
+        page = browser.content()
+        state = takeout.classify(page)
+    check_identity(ctx, page)
     if reported:
         ctx.progress("signed in")

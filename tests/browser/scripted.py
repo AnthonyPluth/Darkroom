@@ -77,9 +77,9 @@ class ScriptedBrowser:
         self.closed = True
 
 
-def context_for(browser: ScriptedBrowser, clock: Clock | None = None, reporter: Reporter | None = None, wall: float = 1_793_750_400.0) -> tuple[JobContext, Clock, Reporter]:
+def context_for(browser: ScriptedBrowser, clock: Clock | None = None, reporter: Reporter | None = None, wall: float = 1_793_750_400.0, email: str | None = "jo@example.test") -> tuple[JobContext, Clock, Reporter]:
     clock = clock or Clock()
     reporter = reporter or Reporter()
-    ctx = JobContext(7, "connect", "1", {}, Path("/photos-unused"), reporter, lambda profile: browser, threading.Event(), None, clock.sleep, clock.monotonic, lambda: wall)
+    ctx = JobContext(7, "connect", "1", {} if email is None else {"email": email}, Path("/photos-unused"), reporter, lambda profile: browser, threading.Event(), None, clock.sleep, clock.monotonic, lambda: wall)
     return ctx, clock, reporter
 

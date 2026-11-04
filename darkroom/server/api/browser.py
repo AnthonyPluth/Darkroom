@@ -53,7 +53,7 @@ def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Resp
     except validate.Invalid as error:
         return error_response(str(error), 400)
     except browser_jobs.UnknownKind:
-        return error_response(f"kind must be one of {', '.join(browser_jobs.KINDS)}", 400)
+        return error_response(f"kind must be one of {', '.join(kind for kind in browser_jobs.KINDS if kind not in browser_jobs.GUARDED_KINDS)}", 400)
     except browser_jobs.UnknownAccount:
         return error_response("no such account", 404)
     return json_response({"job": reply}, 201)

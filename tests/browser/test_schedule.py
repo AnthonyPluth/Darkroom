@@ -109,6 +109,13 @@ class ScheduleJobTests(unittest.TestCase):
         self.assertEqual(schedule.one_year_after(leap), datetime(2029, 2, 28, 12, 0, tzinfo=UTC).timestamp())
         self.assertEqual(schedule.one_year_after(CREATED), datetime(2027, 11, 4, 9, 30, tzinfo=UTC).timestamp())
 
+    def test_a_schedule_is_never_created_in_a_different_account(self):
+        browser = export_page()
+        ctx, _, _ = context_for(browser, wall=CREATED, email="someone.else@example.test")
+        with self.assertRaises(session.WrongAccount):
+            schedule.create_schedule(ctx)
+        self.assertEqual(browser.clicks, [])
+
     def test_the_job_is_registered(self):
         self.assertIs(REGISTRY["schedule"], schedule.create_schedule)
 

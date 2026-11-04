@@ -57,47 +57,32 @@ td{padding:12px 12px 12px 0;border-top:1px solid #2B2721;vertical-align:middle}
 <div class="who">Signed in as<br><b style="color:#F1ECE2">jo@example.com</b></div>
 </nav>
 <main class="main">
-<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap">
 <div style="display:flex;flex-direction:column;gap:4px">
 <h1>Exports</h1>
-<div class="sub">Google Takeout exports for family@example.com, downloaded and imported automatically.</div>
-</div>
-<button class="btn p" type="button">Check exports now</button>
+<div class="sub">Google Takeout for each Google account: whether its browser session works and when its export schedule ends.</div>
 </div>
 
-<section class="card" aria-label="Schedule">
+<section class="card" aria-label="family@example.com">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><h2>family@example.com</h2><span class="chip ok"><i></i>Session ok</span></div>
 <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px">
-<div class="stat"><span class="lbl">Schedule ends</span><b>12 Jan 2027</b><span class="sub">In 10 weeks. A reminder goes out about 3 weeks before.</span></div>
-<div class="stat"><span class="lbl">Last export</span><b>2 Oct 2026, 03:10</b><span class="sub">4 parts, all imported</span></div>
-<div class="stat"><span class="lbl">Next export</span><b>2 Dec 2026</b><span class="sub">Darkroom checks daily from 1 Dec</span></div>
+<div class="stat"><span class="lbl">Session checked</span><b>Today 09:12</b></div>
+<div class="stat"><span class="lbl">Schedule created</span><b>4 Nov 2026</b></div>
+<div class="stat"><span class="lbl">Schedule ends</span><b>4 Nov 2027</b></div>
 </div>
+<div class="sub">Create schedule: done.</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" type="button">Connect</button><button class="btn" type="button" disabled style="opacity:.6">Create schedule</button></div>
+<div class="sub" style="font-size:13px">The schedule exports Google Photos every 2 months for 1 year.</div>
 </section>
-
-<section class="card" aria-label="Current export parts">
-<div style="display:flex;justify-content:space-between;align-items:center"><h2>Export started 2 Nov 2026, 5 parts</h2><span class="chip idle"><i></i>Downloading</span></div>
-<table>
-<thead><tr><th>Part</th><th>File</th><th style="width:300px">Progress</th><th>Downloads used</th><th>State</th></tr></thead>
-<tbody>
-<tr><td><b>1</b></td><td style="font-family:ui-monospace,Menlo,monospace;font-size:13px">takeout-20261102-001.zip</td><td><div style="display:flex;align-items:center;gap:10px"><div class="bar" role="progressbar" aria-label="Part 1 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span style="width:44px">100%</span></div></td><td>3 of 5</td><td><span class="chip ok"><i></i>Imported</span></td></tr>
-<tr><td><b>2</b></td><td style="font-family:ui-monospace,Menlo,monospace;font-size:13px">takeout-20261102-002.zip</td><td><div style="display:flex;align-items:center;gap:10px"><div class="bar" role="progressbar" aria-label="Part 2 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span style="width:44px">100%</span></div></td><td>2 of 5</td><td><span class="chip ok"><i></i>Imported</span></td></tr>
-<tr><td><b>3</b></td><td style="font-family:ui-monospace,Menlo,monospace;font-size:13px">takeout-20261102-003.zip</td><td><div style="display:flex;align-items:center;gap:10px"><div class="bar" role="progressbar" aria-label="Part 3 download" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><b style="width:100%"></b></div><span style="width:44px">100%</span></div></td><td>1 of 5</td><td><span class="chip ok"><i></i>Imported</span></td></tr>
-<tr><td><b>4</b></td><td style="font-family:ui-monospace,Menlo,monospace;font-size:13px">takeout-20261102-004.zip</td><td><div style="display:flex;align-items:center;gap:10px"><div class="bar" role="progressbar" aria-label="Part 4 download" aria-valuenow="62" aria-valuemin="0" aria-valuemax="100"><b style="width:62%"></b></div><span style="width:44px">62%</span></div></td><td>1 of 5</td><td><span class="chip idle"><i></i>Downloading</span></td></tr>
-<tr><td><b>5</b></td><td style="font-family:ui-monospace,Menlo,monospace;font-size:13px">takeout-20261102-005.zip</td><td><div style="display:flex;align-items:center;gap:10px"><div class="bar" role="progressbar" aria-label="Part 5 download" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"><b style="width:0%"></b></div><span style="width:44px">0%</span></div></td><td>0 of 5</td><td><span class="chip idle"><i></i>Waiting</span></td></tr>
-</tbody>
-</table>
-<div class="sub" style="font-size:13px">Google allows each part to be downloaded 5 times. Darkroom downloads each part once and keeps the file until it is imported.</div>
-</section>
-
-<section class="card" aria-label="Earlier exports">
-<h2>Earlier exports</h2>
-<table>
-<thead><tr><th>Exported</th><th>Parts</th><th>Result</th></tr></thead>
-<tbody>
-<tr><td>2 Oct 2026</td><td>4</td><td><span class="chip ok"><i></i>Imported</span> 2 sent to review</td></tr>
-<tr><td>2 Sep 2026</td><td>4</td><td><span class="chip ok"><i></i>Imported</span></td></tr>
-<tr><td>2 Aug 2026</td><td>3</td><td><span class="chip bad"><i></i>Failed</span> Unpack error on part 2, retried and imported</td></tr>
-</tbody>
-</table>
+<section class="card" aria-label="jo.photos@example.com">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><h2>jo.photos@example.com</h2><span class="chip bad"><i></i>Sign-in needed</span></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px">
+<div class="stat"><span class="lbl">Session checked</span><b>Yesterday 18:40</b></div>
+<div class="stat"><span class="lbl">Schedule created</span><b>Not created</b></div>
+<div class="stat"><span class="lbl">Schedule ends</span><b>No schedule</b></div>
+</div>
+<div class="sub">Connect: waiting for you to sign in.</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn p" href="07-browser-desktop.dc.html">Open remote browser</a><button class="btn" type="button" disabled style="opacity:.6">Connect</button><button class="btn" type="button">Create schedule</button></div>
+<div class="sub" style="font-size:13px">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every 2 months for 1 year.</div>
 </section>
 </main>
 </div>

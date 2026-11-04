@@ -62,6 +62,22 @@ class AccountJobsApiTests(ApiCase):
         self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
 
+    def test_the_generic_job_route_cannot_queue_the_guarded_kinds(self):
+        for kind in ("connect", "schedule"):
+            status, reply = self.call("POST", "/api/browser/jobs", {"account_id": self.account_id, "kind": kind})
+            self.assertEqual(status, 400, reply)
+            self.assertNotIn("connect", reply["error"])
+        self.assertEqual(self.call("POST", "/api/browser/jobs", {"account_id": self.account_id, "kind": "noop"})[0], 201)
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+        self.assertEqual(self.call("POST", "/api/browser/jobs", {"account_id": self.account_id, "kind": "schedule"})[0], 400)
+        with db.session(self.engine) as opened:
+            self.assertEqual(sorted(job.kind for job in opened.execute(select(BrowserJob)).scalars()), ["noop", "schedule"])
+
+    def test_the_claimed_job_carries_the_account_email(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.assertEqual(job["payload"], {"email": "jo.photos@example.test"})
+
     def test_unknown_and_malformed_accounts_are_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/connect", "/api/accounts/abc/schedule", f"/api/accounts/{self.account_id + 50}/schedule"):
             with self.subTest(path=path):

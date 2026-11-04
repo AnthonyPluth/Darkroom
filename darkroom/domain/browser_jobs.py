@@ -15,6 +15,7 @@ from darkroom.storage.paths import OutsideRoot, Photos
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
+GUARDED_KINDS = ("connect", "schedule")
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify")
 OPEN_STATUSES = ("running", "waiting_for_user")
@@ -64,8 +65,12 @@ def account_of(opened: Session, account_id: int) -> GoogleAccount:
 
 
 def enqueue(opened: Session, account_id: int, kind: str, payload: dict[str, object] | None, now: float) -> BrowserJob:
-    if kind not in KINDS or not KIND.match(kind):
+    if kind not in KINDS or kind in GUARDED_KINDS or not KIND.match(kind):
         raise UnknownKind(f"{kind!r} is not a browser job kind")
+    return queue(opened, account_id, kind, payload, now)
+
+
+def queue(opened: Session, account_id: int, kind: str, payload: dict[str, object] | None, now: float) -> BrowserJob:
     account_of(opened, account_id)
     job = BrowserJob(account_id=account_id, kind=kind, status="queued", payload=json.dumps(payload or {}), created=now)
     opened.add(job)
@@ -85,7 +90,7 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(statuses)).limit(1)).first()
     if busy is not None:
         raise AlreadyOpen(f"a {kind} job for this account is already waiting, running or done")
-    return enqueue(opened, account_id, kind, None, now)
+    return queue(opened, account_id, kind, {"email": account.email}, now)
 
 
 def claim(opened: Session, now: float) -> BrowserJob | None:

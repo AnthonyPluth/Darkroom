@@ -33,7 +33,7 @@ class BrowserJobTests(unittest.TestCase):
 
     def enqueue(self, kind="noop", now=10.0):
         with db.session(self.engine) as opened:
-            return browser_jobs.enqueue(opened, self.account, kind, {"n": 1}, now).id
+            return (browser_jobs.queue if kind in browser_jobs.GUARDED_KINDS else browser_jobs.enqueue)(opened, self.account, kind, {"n": 1}, now).id
 
     def write_capture(self, job_id, *names):
         folder = self.photos / "_browser" / str(self.account) / "failures" / str(job_id)
@@ -55,6 +55,9 @@ class BrowserJobTests(unittest.TestCase):
                 browser_jobs.enqueue(opened, self.account, "rm -rf", None, 1.0)
             with self.assertRaises(browser_jobs.UnknownKind):
                 browser_jobs.enqueue(opened, self.account, "download", None, 1.0)
+            for guarded in ("connect", "schedule"):
+                with self.assertRaises(browser_jobs.UnknownKind):
+                    browser_jobs.enqueue(opened, self.account, guarded, None, 1.0)
             with self.assertRaises(browser_jobs.UnknownAccount):
                 browser_jobs.enqueue(opened, self.account + 7, "noop", None, 1.0)
 
@@ -199,6 +202,12 @@ class BrowserJobTests(unittest.TestCase):
             browser_jobs.claim(opened, 5.0)
             browser_jobs.done(opened, job_id, {"session_state": "ok"}, 8.0)
             self.assertEqual(opened.get(GoogleAccount, self.account).schedule_end, 500.0)
+
+    def test_enqueue_once_tells_the_worker_which_google_account_the_job_is_for(self):
+        with db.session(self.engine) as opened:
+            job = browser_jobs.enqueue_once(opened, self.account, "connect", 1.0)
+            self.assertEqual(json.loads(job.payload), {"email": "jo.takeout@example.test"})
+            self.assertEqual(browser_jobs.for_worker(job)["payload"], {"email": "jo.takeout@example.test"})
 
     def test_enqueue_once_refuses_a_second_open_job_of_the_same_kind_only(self):
         with db.session(self.engine) as opened:

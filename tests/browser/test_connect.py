@@ -69,6 +69,39 @@ class ConnectStateMachineTests(unittest.TestCase):
             connect(ctx)
         self.assertEqual(len(clock.slept), 3)
 
+    def test_a_signed_in_page_for_a_different_account_fails_without_succeeding(self):
+        ctx, _, reporter = context_for(ScriptedBrowser([SIGNED_IN]), email="someone.else@example.test")
+        with self.assertRaises(session.WrongAccount) as caught:
+            connect(ctx)
+        self.assertIn("different Google account", str(caught.exception))
+        self.assertNotIn("example.test", str(caught.exception))
+        self.assertEqual(reporter.kinds("progress"), [])
+
+    def test_the_account_is_compared_without_regard_to_case(self):
+        ctx, _, _ = context_for(ScriptedBrowser([SIGNED_IN]), email="Jo@Example.Test")
+        self.assertEqual(connect(ctx), {"session_state": "ok"})
+
+    def test_a_signed_in_page_that_does_not_name_the_account_fails(self):
+        page = SIGNED_IN.replace("Google Account: Jo (jo@example.test)", "Account menu")
+        ctx, _, _ = context_for(ScriptedBrowser([page]))
+        with self.assertRaises(session.WrongAccount) as caught:
+            connect(ctx)
+        self.assertIn("could not read", str(caught.exception))
+
+    def test_a_job_without_an_expected_account_fails(self):
+        ctx, _, _ = context_for(ScriptedBrowser([SIGNED_IN]), email=None)
+        with self.assertRaises(session.WrongAccount) as caught:
+            connect(ctx)
+        self.assertIn("does not say", str(caught.exception))
+
+    def test_signing_in_as_the_wrong_account_after_waiting_fails_instead_of_connecting(self):
+        wrong = SIGNED_IN.replace("jo@example.test", "someone.else@example.test")
+        ctx, _, reporter = context_for(ScriptedBrowser([SIGN_IN_NEEDED, wrong]))
+        with self.assertRaises(session.WrongAccount):
+            connect(ctx)
+        self.assertEqual(reporter.kinds("waiting"), ["sign_in"])
+        self.assertEqual(reporter.kinds("progress"), [])
+
     def test_the_job_is_registered(self):
         self.assertIs(REGISTRY["connect"], connect)
 

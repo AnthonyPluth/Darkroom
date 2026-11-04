@@ -13,6 +13,18 @@ ONE_OFF = "<html><body><h1>Export created</h1><p>We've started creating a copy o
 
 
 @snapshot_pending
+class SignedInEmailTests(unittest.TestCase):
+    def test_reads_the_account_the_menu_names(self):
+        page = """<nav><a aria-label="Google Account: Jo Example  (Jo.Photos@Example.test)">J</a></nav>"""
+        self.assertEqual(takeout.signed_in_email(page), "jo.photos@example.test")
+
+    def test_unreadable_pages_give_none(self):
+        for page in ("", "<a aria-label='Google Account'>J</a>", "<a aria-label='Settings (a@b.test)'>x</a>", "<p>Google Account: Jo (jo@example.test)</p>"):
+            with self.subTest(page=page):
+                self.assertIsNone(takeout.signed_in_email(page))
+
+
+@snapshot_pending
 class ParseScheduleConfirmationTests(unittest.TestCase):
     def test_a_recurring_confirmation_names_its_frequency(self):
         self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED), takeout.ScheduleConfirmation("every 2 months for 1 year"))

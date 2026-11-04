@@ -6,6 +6,7 @@ TAKEOUT_SETTINGS_URL = "https://takeout.google.com/settings/takeout"
 
 PAGE_BODY = "body"
 SIGNED_IN_ACCOUNT_MENU = "a[aria-label*='Google Account']"
+SIGNED_IN_ACCOUNT_LABEL_PREFIX = "google account:"
 CREATE_NEW_EXPORT_HEADING = "text=/create a new export/i"
 MANAGE_EXPORTS_HEADING = "text=/manage your exports/i"
 EXPORT_LIST = "[role='list']"
