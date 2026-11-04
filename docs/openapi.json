@@ -21,6 +21,200 @@
       }
     },
     "schemas": {
+      "AccountCreateBody": {
+        "additionalProperties": false,
+        "properties": {
+          "default_person_id": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "default_person_id",
+          "email"
+        ],
+        "type": "object"
+      },
+      "AccountPatchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "default_person_id": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "AccountReply": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AccountView"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "type": "object"
+      },
+      "AccountState": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "schedule_end": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_checked": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "id",
+          "schedule_end",
+          "session_checked",
+          "session_state"
+        ],
+        "type": "object"
+      },
+      "AccountView": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "type": "number"
+          },
+          "default_person_id": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "schedule_end": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "served_people": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "session_checked": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "default_person_id",
+          "email",
+          "id",
+          "schedule_end",
+          "served_people",
+          "session_checked",
+          "session_state"
+        ],
+        "type": "object"
+      },
+      "Accounts": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/AccountView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "type": "object"
+      },
+      "AlertView": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "opened": {
+            "type": "number"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "link",
+          "message",
+          "opened",
+          "subject"
+        ],
+        "type": "object"
+      },
       "BrowserJobReply": {
         "additionalProperties": false,
         "properties": {
@@ -127,6 +321,140 @@
         "required": [],
         "type": "object"
       },
+      "DeviceReply": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceView"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "type": "object"
+      },
+      "DeviceState": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "last_checkin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "pending_uploads": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "eligible",
+          "id",
+          "last_checkin",
+          "name",
+          "pending_uploads"
+        ],
+        "type": "object"
+      },
+      "DeviceView": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cleanup_enabled": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "number"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "last_checkin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "pending_uploads": {
+            "type": "integer"
+          },
+          "person_id": {
+            "type": "integer"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "app_version",
+          "cleanup_enabled",
+          "created",
+          "id",
+          "last_checkin",
+          "name",
+          "pending_uploads",
+          "person_id",
+          "revoked_at"
+        ],
+        "type": "object"
+      },
+      "Devices": {
+        "additionalProperties": false,
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "type": "object"
+      },
       "DoneBody": {
         "additionalProperties": false,
         "properties": {
@@ -151,6 +479,56 @@
         "required": [
           "account_id",
           "kind"
+        ],
+        "type": "object"
+      },
+      "EventView": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "time": {
+            "type": "number"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "id",
+          "subject",
+          "time",
+          "type"
+        ],
+        "type": "object"
+      },
+      "Events": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
         ],
         "type": "object"
       },
@@ -374,17 +752,201 @@
         ],
         "type": "object"
       },
-      "PersonStatus": {
+      "Ok": {
         "additionalProperties": false,
         "properties": {
-          "indexed": {
-            "type": "integer"
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "People": {
+        "additionalProperties": false,
+        "properties": {
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/PersonView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "people"
+        ],
+        "type": "object"
+      },
+      "PersonCreateBody": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_library_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"
           },
           "slug": {
             "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "PersonPatchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_library_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "PersonReply": {
+        "additionalProperties": false,
+        "properties": {
+          "person": {
+            "$ref": "#/components/schemas/PersonView"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "type": "object"
+      },
+      "PersonStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/AccountState"
+            },
+            "type": "array"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/AlertView"
+            },
+            "type": "array"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceState"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "indexed": {
+            "type": "integer"
+          },
+          "last_import": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "pixels": {
+            "items": {
+              "$ref": "#/components/schemas/PixelState"
+            },
+            "type": "array"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "unknown_time": {
+            "type": "integer"
           },
           "unmatched": {
             "anyOf": [
@@ -395,13 +957,246 @@
                 "type": "null"
               }
             ]
+          },
+          "with_gps": {
+            "type": "integer"
           }
         },
         "required": [
+          "accounts",
+          "alerts",
+          "devices",
+          "id",
           "indexed",
+          "last_import",
           "name",
+          "pixels",
           "slug",
-          "unmatched"
+          "unknown_time",
+          "unmatched",
+          "with_gps"
+        ],
+        "type": "object"
+      },
+      "PersonView": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "type": "number"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_immich_key": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "immich_library_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "email",
+          "has_immich_key",
+          "id",
+          "immich_library_id",
+          "immich_user_id",
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "PixelCreateBody": {
+        "additionalProperties": false,
+        "properties": {
+          "google_account_id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "people_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "syncthing_device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "google_account_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "PixelPatchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "google_account_id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "people_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "syncthing_device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "PixelReply": {
+        "additionalProperties": false,
+        "properties": {
+          "pixel": {
+            "$ref": "#/components/schemas/PixelView"
+          }
+        },
+        "required": [
+          "pixel"
+        ],
+        "type": "object"
+      },
+      "PixelState": {
+        "additionalProperties": false,
+        "properties": {
+          "google_account_id": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "google_account_id",
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "PixelView": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "type": "number"
+          },
+          "google_account_id": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "people_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "syncthing_device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "created",
+          "google_account_id",
+          "id",
+          "last_sync",
+          "name",
+          "people_ids",
+          "syncthing_device_id"
+        ],
+        "type": "object"
+      },
+      "Pixels": {
+        "additionalProperties": false,
+        "properties": {
+          "pixels": {
+            "items": {
+              "$ref": "#/components/schemas/PixelView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pixels"
         ],
         "type": "object"
       },
@@ -420,6 +1215,12 @@
       "Status": {
         "additionalProperties": false,
         "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/AlertView"
+            },
+            "type": "array"
+          },
           "people": {
             "items": {
               "$ref": "#/components/schemas/PersonStatus"
@@ -438,6 +1239,7 @@
           }
         },
         "required": [
+          "alerts",
           "people",
           "worker_last_seen"
         ],
@@ -508,6 +1310,106 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/accounts": {
+      "get": {
+        "operationId": "list_accounts",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accounts"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "post": {
+        "operationId": "create_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/accounts/{id}": {
+      "delete": {
+        "operationId": "delete_account",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "patch": {
+        "operationId": "update_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/browser/failures/{id}/page.html": {
       "get": {
         "operationId": "page_snapshot",
@@ -574,6 +1476,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BrowserJobReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/devices/{id}": {
+      "delete": {
+        "operationId": "revoke_device",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/events": {
+      "get": {
+        "operationId": "recent_events",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
                 }
               }
             },
@@ -658,6 +1602,227 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/people": {
+      "get": {
+        "operationId": "list_people",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/People"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "post": {
+        "operationId": "create_person",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/people/{id}": {
+      "delete": {
+        "operationId": "delete_person",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "patch": {
+        "operationId": "update_person",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/people/{id}/devices": {
+      "get": {
+        "operationId": "list_person_devices",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Devices"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels": {
+      "get": {
+        "operationId": "list_pixels",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pixels"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "post": {
+        "operationId": "create_pixel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PixelCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels/{id}": {
+      "delete": {
+        "operationId": "delete_pixel",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "patch": {
+        "operationId": "update_pixel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PixelPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PixelReply"
                 }
               }
             },

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Darkroom UI Cover</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+li{margin:0 0 6px}
+</style>
+</helmet>
+<div style="width:100%;min-height:700px;padding:64px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:64px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:center;gap:12px"><span style="width:16px;height:16px;border-radius:50%;background:#E2693F;display:block"></span><span class="lbl">Darkroom, web UI for owner sign-off</span></div>
+<h1 style="margin:0;font-size:56px;line-height:1.05;letter-spacing:-.02em">Safelight, dark</h1>
+<p style="margin:0;font-size:18px;max-width:520px">One dark theme only: warm near-black ground, warm off-white ink, and one amber-red safelight accent for primary actions and alerts. Green, amber and red appear only as status, always with a text label and a distinct shape.</p>
+<p style="margin:0;color:#B3AB9D;max-width:520px">Seven screens, each at desktop (1280) and phone (390). The token set is on 00 Theme tokens. All people, accounts and devices are made up.</p>
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+<span style="min-height:44px;display:inline-flex;align-items:center;padding:0 16px;border-radius:8px;background:#E2693F;color:#1A0E08;font-weight:600">Primary action</span>
+<span style="min-height:44px;display:inline-flex;align-items:center;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;font-weight:600">Secondary</span>
+<span style="min-height:44px;display:inline-flex;align-items:center;gap:8px;padding:0 16px;border-radius:999px;background:#1D2B20;color:#7CC38F;font-weight:600"><span style="width:8px;height:8px;border-radius:50%;background:#7CC38F;display:block"></span>Healthy</span>
+</div>
+</div>
+<div style="background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:28px;display:flex;flex-direction:column;gap:16px">
+<div class="lbl">Screen map</div>
+<ol style="margin:0;padding-left:22px;line-height:1.5">
+<li><b>Sign-in</b>: signed out, and the not-allowed error</li>
+<li><b>Status</b>: per-person health, open alerts, recent events</li>
+<li><b>People</b>: persons, Google accounts, Pixels, iPhones and the cleanup switch</li>
+<li><b>Exports</b>: schedule, last and next export, parts and downloads</li>
+<li><b>Imports</b>: runs with counts, and the Missing GPS list</li>
+<li><b>Review</b>: likely re-encode pairs, decisions, undo</li>
+<li><b>Browser</b>: embedded noVNC for Google sign-ins</li>
+</ol>
+<div class="lbl" style="margin-top:8px">Navigation</div>
+<p style="margin:0">Status, People, Exports, Imports, Review (count badge), Browser. A left rail on desktop; a header and bottom tab bar on phone.</p>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":700}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

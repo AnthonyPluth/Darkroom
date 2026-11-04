@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -23,6 +24,10 @@ class AlreadyExists(FileExistsError):
 
 
 class NotASidecar(ValueError):
+    pass
+
+
+class ProfileNotRemoved(OSError):
     pass
 
 
@@ -92,6 +97,21 @@ class Photos:
             raise OutsideRoot(f"{name!r} is not a valid folder name")
         return name
 
+    def retire_browser_account(self, account: str) -> None:
+        name = self.name_part(account)
+        parent = self.root / "_browser"
+        target = parent / name
+        if parent.is_symlink() or target.is_symlink():
+            raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
+        if not target.exists():
+            return
+        if target.resolve() != self.browser_profile(name).parent:
+            raise ProfileNotRemoved("the account's browser folder is not where it should be, so it was not removed")
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise ProfileNotRemoved("the account's browser folder could not be removed") from error
+
     def inbox_root(self) -> Path:
         return self.inside("_inbox")
 
@@ -120,8 +140,22 @@ class Photos:
 
     def ensure_person_tree(self, person: str) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
-        for folder in folders:
-            folder.mkdir(parents=True, exist_ok=True)
+        made: list[Path] = []
+        try:
+            for folder in folders:
+                missing: list[Path] = []
+                ancestor = folder
+                while ancestor != self.root and not ancestor.exists():
+                    missing.append(ancestor)
+                    ancestor = ancestor.parent
+                for path in reversed(missing):
+                    path.mkdir()
+                    made.append(path)
+        except OSError:
+            for path in reversed(made):
+                with contextlib.suppress(OSError):
+                    path.rmdir()
+            raise
         return folders
 
 

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from darkroom.storage import paths
 
@@ -56,6 +57,59 @@ class PhotosTests(unittest.TestCase):
         keep.write_bytes(b"x")
         self.photos.ensure_person_tree("jo")
         self.assertTrue(keep.exists())
+
+
+class FailedTreeTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.photos = paths.Photos(self.root)
+
+    def snapshot(self):
+        return {str(p.relative_to(self.root)): (p.read_bytes() if p.is_file() else None) for p in self.root.rglob("*")}
+
+    def test_a_failure_after_originals_and_google_only_were_made_removes_exactly_those(self):
+        (self.root / "_inbox").write_bytes(b"in the way")
+        (self.root / "sam" / "originals").mkdir(parents=True)
+        (self.root / "sam" / "originals" / "keep.jpg").write_bytes(b"photo")
+        before = self.snapshot()
+        with self.assertRaises(OSError):
+            self.photos.ensure_person_tree("jo")
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / "jo").exists())
+
+    def test_it_leaves_alone_what_existed_before_even_with_files_in_it(self):
+        (self.root / "jo" / "originals").mkdir(parents=True)
+        (self.root / "jo" / "originals" / "keep.jpg").write_bytes(b"photo")
+        (self.root / "_inbox").write_bytes(b"in the way")
+        with self.assertRaises(OSError):
+            self.photos.ensure_person_tree("jo")
+        self.assertEqual((self.root / "jo" / "originals" / "keep.jpg").read_bytes(), b"photo")
+        self.assertFalse((self.root / "jo" / "google-only").exists())
+
+    def test_it_never_removes_a_folder_that_holds_something(self):
+        real = Path.mkdir
+        calls = []
+
+        def failing(path, *args, **kwargs):
+            calls.append(path)
+            if path.name == "manual":
+                (self.root / "jo" / "google-only" / "late.txt").write_bytes(b"x")
+                raise PermissionError("no")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", failing), self.assertRaises(PermissionError):
+            self.photos.ensure_person_tree("jo")
+        self.assertEqual((self.root / "jo" / "google-only" / "late.txt").read_bytes(), b"x")
+        self.assertFalse((self.root / "jo" / "originals").exists())
+
+    def test_a_retry_after_the_blocker_is_gone_works(self):
+        (self.root / "_inbox").write_bytes(b"in the way")
+        with self.assertRaises(OSError):
+            self.photos.ensure_person_tree("jo")
+        (self.root / "_inbox").unlink()
+        self.assertTrue(all(folder.is_dir() for folder in self.photos.ensure_person_tree("jo")))
 
 
 class WriteOnceTests(unittest.TestCase):

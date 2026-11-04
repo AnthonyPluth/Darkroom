@@ -8,6 +8,11 @@ from tests.shared import fetch, settings_from, start_server
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"device", "worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
+PEOPLE_AND_STATUS_ROUTES = {
+    "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
+    "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
+    "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events",
+}
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})
 
 
@@ -36,6 +41,12 @@ class EveryRouteTests(unittest.TestCase):
     def test_the_public_routes_are_exactly_these(self):
         public = {f"{route.method} {route.path}" for route in routes.ROUTES if route.auth == "public"}
         self.assertEqual(public, PUBLIC, "a public route must be listed here, with a reason in the pull request")
+
+    def test_the_people_accounts_pixels_devices_and_status_routes_are_session_routes(self):
+        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
+        for key in PEOPLE_AND_STATUS_ROUTES:
+            with self.subTest(route=key):
+                self.assertEqual(found.get(key), "session")
 
     def test_session_routes_answer_401_without_a_cookie(self):
         found = [route for route in routes.ROUTES if route.auth == "session"]

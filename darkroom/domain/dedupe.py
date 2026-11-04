@@ -19,7 +19,7 @@ from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
 
 PHASH_MAX_DISTANCE = 8
 REVIEW_MAX_SECONDS = 2.0
-CONFIRMING_TIERS = (1, 2)
+CONFIRMING_TIERS = accounts.CONFIRMING_TIERS
 TRUE_VALUES = {"1", "true", "yes", "on"}
 REVIEW_SPREAD = 3
 HEX = set(string.hexdigits)

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth
-from darkroom.server.api import browser, browser_internal, imports, status
+from darkroom.server.api import accounts, browser, browser_internal, devices, imports, people, pixels, status
 from darkroom.server.common import Request, Response
 
 AUTH_KINDS = ("session", "device", "worker", "public")
@@ -26,6 +26,21 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/auth/signed-out", auth.signed_out, "public"),
     Route("GET", "/api/me", auth.me, "session"),
     Route("GET", "/api/status", status.status, "session"),
+    Route("GET", "/api/events", status.recent_events, "session"),
+    Route("GET", "/api/people", people.list_people, "session"),
+    Route("POST", "/api/people", people.create_person, "session"),
+    Route("PATCH", "/api/people/{id}", people.update_person, "session"),
+    Route("DELETE", "/api/people/{id}", people.delete_person, "session"),
+    Route("GET", "/api/people/{id}/devices", people.list_person_devices, "session"),
+    Route("DELETE", "/api/devices/{id}", devices.revoke_device, "session"),
+    Route("GET", "/api/accounts", accounts.list_accounts, "session"),
+    Route("POST", "/api/accounts", accounts.create_account, "session"),
+    Route("PATCH", "/api/accounts/{id}", accounts.update_account, "session"),
+    Route("DELETE", "/api/accounts/{id}", accounts.delete_account, "session"),
+    Route("GET", "/api/pixels", pixels.list_pixels, "session"),
+    Route("POST", "/api/pixels", pixels.create_pixel, "session"),
+    Route("PATCH", "/api/pixels/{id}", pixels.update_pixel, "session"),
+    Route("DELETE", "/api/pixels/{id}", pixels.delete_pixel, "session"),
     Route("GET", "/api/browser/jobs", browser.list_jobs, "session"),
     Route("POST", "/api/browser/jobs", browser.enqueue, "session"),
     Route("GET", "/api/browser/failures/{id}/screenshot.png", browser.screenshot, "session"),

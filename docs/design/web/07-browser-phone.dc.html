@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Remote Browser Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ph{width:100%;min-height:1000px;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;min-height:56px;background:#1B1813;border-bottom:1px solid #3A352C}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.pg{flex:1;padding:20px 16px 28px;display:flex;flex-direction:column;gap:16px}
+.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:#1B1813;border-top:1px solid #3A352C}
+.tabs a{min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:11px;font-weight:600;color:#F1ECE2;text-decoration:none}
+.tabs a.on{background:#F1ECE2;color:#1F1C17}
+.tabs a:focus-visible,.btn:focus-visible{outline:3px solid #E2693F;outline-offset:-3px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:11px;font-weight:700;padding:0 6px;line-height:16px}
+h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.01em}
+.sub{color:#B3AB9D}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.ok{color:#7CC38F;background:#1D2B20}.bad{color:#F08A84;background:#3A1A1A}.bad i{border-radius:1px}
+.btn{min-height:48px;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.banner{background:#1F1C17;border:1px solid #E2693F;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.vnc{border-radius:12px;border:1px solid #3A352C;background:#2B2721;overflow:hidden;display:flex;flex-direction:column}
+.vbar{background:#16140F;color:#B3AB9D;padding:8px 12px;display:flex;align-items:center;font-size:12px}
+.vbar span.u{flex:1;background:#2B2721;border-radius:999px;padding:4px 12px;color:#D8D1C3;font-family:ui-monospace,Menlo,monospace}
+.vview{height:360px;display:flex;align-items:center;justify-content:center;color:#D8D1C3;text-align:center;padding:20px}
+</style>
+</helmet>
+<div class="ph">
+<header class="top">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<button class="btn" type="button" style="width:auto;min-width:44px" aria-label="Account: jo@example.com">Jo</button>
+</header>
+<main class="pg">
+<div style="display:flex;flex-direction:column;gap:6px">
+<h1>Remote browser</h1>
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="chip ok"><i></i>Connected</span><span class="sub">Used to sign in to Google.</span></div>
+</div>
+
+<section class="banner" aria-label="Sign-in task">
+<span class="chip bad" style="align-self:flex-start"><i></i>Sign-in needed</span>
+<b style="font-size:16px">Sign in to family@example.com</b>
+<div>Google asked to verify this account. Sign in below as you normally would and finish any verification. When you can see the Google account page, press Done.</div>
+<button class="btn p" type="button">Done</button>
+</section>
+
+<section class="vnc" aria-label="Remote browser view">
+<div class="vbar"><span class="u">accounts.example.com</span></div>
+<div class="vview">
+<div style="display:flex;flex-direction:column;gap:8px">
+<div style="font-size:16px;font-weight:600">Live remote browser appears here</div>
+<div style="color:#B3AB9D">The embedded noVNC view fills this area. Tap to type; pinch to zoom.</div>
+</div>
+</div>
+</section>
+<div class="sub" style="font-size:13px">This view needs Darkroom reachable on home Wi-Fi or Tailscale.</div>
+</main>
+<nav class="tabs" aria-label="Primary">
+<a href="02-status-phone.dc.html">Status</a>
+<a href="03-people-phone.dc.html">People</a>
+<a href="04-exports-phone.dc.html">Exports</a>
+<a href="05-imports-phone.dc.html">Imports</a>
+<a href="06-review-phone.dc.html">Review<span class="badge">4</span></a>
+<a class="on" href="07-browser-phone.dc.html" aria-current="page">Browser</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

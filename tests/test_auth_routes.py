@@ -100,8 +100,11 @@ class RoundTripTests(SignedInServer):
         self.assertEqual(status, 403)
         self.assertIn("text/html", headers["Content-Type"])
         text = body.decode()
-        self.assertIn("Not authorized", text)
-        self.assertIn("kid@example.test is not allowed", text)
+        self.assertIn("Not allowed", text)
+        self.assertIn("You signed in as kid@example.test, which is not allowed", text)
+        self.assertIn("ask whoever runs Darkroom to allow it in Pocket ID", text)
+        self.assertIn('role="alert"', text)
+        self.assertIn("Sign in with a different account", text)
         self.assertIn('href="/auth/login"', text)
         self.assertEqual(headers.get_all("Set-Cookie"), [f"{auth.LOGIN_COOKIE}=; Path=/auth; Max-Age=0; HttpOnly; SameSite=Lax"])
         with db.session(self.engine) as opened:

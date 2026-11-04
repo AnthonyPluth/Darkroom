@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign-in Not Allowed Desktop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.btn{min-height:44px;padding:0 20px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.btn:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+</style>
+</helmet>
+<div style="width:100%;min-height:760px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+<div style="background:#1B1813;color:#F1ECE2;padding:64px;display:flex;flex-direction:column;justify-content:space-between">
+<div style="display:flex;align-items:center;gap:12px;font-size:20px;font-weight:700"><span style="width:14px;height:14px;border-radius:50%;background:#E2693F;display:block"></span>Darkroom</div>
+<div style="display:flex;flex-direction:column;gap:16px;max-width:420px">
+<div style="font-size:36px;line-height:1.1;font-weight:700;letter-spacing:-.01em">Photos leave the phone only after Google Photos has them.</div>
+<div style="color:#B3AB9D;font-size:16px">Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</div>
+</div>
+<div style="display:flex;gap:6px">
+<span style="width:72px;height:96px;background:#3A352C;border-radius:4px;display:block"></span>
+<span style="width:96px;height:96px;background:#4A4439;border-radius:4px;display:block"></span>
+<span style="width:72px;height:96px;background:#2B2721;border-radius:4px;display:block"></span>
+</div>
+</div>
+<main style="display:flex;align-items:center;justify-content:center;padding:48px">
+<div style="width:100%;max-width:400px;background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:32px;display:flex;flex-direction:column;gap:20px">
+<h1 style="margin:0;font-size:28px;line-height:1.15">Sign in</h1>
+<div role="alert" style="background:#3A1A1A;color:#F08A84;border:1px solid #F08A84;border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;gap:8px;font-weight:700"><span style="width:10px;height:10px;background:#F08A84;border-radius:1px;display:block"></span>Not allowed</div>
+<div style="color:#F1ECE2">You signed in as <b>visitor@example.com</b>, which is not in the parents group. Darkroom shows nothing to this account.</div>
+</div>
+<p style="margin:0;color:#B3AB9D">If this is your account, ask Jo or Sam to add it to the parents group in Pocket ID, then try again.</p>
+<div style="display:flex;flex-direction:column;gap:10px">
+<a class="btn p" href="01-signin-desktop.dc.html">Sign in with a different account</a>
+<a class="btn" href="01-signin-desktop.dc.html">Back to sign-in</a>
+</div>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":760}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -12,11 +12,11 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - At the top, what everything shares: `config.py` (every environment variable, all listed in `.env.example`), `tls.py` (the only module that opens outbound connections), `validate.py`, `dates.py`, `monitoring.py`, `oidc.py`.
   - `static/app/`: the built web app (`make frontend-build`, not committed), served at `/` by `server/static.py` with the CSP in `server/common.py`.
 - `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
-- `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` and the signed-out view are placeholders until the design signed off in #16 replaces them (#17).
+- `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` are the dark set from the design signed off in #16 (`docs/design/web/00-tokens.dc.html`); the app is dark only, and a new colour or token goes back to #16 first.
 - `ios/` (XcodeGen, SwiftUI): added by a later issue.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `fleet` (the shim that runs fleet's tools at the version in `.fleet/version`), `app_checks.py` (Darkroom's own checks, run by `fleet checks`), `feature_map.py`, `api_contract.py`, `scrub_snapshot.py`.
-- `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and later the signed-off designs in `design/`.
+- `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and the signed-off designs in `design/` (`design/web/` for the web UI, with its README).
 
 A broken boundary fails `make lint`: move the code to where its import is allowed rather than adding an exception. A new provider module gets added to the `providers-alone` contract.
 

@@ -128,5 +128,26 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("people", inspect(self.engine).get_table_names())
 
 
+    def test_0006_pixel_last_sync_keeps_old_pixels_with_no_sync_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0005")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'Pixel', 1, 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertIsNone(connection.exec_driver_sql("SELECT last_sync FROM pixels").scalar_one())
+            connection.exec_driver_sql("UPDATE pixels SET last_sync = 123.5")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0005")
+        self.assertNotIn("last_sync", {column["name"] for column in inspect(self.engine).get_columns("pixels")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT name FROM pixels").scalars().all(), ["Pixel"])
+
+
 if __name__ == "__main__":
     unittest.main()

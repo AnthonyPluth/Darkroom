@@ -150,8 +150,9 @@ def callback(request: Request) -> Response:
             life = oidc.cookie_life(oidc.find_session(opened, signed.token) or oidc.AuthSession(expires=None), moment)
     except oidc.NotAllowed as error:
         monitoring.log("sign-in refused", reason="not_allowed")
-        return page(403, "Not authorized", f"{error.who} is not allowed to use this Darkroom. Ask whoever runs it to add you, or sign in with a different account.",
-                    ("/auth/login", "Sign in again"), (clear_login,))
+        return page(403, "Not allowed", f"You signed in as {error.who}, which is not allowed to use this Darkroom. Darkroom shows nothing to this account.",
+                    ("/auth/login", "Sign in with a different account"), (clear_login,),
+                    "If this is your account, ask whoever runs Darkroom to allow it in Pocket ID, then try again.")
     except oidc.ProviderUnreachable as error:
         monitoring.log("sign-in failed", reason=type(error).__name__)
         return page(502, "Can't reach sign-in", "Darkroom could not reach the sign-in provider. Try again in a moment.", ("/auth/login", "Try again"), (clear_login,))

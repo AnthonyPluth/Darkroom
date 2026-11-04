@@ -15,7 +15,7 @@
 </script>
 
 {#if session.current.kind === "loading"}
-  <p role="status" class="p-4 text-placeholder-ink-muted">Loading...</p>
+  <p role="status" class="p-4 text-ink-muted">Loading...</p>
 {:else if session.current.kind === "signed-out"}
   <SignedOut />
 {:else if session.current.kind === "unreachable"}

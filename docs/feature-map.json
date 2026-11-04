@@ -79,14 +79,208 @@
       "route": "GET /api/status",
       "auth": "session",
       "handler": "darkroom.server.api.status.status",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Status.svelte"
+      ],
       "tests": [
         "tests/test_browser_internal_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_every_route.py",
         "tests/test_imports_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_status_api.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
+      ]
+    },
+    {
+      "route": "GET /api/events",
+      "auth": "session",
+      "handler": "darkroom.server.api.status.recent_events",
+      "frontend": [
+        "frontend/src/pages/Status.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_status_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/people",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.list_people",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_static.py"
+      ]
+    },
+    {
+      "route": "POST /api/people",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.create_person",
+      "frontend": [
+        "frontend/src/forms/PersonForm.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_static.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/people/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.update_person",
+      "frontend": [
+        "frontend/src/forms/PersonForm.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/people/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.delete_person",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/people/{id}/devices",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.list_person_devices",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/devices/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.devices.revoke_device",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/accounts",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.list_accounts",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py",
+        "tests/test_served_people_guard.py"
+      ]
+    },
+    {
+      "route": "POST /api/accounts",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.create_account",
+      "frontend": [
+        "frontend/src/forms/AccountForm.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py",
+        "tests/test_served_people_guard.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/accounts/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.update_account",
+      "frontend": [
+        "frontend/src/forms/AccountForm.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/accounts/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.delete_account",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/pixels",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.list_pixels",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_served_people_guard.py"
+      ]
+    },
+    {
+      "route": "POST /api/pixels",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.create_pixel",
+      "frontend": [
+        "frontend/src/forms/PixelForm.svelte"
+      ],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_served_people_guard.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/pixels/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.update_pixel",
+      "frontend": [
+        "frontend/src/forms/PixelForm.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/pixels/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.delete_pixel",
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py"
       ]
     },
     {
