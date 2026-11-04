@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from darkroom_browser import selectors
-from darkroom_browser.context import Browser, JobContext
+from darkroom_browser.context import Browser, Cancelled, JobContext
 from darkroom_browser.jobs.session import UnexpectedPage, ensure_signed_in
 from darkroom_browser.pages import takeout
 
@@ -43,7 +43,13 @@ def drive(ctx: JobContext, browser: Browser) -> None:
     for step, selector in CLICK_SEQUENCE:
         ctx.progress(step)
         browser.wait_for(selector)
-        browser.click(selector)
+        if selector != selectors.EXPORT_CREATE:
+            browser.click(selector)
+            continue
+        try:
+            browser.click(selector)
+        except Exception as error:
+            raise ScheduleNotConfirmed(f"the click on Create export did not finish ({type(error).__name__}); check Takeout before trying again") from error
 
 
 def await_confirmation(ctx: JobContext, browser: Browser) -> None:
@@ -63,6 +69,11 @@ def create_schedule(ctx: JobContext) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
     drive(ctx, browser)
-    await_confirmation(ctx, browser)
+    try:
+        await_confirmation(ctx, browser)
+    except (Cancelled, ScheduleNotConfirmed):
+        raise
+    except Exception as error:
+        raise ScheduleNotConfirmed(f"the page failed after Create export ({type(error).__name__}); check Takeout before trying again") from error
     created = ctx.wall()
     return {"schedule_created": created, "schedule_end": one_year_after(created)}

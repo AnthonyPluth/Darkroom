@@ -212,6 +212,7 @@ class BrowserJobView(TypedDict):
     finished: float | None
     message: str
     has_capture: bool
+    capture_files: list[str]
 
 
 class BrowserView(TypedDict):

@@ -85,6 +85,11 @@ def queue(opened: Session, account_id: int, kind: str, payload: dict[str, object
     return job
 
 
+def has_open_onboarding_job(opened: Session, account_id: int) -> bool:
+    found = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(GUARDED_KINDS), BrowserJob.status.in_(QUEUED_STATUSES)).limit(1)).first()
+    return found is not None
+
+
 def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
     latest = opened.execute(select(BrowserJob).where(BrowserJob.account_id == account_id, BrowserJob.kind == "schedule").order_by(BrowserJob.id.desc()).limit(1)).scalar_one_or_none()
     message = latest.message or "" if latest is not None else ""
@@ -274,7 +279,7 @@ def worker_last_seen(opened: Session) -> float | None:
     return float(setting.value) if setting is not None and setting.value else None
 
 
-def as_dict(job: BrowserJob) -> dict[str, object]:
+def as_dict(job: BrowserJob, settings: Settings | None = None) -> dict[str, object]:
     return {
         "id": job.id,
         "account_id": job.account_id,
@@ -286,6 +291,7 @@ def as_dict(job: BrowserJob) -> dict[str, object]:
         "finished": job.finished,
         "message": job.message or "",
         "has_capture": job.failure_dir is not None,
+        "capture_files": captured_files(settings, job, CAPTURE_FILES) if settings is not None and job.failure_dir is not None else [],
     }
 
 

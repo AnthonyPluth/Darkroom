@@ -54,7 +54,7 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         return error_response(NO_ACCOUNT, 404)
     except accounts.NoSuchPerson:
         return error_response(NO_PERSON, 404)
-    except (accounts.EmailTaken, accounts.StillConfirming) as error:
+    except (accounts.EmailTaken, accounts.StillConfirming, accounts.JobOpen) as error:
         return error_response(str(error), 409)
     return json_response({"account": reply})
 
@@ -81,7 +81,7 @@ def start_job(request: Request, kind: str) -> Response:
         return error_response(NO_ACCOUNT, 404)
     try:
         with db.session(engine_of(request)) as opened:
-            reply = browser_jobs.as_dict(browser_jobs.enqueue_once(opened, account_id, kind, now()))
+            reply = browser_jobs.as_dict(browser_jobs.enqueue_once(opened, account_id, kind, now()), request.settings)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)
     except browser_jobs.AlreadyOpen as error:
@@ -95,7 +95,7 @@ def schedule_checked(request: Request) -> Annotated[Response, contract.BrowserJo
         return error_response(NO_ACCOUNT, 404)
     try:
         with db.session(engine_of(request)) as opened:
-            reply = browser_jobs.as_dict(browser_jobs.mark_schedule_checked(opened, account_id, now()))
+            reply = browser_jobs.as_dict(browser_jobs.mark_schedule_checked(opened, account_id, now()), request.settings)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)
     except browser_jobs.NothingToCheck as error:

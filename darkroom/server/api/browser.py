@@ -32,7 +32,7 @@ def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
     except validate.Invalid as error:
         return error_response(str(error), 400)
     with db.session(engine_of(request)) as opened:
-        jobs = [browser_jobs.as_dict(job) for job in browser_jobs.list_jobs(opened, account)]
+        jobs = [browser_jobs.as_dict(job, request.settings) for job in browser_jobs.list_jobs(opened, account)]
     return json_response({"jobs": jobs})
 
 
@@ -49,7 +49,7 @@ def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Resp
         kind = validate.text(body, "kind", limit=40)
         with db.session(engine_of(request)) as opened:
             job = browser_jobs.enqueue(opened, account_id, kind, None, now())
-            reply = browser_jobs.as_dict(job)
+            reply = browser_jobs.as_dict(job, request.settings)
     except validate.Invalid as error:
         return error_response(str(error), 400)
     except browser_jobs.UnknownKind:

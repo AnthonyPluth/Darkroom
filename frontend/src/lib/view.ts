@@ -60,7 +60,7 @@ export function failureReason(job: BrowserJobView): string {
 
 export function failedCaptures(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView[] {
   const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule")];
-  return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.has_capture ? [job] : []));
+  return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.capture_files.length > 0 ? [job] : []));
 }
 
 export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {

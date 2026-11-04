@@ -60,6 +60,7 @@ export interface BrowserJobView {
   finished: number | null;
   message: string;
   has_capture: boolean;
+  capture_files: string[];
 }
 
 export interface BrowserJobs {

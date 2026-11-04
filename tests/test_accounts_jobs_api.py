@@ -94,6 +94,28 @@ class AccountJobsApiTests(ApiCase):
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]
         self.assertEqual(job["payload"], {"email": "jo.photos@example.test"})
 
+    def test_the_email_cannot_change_while_a_connect_or_schedule_job_is_open(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        status, reply = self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})
+        self.assertEqual(status, 409)
+        self.assertIn("still open", reply["error"])
+        self.assertEqual(self.account_view()["email"], "jo.photos@example.test")
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "jo.photos@example.test"})[0], 200)
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 409)
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+
+    def test_a_failed_job_lists_only_the_capture_files_that_exist(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        folder = self.photos / "_browser" / str(self.account_id) / "failures" / str(job["id"])
+        folder.mkdir(parents=True)
+        (folder / "page.html").write_bytes(b"x")
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage", "failure_dir": f"_browser/{self.account_id}/failures/{job['id']}", "files": ["screenshot.png", "page.html"]})
+        listed = self.call("GET", "/api/browser/jobs")[1]["jobs"][0]
+        self.assertEqual((listed["has_capture"], listed["capture_files"]), (True, ["page.html"]))
+
     def test_unknown_and_malformed_accounts_are_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/connect", "/api/accounts/abc/schedule", f"/api/accounts/{self.account_id + 50}/schedule"):
             with self.subTest(path=path):

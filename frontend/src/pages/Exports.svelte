@@ -93,8 +93,12 @@
         {#each failed as job (job.id)}
           <p class="text-ink-muted">
             Capture of the failed {job.kind === "schedule" ? "Create schedule" : "Connect"}:
-            <a class="font-semibold underline" href="/api/browser/failures/{job.id}/screenshot.png" target="_blank" rel="noopener">screenshot</a>,
-            <a class="font-semibold underline" href="/api/browser/failures/{job.id}/page.html" target="_blank" rel="noopener">page snapshot</a>.
+            {#if job.capture_files.includes("screenshot.png")}
+              <a class="font-semibold underline" href="/api/browser/failures/{job.id}/screenshot.png" target="_blank" rel="noopener">screenshot</a>{job.capture_files.length > 1 ? "," : "."}
+            {/if}
+            {#if job.capture_files.includes("page.html")}
+              <a class="font-semibold underline" href="/api/browser/failures/{job.id}/page.html" target="_blank" rel="noopener">page snapshot</a>.
+            {/if}
           </p>
         {/each}
         {#if maybe}

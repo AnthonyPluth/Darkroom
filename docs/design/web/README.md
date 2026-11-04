@@ -21,6 +21,17 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17). Exports, Imports, Review and Browser arrive with their own issues.
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), and the account part of Exports and the Remote browser (#29). Imports and Review arrive with their own issues.
 
-Approved departures (#29): the Exports and Remote browser pages are built with three departures from boards 04 and 07: no "Done" button on the Remote browser (the worker notices the sign-in itself), Exports as one card per Google account, and no export parts, earlier exports or "Check exports now" yet (they arrive with #30 and #31). The sign-off is recorded on #16: https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6635767164. The boards are re-exported from the canvas when the design session next touches them.
+Approved departures (#29): the Exports and Remote browser pages are built with these departures from boards 04 and 07, all approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6636481608):
+
+1. No "Done" button on the Remote browser sign-in banner (the worker notices the sign-in itself).
+2. One Exports card per Google account instead of a single schedule card.
+3. No export parts, earlier exports or "Check exports now" yet (they arrive with #30 and #31).
+4. Exports: a warning box ("Takeout may already have this schedule...") with an "I checked Takeout, there is no schedule" button.
+5. Exports: links to the failed job's screenshot and page snapshot.
+6. Exports: "Connect: waiting for you to switch to the right Google account".
+7. Remote browser: a "Wrong account" chip and "Switch to <email>" instructions.
+8. Status: an "Open remote browser" link on the wrong-account alert.
+
+The boards are re-exported from the canvas when the design session next touches them.

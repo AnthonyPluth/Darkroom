@@ -2,6 +2,7 @@ import unittest
 from datetime import UTC, datetime
 
 from darkroom_browser import selectors
+from darkroom_browser.context import Cancelled
 from darkroom_browser.jobs import REGISTRY, schedule, session
 from tests.browser.scripted import ScriptedBrowser, context_for
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN
@@ -69,6 +70,51 @@ class ScheduleJobTests(unittest.TestCase):
         with self.assertRaises(schedule.ScheduleNotConfirmed):
             schedule.create_schedule(ctx)
         self.assertEqual(clock.slept, [])
+
+    def test_any_failure_at_or_after_the_create_click_is_a_maybe_created_failure(self):
+        class Crashing(ScriptedBrowser):
+            def __init__(self, on_click=False, on_read=False):
+                super().__init__([SIGNED_IN], after_click={selectors.EXPORT_CREATE: [CONFIRMED]})
+                self.on_click, self.on_read, self.created = on_click, on_read, False
+
+            def click(self, selector):
+                if selector == selectors.EXPORT_CREATE and self.on_click:
+                    raise RuntimeError("page crashed")
+                super().click(selector)
+                self.created = self.created or selector == selectors.EXPORT_CREATE
+
+            def content(self):
+                if self.created and self.on_read:
+                    raise RuntimeError("page crashed")
+                return super().content()
+
+        for browser in (Crashing(on_click=True), Crashing(on_read=True)):
+            ctx, _, _ = context_for(browser, wall=CREATED)
+            with self.assertRaises(schedule.ScheduleNotConfirmed) as caught:
+                schedule.create_schedule(ctx)
+            self.assertIn("check Takeout before trying again", str(caught.exception))
+            self.assertIn("RuntimeError", str(caught.exception))
+
+    def test_a_failure_before_the_create_click_stays_an_ordinary_failure(self):
+        browser = export_page()
+        browser.missing.add(selectors.EXPORT_SIZE_50GB)
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(TimeoutError):
+            schedule.create_schedule(ctx)
+        self.assertNotIn(selectors.EXPORT_CREATE, browser.clicks)
+
+    def test_a_lost_lease_after_the_create_click_is_still_a_cancellation(self):
+        browser = export_page(UNKNOWN)
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        original = ctx.sleep
+
+        def sleep(seconds):
+            original(seconds)
+            ctx.cancelled.set()
+
+        ctx.sleep = sleep
+        with self.assertRaises(Cancelled):
+            schedule.create_schedule(ctx)
 
     def test_a_confirmation_that_appears_after_the_last_wait_is_still_read(self):
         pages = [UNKNOWN] * 12 + [CONFIRMED]

@@ -107,6 +107,27 @@ describe("the Exports page", () => {
     expect(screen.getByRole("link", { name: "page snapshot" })).toHaveAttribute("href", "/api/browser/failures/4/page.html");
   });
 
+  it("links only to the capture files that were saved", async () => {
+    const failed = { ...failedSchedule, capture_files: ["page.html"] };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });
+    expect(await screen.findByRole("link", { name: "page snapshot" })).toHaveAttribute("href", "/api/browser/failures/4/page.html");
+    expect(screen.queryByRole("link", { name: "screenshot" })).not.toBeInTheDocument();
+  });
+
+  it("links only to the screenshot when the page snapshot failed", async () => {
+    const failed = { ...failedSchedule, capture_files: ["screenshot.png"] };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });
+    expect(await screen.findByRole("link", { name: "screenshot" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "page snapshot" })).not.toBeInTheDocument();
+  });
+
+  it("shows no capture links for a failure with no capture", async () => {
+    const failed = { ...failedSchedule, has_capture: false, capture_files: [] };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });
+    await screen.findByText("Create schedule: failed (UnexpectedPage).");
+    expect(screen.queryByText(/Capture of the failed/)).not.toBeInTheDocument();
+  });
+
   it("holds back Create schedule after an unconfirmed attempt until the person says they checked Takeout", async () => {
     let message = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again";
     const server = show({
