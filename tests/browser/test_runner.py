@@ -124,10 +124,28 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         beat = runner.Heartbeat(Slow(), mock.Mock(job_id=1), 0.001)
         beat.start()
         self.assertTrue(started.wait(5))
-        with mock.patch.object(beat.thread, "join", wraps=beat.thread.join) as joined:
-            beat.stop()
-        joined.assert_called_once_with()
+        beat.stop()
         self.assertFalse(beat.thread.is_alive())
+
+    def test_stopping_gives_up_on_a_heartbeat_that_never_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class Stuck:
+            def heartbeat(self, job_id):
+                started.set()
+                release.wait(5)
+
+        beat = runner.Heartbeat(Stuck(), mock.Mock(job_id=1), 0.001)
+        beat.start()
+        self.assertTrue(started.wait(5))
+        began = time.monotonic()
+        with mock.patch.object(runner, "JOIN_SECONDS", 0.05):
+            beat.stop()
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertTrue(beat.thread.is_alive())
+        release.set()
+        beat.thread.join(5)
 
     def test_the_bundled_noop_job_runs_end_to_end(self):
         self.fake.enqueue(3)

@@ -13,6 +13,7 @@ from darkroom_browser.context import Browser, Cancelled, JobContext
 
 HEARTBEAT_SECONDS = 30.0
 BACKOFF_SECONDS = 60.0
+JOIN_SECONDS = 40.0
 
 OpenBrowser = Callable[[Path], Browser]
 
@@ -42,7 +43,9 @@ class Heartbeat:
     def stop(self) -> None:
         self.stopping.set()
         if self.thread.is_alive():
-            self.thread.join()
+            self.thread.join(timeout=JOIN_SECONDS)
+        if self.thread.is_alive():
+            monitoring.log("heartbeat still in flight; reporting without waiting for it", job=self.ctx.job_id)
 
 
 class Runner:
