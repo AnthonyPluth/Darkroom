@@ -55,6 +55,29 @@ class ScheduleJobTests(unittest.TestCase):
         with self.assertRaises(schedule.ScheduleNotConfirmed):
             schedule.create_schedule(ctx)
 
+    def test_a_confirmation_that_arrives_after_a_few_seconds_is_waited_for(self):
+        browser = ScriptedBrowser([SIGNED_IN], after_click={selectors.EXPORT_CREATE: [SIGNED_IN, UNKNOWN, CONFIRMED]})
+        ctx, clock, _ = context_for(browser, wall=CREATED)
+        result = schedule.create_schedule(ctx)
+        self.assertEqual(result["schedule_created"], CREATED)
+        self.assertEqual(clock.slept, [5.0, 5.0])
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
+
+    def test_a_sign_in_page_after_create_is_a_definitive_failure(self):
+        browser = ScriptedBrowser([SIGNED_IN], after_click={selectors.EXPORT_CREATE: [SIGN_IN_NEEDED]})
+        ctx, clock, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(schedule.UnexpectedPage):
+            schedule.create_schedule(ctx)
+        self.assertEqual(clock.slept, [])
+
+    def test_no_confirmation_within_a_minute_fails_without_clicking_create_twice(self):
+        browser = export_page(UNKNOWN)
+        ctx, clock, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
+            schedule.create_schedule(ctx)
+        self.assertEqual(sum(clock.slept), 60.0)
+        self.assertEqual(browser.clicks.count(selectors.EXPORT_CREATE), 1)
+
     def test_an_unexpected_page_after_create_stops(self):
         ctx, _, _ = context_for(export_page(UNKNOWN), wall=CREATED)
         with self.assertRaises(schedule.UnexpectedPage):

@@ -22,6 +22,10 @@ CLICK_SEQUENCE: tuple[tuple[str, str], ...] = (
 )
 
 
+CONFIRM_POLLS = 12
+CONFIRM_POLL_SECONDS = 5.0
+
+
 class ScheduleNotConfirmed(UnexpectedPage):
     pass
 
@@ -42,11 +46,22 @@ def drive(ctx: JobContext, browser: Browser) -> None:
         browser.click(selector)
 
 
+def await_confirmation(ctx: JobContext, browser: Browser) -> None:
+    for _ in range(CONFIRM_POLLS):
+        page = browser.content()
+        if takeout.parse_schedule_confirmation(page) is not None:
+            return
+        if takeout.classify(page) in (takeout.SIGN_IN_NEEDED, takeout.VERIFY_ITS_YOU):
+            raise UnexpectedPage("Takeout asked for a sign-in after the export was created")
+        ctx.sleep(CONFIRM_POLL_SECONDS)
+        ctx.check()
+    raise ScheduleNotConfirmed("Takeout did not confirm a recurring export; check Takeout before trying again")
+
+
 def create_schedule(ctx: JobContext) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
     drive(ctx, browser)
-    if takeout.parse_schedule_confirmation(browser.content()) is None:
-        raise ScheduleNotConfirmed("Takeout did not confirm a recurring export")
+    await_confirmation(ctx, browser)
     created = ctx.wall()
     return {"schedule_created": created, "schedule_end": one_year_after(created)}

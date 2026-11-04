@@ -46,6 +46,22 @@ class AccountJobsApiTests(ApiCase):
         with db.session(self.engine) as opened:
             self.assertEqual(len(opened.execute(select(BrowserJob)).scalars().all()), 2)
 
+    def test_only_one_schedule_per_account_even_after_it_is_done(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        self.assertEqual(status, 409, reply)
+        self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": {"schedule_created": 100.0, "schedule_end": 200.0}})
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        self.assertEqual(status, 409, reply)
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/connect")[0], 201)
+
+    def test_a_failed_schedule_job_may_be_retried(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+
     def test_unknown_and_malformed_accounts_are_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/connect", "/api/accounts/abc/schedule", f"/api/accounts/{self.account_id + 50}/schedule"):
             with self.subTest(path=path):

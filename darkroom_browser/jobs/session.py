@@ -7,7 +7,6 @@ from darkroom_browser.pages import takeout
 POLL_SECONDS = 30.0
 UNKNOWN_LIMIT_SECONDS = 5 * 60.0
 WAIT_LIMIT_SECONDS = 48 * 3600.0
-WAITING_REASON = "sign_in"
 
 
 class UnexpectedPage(Exception):
@@ -33,7 +32,7 @@ def ensure_signed_in(ctx: JobContext, browser: Browser) -> None:
         else:
             unknown_since = None
             if not reported:
-                ctx.wait_for_user(WAITING_REASON)
+                ctx.wait_for_user("verify" if state == takeout.VERIFY_ITS_YOU else "sign_in")
                 reported = True
         if now - started > WAIT_LIMIT_SECONDS:
             raise SignInTimedOut("nobody signed in within 48 hours")

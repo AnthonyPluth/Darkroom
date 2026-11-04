@@ -31,7 +31,7 @@ class ConnectStateMachineTests(unittest.TestCase):
     def test_verify_first_is_one_waiting_report_too(self):
         ctx, _, reporter = context_for(ScriptedBrowser([VERIFY, SIGN_IN_NEEDED, SIGNED_IN]))
         connect(ctx)
-        self.assertEqual(reporter.kinds("waiting"), ["sign_in"])
+        self.assertEqual(reporter.kinds("waiting"), ["verify"])
 
     def test_an_unrecognised_page_for_more_than_five_minutes_fails(self):
         browser = ScriptedBrowser([UNKNOWN])

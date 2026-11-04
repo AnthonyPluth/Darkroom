@@ -75,10 +75,13 @@ def enqueue(opened: Session, account_id: int, kind: str, payload: dict[str, obje
 
 
 def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
-    account_of(opened, account_id)
-    busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(QUEUED_STATUSES)).limit(1)).first()
+    account = account_of(opened, account_id)
+    if kind == "schedule" and account.schedule_created is not None:
+        raise AlreadyOpen("this account already has an export schedule")
+    statuses = (*QUEUED_STATUSES, "done") if kind == "schedule" else QUEUED_STATUSES
+    busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(statuses)).limit(1)).first()
     if busy is not None:
-        raise AlreadyOpen(f"a {kind} job for this account is already waiting or running")
+        raise AlreadyOpen(f"a {kind} job for this account is already waiting, running or done")
     return enqueue(opened, account_id, kind, None, now)
 
 
@@ -190,6 +193,8 @@ def capture_link(settings: Settings, job: BrowserJob, files: Sequence[str]) -> s
 
 def fail(opened: Session, settings: Settings, job: BrowserJob, message: str, files: Sequence[str], now: float) -> BrowserJob:
     present = captured_files(settings, job, files)
+    if job.status == "waiting_for_user":
+        alerts.close(opened, sign_in_key(job.account_id), now)
     job.status = "failed"
     job.message = message
     job.finished = now

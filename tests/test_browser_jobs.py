@@ -187,6 +187,42 @@ class BrowserJobTests(unittest.TestCase):
             opened.flush()
             browser_jobs.enqueue_once(opened, self.account, "connect", 3.0)
 
+    def test_enqueue_once_refuses_a_second_schedule_once_one_exists_or_was_done(self):
+        with db.session(self.engine) as opened:
+            first = browser_jobs.enqueue_once(opened, self.account, "schedule", 1.0)
+            first.status = "done"
+            opened.flush()
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 2.0)
+            first.status = "failed"
+            opened.flush()
+            browser_jobs.enqueue_once(opened, self.account, "schedule", 3.0)
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_created = 5.0
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", 4.0)
+            browser_jobs.enqueue_once(opened, self.account, "connect", 4.0)
+
+    def test_a_waiting_job_that_fails_closes_the_sign_in_alert_and_frees_the_account_to_reconnect(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.failed(opened, self.settings, job_id, "SignInTimedOut", None, [], 7.0)
+        kinds = {(kind, closed is not None) for kind, _, closed in self.open_alerts()}
+        self.assertEqual(kinds, {("sign_in_needed", True), ("failure", True)})
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "needs_sign_in")
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "connect", 8.0).status, "queued")
+
+    def test_a_running_job_that_fails_leaves_other_sign_in_alerts_alone(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.failed(opened, self.settings, job_id, "UnexpectedPage", None, [], 7.0)
+        self.assertEqual([kind for kind, _, _ in self.open_alerts()], ["failure"])
+
     def test_failed_records_the_capture_and_alerts_with_a_link_to_it(self):
         job_id = self.enqueue()
         self.write_capture(job_id, "screenshot.png", "page.html")

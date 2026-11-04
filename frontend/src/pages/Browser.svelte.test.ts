@@ -62,7 +62,7 @@ describe("the Remote browser page", () => {
     expect(await screen.findByText("Worker not responding")).toBeInTheDocument();
   });
 
-  it("offers a retry when loading fails and refreshes on a timer", async () => {
+  it("offers a retry when loading fails", async () => {
     show({ "GET /api/browser/view": reply(500, { error: "database is locked" }), "GET /api/accounts": { accounts: [] }, "GET /api/browser/jobs": { jobs: [] } });
     expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
     expect(screen.getByRole("heading", { name: "Remote browser" })).toBeInTheDocument();
