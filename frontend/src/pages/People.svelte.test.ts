@@ -180,6 +180,24 @@ describe("forms in dialogs", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("does not show a refused delete's error when another confirmation opens", async () => {
+    show({
+      ...seeded(),
+      "DELETE /api/people/2": reply(409, { error: "Sam Example still has devices; remove those first" }),
+      "DELETE /api/devices/30": { device: { ...joPhone, revoked_at: 1 } },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Sam Example" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete person" }));
+    const ask = await screen.findByRole("dialog", { name: "Delete Sam Example?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Delete person" }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent("still has devices");
+    await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke Jo's iPhone, Jo Example" }));
+    const revoke = await screen.findByRole("dialog", { name: "Revoke Jo's iPhone?" });
+    expect(within(revoke).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("deletes a person that can go and loads the list again", async () => {
     let gone = false;
     const server = show({

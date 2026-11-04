@@ -15,6 +15,10 @@
   let busy = $state(false);
   let error = $state("");
 
+  $effect(() => {
+    if (open) error = "";
+  });
+
   async function go(): Promise<void> {
     error = "";
     const ok = await act(run, { busy: (on) => (busy = on), onError: (m) => (error = m) });
