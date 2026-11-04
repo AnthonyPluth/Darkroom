@@ -140,11 +140,18 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
             ctx.browser()
             return {"ok": True}
 
-        self.fake.enqueue(25)
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(self.make_runner({"noop": opens}, heartbeat=0.01, give_up=0.3).run_job(self.fake.queue.pop(0)), "abandoned")
-        self.assertTrue(self.abandoned.is_set())
-        self.assertEqual(self.reported(), [])
+        def explodes(ctx):
+            ctx.browser()
+            raise TimeoutError("x")
+
+        for number, work in ((25, opens), (26, explodes)):
+            with self.subTest(job=number):
+                self.abandoned.clear()
+                self.fake.enqueue(number)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.make_runner({"noop": work}, heartbeat=0.01, give_up=0.3).run_job(self.fake.queue.pop(0)), "abandoned")
+                self.assertTrue(self.abandoned.is_set())
+                self.assertEqual(self.reported(), [])
 
     def test_the_worker_gives_up_well_inside_darkrooms_lease(self):
         self.assertLessEqual(runner.GIVE_UP_SECONDS + 2 * runner.HEARTBEAT_SECONDS, browser_jobs.LEASE_SECONDS)

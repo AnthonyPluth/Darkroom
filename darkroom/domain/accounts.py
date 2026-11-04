@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events
@@ -24,6 +25,10 @@ class EmailTaken(ValueError):
 
 
 class InUse(ValueError):
+    pass
+
+
+class Busy(RuntimeError):
     pass
 
 
@@ -148,8 +153,13 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
 
 
 def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
+    try:
+        opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
+    except OperationalError as error:
+        if "database is locked" not in str(error.orig):
+            raise
+        raise Busy("Darkroom is busy with another change; try deleting the account again in a moment") from None
     account = get(opened, account_id)
-    opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
     found = []
     if opened.execute(select(func.count(Pixel.id)).where(Pixel.google_account_id == account_id)).scalar_one():
         found.append("Pixels")

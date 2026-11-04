@@ -141,7 +141,7 @@ class Runner:
             monitoring.log("browser job lost its lease", job=ctx.job_id)
             outcome = "cancelled"
         except Exception as error:
-            outcome = self.report_failure(ctx, error, watchdog)
+            outcome = self.report_failure(ctx, error, beat, watchdog)
         finally:
             beat.stop()
             if not self.closed(ctx, watchdog):
@@ -161,7 +161,8 @@ class Runner:
         watchdog.disarm()
         return True
 
-    def report_failure(self, ctx: JobContext, error: BaseException, watchdog: Watchdog) -> str:
+    def report_failure(self, ctx: JobContext, error: BaseException, beat: Heartbeat, watchdog: Watchdog) -> str:
+        beat.stop()
         captured = None
         try:
             captured = capture.capture(ctx.browser_open, ctx.failure_dir())
