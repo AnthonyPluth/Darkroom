@@ -108,6 +108,20 @@ def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject
     return alert
 
 
+def open_alert_committed(opened: Session, settings: Settings, key: str, kind: str, subject: str, wording: Wording, link: str | None, now: float,
+                         notifier: Notifier | None = None) -> Alert:
+    existing = opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None))).scalars().first()
+    if existing is not None:
+        return existing
+    alert = Alert(key=key, kind=kind, subject=subject, message=wording.message, link=link, opened=now, last_sent=now, sent_count=1,
+                  closed=now if kind in ONE_SHOT_KINDS else None)
+    opened.add(alert)
+    opened.commit()
+    outcome = (notifier or notifier_for(settings))(settings, wording.title, wording.message, link)
+    events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
+    return alert
+
+
 def tick(opened: Session, settings: Settings, now: float, notifier: Notifier | None = None) -> int:
     sent = 0
     for alert in opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars():

@@ -126,16 +126,36 @@ class CrashTests(unittest.TestCase):
                 self.assertEqual(self.crashed_state(place, "place", kill_on_call(place.place, number, after=True)), clean)
                 self.assertEqual(self.crashed_state(place, "place", kill_on_call(place.place, number)), clean)
 
-    def test_killing_the_run_between_sending_the_summary_and_saving_it_sends_it_once(self):
+    def killed_after_sending(self, title):
         world = World(self)
         export_id = world.hand_dropped().id
-        with mock.patch.object(alerts, "deliver", kill_on_call(alerts.deliver, 2, after=True)), self.assertRaises(KeyboardInterrupt):
+
+        def notifier(settings, sent_title, message, link=None):
+            outcome = world.recorder(settings, sent_title, message, link)
+            if sent_title == title:
+                raise KeyboardInterrupt
+            return outcome
+
+        world.tools = run.Tools(notifier=notifier)
+        with self.assertRaises(KeyboardInterrupt):
             world.run_import(export_id)
-        self.assertEqual(world.sent(SUMMARY), 1)
+        self.assertEqual(world.sent(title), 1)
         world.reopen()
+        world.tools = run.Tools(notifier=world.recorder)
         self.assertEqual(world.run_import(export_id).status, "done")
-        self.assertEqual(world.sent(SUMMARY), 1)
+        alerts.tick(world.opened, world.settings, NOW + 60, world.recorder)
+        self.assertEqual(world.sent(title), 1)
+        return world
+
+    def test_killing_the_run_between_sending_the_summary_and_saving_it_sends_it_once(self):
+        world = self.killed_after_sending(SUMMARY)
         self.assertEqual(world.opened.execute(select(Alert).where(Alert.kind == "export_imported")).scalar_one().closed, NOW)
+
+    def test_killing_the_run_between_sending_an_unmatched_alert_and_saving_it_sends_it_once(self):
+        world = self.killed_after_sending("Some originals are not in Google Photos")
+        alert = world.opened.execute(select(Alert).where(Alert.kind == "originals_unmatched")).scalar_one()
+        self.assertEqual((alert.closed, alert.sent_count), (None, 1))
+        self.assertEqual(world.sent(SUMMARY), 1)
 
     def test_a_failed_save_after_the_summary_is_sent_leaves_the_run_to_resume_not_failed(self):
         world = World(self)

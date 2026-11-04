@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
@@ -177,6 +178,43 @@ class StagingAndPartsTests(Imported):
         self.assertTrue(self.hold.is_file())
         failed = [(e.subject, e.detail) for e in self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed").order_by(Event.id)).scalars()]
         self.assertEqual(failed, [("export 1", "OSError"), (f"review {review.id}", "OSError")])
+
+    def test_parts_left_after_staging_went_are_finished_on_the_next_run(self):
+        with mock.patch.object(paths, "remove_inbox_file", side_effect=OSError("/private/path")):
+            report = self.clean()
+        self.assertEqual((report.staging, report.parts, report.failed), (1, 0, 1))
+        self.assertFalse(self.staging.exists())
+        self.assertTrue(all(part.is_file() for part in self.zips))
+        report = self.clean(LATER + DAY)
+        self.assertEqual((report.staging, report.parts, report.kept), (0, 2, 0))
+        self.assertFalse(any(part.exists() for part in self.zips))
+        self.assertTrue(self.hold.is_file())
+        self.assertEqual(self.review().hold_path, "_inbox/jo/review/export-1/IMG_1005.JPG")
+        self.assertEqual(len(list(self.world.opened.execute(select(Event).where(Event.type == cleanup.VERIFIED)).scalars())), 1)
+        self.assertEqual(self.kept_tree(), self.kept)
+
+    def test_without_the_verification_record_parts_stay_once_staging_is_gone(self):
+        import shutil
+
+        shutil.rmtree(self.staging)
+        report = self.clean(LATER + 365 * DAY)
+        self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 1))
+        self.assertTrue(all(part.is_file() for part in self.zips))
+        self.assertTrue(self.hold.is_file())
+        self.assertEqual(list(self.world.opened.execute(select(Event).where(Event.type == cleanup.VERIFIED)).scalars()), [])
+
+    def test_the_verification_record_is_saved_before_staging_is_removed(self):
+        seen = []
+        real = paths.remove_inbox_tree
+
+        def removing(photos, path):
+            with Session(self.world.engine) as fresh:
+                seen.append(cleanup.holds_verified(fresh, fresh.get(Export, self.export_id)))
+            return real(photos, path)
+
+        with mock.patch.object(paths, "remove_inbox_tree", removing):
+            self.clean()
+        self.assertTrue(seen and all(seen))
 
     def test_a_second_cleanup_finds_nothing_more(self):
         self.clean()
