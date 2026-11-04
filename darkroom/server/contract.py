@@ -142,6 +142,7 @@ class PixelView(TypedDict):
     syncthing_device_id: str | None
     google_account_id: int
     people_ids: list[int]
+    last_sync: float | None
     created: float
 
 

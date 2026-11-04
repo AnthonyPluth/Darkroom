@@ -33,8 +33,8 @@ export const sam: PersonView = { id: 2, name: "Sam Example", slug: "sam-example"
 export const joAccount: AccountView = { id: 10, email: "jo.photos@example.com", default_person_id: 1, session_state: "ok", session_checked: 1000, schedule_end: null, served_people: [1], created: 1 };
 export const familyAccount: AccountView = { id: 11, email: "family.photos@example.com", default_person_id: 2, session_state: "needs_sign_in", session_checked: 1000, schedule_end: 5_000_000, served_people: [1, 2], created: 1 };
 
-export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], created: 1 };
-export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], created: 1 };
+export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], last_sync: 940, created: 1 };
+export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], last_sync: null, created: 1 };
 
 export const joPhone: DeviceView = { id: 30, person_id: 1, name: "Jo's iPhone", cleanup_enabled: false, last_checkin: 990, app_version: "0.1.0", pending_uploads: 0, created: 1, revoked_at: null };
 export const samPhone: DeviceView = { id: 31, person_id: 2, name: "Sam's iPhone", cleanup_enabled: false, last_checkin: null, app_version: null, pending_uploads: 18, created: 1, revoked_at: null };

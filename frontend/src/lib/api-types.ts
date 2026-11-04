@@ -223,6 +223,7 @@ export interface PixelView {
   syncthing_device_id: string | null;
   google_account_id: number;
   people_ids: number[];
+  last_sync: number | null;
   created: number;
 }
 

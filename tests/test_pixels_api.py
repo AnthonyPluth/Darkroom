@@ -3,7 +3,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.storage.models import Export, PixelPerson
+from darkroom.storage.models import Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -93,6 +93,16 @@ class PixelsApiTests(ApiCase):
         self.assertEqual(self.call("DELETE", "/api/pixels/999"), (404, {"error": "no such Pixel"}))
         self.assertEqual(self.call("DELETE", "/api/pixels/abc"), (404, {"error": "no such Pixel"}))
         self.assertEqual(self.call("GET", "/api/pixels")[1]["pixels"][0]["people_ids"], [self.jo["id"]])
+
+    def test_last_sync_is_null_until_something_records_it_and_is_returned_when_set(self):
+        pixel = self.pixel(self.account["id"])
+        self.assertIsNone(pixel["last_sync"])
+        self.assertIsNone(self.call("GET", "/api/pixels")[1]["pixels"][0]["last_sync"])
+        with db.session(self.engine) as opened:
+            opened.get(Pixel, pixel["id"]).last_sync = 1234.5
+        self.assertEqual(self.call("GET", "/api/pixels")[1]["pixels"][0]["last_sync"], 1234.5)
+        status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "last_sync": 1.0})
+        self.assertEqual((status, reply["pixel"]["last_sync"]), (200, 1234.5))
 
     def test_deleting_a_pixel_removes_its_links_and_nothing_else(self):
         pixel = self.pixel(self.account["id"], people_ids=[self.jo["id"], self.sam["id"]])

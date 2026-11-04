@@ -92,6 +92,18 @@ describe("the People page with data", () => {
     expect(rows[1]).toHaveTextContent("Jo Example, Sam Example");
   });
 
+  it("shows when each Pixel last synced, and says not synced yet rather than inventing a time", async () => {
+    show(seeded());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(within(table).getByRole("columnheader", { name: "Last sync" })).toBeInTheDocument();
+    const [synced, never] = within(table).getAllByRole("row").slice(1);
+    const cell = (row: HTMLElement) => row.querySelector('td[data-label="Last sync"]') as HTMLElement;
+    expect(cell(synced)).toHaveTextContent("just now");
+    expect(cell(synced)).not.toHaveClass("text-ink-muted");
+    expect(cell(never)).toHaveTextContent("Not synced yet");
+    expect(cell(never)).toHaveClass("text-ink-muted");
+  });
+
   it("shows each iPhone with its state and a revoke button only while it works", async () => {
     show(seeded());
     const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });

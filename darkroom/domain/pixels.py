@@ -38,6 +38,7 @@ def as_dict(opened: Session, pixel: Pixel) -> dict[str, object]:
         "syncthing_device_id": pixel.syncthing_device_id,
         "google_account_id": pixel.google_account_id,
         "people_ids": people_of(opened, pixel.id),
+        "last_sync": pixel.last_sync,
         "created": pixel.created,
     }
 

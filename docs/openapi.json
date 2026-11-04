@@ -994,6 +994,16 @@
           "id": {
             "type": "integer"
           },
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -1018,6 +1028,7 @@
           "created",
           "google_account_id",
           "id",
+          "last_sync",
           "name",
           "people_ids",
           "syncthing_device_id"

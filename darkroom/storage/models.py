@@ -60,6 +60,7 @@ class Pixel(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     syncthing_device_id: Mapped[str | None] = mapped_column(String)
     google_account_id: Mapped[int] = mapped_column(ForeignKey("google_accounts.id", ondelete="CASCADE"), nullable=False)
+    last_sync: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 
