@@ -70,7 +70,7 @@ class ViewerFrameTests(unittest.TestCase):
         self.assertNotIn("frame-src", self.serve("/app.js", "https://browser.example/vnc.html"))
 
     def test_no_or_an_unusable_viewer_address_allows_no_frame(self):
-        for address in ("", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/"):
+        for address in ("", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/", "https://[::1", "http://[bad"):
             with self.subTest(address=address):
                 self.assertNotIn("frame-src", self.serve("/", address))
 

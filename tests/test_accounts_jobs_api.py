@@ -192,6 +192,16 @@ class ViewWithoutAViewerTests(ApiCase):
         self.assertEqual(self.call("GET", "/api/browser/view")[1]["vnc_url"], None)
 
 
+class ViewMalformedTests(ApiCase):
+    extra_env = {"VNC_URL": "https://[::1"}
+
+    def test_a_malformed_address_is_unavailable_not_an_error(self):
+        self.assertEqual(self.call("GET", "/api/browser/view"), (200, {"vnc_url": None, "worker_last_seen": None}))
+        status, headers, _ = fetch(self.base, "GET", "/")
+        self.assertNotIn(status, (500,))
+        self.assertNotIn("frame-src", headers.get("Content-Security-Policy", ""))
+
+
 class ViewUnsetTests(ApiCase):
     def test_no_address_is_null(self):
         self.assertEqual(self.call("GET", "/api/browser/view")[1], {"vnc_url": None, "worker_last_seen": None})

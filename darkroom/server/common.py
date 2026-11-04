@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
 
-from darkroom.config import Settings
+from darkroom.config import Settings, usable_viewer_url
 from darkroom.dates import utc_now
 from darkroom.storage.paths import Readable
 
@@ -18,10 +18,7 @@ CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'
 
 
 def viewer_url(vnc_url: str) -> str | None:
-    parts = urlsplit(vnc_url)
-    if parts.scheme in ("http", "https") and parts.netloc and not parts.username and not parts.password:
-        return vnc_url
-    return None
+    return usable_viewer_url(vnc_url)
 
 
 def app_csp(vnc_url: str = "") -> str:
