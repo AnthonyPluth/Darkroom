@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import os
 import re
-from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -63,25 +61,6 @@ def as_dict(person: Person) -> dict[str, object]:
     }
 
 
-def remove_empty(folders: list[Path]) -> None:
-    for folder in folders:
-        with contextlib.suppress(OSError):
-            folder.rmdir()
-
-
-def create_tree(photos: Photos, slug: str) -> None:
-    person_folder = photos.inside(photos.person_part(slug))
-    inbox_folder = photos.inbox(slug)
-    inbox_root = inbox_folder.parent
-    inbox_root_existed = inbox_root.exists()
-    try:
-        photos.ensure_person_tree(slug)
-    except OSError:
-        made = [photos.originals(slug), photos.inside(slug, "google-only"), person_folder, photos.manual_inbox(slug), inbox_folder]
-        remove_empty([*made, *([] if inbox_root_existed else [inbox_root])])
-        raise
-
-
 def create(opened: Session, photos: Photos, name: str, slug: str, email: str | None, immich_user_id: str | None,
            immich_library_id: str | None, sealed_key: str | None, now: float) -> Person:
     slug = slug or slugify(name)
@@ -95,7 +74,7 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
                     immich_api_key_sealed=sealed_key, originals_path=f"{slug}/originals", google_only_path=f"{slug}/google-only", created=now)
     opened.add(person)
     opened.flush()
-    create_tree(photos, slug)
+    photos.ensure_person_tree(slug)
     events.record(opened, now, "person_created", slug)
     if sealed_key:
         events.record(opened, now, "immich_key_set", slug)

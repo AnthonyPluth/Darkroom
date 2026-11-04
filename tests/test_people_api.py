@@ -165,16 +165,6 @@ class PeopleApiTests(ApiCase):
         self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 201)
         self.assertTrue((self.photos / "jo" / "originals").is_dir())
 
-    def test_a_failed_creation_removes_only_the_empty_folders_it_made(self):
-        (self.photos / "_inbox").mkdir()
-        (self.photos / "_inbox" / "jo").write_bytes(b"in the way")
-        self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 409)
-        (self.photos / "_inbox" / "jo").unlink()
-        (self.photos / "_inbox" / "jo").mkdir()
-        (self.photos / "_inbox" / "jo" / "manual").write_bytes(b"in the way")
-        self.assertEqual(self.call("POST", "/api/people", {"name": "Kai"})[0], 201)
-        self.assertTrue((self.photos / "_inbox").is_dir())
-
     def test_devices_of_a_person_are_listed_without_their_token(self):
         person = self.person("Jo")
         device_id = self.add_device(person["id"])

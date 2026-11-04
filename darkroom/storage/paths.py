@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -89,8 +90,22 @@ class Photos:
 
     def ensure_person_tree(self, person: str) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
-        for folder in folders:
-            folder.mkdir(parents=True, exist_ok=True)
+        made: list[Path] = []
+        try:
+            for folder in folders:
+                missing: list[Path] = []
+                ancestor = folder
+                while ancestor != self.root and not ancestor.exists():
+                    missing.append(ancestor)
+                    ancestor = ancestor.parent
+                for path in reversed(missing):
+                    path.mkdir()
+                    made.append(path)
+        except OSError:
+            for path in reversed(made):
+                with contextlib.suppress(OSError):
+                    path.rmdir()
+            raise
         return folders
 
 
