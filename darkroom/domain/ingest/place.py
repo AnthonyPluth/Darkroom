@@ -158,7 +158,7 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
     folder = photos.review_hold(person.slug, unpack.staging_name(export))
     placed = copy_into(folder, entry.item.path, entry.fields.sha1)
     report.held += 1
-    review.hold_path = relative(photos, placed.path)
+    review.hold_path, review.sidecar_json = relative(photos, placed.path), entry.fields.sidecar_json
     return review
 
 

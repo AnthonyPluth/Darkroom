@@ -281,11 +281,14 @@ def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path:
 
 def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_id: int, now: float, read: xmp.Reader) -> tuple[TakeoutItem, MediaItem]:
     staged, found_sidecar = (None, None) if hit.decision.source_path is None else staged_sidecar(opened, photos, hit.export, hit.decision.source_path)
-    raw = None if found_sidecar is None else found_sidecar.read_text(encoding="utf-8", errors="replace")
+    raw = hit.review.sidecar_json if found_sidecar is None else found_sidecar.read_text(encoding="utf-8", errors="replace")
     parsed = sidecar.parse(raw) if raw else None
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
     fields = metadata.candidate(item, read_tags(read, hold), parsed, person_id, UNPLACED, now, hit.export.id)
-    if staged is not None and media.sha1_of(staged)[0] != fields.sha1:
+    expected = media.sha1_of(staged)[0] if staged is not None else (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
+    if expected is None:
+        raise WrongState("the held copy can no longer be checked against the export, so it was not kept")
+    if expected != fields.sha1:
         raise WrongState("the held copy no longer matches the file in the export, so it was not kept")
     return item, fields
 
@@ -360,10 +363,10 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     matched, shared = still_referenced(opened, item, hit.decision)
     if matched:
         raise WrongState("a later import matched the kept copy; reverse that decision before undoing this one")
-    adopted = adopted_by(opened, hit.review)
-    if shared or "row" in adopted:
+    if shared:
         hit.decision.takeout_item_id = None
         return set()
+    adopted = adopted_by(opened, hit.review)
     try:
         if "photo" not in adopted:
             effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold, with_sidecar="sidecar" not in adopted))
@@ -375,8 +378,9 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
         raise WrongState("the kept copy could not be removed, so nothing was changed") from error
     hit.decision.takeout_item_id = None
     owner = item.person_id
-    opened.delete(item)
-    return {owner}
+    if "row" not in adopted:
+        opened.delete(item)
+    return set() if {"row", "photo", "sidecar"} <= adopted else {owner}
 
 
 def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects) -> Changed:

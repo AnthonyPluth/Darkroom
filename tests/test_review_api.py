@@ -214,13 +214,42 @@ class ResolveTests(ReviewCase):
         self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
         self.assertEqual(self.pending().id, review_id)
 
-    def test_keep_both_works_once_staging_is_cleaned(self):
+    def cleaned(self):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
-        for path in sorted(staging.rglob("*"), reverse=True):
-            path.rmdir() if path.is_dir() else path.unlink()
+        hit = review.found(self.opened, self.pending().id)
+        staged, found_sidecar = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
+        self.assertIsNotNone(staged)
+        raw = found_sidecar.read_text(encoding="utf-8")
+        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY)
+        self.world.opened.commit()
+        self.assertFalse(staging.exists())
+        return raw
+
+    def test_keep_both_works_once_staging_is_cleaned(self):
+        raw = self.cleaned()
         status, body = self.call("POST", f"/api/review/{self.pending().id}/resolve", {"action": "keep_both"})
         self.assertEqual(status, 200, body)
         self.assertTrue((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).is_file())
+        self.assertEqual(self.opened.get(MediaItem, body["review"]["kept_item_id"]).sidecar_json, raw)
+
+    def test_keep_both_after_cleanup_refuses_a_hold_that_changed_since_it_was_verified(self):
+        self.cleaned()
+        before_flags, review_id = self.confirmed(), self.pending().id
+        self.hold().write_bytes(b"changed after it was verified")
+        before = self.tree()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                         (409, {"error": "the held copy no longer matches the file in the export, so it was not kept"}))
+        self.assertEqual((self.tree(), self.confirmed()), (before, before_flags))
+        self.assertEqual(self.pending().id, review_id)
+
+    def test_keep_both_refuses_a_hold_nothing_can_check_any_more(self):
+        staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
+        for path in sorted(staging.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        before, review_id = self.tree(), self.pending().id
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                         (409, {"error": "the held copy can no longer be checked against the export, so it was not kept"}))
+        self.assertEqual(self.tree(), before)
 
     def test_a_bad_action_is_400(self):
         review_id = self.pending().id
@@ -305,11 +334,26 @@ class UndoTests(ReviewCase):
         opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(photo.relative_to(self.world.root)),
                              sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0))
         opened.commit()
-        review_id, _ = self.resolve("keep_both")
         before = self.tree()
+        review_id, _ = self.resolve("keep_both")
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before)
         self.assertEqual(len(self.opened.execute(select(MediaItem).where(MediaItem.path == str(photo.relative_to(self.world.root)))).all()), 1)
+
+    def test_undo_after_keep_both_over_a_stale_row_restores_the_stale_state(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        relative = str((folder / PAIR_NAME).relative_to(self.world.root))
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1="0" * 40, bytes=1, indexed_at=1.0))
+        opened.commit()
+        before_tree = self.tree()
+        review_id, _ = self.resolve("keep_both")
+        self.assertTrue((folder / PAIR_NAME).is_file())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(self.tree(), before_tree)
+        (row,) = self.opened.execute(select(MediaItem).where(MediaItem.path == relative)).scalars()
+        self.assertEqual((row.sha1, row.bytes), ("0" * 40, 1))
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
 
     def test_a_keep_both_that_fails_puts_back_a_sidecar_it_changed(self):
         _, sidecar = self.already_there(b"<x:xmpmeta>edited by you</x:xmpmeta>")

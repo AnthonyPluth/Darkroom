@@ -199,6 +199,7 @@ class ReviewItem(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
     hold_path: Mapped[str | None] = mapped_column(String)
     resolved_at: Mapped[float | None] = mapped_column(Float)
+    sidecar_json: Mapped[str | None] = mapped_column(Text)
 
 
 class ImportRun(Base):

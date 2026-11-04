@@ -106,15 +106,20 @@ def verified_hashes(opened: Session, photos: Photos, export: Export) -> dict[str
     return found
 
 
-def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
+def saved_hashes(opened: Session, export: Export) -> dict[str, object] | None:
     saved = opened.execute(
         select(Event.detail).where(Event.type == VERIFIED, Event.subject == f"export {export.id}").order_by(Event.id).limit(1)
     ).scalar_one_or_none()
     try:
         expected = json.loads(saved) if saved else None
     except ValueError:
-        return False
-    if not isinstance(expected, dict):
+        return None
+    return expected if isinstance(expected, dict) else None
+
+
+def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
+    expected = saved_hashes(opened, export)
+    if expected is None:
         return False
     for review in pending_reviews(opened, export):
         hold = hold_file(photos, export, review)
