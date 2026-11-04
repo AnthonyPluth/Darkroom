@@ -84,8 +84,165 @@
         "tests/test_browser_internal_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
+        "tests/test_every_route.py",
+        "tests/test_status_api.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
+      ]
+    },
+    {
+      "route": "GET /api/events",
+      "auth": "session",
+      "handler": "darkroom.server.api.status.recent_events",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_status_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/people",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.list_people",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_static.py"
+      ]
+    },
+    {
+      "route": "POST /api/people",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.create_person",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py",
+        "tests/test_static.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/people/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.update_person",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/people/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.delete_person",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/people/{id}/devices",
+      "auth": "session",
+      "handler": "darkroom.server.api.people.list_person_devices",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/devices/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.devices.revoke_device",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/accounts",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.list_accounts",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/accounts",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.create_account",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/accounts/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.update_account",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/accounts/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.delete_account",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "GET /api/pixels",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.list_pixels",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/pixels",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.create_pixel",
+      "frontend": [],
+      "tests": [
+        "tests/api_world.py",
+        "tests/test_every_route.py",
+        "tests/test_people_api.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/pixels/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.update_pixel",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/pixels/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.delete_pixel",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
       ]
     },
     {

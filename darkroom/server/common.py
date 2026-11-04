@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import Engine
 
 from darkroom.config import Settings
+from darkroom.dates import utc_now
 
 CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
 
@@ -52,6 +53,21 @@ def header(request: Request, name: str) -> str | None:
         if key.lower() == wanted:
             return value
     return None
+
+
+def engine_of(request: Request) -> Engine:
+    if request.engine is None:
+        raise RuntimeError("this route needs the database")
+    return request.engine
+
+
+def now() -> float:
+    return utc_now().timestamp()
+
+
+def path_id(request: Request) -> int | None:
+    raw = request.params.get("id", "")
+    return int(raw) if raw.isdigit() and len(raw) <= 12 else None
 
 
 def first_query(request: Request, name: str) -> str | None:

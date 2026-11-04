@@ -16,9 +16,31 @@ class ValidateTests(unittest.TestCase):
     def test_text(self):
         self.assertEqual(validate.text({"n": " Jo "}, "n"), "Jo")
         self.assertEqual(validate.text({}, "n", required=False), "")
-        for body in ({}, {"n": 3}, {"n": "x" * 300}):
+        for body in ({}, {"n": 3}, {"n": "x" * 300}, {"n": "   "}):
             with self.assertRaises(validate.Invalid):
                 validate.text(body, "n")
+        self.assertEqual(validate.text({"n": "  "}, "n", required=False), "")
+
+    def test_present_and_text_or_none(self):
+        self.assertTrue(validate.present({"n": None}, "n"))
+        self.assertFalse(validate.present({}, "n"))
+        self.assertIsNone(validate.text_or_none({"n": None}, "n"))
+        self.assertIsNone(validate.text_or_none({"n": "  "}, "n"))
+        self.assertEqual(validate.text_or_none({"n": " a "}, "n"), "a")
+        with self.assertRaises(validate.Invalid):
+            validate.text_or_none({"n": 4}, "n")
+
+    def test_whole_numbers(self):
+        self.assertEqual(validate.whole_numbers({"n": [3, 1]}, "n"), [3, 1])
+        for body in ({}, {"n": 3}, {"n": [True]}, {"n": ["1"]}, {"n": [0]}, {"n": [1, 1]}, {"n": list(range(1, 60))}):
+            with self.assertRaises(validate.Invalid):
+                validate.whole_numbers(body, "n")
+
+    def test_email(self):
+        self.assertEqual(validate.email({"e": " jo@example.test "}, "e"), "jo@example.test")
+        for body in ({}, {"e": "jo"}, {"e": "@example.test"}, {"e": "jo@example"}, {"e": "jo@.test"}, {"e": "jo@test."}, {"e": "j o@example.test"}, {"e": "a@b@example.test"}, {"e": "<jo>@example.test"}):
+            with self.assertRaises(validate.Invalid):
+                validate.email(body, "e")
 
     def test_whole_number(self):
         self.assertEqual(validate.whole_number({"n": 3}, "n"), 3)

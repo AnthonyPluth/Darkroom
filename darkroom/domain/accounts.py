@@ -1,9 +1,26 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.storage.models import GoogleAccount, Pixel, PixelPerson
+from darkroom.domain import events
+from darkroom.storage.models import Export, GoogleAccount, Person, Pixel, PixelPerson
+
+
+class NoSuchAccount(LookupError):
+    pass
+
+
+class NoSuchPerson(LookupError):
+    pass
+
+
+class EmailTaken(ValueError):
+    pass
+
+
+class InUse(ValueError):
+    pass
 
 
 def served_people(opened: Session, account_id: int) -> set[int]:
@@ -26,3 +43,77 @@ def accounts_serving(opened: Session, person_id: int) -> set[int]:
         ).scalars()
     )
     return by_default | by_pixel
+
+
+def get(opened: Session, account_id: int) -> GoogleAccount:
+    account = opened.get(GoogleAccount, account_id)
+    if account is None:
+        raise NoSuchAccount(f"no Google account {account_id}")
+    return account
+
+
+def listing(opened: Session) -> list[GoogleAccount]:
+    return list(opened.execute(select(GoogleAccount).order_by(GoogleAccount.id)).scalars())
+
+
+def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
+    return {
+        "id": account.id,
+        "email": account.email,
+        "default_person_id": account.default_person_id,
+        "session_state": account.session_state,
+        "session_checked": account.session_checked,
+        "schedule_end": account.schedule_end,
+        "served_people": sorted(served_people(opened, account.id)),
+        "created": account.created,
+    }
+
+
+def require_person(opened: Session, person_id: int) -> None:
+    if opened.get(Person, person_id) is None:
+        raise NoSuchPerson(f"no person {person_id}")
+
+
+def require_free_email(opened: Session, email: str, except_id: int | None = None) -> None:
+    query = select(GoogleAccount.id).where(func.lower(GoogleAccount.email) == email.lower())
+    if except_id is not None:
+        query = query.where(GoogleAccount.id != except_id)
+    if opened.execute(query).first() is not None:
+        raise EmailTaken("there is already a Google account with that email")
+
+
+def create(opened: Session, email: str, default_person_id: int, now: float) -> GoogleAccount:
+    require_person(opened, default_person_id)
+    require_free_email(opened, email)
+    account = GoogleAccount(email=email, default_person_id=default_person_id, created=now)
+    opened.add(account)
+    opened.flush()
+    events.record(opened, now, "account_created", str(account.id))
+    return account
+
+
+def update(opened: Session, account_id: int, email: str | None, default_person_id: int | None, now: float) -> GoogleAccount:
+    account = get(opened, account_id)
+    if email is not None:
+        require_free_email(opened, email, account.id)
+        account.email = email
+    if default_person_id is not None:
+        require_person(opened, default_person_id)
+        account.default_person_id = default_person_id
+    opened.flush()
+    events.record(opened, now, "account_updated", str(account.id))
+    return account
+
+
+def delete(opened: Session, account_id: int, now: float) -> None:
+    account = get(opened, account_id)
+    found = []
+    if opened.execute(select(func.count(Pixel.id)).where(Pixel.google_account_id == account_id)).scalar_one():
+        found.append("Pixels")
+    if opened.execute(select(func.count(Export.id)).where(Export.account_id == account_id)).scalar_one():
+        found.append("exports")
+    if found:
+        raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
+    opened.delete(account)
+    opened.flush()
+    events.record(opened, now, "account_deleted", str(account_id))
