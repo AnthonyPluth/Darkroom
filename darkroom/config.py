@@ -41,6 +41,7 @@ class Settings:
     browser_token: str
     vnc_url: str
     timezone: str
+    upload_read_timeout: int
 
 
 def load() -> Settings:
@@ -65,6 +66,7 @@ def load() -> Settings:
         browser_token=env("DARKROOM_BROWSER_TOKEN"),
         vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
+        upload_read_timeout=int(env("UPLOAD_READ_TIMEOUT", "3600")),
     )
 
 

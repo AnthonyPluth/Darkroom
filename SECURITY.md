@@ -8,6 +8,7 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - A photo is offered for deletion from an iPhone only on the rules in promise 3, re-checked right before deleting.
 - The browser worker never types a Google password or 2FA code (promise 4). Signing in is done by a person, in the embedded browser view.
 - Secrets (API keys, tokens, `DARKROOM_SECRET_KEY`) are never committed, logged, returned in a reply or put in an error message. `.env.example` lists the configuration; real values stay in `.env`.
+- A device (iPhone) token is stored only as its SHA-256 and shown once, in the sign-in redirect's fragment. It is refused once the device is revoked or the person's access lapses, and is looked up only by `darkroom/domain/devices.py`'s `authenticate` (Semgrep's `darkroom-device-token-single-path`). The device API is in `docs/api/device.md`.
 - Every route declares who may call it (`session`, `device`, `worker` or `public`), and an unlisted kind answers 401. A new route needs a test.
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner).
 
