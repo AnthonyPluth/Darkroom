@@ -25,7 +25,7 @@ class StatusApiTests(ApiCase):
         jo = self.person("Jo")
         (card,) = self.call("GET", "/api/status")[1]["people"]
         self.assertEqual(card, {"id": jo["id"], "slug": "jo", "name": "Jo", "indexed": 0, "with_gps": 0, "unknown_time": 0, "accounts": [], "pixels": [],
-                                "devices": [], "last_import": None, "unmatched": 0, "alerts": []})
+                                "devices": [], "last_import": None, "unmatched": None, "alerts": []})
 
     def seed_media(self, person_id):
         rows = (("a.jpg", "exif", "exif_offset"), ("b.jpg", "none", "unknown"), ("c.jpg", "exif", "unknown"), ("d.jpg", "none", "gps_lookup"))
@@ -53,7 +53,7 @@ class StatusApiTests(ApiCase):
             self.assertEqual([a["email"] for a in people[slug]["accounts"]], ["jo.photos@example.test"], slug)
             self.assertEqual([(x["id"], x["name"]) for x in people[slug]["pixels"]], [(pixel["id"], "Shared")], slug)
         self.assertEqual(people["jo"]["accounts"][0]["session_state"], "unknown")
-        self.assertEqual(people["jo"]["devices"], [{"id": people["jo"]["devices"][0]["id"], "name": "Jo's iPhone", "last_checkin": 50.0, "pending_uploads": 7, "eligible": 0}])
+        self.assertEqual(people["jo"]["devices"], [{"id": people["jo"]["devices"][0]["id"], "name": "Jo's iPhone", "last_checkin": 50.0, "pending_uploads": 7, "eligible": None}])
         self.assertEqual(people["sam"]["devices"], [])
 
     def test_open_alerts_are_listed_overall_and_on_the_people_they_concern(self):

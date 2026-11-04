@@ -53,7 +53,7 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         return error_response(NO_ACCOUNT, 404)
     except accounts.NoSuchPerson:
         return error_response(NO_PERSON, 404)
-    except accounts.EmailTaken as error:
+    except (accounts.EmailTaken, accounts.StillConfirming) as error:
         return error_response(str(error), 409)
     return json_response({"account": reply})
 

@@ -337,7 +337,14 @@
         "additionalProperties": false,
         "properties": {
           "eligible": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "integer"
@@ -792,7 +799,14 @@
             "type": "integer"
           },
           "unmatched": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "with_gps": {
             "type": "integer"

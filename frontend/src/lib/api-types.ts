@@ -78,7 +78,7 @@ export interface DeviceState {
   name: string;
   last_checkin: number | null;
   pending_uploads: number;
-  eligible: number;
+  eligible: number | null;
 }
 
 export interface DeviceView {
@@ -178,7 +178,7 @@ export interface PersonStatus {
   pixels: PixelState[];
   devices: DeviceState[];
   last_import: number | null;
-  unmatched: number;
+  unmatched: number | null;
   alerts: AlertView[];
 }
 

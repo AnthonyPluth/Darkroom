@@ -75,15 +75,15 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
 
 def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float) -> Pixel:
     pixel = get(opened, pixel_id)
-    if "google_account_id" in fields:
-        account_id = fields["google_account_id"]
-        assert isinstance(account_id, int)
-        require_account(opened, account_id)
-        pixel.google_account_id = account_id
+    account_id = fields.get("google_account_id", pixel.google_account_id)
+    assert isinstance(account_id, int)
+    require_account(opened, account_id)
+    chosen = fields.get("people_ids", people_of(opened, pixel.id))
+    assert isinstance(chosen, list)
+    require_people(opened, chosen)
+    require_still_served(opened, pixel, set(chosen) if account_id == pixel.google_account_id else set())
+    pixel.google_account_id = account_id
     if "people_ids" in fields:
-        chosen = fields["people_ids"]
-        assert isinstance(chosen, list)
-        require_people(opened, chosen)
         set_people(opened, pixel.id, chosen)
     if "name" in fields:
         pixel.name = str(fields["name"])
@@ -95,8 +95,15 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     return pixel
 
 
+def require_still_served(opened: Session, pixel: Pixel, kept: set[int]) -> None:
+    account = require_account(opened, pixel.google_account_id)
+    still = {account.default_person_id} | accounts.served_by_pixels(opened, account.id, except_pixel_id=pixel.id) | kept
+    accounts.require_confirmations_kept(opened, account.id, still)
+
+
 def delete(opened: Session, pixel_id: int, now: float) -> None:
     pixel = get(opened, pixel_id)
+    require_still_served(opened, pixel, set())
     opened.delete(pixel)
     opened.flush()
     events.record(opened, now, "pixel_deleted", str(pixel_id))

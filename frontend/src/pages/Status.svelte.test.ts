@@ -62,8 +62,9 @@ describe("the Status page with the seeded data", () => {
     expect(within(jo).getByText("Session ok")).toBeInTheDocument();
     expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
     expect(within(jo).getByText("Jo's iPhone: checked in just now, 0 pending")).toBeInTheDocument();
-    expect(within(jo).getByText("0 photos")).toBeInTheDocument();
-    expect(within(jo).getByText("0 originals")).toBeInTheDocument();
+    expect(within(jo).getAllByText("Not checked yet")).toHaveLength(2);
+    for (const unknown of within(jo).getAllByText("Not checked yet")) expect(unknown).toHaveClass("text-ink-muted");
+    expect(within(jo).queryByText(/^0 (photos|originals)$/)).not.toBeInTheDocument();
 
     const sam = screen.getByRole("article", { name: "Sam Example" });
     expect(within(sam).getByText("Needs attention")).toBeInTheDocument();
@@ -91,6 +92,26 @@ describe("the Status page with the seeded data", () => {
     show({ ...routes, "GET /api/status": lonely });
     const card = await screen.findByRole("article", { name: "Jo Example" });
     expect(within(card).getAllByText("None")).toHaveLength(3);
+  });
+
+  it("shows the counts once they have been checked, and a count of 0 as checked", async () => {
+    const jo = seededStatus.people[0];
+    const checked = { ...seededStatus, people: [{ ...jo, unmatched: 0, devices: [{ ...jo.devices[0], eligible: 0 }, { ...jo.devices[0], id: 33, eligible: 1 }] }] };
+    show({ ...routes, "GET /api/status": checked });
+    const card = await screen.findByRole("article", { name: "Jo Example" });
+    expect(within(card).getByText("1 photo")).not.toHaveClass("text-ink-muted");
+    expect(within(card).getByText("0 originals")).not.toHaveClass("text-ink-muted");
+    expect(within(card).queryByText("Not checked yet")).not.toBeInTheDocument();
+  });
+
+  it("says not checked yet for safe to delete while any iPhone has no count", async () => {
+    const jo = seededStatus.people[0];
+    const partly = { ...seededStatus, people: [{ ...jo, unmatched: 4, devices: [{ ...jo.devices[0], eligible: 5 }, { ...jo.devices[0], id: 33, eligible: null }] }] };
+    show({ ...routes, "GET /api/status": partly });
+    const card = await screen.findByRole("article", { name: "Jo Example" });
+    expect(within(card).getByText("Not checked yet")).toHaveClass("text-ink-muted");
+    expect(within(card).getByText("4 originals")).toBeInTheDocument();
+    expect(within(card).queryByText("5 photos")).not.toBeInTheDocument();
   });
 });
 

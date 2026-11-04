@@ -43,7 +43,7 @@ class DeviceState(TypedDict):
     name: str
     last_checkin: float | None
     pending_uploads: int
-    eligible: int
+    eligible: int | None
 
 
 class PersonStatus(TypedDict):
@@ -57,7 +57,7 @@ class PersonStatus(TypedDict):
     pixels: list[PixelState]
     devices: list[DeviceState]
     last_import: float | None
-    unmatched: int
+    unmatched: int | None
     alerts: list[AlertView]
 
 

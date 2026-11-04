@@ -5,7 +5,7 @@
   import { ago, checkedIn, count, names, nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { alertChip, needsAttention, needsSentence, sessionChip } from "$lib/view";
+  import { alertChip, NOT_CHECKED, needsAttention, needsSentence, safeToDelete, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
 
@@ -68,6 +68,7 @@
       {:else}
         <div class="grid gap-4 md:grid-cols-2">
           {#each data.status.people as person (person.id)}
+            {@const eligible = safeToDelete(person.devices)}
             <article class="card" aria-label={person.name}>
               <div class="flex items-center justify-between gap-3">
                 <h3 class="text-md font-semibold">{person.name}</h3>
@@ -98,11 +99,11 @@
                   {/each}
                 </dd>
                 <dt class="text-ink-muted">Safe to delete</dt>
-                <dd>{count(person.devices.reduce((sum, d) => sum + d.eligible, 0), "photo")}</dd>
+                <dd class:text-ink-muted={eligible === null}>{eligible === null ? NOT_CHECKED : count(eligible, "photo")}</dd>
                 <dt class="text-ink-muted">Last import</dt>
                 <dd>{person.last_import === null ? "None yet" : when(person.last_import, data.now)}</dd>
                 <dt class="text-ink-muted">Unmatched</dt>
-                <dd>{count(person.unmatched, "original")}</dd>
+                <dd class:text-ink-muted={person.unmatched === null}>{person.unmatched === null ? NOT_CHECKED : count(person.unmatched, "original")}</dd>
               </dl>
               <a class="font-semibold underline" href="/people" onclick={(e) => followLink(e, "/people")}>Open {person.name}</a>
             </article>

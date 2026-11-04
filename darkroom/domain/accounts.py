@@ -4,7 +4,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
-from darkroom.storage.models import Export, GoogleAccount, Person, Pixel, PixelPerson
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
+
+CONFIRMING_TIERS = (1, 2)
 
 
 class NoSuchAccount(LookupError):
@@ -23,16 +25,44 @@ class InUse(ValueError):
     pass
 
 
+class StillConfirming(ValueError):
+    pass
+
+
 def served_people(opened: Session, account_id: int) -> set[int]:
     account = opened.get(GoogleAccount, account_id)
     if account is None:
         return set()
-    people = {account.default_person_id}
+    return {account.default_person_id} | served_by_pixels(opened, account_id)
+
+
+def served_by_pixels(opened: Session, account_id: int, except_pixel_id: int | None = None) -> set[int]:
+    query = select(PixelPerson.person_id).join(Pixel, Pixel.id == PixelPerson.pixel_id).where(Pixel.google_account_id == account_id)
+    if except_pixel_id is not None:
+        query = query.where(Pixel.id != except_pixel_id)
+    return set(opened.execute(query).scalars())
+
+
+def confirmed_people(opened: Session, account_id: int) -> set[int]:
     rows = opened.execute(
-        select(PixelPerson.person_id).join(Pixel, Pixel.id == PixelPerson.pixel_id).where(Pixel.google_account_id == account_id)
-    ).scalars()
-    people.update(rows)
-    return people
+        select(DedupeDecision.person_id, MediaItem.person_id).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id).where(
+            DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone",
+        )
+    ).all()
+    return {person_id for row in rows for person_id in row}
+
+
+def require_confirmations_kept(opened: Session, account_id: int, still_served: set[int]) -> None:
+    lost = (served_people(opened, account_id) - still_served) & confirmed_people(opened, account_id)
+    if not lost:
+        return
+    account = get(opened, account_id)
+    who = sorted(opened.execute(select(Person.name).where(Person.id.in_(lost))).scalars())
+    raise StillConfirming(
+        f"{account.email} has matched photos of {' and '.join(who)} in Google Photos, which count as backed up; "
+        "it has to keep serving them until those matches are reversed"
+    )
 
 
 def accounts_serving(opened: Session, person_id: int) -> set[int]:
@@ -96,9 +126,12 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
     account = get(opened, account_id)
     if email is not None:
         require_free_email(opened, email, account.id)
-        account.email = email
     if default_person_id is not None:
         require_person(opened, default_person_id)
+        require_confirmations_kept(opened, account.id, {default_person_id} | served_by_pixels(opened, account.id))
+    if email is not None:
+        account.email = email
+    if default_person_id is not None:
         account.default_person_id = default_person_id
     opened.flush()
     events.record(opened, now, "account_updated", str(account.id))

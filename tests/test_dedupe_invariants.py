@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from darkroom.domain import dedupe
+from darkroom.domain import dedupe, pixels
 from darkroom.storage.models import DedupeDecision, Event, MediaItem, ReviewItem
 from tests.dedupe_world import MOMENT, PHASH, World, flip
 
@@ -311,9 +311,32 @@ class TierTwoNeedsExactlyOneCandidate(Household):
 
 class FlagImpliesAnUnreversedAutomaticMatch(unittest.TestCase):
     def test_random_households_never_flag_without_an_unreversed_automatic_tier_one_or_two(self):
+        self.outcomes = {"changed": 0, "refused": 0}
         for seed in range(25):
             with self.subTest(seed=seed):
                 self.run_household(random.Random(seed))
+        self.assertGreater(self.outcomes["changed"], 0)
+        self.assertGreater(self.outcomes["refused"], 0)
+
+    def change_who_is_served(self, world, rng, people, accounts):
+        listed = pixels.listing(world.opened)
+        choice = rng.randrange(5) if listed else 0
+        pixel = rng.choice(listed) if listed else None
+        try:
+            if choice == 0:
+                pixels.create(world.opened, "Pixel", None, rng.choice(accounts), rng.sample(people, rng.randint(1, 3)), 4.0)
+            elif choice == 1:
+                pixels.update(world.opened, pixel.id, {"people_ids": rng.sample(people, rng.randint(1, 3))}, 4.0)
+            elif choice == 2:
+                pixels.update(world.opened, pixel.id, {"google_account_id": rng.choice(accounts)}, 4.0)
+            elif choice == 3:
+                pixels.delete(world.opened, pixel.id, 4.0)
+            else:
+                dedupe.accounts.update(world.opened, rng.choice(accounts), None, rng.choice(people), 4.0)
+        except dedupe.accounts.StillConfirming:
+            self.outcomes["refused"] += 1
+        else:
+            self.outcomes["changed"] += 1
 
     def run_household(self, rng):
         world = World(self)
@@ -343,6 +366,9 @@ class FlagImpliesAnUnreversedAutomaticMatch(unittest.TestCase):
                     dedupe.apply(world.opened, decision, export, 2.0)
             for row in rng.sample(rows, min(len(rows), 3)):
                 dedupe.reverse(world.opened, row.id, 3.0, rng.choice(["owner", "auto"]))
+            for _ in range(3):
+                self.change_who_is_served(world, rng, people, accounts)
+                self.assert_flags_hold(world)
         self.assert_flags_hold(world)
 
     def assert_flags_hold(self, world):

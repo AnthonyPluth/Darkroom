@@ -53,9 +53,9 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "unknown_time": counts[2],
         "accounts": [account_state(account) for account in people_accounts],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
-        "devices": [{"id": d.id, "name": d.name, "last_checkin": d.last_checkin, "pending_uploads": d.pending_uploads, "eligible": 0} for d in devices],
+        "devices": [{"id": d.id, "name": d.name, "last_checkin": d.last_checkin, "pending_uploads": d.pending_uploads, "eligible": None} for d in devices],
         "last_import": last_import(opened, serving),
-        "unmatched": 0,
+        "unmatched": None,
         "alerts": concerning,
     }
 

@@ -1,4 +1,4 @@
-import type { AccountState, PersonStatus } from "./api-types";
+import type { AccountState, DeviceState, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -25,4 +25,15 @@ export function alertChip(kind: string): { tone: Tone; label: string } {
 export function needsSentence(count: number): string {
   if (count === 0) return "Nothing needs you right now.";
   return count === 1 ? "One thing needs you." : `${count} things need you.`;
+}
+
+export const NOT_CHECKED = "Not checked yet";
+
+export function safeToDelete(devices: readonly DeviceState[]): number | null {
+  let total = 0;
+  for (const device of devices) {
+    if (device.eligible === null) return null;
+    total += device.eligible;
+  }
+  return total;
 }
