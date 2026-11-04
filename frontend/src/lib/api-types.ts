@@ -131,6 +131,39 @@ export interface Health {
 
 export type HeartbeatBody = Record<string, never>;
 
+export interface ImportQueued {
+  export_id: number;
+  status: string;
+  stage: string | null;
+}
+
+export interface ImportReply {
+  run: ImportView;
+}
+
+export interface ImportView {
+  id: number;
+  export_id: number;
+  account_id: number;
+  started: number;
+  finished: number | null;
+  stage: string | null;
+  status: string;
+  added: number;
+  skipped_t1: number;
+  skipped_t2: number;
+  skipped_t3: number;
+  review: number;
+  missing_gps: number;
+  failed: number;
+  unmatched_by_person: Record<string, number>;
+  error: string | null;
+}
+
+export interface Imports {
+  imports: ImportView[];
+}
+
 export interface Me {
   sub: string;
   email: string;
@@ -277,6 +310,9 @@ export interface Endpoints {
   "DELETE /api/pixels/{id}": { body: never; reply: Ok };
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
+  "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
+  "GET /api/imports": { body: never; reply: Imports };
+  "GET /api/imports/{id}": { body: never; reply: ImportReply };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

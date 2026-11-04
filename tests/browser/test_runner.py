@@ -3,7 +3,9 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from darkroom.domain import browser_jobs
@@ -96,6 +98,58 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertEqual(self.fake.bodies("done"), [{"result": {"ok": True}}])
         self.assertEqual(self.fake.bodies("claim")[0], {"worker": "test-worker"})
         self.assertEqual(self.browsers, [], "a noop job opens no browser")
+
+    def test_no_heartbeat_reaches_darkroom_after_done(self):
+        def quick(ctx):
+            time.sleep(0.05)
+            return {"ok": True}
+
+        for number in range(5):
+            self.fake.enqueue(number + 1, payload={})
+            worker = self.make_runner({"noop": quick}, heartbeat=0.001)
+            self.assertTrue(worker.tick())
+        actions = self.fake.actions()
+        for position, action in enumerate(actions):
+            if action == "done":
+                self.assertNotEqual(actions[position + 1:position + 2], ["heartbeat"])
+
+    def test_stopping_waits_for_a_heartbeat_that_is_still_in_flight(self):
+        started = threading.Event()
+
+        class Slow:
+            def heartbeat(self, job_id):
+                started.set()
+                time.sleep(0.3)
+
+        beat = runner.Heartbeat(Slow(), mock.Mock(job_id=1), 0.001)
+        beat.start()
+        self.assertTrue(started.wait(5))
+        beat.stop()
+        self.assertFalse(beat.thread.is_alive())
+
+    def test_stopping_gives_up_on_a_heartbeat_that_never_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class Stuck:
+            def heartbeat(self, job_id):
+                started.set()
+                release.wait(5)
+
+        beat = runner.Heartbeat(Stuck(), mock.Mock(job_id=1), 0.001)
+        beat.start()
+        self.assertTrue(started.wait(5))
+        began = time.monotonic()
+        with mock.patch.object(runner, "JOIN_SECONDS", 0.05):
+            beat.stop()
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertTrue(beat.thread.is_alive())
+        again = time.monotonic()
+        with mock.patch.object(runner, "JOIN_SECONDS", 5):
+            beat.stop()
+        self.assertLess(time.monotonic() - again, 1)
+        release.set()
+        beat.thread.join(5)
 
     def test_the_bundled_noop_job_runs_end_to_end(self):
         self.fake.enqueue(3)

@@ -261,3 +261,36 @@ class FailedBody(TypedDict):
     message: str
     failure_dir: NotRequired[str]
     files: NotRequired[list[str]]
+
+
+class ImportView(TypedDict):
+    id: int
+    export_id: int
+    account_id: int
+    started: float
+    finished: float | None
+    stage: str | None
+    status: str
+    added: int
+    skipped_t1: int
+    skipped_t2: int
+    skipped_t3: int
+    review: int
+    missing_gps: int
+    failed: int
+    unmatched_by_person: dict[str, int]
+    error: str | None
+
+
+class Imports(TypedDict):
+    imports: list[ImportView]
+
+
+class ImportReply(TypedDict):
+    run: ImportView
+
+
+class ImportQueued(TypedDict):
+    export_id: int
+    status: str
+    stage: str | None

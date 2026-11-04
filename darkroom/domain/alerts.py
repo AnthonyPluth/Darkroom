@@ -45,8 +45,9 @@ def export_imported(summary: str) -> Wording:
     return Wording("Takeout import finished", summary)
 
 
-def originals_unmatched(person: str, pixel: str, count: int) -> Wording:
-    return Wording("Some originals are not in Google Photos", f"{count} of {person}'s originals have no match in Google yet. Check that their folder is turned on for backup on {pixel}.")
+def originals_unmatched(person: str, pixel: str | None, count: int) -> Wording:
+    where = f"on {pixel}" if pixel else "in Google Photos on the Pixel that serves them"
+    return Wording("Some originals are not in Google Photos", f"{count} of {person}'s originals have no match in Google yet. Check that their folder is turned on for backup {where}.")
 
 
 def schedule_ending(account: str, end: str) -> Wording:

@@ -111,6 +111,10 @@ class AlertTests(unittest.TestCase):
 
     def test_wording(self):
         self.assertIn("BACK", alerts.originals_unmatched("Jo", "BACK", 4).message.upper())
+        without_pixel = alerts.originals_unmatched("Jo", None, 4).message
+        self.assertIn("Jo's", without_pixel)
+        self.assertNotIn("None", without_pixel)
+        self.assertNotIn("delet", without_pixel.lower())
         self.assertIn("2026", alerts.schedule_ending("a@x", "2026-12-01").message)
         self.assertIn("2027", alerts.schedule_renewed("a@x", "2027-12-01").message)
         self.assertIn("E1", alerts.export_expiring("E1", "soon").message)

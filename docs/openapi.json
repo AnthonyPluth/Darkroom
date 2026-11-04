@@ -575,6 +575,156 @@
         "required": [],
         "type": "object"
       },
+      "ImportQueued": {
+        "additionalProperties": false,
+        "properties": {
+          "export_id": {
+            "type": "integer"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "export_id",
+          "stage",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ImportReply": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/ImportView"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "ImportView": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "added": {
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "export_id": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "finished": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "missing_gps": {
+            "type": "integer"
+          },
+          "review": {
+            "type": "integer"
+          },
+          "skipped_t1": {
+            "type": "integer"
+          },
+          "skipped_t2": {
+            "type": "integer"
+          },
+          "skipped_t3": {
+            "type": "integer"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string"
+          },
+          "unmatched_by_person": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "account_id",
+          "added",
+          "error",
+          "export_id",
+          "failed",
+          "finished",
+          "id",
+          "missing_gps",
+          "review",
+          "skipped_t1",
+          "skipped_t2",
+          "skipped_t3",
+          "stage",
+          "started",
+          "status",
+          "unmatched_by_person"
+        ],
+        "type": "object"
+      },
+      "Imports": {
+        "additionalProperties": false,
+        "properties": {
+          "imports": {
+            "items": {
+              "$ref": "#/components/schemas/ImportView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "imports"
+        ],
+        "type": "object"
+      },
       "Me": {
         "additionalProperties": false,
         "properties": {
@@ -1368,6 +1518,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Events"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports/{id}/import": {
+      "post": {
+        "operationId": "request",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportQueued"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/imports": {
+      "get": {
+        "operationId": "list_imports",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Imports"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/imports/{id}": {
+      "get": {
+        "operationId": "one",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReply"
                 }
               }
             },

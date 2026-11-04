@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, browser_jobs
+from darkroom.domain.ingest import run
 from darkroom.storage.models import Alert, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
 
 
@@ -37,7 +40,7 @@ def account_state(account: GoogleAccount) -> dict[str, object]:
             "schedule_end": account.schedule_end}
 
 
-def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert]) -> dict[str, object]:
+def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None]) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
     emails = {account.email for account in people_accounts}
@@ -55,7 +58,7 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
         "devices": [{"id": d.id, "name": d.name, "last_checkin": d.last_checkin, "pending_uploads": d.pending_uploads, "eligible": None} for d in devices],
         "last_import": last_import(opened, serving),
-        "unmatched": None,
+        "unmatched": unmatched.get(person.slug),
         "alerts": concerning,
     }
 
@@ -63,5 +66,6 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
 def overview(opened: Session) -> dict[str, object]:
     counts = photo_counts(opened)
     alerts_open = open_alerts(opened)
-    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open) for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
+    unmatched = run.unmatched_by_person(opened)
+    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched) for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
     return {"worker_last_seen": browser_jobs.worker_last_seen(opened), "people": people, "alerts": [alert_dict(alert) for alert in alerts_open]}
