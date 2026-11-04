@@ -88,7 +88,7 @@
           <p class="text-ink-muted">{note}</p>
         {/each}
         <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
-          {#if account.session_state === "needs_sign_in" || connecting?.status === "waiting_for_user" || scheduling?.status === "waiting_for_user"}
+          {#if connecting?.status === "waiting_for_user" || scheduling?.status === "waiting_for_user"}
             <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>

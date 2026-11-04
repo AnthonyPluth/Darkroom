@@ -75,6 +75,9 @@ def enqueue(opened: Session, account_id: int, kind: str, payload: dict[str, obje
 
 
 def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
+    locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
+    if locked is None:
+        raise UnknownAccount(f"no Google account {account_id}")
     account = account_of(opened, account_id)
     if kind == "schedule" and account.schedule_created is not None:
         raise AlreadyOpen("this account already has an export schedule")

@@ -46,8 +46,7 @@ describe("the Exports page", () => {
     expect(within(family).getByText("16 Feb 1970")).toBeInTheDocument();
     expect(within(family).getByText("27 Feb 1970")).toBeInTheDocument();
     expect(within(family).getByRole("button", { name: "Create schedule" })).toBeDisabled();
-    await userEvent.click(within(family).getByRole("link", { name: "Open remote browser" }));
-    expect(router.path).toBe("/browser");
+    expect(within(family).queryByRole("link", { name: "Open remote browser" })).not.toBeInTheDocument();
   });
 
   it("queues a connect job and reloads, then disables the button while it is open", async () => {
@@ -93,7 +92,8 @@ describe("the Exports page", () => {
     show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [waitingConnect, failedSchedule] } });
     const family = await screen.findByRole("region", { name: "family.photos@example.com" });
     expect(within(family).getByText("Connect: waiting for you to sign in.")).toBeInTheDocument();
-    expect(within(family).getByRole("link", { name: "Open remote browser" })).toBeInTheDocument();
+    await userEvent.click(within(family).getByRole("link", { name: "Open remote browser" }));
+    expect(router.path).toBe("/browser");
     const jo = screen.getByRole("region", { name: "jo.photos@example.com" });
     expect(within(jo).getByText("Create schedule: failed. Open Status for details.")).toBeInTheDocument();
     expect(within(jo).getByRole("button", { name: "Create schedule" })).toBeEnabled();

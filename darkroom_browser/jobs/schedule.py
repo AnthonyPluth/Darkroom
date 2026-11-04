@@ -47,14 +47,15 @@ def drive(ctx: JobContext, browser: Browser) -> None:
 
 
 def await_confirmation(ctx: JobContext, browser: Browser) -> None:
-    for _ in range(CONFIRM_POLLS):
+    for attempt in range(CONFIRM_POLLS + 1):
         page = browser.content()
         if takeout.parse_schedule_confirmation(page) is not None:
             return
         if takeout.classify(page) in (takeout.SIGN_IN_NEEDED, takeout.VERIFY_ITS_YOU):
             raise UnexpectedPage("Takeout asked for a sign-in after the export was created")
-        ctx.sleep(CONFIRM_POLL_SECONDS)
-        ctx.check()
+        if attempt < CONFIRM_POLLS:
+            ctx.sleep(CONFIRM_POLL_SECONDS)
+            ctx.check()
     raise ScheduleNotConfirmed("Takeout did not confirm a recurring export; check Takeout before trying again")
 
 

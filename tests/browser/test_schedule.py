@@ -70,6 +70,13 @@ class ScheduleJobTests(unittest.TestCase):
             schedule.create_schedule(ctx)
         self.assertEqual(clock.slept, [])
 
+    def test_a_confirmation_that_appears_after_the_last_wait_is_still_read(self):
+        pages = [UNKNOWN] * 12 + [CONFIRMED]
+        browser = ScriptedBrowser([SIGNED_IN], after_click={selectors.EXPORT_CREATE: pages})
+        ctx, clock, _ = context_for(browser, wall=CREATED)
+        self.assertEqual(schedule.create_schedule(ctx)["schedule_created"], CREATED)
+        self.assertEqual(sum(clock.slept), 60.0)
+
     def test_no_confirmation_within_a_minute_fails_without_clicking_create_twice(self):
         browser = export_page(UNKNOWN)
         ctx, clock, _ = context_for(browser, wall=CREATED)

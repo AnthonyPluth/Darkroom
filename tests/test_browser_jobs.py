@@ -94,6 +94,31 @@ class BrowserJobTests(unittest.TestCase):
         self.assertEqual(len(claimed), wanted)
         self.assertEqual(len(set(claimed)), wanted)
 
+    def race(self, kind):
+        made, refused, errors = [], [], []
+        start = threading.Barrier(8)
+
+        def request():
+            start.wait()
+            try:
+                with db.session(self.engine) as opened:
+                    made.append(browser_jobs.enqueue_once(opened, self.account, kind, 1.0).id)
+            except browser_jobs.AlreadyOpen:
+                refused.append(kind)
+            except Exception as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=request) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return errors, len(made), len(refused)
+
+    def test_simultaneous_requests_queue_one_job_per_kind(self):
+        for kind in ("connect", "schedule"):
+            self.assertEqual(self.race(kind), ([], 1, 7), kind)
+
     def test_heartbeat_progress_and_done(self):
         job_id, queued = self.enqueue(), self.enqueue()
         with db.session(self.engine) as opened:
