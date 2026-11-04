@@ -49,7 +49,7 @@ def create_person(request: Annotated[Request, contract.PersonCreateBody]) -> Ann
         return error_response(str(error), 400)
     except people.BadSlug as error:
         return error_response(str(error), 400)
-    except people.SlugTaken as error:
+    except (people.SlugTaken, people.FolderInUse) as error:
         return error_response(str(error), 409)
     except secretbox.Unreadable:
         return error_response(NO_SECRET, 503)

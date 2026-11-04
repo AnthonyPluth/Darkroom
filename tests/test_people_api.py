@@ -132,8 +132,29 @@ class PeopleApiTests(ApiCase):
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["sam"])
         self.assertEqual(original.read_bytes(), b"photo bytes")
 
+    def test_a_deleted_persons_folder_name_is_never_reused_and_its_files_are_not_indexed(self):
+        old = self.person("Jo")
+        original = self.photos / "jo" / "originals" / "keep.jpg"
+        original.write_bytes(b"photo bytes")
+        self.assertEqual(self.call("DELETE", f"/api/people/{old['id']}"), (200, {"ok": True}))
+        status, reply = self.call("POST", "/api/people", {"name": "Someone Else", "slug": "jo"})
+        self.assertEqual(status, 409)
+        self.assertIn("already in use on disk", reply["error"])
+        self.assertIn("never reused or deleted automatically", reply["error"])
+        self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 409)
+        self.assertEqual(original.read_bytes(), b"photo bytes")
+        self.assertEqual(self.call("GET", "/api/people"), (200, {"people": []}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(MediaItem)).scalars().all(), [])
+        self.assertEqual(self.person("Kai")["slug"], "kai")
+
+    def test_a_leftover_inbox_folder_also_blocks_the_name(self):
+        (self.photos / "_inbox" / "kai").mkdir(parents=True)
+        self.assertEqual(self.call("POST", "/api/people", {"name": "Kai"})[0], 409)
+        self.assertFalse((self.photos / "kai").exists())
+
     def test_a_folder_that_cannot_be_made_is_a_clear_500_and_no_person(self):
-        (self.photos / "jo").write_bytes(b"in the way")
+        (self.photos / "_inbox").write_bytes(b"in the way")
         status, reply = self.call("POST", "/api/people", {"name": "Jo"})
         self.assertEqual((status, reply), (500, {"error": "Darkroom could not create the person's folders"}))
         self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})

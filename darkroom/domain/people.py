@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 
 from sqlalchemy import func, select
@@ -12,6 +13,10 @@ from darkroom.storage.paths import SLUG, Photos
 
 
 class SlugTaken(ValueError):
+    pass
+
+
+class FolderInUse(ValueError):
     pass
 
 
@@ -63,6 +68,8 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
         raise BadSlug("slug must be lower-case letters, numbers and dashes, starting with a letter or number")
     if opened.execute(select(Person.id).where(Person.slug == slug)).first() is not None:
         raise SlugTaken(f"there is already a person with the folder name {slug}")
+    if any(os.path.lexists(folder) for folder in (photos.inside(photos.person_part(slug)), photos.inbox(slug))):
+        raise FolderInUse(f"the folder name {slug} is already in use on disk; a person's folders are never reused or deleted automatically, so choose another folder name")
     person = Person(name=name, slug=slug, email=email, immich_user_id=immich_user_id, immich_library_id=immich_library_id,
                     immich_api_key_sealed=sealed_key, originals_path=f"{slug}/originals", google_only_path=f"{slug}/google-only", created=now)
     opened.add(person)
