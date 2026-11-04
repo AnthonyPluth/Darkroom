@@ -36,6 +36,7 @@
     ]);
     const first = pending.reviews[0];
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
+    reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
     const past = resolved.flatMap((list) => list.reviews).sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
     return { pending: pending.reviews, detail, past, people: people.people, now: nowSeconds() };
   });
@@ -223,7 +224,7 @@
           {@const chip = decisionChip(review, data.people)}
           <tr>
             <td data-label="When">{review.resolved_at === null ? "" : when(review.resolved_at, data.now)}</td>
-            <td data-label="Pair" class="font-mono text-sm break-all">{pairLabel(review)}</td>
+            <td data-label="Pair"><span class="font-mono text-sm break-all">{pairLabel(review)}</span></td>
             <td data-label="Decision"><Chip tone={chip.tone} label={chip.label} /></td>
             <td class="md:text-right">
               {#if canUndo(review, data.now)}
@@ -261,7 +262,7 @@
             {@const state = decisionState(decision)}
             <tr>
               <td data-label="When">{when(decision.decided_at, data.now)}</td>
-              <td data-label="File" class="font-mono text-sm break-all">{decision.name ?? "Unknown file"}</td>
+              <td data-label="File"><span class="font-mono text-sm break-all">{decision.name ?? "Unknown file"}</span></td>
               <td data-label="Tier">{tierLabel(decision.tier)}</td>
               <td data-label="Person">{personName(data.people, decision.person_id)}</td>
               <td class="md:text-right">
