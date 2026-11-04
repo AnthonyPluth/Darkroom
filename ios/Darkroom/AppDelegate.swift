@@ -1,17 +1,23 @@
 import UIKit
 
-@MainActor
-final class BackgroundSessionCompletions {
+final class BackgroundSessionCompletions: @unchecked Sendable {
     static let shared = BackgroundSessionCompletions()
 
+    private let lock = NSLock()
     private var handlers: [String: () -> Void] = [:]
 
     func store(_ handler: @escaping () -> Void, for identifier: String) {
+        lock.lock()
         handlers[identifier] = handler
+        lock.unlock()
     }
 
     func complete(identifier: String) {
-        handlers.removeValue(forKey: identifier)?()
+        lock.lock()
+        let handler = handlers.removeValue(forKey: identifier)
+        lock.unlock()
+        guard let handler else { return }
+        DispatchQueue.main.async(execute: handler)
     }
 }
 
@@ -21,8 +27,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        Task { @MainActor in
-            BackgroundSessionCompletions.shared.store(completionHandler, for: identifier)
-        }
+        BackgroundSessionCompletions.shared.store(completionHandler, for: identifier)
     }
 }

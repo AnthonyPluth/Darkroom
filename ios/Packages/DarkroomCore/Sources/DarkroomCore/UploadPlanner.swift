@@ -64,13 +64,16 @@ public enum UploadPlanner {
         }
     }
 
-    public static func plan(resources: [LocalResource], reply: CheckReply) -> UploadPlan {
+    public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
+        let checkedKeys = Set(batch.assets.flatMap { asset in
+            asset.resources.map { ResourceKey(assetID: asset.id, kind: $0.kind) }
+        })
         let needed = Set(reply.needed.map(\.key))
         var assetOrder: [String: Int] = [:]
         for resource in resources where assetOrder[resource.key.assetID] == nil {
             assetOrder[resource.key.assetID] = assetOrder.count
         }
-        let hashed = resources.filter { $0.state == .hashed }
+        let hashed = resources.filter { $0.state == .hashed && checkedKeys.contains($0.key) }
         let queue = hashed
             .filter { needed.contains($0.key) }
             .sorted {

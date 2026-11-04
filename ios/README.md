@@ -38,7 +38,7 @@ Which one to use is decided in #10 item 7.
 2. The `build` job runs on `macos-15` (pinned, so Xcode does not change under a pull request): select the Xcode version in `ios/.xcode-version`, install XcodeGen and xcbeautify at pinned versions (checksums verified), `xcodegen generate`, `swift test` for DarkroomCore, then an unsigned `xcodebuild` build for `generic/platform=iOS Simulator` with `CODE_SIGNING_ALLOWED=NO`. No team id, certificate or secret is involved.
 3. Both steps pipe through `xcbeautify --renderer github-actions`, so a compile error becomes a `file:line` annotation on the pull request. The `.xcresult` is uploaded when the build fails. SwiftPM and DerivedData are cached on the Xcode version and `Package.resolved`.
 
-Cost: Darkroom is private, so each macOS minute counts ten times against the account's included minutes. Measured durations are in the table below.
+Cost: Darkroom is public, so GitHub-hosted runner minutes are free. If the repository ever goes private, each macOS minute counts ten times against the account's included minutes. Measured durations are in the table below.
 
 | Run | Duration |
 | --- | --- |

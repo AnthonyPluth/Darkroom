@@ -12,6 +12,10 @@ final class UploadPlannerTests: XCTestCase {
         )
     }
 
+    private func whole(_ resources: [LocalResource]) -> CheckRequest {
+        UploadPlanner.checkBatches(from: resources, batchSize: Int.max).first ?? CheckRequest(assets: [])
+    }
+
     func testBatchesHoldWholeAssetsInOrder() {
         let resources = [
             resource("a", .adjusted), resource("a", .photo),
@@ -41,7 +45,7 @@ final class UploadPlannerTests: XCTestCase {
     func testNeededResourcesAreQueuedAndTheRestMarkedUploaded() {
         let resources = [resource("a", .photo), resource("a", .liveVideo), resource("b", .photo)]
         let reply = CheckReply(needed: [NeededResource(id: "a", kind: .liveVideo)])
-        let plan = UploadPlanner.plan(resources: resources, reply: reply)
+        let plan = UploadPlanner.plan(resources: resources, checked: whole(resources), reply: reply)
         XCTAssertEqual(plan.queue, [ResourceKey(assetID: "a", kind: .liveVideo)])
         XCTAssertEqual(plan.markUploaded, [ResourceKey(assetID: "a", kind: .photo), ResourceKey(assetID: "b", kind: .photo)])
     }
@@ -52,7 +56,7 @@ final class UploadPlannerTests: XCTestCase {
             resource("a", .liveVideo), resource("a", .photo),
         ]
         let reply = CheckReply(needed: resources.map { NeededResource(id: $0.key.assetID, kind: $0.key.kind) })
-        let plan = UploadPlanner.plan(resources: resources, reply: reply)
+        let plan = UploadPlanner.plan(resources: resources, checked: whole(resources), reply: reply)
         XCTAssertEqual(plan.queue.map { "\($0.assetID).\($0.kind.rawValue)" }, ["b.photo", "b.adjusted", "a.photo", "a.live_video"])
         XCTAssertTrue(plan.markUploaded.isEmpty)
     }
@@ -65,7 +69,7 @@ final class UploadPlannerTests: XCTestCase {
             resource("d", .photo, state: .uploaded),
         ]
         let reply = CheckReply(needed: resources.map { NeededResource(id: $0.key.assetID, kind: $0.key.kind) })
-        let plan = UploadPlanner.plan(resources: resources, reply: reply)
+        let plan = UploadPlanner.plan(resources: resources, checked: whole(resources), reply: reply)
         XCTAssertTrue(plan.queue.isEmpty)
         XCTAssertTrue(plan.markUploaded.isEmpty)
     }
@@ -73,8 +77,20 @@ final class UploadPlannerTests: XCTestCase {
     func testNeededEntryForAnUnknownResourceIsIgnored() {
         let resources = [resource("a", .photo)]
         let reply = CheckReply(needed: [NeededResource(id: "zzz", kind: .photo)])
-        let plan = UploadPlanner.plan(resources: resources, reply: reply)
+        let plan = UploadPlanner.plan(resources: resources, checked: whole(resources), reply: reply)
         XCTAssertTrue(plan.queue.isEmpty)
         XCTAssertEqual(plan.markUploaded, [ResourceKey(assetID: "a", kind: .photo)])
+    }
+
+    func testReplyToOneBatchNeverMarksLaterBatchesUploaded() {
+        let resources = (0..<450).map { resource("asset-\($0)", .photo) }
+        let batches = UploadPlanner.checkBatches(from: resources)
+        XCTAssertEqual(batches.count, 3)
+        let firstReply = CheckReply(needed: [NeededResource(id: "asset-5", kind: .photo)])
+        let plan = UploadPlanner.plan(resources: resources, checked: batches[0], reply: firstReply)
+        XCTAssertEqual(plan.queue, [ResourceKey(assetID: "asset-5", kind: .photo)])
+        XCTAssertEqual(plan.markUploaded.count, 199)
+        let firstBatchIDs = Set(batches[0].assets.map(\.id))
+        XCTAssertTrue(plan.markUploaded.allSatisfy { firstBatchIDs.contains($0.assetID) })
     }
 }
