@@ -6,7 +6,7 @@ from darkroom.server import routes
 from tests.shared import fetch, settings_from, start_server
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
-BEARER_KINDS = {"device", "worker", "mcp"}
+BEARER_KINDS = {"device", "worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
@@ -116,6 +116,12 @@ class EveryRouteTests(unittest.TestCase):
         with mock.patch.object(routes, "ROUTES", unknown):
             self.assertFalse(all(route.auth in routes.AUTH_KINDS for route in routes.ROUTES))
             status, _, _ = fetch(self.base, "GET", "/api/odd")
+        self.assertEqual(status, 401)
+        self.assertNotIn("mcp", routes.AUTH_KINDS)
+        retired = (*routes.ROUTES, routes.Route("GET", "/api/retired", never_runs, "mcp"))
+        with mock.patch.object(routes, "ROUTES", retired):
+            self.assertFalse(all(route.auth in routes.AUTH_KINDS for route in routes.ROUTES))
+            status, _, _ = fetch(self.base, "GET", "/api/retired")
         self.assertEqual(status, 401)
 
 

@@ -7,7 +7,7 @@ from darkroom.server import auth
 from darkroom.server.api import accounts, browser, browser_internal, devices, people, pixels, status
 from darkroom.server.common import Request, Response
 
-AUTH_KINDS = ("session", "device", "worker", "mcp", "public")
+AUTH_KINDS = ("session", "device", "worker", "public")
 
 
 @dataclass(frozen=True)
