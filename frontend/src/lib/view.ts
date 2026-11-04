@@ -30,6 +30,7 @@ export function needsSentence(count: number): string {
 export const NOT_CHECKED = "Not checked yet";
 
 export function safeToDelete(devices: readonly DeviceState[]): number | null {
+  if (devices.length === 0) return null;
   let total = 0;
   for (const device of devices) {
     if (device.eligible === null) return null;

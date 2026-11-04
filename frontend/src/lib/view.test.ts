@@ -38,7 +38,7 @@ describe("needsAttention and needsSentence", () => {
 describe("safeToDelete", () => {
   const device = seededStatus.people[0].devices[0];
   it("adds up the iPhones' counts, and is unknown while any of them is", () => {
-    expect(safeToDelete([])).toBe(0);
+    expect(safeToDelete([])).toBeNull();
     expect(safeToDelete([{ ...device, eligible: 2 }, { ...device, eligible: 3 }])).toBe(5);
     expect(safeToDelete([{ ...device, eligible: 2 }, { ...device, eligible: null }])).toBeNull();
     expect(safeToDelete([device])).toBeNull();
