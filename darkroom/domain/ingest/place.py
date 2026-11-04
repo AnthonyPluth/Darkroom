@@ -109,6 +109,7 @@ def copy_into(folder: Path, source: Path, sha1: str) -> Placed:
                 return Placed(destination, False)
             continue
         if written != sha1:
+            destination.unlink(missing_ok=True)
             raise PlaceFailed("the staged file changed while it was copied")
         return Placed(destination, True)
     raise PlaceFailed("both names are taken by other files")
@@ -186,7 +187,7 @@ def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Ent
         decision = entry.decision
         if decision.export_id != export.id or decision.account_id != export.account_id:
             raise PlaceFailed("the decision belongs to another export")
-        if decision.reversed_at is not None:
+        if decision.reversed_at is not None or decision.decided_by != "auto":
             report.skipped += 1
         elif decision.tier == 5:
             place_google_only(opened, photos, export, entry, report, read, write)

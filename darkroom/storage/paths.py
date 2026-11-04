@@ -150,6 +150,7 @@ def checked_sidecar(destination: Path) -> Path:
 def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]) -> None:
     checked_sidecar(destination)
     source = destination if destination.exists() else None
+    before = None if source is None else source.read_bytes()
     with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".xmp-") as folder:
         temp = Path(folder) / destination.name
         render(temp, source)
@@ -157,6 +158,8 @@ def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]
             raise NotASidecar("no sidecar was written")
         checked_sidecar(destination)
         if source is not None:
+            if not source.is_file() or source.read_bytes() != before:
+                raise AlreadyExists(destination.name)
             os.replace(temp, destination)
             return
         try:

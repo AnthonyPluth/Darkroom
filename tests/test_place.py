@@ -235,6 +235,22 @@ class CollisionTests(Household):
         with self.assertRaises(place.PlaceFailed):
             self.place(entry)
 
+    def test_a_copy_that_does_not_match_its_hash_is_removed(self):
+        entry = self.entry(self.staged("a.jpg"))
+        entry.fields.sha1 = "0" * 40
+        with self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual([p for p in (self.root / "jo/google-only").rglob("*") if p.is_file()], [])
+
+    def test_owner_made_decisions_are_never_placed_or_held(self):
+        _, mine = self.phone("sam", self.sam)
+        for tier, kwargs in ((5, {}), (4, {"person": self.sam, "matched": mine})):
+            entry = self.entry(self.staged(f"o{tier}.jpg", colour=(tier, 9, 9)), tier=tier, decided_by="owner", **kwargs)
+            before = tree(self.root)
+            report = self.place(entry)
+            self.assertEqual(tree(self.root), before)
+            self.assertEqual((report.placed, report.held, report.skipped), (0, 0, 1))
+
     def test_hidden_and_counter_only_names_get_a_plain_name(self):
         self.assertEqual(place.plain_name(Path(".hidden.jpg")), ("_hidden", ".jpg"))
         self.assertEqual(place.plain_name(Path("(1).jpg")), ("(1)", ".jpg"))
