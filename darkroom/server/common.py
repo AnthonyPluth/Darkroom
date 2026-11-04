@@ -12,6 +12,7 @@ from sqlalchemy import Engine
 
 from darkroom.config import Settings
 from darkroom.dates import utc_now
+from darkroom.storage.paths import Readable
 
 CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
 
@@ -39,6 +40,8 @@ class Principal:
     name: str | None = None
     groups: tuple[str, ...] = ()
     renewed: int | None = None
+    device_id: int | None = None
+    person_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class Request:
     engine: Engine | None = None
     user: Principal | None = None
     params: Mapping[str, str] = field(default_factory=dict)
+    stream: Readable | None = None
 
 
 @dataclass(frozen=True)

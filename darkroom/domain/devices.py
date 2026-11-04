@@ -1,14 +1,76 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+import secrets
+from dataclasses import dataclass
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from darkroom import oidc
+from darkroom.config import Settings
 from darkroom.domain import events
 from darkroom.storage.models import Device, Person
+
+MAX_TOKEN = 200
 
 
 class NoSuchDevice(LookupError):
     pass
+
+
+class NoPerson(LookupError):
+    pass
+
+
+@dataclass(frozen=True)
+class SignedInDevice:
+    device_id: int
+    person_id: int
+    name: str
+    email: str | None
+
+
+def person_for(opened: Session, email: str | None, verified: bool) -> Person:
+    if not email or not verified:
+        raise NoPerson("Darkroom has no person with this email")
+    found = list(opened.execute(select(Person).where(func.lower(Person.email) == email.strip().lower())).scalars())
+    if len(found) != 1:
+        raise NoPerson("Darkroom has no person with this email" if not found else "more than one person has this email")
+    return found[0]
+
+
+def enrol(opened: Session, sub: str, email: str | None, verified: bool, name: str, now: float) -> tuple[Device, str]:
+    person = person_for(opened, email, verified)
+    for other in of_person(opened, person.id):
+        if other.revoked_at is None and other.sub != sub:
+            revoke(opened, other.id, now)
+    token = secrets.token_urlsafe(32)
+    device = Device(person_id=person.id, name=name, token_hash=oidc.hash_token(token), sub=sub, created=now, last_checkin=now)
+    opened.add(device)
+    opened.flush()
+    events.record(opened, now, "device_signed_in", person.slug, name)
+    return device, token
+
+
+def authenticate(opened: Session, settings: Settings, token: str | None, now: float) -> SignedInDevice | None:
+    if not token or len(token) > MAX_TOKEN:
+        return None
+    device = opened.execute(select(Device).where(Device.token_hash == oidc.hash_token(token))).scalar_one_or_none()
+    if device is None or device.revoked_at is not None:
+        return None
+    person = opened.get(Person, device.person_id)
+    if person is None or oidc.device_access_lapsed(opened, settings, device.sub, person.email, now) is not None:
+        return None
+    device.last_checkin = now
+    opened.flush()
+    return SignedInDevice(device.id, person.id, device.name, person.email)
+
+
+def check_in(opened: Session, device_id: int, pending_uploads: int, app_version: str | None, now: float) -> Device:
+    device = get(opened, device_id)
+    device.pending_uploads, device.app_version, device.last_checkin = pending_uploads, app_version, now
+    opened.flush()
+    return device
 
 
 def get(opened: Session, device_id: int) -> Device:

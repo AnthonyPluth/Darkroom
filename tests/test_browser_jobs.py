@@ -268,8 +268,8 @@ class BrowserJobTests(unittest.TestCase):
             self.assertIn("check Takeout", str(caught.exception))
             browser_jobs.enqueue_once(opened, self.account, "connect", 30.0)
             checked = browser_jobs.mark_schedule_checked(opened, self.account, 31.0)
-            self.assertTrue(checked.message.endswith(" [checked]"))
             self.assertTrue(checked.message.startswith("ScheduleNotConfirmed"))
+            self.assertEqual(json.loads(checked.result), {"checked": True})
             with self.assertRaises(browser_jobs.NothingToCheck):
                 browser_jobs.mark_schedule_checked(opened, self.account, 32.0)
             self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "schedule", 33.0).status, "queued")
@@ -294,7 +294,7 @@ class BrowserJobTests(unittest.TestCase):
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
             browser_jobs.expire_leases(opened, self.settings, 5.0 + browser_jobs.LEASE_SECONDS + 1)
-        self.assertTrue(self.job(job_id).message.startswith("ScheduleNotConfirmed"))
+        self.assertEqual(self.job(job_id).message, browser_jobs.EXPIRED_MESSAGE)
         with db.session(self.engine) as opened:
             with self.assertRaises(browser_jobs.AlreadyOpen):
                 browser_jobs.enqueue_once(opened, self.account, "schedule", 500.0)

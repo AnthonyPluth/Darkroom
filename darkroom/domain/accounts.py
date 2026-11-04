@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sql_update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events
@@ -23,6 +25,10 @@ class EmailTaken(ValueError):
 
 
 class InUse(ValueError):
+    pass
+
+
+class Busy(RuntimeError):
     pass
 
 
@@ -154,6 +160,12 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
 
 
 def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
+    try:
+        opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
+    except OperationalError as error:
+        if "database is locked" not in str(error.orig):
+            raise
+        raise Busy("Darkroom is busy with another change; try deleting the account again in a moment") from None
     account = get(opened, account_id)
     found = []
     if opened.execute(select(func.count(Pixel.id)).where(Pixel.google_account_id == account_id)).scalar_one():
@@ -162,6 +174,12 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None
         found.append("exports")
     if found:
         raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
+    hold = browser_jobs.holds_profile(opened, account_id, now)
+    if hold == "open":
+        raise InUse(f"{account.email} has a browser job that has not finished; wait for it to finish, then delete the account")
+    if hold == "lease_expired":
+        raise InUse(f"{account.email} had a browser job that failed when its worker stopped reporting less than {int(browser_jobs.LEASE_SECONDS // 60)} minutes ago, "
+                    "and that worker may still be closing its browser; try again in a few minutes")
     email = account.email
     opened.delete(account)
     opened.flush()

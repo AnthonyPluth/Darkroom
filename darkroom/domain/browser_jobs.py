@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
@@ -17,10 +19,10 @@ LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
 GUARDED_KINDS = ("connect", "schedule")
 MAYBE_CREATED = "ScheduleNotConfirmed"
-CHECKED = " [checked]"
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify", "wrong_account")
 OPEN_STATUSES = ("running", "waiting_for_user")
+EXPIRED_MESSAGE = "the worker stopped reporting"
 WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
@@ -92,10 +94,15 @@ def has_open_onboarding_job(opened: Session, account_id: int) -> bool:
 
 def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
     latest = opened.execute(select(BrowserJob).where(BrowserJob.account_id == account_id, BrowserJob.kind == "schedule").order_by(BrowserJob.id.desc()).limit(1)).scalar_one_or_none()
-    message = latest.message or "" if latest is not None else ""
-    if latest is not None and latest.status == "failed" and message.startswith(MAYBE_CREATED) and not message.endswith(CHECKED):
-        return latest
-    return None
+    if latest is None or latest.status != "failed" or json.loads(latest.result or "{}").get("checked"):
+        return None
+    message = latest.message or ""
+    return latest if message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE else None
+
+
+def is_unchecked(opened: Session, job: BrowserJob) -> bool:
+    stuck = unchecked_schedule(opened, job.account_id)
+    return stuck is not None and stuck.id == job.id
 
 
 def mark_schedule_checked(opened: Session, account_id: int, now: float) -> BrowserJob:
@@ -103,13 +110,18 @@ def mark_schedule_checked(opened: Session, account_id: int, now: float) -> Brows
     job = unchecked_schedule(opened, account_id)
     if job is None:
         raise NothingToCheck("there is no schedule attempt waiting to be checked")
-    job.message = (job.message or "") + CHECKED
+    job.result = json.dumps({"checked": True})
     events.record(opened, now, "schedule_checked", str(job.id))
     return job
 
 
 def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
-    locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
+    try:
+        locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
+    except OperationalError as error:
+        if "database is locked" not in str(error.orig):
+            raise
+        raise AlreadyOpen("Darkroom is busy with another change; try again in a moment") from None
     if locked is None:
         raise UnknownAccount(f"no Google account {account_id}")
     account = account_of(opened, account_id)
@@ -259,7 +271,7 @@ def expire_leases(opened: Session, settings: Settings, now: float) -> list[Brows
     stale = now - LEASE_SECONDS
     expired = []
     for job in opened.execute(select(BrowserJob).where(BrowserJob.status.in_(OPEN_STATUSES), BrowserJob.heartbeat < stale)).scalars():
-        expired.append(fail(opened, settings, job, f"{MAYBE_CREATED}: the worker stopped reporting; check Takeout before trying again" if job.kind == "schedule" else "the worker stopped reporting", [], now))
+        expired.append(fail(opened, settings, job, EXPIRED_MESSAGE, [], now))
     return expired
 
 
@@ -292,7 +304,7 @@ def unresolved_jobs(opened: Session, account_id: int | None) -> list[BrowserJob]
     return found
 
 
-def as_dict(job: BrowserJob, settings: Settings | None = None) -> dict[str, object]:
+def as_dict(job: BrowserJob, settings: Settings | None = None, needs_check: bool = False) -> dict[str, object]:
     return {
         "id": job.id,
         "account_id": job.account_id,
@@ -303,6 +315,7 @@ def as_dict(job: BrowserJob, settings: Settings | None = None) -> dict[str, obje
         "heartbeat": job.heartbeat,
         "finished": job.finished,
         "message": job.message or "",
+        "needs_check": needs_check,
         "has_capture": job.failure_dir is not None,
         "capture_files": captured_files(settings, job, CAPTURE_FILES) if settings is not None and job.failure_dir is not None else [],
     }
@@ -310,3 +323,13 @@ def as_dict(job: BrowserJob, settings: Settings | None = None) -> dict[str, obje
 
 def for_worker(job: BrowserJob) -> dict[str, object]:
     return {"id": job.id, "kind": job.kind, "account": str(job.account_id), "payload": json.loads(job.payload or "{}")}
+
+
+def holds_profile(opened: Session, account_id: int, now: float) -> Literal["open", "lease_expired"] | None:
+    mine = BrowserJob.account_id == account_id
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, BrowserJob.status.in_(OPEN_STATUSES))).scalar_one():
+        return "open"
+    expired = and_(BrowserJob.status == "failed", BrowserJob.message == EXPIRED_MESSAGE, BrowserJob.finished > now - LEASE_SECONDS)
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, expired)).scalar_one():
+        return "lease_expired"
+    return None

@@ -1,8 +1,16 @@
+import sqlite3
+import tempfile
+from pathlib import Path
 import unittest
+from unittest import mock
 
-from darkroom.domain import accounts
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import OperationalError
+
+from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
-from darkroom.storage.models import GoogleAccount, Pixel, PixelPerson
+from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
+from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
 
 
@@ -71,6 +79,120 @@ class ServedPeopleTests(unittest.TestCase):
             add_pixel(opened, shared, [jo])
             self.assertEqual(accounts.accounts_serving(opened, jo), {own, shared})
             self.assertEqual(accounts.accounts_serving(opened, sam), {shared})
+
+
+class DeleteTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = own_database(self)
+        self.photos = Photos(Path(self.enterContext(tempfile.TemporaryDirectory())))
+
+    def account_with_job(self, status, finished=None, message=None):
+        with db.session(self.engine) as opened:
+            name = f"jo{status.replace('_', '')}{finished}"
+            account = add_account(opened, f"{name}@x.test", add_person(opened, name))
+            job = browser_jobs.enqueue(opened, account, "noop", None, 1.0)
+            job.status = status
+            job.finished = finished
+            job.message = message
+        return account
+
+    def refused(self, account, now=2.0, says="browser job that has not finished"):
+        with db.session(self.engine) as opened:
+            with self.assertRaisesRegex(accounts.InUse, says):
+                accounts.delete(opened, self.photos, account, now)
+        with db.session(self.engine) as opened:
+            self.assertIsNotNone(opened.get(GoogleAccount, account))
+            self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 1)
+
+    def deleted(self, account, now=2.0):
+        with db.session(self.engine) as opened:
+            accounts.delete(opened, self.photos, account, now)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(GoogleAccount, account))
+            self.assertEqual(opened.query(BrowserJob).filter_by(account_id=account).count(), 0)
+
+    def test_a_running_or_waiting_job_refuses_the_delete_and_changes_nothing(self):
+        for status in browser_jobs.OPEN_STATUSES:
+            with self.subTest(status=status):
+                self.refused(self.account_with_job(status))
+
+    def test_a_job_the_lease_expired_still_refuses_until_the_lease_window_has_passed(self):
+        account = self.account_with_job("failed", finished=1000.0, message=browser_jobs.EXPIRED_MESSAGE)
+        self.refused(account, now=1000.0 + browser_jobs.LEASE_SECONDS - 1, says="failed when its worker stopped reporting less than 3 minutes ago.*try again in a few minutes")
+        self.deleted(account, now=1000.0 + browser_jobs.LEASE_SECONDS + 1)
+
+    def test_the_delete_holds_the_write_lock_before_it_checks_for_browser_jobs(self):
+        account = self.account_with_job("queued")
+        database = self.engine.url.database
+        checked = browser_jobs.holds_profile
+        seen = []
+
+        def claim_meanwhile(opened, account_id, now):
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE browser_jobs SET status = 'running', started = 2.0, heartbeat = 2.0 WHERE account_id = ?", (account_id,))
+                other.commit()
+                seen.append("claimed")
+            except sqlite3.OperationalError as error:
+                seen.append(str(error))
+            finally:
+                other.close()
+            return checked(opened, account_id, now)
+
+        with mock.patch.object(browser_jobs, "holds_profile", claim_meanwhile):
+            self.deleted(account)
+        self.assertEqual(seen, ["database is locked"])
+
+    def test_a_write_committed_after_the_deletes_first_statement_waits_for_the_delete(self):
+        account = self.account_with_job("queued")
+        database = self.engine.url.database
+        seen = []
+
+        def write_meanwhile(conn, cursor, statement, parameters, context, executemany):
+            if seen:
+                return
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE browser_jobs SET heartbeat = 3.0 WHERE account_id = ?", (account,))
+                other.commit()
+                seen.append("committed")
+            except sqlite3.OperationalError as error:
+                seen.append(str(error))
+            finally:
+                other.close()
+
+        event.listen(self.engine, "after_cursor_execute", write_meanwhile)
+        self.addCleanup(event.remove, self.engine, "after_cursor_execute", write_meanwhile)
+        with db.session(self.engine) as opened:
+            accounts.delete(opened, self.photos, account, 2.0)
+        self.assertEqual(seen, ["database is locked"])
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(GoogleAccount, account))
+
+    def test_a_delete_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
+        account = self.account_with_job("done")
+        impatient = create_engine(str(self.engine.url), connect_args={"timeout": 0.05})
+        event.listen(impatient, "connect", db.set_sqlite_pragmas)
+        self.addCleanup(impatient.dispose)
+        holder = sqlite3.connect(self.engine.url.database, timeout=0)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            with db.session(impatient) as opened:
+                with self.assertRaisesRegex(accounts.Busy, "try deleting the account again in a moment"):
+                    accounts.delete(opened, self.photos, account, 2.0)
+        finally:
+            holder.rollback()
+            holder.close()
+        with db.session(self.engine) as opened:
+            self.assertIsNotNone(opened.get(GoogleAccount, account))
+        with db.session(self.engine) as opened, mock.patch.object(opened, "execute", side_effect=OperationalError("UPDATE", {}, sqlite3.OperationalError("disk I/O error"))):
+            with self.assertRaises(OperationalError):
+                accounts.delete(opened, self.photos, account, 2.0)
+
+    def test_finished_and_queued_jobs_do_not_block_the_delete(self):
+        for status in ("done", "failed", "queued"):
+            with self.subTest(status=status):
+                self.deleted(self.account_with_job(status, finished=1000.0, message="TimeoutError"))
 
 
 if __name__ == "__main__":

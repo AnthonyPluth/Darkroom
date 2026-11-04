@@ -59,6 +59,7 @@ export interface BrowserJobView {
   heartbeat: number | null;
   finished: number | null;
   message: string;
+  needs_check: boolean;
   has_capture: boolean;
   capture_files: string[];
 }
@@ -76,8 +77,33 @@ export interface ClaimBody {
   worker?: string;
 }
 
+export interface DeviceAssetDecl {
+  id: string;
+  resources: DeviceResourceDecl[];
+}
+
+export interface DeviceCheckBody {
+  assets: DeviceAssetDecl[];
+}
+
+export interface DeviceCheckReply {
+  needed: NeededResource[];
+}
+
+export interface DeviceCheckinBody {
+  pending_uploads: number;
+  app_version?: string | null;
+}
+
 export interface DeviceReply {
   device: DeviceView;
+}
+
+export interface DeviceResourceDecl {
+  kind: string;
+  sha1: string;
+  bytes: number;
+  filename: string;
 }
 
 export interface DeviceState {
@@ -176,6 +202,11 @@ export interface Me {
   email: string;
   name: string;
   groups: string[];
+}
+
+export interface NeededResource {
+  id: string;
+  kind: string;
 }
 
 export interface Ok {
@@ -281,6 +312,14 @@ export interface Status {
   alerts: AlertView[];
 }
 
+export interface UploadReply {
+  id: string;
+  kind: string;
+  sha1: string;
+  already: boolean;
+  indexed: boolean;
+}
+
 export interface WaitingBody {
   reason: string;
 }
@@ -324,6 +363,9 @@ export interface Endpoints {
   "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
   "GET /api/imports": { body: never; reply: Imports };
   "GET /api/imports/{id}": { body: never; reply: ImportReply };
+  "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
+  "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
+  "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

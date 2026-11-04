@@ -72,6 +72,6 @@ export const someEvents: EventView[] = [
   { id: 1, time: 100, type: "person_created", subject: "jo-example", detail: null },
 ];
 
-export const queuedConnect: BrowserJobView = { id: 5, account_id: 10, kind: "connect", status: "queued", created: 990, started: null, heartbeat: null, finished: null, message: "", has_capture: false, capture_files: [] };
+export const queuedConnect: BrowserJobView = { id: 5, account_id: 10, kind: "connect", status: "queued", created: 990, started: null, heartbeat: null, finished: null, message: "", needs_check: false, has_capture: false, capture_files: [] };
 export const waitingConnect: BrowserJobView = { ...queuedConnect, id: 6, account_id: 11, status: "waiting_for_user", started: 991, heartbeat: 995, message: "sign_in" };
 export const failedSchedule: BrowserJobView = { ...queuedConnect, id: 4, account_id: 10, kind: "schedule", status: "failed", started: 900, finished: 910, message: "UnexpectedPage", has_capture: true, capture_files: ["screenshot.png", "page.html"] };

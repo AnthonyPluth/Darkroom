@@ -50,10 +50,8 @@ export function latestJob(jobs: readonly BrowserJobView[], accountId: number, ki
   return jobs.find((job) => job.account_id === accountId && job.kind === kind);
 }
 
-const CHECKED = " [checked]";
-
 export function failureReason(job: BrowserJobView): string {
-  const message = job.message.endsWith(CHECKED) ? job.message.slice(0, -CHECKED.length) : job.message;
+  const message = job.message;
   const at = message.indexOf(": ");
   return message === "" ? "" : at === -1 ? ` (${message})` : `, ${message.slice(at + 2).replace(/[.]$/, "")}`;
 }
@@ -65,7 +63,7 @@ export function failedCaptures(jobs: readonly BrowserJobView[], accountId: numbe
 
 export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
   const latest = latestJob(jobs, accountId, "schedule");
-  return latest !== undefined && latest.status === "failed" && latest.message.startsWith("ScheduleNotConfirmed") && !latest.message.endsWith(CHECKED) ? latest : undefined;
+  return latest !== undefined && latest.needs_check ? latest : undefined;
 }
 
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {

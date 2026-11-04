@@ -129,13 +129,14 @@ describe("the Exports page", () => {
   });
 
   it("holds back Create schedule after an unconfirmed attempt until the person says they checked Takeout", async () => {
-    let message = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again";
+    const message = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again";
+    let needsCheck = true;
     const server = show({
       "GET /api/accounts": { accounts: [joAccount] },
-      "GET /api/browser/jobs": () => ({ jobs: [{ ...failedSchedule, message }] }),
+      "GET /api/browser/jobs": () => ({ jobs: [{ ...failedSchedule, message, needs_check: needsCheck }] }),
       "POST /api/accounts/10/schedule/checked": () => {
-        message += " [checked]";
-        return { job: { ...failedSchedule, message } };
+        needsCheck = false;
+        return { job: { ...failedSchedule, message, needs_check: false } };
       },
     });
     const region = await screen.findByRole("region", { name: "jo.photos@example.com" });

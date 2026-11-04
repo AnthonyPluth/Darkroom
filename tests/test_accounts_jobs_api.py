@@ -64,7 +64,7 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(status, 409)
         self.assertIn("check Takeout", reply["error"])
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")
-        self.assertEqual((status, reply["job"]["message"]), (200, "ScheduleNotConfirmed: check Takeout before trying again [checked]"))
+        self.assertEqual((status, reply["job"]["message"], reply["job"]["needs_check"]), (200, "ScheduleNotConfirmed: check Takeout before trying again", False))
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")[0], 409)
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
 
@@ -120,6 +120,14 @@ class AccountJobsApiTests(ApiCase):
             self.assertEqual([entry["id"] for entry in listed], sorted((entry["id"] for entry in listed), reverse=True))
         self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")
         self.assertNotIn(job["id"], [entry["id"] for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"]])
+
+    def test_the_job_list_marks_the_attempt_that_needs_checking(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "ScheduleNotConfirmed: check Takeout"})
+        self.assertEqual([entry["needs_check"] for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"]], [True])
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")
+        self.assertEqual([entry["needs_check"] for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"]], [False])
 
     def test_a_failed_job_lists_only_the_capture_files_that_exist(self):
         self.call("POST", f"/api/accounts/{self.account_id}/connect")

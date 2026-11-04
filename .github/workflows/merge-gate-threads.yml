@@ -12,12 +12,17 @@ name: Merge gate threads
 # starts the gate on Codex's own comments on a pull request only (a comment's workflow runs with the base repository's
 # token, so there is no fork to skip).
 #
-# Each run has a concurrency group of its own (the jobs', not the workflow's: a workflow-level group is joined before
-# any job's `if:`, so every comment on the pull request would cancel a gate restart that Codex's review or comment had
-# started, leaving the gate pending). A shared group with cancel-in-progress left a cancelled "decide" check run on the
-# commit each time a newer review superseded an older one, and GitHub lists a cancelled check as a failure on the pull
-# request even while "Merge gate" passes. A run only starts the gate, which is cheap, and merge-gate.yml cancels its own
-# older evaluations of the same pull request, so there is nothing for these runs to cancel.
+# The caller has no concurrency group, neither the workflow's nor a job's. Codex posts a review and a comment per
+# finding in one burst, and every run of a review event belongs to the same head commit: with a group and
+# cancel-in-progress, each newer run cancelled the one before it, and a cancelled job leaves a check run on the pull
+# request's head that GitHub lists as failing ("Merge gate" green, the checks red). Cancelling them saves nothing,
+# since each run only starts the gate, and merge-gate.yml's own group (merge-gate-<pull request number> for a
+# workflow_dispatch, with cancel-in-progress) already replaces an older evaluation of the same pull request with the
+# newer one. A group keyed on github.run_id with cancel-in-progress: false would do the same as none, so there is none.
+# A workflow-level group in particular would also be wrong: it is joined before any job's `if:` is read, and
+# issue_comment fires on every comment on the pull request, so each such run would cancel a gate restart still in
+# flight (the decide run of Codex's review, or the codex-comment run of its comment) and then skip its own jobs,
+# leaving the gate pending until someone re-runs it.
 on:
   pull_request_review:
     types: [submitted]
@@ -35,21 +40,15 @@ defaults:
 jobs:
   decide:
     if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
-    concurrency:
-      group: merge-gate-threads-${{ github.event.pull_request.number }}-${{ github.run_id }}
-      cancel-in-progress: false
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@e46ed57c9783080142e148121176bd7d4a321a8a   # v2.3.0
     with:
       pr: ${{ github.event.pull_request.number }}
   codex-comment:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
-    concurrency:
-      group: merge-gate-threads-comment-${{ github.event.issue.number }}-${{ github.run_id }}
-      cancel-in-progress: false
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@b554ed883ec02bab75af3ba976743a3b4ed3ba5a   # v2.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@e46ed57c9783080142e148121176bd7d4a321a8a   # v2.3.0
     with:
       pr: ${{ github.event.issue.number }}

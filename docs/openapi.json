@@ -285,6 +285,9 @@
           "message": {
             "type": "string"
           },
+          "needs_check": {
+            "type": "boolean"
+          },
           "started": {
             "anyOf": [
               {
@@ -309,6 +312,7 @@
           "id",
           "kind",
           "message",
+          "needs_check",
           "started",
           "status"
         ],
@@ -369,6 +373,77 @@
         "required": [],
         "type": "object"
       },
+      "DeviceAssetDecl": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceResourceDecl"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "DeviceCheckBody": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceAssetDecl"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "assets"
+        ],
+        "type": "object"
+      },
+      "DeviceCheckReply": {
+        "additionalProperties": false,
+        "properties": {
+          "needed": {
+            "items": {
+              "$ref": "#/components/schemas/NeededResource"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "needed"
+        ],
+        "type": "object"
+      },
+      "DeviceCheckinBody": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_uploads": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending_uploads"
+        ],
+        "type": "object"
+      },
       "DeviceReply": {
         "additionalProperties": false,
         "properties": {
@@ -378,6 +453,30 @@
         },
         "required": [
           "device"
+        ],
+        "type": "object"
+      },
+      "DeviceResourceDecl": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "sha1": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "filename",
+          "kind",
+          "sha1"
         ],
         "type": "object"
       },
@@ -797,6 +896,22 @@
           "groups",
           "name",
           "sub"
+        ],
+        "type": "object"
+      },
+      "NeededResource": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
         ],
         "type": "object"
       },
@@ -1293,6 +1408,34 @@
         ],
         "type": "object"
       },
+      "UploadReply": {
+        "additionalProperties": false,
+        "properties": {
+          "already": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "indexed": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "sha1": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "already",
+          "id",
+          "indexed",
+          "kind",
+          "sha1"
+        ],
+        "type": "object"
+      },
       "WaitingBody": {
         "additionalProperties": false,
         "properties": {
@@ -1618,6 +1761,89 @@
           }
         },
         "x-auth": "session"
+      }
+    },
+    "/api/device/assets/check": {
+      "post": {
+        "operationId": "check_assets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCheckBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCheckReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/assets/{id}/resources/{kind}": {
+      "put": {
+        "operationId": "upload_resource",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/checkin": {
+      "post": {
+        "operationId": "checkin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCheckinBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
       }
     },
     "/api/devices/{id}": {
@@ -1991,6 +2217,20 @@
     "/auth/callback": {
       "get": {
         "operationId": "callback",
+        "responses": {
+          "2XX": {
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "public"
+      }
+    },
+    "/auth/device/start": {
+      "get": {
+        "operationId": "device_start",
         "responses": {
           "2XX": {
             "description": "OK"

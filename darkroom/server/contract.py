@@ -211,6 +211,7 @@ class BrowserJobView(TypedDict):
     heartbeat: float | None
     finished: float | None
     message: str
+    needs_check: bool
     has_capture: bool
     capture_files: list[str]
 
@@ -301,3 +302,41 @@ class ImportQueued(TypedDict):
     export_id: int
     status: str
     stage: str | None
+
+
+class DeviceResourceDecl(TypedDict):
+    kind: str
+    sha1: str
+    bytes: int
+    filename: str
+
+
+class DeviceAssetDecl(TypedDict):
+    id: str
+    resources: list[DeviceResourceDecl]
+
+
+class DeviceCheckBody(TypedDict):
+    assets: list[DeviceAssetDecl]
+
+
+class NeededResource(TypedDict):
+    id: str
+    kind: str
+
+
+class DeviceCheckReply(TypedDict):
+    needed: list[NeededResource]
+
+
+class UploadReply(TypedDict):
+    id: str
+    kind: str
+    sha1: str
+    already: bool
+    indexed: bool
+
+
+class DeviceCheckinBody(TypedDict):
+    pending_uploads: int
+    app_version: NotRequired[str | None]

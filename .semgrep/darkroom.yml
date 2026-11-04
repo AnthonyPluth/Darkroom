@@ -179,3 +179,17 @@ rules:
                   ...
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+
+  - id: darkroom-device-token-single-path
+    message: >-
+      A device token is looked up only in darkroom/domain/devices.py's authenticate, which refuses a revoked device and
+      a person whose access lapsed before anything else runs. Authenticate a device through devices.authenticate (the
+      `device` auth kind) instead of matching Device.token_hash here.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: Device.token_hash
+      - pattern: $S.query(Device).filter_by(..., token_hash=$V, ...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/devices.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
