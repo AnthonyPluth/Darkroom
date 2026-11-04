@@ -17,21 +17,24 @@
   let busy = $state(false);
   let error = $state("");
   let reassignTo = $state("");
+  let skipped: number[] = [];
 
   const loader = new Loader(async () => {
     const [pending, resolved, people] = await Promise.all([
       apiCall<"GET /api/review">("/api/review?status=pending", { failed: "Couldn't load the review queue" }),
-      Promise.all([
-        apiCall<"GET /api/review">("/api/review?status=kept_both", { failed: "Couldn't load the past decisions" }),
-        apiCall<"GET /api/review">("/api/review?status=skipped", { failed: "Couldn't load the past decisions" }),
-      ]),
+      apiCall<"GET /api/review">("/api/review?status=kept_both", { failed: "Couldn't load the past decisions" }),
       apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
     ]);
-    const first = pending.reviews[0];
+    let first = pending.reviews.find((review) => !skipped.includes(review.id));
+    if (!first) {
+      skipped = [];
+      first = pending.reviews[0];
+    }
+    const position = first ? pending.reviews.indexOf(first) + 1 : 0;
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
     reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
-    const past = resolved.flatMap((list) => list.reviews).sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
-    return { pending: pending.reviews, pendingCount: pending.pending, detail, past, people: people.people, now: nowSeconds() };
+    const past = [...resolved.reviews].sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
+    return { pending: pending.reviews, pendingCount: pending.pending, position, detail, past, people: people.people, now: nowSeconds() };
   });
 
   onMount(() => void loader.load());
@@ -40,15 +43,21 @@
     await loader.load(true);
   }
 
-  async function resolve(id: number, action: "keep_both" | "skip", name: string | null): Promise<void> {
+  async function keep(id: number, name: string | null): Promise<void> {
     error = "";
-    const ok = await act(() => apiCall<"POST /api/review/{id}/resolve">(`/api/review/${id}/resolve`, { method: "POST", body: { action } }), {
+    const ok = await act(() => apiCall<"POST /api/review/{id}/resolve">(`/api/review/${id}/resolve`, { method: "POST", body: { action: "keep_both" } }), {
       busy: (on) => (busy = on), onError: (m) => (error = m),
     });
     if (ok) {
-      saved = { id, message: savedSentence(action, name) };
+      saved = { id, message: savedSentence(name) };
       await refresh();
     }
+  }
+
+  async function skip(id: number): Promise<void> {
+    error = "";
+    skipped = [...skipped, id];
+    await refresh();
   }
 
   async function keepFor(id: number, name: string | null, personId: number): Promise<void> {
@@ -60,7 +69,7 @@
         await apiCall<"POST /api/media/{id}/reassign">(`/api/media/${kept.kept_item_id}/reassign`, { method: "POST", body: { person_id: personId } });
       }
     }, { busy: (on) => (busy = on), onError: (m) => (error = m) });
-    if (ok || kept !== null) saved = { id, message: savedSentence("keep_both", name) };
+    if (ok || kept !== null) saved = { id, message: savedSentence(name) };
     await refresh();
   }
 
@@ -112,7 +121,7 @@
       {@const choices = pair.served_people}
       <section class="card md:p-5" aria-label="Current pair">
         <div class="flex items-center justify-between gap-2">
-          <h2 class="text-md font-semibold">Pair 1 of {data.pendingCount}</h2>
+          <h2 class="text-md font-semibold">Pair {data.position} of {data.pendingCount}</h2>
           <Chip tone="warn" label="Likely re-encode" />
         </div>
         <div class="grid grid-cols-2 gap-2.5 md:gap-6">
@@ -153,8 +162,8 @@
           {/each}
         </div>
         <div class="flex flex-col gap-3 border-t border-raised pt-4 md:flex-row md:flex-wrap md:items-end">
-          <button type="button" class="btn btn-primary" disabled={busy || !pair.export.held} onclick={() => resolve(pairId, "keep_both", pair.review.name)}>Keep both</button>
-          <button type="button" class="btn" disabled={busy} onclick={() => resolve(pairId, "skip", pair.review.name)}>Skip</button>
+          <button type="button" class="btn btn-primary" disabled={busy || !pair.export.held} onclick={() => keep(pairId, pair.review.name)}>Keep both</button>
+          <button type="button" class="btn" disabled={busy} onclick={() => skip(pairId)}>Skip</button>
           {#if choices.length > 1}
             <div class="hidden flex-1 md:block"></div>
             <div class="flex flex-col gap-1 border-t border-raised pt-3 md:border-0 md:pt-0">
@@ -170,10 +179,10 @@
           {/if}
         </div>
         <p class="text-sm text-ink-muted">
-          Keep both stores the two files. Skip keeps only the library photo; the export's copy is held for 14 days, so you can undo.
+          Keep both stores the two files. Skip leaves the pair for later.
           {#if choices.length > 1}Reassign keeps both and gives the export file to the person you choose.{/if}
         </p>
-        {#if !pair.export.held}<p class="text-sm text-ink-muted">The export's held copy is gone, so this pair can only be skipped.</p>{/if}
+        {#if !pair.export.held}<p class="text-sm text-ink-muted">The export's held copy is gone, so both files can't be kept.</p>{/if}
       </section>
     {/if}
 

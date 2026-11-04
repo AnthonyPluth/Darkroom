@@ -1962,10 +1962,7 @@
         "additionalProperties": false,
         "properties": {
           "action": {
-            "enum": [
-              "keep_both",
-              "skip"
-            ]
+            "const": "keep_both"
           }
         },
         "required": [

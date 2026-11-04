@@ -373,7 +373,7 @@ class ReviewReply(TypedDict):
 
 
 class ResolveBody(TypedDict):
-    action: Literal["keep_both", "skip"]
+    action: Literal["keep_both"]
 
 
 class DecisionView(TypedDict):

@@ -57,7 +57,6 @@ describe("review rows", () => {
   it("chips each decision and says who a kept copy moved to", () => {
     expect(decisionChip(summary, people)).toEqual({ tone: "ok", label: "Kept both" });
     expect(decisionChip({ ...summary, kept_person_id: 2 }, people)).toEqual({ tone: "ok", label: "Kept both, moved to Sam" });
-    expect(decisionChip({ ...summary, status: "skipped" }, people)).toEqual({ tone: "neutral", label: "Skipped" });
     expect(decisionChip({ ...summary, status: "pending" }, people)).toEqual({ tone: "warn", label: "Waiting" });
     expect(decisionChip({ ...summary, status: "undone" }, people)).toEqual({ tone: "neutral", label: "Undone" });
     expect(personName(people, 9)).toBe("Unknown");
@@ -67,8 +66,8 @@ describe("review rows", () => {
     expect(canUndo(summary, 199)).toBe(true);
     expect(canUndo(summary, 200)).toBe(false);
     expect(canUndo({ ...summary, undo_until: null }, 0)).toBe(false);
-    expect(savedSentence("keep_both", "a.jpg")).toBe("Decision saved: kept both for a.jpg.");
-    expect(savedSentence("skip", null)).toBe("Decision saved: skipped the pair.");
+    expect(savedSentence("a.jpg")).toBe("Decision saved: kept both for a.jpg.");
+    expect(savedSentence(null)).toBe("Decision saved: kept both for the pair.");
   });
 });
 

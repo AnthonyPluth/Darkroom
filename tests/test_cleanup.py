@@ -299,6 +299,50 @@ class ReviewHoldTests(Imported):
         self.assertIsNone(self.review().hold_path)
 
 
+class InterruptedRemovalTests(Imported):
+    def leftover(self, name):
+        path = self.root / "jo" / "google-only" / "2017" / "07" / f"{paths.DROPPING}0123456789abcdef-{name}"
+        path.write_bytes(b"left behind by an interrupted removal")
+        return path
+
+    def test_an_old_dropping_file_in_google_only_is_swept_and_counted(self):
+        stale = self.leftover("IMG_9.JPG")
+        before = {key: value for key, value in self.kept_tree().items() if paths.DROPPING not in key}
+        report = self.clean(at=TOO_SOON)
+        self.assertFalse(stale.exists())
+        self.assertEqual(report.dropped, 1)
+        self.assertEqual({key: value for key, value in self.kept_tree().items()}, before)
+        details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
+        self.assertTrue(any(detail.endswith("1 interrupted removals cleared") for detail in details))
+        self.assertFalse(any("IMG_9" in detail for detail in details))
+
+    def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
+        fresh = self.leftover("IMG_9.JPG")
+        report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1)
+        self.assertTrue(fresh.exists())
+        self.assertEqual(report.dropped, 0)
+
+    def test_only_google_only_dropping_files_are_swept(self):
+        original = self.root / "jo" / "originals" / f"{paths.DROPPING}0123456789abcdef-IMG_1.JPG"
+        original.write_bytes(b"an original with an odd name")
+        outside = self.root.parent / "elsewhere.JPG"
+        outside.write_bytes(b"outside")
+        link = self.root / "jo" / "google-only" / f"{paths.DROPPING}link-x.JPG"
+        link.symlink_to(outside)
+        self.clean(at=TOO_SOON)
+        self.assertTrue(original.is_file())
+        self.assertTrue(outside.is_file())
+        self.assertTrue(link.is_symlink())
+
+    def test_a_sweep_that_fails_is_recorded_and_cleanup_goes_on(self):
+        self.leftover("IMG_9.JPG")
+        with mock.patch.object(paths, "sweep_dropping", side_effect=PermissionError("read-only")):
+            report = self.clean(at=TOO_SOON)
+        self.assertEqual(report.failed, 1)
+        events = [(row.subject, row.detail) for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed")).scalars()]
+        self.assertIn(("google-only", "PermissionError"), events)
+
+
 class RemovableTests(unittest.TestCase):
     def setUp(self):
         self.world = World(self, people=("jo",), pixel_people=())

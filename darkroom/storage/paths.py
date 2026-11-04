@@ -315,3 +315,18 @@ def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: b
     for _, aside in staged:
         with contextlib.suppress(OSError):
             aside.unlink()
+
+
+def sweep_dropping(photos: Photos, older_than: float) -> int:
+    swept = 0
+    for folder in photos.kept_folders():
+        if folder.name != "google-only" or folder.is_symlink() or not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob(f"{DROPPING}*")):
+            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(folder.resolve()):
+                continue
+            if path.stat().st_ctime >= older_than:
+                continue
+            path.unlink()
+            swept += 1
+    return swept

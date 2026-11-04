@@ -382,7 +382,7 @@ export interface ReassignBody {
 }
 
 export interface ResolveBody {
-  action: "keep_both" | "skip";
+  action: "keep_both";
 }
 
 export interface ReviewDetail {

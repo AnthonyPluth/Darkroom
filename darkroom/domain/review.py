@@ -16,8 +16,8 @@ from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
 STATUSES = ("pending", "kept_both", "skipped", "undone")
-RESOLVED = ("kept_both", "skipped")
-ACTIONS = {"keep_both": "kept_both", "skip": "skipped"}
+RESOLVED = ("kept_both",)
+ACTIONS = {"keep_both": "kept_both"}
 SIDES = ("library", "export")
 UNPLACED = "unplaced"
 PAGE_SIZE = 50
@@ -221,18 +221,34 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, read: xmp
     account = opened.get(GoogleAccount, hit.export.account_id)
     if hold is None or account is None:
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
-    item, fields = kept_fields(opened, photos, hit, hold, account.default_person_id, now, read)
+    person = opened.get(Person, account.default_person_id)
+    if person is None:
+        raise WrongState("the export's account has no default person")
+    item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
+    folder = place.google_only_folder(photos, person.slug, fields)
+    before = set(folder.iterdir()) if folder.is_dir() else set()
     try:
         row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write)
-    except place.PlaceFailed as error:
-        raise WrongState("the held copy could not be placed in google-only") from error
+    except Exception as error:
+        take_out_new_copies(photos, folder, before, hold)
+        if isinstance(error, (place.PlaceFailed, *MOVE_FAILURES)):
+            raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
+        raise
     return {row.person_id}
+
+
+def take_out_new_copies(photos: Photos, folder: Path, before: set[Path], hold: Path) -> None:
+    if not folder.is_dir():
+        return
+    for path in sorted(set(folder.iterdir()) - before):
+        if path.suffix != paths.SIDECAR_SUFFIX and not path.name.startswith("."):
+            paths.drop_library_copy(photos, place.relative(photos, path), hold, with_sidecar=paths.sidecar_of(path) not in before)
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float,
             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> Changed:
     if action not in ACTIONS:
-        raise WrongState("the action is keep_both or skip")
+        raise WrongState("the only action is keep_both; skip leaves the pair for later and saves nothing")
     hit = found(opened, review_id)
     if hit.review.status != "pending":
         raise WrongState("this pair is already decided; undo that decision first")
@@ -282,7 +298,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path) -> set[in
 def undo(opened: Session, photos: Photos, review_id: int, now: float) -> Changed:
     hit = found(opened, review_id)
     if hit.review.status not in RESOLVED or hit.review.resolved_at is None:
-        raise WrongState("only a kept or skipped pair can be undone")
+        raise WrongState("only a kept pair can be undone")
     if hit.decision.reversed_at is not None:
         raise WrongState("this pair's dedupe decision was reversed, so the pair can no longer go back to the queue")
     if now - hit.review.resolved_at >= UNDO_WINDOW:
@@ -330,7 +346,7 @@ def reverse(opened: Session, decision_id: int, now: float) -> DedupeDecision:
         raise WrongState("this decision is already reversed")
     review = opened.execute(select(ReviewItem).where(ReviewItem.decision_id == row.id)).scalar_one_or_none()
     if review is not None and review.status == "pending":
-        raise WrongState("this pair is waiting in the review queue; keep both or skip it there instead")
+        raise WrongState("this pair is waiting in the review queue; decide it there instead")
     return dedupe.reverse(opened, row.id, now, "owner")
 
 

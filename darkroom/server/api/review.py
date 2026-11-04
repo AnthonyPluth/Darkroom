@@ -98,7 +98,7 @@ def resolve(request: Annotated[Request, contract.ResolveBody]) -> Annotated[Resp
         body = validate.json_object(request.body, limit=MAX_BODY)
         action = validate.text(body, "action", limit=20)
         if action not in review.ACTIONS:
-            raise validate.Invalid("action is keep_both or skip")
+            raise validate.Invalid("action is keep_both; skip leaves the pair for later and saves nothing")
         at = now()
         with db.session(engine_of(request)) as opened:
             changed = review.resolve(opened, photos_of(request), wanted, action, at)

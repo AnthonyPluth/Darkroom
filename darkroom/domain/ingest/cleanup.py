@@ -15,6 +15,7 @@ from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
 KEEP_FOR = 14 * DAY
+DROPPING_GRACE = 3600.0
 VERIFIED = "cleanup_holds_verified"
 
 
@@ -26,6 +27,7 @@ class CleanupReport:
     kept: int = 0
     refused: int = 0
     failed: int = 0
+    dropped: int = 0
 
 
 def imported_at(opened: Session, export: Export) -> float | None:
@@ -227,9 +229,15 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
             report.failed += 1
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
+    try:
+        report.dropped = paths.sweep_dropping(photos, now - DROPPING_GRACE)
+    except OSError as error:
+        report.failed += 1
+        events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)
     opened.flush()
-    if report.staging or report.parts or report.holds or report.refused or report.failed:
+    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped:
         detail = (f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
-                  + (f", {report.failed} failed" if report.failed else ""))
+                  + (f", {report.failed} failed" if report.failed else "")
+                  + (f", {report.dropped} interrupted removals cleared" if report.dropped else ""))
         events.record(opened, now, "cleanup", "inbox", detail)
     return report

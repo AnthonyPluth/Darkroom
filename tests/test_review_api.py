@@ -5,7 +5,8 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import review
-from darkroom.domain.ingest import cleanup, run
+from darkroom.domain.ingest import cleanup, place, run
+from darkroom.providers import exiftool
 from darkroom.server import routes
 from darkroom.server.api import review as review_api
 from darkroom.storage import paths
@@ -38,7 +39,7 @@ class ReviewQueueTests(ReviewCase):
         self.assertEqual({key: listed[key] for key in ("status", "tier", "name", "library_name", "resolved_at", "undo_until", "kept_item_id")},
                          {"status": "pending", "tier": 4, "name": PAIR_NAME, "library_name": PAIR_NAME, "resolved_at": None, "undo_until": None,
                           "kept_item_id": None})
-        self.assertEqual(self.call("GET", "/api/review?status=skipped"), (200, {"reviews": [], "pending": 1}))
+        self.assertEqual(self.call("GET", "/api/review?status=kept_both"), (200, {"reviews": [], "pending": 1}))
         self.assertEqual(self.call("GET", "/api/review")[1]["reviews"], [listed])
 
     def test_an_unknown_status_is_refused(self):
@@ -65,7 +66,7 @@ class ReviewQueueTests(ReviewCase):
                 self.assertEqual(self.call("GET", path)[0], 404)
         for path in ("/api/review/999/resolve", "/api/review/999/undo", "/api/review/x/undo"):
             with self.subTest(path=path):
-                self.assertEqual(self.call("POST", path, {"action": "skip"}), (404, {"error": "no such review item"}))
+                self.assertEqual(self.call("POST", path, {"action": "keep_both"}), (404, {"error": "no such review item"}))
 
     def test_a_pair_whose_hold_is_gone_shows_the_export_side_unheld(self):
         self.hold().unlink()
@@ -90,26 +91,24 @@ class ResolveTests(ReviewCase):
         self.assertEqual(self.decision_of(PAIR_NAME).tier, 4)
         self.assertEqual(self.world.scanned()[-1], "lib-jo")
 
-    def test_skip_keeps_the_decision_at_tier_four_and_the_hold_until_cleanup(self):
+    def test_skip_is_not_a_server_action_and_changes_nothing(self):
         before_tree, before_flags = self.tree(), self.confirmed()
-        status, body = self.call("POST", f"/api/review/{self.pending().id}/resolve", {"action": "skip"})
-        self.assertEqual(status, 200, body)
-        self.assertEqual((body["review"]["status"], body["review"]["tier"]), ("skipped", 4))
-        self.assertEqual(body["review"]["undo_until"], body["review"]["resolved_at"] + 14 * DAY)
-        self.assertEqual(self.tree(), before_tree)
-        self.assertEqual(self.confirmed(), before_flags)
-        row = self.opened.execute(select(ReviewItem)).scalar_one()
-        self.assertEqual(row.status, "skipped")
+        review_id = self.pending().id
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "skip"}),
+                         (400, {"error": "action is keep_both; skip leaves the pair for later and saves nothing"}))
+        with self.assertRaises(review.WrongState):
+            review.resolve(self.opened, self.world.photos, review_id, "skip", 1.0)
+        self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
+        row = self.opened.get(ReviewItem, review_id)
+        self.assertEqual((row.status, row.resolved_at), ("pending", None))
         self.assertIsNotNone(row.hold_path)
 
     def test_a_decided_pair_cannot_be_decided_again(self):
         review_id = self.pending().id
-        self.call("POST", f"/api/review/{review_id}/resolve", {"action": "skip"})
+        self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
         before_tree, before_flags = self.tree(), self.confirmed()
-        for action in ("keep_both", "skip"):
-            with self.subTest(action=action):
-                self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": action}),
-                                 (409, {"error": "this pair is already decided; undo that decision first"}))
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                         (409, {"error": "this pair is already decided; undo that decision first"}))
         self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
 
     def test_a_pair_whose_decision_was_reversed_cannot_be_decided(self):
@@ -136,6 +135,20 @@ class ResolveTests(ReviewCase):
                          (409, {"error": "the held copy no longer matches the file in the export, so it was not kept"}))
         self.assertFalse((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).exists())
 
+    def test_keep_both_that_fails_after_copying_leaves_nothing_behind(self):
+        before_tree, before_flags = self.tree(), self.confirmed()
+        review_id = self.pending().id
+        for failure in (exiftool.WriteFailed("bad tag"), exiftool.Missing("no exiftool"), PermissionError("read-only")):
+            with self.subTest(failure=failure), mock.patch.object(place.xmp, "fill", side_effect=failure):
+                self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                                 (409, {"error": "the held copy could not be placed in google-only; nothing was changed"}))
+                self.assertEqual(self.tree(), before_tree)
+                self.assertEqual(self.confirmed(), before_flags)
+                self.assertEqual(self.pending().id, review_id)
+        with mock.patch.object(place.xmp, "fill", side_effect=RuntimeError("unexpected")), self.assertRaises(RuntimeError):
+            review.resolve(self.opened, self.world.photos, review_id, "keep_both", 1.0)
+        self.assertEqual(self.tree(), before_tree)
+
     def test_keep_both_works_once_staging_is_cleaned(self):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
         for path in sorted(staging.rglob("*"), reverse=True):
@@ -146,7 +159,7 @@ class ResolveTests(ReviewCase):
 
     def test_a_bad_action_is_400(self):
         review_id = self.pending().id
-        for body, message in (({"action": "delete"}, "action is keep_both or skip"), ({}, "action is required"), ({"action": 3}, "action must be text")):
+        for body, message in (({"action": "delete"}, "action is keep_both; skip leaves the pair for later and saves nothing"), ({}, "action is required"), ({"action": 3}, "action must be text")):
             with self.subTest(body=body):
                 self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", body), (400, {"error": message}))
         with self.assertRaises(review.WrongState):
@@ -171,14 +184,8 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[0], 200)
 
-    def test_undoing_skip_returns_the_pair_and_changes_no_file(self):
-        before_tree, before_flags = self.tree(), self.confirmed()
-        review_id, _ = self.resolve("skip")
-        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[1]["review"]["status"], "pending")
-        self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
-
     def test_undo_is_allowed_inside_the_window_and_refused_after(self):
-        review_id, resolved = self.resolve("skip")
+        review_id, resolved = self.resolve("keep_both")
         with mock.patch.object(review_api, "now", return_value=resolved + 14 * DAY):
             self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"), (409, {"error": (
                 "this decision is more than 14 days old and its held copy is cleaned up, so it can no longer be undone")}))
@@ -188,7 +195,7 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.pending().id, review_id)
 
     def test_cleanup_removes_the_hold_only_after_the_window_so_undo_and_cleanup_never_overlap(self):
-        review_id, resolved = self.resolve("skip")
+        review_id, resolved = self.resolve("keep_both")
         hold = self.world.root / self.opened.get(ReviewItem, review_id).hold_path
         cleanup.clean(self.world.reopen(), self.world.photos, resolved + 14 * DAY - 1)
         self.world.opened.commit()
@@ -200,13 +207,13 @@ class UndoTests(ReviewCase):
             self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 409)
 
     def test_undo_without_the_hold_is_refused(self):
-        review_id, _ = self.resolve("skip")
+        review_id, _ = self.resolve("keep_both")
         (self.world.root / self.opened.get(ReviewItem, review_id).hold_path).unlink()
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"),
                          (409, {"error": "the held copy from the export is gone, so this decision can no longer be undone"}))
 
     def test_a_pending_pair_cannot_be_undone(self):
-        self.assertEqual(self.call("POST", f"/api/review/{self.pending().id}/undo"), (409, {"error": "only a kept or skipped pair can be undone"}))
+        self.assertEqual(self.call("POST", f"/api/review/{self.pending().id}/undo"), (409, {"error": "only a kept pair can be undone"}))
 
     def test_an_undone_status_cannot_be_undone(self):
         row = self.pending()
@@ -229,12 +236,12 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.tree(), before)
 
     def test_a_reversed_pair_cannot_go_back_to_the_queue(self):
-        review_id, _ = self.resolve("skip")
+        review_id, _ = self.resolve("keep_both")
         self.assertEqual(self.call("POST", f"/api/decisions/{self.decision_of(PAIR_NAME).id}/reverse")[0], 200)
         before = self.tree()
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"),
                          (409, {"error": "this pair's dedupe decision was reversed, so the pair can no longer go back to the queue"}))
-        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "skipped")
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "kept_both")
         self.assertEqual(self.tree(), before)
         self.assertEqual(self.call("GET", "/api/review?status=pending")[1]["reviews"], [])
 
@@ -347,7 +354,7 @@ class DecisionTests(ReviewCase):
     def test_a_pending_pair_is_decided_in_the_queue_not_reversed(self):
         decision = self.decision_of(PAIR_NAME)
         self.assertEqual(self.call("POST", f"/api/decisions/{decision.id}/reverse"),
-                         (409, {"error": "this pair is waiting in the review queue; keep both or skip it there instead"}))
+                         (409, {"error": "this pair is waiting in the review queue; decide it there instead"}))
         self.assertIsNone(self.opened.get(DedupeDecision, decision.id).reversed_at)
 
     def test_reversing_a_decided_pair_never_sets_the_flag(self):
@@ -403,7 +410,7 @@ class PrivacyTests(ReviewCase):
             self.call("GET", f"/api/review/{review_id}/thumb/export")
             self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
             self.call("POST", f"/api/review/{review_id}/undo")
-            self.call("POST", f"/api/review/{review_id}/resolve", {"action": "skip"})
+            self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
             self.call("POST", f"/api/media/{self.item_named(GOOGLE_ONLY_NAME).id}/reassign", {"person_id": self.world.ids["sam"]})
             self.call("GET", "/api/review/999/thumb/library")
         with no_leaks(self, root, replies=[reply for reply in self.replies if not reply.startswith(b"\xff\xd8")]):

@@ -75,7 +75,6 @@ export function personName(people: readonly Pick<PersonView, "id" | "name">[], i
 }
 
 export function decisionChip(review: ReviewSummary, people: readonly Pick<PersonView, "id" | "name">[]): { tone: Tone; label: string } {
-  if (review.status === "skipped") return { tone: "neutral", label: "Skipped" };
   if (review.status === "kept_both") {
     if (review.kept_person_id !== null && review.kept_person_id !== review.person_id) {
       return { tone: "ok", label: `Kept both, moved to ${personName(people, review.kept_person_id)}` };
@@ -90,9 +89,8 @@ export function canUndo(review: ReviewSummary, now: number): boolean {
   return review.undo_until !== null && now < review.undo_until;
 }
 
-export function savedSentence(action: "keep_both" | "skip", name: string | null): string {
-  const file = name ?? "the pair";
-  return action === "keep_both" ? `Decision saved: kept both for ${file}.` : `Decision saved: skipped ${file}.`;
+export function savedSentence(name: string | null): string {
+  return `Decision saved: kept both for ${name ?? "the pair"}.`;
 }
 
 export function counted(run: Pick<ImportView, "stage" | "status">): boolean {

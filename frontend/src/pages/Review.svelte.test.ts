@@ -22,7 +22,7 @@ const pending: ReviewSummary = {
   reversed: false, resolved_at: null, undo_until: null, name: "IMG_2431.jpg", library_name: "IMG_2431.HEIC", person_id: 1, kept_item_id: null, kept_person_id: null,
 };
 const kept: ReviewSummary = { ...pending, id: 5, status: "kept_both", name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", resolved_at: NOW - 60, undo_until: NOW + 1000, kept_item_id: 50, kept_person_id: 1 };
-const old: ReviewSummary = { ...pending, id: 4, status: "skipped", name: "PXL_1.jpg", library_name: "IMG_1.HEIC", resolved_at: NOW - 20 * 86_400, undo_until: NOW - 6 * 86_400 };
+const old: ReviewSummary = { ...pending, id: 4, status: "kept_both", name: "PXL_1.jpg", library_name: "IMG_1.HEIC", resolved_at: NOW - 20 * 86_400, undo_until: NOW - 6 * 86_400 };
 const detail: ReviewDetail = {
   review: pending,
   library: { item_id: 3, person_id: 1, source: "phone", name: "IMG_2431.HEIC", path: "originals/IMG_2431.HEIC", bytes: 3_355_443, captured_utc: 1, captured_local: "2026-09-12T14:03:22", offset_minutes: 120, make: "Apple", model: "iPhone 15", width: 4032, height: 3024, duration_ms: null, is_video: false },
@@ -32,8 +32,7 @@ const detail: ReviewDetail = {
 function routes(extra: Record<string, unknown> = {}) {
   return {
     "GET /api/review?status=pending": { reviews: [pending], pending: 1 },
-    "GET /api/review?status=kept_both": { reviews: [kept], pending: 1 },
-    "GET /api/review?status=skipped": { reviews: [old], pending: 1 },
+    "GET /api/review?status=kept_both": { reviews: [old, kept], pending: 1 },
     "GET /api/people": { people: [jo, sam] },
     "GET /api/review/7": detail,
     ...extra,
@@ -81,16 +80,27 @@ describe("the current pair", () => {
     await waitFor(() => expect(screen.queryByText(/Decision saved/)).not.toBeInTheDocument());
   });
 
-  it("skips", async () => {
-    const server = show({ "POST /api/review/7/resolve": { review: { ...pending, status: "skipped" } } });
-    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
-    expect(server.sent("POST /api/review/7/resolve")[0].body).toEqual({ action: "skip" });
-    expect(await screen.findByText("Decision saved: skipped IMG_2431.jpg.")).toBeInTheDocument();
+  it("skip leaves the pair for later: it moves on to the next pair and saves nothing", async () => {
+    const second: ReviewSummary = { ...pending, id: 8, name: "IMG_3000.jpg", library_name: "IMG_3000.HEIC" };
+    const server = show({
+      "GET /api/review?status=pending": { reviews: [pending, second], pending: 2 },
+      "GET /api/review/8": { ...detail, review: second, library: { ...detail.library!, name: "IMG_3000.HEIC" } },
+    });
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 2" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(await screen.findByRole("heading", { name: "Pair 2 of 2" })).toBeInTheDocument();
+    expect(screen.getByText("IMG_3000.HEIC")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 2" })).toBeInTheDocument();
+    expect(server.calls.filter((call) => !call.key.startsWith("GET "))).toEqual([]);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText(/Skip leaves the pair for later\./)).toBeInTheDocument();
+    expect(screen.queryByText(/14 days/)).not.toBeInTheDocument();
   });
 
   it("shows why an action was refused", async () => {
     show({ "POST /api/review/7/resolve": reply(409, { error: "this pair is already decided; undo that decision first" }) });
-    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Keep both" }));
     expect(await screen.findByText("this pair is already decided; undo that decision first")).toBeInTheDocument();
     expect(screen.queryByText(/Decision saved/)).not.toBeInTheDocument();
   });
@@ -130,7 +140,7 @@ describe("the current pair", () => {
     expect(screen.queryByLabelText("Reassign to")).not.toBeInTheDocument();
   });
 
-  it("allows only skip once the held copy is gone", async () => {
+  it("can only skip once the held copy is gone", async () => {
     show({ "GET /api/review/7": { ...detail, export: { ...detail.export, held: false, bytes: null } } });
     expect(await screen.findByRole("button", { name: "Keep both" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
@@ -165,7 +175,7 @@ describe("past decisions", () => {
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("IMG_2102.HEIC / .jpg");
     expect(rows[0]).toHaveTextContent("Kept both");
-    expect(rows[1]).toHaveTextContent("Skipped");
+    expect(rows[1]).toHaveTextContent("PXL_1.jpg");
     expect(rows[1]).toHaveTextContent("Too late to undo");
     await userEvent.click(within(rows[0]).getByRole("button", { name: "Undo IMG_2102.HEIC / .jpg" }));
     expect(server.sent("POST /api/review/5/undo")).toHaveLength(1);
