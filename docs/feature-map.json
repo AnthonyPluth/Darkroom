@@ -87,6 +87,7 @@
         "tests/test_demo.py",
         "tests/test_demo_session.py",
         "tests/test_every_route.py",
+        "tests/test_pixels_api.py",
         "tests/test_status_api.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
