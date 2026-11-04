@@ -125,7 +125,7 @@ class EveryRouteTests(unittest.TestCase):
             opened.add(person)
             opened.flush()
             opened.add(User(sub="jo", email="jo@example.test", email_verified=True, groups='["parents"]', last_seen=time.time()))
-            opened.add(Device(person_id=person.id, name="iPhone", token_hash=oidc.hash_token(DEVICE_TOKEN), created=1.0))
+            opened.add(Device(person_id=person.id, name="iPhone", token_hash=oidc.hash_token(DEVICE_TOKEN), sub="jo", created=1.0))
 
     def test_a_device_token_opens_only_device_routes(self):
         self.a_live_device()

@@ -55,7 +55,7 @@ class DeviceCase(unittest.TestCase):
                 opened.flush()
             if opened.get(User, f"sub-{slug}") is None:
                 opened.add(User(sub=f"sub-{slug}", email=email, email_verified=True, groups=json.dumps(list(groups)), last_seen=time.time()))
-            device = Device(person_id=person.id, name=f"{slug} iPhone", token_hash=oidc.hash_token(token), created=1.0)
+            device = Device(person_id=person.id, name=f"{slug} iPhone", token_hash=oidc.hash_token(token), sub=f"sub-{slug}", created=1.0)
             opened.add(device)
             opened.flush()
             return person.id, device.id

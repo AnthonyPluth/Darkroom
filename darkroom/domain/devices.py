@@ -39,10 +39,13 @@ def person_for(opened: Session, email: str | None, verified: bool) -> Person:
     return found[0]
 
 
-def enrol(opened: Session, email: str | None, verified: bool, name: str, now: float) -> tuple[Device, str]:
+def enrol(opened: Session, sub: str, email: str | None, verified: bool, name: str, now: float) -> tuple[Device, str]:
     person = person_for(opened, email, verified)
+    for other in of_person(opened, person.id):
+        if other.revoked_at is None and other.sub != sub:
+            revoke(opened, other.id, now)
     token = secrets.token_urlsafe(32)
-    device = Device(person_id=person.id, name=name, token_hash=oidc.hash_token(token), created=now, last_checkin=now)
+    device = Device(person_id=person.id, name=name, token_hash=oidc.hash_token(token), sub=sub, created=now, last_checkin=now)
     opened.add(device)
     opened.flush()
     events.record(opened, now, "device_signed_in", person.slug, name)
@@ -56,7 +59,7 @@ def authenticate(opened: Session, settings: Settings, token: str | None, now: fl
     if device is None or device.revoked_at is not None:
         return None
     person = opened.get(Person, device.person_id)
-    if person is None or oidc.device_access_lapsed(opened, settings, person.email, now) is not None:
+    if person is None or oidc.device_access_lapsed(opened, settings, device.sub, person.email, now) is not None:
         return None
     device.last_checkin = now
     opened.flush()

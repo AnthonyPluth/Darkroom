@@ -465,18 +465,20 @@ def finish_device_login(opened: Session, settings: Settings, query: Mapping[str,
     return who, pending.device_name or "iPhone"
 
 
-def device_access_lapsed(opened: Session, settings: Settings, email: str | None, now: float) -> str | None:
+def device_access_lapsed(opened: Session, settings: Settings, sub: str | None, email: str | None, now: float) -> str | None:
     if not configured(settings):
         return "sign_in_unavailable"
     address = email_of({"email": email})
-    if address is None:
+    user = opened.get(User, sub) if sub else None
+    if address is None or user is None or not user.email_verified or email_of({"email": user.email}) != address:
         return "user_removed"
-    users = opened.execute(select(User).where(func.lower(User.email) == address, User.email_verified.is_(True))).scalars().all()
-    allowed_users = [user for user in users if device_groups(settings) & set(stored_groups(user))]
-    if not allowed_users:
+    if not device_groups(settings) & set(stored_groups(user)):
         return "user_removed"
-    if all(user.last_seen is None or now - user.last_seen > NO_RECHECK_DAYS * 86_400 for user in allowed_users):
+    if user.last_seen is None or now - user.last_seen > NO_RECHECK_DAYS * 86_400:
         return "sign_in_lapsed"
+    newer = select(User.sub).where(func.lower(User.email) == address, User.email_verified.is_(True), User.sub != user.sub, User.last_seen > user.last_seen)
+    if opened.execute(newer.limit(1)).first() is not None:
+        return "email_moved"
     return None
 
 

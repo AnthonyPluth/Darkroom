@@ -178,7 +178,7 @@ def device_callback(request: Request, clear_login: str, moment: float) -> Respon
     try:
         with db.session(engine_of(request)) as opened:
             who, name = oidc.finish_device_login(opened, settings, request.query, cookies_of(request).get(LOGIN_COOKIE), moment)
-            _, token = devices.enrol(opened, who.email, who.email_verified, name, moment)
+            _, token = devices.enrol(opened, who.sub, who.email, who.email_verified, name, moment)
     except oidc.NotAllowed as error:
         monitoring.log("device sign-in refused", reason="not_allowed")
         return page(403, "Not allowed", f"You signed in as {error.who}, which is not allowed to use the Darkroom app.", None, (clear_login,),

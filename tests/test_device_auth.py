@@ -223,12 +223,61 @@ class RevokedAndLapsedTests(DeviceSignInCase):
             opened.add(User(sub="kid", email="kid@example.test", email_verified=True, groups='["family"]', last_seen=now))
             opened.add(User(sub="unverified", email="u@example.test", email_verified=False, groups='["family"]', last_seen=now))
             opened.flush()
-            self.assertIsNone(oidc.device_access_lapsed(opened, self.settings, "KID@example.test", now))
-            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "kid@example.test", now + 31 * 86_400), "sign_in_lapsed")
-            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "u@example.test", now), "user_removed")
-            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, None, now), "user_removed")
+            self.assertIsNone(oidc.device_access_lapsed(opened, self.settings, "kid", "KID@example.test", now))
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "kid", "kid@example.test", now + 31 * 86_400), "sign_in_lapsed")
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "unverified", "u@example.test", now), "user_removed")
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "kid", "other@example.test", now), "user_removed")
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, None, "kid@example.test", now), "user_removed")
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "kid", None, now), "user_removed")
+            opened.add(User(sub="kid-again", email="kid@example.test", email_verified=True, groups='["family"]', last_seen=now + 5))
+            opened.flush()
+            self.assertEqual(oidc.device_access_lapsed(opened, self.settings, "kid", "kid@example.test", now + 10), "email_moved")
+            self.assertIsNone(oidc.device_access_lapsed(opened, self.settings, "kid-again", "kid@example.test", now + 10))
             unset = settings_from(DARKROOM_ALLOW_NO_AUTH="1")
-            self.assertEqual(oidc.device_access_lapsed(opened, unset, "kid@example.test", now), "sign_in_unavailable")
+            self.assertEqual(oidc.device_access_lapsed(opened, unset, "kid", "kid@example.test", now), "sign_in_unavailable")
+
+
+class BoundToTheEnrollingAccountTests(DeviceSignInCase):
+    def test_the_device_records_the_account_that_signed_it_in(self):
+        self.token_from(self.sign_in(sub="jo-account")[1])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Device).one().sub, "jo-account")
+
+    def test_an_email_reassigned_to_another_account_ends_the_old_token(self):
+        old = self.token_from(self.sign_in(sub="jo-account")[1])
+        with db.session(self.engine) as opened:
+            opened.query(User).filter_by(sub="jo-account").update({"email": "jo.old@example.test"})
+            opened.add(User(sub="someone-else", email="jo@example.test", email_verified=True, groups='["family"]', last_seen=time.time() - 60))
+        self.assertEqual(self.checkin(old)[0], 401)
+        new = self.token_from(self.sign_in(sub="someone-else")[1])
+        self.assertEqual(self.checkin(new)[0], 200)
+        self.assertEqual(self.checkin(old)[0], 401)
+        with db.session(self.engine) as opened:
+            first = opened.query(Device).filter_by(sub="jo-account").one()
+            self.assertIsNotNone(first.revoked_at)
+            self.assertFalse(first.cleanup_enabled)
+
+    def test_an_account_recreated_with_the_same_email_does_not_keep_the_old_token_alive(self):
+        old = self.token_from(self.sign_in(sub="jo-account")[1])
+        self.assertEqual(self.checkin(old)[0], 200)
+        with db.session(self.engine) as opened:
+            opened.query(User).filter_by(sub="jo-account").update({"last_seen": time.time() - 60})
+            opened.add(User(sub="jo-recreated", email="jo@example.test", email_verified=True, groups='["family"]', last_seen=time.time()))
+        self.assertEqual(self.checkin(old)[0], 401)
+        new = self.token_from(self.sign_in(sub="jo-recreated")[1])
+        self.assertEqual(self.checkin(new)[0], 200)
+        self.assertEqual(self.checkin(old)[0], 401)
+
+    def test_signing_in_again_with_the_same_account_keeps_its_other_iphones(self):
+        first = self.token_from(self.sign_in("Jo's iPhone", sub="jo-account")[1])
+        second = self.token_from(self.sign_in("Jo's iPad", sub="jo-account")[1])
+        self.assertEqual((self.checkin(first)[0], self.checkin(second)[0]), (200, 200))
+
+    def test_a_device_bound_to_no_account_is_refused(self):
+        self.token_from(self.sign_in()[1])
+        with db.session(self.engine) as opened:
+            opened.add(Device(person_id=self.person_id, name="Unbound", token_hash=oidc.hash_token("device-token-canary-unbound-0000000"), created=1.0))
+        self.assertEqual(self.checkin("device-token-canary-unbound-0000000")[0], 401)
 
 
 class NotConfiguredTests(unittest.TestCase):

@@ -10,7 +10,7 @@ What the Darkroom iPhone app (#35, and cleanup in #38) talks to. The request and
 
 Who may sign in an iPhone: someone in one of `OIDC_DEVICE_GROUPS` (default `family,parents`) whose verified email is the email of exactly one person on the People page. That person owns everything the iPhone uploads. Otherwise the sign-in view shows an error page (not allowed, or "No person with this email") and no device is created.
 
-Each sign-in creates a new device with its own token. Signing in again after a revoke is how an iPhone gets back in; the old token stays refused.
+Each sign-in creates a new device with its own token, bound to the Pocket ID account (subject) that signed in. Signing in again after a revoke is how an iPhone gets back in; the old token stays refused. When a different account signs in an iPhone for the same person (the email moved to another account, or the account was recreated), the person's devices bound to other accounts are revoked.
 
 ## Calling the API
 
@@ -18,7 +18,8 @@ Every device route takes `Authorization: Bearer <token>`. Darkroom answers `401 
 
 - the token is missing or unknown;
 - the device was revoked on the People page (`revoked_at` is set);
-- the person's access lapsed: their email no longer belongs to a verified Pocket ID user in `OIDC_DEVICE_GROUPS`, or that user has not signed in to Darkroom (web or app) for 30 days;
+- the person's access lapsed: the account that signed the device in no longer has the person's email verified, is no longer in `OIDC_DEVICE_GROUPS`, or has not signed in to Darkroom (web or app) for 30 days;
+- another verified account with the person's email has signed in to Darkroom more recently than the device's account (the email moved, or the account was recreated);
 - Darkroom has no sign-in provider configured.
 
 On a 401 the app stops uploading and asks the person to sign in again. Every accepted request records the device's last check-in.
@@ -48,7 +49,7 @@ Uploads one resource that the last check declared. `{id}` is the PhotoKit identi
 
 Headers: `X-Darkroom-SHA1` (the resource's SHA-1), `X-Darkroom-Filename` (its filename) and `Content-Length`; both must match what the check declared. The body is the file's bytes, not chunked.
 
-- The body streams to the person's `originals/.uploads_tmp/` while it is hashed, then is saved once as `originals/<filename>`. There is no size cap. A connection that sends nothing for `UPLOAD_READ_TIMEOUT` seconds (default 3600) is dropped.
+- The body streams to the person's `originals/.uploads_tmp/` while it is hashed, then is saved once as `originals/<filename>`. There is no size cap. A connection that sends nothing for `UPLOAD_READ_TIMEOUT` seconds (default 3600; a whole number, at least 1, or Darkroom refuses to start) is dropped.
 - If `originals/<filename>` already holds other bytes, the file is saved as `<stem>~<first 8 of the SHA-1>.<ext>`; if it holds the same bytes, nothing is written.
 - Darkroom never replaces, moves or deletes a file under `originals/`.
 
