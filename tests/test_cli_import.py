@@ -8,7 +8,7 @@ from unittest import mock
 
 import run
 from darkroom.storage import db
-from darkroom.storage.models import Export, GoogleAccount
+from darkroom.storage.models import Export, GoogleAccount, ImportRun
 from darkroom.storage.paths import Photos
 from tests.shared import add_person
 from tests.takeout_fixtures import standard_export
@@ -56,7 +56,41 @@ class ImportTakeoutTests(unittest.TestCase):
         standard_export(elsewhere)
         code, out, _ = self.call("--person", "jo", "--dir", str(elsewhere))
         self.assertEqual(code, 0)
-        self.assertIn("Unpacked", out)
+        self.assertIn("added", out)
+        self.assertTrue((elsewhere / "takeout-20260101T000000Z-001.zip").is_file())
+
+    def test_imports_the_manual_inbox_through_every_stage_and_once(self):
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        code, out, _ = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"Export \d+: 16 added, 0 skipped as duplicates, 0 in review, 4 missing GPS")
+        with db.session(self.engine) as opened:
+            export = opened.query(Export).one()
+            self.assertEqual((export.status, export.stage), ("imported", "done"))
+            run_row = opened.query(ImportRun).one()
+            self.assertEqual((run_row.status, run_row.added), ("done", 16))
+        self.assertTrue(any((self.photos / "jo/google-only").rglob("*.JPG")))
+        code, out, _ = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("already imported", out)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(ImportRun).count(), 1)
+
+    def test_an_import_already_running_for_the_account_is_refused(self):
+        from darkroom import config
+        from darkroom.domain.ingest import run as ingest_run
+        from darkroom.storage import locks
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        with db.session(self.engine) as opened:
+            account = opened.query(GoogleAccount).one().id
+        with locks.exclusive(ingest_run.lock_file(config.load(), account)):
+            code, _, err = self.call("--person", "jo")
+        self.assertEqual(code, 1)
+        self.assertIn("already running", err)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(ImportRun).count(), 0)
+            self.assertEqual(opened.query(Export).one().status, "downloaded")
 
     def test_person_is_required_and_must_exist(self):
         self.assertEqual(self.call()[0], 1)

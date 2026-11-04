@@ -130,5 +130,35 @@ class BuildTests(unittest.TestCase):
                 self.assertEqual(opened.query(MediaItem).count(), 1)
 
 
+    def test_the_import_job_runs_requested_imports_on_the_scheduler_thread(self):
+        from darkroom.domain.ingest import run
+        from darkroom.storage.models import Export
+        from tests.import_world import NOW, World
+
+        world = World(self, immich_configured=False)
+        export_id = world.hand_dropped().id
+        scheduler = jobs.build(world.settings, world.engine)
+        self.assertEqual(scheduler.jobs["imports"].interval, 60.0)
+        scheduler.run_one("imports", NOW)
+        self.assertEqual(world.reopen().get(Export, export_id).status, "downloaded")
+        run.request_import(world.opened, export_id)
+        world.opened.commit()
+        scheduler.run_one("imports", NOW)
+        self.assertEqual(world.reopen().get(Export, export_id).status, "imported")
+
+    def test_the_cleanup_job_runs_daily_and_removes_old_staging(self):
+        from darkroom.storage.models import Export
+        from tests.import_world import DAY, NOW, World
+
+        world = World(self, immich_configured=False)
+        export_id = world.hand_dropped().id
+        world.run_import(export_id)
+        scheduler = jobs.build(world.settings, world.engine)
+        self.assertEqual((scheduler.jobs["cleanup"].interval, scheduler.jobs["cleanup"].hour), (None, 4))
+        scheduler.run_one("cleanup", NOW + 15 * DAY)
+        self.assertFalse((world.root / "_inbox/jo/export-1").exists())
+        self.assertEqual(world.reopen().get(Export, export_id).status, "imported")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,7 @@ class UnpackReport:
     parts_skipped: int = 0
     files: int = 0
     problems: list[str] = field(default_factory=list)
+    public: list[str] = field(default_factory=list)
 
 
 def staging_name(export: Export) -> str:
@@ -128,6 +129,7 @@ def unpack(opened: Session, photos: Photos, person: Person, export: Export, now:
         export.status = "failed"
         public = error.public if isinstance(error, UnpackFailed) else f"{type(error).__name__} while unpacking"
         report.problems.append(str(error) if isinstance(error, UnpackFailed) else public)
+        report.public.append(public)
         events.record(opened, now, "unpack_failed", person.slug, public[:200])
         opened.flush()
         return report
