@@ -144,6 +144,10 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
             beat.stop()
         self.assertLess(time.monotonic() - began, 2)
         self.assertTrue(beat.thread.is_alive())
+        again = time.monotonic()
+        with mock.patch.object(runner, "JOIN_SECONDS", 5):
+            beat.stop()
+        self.assertLess(time.monotonic() - again, 1)
         release.set()
         beat.thread.join(5)
 

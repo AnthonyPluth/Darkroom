@@ -24,6 +24,7 @@ class Heartbeat:
         self.ctx = ctx
         self.every = every
         self.stopping = threading.Event()
+        self.gave_up = False
         self.thread = threading.Thread(target=self.loop, daemon=True, name=f"heartbeat-{ctx.job_id}")
 
     def start(self) -> None:
@@ -42,9 +43,12 @@ class Heartbeat:
 
     def stop(self) -> None:
         self.stopping.set()
+        if self.gave_up:
+            return
         if self.thread.is_alive():
             self.thread.join(timeout=JOIN_SECONDS)
         if self.thread.is_alive():
+            self.gave_up = True
             monitoring.log("heartbeat still in flight; reporting without waiting for it", job=self.ctx.job_id)
 
 
