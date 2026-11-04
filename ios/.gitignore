@@ -1,0 +1,8 @@
+Local.xcconfig
+Darkroom.xcodeproj/
+Darkroom/Info.plist
+.build/
+build/
+DerivedData/
+xcuserdata/
+*.xcresult
