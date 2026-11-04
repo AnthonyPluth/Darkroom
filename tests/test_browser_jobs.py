@@ -158,22 +158,48 @@ class BrowserJobTests(unittest.TestCase):
             self.assertEqual((account.session_state, account.session_checked), ("ok", 60.0))
         self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 60.0)])
 
-    def test_verify_waits_without_touching_the_session_state(self):
+    def test_verify_needs_sign_in_attention_and_done_sets_the_session_ok(self):
         job_id = self.enqueue()
         with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
             browser_jobs.claim(opened, 5.0)
             browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
-            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "unknown")
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, account.session_checked), ("needs_sign_in", 6.0))
             browser_jobs.done(opened, job_id, {}, 7.0)
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
         self.assertEqual(self.open_alerts()[0][2], 7.0)
 
-    def test_progress_while_verifying_leaves_the_session_state_alone(self):
+    def test_a_resume_after_verification_sets_the_session_ok(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
+            browser_jobs.progress(opened, job_id, "signed in", 8.0)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((account.session_state, account.session_checked), ("ok", 8.0))
+
+    def test_a_verification_that_times_out_leaves_needs_sign_in_with_connect_available(self):
+        job_id = self.enqueue("connect")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "ok"
+            browser_jobs.claim(opened, 5.0)
+            browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
+        with db.session(self.engine) as opened:
+            browser_jobs.failed(opened, self.settings, job_id, "SignInTimedOut: nobody signed in", None, [], 9.0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "needs_sign_in")
+            self.assertEqual(browser_jobs.enqueue_once(opened, self.account, "connect", 10.0).status, "queued")
+        self.assertEqual([closed for kind, _, closed in self.open_alerts() if kind == "sign_in_needed"], [9.0])
+
+    def test_progress_after_verifying_marks_the_session_ok(self):
         job_id = self.enqueue()
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
             browser_jobs.waiting(opened, self.settings, job_id, "verify", 6.0)
             browser_jobs.progress(opened, job_id, "verified", 7.0)
-            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "unknown")
+            self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "ok")
 
     def test_a_schedule_job_records_when_it_was_created_and_when_it_ends(self):
         job_id = self.enqueue("schedule")

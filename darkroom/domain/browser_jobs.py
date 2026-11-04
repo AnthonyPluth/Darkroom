@@ -173,7 +173,7 @@ def progress(opened: Session, job_id: int, message: str, now: float) -> BrowserJ
     previous = job.message
     job.message = message
     if job.status == "waiting_for_user":
-        resumed_from_sign_in = previous in ("sign_in", "wrong_account")
+        resumed_from_sign_in = previous in WAITING_REASONS
         job.status = "running"
         alerts.close(opened, sign_in_key(job.account_id), now)
         if resumed_from_sign_in:
@@ -190,7 +190,7 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     job.status = "waiting_for_user"
     job.message = reason
     account = account_of(opened, job.account_id)
-    if reason in ("sign_in", "wrong_account"):
+    if reason in WAITING_REASONS:
         account.session_state = "needs_sign_in"
         account.session_checked = now
     kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
