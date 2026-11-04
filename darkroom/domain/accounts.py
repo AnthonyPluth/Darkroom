@@ -94,6 +94,7 @@ def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
         "default_person_id": account.default_person_id,
         "session_state": account.session_state,
         "session_checked": account.session_checked,
+        "schedule_created": account.schedule_created,
         "schedule_end": account.schedule_end,
         "served_people": sorted(served_people(opened, account.id)),
         "created": account.created,

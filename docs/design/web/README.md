@@ -21,4 +21,4 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17). Exports, Imports, Review and Browser arrive with their own issues.
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), and the account part of Exports and the Remote browser page (#29: session state, schedule dates, Connect and Create schedule; the export parts, earlier exports and "Check exports now" arrive with #30 and #31, and the Done button is left out because the worker notices the sign-in itself). Imports and Review arrive with their own issues.

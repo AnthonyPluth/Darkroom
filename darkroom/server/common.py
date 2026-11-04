@@ -6,6 +6,7 @@ import html
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
 
@@ -13,6 +14,21 @@ from darkroom.config import Settings
 from darkroom.dates import utc_now
 
 CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
+
+
+def viewer_url(vnc_url: str) -> str | None:
+    parts = urlsplit(vnc_url)
+    if parts.scheme in ("http", "https") and parts.netloc and not parts.username and not parts.password:
+        return vnc_url
+    return None
+
+
+def app_csp(vnc_url: str = "") -> str:
+    viewer = viewer_url(vnc_url)
+    if viewer is None:
+        return CSP
+    parts = urlsplit(viewer)
+    return f"{CSP}; frame-src 'self' {parts.scheme}://{parts.netloc}"
 
 
 @dataclass(frozen=True)

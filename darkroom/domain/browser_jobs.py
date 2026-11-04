@@ -14,7 +14,8 @@ from darkroom.storage.models import BrowserJob, GoogleAccount, Setting
 from darkroom.storage.paths import OutsideRoot, Photos
 
 LEASE_SECONDS = 180.0
-KINDS = ("noop",)
+KINDS = ("noop", "connect", "schedule")
+QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify")
 OPEN_STATUSES = ("running", "waiting_for_user")
 WORKER_LAST_SEEN = "worker_last_seen"
@@ -36,6 +37,10 @@ class NoSuchJob(LookupError):
 
 
 class NotOpen(ValueError):
+    pass
+
+
+class AlreadyOpen(ValueError):
     pass
 
 
@@ -67,6 +72,14 @@ def enqueue(opened: Session, account_id: int, kind: str, payload: dict[str, obje
     opened.flush()
     events.record(opened, now, "browser_job_queued", str(job.id), kind)
     return job
+
+
+def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
+    account_of(opened, account_id)
+    busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(QUEUED_STATUSES)).limit(1)).first()
+    if busy is not None:
+        raise AlreadyOpen(f"a {kind} job for this account is already waiting or running")
+    return enqueue(opened, account_id, kind, None, now)
 
 
 def claim(opened: Session, now: float) -> BrowserJob | None:
@@ -103,10 +116,16 @@ def heartbeat(opened: Session, job_id: int, now: float) -> BrowserJob:
 
 def progress(opened: Session, job_id: int, message: str, now: float) -> BrowserJob:
     job = heartbeat(opened, job_id, now)
+    previous = job.message
     job.message = message
     if job.status == "waiting_for_user":
+        resumed_from_sign_in = previous == "sign_in"
         job.status = "running"
         alerts.close(opened, sign_in_key(job.account_id), now)
+        if resumed_from_sign_in:
+            account = account_of(opened, job.account_id)
+            account.session_state = "ok"
+            account.session_checked = now
     return job
 
 
@@ -126,8 +145,18 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     return job
 
 
+def schedule_times(result: dict[str, object]) -> tuple[float, float]:
+    created, end = result.get("schedule_created"), result.get("schedule_end")
+    if isinstance(created, bool) or isinstance(end, bool) or not isinstance(created, int | float) or not isinstance(end, int | float):
+        raise ValueError("a schedule job's result needs schedule_created and schedule_end as numbers")
+    if not 0 < created < end:
+        raise ValueError("schedule_end must be after schedule_created")
+    return float(created), float(end)
+
+
 def done(opened: Session, job_id: int, result: dict[str, object], now: float) -> BrowserJob:
     job = open_job(opened, job_id)
+    times = schedule_times(result) if job.kind == "schedule" else None
     job.status = "done"
     job.result = json.dumps(result)
     job.finished = now
@@ -136,6 +165,8 @@ def done(opened: Session, job_id: int, result: dict[str, object], now: float) ->
     account = account_of(opened, job.account_id)
     account.session_state = "ok"
     account.session_checked = now
+    if times is not None:
+        account.schedule_created, account.schedule_end = times
     events.record(opened, now, "browser_job_done", str(job.id), job.kind)
     return job
 

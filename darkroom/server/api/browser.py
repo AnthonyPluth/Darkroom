@@ -7,7 +7,7 @@ from darkroom import validate
 from darkroom.domain import browser_jobs
 from darkroom.server.api.browser_internal import NotFound, engine_of, job_id_of, now
 from darkroom.server import contract
-from darkroom.server.common import Request, Response, error_response, first_query, json_response
+from darkroom.server.common import Request, Response, error_response, first_query, json_response, viewer_url
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob
 from darkroom.storage.paths import OutsideRoot, Photos
@@ -34,6 +34,12 @@ def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
     with db.session(engine_of(request)) as opened:
         jobs = [browser_jobs.as_dict(job) for job in browser_jobs.list_jobs(opened, account)]
     return json_response({"jobs": jobs})
+
+
+def view(request: Request) -> Annotated[Response, contract.BrowserView]:
+    with db.session(engine_of(request)) as opened:
+        seen = browser_jobs.worker_last_seen(opened)
+    return json_response({"vnc_url": viewer_url(request.settings.vnc_url), "worker_last_seen": seen})
 
 
 def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Response, contract.BrowserJobReply]:

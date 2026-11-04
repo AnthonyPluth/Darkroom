@@ -1,4 +1,4 @@
-import type { AccountState, DeviceState, PersonStatus } from "./api-types";
+import type { AccountState, BrowserJobView, DeviceState, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -37,4 +37,30 @@ export function safeToDelete(devices: readonly DeviceState[]): number | null {
     total += device.eligible;
   }
   return total;
+}
+
+const OPEN_JOB = ["queued", "running", "waiting_for_user"];
+
+export function openJob(jobs: readonly BrowserJobView[], accountId: number, kind: string): BrowserJobView | undefined {
+  return jobs.find((job) => job.account_id === accountId && job.kind === kind && OPEN_JOB.includes(job.status));
+}
+
+export function latestJob(jobs: readonly BrowserJobView[], accountId: number, kind: string): BrowserJobView | undefined {
+  return jobs.find((job) => job.account_id === accountId && job.kind === kind);
+}
+
+export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
+  if (job === undefined) return null;
+  switch (job.status) {
+    case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
+    case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
+    case "waiting_for_user": return `${doing}: waiting for you to sign in.`;
+    case "failed": return `${doing}: failed. Open Status for details.`;
+    default: return `${doing}: done.`;
+  }
+}
+
+export function workerChip(lastSeen: number | null, now: number): { tone: Tone; label: string } {
+  if (lastSeen === null) return { tone: "neutral", label: "Worker not seen yet" };
+  return now - lastSeen <= 120 ? { tone: "ok", label: "Connected" } : { tone: "bad", label: "Worker not responding" };
 }

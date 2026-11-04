@@ -81,7 +81,7 @@ describe("signed in", () => {
     await screen.findByText("No one has been added yet.");
     for (const label of ["People", "Exports", "Imports", "Review", "Browser", "Status"]) {
       await userEvent.click(within(nav).getByRole("link", { name: label }));
-      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(label);
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(label === "Browser" ? "Remote browser" : label);
       expect(within(nav).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
     }
     await userEvent.click(within(nav).getByRole("link", { name: "Review" }));
