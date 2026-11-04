@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ImportView, ReviewSummary } from "./api-types";
 import {
   camera, canUndo, compared, counted, decisionChip, frame, pairLabel, partsSentence, personName, rangeStart, runChip, savedSentence, size, skipped,
-  unmatchedNames, unmatchedTotal, wallClock,
+  undoUnavailable, unmatchedNames, unmatchedTotal, wallClock,
 } from "./review";
 
 const people = [{ id: 1, name: "Jo", slug: "jo" }, { id: 2, name: "Sam", slug: "sam" }];
@@ -66,6 +66,9 @@ describe("review rows", () => {
     expect(canUndo(summary, 199)).toBe(true);
     expect(canUndo(summary, 200)).toBe(false);
     expect(canUndo({ ...summary, undo_until: null }, 0)).toBe(false);
+    expect(canUndo({ ...summary, reversed: true }, 0)).toBe(false);
+    expect(undoUnavailable({ ...summary, reversed: true })).toBe("Reversed, so it can't be undone");
+    expect(undoUnavailable(summary)).toBe("Too late to undo");
     expect(savedSentence("a.jpg")).toBe("Decision saved: kept both for a.jpg.");
     expect(savedSentence(null)).toBe("Decision saved: kept both for the pair.");
   });

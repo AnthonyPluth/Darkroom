@@ -14,7 +14,7 @@ from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -25,6 +25,7 @@ SIDES = ("library", "export")
 UNPLACED = "unplaced"
 PAGE_SIZE = 50
 LIST_LIMIT = 500
+ADOPTED = "; adopted what was already there: "
 
 
 MOVE_FAILURES = (paths.NotALibraryCopy, paths.NotASidecar, OSError, exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)
@@ -70,7 +71,10 @@ class FileEffects:
     done: list[Callable[[], None]] = field(default_factory=list)
 
     def made(self, photos: Photos, placed: place.Placed, kept: Path, had_sidecar: bool) -> None:
-        relative = place.relative(photos, placed.path)
+        relative, sidecar = place.relative(photos, placed.path), paths.sidecar_of(placed.path)
+        if had_sidecar and sidecar.is_file() and not sidecar.is_symlink():
+            before = sidecar.read_bytes()
+            self.undo.append(lambda: paths.restore_sidecar(sidecar, before))
         if placed.copied:
             self.undo.append(lambda: paths.drop_library_copy(photos, relative, kept, with_sidecar=not had_sidecar))
         elif not had_sidecar:
@@ -286,7 +290,8 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     return item, fields
 
 
-def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader, write: xmp.Writer) -> set[int]:
+def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader,
+              write: xmp.Writer) -> tuple[set[int], list[str]]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     account = opened.get(GoogleAccount, hit.export.account_id)
     if hold is None or account is None:
@@ -295,15 +300,28 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
     if person is None:
         raise WrongState("the export's account has no default person")
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
+    adopted: list[str] = []
 
     def copied(placed: place.Placed) -> None:
-        effects.made(photos, placed, hold, paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink())
+        had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
+        recorded = opened.execute(select(MediaItem.id).where(MediaItem.person_id == person.id, MediaItem.path == place.relative(photos, placed.path))).first()
+        adopted.extend(name for name, kept in (("photo", not placed.copied), ("sidecar", had_sidecar), ("row", recorded is not None)) if kept)
+        effects.made(photos, placed, hold, had_sidecar)
 
     try:
         row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write, copied)
     except (place.PlaceFailed, *MOVE_FAILURES) as error:
         raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
-    return {row.person_id}
+    return {row.person_id}, adopted
+
+
+def adopted_by(opened: Session, review: ReviewItem) -> set[str]:
+    detail = opened.execute(
+        select(Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.time.desc(), Event.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if detail is None or ADOPTED not in detail:
+        return set()
+    return set(detail.split(ADOPTED, 1)[1].split(", "))
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
@@ -317,10 +335,11 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
         raise WrongState("this pair's dedupe decision was reversed")
     changed = Changed(hit.export)
     if action == "keep_both":
-        changed.people |= keep_both(opened, photos, hit, now, effects, read, write)
+        people, adopted = keep_both(opened, photos, hit, now, effects, read, write)
+        changed.people |= people
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
-    events.record(opened, now, "review_resolved", f"review {hit.review.id}", action)
+    events.record(opened, now, "review_resolved", f"review {hit.review.id}", action + (f"{ADOPTED}{', '.join(adopted)}" if adopted else ""))
     return changed
 
 
@@ -341,11 +360,15 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     matched, shared = still_referenced(opened, item, hit.decision)
     if matched:
         raise WrongState("a later import matched the kept copy; reverse that decision before undoing this one")
-    if shared:
+    adopted = adopted_by(opened, hit.review)
+    if shared or "row" in adopted:
         hit.decision.takeout_item_id = None
         return set()
     try:
-        effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold))
+        if "photo" not in adopted:
+            effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold, with_sidecar="sidecar" not in adopted))
+        elif "sidecar" not in adopted:
+            effects.set_aside(paths.set_sidecar_aside(photos, item.path))
     except paths.NotALibraryCopy as error:
         raise WrongState("the kept copy is not where it was placed, so it was left alone") from error
     except OSError as error:

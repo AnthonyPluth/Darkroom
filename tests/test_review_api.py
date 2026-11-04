@@ -260,6 +260,72 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[0], 200)
 
+    def already_there(self, sidecar):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        folder.mkdir(parents=True, exist_ok=True)
+        photo = folder / PAIR_NAME
+        photo.write_bytes(self.hold().read_bytes())
+        if sidecar is not None:
+            photo.with_name(f"{PAIR_NAME}.xmp").write_bytes(sidecar)
+        return photo, photo.with_name(f"{PAIR_NAME}.xmp")
+
+    def test_undo_leaves_an_identical_photo_and_sidecar_that_were_already_there(self):
+        for sidecar_data in (b"<x:xmpmeta>edited by you</x:xmpmeta>", None):
+            with self.subTest(had_sidecar=sidecar_data is not None):
+                photo, sidecar = self.already_there(sidecar_data)
+                data = photo.read_bytes()
+                review_id, _ = self.resolve("keep_both")
+                kept_sidecar = sidecar.read_bytes() if sidecar.exists() else None
+                self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+                self.assertEqual(photo.read_bytes(), data)
+                if sidecar_data is None:
+                    self.assertFalse(sidecar.exists())
+                else:
+                    self.assertEqual(sidecar.read_bytes(), kept_sidecar)
+                self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
+                self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+                photo.unlink()
+                sidecar.unlink(missing_ok=True)
+
+    def test_undo_leaves_a_sidecar_that_was_already_there_and_takes_the_photo_it_copied(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        folder.mkdir(parents=True, exist_ok=True)
+        sidecar = folder / f"{PAIR_NAME}.xmp"
+        sidecar.write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        review_id, _ = self.resolve("keep_both")
+        self.assertTrue((folder / PAIR_NAME).is_file())
+        kept_sidecar = sidecar.read_bytes()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(sidecar.read_bytes(), kept_sidecar)
+
+    def test_undo_leaves_a_row_and_file_that_were_already_recorded(self):
+        photo, _ = self.already_there(None)
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(photo.relative_to(self.world.root)),
+                             sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        review_id, _ = self.resolve("keep_both")
+        before = self.tree()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(len(self.opened.execute(select(MediaItem).where(MediaItem.path == str(photo.relative_to(self.world.root)))).all()), 1)
+
+    def test_a_keep_both_that_fails_puts_back_a_sidecar_it_changed(self):
+        _, sidecar = self.already_there(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        before_tree, review_id = self.tree(), self.pending().id
+
+        def fill(path, *args, **kwargs):
+            sidecar.write_bytes(sidecar.read_bytes() + b"<x:merged/>")
+            return True
+
+        with mock.patch.object(place.xmp, "fill", side_effect=fill), failing_commit(self.world.opened):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the change could not be saved, so it was undone"}))
+        self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        self.assertEqual(self.tree(), before_tree)
+        self.assertEqual(self.pending().id, review_id)
+
     def test_an_undo_whose_commit_fails_keeps_the_copy_and_can_be_tried_again(self):
         review_id, _ = self.resolve("keep_both")
         kept_tree, kept_flags = self.tree(), self.confirmed()

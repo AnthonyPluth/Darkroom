@@ -5,7 +5,7 @@
   import { apiCall } from "$lib/contract";
   import { nowSeconds, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
-  import { camera, canUndo, compared, decisionChip, frame, pairLabel, personName, savedSentence, size, wallClock } from "$lib/review";
+  import { camera, canUndo, compared, decisionChip, frame, pairLabel, personName, savedSentence, size, undoUnavailable, wallClock } from "$lib/review";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -214,7 +214,7 @@
               {#if canUndo(review, data.now)}
                 <button type="button" class="btn w-full md:w-auto" disabled={busy} aria-label="Undo {pairLabel(review)}" onclick={() => undo(review.id)}>Undo</button>
               {:else}
-                <span class="text-ink-muted">Too late to undo</span>
+                <span class="text-ink-muted">{undoUnavailable(review)}</span>
               {/if}
             </td>
           </tr>

@@ -86,7 +86,11 @@ export function decisionChip(review: ReviewSummary, people: readonly Pick<Person
 }
 
 export function canUndo(review: ReviewSummary, now: number): boolean {
-  return review.undo_until !== null && now < review.undo_until;
+  return !review.reversed && review.undo_until !== null && now < review.undo_until;
+}
+
+export function undoUnavailable(review: ReviewSummary): string {
+  return review.reversed ? "Reversed, so it can't be undone" : "Too late to undo";
 }
 
 export function savedSentence(name: string | null): string {

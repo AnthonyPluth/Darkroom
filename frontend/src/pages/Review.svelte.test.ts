@@ -198,6 +198,13 @@ describe("past decisions", () => {
     expect(server.sent("POST /api/review/5/undo")).toHaveLength(1);
   });
 
+  it("offers no undo for a decision that was reversed and says why", async () => {
+    show({ "GET /api/review?status=kept_both": { reviews: [{ ...kept, reversed: true }], pending: 1, before: 0 } });
+    const past = await screen.findByRole("region", { name: "Past decisions" });
+    expect(within(past).getByText("Reversed, so it can't be undone")).toBeInTheDocument();
+    expect(within(past).queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
+  });
+
   it("shows why an undo was refused", async () => {
     show({ "POST /api/review/5/undo": reply(409, { error: "this decision is more than 14 days old" }) });
     const table = await screen.findByRole("table", { name: "Past decisions" });

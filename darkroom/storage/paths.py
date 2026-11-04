@@ -315,6 +315,26 @@ def drop_new_sidecar(photos: Photos, relative: str) -> None:
         sidecar.unlink()
 
 
+def restore_sidecar(destination: Path, data: bytes) -> None:
+    checked_sidecar(destination)
+    if destination.is_file() and destination.read_bytes() == data:
+        return
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".xmp-") as folder:
+        temp = Path(folder) / destination.name
+        temp.write_bytes(data)
+        checked_sidecar(destination)
+        os.replace(temp, destination)
+
+
+def set_sidecar_aside(photos: Photos, relative: str) -> SetAside:
+    sidecar = sidecar_of(photos.google_only_file(relative))
+    if sidecar.is_symlink() or not sidecar.is_file():
+        return SetAside([])
+    aside = sidecar.with_name(f"{DROPPING}{secrets.token_hex(8)}-{sidecar.name}")
+    os.rename(sidecar, aside)
+    return SetAside([(sidecar, aside)])
+
+
 def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> None:
     set_library_copy_aside(photos, relative, kept, with_sidecar).finish()
 
