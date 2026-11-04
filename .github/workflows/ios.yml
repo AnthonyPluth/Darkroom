@@ -1,0 +1,120 @@
+name: iOS
+
+# The agents' compile feedback for ios/ (they cannot run Xcode) and a required check of the merge gate. A pull request
+# that does not touch ios/ or this file skips the build job, and a skipped job counts as passed, so backend pull
+# requests never wait on a macOS runner. The build is unsigned and needs no team id, certificate or secret. macOS
+# minutes would cost ten times as much as Linux minutes if the repository went private (see ios/README.md for this check's duration).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  XCODEGEN_VERSION: "2.46.0"
+  XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+  XCBEAUTIFY_VERSION: "3.2.1"
+  XCBEAUTIFY_SHA256: "87fdbe786f71d7b2ee28c5c1ca97087587292f2c5c6f9e721cf02db8b2a3c241"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest   # hosted: tiny job
+    timeout-minutes: 5
+    outputs:
+      ios: ${{ steps.diff.outputs.ios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Did ios/ or this workflow change
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          changed=true
+          if [[ "$EVENT" != workflow_dispatch && -n "$BASE" && "$BASE" != 0000000000000000000000000000000000000000 ]] \
+              && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            files="$(git diff --name-only "$BASE" "$HEAD")"
+            if grep -qE '^(ios/|\.github/workflows/ios\.yml$)' <<< "$files"; then
+              changed=true
+            else
+              changed=false
+            fi
+          fi
+          echo "ios=$changed" >> "$GITHUB_OUTPUT"
+          echo "ios changed: $changed"
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-15   # hosted: Xcode only runs on macOS
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: |
+          version="$(tr -d '[:space:]' < ios/.xcode-version)"
+          sudo xcode-select -s "/Applications/Xcode_${version}.app/Contents/Developer"
+          xcodebuild -version
+      - name: Install XcodeGen and xcbeautify at pinned versions
+        run: |
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/xcodegen-dl" "$tools/xcbeautify"
+          curl -fsSL -o "$tools/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $tools/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$tools/xcodegen.zip" -d "$tools/xcodegen-dl"
+          curl -fsSL -o "$tools/xcbeautify.zip" "https://github.com/cpisciotta/xcbeautify/releases/download/${XCBEAUTIFY_VERSION}/xcbeautify-${XCBEAUTIFY_VERSION}-universal-apple-macosx.zip"
+          echo "${XCBEAUTIFY_SHA256}  $tools/xcbeautify.zip" | shasum -a 256 -c -
+          unzip -q "$tools/xcbeautify.zip" -d "$tools/xcbeautify"
+          chmod +x "$tools/xcodegen-dl/xcodegen/bin/xcodegen" "$tools/xcbeautify/release/xcbeautify"
+          echo "$tools/xcodegen-dl/xcodegen/bin" >> "$GITHUB_PATH"
+          echo "$tools/xcbeautify/release" >> "$GITHUB_PATH"
+      - name: Cache SwiftPM and DerivedData
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ios/Packages/DarkroomCore/.build
+            build
+          key: ios-${{ runner.os }}-${{ hashFiles('ios/.xcode-version', 'ios/Packages/**/Package.resolved') }}
+          restore-keys: |
+            ios-${{ runner.os }}-
+      - name: Generate the Xcode project
+        run: xcodegen generate --spec ios/project.yml --project ios
+      - name: DarkroomCore tests
+        run: |
+          set -o pipefail
+          swift test --package-path ios/Packages/DarkroomCore 2>&1 | xcbeautify --renderer github-actions
+      - name: Unsigned simulator build
+        run: |
+          set -o pipefail
+          rm -rf build/Darkroom.xcresult
+          xcodebuild -project ios/Darkroom.xcodeproj -scheme Darkroom \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            -resultBundlePath build/Darkroom.xcresult \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | xcbeautify --renderer github-actions
+      - name: Upload the result bundle
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4.6.2
+        with:
+          name: ios-xcresult
+          path: build/Darkroom.xcresult
+          if-no-files-found: ignore
