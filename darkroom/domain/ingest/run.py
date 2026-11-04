@@ -124,9 +124,9 @@ def mark(opened: Session, export: Export, run: ImportRun, stage: str) -> None:
 
 def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun, now: float) -> None:
     person = default_person(opened, export)
-    unpack.unpack(opened, photos, person, export, now)
+    report = unpack.unpack(opened, photos, person, export, now)
     if export.status == "failed":
-        raise StageFailed("the export could not be unpacked; the events say which part")
+        raise StageFailed(f"the export could not be unpacked: {'; '.join(report.public) or 'see the events'}")
     export.status = "importing"
     mark(opened, export, run, "unpacked")
 

@@ -4,6 +4,7 @@ from typing import Annotated
 
 from darkroom import VERSION
 from darkroom.domain import browser_jobs, index
+from darkroom.domain.ingest import run
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, json_response
 from darkroom.storage import db
@@ -18,5 +19,6 @@ def status(request: Request) -> Annotated[Response, contract.Status]:
         raise RuntimeError("this route needs the database")
     with db.session(request.engine) as opened:
         seen = browser_jobs.worker_last_seen(opened)
-        people = [{"slug": slug, "name": name, "indexed": count} for slug, name, count in index.counts_by_person(opened)]
+        unmatched = run.unmatched_by_person(opened)
+        people = [{"slug": slug, "name": name, "indexed": count, "unmatched": unmatched.get(slug)} for slug, name, count in index.counts_by_person(opened)]
     return json_response({"worker_last_seen": seen, "people": people})

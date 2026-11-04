@@ -8,14 +8,17 @@ import os
 import sys
 from pathlib import Path
 
+from sqlalchemy.orm import Session
+
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool
 from darkroom.dates import utc_now
 from darkroom.domain import demo, index
+from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
 from darkroom.storage import db
-from darkroom.storage.models import Person
+from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
@@ -78,6 +81,30 @@ def run_index(slug: str | None) -> int:
     return code
 
 
+def unpack_only_export(opened: Session, photos: Photos, person: Person, export: Export, now: float) -> int:
+    report = unpack.unpack(opened, photos, person, export, now)
+    monitoring.log("unpacked", person=person.slug, export=export.id, parts=report.parts_unpacked, skipped=report.parts_skipped, files=report.files, problems=len(report.problems))
+    for problem in report.problems:
+        print(problem, file=sys.stderr)
+    return 1 if report.problems else 0
+
+
+def import_one(opened: Session, settings: config.Settings, export: Export, now: float) -> int:
+    try:
+        done = ingest_run.import_export(opened, settings, export, now)
+    except ingest_run.AlreadyImported:
+        print(f"Export {export.id} is already imported.")
+        return 0
+    except (ingest_run.Busy, ingest_run.NotReady) as error:
+        print(f"export {export.id}: {error}", file=sys.stderr)
+        return 1
+    if done.status != "done":
+        print(f"export {export.id}: {done.error or 'the import failed'}; see the events on the status page", file=sys.stderr)
+        return 1
+    print(ingest_run.summary_of(export, done))
+    return 0
+
+
 def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, account: str | None = None) -> int:
     if not slug:
         print("import-takeout needs --person", file=sys.stderr)
@@ -103,13 +130,7 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
                 print("no Takeout zip files found to import", file=sys.stderr)
                 code = 1
             for export in found:
-                report = unpack.unpack(opened, photos, person, export, now)
-                monitoring.log("unpacked", person=person.slug, export=export.id, parts=report.parts_unpacked, skipped=report.parts_skipped, files=report.files, problems=len(report.problems))
-                for problem in report.problems:
-                    print(problem, file=sys.stderr)
-                    code = 1
-            if not unpack_only and not code:
-                print("Unpacked; pairing and import arrive with later steps.")
+                code = max(code, unpack_only_export(opened, photos, person, export, now) if unpack_only else import_one(opened, settings, export, now))
     engine.dispose()
     return code
 
