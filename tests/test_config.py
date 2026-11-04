@@ -87,6 +87,19 @@ class AuthProblemTests(unittest.TestCase):
         self.assertEqual(config.refuses_to_start(settings_from(DARKROOM_HOST="0.0.0.0")), [])
         self.assertEqual(config.auth_problems(settings_from(DARKROOM_HOST="0.0.0.0")), ["sign-in is not set up: set OIDC_ISSUER and OIDC_CLIENT_ID (or DARKROOM_ALLOW_NO_AUTH=1 on a local address) so someone can use the web UI"])
 
+    def test_check_config_reports_a_vnc_url_the_viewer_cannot_use(self):
+        for value in ("https://[::1", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/"):
+            with self.subTest(value=value):
+                found = config.vnc_url_problems(settings_from(VNC_URL=value))
+                self.assertEqual(len(found), 1)
+                self.assertIn("VNC_URL", found[0])
+                self.assertNotIn("secret", found[0])
+                self.assertIn("VNC_URL", " ".join(config.problems(settings_from(VNC_URL=value))))
+                self.assertEqual(config.refuses_to_start(settings_from(VNC_URL=value)), [])
+        for value in ("", "https://browser.example:6080/vnc.html?autoconnect=1", "http://127.0.0.1:6080/"):
+            with self.subTest(value=value):
+                self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), [])
+
     def test_an_upload_timeout_below_one_second_or_not_a_number_refuses_to_start(self):
         self.assertEqual(settings_from().upload_read_timeout, 3600)
         self.assertEqual(settings_from(UPLOAD_READ_TIMEOUT="90").upload_read_timeout, 90)

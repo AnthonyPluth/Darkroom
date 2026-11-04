@@ -29,7 +29,7 @@ def dispatch(request: Request) -> Response:
     found = routes.match(request.method, request.path)
     if found is None:
         if request.method == "GET" and not request.path.startswith(("/api/", "/internal/")):
-            return static.serve(request.path)
+            return static.serve(request.path, vnc_url=request.settings.vnc_url)
         return error_response("not found", 404)
     route, params = found
     request = replace(request, params=params)

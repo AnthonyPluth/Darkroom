@@ -50,7 +50,7 @@
               <p class="font-bold">{alert.message}</p>
               <p class="text-ink-muted">Opened {ago(alert.opened, data.now)}.</p>
             </div>
-            {#if alert.kind === "sign_in_needed"}
+            {#if alert.kind === "sign_in_needed" || alert.kind === "wrong_account"}
               <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
             {/if}
           </div>

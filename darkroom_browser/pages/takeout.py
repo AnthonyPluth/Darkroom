@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
+
+from darkroom_browser import selectors
 
 SIGNED_IN = "SIGNED_IN"
 SIGN_IN_NEEDED = "SIGN_IN_NEEDED"
@@ -33,3 +36,28 @@ def classify(page: str) -> str:
     if "takeout" in lowered and any(phrase in text for phrase in SIGNED_IN_PHRASES):
         return SIGNED_IN
     return UNKNOWN
+
+
+CONFIRMATION_PHRASES = ("export created", "we've started creating a copy", "your export has been scheduled", "export scheduled")
+RECURRING = re.compile(r"every 2 months for (?:1 year|a year|12 months)")
+
+
+@dataclass(frozen=True)
+class ScheduleConfirmation:
+    frequency: str
+
+
+def parse_schedule_confirmation(page: str) -> ScheduleConfirmation | None:
+    text = visible_text(page)
+    if not any(phrase in text for phrase in CONFIRMATION_PHRASES):
+        return None
+    recurring = RECURRING.search(text)
+    return ScheduleConfirmation(recurring.group(0)) if recurring is not None else None
+
+
+ACCOUNT_LABEL = re.compile(r"""aria-label\s*=\s*["']""" + re.escape(selectors.SIGNED_IN_ACCOUNT_LABEL_PREFIX) + r"""[^"']*?\(([^()"'\s]+@[^()"'\s]+)\)""", re.IGNORECASE)
+
+
+def signed_in_email(page: str) -> str | None:
+    found = ACCOUNT_LABEL.search(page)
+    return found.group(1).lower() if found is not None else None

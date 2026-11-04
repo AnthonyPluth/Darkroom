@@ -26,6 +26,7 @@ export interface AccountView {
   default_person_id: number;
   session_state: string;
   session_checked: number | null;
+  schedule_created: number | null;
   schedule_end: number | null;
   served_people: number[];
   created: number;
@@ -58,11 +59,18 @@ export interface BrowserJobView {
   heartbeat: number | null;
   finished: number | null;
   message: string;
+  needs_check: boolean;
   has_capture: boolean;
+  capture_files: string[];
 }
 
 export interface BrowserJobs {
   jobs: BrowserJobView[];
+}
+
+export interface BrowserView {
+  vnc_url: string | null;
+  worker_last_seen: number | null;
 }
 
 export interface ClaimBody {
@@ -342,12 +350,16 @@ export interface Endpoints {
   "POST /api/accounts": { body: AccountCreateBody; reply: AccountReply };
   "PATCH /api/accounts/{id}": { body: AccountPatchBody; reply: AccountReply };
   "DELETE /api/accounts/{id}": { body: never; reply: Ok };
+  "POST /api/accounts/{id}/connect": { body: never; reply: BrowserJobReply };
+  "POST /api/accounts/{id}/schedule": { body: never; reply: BrowserJobReply };
+  "POST /api/accounts/{id}/schedule/checked": { body: never; reply: BrowserJobReply };
   "GET /api/pixels": { body: never; reply: Pixels };
   "POST /api/pixels": { body: PixelCreateBody; reply: PixelReply };
   "PATCH /api/pixels/{id}": { body: PixelPatchBody; reply: PixelReply };
   "DELETE /api/pixels/{id}": { body: never; reply: Ok };
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
+  "GET /api/browser/view": { body: never; reply: BrowserView };
   "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
   "GET /api/imports": { body: never; reply: Imports };
   "GET /api/imports/{id}": { body: never; reply: ImportReply };

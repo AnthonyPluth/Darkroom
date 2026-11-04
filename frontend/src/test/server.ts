@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, DeviceView, EventView, Me, PersonView, PixelView, Status } from "$lib/api-types";
+import type { AccountView, BrowserJobView, DeviceView, EventView, Me, PersonView, PixelView, Status } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -30,8 +30,8 @@ export const me: Me = { sub: "u-1", email: "sam@example.com", name: "Sam Example
 export const jo: PersonView = { id: 1, name: "Jo Example", slug: "jo-example", email: "jo@example.com", immich_user_id: "immich-jo", immich_library_id: null, has_immich_key: true, created: 1 };
 export const sam: PersonView = { id: 2, name: "Sam Example", slug: "sam-example", email: null, immich_user_id: null, immich_library_id: null, has_immich_key: false, created: 2 };
 
-export const joAccount: AccountView = { id: 10, email: "jo.photos@example.com", default_person_id: 1, session_state: "ok", session_checked: 1000, schedule_end: null, served_people: [1], created: 1 };
-export const familyAccount: AccountView = { id: 11, email: "family.photos@example.com", default_person_id: 2, session_state: "needs_sign_in", session_checked: 1000, schedule_end: 5_000_000, served_people: [1, 2], created: 1 };
+export const joAccount: AccountView = { id: 10, email: "jo.photos@example.com", default_person_id: 1, session_state: "ok", session_checked: 1000, schedule_created: null, schedule_end: null, served_people: [1], created: 1 };
+export const familyAccount: AccountView = { id: 11, email: "family.photos@example.com", default_person_id: 2, session_state: "needs_sign_in", session_checked: 1000, schedule_created: 4_000_000, schedule_end: 5_000_000, served_people: [1, 2], created: 1 };
 
 export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], last_sync: 940, created: 1 };
 export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], last_sync: null, created: 1 };
@@ -71,3 +71,7 @@ export const someEvents: EventView[] = [
   { id: 2, time: 900, type: "mystery_event", subject: "sam-example", detail: null },
   { id: 1, time: 100, type: "person_created", subject: "jo-example", detail: null },
 ];
+
+export const queuedConnect: BrowserJobView = { id: 5, account_id: 10, kind: "connect", status: "queued", created: 990, started: null, heartbeat: null, finished: null, message: "", needs_check: false, has_capture: false, capture_files: [] };
+export const waitingConnect: BrowserJobView = { ...queuedConnect, id: 6, account_id: 11, status: "waiting_for_user", started: 991, heartbeat: 995, message: "sign_in" };
+export const failedSchedule: BrowserJobView = { ...queuedConnect, id: 4, account_id: 10, kind: "schedule", status: "failed", started: 900, finished: 910, message: "UnexpectedPage", has_capture: true, capture_files: ["screenshot.png", "page.html"] };

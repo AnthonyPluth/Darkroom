@@ -52,6 +52,29 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(static.ROOT, ROOT / "darkroom/static/app")
 
 
+class ViewerFrameTests(unittest.TestCase):
+    def serve(self, path, vnc_url):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "index.html").write_text("<p>home</p>")
+            (root / "app.js").write_text("1")
+            return static.serve(path, root, vnc_url).headers["Content-Security-Policy"]
+
+    def test_the_page_may_frame_only_the_viewer_origin(self):
+        policy = self.serve("/people", "https://browser.example:6080/vnc.html?autoconnect=1")
+        self.assertIn("; frame-src 'self' https://browser.example:6080", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+        self.assertNotIn("vnc.html", policy)
+
+    def test_scripts_get_no_frame_source(self):
+        self.assertNotIn("frame-src", self.serve("/app.js", "https://browser.example/vnc.html"))
+
+    def test_no_or_an_unusable_viewer_address_allows_no_frame(self):
+        for address in ("", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/", "https://[::1", "http://[bad"):
+            with self.subTest(address=address):
+                self.assertNotIn("frame-src", self.serve("/", address))
+
+
 class ServedAppTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()

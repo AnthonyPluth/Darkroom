@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,10 @@ class Cancelled(Exception):
     pass
 
 
+class JobFailure(Exception):
+    pass
+
+
 @dataclass
 class JobContext:
     job_id: int
@@ -46,6 +51,9 @@ class JobContext:
     open_browser: Callable[[Path], Browser]
     cancelled: threading.Event = field(default_factory=threading.Event)
     browser_open: Browser | None = None
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.monotonic
+    wall: Callable[[], float] = time.time
 
     def profile_dir(self) -> Path:
         return self.photos_root / "_browser" / self.account / "profile"

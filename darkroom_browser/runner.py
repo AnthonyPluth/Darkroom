@@ -10,7 +10,7 @@ from typing import Any
 from darkroom_browser import capture, jobs, monitoring
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from darkroom_browser.config import Settings
-from darkroom_browser.context import Browser, Cancelled, JobContext
+from darkroom_browser.context import Browser, Cancelled, JobContext, JobFailure
 
 HEARTBEAT_SECONDS = 30.0
 BACKOFF_SECONDS = 60.0
@@ -19,6 +19,15 @@ GIVE_UP_SECONDS = 120.0
 ABANDONED_EXIT = 3
 
 OpenBrowser = Callable[[Path], Browser]
+
+
+def failure_message(error: BaseException) -> str:
+    name = type(error).__name__
+    return f"{name}: {error}" if isinstance(error, JobFailure) else name
+
+
+def unrecorded_message(error: BaseException) -> str:
+    return f"ScheduleNotConfirmed: the work finished but Darkroom could not record it ({type(error).__name__}); check Takeout before trying again"
 
 
 def exit_now() -> None:
@@ -122,11 +131,13 @@ class Runner:
         watchdog.start()
         beat.start()
         outcome = "failed"
+        worked = False
         try:
             work = self.registry.get(ctx.kind)
             if work is None:
                 raise jobs.UnknownJob(f"no job called {ctx.kind!r}")
             result = work(ctx)
+            worked = True
             ctx.check()
             beat.stop()
             if self.closed(ctx, watchdog):
@@ -141,7 +152,7 @@ class Runner:
             monitoring.log("browser job lost its lease", job=ctx.job_id)
             outcome = "cancelled"
         except Exception as error:
-            outcome = self.report_failure(ctx, error, beat, watchdog)
+            outcome = self.report_failure(ctx, error, beat, watchdog, worked)
         finally:
             beat.stop()
             if not self.closed(ctx, watchdog):
@@ -161,7 +172,7 @@ class Runner:
         watchdog.disarm()
         return True
 
-    def report_failure(self, ctx: JobContext, error: BaseException, beat: Heartbeat, watchdog: Watchdog) -> str:
+    def report_failure(self, ctx: JobContext, error: BaseException, beat: Heartbeat, watchdog: Watchdog, worked: bool = False) -> str:
         beat.stop()
         captured = None
         try:
@@ -172,7 +183,7 @@ class Runner:
         if not self.closed(ctx, watchdog):
             return "abandoned"
         try:
-            self.client.failed(ctx.job_id, type(error).__name__, folder, captured.files() if captured is not None else None)
+            self.client.failed(ctx.job_id, unrecorded_message(error) if worked and ctx.kind == "schedule" else failure_message(error), folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
         return "failed"

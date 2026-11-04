@@ -3,6 +3,8 @@
   import type { Me } from "$lib/api-types";
   import { followLink, pageFor, PAGES, router } from "$lib/nav.svelte";
   import { displayName } from "$lib/session.svelte";
+  import Browser from "./pages/Browser.svelte";
+  import Exports from "./pages/Exports.svelte";
   import People from "./pages/People.svelte";
   import Placeholder from "./pages/Placeholder.svelte";
   import Status from "./pages/Status.svelte";
@@ -64,6 +66,10 @@
         <Status />
       {:else if page?.path === "/people"}
         <People />
+      {:else if page?.path === "/exports"}
+        <Exports />
+      {:else if page?.path === "/browser"}
+        <Browser />
       {:else if page}
         <Placeholder title={page.label} />
       {:else}
