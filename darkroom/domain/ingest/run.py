@@ -264,7 +264,7 @@ def check_unmatched(opened: Session, settings: config.Settings, export: Export, 
                 continue
             wanted.add(key)
             wording = alerts.originals_unmatched(person.name, None if pixel is None else pixel.name, count)
-            alert = alerts.open_alert(opened, settings, key, "originals_unmatched", person.slug, wording, None, now, notifier=notifier)
+            alert = alerts.open_alert_committed(opened, settings, key, "originals_unmatched", person.slug, wording, None, now, notifier=notifier)
             alert.message = wording.message
     prefix = f"originals_unmatched:{export.account_id}:"
     for alert in opened.execute(select(Alert).where(Alert.key.startswith(prefix), Alert.closed.is_(None))).scalars():
@@ -346,11 +346,8 @@ def summary_of(export: Export, run: ImportRun) -> str:
 def stage_report(opened: Session, settings: config.Settings, export: Export, run: ImportRun, now: float, tools: Tools) -> None:
     key = f"export_imported:{export.id}"
     if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
-        wording = alerts.export_imported(summary_of(export, run))
-        alert = Alert(key=key, kind="export_imported", subject=f"export {export.id}", message=wording.message, link=None, opened=now, closed=now)
-        opened.add(alert)
-        opened.commit()
-        alerts.deliver(opened, settings, alert, wording, now, tools.notifier)
+        alerts.open_alert_committed(opened, settings, key, "export_imported", f"export {export.id}", alerts.export_imported(summary_of(export, run)),
+                                    None, now, tools.notifier)
         try:
             mark(opened, export, run, "reported")
         except Exception as error:
