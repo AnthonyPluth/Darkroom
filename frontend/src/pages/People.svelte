@@ -102,7 +102,7 @@
   function removeAccount(account: AccountView): void {
     ask({
       title: `Delete ${account.email}?`,
-      message: "Only an account with no Pixels, no exports and no unfinished browser job can be deleted.",
+      message: "Only an account with no Pixels and no exports can be deleted.",
       confirm: "Delete account",
       run: () => apiCall<"DELETE /api/accounts/{id}">(`/api/accounts/${account.id}`, { method: "DELETE" }),
     });
