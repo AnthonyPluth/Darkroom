@@ -134,6 +134,16 @@ class AccountsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", f"/api/accounts/{second['id']}", {"email": "a@example.test"})[0], 409)
         self.assertEqual(self.call("PATCH", f"/api/accounts/{first['id']}", {"email": "a@example.test"})[0], 200)
 
+    def test_a_non_ascii_duplicate_email_is_a_conflict_on_create_and_update(self):
+        jo = self.person("Jo")
+        first = self.account(jo["id"], "\u00c4@example.test")
+        self.assertEqual(first["email"], "\u00c4@example.test")
+        self.assertEqual(self.call("POST", "/api/accounts", {"email": "\u00e4@example.test", "default_person_id": jo["id"]})[0], 409)
+        second = self.account(jo["id"], "other@example.test")
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{second['id']}", {"email": "\u00e4@EXAMPLE.test"})[0], 409)
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{first['id']}", {"email": "\u00e4@example.test"})[0], 200)
+        self.assertEqual(self.call("GET", "/api/accounts")[1]["accounts"][0]["email"], "\u00e4@example.test")
+
     def test_validation_errors_and_404s(self):
         jo = self.person("Jo")
         for body, message in (({}, "email is required"), ({"email": "nope"}, "email must be an email address"), ({"email": "a b@example.test"}, "email must be an email address"),

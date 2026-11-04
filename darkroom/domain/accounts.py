@@ -105,10 +105,9 @@ def require_person(opened: Session, person_id: int) -> None:
 
 
 def require_free_email(opened: Session, email: str, except_id: int | None = None) -> None:
-    query = select(GoogleAccount.id).where(func.lower(GoogleAccount.email) == email.lower())
-    if except_id is not None:
-        query = query.where(GoogleAccount.id != except_id)
-    if opened.execute(query).first() is not None:
+    wanted = email.casefold()
+    rows = opened.execute(select(GoogleAccount.id, GoogleAccount.email)).all()
+    if any(account_id != except_id and existing.casefold() == wanted for account_id, existing in rows):
         raise EmailTaken("there is already a Google account with that email")
 
 
