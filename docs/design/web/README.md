@@ -21,4 +21,4 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17). Exports, Imports, Review and Browser arrive with their own issues.
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), Imports and Review (#27). Exports and Browser arrive with their own issues.

@@ -115,7 +115,9 @@
       "auth": "session",
       "handler": "darkroom.server.api.people.list_people",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/pages/Imports.svelte",
+        "frontend/src/pages/People.svelte",
+        "frontend/src/pages/Review.svelte"
       ],
       "tests": [
         "tests/api_world.py",
@@ -339,7 +341,9 @@
       "route": "GET /api/imports",
       "auth": "session",
       "handler": "darkroom.server.api.imports.list_imports",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Imports.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_imports_api.py"
@@ -359,7 +363,9 @@
       "route": "GET /api/review",
       "auth": "session",
       "handler": "darkroom.server.api.review.list_reviews",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_reassign.py",
@@ -371,7 +377,9 @@
       "route": "GET /api/review/{id}",
       "auth": "session",
       "handler": "darkroom.server.api.review.one",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -391,7 +399,9 @@
       "route": "POST /api/review/{id}/resolve",
       "auth": "session",
       "handler": "darkroom.server.api.review.resolve",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -401,7 +411,9 @@
       "route": "POST /api/review/{id}/undo",
       "auth": "session",
       "handler": "darkroom.server.api.review.undo",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -411,7 +423,9 @@
       "route": "GET /api/decisions",
       "auth": "session",
       "handler": "darkroom.server.api.review.list_decisions",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -421,7 +435,9 @@
       "route": "POST /api/decisions/{id}/reverse",
       "auth": "session",
       "handler": "darkroom.server.api.review.reverse",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
@@ -431,7 +447,9 @@
       "route": "GET /api/media",
       "auth": "session",
       "handler": "darkroom.server.api.review.list_media",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Imports.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_reassign.py",
@@ -442,7 +460,9 @@
       "route": "POST /api/media/{id}/reassign",
       "auth": "session",
       "handler": "darkroom.server.api.review.reassign",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Review.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
