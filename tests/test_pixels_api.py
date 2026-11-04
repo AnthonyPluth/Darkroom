@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from darkroom.storage import db
 from darkroom.domain import alerts, browser_jobs
-from darkroom.storage.models import Alert, Event, Export, Pixel, PixelPerson
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -295,6 +295,31 @@ class AccountsApiTests(ApiCase):
             opened.add(Export(account_id=account["id"], kind="manual"))
         self.assertIn("exports", self.call("DELETE", f"/api/accounts/{account['id']}")[1]["error"])
         self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_an_account_with_an_unfinished_browser_job_is_not_deleted_until_it_finishes(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        profile = self.make_profile(account["id"])
+        for status in browser_jobs.UNFINISHED_STATUSES:
+            with db.session(self.engine) as opened:
+                job = browser_jobs.enqueue(opened, account["id"], "noop", None, 1.0)
+                job.status = status
+                job_id = job.id
+            status_code, reply = self.call("DELETE", f"/api/accounts/{account['id']}")
+            self.assertEqual(status_code, 409, status)
+            self.assertIn("browser job that has not finished", reply["error"])
+            self.assertTrue(profile.exists())
+            with db.session(self.engine) as opened:
+                opened.get(BrowserJob, job_id).status = "done"
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_finished_browser_jobs_do_not_block_deleting_an_account(self):
+        jo = self.person("Jo")
+        account = self.account(jo["id"])
+        for status in ("done", "failed"):
+            with db.session(self.engine) as opened:
+                browser_jobs.enqueue(opened, account["id"], "noop", None, 1.0).status = status
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}"), (200, {"ok": True}))
 
 
 if __name__ == "__main__":
