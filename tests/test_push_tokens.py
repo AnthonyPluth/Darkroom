@@ -180,6 +180,56 @@ class PushTokenTests(DeviceCase):
         self.assertIsNone(self.device().push_token_digest)
         self.assertEqual(self.kinds(), ["push_token_registered", "push_token_cleared"])
 
+    def revoked_after_loading(self):
+        real = push_tokens.hold_active
+
+        def raced(opened, device):
+            with db.session(self.engine) as other:
+                devices.revoke(other, device.id, 5.0)
+            real(opened, device)
+
+        return mock.patch.object(push_tokens, "hold_active", raced)
+
+    def test_a_device_revoked_between_loading_it_and_writing_a_new_token_is_refused_and_keeps_none(self):
+        for first in (None, PUSH_TOKEN):
+            with self.subTest(replacing=first is not None):
+                if first:
+                    self.register(first)
+                with db.session(self.engine) as opened, self.revoked_after_loading(), self.assertRaises(push_tokens.DeviceGone):
+                    push_tokens.register(opened, self.settings, self.device_id, OTHER_PUSH_TOKEN, 6.0)
+                device = self.device()
+                self.assertIsNotNone(device.revoked_at)
+                self.assertEqual((device.push_token_sealed, device.push_token_digest), (None, None))
+                with db.session(self.engine) as opened:
+                    opened.get(Device, self.device_id).revoked_at = None
+
+    def test_a_device_revoked_after_loading_it_is_refused_when_the_same_token_comes_again(self):
+        self.register()
+        with db.session(self.engine) as opened, self.revoked_after_loading(), self.assertRaises(push_tokens.DeviceGone):
+            push_tokens.register(opened, self.settings, self.device_id, PUSH_TOKEN, 7.0)
+        device = self.device()
+        self.assertNotEqual(device.push_token_at, 7.0)
+        self.assertEqual(device.push_token_digest, None)
+
+    def test_a_device_revoked_after_loading_it_is_refused_when_it_clears_its_token_and_when_it_had_none(self):
+        for token in (PUSH_TOKEN, None):
+            with self.subTest(had_token=token is not None):
+                if token:
+                    self.register(token)
+                with db.session(self.engine) as opened, self.revoked_after_loading(), self.assertRaises(push_tokens.DeviceGone):
+                    push_tokens.forget_own(opened, self.device_id, 8.0)
+                self.assertIsNotNone(self.device().revoked_at)
+                with db.session(self.engine) as opened:
+                    opened.get(Device, self.device_id).revoked_at = None
+
+    def test_the_http_routes_answer_401_for_a_device_revoked_after_it_was_loaded(self):
+        for method, body in (("PUT", {"token": PUSH_TOKEN}), ("DELETE", None)):
+            with self.subTest(method=method), self.revoked_after_loading(), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.call(method, "/api/device/push-token", body)[0], 401)
+            with db.session(self.engine) as opened:
+                opened.get(Device, self.device_id).revoked_at = None
+        self.assertIsNone(self.device().push_token_digest)
+
     def test_a_token_is_not_read_with_another_key_tampered_with_or_from_a_revoked_device(self):
         self.register()
         device = self.device()

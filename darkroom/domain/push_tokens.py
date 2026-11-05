@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session
 
 from darkroom import oidc
@@ -52,10 +52,18 @@ def forget(opened: Session, device: Device, now: float) -> bool:
     return True
 
 
+def hold_active(opened: Session, device: Device) -> None:
+    held = opened.execute(update(Device).where(Device.id == device.id, Device.revoked_at.is_(None)).values(revoked_at=None))
+    assert isinstance(held, CursorResult)
+    if held.rowcount != 1:
+        raise DeviceGone("no such device")
+
+
 def forget_own(opened: Session, device_id: int, now: float) -> bool:
     device = opened.get(Device, device_id)
     if device is None or device.revoked_at is not None:
         raise DeviceGone("no such device")
+    hold_active(opened, device)
     return forget(opened, device, now)
 
 
@@ -70,6 +78,7 @@ def register(opened: Session, settings: Settings, device_id: int, raw: str, now:
         raise DeviceGone("no such device")
     digest = digest_of(token)
     sealed = secretbox.seal(token, settings.secret_key)
+    hold_active(opened, device)
     if device.push_token_digest == digest and unsealed(device, settings.secret_key) == token:
         device.push_token_at = now
         return False
