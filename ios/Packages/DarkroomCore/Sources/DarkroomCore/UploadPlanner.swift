@@ -24,6 +24,10 @@ public struct LocalResource: Equatable, Sendable {
         self.state = state
     }
 
+    func hasSameContent(as other: LocalResource) -> Bool {
+        sha1 == other.sha1 && bytes == other.bytes && filename == other.filename
+    }
+
     var descriptor: ResourceDescriptor {
         ResourceDescriptor(kind: key.kind, sha1: sha1, bytes: bytes, filename: filename)
     }

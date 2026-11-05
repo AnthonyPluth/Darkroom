@@ -28,11 +28,14 @@ private actor FakeAPI: DeviceAPI {
 
 private actor FakeTransport: UploadTransport {
     var errors: [ResourceKey: Error] = [:]
+    var duringUpload: (@Sendable () async throws -> Void)?
+    func setDuringUpload(_ action: (@Sendable () async throws -> Void)?) { duringUpload = action }
     private(set) var sent: [ResourceKey] = []
 
     func fail(_ key: ResourceKey, with error: Error?) { errors[key] = error }
 
     func upload(_ resource: LocalResource) async throws {
+        try await duringUpload?()
         if let error = errors[resource.key] { throw error }
         sent.append(resource.key)
     }
@@ -114,6 +117,20 @@ final class UploadCoordinatorTests: XCTestCase {
         await rig.api.setDuringCheck { try await store.upsert([changed]) }
         let result = try await coordinator(rig).run()
         XCTAssertEqual(result.alreadyOnServer, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.sha1, "new")
+        XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
+    func testAResourceReplacedWhileItUploadedKeepsItsNewHashAndState() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        await rig.api.setNeeded([a])
+        let store = rig.store
+        let replacement = hashed(a, sha1: "new")
+        await rig.transport.setDuringUpload { try await store.upsert([replacement]) }
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.uploaded, 0)
         let record = try await rig.store.record(for: a)
         XCTAssertEqual(record?.resource.sha1, "new")
         XCTAssertEqual(record?.resource.state, .hashed)
