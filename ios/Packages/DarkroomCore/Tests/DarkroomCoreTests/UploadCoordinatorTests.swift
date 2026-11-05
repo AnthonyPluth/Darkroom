@@ -164,6 +164,45 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.resource.state, .hashed)
     }
 
+    func testConcurrentRunsShareOnePassAndNeverRecoverTheLiveUpload() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.setDuringUpload { try await Task.sleep(nanoseconds: 200_000_000) }
+        let coordinator = coordinator(rig)
+        let first = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let second = Task { try await coordinator.run() }
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+        XCTAssertEqual(firstResult, secondResult)
+        XCTAssertEqual(firstResult.uploaded, 1)
+        let sent = await rig.transport.sent
+        XCTAssertEqual(sent, [a])
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .uploaded)
+        XCTAssertEqual(record?.attempts, 1)
+        let third = try await coordinator.run()
+        XCTAssertEqual(third.uploaded, 0)
+    }
+
+    func testACancelledPassDoesNotCancelACallerThatJoinedIt() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.setDuringUpload { try await Task.sleep(nanoseconds: 200_000_000) }
+        let coordinator = coordinator(rig)
+        let first = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let second = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        first.cancel()
+        let joined = try await second.value
+        XCTAssertEqual(joined.outcome, .finished)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .uploaded)
+    }
+
     func testInterruptedUploadsAreRecoveredAndRetried() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a)])

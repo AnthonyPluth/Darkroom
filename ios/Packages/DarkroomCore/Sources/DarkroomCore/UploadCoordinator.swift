@@ -50,6 +50,7 @@ public actor UploadCoordinator {
     private let maxAttempts: Int
     private let clock: @Sendable () -> Date
     private var policy: ReachabilityPolicy
+    private var inFlight: Task<Result, Error>?
 
     public init(
         api: DeviceAPI,
@@ -76,6 +77,34 @@ public actor UploadCoordinator {
     public var reachability: ReachabilityPolicy.Status { policy.status }
 
     public func run() async throws -> Result {
+        while true {
+            if let running = inFlight {
+                do {
+                    return try await running.value
+                } catch is CancellationError {
+                    try Task.checkCancellation()
+                    await Task.yield()
+                    continue
+                }
+            }
+            let pass = Task { try await self.runPass() }
+            inFlight = pass
+            do {
+                let result = try await withTaskCancellationHandler {
+                    try await pass.value
+                } onCancel: {
+                    pass.cancel()
+                }
+                inFlight = nil
+                return result
+            } catch {
+                inFlight = nil
+                throw error
+            }
+        }
+    }
+
+    private func runPass() async throws -> Result {
         var result = Result()
         // An upload cut short by a kill is `uploading` on disk; the server was never told it finished.
         let interrupted = try await store.resources(in: [.uploading])
