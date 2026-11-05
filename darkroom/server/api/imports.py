@@ -12,6 +12,7 @@ from darkroom.server.api.browser_internal import engine_of
 from darkroom.server.common import Request, Response, error_response, json_response
 from darkroom.storage import db
 from darkroom.storage.models import Export, ExportPart, ImportRun
+from darkroom.storage.paths import Photos
 
 ID_DIGITS = 12
 LIST_LIMIT = 200
@@ -71,7 +72,7 @@ def request(request: Request) -> Annotated[Response, contract.ImportQueued]:
         return error_response("no such export", 404)
     try:
         with db.session(engine_of(request)) as opened:
-            export = run.request_import(opened, wanted)
+            export = run.request_import(opened, wanted, Photos(request.settings.photos_root))
             reply = {"export_id": export.id, "status": export.status, "stage": export.stage}
     except LookupError:
         return error_response("no such export", 404)

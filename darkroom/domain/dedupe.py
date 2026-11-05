@@ -152,11 +152,13 @@ class PersonIndex:
         object.__setattr__(self, "peer_times", Buckets(self.peers))
 
     @classmethod
-    def load(cls, opened: Session, account_id: int) -> PersonIndex:
+    def load(cls, opened: Session, account_id: int, owner_person_id: int | None = None) -> PersonIndex:
         account = opened.get(GoogleAccount, account_id)
         if account is None:
             raise LookupError("no such Google account")
         people = accounts.served_people(opened, account_id)
+        if owner_person_id is not None:
+            people = people | {owner_person_id}
         phone = opened.execute(
             select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people)).order_by(MediaItem.id)
         ).scalars()
@@ -164,7 +166,7 @@ class PersonIndex:
             select(MediaItem).join(Export, Export.id == MediaItem.export_id)
             .where(MediaItem.source == "takeout", MediaItem.person_id.in_(people), Export.account_id == account_id).order_by(MediaItem.id)
         ).scalars()
-        return cls(account_id, account.default_person_id, frozenset(people), tuple(shot_of(i) for i in phone), tuple(shot_of(i) for i in takeout))
+        return cls(account_id, owner_person_id or account.default_person_id, frozenset(people), tuple(shot_of(i) for i in phone), tuple(shot_of(i) for i in takeout))
 
 
 def shot_of(item: MediaItem) -> Shot:
@@ -348,7 +350,8 @@ def apply(opened: Session, decision: Decision, export: Export, now: float) -> De
     existing = stored_decision(opened, export.id, decision.source_path)
     if existing is not None:
         return existing
-    people = accounts.served_people(opened, export.account_id)
+    served = accounts.served_people(opened, export.account_id)
+    people = served if export.owner_person_id is None else served | {export.owner_person_id}
     if decision.person_id not in people:
         raise ValueError("the decision assigns the item to someone this account does not serve")
     matched = checked_match(opened, decision, export, people)
@@ -360,20 +363,21 @@ def apply(opened: Session, decision: Decision, export: Export, now: float) -> De
     opened.flush()
     if decision.tier == 4:
         opened.add(ReviewItem(decision_id=row.id, status="pending"))
-    if decision.confirms and matched is not None and matched.source == "phone":
+    if decision.confirms and matched is not None and matched.source == "phone" and matched.person_id in served:
         matched.confirmed_in_google = True
     opened.flush()
     return row
 
 
-def confirming(opened: Session, item_id: int) -> bool:
-    found = opened.execute(
-        select(DedupeDecision.id).where(
+def confirming(opened: Session, item_id: int, person_id: int) -> bool:
+    accounts_found = set(opened.execute(
+        select(DedupeDecision.account_id).where(
             DedupeDecision.matched_item_id == item_id, DedupeDecision.reversed_at.is_(None),
             DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(CONFIRMING_TIERS),
-        ).limit(1)
-    ).first()
-    return found is not None
+        )
+    ).scalars())
+    serving = accounts.served_people_of(opened, accounts_found)
+    return any(person_id in people for people in serving.values())
 
 
 def reverse(opened: Session, decision_id: int, now: float, by: DecidedBy) -> DedupeDecision:
@@ -386,6 +390,6 @@ def reverse(opened: Session, decision_id: int, now: float, by: DecidedBy) -> Ded
         events.record(opened, now, "dedupe_reversed", f"decision {row.id}", f"tier {row.tier}, by {by}")
     matched = None if row.matched_item_id is None else opened.get(MediaItem, row.matched_item_id)
     if matched is not None and matched.source == "phone":
-        matched.confirmed_in_google = confirming(opened, matched.id)
+        matched.confirmed_in_google = confirming(opened, matched.id, matched.person_id)
     opened.flush()
     return row

@@ -11,11 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import accounts, alerts, dedupe, events, xmp
+from darkroom.dates import utc_now
+from darkroom.domain import accounts, alerts, dedupe, events, exports, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
-from darkroom.storage import locks
+from darkroom.storage import locks, paths
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -109,9 +110,8 @@ def current_run(opened: Session, export: Export, now: float) -> ImportRun:
     return run
 
 
-def default_person(opened: Session, export: Export) -> Person:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+def owner_person(opened: Session, export: Export, claim: bool = False) -> Person:
+    person = exports.claim_owner(opened, export) if claim else exports.owner_of(opened, export)
     if person is None:
         raise StageFailed("the export's account has no default person")
     return person
@@ -127,7 +127,7 @@ def mark(opened: Session, export: Export, run: ImportRun, stage: str) -> None:
 
 
 def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun, now: float) -> None:
-    person = default_person(opened, export)
+    person = owner_person(opened, export, claim=True)
     report = unpack.unpack(opened, photos, person, export, now)
     if export.status == "failed":
         raise StageFailed(f"the export could not be unpacked: {'; '.join(report.public) or 'see the events'}")
@@ -136,9 +136,9 @@ def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun
 
 
 def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: Tools, report: bool) -> Prepared:
-    person = default_person(opened, export)
-    staging = unpack.staging_dir(photos, person, export)
-    if not staging.is_dir():
+    person = owner_person(opened, export)
+    staging = staging_of(opened, photos, export)
+    if staging is None:
         raise StageFailed("the export's staging folder is missing")
     prepared = Prepared(staging, pairing.pair(staging).items)
     tags = tools.read([item.path for item in prepared.items]) if prepared.items else {}
@@ -162,7 +162,7 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
     known = stored_decisions(opened, export)
     candidates = [dedupe.candidate_of(item, prepared.fields[item.path], prepared.staging) for item in prepared.items if item.path in prepared.fields]
     if any(candidate.source_path not in known for candidate in candidates):
-        index = dedupe.PersonIndex.load(opened, export.account_id)
+        index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
         for decision in dedupe.decide_all(index, candidates, dedupe.load_settings(opened)):
             if decision.source_path in known or dedupe.repeated(opened, decision, export.id):
                 continue
@@ -203,6 +203,8 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
             continue
         if fields is None or row is None:
             failed += 1
+            continue
+        if row.tier == 5 and row.takeout_item_id is not None:
             continue
         new_row = row.tier == 5 and row.takeout_item_id is None
         try:
@@ -440,22 +442,51 @@ def import_export(opened: Session, settings: config.Settings, export: Export, no
         return run_stages(opened, settings, export, now, tools or Tools())
 
 
-def request_import(opened: Session, export_id: int) -> Export:
+def failed_items_run(opened: Session, export: Export) -> ImportRun | None:
+    last = latest_run(opened, export.id)
+    return last if last is not None and last.status == "done" and last.failed > 0 else None
+
+
+def staging_of(opened: Session, photos: Photos, export: Export) -> Path | None:
+    owner = None if export.owner_person_id is None else opened.get(Person, export.owner_person_id)
+    slugs = [owner.slug] if owner is not None else opened.execute(select(Person.slug).order_by(Person.id)).scalars()
+    for slug in slugs:
+        try:
+            found = photos.staging(slug, unpack.staging_name(export))
+        except paths.OutsideRoot:
+            continue
+        if found.is_dir() and not found.is_symlink():
+            return found
+    return None
+
+
+def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
+    if failed_items_run(opened, export) is None:
+        raise AlreadyImported("this export is already imported")
+    if photos is None or staging_of(opened, photos, export) is None:
+        raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
+    export.status, export.stage = "importing", "unpacked"
+    opened.add(ImportRun(export_id=export.id, started=now, status="queued", stage="unpacked"))
+    opened.flush()
+    return export
+
+
+def request_import(opened: Session, export_id: int, photos: Photos | None = None, now: float | None = None) -> Export:
     export = opened.get(Export, export_id)
     if export is None:
         raise LookupError("no such export")
     if export.status == "imported":
-        raise AlreadyImported("this export is already imported")
+        return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
-    if export.stage in EARLY_STAGES:
+    last = latest_run(opened, export.id)
+    waiting = last is not None and last.status in WAITING
+    if export.stage in EARLY_STAGES and not waiting:
         export.stage = "queued"
         if export.status == "failed":
             export.status = "downloaded"
-    else:
-        run = latest_run(opened, export.id)
-        if run is not None and run.status != "running":
-            run.status = "queued"
+    elif last is not None and last.status != "running":
+        last.status = "queued"
     opened.flush()
     return export
 
