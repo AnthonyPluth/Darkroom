@@ -141,9 +141,11 @@ public actor UploadCoordinator {
             }
             let current = try await store.resources(in: everything)
             let plan = UploadPlanner.plan(resources: current, checked: batch, reply: reply)
-            try await store.setState(.uploaded, for: plan.markUploaded, failureReason: nil)
-            try await store.setState(.checked, for: plan.queue, failureReason: nil)
-            result.alreadyOnServer += plan.markUploaded.count
+            let rows = Dictionary(uniqueKeysWithValues: current.map { ($0.key, $0) })
+            let done = plan.markUploaded.compactMap { rows[$0] }
+            let queued = plan.queue.compactMap { rows[$0] }
+            result.alreadyOnServer += try await store.setState(.uploaded, ifUnchanged: done, failureReason: nil)
+            try await store.setState(.checked, ifUnchanged: queued, failureReason: nil)
         }
         return .finished
     }
@@ -152,30 +154,30 @@ public actor UploadCoordinator {
         for record in try await store.records(in: [.checked]) {
             try Task.checkCancellation()
             let key = record.resource.key
+            let sent = record.resource
+            guard try await store.setState(.uploading, ifUnchanged: [sent], failureReason: nil) == 1 else { continue }
             try await store.recordAttempt(for: [key])
-            try await store.setState(.uploading, for: [key], failureReason: nil)
             let attempts = record.attempts + 1
             do {
-                try await transport.upload(record.resource)
-                try await store.setState(.uploaded, for: [key], failureReason: nil)
-                result.uploaded += 1
+                try await transport.upload(sent)
+                result.uploaded += try await store.setState(.uploaded, ifUnchanged: [sent], failureReason: nil)
             } catch is CancellationError {
-                try await store.setState(.checked, for: [key], failureReason: nil)
+                try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                 throw CancellationError()
             } catch {
                 switch disposition(of: error) {
                 case .signIn:
-                    try await store.setState(.checked, for: [key], failureReason: nil)
+                    try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     return .needsSignIn
                 case .network:
-                    try await store.setState(.checked, for: [key], failureReason: nil)
+                    try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     return lostNetwork()
                 case .retry(let why):
                     if attempts >= maxAttempts {
-                        try await store.setState(.failed, for: [key], failureReason: "gave up after \(attempts) attempts: \(why)")
+                        try await store.setState(.failed, ifUnchanged: [sent], failureReason: "gave up after \(attempts) attempts: \(why)")
                         result.failed += 1
                     } else {
-                        try await store.setState(.checked, for: [key], failureReason: nil)
+                        try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     }
                 case .rejected(let status):
                     switch status {
@@ -183,9 +185,9 @@ public actor UploadCoordinator {
                         try await handleMismatch(record.resource, &result)
                     case 404, 409:
                         // Not checked, or the asset changed since: check it again.
-                        try await store.setState(.hashed, for: [key], failureReason: nil)
+                        try await store.setState(.hashed, ifUnchanged: [sent], failureReason: nil)
                     default:
-                        try await store.setState(.failed, for: [key], failureReason: "the server refused it (\(status))")
+                        try await store.setState(.failed, ifUnchanged: [sent], failureReason: "the server refused it (\(status))")
                         result.failed += 1
                     }
                 }
@@ -200,7 +202,7 @@ public actor UploadCoordinator {
         do {
             fresh = try await rehasher.rehash(old.key)
         } catch is CancellationError {
-            try await store.setState(.checked, for: [old.key], failureReason: nil)
+            try await store.setState(.checked, ifUnchanged: [old], failureReason: nil)
             throw CancellationError()
         } catch {
             fresh = nil
@@ -212,7 +214,7 @@ public actor UploadCoordinator {
         let reason = fresh == nil
             ? "the file could not be read again after the server saw different bytes"
             : "the server received different bytes than the hash promised"
-        try await store.setState(.failed, for: [old.key], failureReason: reason)
+        try await store.setState(.failed, ifUnchanged: [old], failureReason: reason)
         result.failed += 1
     }
 
