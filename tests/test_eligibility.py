@@ -6,10 +6,12 @@ import sqlite3
 import unittest
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
-from darkroom.domain import eligibility, status, uploads
+from darkroom.domain import dedupe, eligibility, status, uploads
+from darkroom.storage import db
 from darkroom.storage.models import Event, PhoneAsset, User
 from tests.eligibility_world import Household
 
@@ -259,8 +261,37 @@ class CountTests(unittest.TestCase):
         self.google = self.home.account(self.jo)
 
     def device_on_status(self):
-        people = status.overview(self.home.opened)["people"]
+        people = status.overview(self.home.opened, self.home.settings, self.home.photos, self.home.now)["people"]
         return people[0]["devices"][0]
+
+    def test_a_reversal_followed_by_an_evaluation_of_a_different_asset_is_not_counted(self):
+        first = self.home.photo(self.phone, through=self.google)
+        second = self.home.photo(self.phone, through=self.google)
+        self.home.eligible(self.phone, first, second)
+        self.assertEqual(self.device_on_status()["eligible"], 2)
+        dedupe.reverse(self.home.opened, first.decisions[0].id, self.home.now, "owner")
+        self.home.eligible(self.phone, second)
+        shown = self.device_on_status()
+        self.assertEqual((shown["eligible"], shown["eligible_bytes"]), (1, second.items["photo"].bytes))
+
+    def test_a_file_removed_after_the_evaluation_is_not_counted(self):
+        photo = self.home.photo(self.phone, through=self.google)
+        self.home.eligible(self.phone, photo)
+        os.remove(self.home.photos.root / photo.items["photo"].path)
+        self.assertEqual(self.device_on_status()["eligible"], 0)
+
+    def test_status_counting_writes_nothing(self):
+        photo = self.home.photo(self.phone, through=self.google)
+        self.home.eligible(self.phone, photo)
+        dedupe.reverse(self.home.opened, photo.decisions[0].id, self.home.now, "owner")
+        before = self.home.state()
+        self.device_on_status()
+        self.assertEqual(self.home.state(), before)
+
+    def test_a_lapsed_sign_in_counts_zero(self):
+        self.home.eligible(self.phone, self.home.photo(self.phone, through=self.google))
+        self.home.opened.get(User, "sub-jo").last_seen = 1.0
+        self.assertEqual(self.device_on_status()["eligible"], 0)
 
     def test_status_shows_no_count_until_the_iphone_has_asked(self):
         self.home.photo(self.phone, through=self.google)
@@ -284,6 +315,58 @@ class CountTests(unittest.TestCase):
         self.home.eligible(self.phone, self.home.photo(self.phone, through=self.google))
         self.phone.cleanup_enabled = False
         self.assertEqual((self.device_on_status()["eligible"], self.device_on_status()["eligible_bytes"]), (0, 0))
+
+
+class WriteLockTests(unittest.TestCase):
+    def setUp(self):
+        self.home = Household(self)
+        self.jo = self.home.person("jo")
+        self.phone = self.home.device(self.jo)
+        self.photo = self.home.photo(self.phone, through=self.home.account(self.jo))
+        self.home.opened.commit()
+        self.database = self.home.engine.url.database
+        impatient = create_engine(str(self.home.engine.url), connect_args={"timeout": 0.05})
+        event.listen(impatient, "connect", db.set_sqlite_pragmas)
+        self.addCleanup(impatient.dispose)
+        self.impatient = impatient
+
+    def test_confirm_holds_the_write_lock_so_a_reversal_waits_for_it(self):
+        with Session(self.impatient, expire_on_commit=False) as opened:
+            confirmed, _ = eligibility.confirm(opened, self.home.settings, self.home.photos, self.phone.id, [self.home.reported(self.photo)], self.home.now)
+            self.assertEqual([entry.asset_id for entry in confirmed], [self.photo.id])
+            other = sqlite3.connect(self.database, timeout=0)
+            try:
+                with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                    other.execute("UPDATE dedupe_decisions SET reversed_at = 9.0")
+            finally:
+                other.close()
+            opened.commit()
+        other = sqlite3.connect(self.database, timeout=0)
+        try:
+            other.execute("UPDATE dedupe_decisions SET reversed_at = 9.0")
+            other.commit()
+        finally:
+            other.close()
+
+    def test_a_confirm_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
+        holder = sqlite3.connect(self.database, timeout=0)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            for call in (lambda opened: eligibility.confirm(opened, self.home.settings, self.home.photos, self.phone.id, [self.home.reported(self.photo)],
+                                                            self.home.now),
+                         lambda opened: eligibility.record_deleted(opened, self.phone.id, [self.photo.id], self.home.now),
+                         lambda opened: eligibility.set_cleanup(opened, self.phone.id, False, False, self.home.now)):
+                with Session(self.impatient) as opened, self.assertRaises(eligibility.Busy):
+                    call(opened)
+        finally:
+            holder.rollback()
+            holder.close()
+        check = sqlite3.connect(self.database)
+        try:
+            self.assertEqual(check.execute("SELECT eligible_at, eligible_confirmed_at, deleted_at FROM phone_assets").fetchall(), [(None, None, None)])
+            self.assertEqual(check.execute("SELECT cleanup_enabled FROM devices").fetchall(), [(1,)])
+        finally:
+            check.close()
 
 
 class CheckForgetsTests(unittest.TestCase):

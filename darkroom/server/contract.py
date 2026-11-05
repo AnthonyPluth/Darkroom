@@ -477,13 +477,13 @@ class EligibleBody(TypedDict):
 
 
 class EligibleAsset(TypedDict):
-    id: str
+    asset_id: str
     bytes: int
     resources: list[str]
 
 
 class Refusal(TypedDict):
-    id: str
+    asset_id: str
     reason: str
     message: str
 
@@ -495,12 +495,12 @@ class EligibleReply(TypedDict):
 
 
 class ConfirmReply(TypedDict):
-    confirmed: list[EligibleAsset]
+    confirmed: list[str]
     rejected: list[Refusal]
 
 
 class DeletedBody(TypedDict):
-    ids: list[str]
+    asset_ids: list[str]
 
 
 class DeletedReply(TypedDict):

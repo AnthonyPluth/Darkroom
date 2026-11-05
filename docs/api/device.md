@@ -69,3 +69,35 @@ Sending the same resource again after it was saved answers 200 with `"already": 
 ### `POST /api/device/checkin`
 
 `{"pending_uploads": 12, "app_version": "0.1.0"}` (the version is optional). Records the count and version with the check-in time; the People and Status pages show them per iPhone. Reply: `{"ok": true}`.
+
+## Cleanup
+
+Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` in `DarkroomCore/Models.swift`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
+
+Darkroom answers from scratch on every call and never from an earlier list. An asset is eligible only when every resource it has (photo, Live Photo video, adjusted version) is uploaded and on Unraid with its SHA-1 and size, matched in a Takeout export by an unreversed automatic tier 1 or 2 decision from a Google account that serves the person, the resources the app sends equal what Darkroom has, and the iPhone has cleanup on, is not revoked and its sign-in has not lapsed. Every refusal is one of these reason codes, with a fixed `message`:
+
+`cleanup_disabled`, `device_revoked`, `access_lapsed`, `unknown_asset`, `already_deleted`, `resources_changed`, `no_original`, `not_uploaded`, `not_on_unraid`, `not_confirmed`, `no_automatic_match`, `account_not_serving`, `file_missing`, `not_confirmed_for_deletion`.
+
+A database busy with another change answers `503`; nothing is confirmed or recorded, and the app tries again later.
+
+### `POST /api/device/eligible`
+
+The body is the same `{"assets": [...]}` as `/api/device/assets/check` (each asset's whole current resource set, up to 500 assets per call; page through the library).
+
+Reply:
+
+```json
+{"cleanup_enabled": true,
+ "eligible": [{"asset_id": "<PhotoKit id>", "bytes": 5792256, "resources": ["photo", "live_video"]}],
+ "rejected": [{"asset_id": "<PhotoKit id>", "reason": "not_confirmed", "message": "Part of this photo is not confirmed in Google Photos."}]}
+```
+
+`cleanup_enabled` is false when this iPhone may not clean at all (cleanup off, revoked or sign-in lapsed); `eligible` is then empty, and the app does nothing.
+
+### `POST /api/device/eligible/confirm`
+
+Sent right before deleting, with the same `{"assets": [...]}` shape for exactly the assets the person is about to remove. Reply: `{"confirmed": ["<PhotoKit id>"], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. Delete only the `confirmed` ids.
+
+### `POST /api/device/deleted`
+
+`{"asset_ids": ["<PhotoKit id>"]}`, up to 500, with what iOS actually removed. Darkroom records the deletion only for this iPhone's assets that a `confirm` passed and no later check refused. Reply: `{"recorded": ["..."], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. A recorded asset is never offered again.

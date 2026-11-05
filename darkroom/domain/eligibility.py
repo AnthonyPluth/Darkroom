@@ -5,7 +5,7 @@ import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -311,12 +311,19 @@ def set_cleanup(opened: Session, device_id: int, enabled: bool, icloud_photos_of
     return device
 
 
-def counts(opened: Session, device: Device) -> tuple[int | None, int | None]:
+def counts(opened: Session, settings: Settings, photos: Photos, device: Device, now: float) -> tuple[int | None, int | None]:
     if device.eligibility_checked_at is None:
         return None, None
-    if device.cleanup_enabled is not True or device.revoked_at is not None:
+    person = opened.get(Person, device.person_id)
+    if device_refusal(opened, settings, device, now) is not None or person is None:
         return 0, 0
-    waiting = (PhoneAsset.device_id == device.id, PhoneAsset.eligible_at.is_not(None), PhoneAsset.deleted_at.is_(None))
-    number = opened.execute(select(func.count(PhoneAsset.id)).where(*waiting)).scalar_one()
-    size = opened.execute(select(func.coalesce(func.sum(PhoneResource.bytes), 0)).join(PhoneAsset, PhoneAsset.id == PhoneResource.asset_id).where(*waiting)).scalar_one()
-    return int(number), int(size)
+    marked = opened.execute(select(PhoneAsset).where(PhoneAsset.device_id == device.id, PhoneAsset.eligible_at.is_not(None),
+                                                     PhoneAsset.deleted_at.is_(None)).order_by(PhoneAsset.id)).scalars()
+    number = size = 0
+    for asset in marked:
+        stored = stored_resources(opened, asset.id)
+        as_known = Reported(asset.photokit_id, tuple(ReportedResource(row.kind, row.sha1, row.bytes, row.filename) for row in stored.values()))
+        if asset_refusal(opened, photos, person, asset, as_known) is None:
+            number += 1
+            size += sum(row.bytes for row in stored.values())
+    return number, size

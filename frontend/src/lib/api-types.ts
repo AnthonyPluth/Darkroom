@@ -78,7 +78,7 @@ export interface ClaimBody {
 }
 
 export interface ConfirmReply {
-  confirmed: EligibleAsset[];
+  confirmed: string[];
   rejected: Refusal[];
 }
 
@@ -111,7 +111,7 @@ export interface Decisions {
 }
 
 export interface DeletedBody {
-  ids: string[];
+  asset_ids: string[];
 }
 
 export interface DeletedReply {
@@ -185,7 +185,7 @@ export interface DoneBody {
 }
 
 export interface EligibleAsset {
-  id: string;
+  asset_id: string;
   bytes: number;
   resources: string[];
 }
@@ -458,7 +458,7 @@ export interface ReassignBody {
 }
 
 export interface Refusal {
-  id: string;
+  asset_id: string;
   reason: string;
   message: string;
 }

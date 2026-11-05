@@ -50,13 +50,13 @@ class CleanupApiTests(DeviceCase):
             self.assertEqual(status, 200, listed)
             self.assertTrue(listed["cleanup_enabled"])
             size = sum(item.bytes for item in good.items.values())
-            self.assertEqual(listed["eligible"], [{"id": good.id, "bytes": size, "resources": ["photo", "live_video"]}])
-            self.assertEqual(listed["rejected"], [{"id": unmatched.id, "reason": "not_confirmed", "message": eligibility.REASONS["not_confirmed"]}])
+            self.assertEqual(listed["eligible"], [{"asset_id": good.id, "bytes": size, "resources": ["photo", "live_video"]}])
+            self.assertEqual(listed["rejected"], [{"asset_id": unmatched.id, "reason": "not_confirmed", "message": eligibility.REASONS["not_confirmed"]}])
             status, confirmed = self.call("POST", "/api/device/eligible/confirm", body_of(self.home, good, unmatched))
             self.assertEqual(status, 200, confirmed)
-            self.assertEqual([entry["id"] for entry in confirmed["confirmed"]], [good.id])
+            self.assertEqual(confirmed["confirmed"], [good.id])
             self.assertEqual([entry["reason"] for entry in confirmed["rejected"]], ["not_confirmed"])
-            status, deleted = self.call("POST", "/api/device/deleted", {"ids": [good.id, unmatched.id]})
+            status, deleted = self.call("POST", "/api/device/deleted", {"asset_ids": [good.id, unmatched.id]})
             self.assertEqual(status, 200, deleted)
             self.assertEqual(deleted["recorded"], [good.id])
             self.assertEqual([entry["reason"] for entry in deleted["rejected"]], ["not_confirmed_for_deletion"])
@@ -79,7 +79,7 @@ class CleanupApiTests(DeviceCase):
         status, confirmed = self.call("POST", "/api/device/eligible/confirm", body_of(self.home, reversed_one, removed_one))
         self.assertEqual(status, 200)
         self.assertEqual(confirmed["confirmed"], [])
-        self.assertEqual({entry["id"]: entry["reason"] for entry in confirmed["rejected"]}, {reversed_one.id: "not_confirmed", removed_one.id: "file_missing"})
+        self.assertEqual({entry["asset_id"]: entry["reason"] for entry in confirmed["rejected"]}, {reversed_one.id: "not_confirmed", removed_one.id: "file_missing"})
 
     def test_cleanup_off_lists_nothing_and_confirms_nothing(self):
         photo = self.home.photo(self.phone, through=self.google)
@@ -96,7 +96,7 @@ class CleanupApiTests(DeviceCase):
         self.commit()
         for path in ("/api/device/eligible", "/api/device/eligible/confirm"):
             self.assertEqual(self.call("POST", path, body_of(self.home, photo)), (401, {"error": "sign in required"}))
-        self.assertEqual(self.call("POST", "/api/device/deleted", {"ids": [photo.id]})[0], 401)
+        self.assertEqual(self.call("POST", "/api/device/deleted", {"asset_ids": [photo.id]})[0], 401)
 
     def test_bad_bodies_are_refused_and_change_nothing(self):
         photo = self.home.photo(self.phone, through=self.google)
@@ -107,7 +107,8 @@ class CleanupApiTests(DeviceCase):
             for body in bad:
                 with self.subTest(path=path, body=body):
                     self.assertEqual(self.call("POST", path, body)[0], 400)
-        for body in ({}, {"ids": []}, {"ids": [1]}, {"ids": [photo.id, photo.id]}, {"ids": [""]}, {"ids": ["x"] * 501}):
+        for body in ({}, {"ids": [photo.id]}, {"asset_ids": []}, {"asset_ids": [1]}, {"asset_ids": [photo.id, photo.id]}, {"asset_ids": [""]},
+                     {"asset_ids": ["x"] * 501}):
             with self.subTest(body=body):
                 self.assertEqual(self.call("POST", "/api/device/deleted", body)[0], 400)
         with db.session(self.engine) as opened:
@@ -119,7 +120,7 @@ class CleanupApiTests(DeviceCase):
         self.commit()
         for name, path, body in (("eligible_assets", "/api/device/eligible", body_of(self.home, photo)),
                                  ("confirm", "/api/device/eligible/confirm", body_of(self.home, photo)),
-                                 ("record_deleted", "/api/device/deleted", {"ids": [photo.id]})):
+                                 ("record_deleted", "/api/device/deleted", {"asset_ids": [photo.id]})):
             for error in (eligibility.Busy("busy"), eligibility.NoSuchDevice("gone")):
                 with self.subTest(name=name, error=type(error).__name__), mock.patch.object(eligibility, name, side_effect=error):
                     status, reply = self.call("POST", path, body)
@@ -200,4 +201,7 @@ class DeviceSwitchTests(ApiCase):
         home.eligible(device, photo)
         opened.commit()
         shown = self.call("GET", "/api/status")[1]["people"][0]["devices"][0]
+        self.assertEqual((shown["eligible"], shown["eligible_bytes"]), (0, 0), "without a sign-in provider nothing can be deleted")
+        with mock.patch.object(eligibility.oidc, "device_access_lapsed", return_value=None):
+            shown = self.call("GET", "/api/status")[1]["people"][0]["devices"][0]
         self.assertEqual((shown["cleanup_enabled"], shown["eligible"], shown["eligible_bytes"]), (True, 1, sum(item.bytes for item in photo.items.values())))

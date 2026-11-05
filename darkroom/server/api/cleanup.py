@@ -20,9 +20,9 @@ def reported_of(request: Request) -> list[eligibility.Reported]:
 
 
 def ids_of(request: Request) -> list[str]:
-    value = validate.json_object(request.body, limit=MAX_BODY).get("ids")
+    value = validate.json_object(request.body, limit=MAX_BODY).get("asset_ids")
     if not isinstance(value, list) or not value or len(value) > MAX_ASSETS or not all(isinstance(entry, str) for entry in value):
-        raise validate.Invalid(f"ids must be a list of 1 to {MAX_ASSETS} asset ids")
+        raise validate.Invalid(f"asset_ids must be a list of 1 to {MAX_ASSETS} asset ids")
     ids = [uploads.asset_id_of(entry) for entry in value]
     if len(set(ids)) != len(ids):
         raise validate.Invalid("the same asset is listed twice")
@@ -30,11 +30,11 @@ def ids_of(request: Request) -> list[str]:
 
 
 def asset_view(entry: eligibility.Eligible) -> dict[str, object]:
-    return {"id": entry.asset_id, "bytes": entry.bytes, "resources": list(entry.resources)}
+    return {"asset_id": entry.asset_id, "bytes": entry.bytes, "resources": list(entry.resources)}
 
 
 def refusal_view(entry: eligibility.Rejected) -> dict[str, object]:
-    return {"id": entry.asset_id, "reason": entry.reason, "message": eligibility.REASONS[entry.reason]}
+    return {"asset_id": entry.asset_id, "reason": entry.reason, "message": eligibility.REASONS[entry.reason]}
 
 
 def eligible(request: Annotated[Request, contract.EligibleBody]) -> Annotated[Response, contract.EligibleReply]:
@@ -73,7 +73,7 @@ def confirm(request: Annotated[Request, contract.EligibleBody]) -> Annotated[Res
     except eligibility.NoSuchDevice:
         return error_response(SIGN_IN, 401)
     monitoring.log("cleanup confirmed", asked=len(reported), confirmed=len(confirmed))
-    return json_response({"confirmed": [asset_view(entry) for entry in confirmed], "rejected": [refusal_view(entry) for entry in rejected]})
+    return json_response({"confirmed": [entry.asset_id for entry in confirmed], "rejected": [refusal_view(entry) for entry in rejected]})
 
 
 def deleted(request: Annotated[Request, contract.DeletedBody]) -> Annotated[Response, contract.DeletedReply]:

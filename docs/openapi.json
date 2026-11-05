@@ -378,7 +378,7 @@
         "properties": {
           "confirmed": {
             "items": {
-              "$ref": "#/components/schemas/EligibleAsset"
+              "type": "string"
             },
             "type": "array"
           },
@@ -550,7 +550,7 @@
       "DeletedBody": {
         "additionalProperties": false,
         "properties": {
-          "ids": {
+          "asset_ids": {
             "items": {
               "type": "string"
             },
@@ -558,7 +558,7 @@
           }
         },
         "required": [
-          "ids"
+          "asset_ids"
         ],
         "type": "object"
       },
@@ -868,11 +868,11 @@
       "EligibleAsset": {
         "additionalProperties": false,
         "properties": {
+          "asset_id": {
+            "type": "string"
+          },
           "bytes": {
             "type": "integer"
-          },
-          "id": {
-            "type": "string"
           },
           "resources": {
             "items": {
@@ -882,8 +882,8 @@
           }
         },
         "required": [
+          "asset_id",
           "bytes",
-          "id",
           "resources"
         ],
         "type": "object"
@@ -2288,7 +2288,7 @@
       "Refusal": {
         "additionalProperties": false,
         "properties": {
-          "id": {
+          "asset_id": {
             "type": "string"
           },
           "message": {
@@ -2299,7 +2299,7 @@
           }
         },
         "required": [
-          "id",
+          "asset_id",
           "message",
           "reason"
         ],
