@@ -77,6 +77,34 @@ export interface ClaimBody {
   worker?: string;
 }
 
+export interface DecisionReply {
+  decision: DecisionView;
+}
+
+export interface DecisionView {
+  id: number;
+  export_id: number;
+  account_id: number;
+  name: string | null;
+  path: string | null;
+  person_id: number | null;
+  tier: number;
+  reason: string;
+  decided_by: string;
+  decided_at: number;
+  reversed_at: number | null;
+  matched_item_id: number | null;
+  takeout_item_id: number | null;
+  review_status: string | null;
+}
+
+export interface Decisions {
+  decisions: DecisionView[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface DeviceAssetDecl {
   id: string;
   resources: DeviceResourceDecl[];
@@ -151,6 +179,27 @@ export interface Events {
   events: EventView[];
 }
 
+export interface ExportPartView {
+  number: number;
+  status: string;
+}
+
+export interface ExportSide {
+  name: string | null;
+  path: string | null;
+  bytes: number | null;
+  captured_utc: number | null;
+  captured_local: string | null;
+  offset_minutes: number | null;
+  make: string | null;
+  model: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  is_video: boolean;
+  held: boolean;
+}
+
 export interface FailedBody {
   message: string;
   failure_dir?: string;
@@ -177,7 +226,11 @@ export interface ImportReply {
 export interface ImportView {
   id: number;
   export_id: number;
-  account_id: number;
+  account_id: number | null;
+  export_kind: string | null;
+  export_created_at: number | null;
+  part_count: number | null;
+  parts: ExportPartView[];
   started: number;
   finished: number | null;
   stage: string | null;
@@ -197,11 +250,62 @@ export interface Imports {
   imports: ImportView[];
 }
 
+export interface LibrarySide {
+  name: string | null;
+  path: string | null;
+  bytes: number | null;
+  captured_utc: number | null;
+  captured_local: string | null;
+  offset_minutes: number | null;
+  make: string | null;
+  model: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  is_video: boolean;
+  item_id: number;
+  person_id: number;
+  source: string;
+}
+
 export interface Me {
   sub: string;
   email: string;
   name: string;
   groups: string[];
+}
+
+export interface MediaList {
+  media: MediaView[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface MediaReply {
+  media: MediaView;
+}
+
+export interface MediaView {
+  name: string | null;
+  path: string | null;
+  bytes: number | null;
+  captured_utc: number | null;
+  captured_local: string | null;
+  offset_minutes: number | null;
+  make: string | null;
+  model: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  is_video: boolean;
+  item_id: number;
+  person_id: number;
+  source: string;
+  id: number;
+  export_id: number | null;
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface NeededResource {
@@ -215,6 +319,11 @@ export interface Ok {
 
 export interface People {
   people: PersonView[];
+}
+
+export interface PersonChoice {
+  id: number;
+  name: string;
 }
 
 export interface PersonCreateBody {
@@ -306,6 +415,53 @@ export interface ProgressBody {
   message: string;
 }
 
+export interface ReassignBody {
+  person_id: number;
+}
+
+export interface ResolveBody {
+  action: "keep_both";
+}
+
+export interface ReviewDetail {
+  review: ReviewSummary;
+  library: LibrarySide | null;
+  export: ExportSide;
+  phash_distance: number | null;
+  served_people: PersonChoice[];
+  default_person_id: number | null;
+}
+
+export interface ReviewReply {
+  review: ReviewSummary;
+}
+
+export interface ReviewSummary {
+  id: number;
+  status: string;
+  decision_id: number;
+  export_id: number;
+  account_id: number;
+  tier: number;
+  reason: string;
+  decided_at: number;
+  reversed: boolean;
+  resolved_at: number | null;
+  undo_until: number | null;
+  name: string | null;
+  library_name: string | null;
+  person_id: number | null;
+  kept_item_id: number | null;
+  kept_person_id: number | null;
+  decided_by_person_id: number | null;
+}
+
+export interface Reviews {
+  reviews: ReviewSummary[];
+  pending: number;
+  before: number;
+}
+
 export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
@@ -363,6 +519,14 @@ export interface Endpoints {
   "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
   "GET /api/imports": { body: never; reply: Imports };
   "GET /api/imports/{id}": { body: never; reply: ImportReply };
+  "GET /api/review": { body: never; reply: Reviews };
+  "GET /api/review/{id}": { body: never; reply: ReviewDetail };
+  "POST /api/review/{id}/resolve": { body: ResolveBody; reply: ReviewReply };
+  "POST /api/review/{id}/undo": { body: never; reply: ReviewReply };
+  "GET /api/decisions": { body: never; reply: Decisions };
+  "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
+  "GET /api/media": { body: never; reply: MediaList };
+  "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
   "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
   "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };

@@ -21,7 +21,7 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), and the account part of Exports and the Remote browser (#29). Imports and Review arrive with their own issues.
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), the account part of Exports and the Remote browser (#29), and Imports and Review (#27).
 
 Approved departures (#29): the Exports and Remote browser pages are built with these departures from boards 04 and 07, all approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6636481608):
 
@@ -35,3 +35,10 @@ Approved departures (#29): the Exports and Remote browser pages are built with t
 8. Status: an "Open remote browser" link on the wrong-account alert.
 
 The boards are re-exported from the canvas when the design session next touches them.
+
+Approved departures (#27), approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16, the latest comment on the issue):
+
+1. Imports shows one row per export run ("3 of 5 parts downloaded") instead of one row per export part ("Part 3 of 5"), because the counts exist only per export.
+2. Review, Past decisions: a reversed decision shows "Reversed, so it can't be undone" in place of Undo.
+3. Review: Reassign on the pending pair is one action that keeps both files and then moves the kept copy to the chosen person (hidden when the account serves one person); undoing it takes the copy back.
+4. Imports, Missing GPS: the thumbnail is a plain placeholder tile where no thumbnail can be made.
