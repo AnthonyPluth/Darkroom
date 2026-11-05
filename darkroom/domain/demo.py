@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from darkroom import oidc
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, index, media
-from darkroom.storage.models import DedupeDecision, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.storage.models import DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -257,6 +257,7 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
                     expires_at=now + 4 * DAY, part_count=1, status="imported", stage="done")
     opened.add(export)
     opened.flush()
+    opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-1.zip", bytes=2_400_000, downloads_used=1, attempts=1, status="done"))
     opened.add(ImportRun(export_id=export.id, started=now - 3 * DAY, finished=now - 3 * DAY + 600, stage="done", added=2, skipped_t1=1, skipped_t2=1,
                          skipped_t3=0, review=1, missing_gps=3, failed=0, status="done"))
     shot = next(candidate for candidate in SHOTS["blair"] if candidate.stem == DUPLICATE_OF)
@@ -271,7 +272,8 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
     local, utc = taken_at(shot, today)
     held = Shot(shot.stem, shot.kind, shot.days_ago, shot.clock, shot.offset, shot.gps, (shot.colour[0], shot.colour[1], shot.colour[2] + 20))
     create_only(hold, encoded(held, local, "JPEG"), utc)
-    opened.add(ReviewItem(decision_id=decision.id, status="pending", hold_path=f"_inbox/{blair}/review/export-{export.id}/{hold.name}"))
+    opened.add(ReviewItem(decision_id=decision.id, status="pending", hold_path=f"_inbox/{blair}/review/export-{export.id}/{hold.name}",
+                          hold_sha1=media.sha1_of(hold)[0]))
 
 
 def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Summary:
