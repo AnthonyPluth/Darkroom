@@ -55,6 +55,13 @@ final class StubProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+final class TimingOutProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.timedOut)) }
+    override func stopLoading() {}
+}
+
 final class APIClientTests: XCTestCase {
     private func client(token: String? = "secret-token", base: String = "https://darkroom.example.test") -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
@@ -195,8 +202,13 @@ final class APIClientTests: XCTestCase {
     }
 
     func testACancelledRequestThrowsCancellationNotATransportError() async {
-        StubProtocol.reset(error: URLError(.timedOut))
-        let api = client()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TimingOutProtocol.self]
+        let api = APIClient(
+            baseURL: URL(string: "https://darkroom.example.test")!,
+            session: URLSession(configuration: configuration),
+            tokenProvider: { "secret-token" }
+        )
         let call = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return try await api.check(CheckRequest(assets: []))
