@@ -5,7 +5,7 @@ import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -122,8 +122,39 @@ def device_refusal(opened: Session, settings: Settings, device: Device, now: flo
     return None
 
 
-def stored_resources(opened: Session, asset_id: int) -> dict[str, PhoneResource]:
-    return {row.kind: row for row in opened.execute(select(PhoneResource).where(PhoneResource.asset_id == asset_id)).scalars()}
+@dataclass(frozen=True)
+class Facts:
+    resources: dict[int, dict[str, PhoneResource]]
+    items: dict[int, MediaItem]
+    decisions: dict[int, list[DedupeDecision]]
+    exports: dict[int, Export]
+    served: dict[int, set[int]]
+
+    def stored(self, asset_id: int) -> dict[str, PhoneResource]:
+        return self.resources.get(asset_id, {})
+
+
+def load_facts(opened: Session, assets: Select[int]) -> Facts:
+    resources: dict[int, dict[str, PhoneResource]] = {}
+    for row in opened.execute(select(PhoneResource).where(PhoneResource.asset_id.in_(assets)).order_by(PhoneResource.id)).scalars():
+        resources.setdefault(row.asset_id, {})[row.kind] = row
+    linked = select(PhoneResource.media_item_id).where(PhoneResource.asset_id.in_(assets))
+    items = {item.id: item for item in opened.execute(select(MediaItem).where(MediaItem.id.in_(linked))).scalars()}
+    backing = select(DedupeDecision).where(
+        DedupeDecision.matched_item_id.in_(linked), DedupeDecision.reversed_at.is_(None),
+        DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(CONFIRMING_TIERS),
+    ).order_by(DedupeDecision.id)
+    decisions: dict[int, list[DedupeDecision]] = {}
+    for decision in opened.execute(backing).scalars():
+        if decision.matched_item_id is not None:
+            decisions.setdefault(decision.matched_item_id, []).append(decision)
+    found = [decision for listed in decisions.values() for decision in listed]
+    exports = {export.id: export for export in opened.execute(select(Export).where(Export.id.in_({d.export_id for d in found}))).scalars()}
+    return Facts(resources, items, decisions, exports, accounts.served_people_of(opened, {decision.account_id for decision in found}))
+
+
+def asset_query(device_id: int, photokit_ids: Sequence[str]) -> Select[int]:
+    return select(PhoneAsset.id).where(PhoneAsset.device_id == device_id, PhoneAsset.photokit_id.in_(photokit_ids))
 
 
 def asset_of(opened: Session, device_id: int, photokit_id: str) -> PhoneAsset | None:
@@ -138,18 +169,14 @@ def same_resources(stored: dict[str, PhoneResource], reported: Reported) -> bool
     return all((row.sha1, row.bytes, row.filename) == declared[kind] for kind, row in stored.items())
 
 
-def backing_refusal(opened: Session, item: MediaItem, person_id: int) -> str | None:
-    query = select(DedupeDecision).where(
-        DedupeDecision.matched_item_id == item.id, DedupeDecision.reversed_at.is_(None),
-        DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(CONFIRMING_TIERS),
-    ).order_by(DedupeDecision.id)
-    decisions = list(opened.execute(query).scalars())
+def backing_refusal(facts: Facts, item: MediaItem, person_id: int) -> str | None:
+    decisions = facts.decisions.get(item.id, [])
     if not decisions:
         return NO_AUTOMATIC_MATCH
     for decision in decisions:
-        export = opened.get(Export, decision.export_id)
+        export = facts.exports.get(decision.export_id)
         if (export is not None and export.account_id == decision.account_id and decision.person_id == person_id
-                and person_id in accounts.served_people(opened, decision.account_id)):
+                and person_id in facts.served.get(decision.account_id, set())):
             return None
     return ACCOUNT_NOT_SERVING
 
@@ -168,15 +195,15 @@ def file_intact(photos: Photos, slug: str, item: MediaItem) -> bool:
     return stat.S_ISREG(found.st_mode) and found.st_size == item.bytes
 
 
-def resource_refusal(opened: Session, photos: Photos, person: Person, row: PhoneResource) -> str | None:
+def resource_refusal(facts: Facts, photos: Photos, person: Person, row: PhoneResource) -> str | None:
     if row.uploaded_at is None or row.media_item_id is None:
         return NOT_UPLOADED
-    item = opened.get(MediaItem, row.media_item_id)
+    item = facts.items.get(row.media_item_id)
     if item is None or item.source != "phone" or item.person_id != person.id or item.sha1 != row.sha1 or item.bytes != row.bytes:
         return NOT_ON_UNRAID
     if item.confirmed_in_google is not True:
         return NOT_CONFIRMED
-    backing = backing_refusal(opened, item, person.id)
+    backing = backing_refusal(facts, item, person.id)
     if backing is not None:
         return backing
     if not file_intact(photos, person.slug, item):
@@ -184,22 +211,26 @@ def resource_refusal(opened: Session, photos: Photos, person: Person, row: Phone
     return None
 
 
-def asset_refusal(opened: Session, photos: Photos, person: Person, asset: PhoneAsset | None, reported: Reported) -> str | None:
+def asset_refusal(facts: Facts, photos: Photos, person: Person, asset: PhoneAsset | None, reported: Reported) -> str | None:
     if asset is None:
         return UNKNOWN_ASSET
     if asset.deleted_at is not None:
         return ALREADY_DELETED
-    stored = stored_resources(opened, asset.id)
+    stored = facts.stored(asset.id)
     if not same_resources(stored, reported):
         return RESOURCES_CHANGED
     if "photo" not in stored:
         return NO_ORIGINAL
     for kind in KINDS:
         row = stored.get(kind)
-        refusal = None if row is None else resource_refusal(opened, photos, person, row)
+        refusal = None if row is None else resource_refusal(facts, photos, person, row)
         if refusal is not None:
             return refusal
     return None
+
+
+def as_known(asset: PhoneAsset, stored: dict[str, PhoneResource]) -> Reported:
+    return Reported(asset.photokit_id, tuple(ReportedResource(row.kind, row.sha1, row.bytes, row.filename) for row in stored.values()))
 
 
 def require_distinct(reported: Sequence[Reported]) -> None:
@@ -208,27 +239,30 @@ def require_distinct(reported: Sequence[Reported]) -> None:
 
 
 def judged(opened: Session, settings: Settings, photos: Photos, device: Device, reported: Sequence[Reported], now: float
-           ) -> tuple[bool, list[tuple[Reported, PhoneAsset | None, str | None]]]:
+           ) -> tuple[bool, Facts, list[tuple[Reported, PhoneAsset | None, str | None]]]:
     require_distinct(reported)
     refusal = device_refusal(opened, settings, device, now)
     person = opened.get(Person, device.person_id)
+    wanted = asset_query(device.id, [entry.photokit_id for entry in reported])
+    found = {asset.photokit_id: asset for asset in opened.execute(select(PhoneAsset).where(PhoneAsset.id.in_(wanted))).scalars()}
+    facts = load_facts(opened, wanted)
     out: list[tuple[Reported, PhoneAsset | None, str | None]] = []
     for entry in reported:
-        asset = asset_of(opened, device.id, entry.photokit_id)
+        asset = found.get(entry.photokit_id)
         if refusal is None and person is not None:
-            out.append((entry, asset, asset_refusal(opened, photos, person, asset, entry)))
+            out.append((entry, asset, asset_refusal(facts, photos, person, asset, entry)))
         else:
             out.append((entry, asset, refusal or ACCESS_LAPSED))
-    return refusal is None, out
+    return refusal is None, facts, out
 
 
-def eligible_of(opened: Session, asset: PhoneAsset) -> Eligible:
-    stored = stored_resources(opened, asset.id)
+def eligible_of(facts: Facts, asset: PhoneAsset) -> Eligible:
+    stored = facts.stored(asset.id)
     return Eligible(asset.photokit_id, sum(row.bytes for row in stored.values()), tuple(kind for kind in KINDS if kind in stored))
 
 
-def settle(opened: Session, device: Device, results: list[tuple[Reported, PhoneAsset | None, str | None]], now: float, confirming: bool
-           ) -> tuple[list[Eligible], list[Rejected]]:
+def settle(opened: Session, device: Device, facts: Facts, results: list[tuple[Reported, PhoneAsset | None, str | None]], now: float,
+           confirming: bool) -> tuple[list[Eligible], list[Rejected]]:
     passed: list[Eligible] = []
     rejected: list[Rejected] = []
     for entry, asset, reason in results:
@@ -236,7 +270,7 @@ def settle(opened: Session, device: Device, results: list[tuple[Reported, PhoneA
             asset.eligible_at = now
             if confirming:
                 asset.eligible_confirmed_at = now
-            passed.append(eligible_of(opened, asset))
+            passed.append(eligible_of(facts, asset))
             continue
         if asset is not None:
             forget(asset)
@@ -248,16 +282,16 @@ def settle(opened: Session, device: Device, results: list[tuple[Reported, PhoneA
 
 def eligible_assets(opened: Session, settings: Settings, photos: Photos, device_id: int, reported: Sequence[Reported], now: float) -> Evaluation:
     device = take_write_lock(opened, device_id)
-    enabled, results = judged(opened, settings, photos, device, reported, now)
-    eligible, rejected = settle(opened, device, results, now, confirming=False)
+    enabled, facts, results = judged(opened, settings, photos, device, reported, now)
+    eligible, rejected = settle(opened, device, facts, results, now, confirming=False)
     return Evaluation(enabled, eligible, rejected)
 
 
 def confirm(opened: Session, settings: Settings, photos: Photos, device_id: int, reported: Sequence[Reported], now: float
             ) -> tuple[list[Eligible], list[Rejected]]:
     device = take_write_lock(opened, device_id)
-    _, results = judged(opened, settings, photos, device, reported, now)
-    confirmed, rejected = settle(opened, device, results, now, confirming=True)
+    _, facts, results = judged(opened, settings, photos, device, reported, now)
+    confirmed, rejected = settle(opened, device, facts, results, now, confirming=True)
     events.record(opened, now, "cleanup_confirmed", subject_of(opened, device), f"{len(confirmed)} of {len(results)} confirmed")
     return confirmed, rejected
 
@@ -317,13 +351,12 @@ def counts(opened: Session, settings: Settings, photos: Photos, device: Device, 
     person = opened.get(Person, device.person_id)
     if device_refusal(opened, settings, device, now) is not None or person is None:
         return 0, 0
-    marked = opened.execute(select(PhoneAsset).where(PhoneAsset.device_id == device.id, PhoneAsset.eligible_at.is_not(None),
-                                                     PhoneAsset.deleted_at.is_(None)).order_by(PhoneAsset.id)).scalars()
+    marked = select(PhoneAsset.id).where(PhoneAsset.device_id == device.id, PhoneAsset.eligible_at.is_not(None), PhoneAsset.deleted_at.is_(None))
+    facts = load_facts(opened, marked)
     number = size = 0
-    for asset in marked:
-        stored = stored_resources(opened, asset.id)
-        as_known = Reported(asset.photokit_id, tuple(ReportedResource(row.kind, row.sha1, row.bytes, row.filename) for row in stored.values()))
-        if asset_refusal(opened, photos, person, asset, as_known) is None:
+    for asset in opened.execute(select(PhoneAsset).where(PhoneAsset.id.in_(marked)).order_by(PhoneAsset.id)).scalars():
+        stored = facts.stored(asset.id)
+        if asset_refusal(facts, photos, person, asset, as_known(asset, stored)) is None:
             number += 1
             size += sum(row.bytes for row in stored.values())
     return number, size

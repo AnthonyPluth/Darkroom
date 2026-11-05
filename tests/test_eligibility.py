@@ -317,6 +317,43 @@ class CountTests(unittest.TestCase):
         self.assertEqual((self.device_on_status()["eligible"], self.device_on_status()["eligible_bytes"]), (0, 0))
 
 
+class StatusAtScaleTests(unittest.TestCase):
+    MARKED = 2000
+
+    def test_status_checks_thousands_of_marked_photos_in_a_fixed_number_of_queries(self):
+        home = Household(self)
+        jo = home.person("jo")
+        phone = home.device(jo)
+        google = home.account(jo)
+        photos = [home.photo(phone, ("photo", "live_video") if n % 4 == 0 else ("photo",), through=google) for n in range(self.MARKED)]
+        for start in range(0, self.MARKED, 500):
+            self.assertEqual(len(home.eligible(phone, *photos[start:start + 500]).eligible), len(photos[start:start + 500]))
+        home.opened.commit()
+        statements: list[str] = []
+
+        def counted(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(home.engine, "before_cursor_execute", counted)
+        self.addCleanup(event.remove, home.engine, "before_cursor_execute", counted)
+
+        def shown():
+            statements.clear()
+            device = status.overview(home.opened, home.settings, home.photos, home.now)["people"][0]["devices"][0]
+            return device["eligible"], len(statements)
+
+        number, queries = shown()
+        self.assertEqual(number, self.MARKED)
+        self.assertLessEqual(queries, 30)
+        dedupe.reverse(home.opened, photos[10].decisions[0].id, home.now, "owner")
+        os.remove(home.photos.root / photos[20].items["photo"].path)
+        number, queries = shown()
+        self.assertEqual(number, self.MARKED - 2)
+        self.assertLessEqual(queries, 30)
+        home.opened.get(User, "sub-jo").last_seen = 1.0
+        self.assertEqual(shown()[0], 0)
+
+
 class WriteLockTests(unittest.TestCase):
     def setUp(self):
         self.home = Household(self)
