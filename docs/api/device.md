@@ -70,9 +70,17 @@ Sending the same resource again after it was saved answers 200 with `"already": 
 
 `{"pending_uploads": 12, "app_version": "0.1.0"}` (the version is optional). Records the count and version with the check-in time; the People and Status pages show them per iPhone. Reply: `{"ok": true}`.
 
+### `PUT /api/device/push-token`
+
+`{"token": "<APNs device token, hex>"}`. Send it after sign-in and whenever iOS hands the app a new one (`didRegisterForRemoteNotificationsWithDeviceToken`), as lowercase or uppercase hex, 64 to 200 characters. Darkroom stores it sealed with `DARKROOM_SECRET_KEY` (`secretbox`) plus its SHA-256, never in plain text, and alerts for this device's person are pushed to it. If another of this person's devices had registered the same token, it moves to this one; so does one held by another person's device that is revoked or whose owner can no longer sign in (whether or not its stored copy can still be read). A push token is only used while its device's owner can still sign in. Sending the same token again only records that it was seen, unless the stored copy can't be read with the current key (for example after `DARKROOM_SECRET_KEY` changed), in which case it is sealed again. Reply: `{"ok": true}`; 400 for anything that isn't a device token; 401 when the device isn't signed in, including when it is revoked while the request is in flight; 409 when another person's signed-in device holds the same token; 503 when the server has no `DARKROOM_SECRET_KEY`.
+
+### `DELETE /api/device/push-token`
+
+Forgets this device's push token (for example when notifications are turned off in the app). Revoking a device forgets its token too. Reply: `{"ok": true}`, also when there was none; 401 when the device isn't signed in, including when it is revoked while the request is in flight.
+
 ## Cleanup
 
-Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` in `DarkroomCore/Models.swift`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
+Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` and their replies in `DarkroomCore/Models.swift`, driven by `CleanupFlow`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
 
 Darkroom answers from scratch on every call and never from an earlier list. An asset is eligible only when every resource it has (photo, Live Photo video, adjusted version) is uploaded and on Unraid with its SHA-1 and size, matched in a Takeout export by an unreversed automatic tier 1 or 2 decision from a Google account that serves the person, the resources the app sends equal what Darkroom has, and the iPhone has cleanup on, is not revoked and its sign-in has not lapsed. Every refusal is one of these reason codes, with a fixed `message`:
 

@@ -251,11 +251,11 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT number, bytes, downloads_used FROM export_parts").one(), (1, 100, 2))
 
-    def test_0012_export_owner_leaves_old_exports_without_one_and_can_be_undone_without_losing_exports(self):
+    def test_0013_export_owner_leaves_old_exports_without_one_and_can_be_undone_without_losing_exports(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0011")
+            command.upgrade(config, "0012")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloaded')")
@@ -267,11 +267,39 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.downgrade(config, "0011")
+            command.downgrade(config, "0012")
         self.assertNotIn("owner_person_id", {column["name"] for column in inspect(self.engine).get_columns("exports")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT status FROM exports").scalars().all(), ["downloaded"])
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
+
+
+    def test_0012_device_push_tokens_leaves_old_devices_without_a_token_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0011")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 1)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (2, 1, 'Old', 'h2', 1.0, 0)")
+            connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT push_token_sealed, push_token_digest, push_token_at, cleanup_enabled FROM devices WHERE id = 1").one(),
+                             (None, None, None, 1))
+            connection.exec_driver_sql("UPDATE devices SET push_token_sealed = 'enc:v1:x', push_token_digest = 'd', push_token_at = 2.5 WHERE id = 1")
+            with self.assertRaises(IntegrityError):
+                connection.exec_driver_sql("UPDATE devices SET push_token_digest = 'd' WHERE id = 2")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0011")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("devices")}
+        self.assertFalse({"push_token_sealed", "push_token_digest", "push_token_at"} & columns)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT name, cleanup_enabled FROM devices ORDER BY id").all(), [("iPhone", 1), ("Old", 0)])
+            self.assertEqual(connection.exec_driver_sql("SELECT photokit_id FROM phone_assets").scalars().all(), ["A"])
 
 
 if __name__ == "__main__":

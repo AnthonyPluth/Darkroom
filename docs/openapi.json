@@ -689,6 +689,18 @@
         ],
         "type": "object"
       },
+      "DevicePushTokenBody": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
       "DeviceReply": {
         "additionalProperties": false,
         "properties": {
@@ -3496,6 +3508,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConfirmReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/push-token": {
+      "delete": {
+        "operationId": "forget_push_token",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      },
+      "put": {
+        "operationId": "register_push_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePushTokenBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
                 }
               }
             },
