@@ -1,5 +1,6 @@
 import { chromium } from "@playwright/test";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
@@ -28,8 +29,10 @@ export const PAGES = ["sign-in", "status", "people", "exports", "imports", "revi
 export const SESSION_FILE = "demo-session.json";
 export const LOADING = "[role=status]:has-text('Loading')";
 
+export const browsersRoot = (env = process.env) => env.PLAYWRIGHT_BROWSERS_PATH || join(env.HOME || homedir(), ".cache", "ms-playwright");
+
 export function findChromium(env = process.env, exists = existsSync, list = readdirSync) {
-  const root = env.PLAYWRIGHT_BROWSERS_PATH || "/opt/pw-browsers";
+  const root = browsersRoot(env);
   if (!exists(root)) return undefined;
   for (const dir of list(root).filter((d) => d.startsWith("chromium-")).sort().reverse()) {
     for (const sub of ["chrome-linux64/chrome", "chrome-linux/chrome"]) {
@@ -48,6 +51,8 @@ export function sessionCookie(file, read = readFileSync) {
   if (typeof cookie !== "string" || typeof token !== "string") throw new Error(`${file} has no cookie and token`);
   return { name: cookie, value: token };
 }
+
+export const signedOutConsoleAllowed = (text, afterSignOut) => afterSignOut && text.includes(SIGNED_OUT_CONSOLE);
 
 export const signedInNow = async (ctx) => (await ctx.cookies()).length > 0;
 
@@ -97,10 +102,11 @@ export function flowProblems(flow) {
   return out;
 }
 
-export async function runStep(page, step, shot, saveDownload) {
+export async function runStep(page, step, shot, saveDownload, onSignOut) {
   const timeout = step.timeout ?? 10000;
   if ("sign_out" in step) {
     await page.context().clearCookies();
+    onSignOut?.();
     await page.reload({ waitUntil: "load", timeout });
   } else if ("reload" in step) {
     await page.reload({ waitUntil: "domcontentloaded", timeout });
@@ -186,6 +192,8 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
     const problems = [];
     const notes = [];
     const consoleErrors = [];
+    let signedOutFrom = signedIn ? null : 0;
+    const markSignedOut = () => { signedOutFrom ??= consoleErrors.length; };
     page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
     page.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
     page.on("response", (r) => { if (r.status() >= 500) problems.push(`${where}: ${r.status()} from ${r.request().method()} ${new URL(r.url()).pathname}`); });
@@ -209,7 +217,7 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
       files.push(file);
     };
     try {
-      await work(page, shot, saveDownload);
+      await work(page, shot, saveDownload, markSignedOut);
       if (audit) {
         const found = await auditPage(page, viewport);
         for (const p of found.problems) problems.push(`${where}: a11y ${p}`);
@@ -219,8 +227,8 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
       problems.push(`${where}: ${String(e.message).split("\n")[0]}`);
       await shot(`${label.replace(/\W+/g, "-")}-FAILED`, out).catch(() => {});
     }
-    const allowed = signedIn && await signedInNow(ctx) ? allowConsole : [...allowConsole, SIGNED_OUT_CONSOLE];
-    for (const c of consoleErrors.filter((c) => !allowed.some((t) => c.includes(t)))) problems.push(`${where}: console error: ${c.slice(0, 300)}`);
+    const unexpected = consoleErrors.filter((c, i) => !allowConsole.some((t) => c.includes(t)) && !signedOutConsoleAllowed(c, signedOutFrom !== null && i >= signedOutFrom));
+    for (const c of unexpected) problems.push(`${where}: console error: ${c.slice(0, 300)}`);
     for (const host of new Set(blocked)) problems.push(`${where}: the page asked for ${host}, which isn't the session's server: the request was blocked before it was sent`);
     return { screenshots: files, consoleErrors, problems, notes };
   } finally { await ctx.close(); }
@@ -230,7 +238,7 @@ export function runVisit(env, v) {
   const { base } = env;
   if (v.kind === "flow") {
     const { flow } = v;
-    return visit(env, `flow ${flow.name}`, v.viewport, async (page, shot, saveDownload) => {
+    return visit(env, `flow ${flow.name}`, v.viewport, async (page, shot, saveDownload, markSignedOut) => {
       await page.goto(`${base}${routeOf(flow.page ?? "status")}`, { waitUntil: loadedWhen(!SIGNED_OUT_PAGES.includes(flow.page)) });
       let checks = [];
       const shotChecked = async (file) => {
@@ -239,7 +247,7 @@ export function runVisit(env, v) {
         if (lost) throw new Error(lost);
       };
       for (const [i, step] of flow.steps.entries()) {
-        try { await runStep(page, step, (n) => shotChecked(`flow-${flow.name}-${n}`), (n, d) => saveDownload(`flow-${flow.name}-${n}`, d, env.out)); }
+        try { await runStep(page, step, (n) => shotChecked(`flow-${flow.name}-${n}`), (n, d) => saveDownload(`flow-${flow.name}-${n}`, d, env.out), markSignedOut); }
         catch (e) { throw new Error(`step ${i + 1} (${JSON.stringify(step).slice(0, 80)}): ${String(e.message).split("\n")[0]}`, { cause: e }); }
         checks = checksAfter(checks, step);
       }
