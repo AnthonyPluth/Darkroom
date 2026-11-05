@@ -214,8 +214,8 @@ tools/control screenshot [path] [options]
 
 Save a screenshot once the page has settled, and print its path.
 
-Taken as make verify takes one: scrolled to the top, the network idle, fonts loaded, animations finished, a short settle, then the image with CSS animations disabled.
-The default is the whole page; --viewport is the first screen only.
+Taken as make verify takes one: the network idle, fonts loaded, animations finished, a short settle, then the image with CSS animations disabled.
+The default is the whole page, scrolled to the top first; --viewport is only the window, where it is scrolled to now (scroll first to capture another part).
 The path must be under artifacts/ (default artifacts/control/shots/<n>-<route>-<viewport>.png). Look at it: it is the evidence for you.
 Never copy one into docs/screenshots/ or a pull request: the images a pull request carries are what make verify writes there.
 

@@ -32,7 +32,7 @@ What usually goes wrong when driving Darkroom with `tools/control`, and what to 
 
 - Phone is 440×956 and desktop is 1280×800, the only two widths make verify shoots. `laptop` (1024×768) and `wide` (1440×900) are there for the flows that list them. The app's layout switches at `md` (768 px): look at 768 to 1023 px in a browser by hand.
 - The app is dark only: there is no light theme to check.
-- `screenshot` is the whole page; `screenshot --viewport` is the first screen. Both scroll to the top first. The phone's bottom tab bar is fixed, so in a full-page image it sits where the first screen ended.
+- `screenshot` is the whole page; `screenshot --viewport` is only the window, where the page is scrolled to now (the first screen until you scroll). Only the whole-page one scrolls to the top first. The phone's bottom tab bar is fixed, so in a full-page image it sits where the first screen ended.
 
 ## Settling and flakes
 
