@@ -219,6 +219,21 @@ class SeededDemo(unittest.TestCase):
             export = opened.get(Export, parts[0].export_id)
             self.assertEqual([each["progress"] for each in exports.as_dict(opened, export)["parts"]], [100, 40, 0])
 
+    def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
+        with db.session(self.engine) as opened:
+            seeded = list(opened.query(Export).order_by(Export.id))
+            self.assertEqual(len(seeded), 2)
+            for export in seeded:
+                account = opened.get(GoogleAccount, export.account_id)
+                self.assertIsNotNone(export.owner_person_id)
+                self.assertEqual(export.owner_person_id, account.default_person_id)
+            other = opened.query(Person).filter(Person.id != seeded[1].owner_person_id).first()
+            opened.get(GoogleAccount, seeded[1].account_id).default_person_id = other.id
+            opened.flush()
+            self.assertEqual(exports.owner_of(opened, seeded[1]).id, seeded[1].owner_person_id)
+            self.assertNotEqual(exports.owner_of(opened, seeded[1]).id, other.id)
+            opened.rollback()
+
     def test_a_seed_for_another_day_moves_with_it(self):
         with tempfile.TemporaryDirectory() as folder:
             engine, _ = seed_into(Path(folder).resolve(), date(2026, 12, 30))
