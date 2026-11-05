@@ -66,6 +66,11 @@ export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number)
   return latest !== undefined && latest.needs_check ? latest : undefined;
 }
 
+export function maybeRenewed(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
+  const latest = latestJob(jobs, accountId, "renew");
+  return latest !== undefined && latest.status === "failed" && (latest.message.startsWith("ScheduleNotConfirmed") || latest.message === "the worker stopped reporting") ? latest : undefined;
+}
+
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
   if (job === undefined) return null;
   switch (job.status) {

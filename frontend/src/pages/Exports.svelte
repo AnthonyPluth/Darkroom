@@ -5,7 +5,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, openJob, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -88,6 +88,7 @@
       {@const connecting = openJob(data.jobs, account.id, "connect")}
       {@const scheduling = openJob(data.jobs, account.id, "schedule")}
       {@const maybe = maybeCreated(data.jobs, account.id)}
+      {@const maybeRenewal = maybeRenewed(data.jobs, account.id)}
       {@const failed = failedCaptures(data.jobs, account.id)}
       {@const checking = openJob(data.jobs, account.id, "status")}
       {@const downloading = openJob(data.jobs, account.id, "download")}
@@ -143,6 +144,11 @@
             {/if}
           </p>
         {/each}
+        {#if maybeRenewal}
+          <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
+            <p>Darkroom could not confirm the renewal. Takeout may already have the new schedule: open Takeout's export list and look. Darkroom will not retry, so it will not create a second one.</p>
+          </div>
+        {/if}
         {#if maybe}
           <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
             <p>Takeout may already have this schedule. Open Takeout's export list and look before creating another.</p>

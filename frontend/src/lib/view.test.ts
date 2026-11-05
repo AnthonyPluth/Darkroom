@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { downloadingExport, expiredExport, failedExport, importedExport, preparingExport, queuedConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, lastExportSentence, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, lastExportSentence, maybeRenewed, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -122,5 +122,19 @@ describe("failedCaptures", () => {
   it("includes a failed renewal with a capture", () => {
     const job = { ...queuedConnect, id: 11, kind: "renew", status: "failed", has_capture: true, capture_files: ["screenshot.png"] };
     expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([11]);
+  });
+});
+
+describe("maybeRenewed", () => {
+  const renew = { ...queuedConnect, id: 15, kind: "renew", status: "failed" };
+  it("finds a renewal that Darkroom could not confirm or lost", () => {
+    expect(maybeRenewed([{ ...renew, message: "ScheduleNotConfirmed: unsure" }], 10)?.id).toBe(15);
+    expect(maybeRenewed([{ ...renew, message: "the worker stopped reporting" }], 10)?.id).toBe(15);
+  });
+
+  it("ignores a plain failure, an open renewal and other accounts", () => {
+    expect(maybeRenewed([{ ...renew, message: "UnexpectedPage: changed" }], 10)).toBeUndefined();
+    expect(maybeRenewed([{ ...renew, status: "running", message: "" }], 10)).toBeUndefined();
+    expect(maybeRenewed([{ ...renew, message: "ScheduleNotConfirmed: unsure" }], 11)).toBeUndefined();
   });
 });

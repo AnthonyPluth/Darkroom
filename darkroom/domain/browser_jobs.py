@@ -106,6 +106,11 @@ def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
     return latest if message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE else None
 
 
+def left_uncertain(job: BrowserJob) -> bool:
+    message = job.message or ""
+    return job.status == "failed" and (message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE)
+
+
 def is_unchecked(opened: Session, job: BrowserJob) -> bool:
     stuck = unchecked_schedule(opened, job.account_id)
     return stuck is not None and stuck.id == job.id

@@ -164,14 +164,14 @@ class RenewalDoneTests(RenewalCase):
 
 
 class RenewalFailureTests(RenewalCase):
-    def fail(self, now, files=("screenshot.png",)):
+    def fail(self, now, files=("screenshot.png",), message="UnexpectedPage: the page changed"):
         job_id = self.claim_renewal(now)
         folder = self.photos / "_browser" / str(self.account) / "failures" / str(job_id)
         folder.mkdir(parents=True)
         for name in files:
             (folder / name).write_bytes(b"x")
         with db.session(self.engine) as opened:
-            job = browser_jobs.failed(opened, self.settings, job_id, "ScheduleNotConfirmed: Takeout did not confirm a recurring export", browser_jobs.failure_folder(self.account, job_id), list(files), now)
+            job = browser_jobs.failed(opened, self.settings, job_id, message, browser_jobs.failure_folder(self.account, job_id), list(files), now)
             renewal.job_failed(opened, self.settings, job, now)
         return job_id
 
@@ -196,6 +196,57 @@ class RenewalFailureTests(RenewalCase):
         with db.session(self.engine) as opened:
             account = opened.get(GoogleAccount, self.account)
             self.assertEqual((account.schedule_created, account.schedule_end), (CREATED, END))
+
+    def test_an_unconfirmed_renewal_says_it_could_not_be_confirmed_not_that_it_failed(self):
+        self.watch(NOTICE_AT)
+        job_id = self.fail(NOTICE_AT + 120, message="ScheduleNotConfirmed: Takeout did not confirm a recurring export")
+        self.assertEqual(self.alerts_of("schedule_renewal_failed"), [])
+        ((key, message, link, sent, closed),) = self.alerts_of("schedule_renewal_unconfirmed")
+        self.assertEqual((key, sent, closed), (renewal.failed_key(self.account), 1, None))
+        self.assertEqual(link, f"https://darkroom.example/api/browser/failures/{job_id}/screenshot.png")
+        self.assertIn("could not confirm", message)
+        self.assertIn("15 Jan 2028", message)
+        self.assertIn("Takeout", message)
+        self.assertIn("will not create a second", message)
+        self.assertNotIn("did not happen", message)
+        self.assertIsNotNone(self.alerts_of("schedule_ending")[0][4])
+        self.assertEqual(self.event_types().count("schedule_renewal_unconfirmed"), 1)
+        self.assertEqual(self.event_types().count("schedule_renewal_failed"), 0)
+
+    def test_an_unconfirmed_renewal_without_a_capture_links_the_exports_page(self):
+        self.watch(NOTICE_AT)
+        job_id = self.claim_renewal(NOTICE_AT + 60)
+        with db.session(self.engine) as opened:
+            job = browser_jobs.failed(opened, self.settings, job_id, "ScheduleNotConfirmed: unsure", None, [], NOTICE_AT + 120)
+            renewal.job_failed(opened, self.settings, job, NOTICE_AT + 120)
+        self.assertEqual(self.alerts_of("schedule_renewal_unconfirmed")[0][2], "https://darkroom.example/exports")
+
+    def test_the_daily_watch_keeps_an_unconfirmed_renewal_alert_and_never_queues_another_renewal(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120, message="ScheduleNotConfirmed: unsure")
+        for days in range(1, 20):
+            self.assertEqual(self.watch(NOTICE_AT + days * DAY), 0)
+        self.assertEqual([job[1] for job in self.renew_jobs()], ["failed"])
+        self.assertEqual(len(self.alerts_of("schedule_renewal_unconfirmed")), 1)
+        self.assertEqual(len(self.alerts_of("schedule_ending")), 1)
+        self.assertEqual(self.alerts_of("schedule_renewal_failed"), [])
+        self.assertEqual(self.tick(NOTICE_AT + 120 + DAY), 1)
+
+    def test_an_unconfirmed_renewal_that_was_in_fact_renewed_closes_the_alert(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120, message="ScheduleNotConfirmed: unsure")
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_end = END + 365 * DAY
+            job = opened.execute(select(BrowserJob).where(BrowserJob.kind == "renew")).scalar_one()
+            renewal.renewed(opened, self.settings, job, NOTICE_AT + 500)
+        self.assertIsNotNone(self.alerts_of("schedule_renewal_unconfirmed")[0][4])
+
+    def test_a_lost_worker_leaves_the_renewal_unconfirmed(self):
+        self.watch(NOTICE_AT)
+        self.claim_renewal(NOTICE_AT + 60)
+        jobs.build(self.settings, self.engine, NOTICE_AT + 60).run_one("browser.leases", NOTICE_AT + 60 + browser_jobs.LEASE_SECONDS + 1)
+        self.assertEqual(self.alerts_of("schedule_renewal_failed"), [])
+        self.assertEqual(len(self.alerts_of("schedule_renewal_unconfirmed")), 1)
 
     def test_a_failed_renewal_is_not_queued_again_and_the_failed_alert_keeps_repeating_while_the_ending_alert_stays_closed(self):
         self.watch(NOTICE_AT)
@@ -226,7 +277,7 @@ class RenewalFailureTests(RenewalCase):
         scheduler.run_one("browser.leases", NOTICE_AT + 60 + browser_jobs.LEASE_SECONDS + 1)
         self.assertEqual([job[1] for job in self.renew_jobs()], ["failed"])
         self.assertIsNotNone(self.alerts_of("schedule_ending")[0][4])
-        self.assertIsNone(self.alerts_of("schedule_renewal_failed")[0][4])
+        self.assertIsNone(self.alerts_of("schedule_renewal_unconfirmed")[0][4])
         self.assertEqual(self.watch(NOTICE_AT + DAY), 0)
 
     def test_another_kind_of_failure_leaves_the_ending_alert_alone(self):
