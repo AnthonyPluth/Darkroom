@@ -24,7 +24,7 @@ Write down the steps that show the bug and the command output that proves it. Th
 tools/control start
 tools/control goto people
 tools/control screenshot                           # phone, 440×956, the whole page
-tools/control screenshot --viewport                # phone, the first screen as a person sees it
+tools/control screenshot --viewport                # phone, the window as it is scrolled now (the first screen, here)
 tools/control viewport desktop
 tools/control screenshot                           # desktop, 1280×800
 ```
