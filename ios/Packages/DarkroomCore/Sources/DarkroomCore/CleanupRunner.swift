@@ -242,29 +242,41 @@ public actor CleanupRunner {
         }
     }
 
-    private func current(among ids: [String]?) async throws -> Current {
-        let records = try await store.records(in: Set(ResourceState.allCases))
-        let wanted = ids.map { Set($0) }
+    private struct Rows {
         var order: [String] = []
         var stored: [String: [ResourceKind: LocalResource]] = [:]
+        var known: [String] = []
+    }
+
+    private func storedRows(among wanted: Set<String>?) async throws -> Rows {
+        var rows = Rows()
         var settled: Set<String> = []
-        for record in records {
+        for record in try await store.records(in: Set(ResourceState.allCases)) {
             let id = record.resource.key.assetID
             if let wanted, !wanted.contains(id) { continue }
-            if stored[id] == nil {
-                order.append(id)
+            if rows.stored[id] == nil {
+                rows.order.append(id)
                 settled.insert(id)
             }
-            stored[id, default: [:]][record.resource.key.kind] = record.resource
+            rows.stored[id, default: [:]][record.resource.key.kind] = record.resource
             if record.resource.state != .uploaded { settled.remove(id) }
         }
-        let known = order.filter { settled.contains($0) && stored[$0]?[.photo] != nil }
+        rows.known = rows.order.filter { settled.contains($0) && rows.stored[$0]?[.photo] != nil }
+        return rows
+    }
+
+    private func current(among ids: [String]?) async throws -> Current {
+        let wanted = ids.map { Set($0) }
+        let before = try await storedRows(among: wanted)
         var ingested: [ResourceKey: String] = [:]
-        for id in known {
-            for key in (stored[id] ?? [:]).values.map(\.key) {
+        for id in before.known {
+            for key in (before.stored[id] ?? [:]).values.map(\.key) {
                 ingested[key] = await versions.version(for: key)
             }
         }
+        let after = try await storedRows(among: wanted)
+        let stored = after.stored
+        let known = after.known
         var library: [String: [PhotoResource]] = [:]
         for resource in try await deleter.resources(of: ids ?? known) {
             library[resource.assetID, default: []].append(resource)

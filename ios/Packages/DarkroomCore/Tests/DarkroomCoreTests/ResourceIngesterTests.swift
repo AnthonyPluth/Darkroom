@@ -31,6 +31,26 @@ private actor FakeExporter: ResourceExporter {
     }
 }
 
+private actor WatchedVersions: IngestVersions {
+    let store: InMemoryResourceStore
+    private var storage: [ResourceKey: String] = [:]
+    private(set) var writes: [(version: String?, sha1: String?)] = []
+
+    init(store: InMemoryResourceStore) {
+        self.store = store
+    }
+
+    func version(for key: ResourceKey) -> String? {
+        storage[key]
+    }
+
+    func setVersion(_ version: String?, for key: ResourceKey) async {
+        let row = try? await store.record(for: key)
+        writes.append((version, row?.resource.sha1))
+        storage[key] = version
+    }
+}
+
 final class ResourceIngesterTests: XCTestCase {
     private func photo(_ id: String, _ version: String = "v1") -> PhotoResource {
         PhotoResource(assetID: id, kind: .photo, originalFilename: "\(id).HEIC", version: version)
@@ -83,6 +103,25 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(changed, IngestSummary(hashed: 1))
         let record = try await store.record(for: a.key)
         XCTAssertEqual(record?.resource.bytes, 4)
+    }
+
+    func testAnEditClearsTheVersionBeforeTheRowChangesAndSetsItAfter() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let versions = WatchedVersions(store: store)
+        let a = photo("IMG_1")
+        await exporter.set(contents: Data("one".utf8), for: a.key)
+        let library = FakeLibrary(resources: [a])
+        _ = try await ResourceIngester(library: library, exporter: exporter, store: store, versions: versions).run()
+        let first = try await store.record(for: a.key)?.resource.sha1
+        await exporter.set(contents: Data("two!".utf8), for: a.key)
+        let edited = FakeLibrary(resources: [photo("IMG_1", "v2")])
+        _ = try await ResourceIngester(library: edited, exporter: exporter, store: store, versions: versions).run()
+        let second = try await store.record(for: a.key)?.resource.sha1
+        let writes = await versions.writes
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(writes.map { $0.version }, ["v1", nil, "v2"])
+        XCTAssertEqual(writes.map { $0.sha1 }, [first, first, second])
     }
 
     func testNotLocalResourceIsIngestedOnceItBecomesLocalWithTheSameVersion() async throws {
