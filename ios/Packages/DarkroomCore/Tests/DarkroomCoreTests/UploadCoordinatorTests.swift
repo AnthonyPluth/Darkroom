@@ -46,6 +46,16 @@ private struct FakeRehasher: ResourceRehasher {
     func rehash(_ key: ResourceKey) async throws -> LocalResource? { result }
 }
 
+private struct ReplacingRehasher: ResourceRehasher {
+    let store: InMemoryResourceStore
+    let newest: LocalResource
+    let result: LocalResource
+    func rehash(_ key: ResourceKey) async throws -> LocalResource? {
+        try await store.upsert([newest])
+        return result
+    }
+}
+
 private actor Probes {
     var answer = true
     private(set) var count = 0
@@ -133,6 +143,24 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(result.uploaded, 0)
         let record = try await rig.store.record(for: a)
         XCTAssertEqual(record?.resource.sha1, "new")
+        XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
+    func testARehashDoesNotOverwriteARowReplacedWhileItRan() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.rejected(status: 422))
+        let newest = hashed(a, sha1: "newest")
+        let store = rig.store
+        let rehasher = ReplacingRehasher(store: store, newest: newest, result: hashed(a, sha1: "rehashed"))
+        let coordinator = UploadCoordinator(
+            api: rig.api, transport: rig.transport, rehasher: rehasher, store: rig.store,
+            probe: ServerProbe { true }, appVersion: "1.0", clock: { self.now }
+        )
+        _ = try await coordinator.run()
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.sha1, "newest")
         XCTAssertEqual(record?.resource.state, .hashed)
     }
 

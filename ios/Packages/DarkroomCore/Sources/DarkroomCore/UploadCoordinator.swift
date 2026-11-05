@@ -78,8 +78,8 @@ public actor UploadCoordinator {
     public func run() async throws -> Result {
         var result = Result()
         // An upload cut short by a kill is `uploading` on disk; the server was never told it finished.
-        let interrupted = try await store.records(in: [.uploading]).map(\.resource.key)
-        try await store.setState(.checked, for: interrupted, failureReason: nil)
+        let interrupted = try await store.resources(in: [.uploading])
+        try await store.setState(.checked, ifUnchanged: interrupted, failureReason: nil)
 
         guard await networkReady() else {
             result.outcome = .waitingForNetwork
@@ -208,7 +208,7 @@ public actor UploadCoordinator {
             fresh = nil
         }
         if let fresh, fresh.sha1 != old.sha1 || fresh.state != .hashed {
-            try await store.upsert([fresh])
+            try await store.replace(old, with: fresh)
             return
         }
         let reason = fresh == nil
