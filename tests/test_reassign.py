@@ -530,6 +530,30 @@ class InterruptedReassignTests(ReviewCase):
                 self.assertEqual(self.clean().taken_back, 1)
                 self.assertEqual(self.tree(), before)
 
+    def test_an_identical_sidecar_another_writer_put_there_first_is_never_taken_back(self):
+        item_id, path = self.kept()
+        source = self.world.root / path
+        for carried in (True, False):
+            with self.subTest(carried=carried):
+                if not carried:
+                    paths.sidecar_of(source).unlink()
+                folder, real = self.target(path).parent, os.link
+
+                def another_writer_first(origin, destination, real=real, folder=folder):
+                    if str(destination).endswith(paths.SIDECAR_SUFFIX) and Path(destination).parent == folder:
+                        Path(destination).write_bytes(Path(origin).read_bytes())
+                        raise FileExistsError(destination)
+                    real(origin, destination)
+
+                with mock.patch.object(paths.os, "link", side_effect=another_writer_first), self.assertRaises(review.WrongState):
+                    self.dies_while_reassigning(item_id)
+                sidecar = paths.sidecar_of(self.target(path))
+                data = sidecar.read_bytes()
+                self.assertEqual(self.clean().taken_back, 1)
+                self.assertFalse(self.target(path).exists())
+                self.assertEqual(sidecar.read_bytes(), data)
+                sidecar.unlink()
+
     def test_a_sidecar_beside_a_photo_replaced_after_an_interrupted_reassign_is_kept(self):
         item_id, path = self.kept()
         target = self.target(path)
@@ -554,14 +578,22 @@ class InterruptedReassignTests(ReviewCase):
         record.unlink()
         return token
 
+    def key(self, path):
+        return str(path.relative_to(self.world.root))
+
     def test_markers_left_by_the_previous_release_are_still_swept(self):
         item_id, path = self.kept()
         before = self.tree()
         self.dies_while_reassigning(item_id)
         self.as_old_markers(self.target(path))
+        sidecar = paths.sidecar_of(self.target(path))
+        data = sidecar.read_bytes()
         report = self.clean()
         self.assertEqual((report.taken_back, report.restored), (1, 1))
-        self.assertEqual(self.tree(), before)
+        self.assertFalse(self.target(path).exists())
+        self.assertEqual(sidecar.read_bytes(), data)
+        self.assertEqual({key: value for key, value in self.tree().items() if key != self.key(sidecar)}, before)
+        sidecar.unlink()
         with mock.patch.object(paths, "clear_placing"):
             self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
         self.as_old_markers(self.target(path))
@@ -570,16 +602,64 @@ class InterruptedReassignTests(ReviewCase):
         self.assertEqual(self.tree(), moved)
         self.assertEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
 
-    def test_an_old_sidecar_marker_beside_an_identical_photo_already_there_takes_back_only_the_sidecar(self):
+    def test_an_old_sidecar_marker_never_removes_a_sidecar(self):
         item_id, path = self.kept()
         target = self.target(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((self.world.root / path).read_bytes())
         before = self.tree()
+        for change in ("as written", "edited"):
+            with self.subTest(change=change):
+                self.dies_while_reassigning(item_id)
+                self.as_old_markers(target)
+                sidecar = paths.sidecar_of(target)
+                if change == "edited":
+                    sidecar.write_bytes(sidecar.read_bytes() + b"<!-- edited by hand -->")
+                data = sidecar.read_bytes()
+                self.assertEqual(self.clean().taken_back, 0)
+                self.assertEqual(sidecar.read_bytes(), data)
+                self.assertEqual({key: value for key, value in self.tree().items() if key != self.key(sidecar)}, before)
+                self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*")), [])
+                sidecar.unlink()
+
+    def test_an_old_marker_keeps_a_copy_a_row_records(self):
+        item_id, path = self.kept()
+        target = self.target(path)
         self.dies_while_reassigning(item_id)
         self.as_old_markers(target)
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["sam"], source="takeout", path=self.key(target), sha1=sha1_of(target),
+                             bytes=target.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        data = target.read_bytes()
         self.assertEqual(self.clean().taken_back, 0)
-        self.assertEqual(self.tree(), before)
+        self.assertEqual(target.read_bytes(), data)
+        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*{target.name}")), [])
+
+    def test_an_old_marker_keeps_the_only_copy_left_and_its_marker(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        self.dies_while_reassigning(item_id)
+        for aside in (self.world.root / path).parent.glob(f"{paths.DROPPING}*"):
+            aside.unlink()
+        token = self.as_old_markers(target)
+        data = target.read_bytes()
+        self.assertEqual(self.clean().taken_back, 0)
+        self.assertEqual(target.read_bytes(), data)
+        self.assertTrue(target.with_name(f"{paths.PLACING}{token}-{target.name}").is_file())
+
+    def test_an_old_marker_whose_place_now_holds_another_photo_never_touches_it(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        self.dies_while_reassigning(item_id)
+        self.as_old_markers(target)
+        target.unlink()
+        target.write_bytes(b"a different photo put there since")
+        self.assertEqual(self.clean().taken_back, 0)
+        self.assertEqual(target.read_bytes(), b"a different photo put there since")
+        self.assertTrue(paths.sidecar_of(target).is_file())
+        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*")), [])
+        self.assertTrue((self.world.root / path).is_file())
 
 
 class SinglePersonAccountTests(ReviewCase):

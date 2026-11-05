@@ -484,10 +484,8 @@ def move_back(opened: Session, photos: Photos, review: ReviewItem, item: MediaIt
     effects.placing(placed.path, token)
     effects.made(photos, placed, source, False)
     if with_sidecar:
-        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True, paths.regular_sha1(paths.sidecar_of(source))))
-        paths.carry_sidecar(source, placed.path)
-        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True,
-                                                             paths.regular_sha1(paths.sidecar_of(placed.path))))
+        paths.carry_sidecar(source, placed.path, lambda sidecar_sha1: paths.mark_placing(
+            placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True, sidecar_sha1)))
     effects.set_aside(paths.set_library_copy_aside(photos, item.path, placed.path))
     return back[0], token
 
@@ -623,16 +621,12 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         def recording(sidecar_sha1: str | None) -> None:
             paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, True, sidecar_sha1))
 
-        if not had_sidecar:
-            recording(paths.regular_sha1(paths.sidecar_of(source)))
-        carried = paths.carry_sidecar(source, placed.path)
+        carried = paths.carry_sidecar(source, placed.path, None if had_sidecar else recording)
         if not carried:
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read,
                      lambda sidecar, tags: paths.write_new_sidecar(sidecar, lambda temp: write(temp, tags), recording))
-        if not had_sidecar:
-            recording(paths.regular_sha1(paths.sidecar_of(placed.path)))
         carries = CARRIES_FOUND if "found" in lineage and placed.copied and not had_sidecar else ""
         adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]

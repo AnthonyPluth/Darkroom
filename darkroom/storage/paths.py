@@ -436,7 +436,7 @@ def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]
             copy_exclusive(temp, destination)
 
 
-def write_new_sidecar(destination: Path, write: Callable[[Path], bool], recording: Callable[[str], None]) -> bool:
+def write_new_sidecar(destination: Path, write: Callable[[Path], bool], recording: Callable[[str | None], None]) -> bool:
     checked_sidecar(destination)
     if present(destination):
         raise AlreadyExists(destination.name)
@@ -446,14 +446,22 @@ def write_new_sidecar(destination: Path, write: Callable[[Path], bool], recordin
             return False
         if not regular(temp):
             raise NotASidecar("no sidecar was written")
-        recording(file_sha1(temp))
+        claim_exclusively(temp, destination, file_sha1(temp), recording)
+    return True
+
+
+def claim_exclusively(temp: Path, destination: Path, sha1: str, recording: Callable[[str | None], None]) -> None:
+    recording(sha1)
+    try:
         try:
             os.link(temp, destination)
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
         except OSError:
             copy_exclusive(temp, destination)
-    return True
+    except AlreadyExists:
+        recording(None)
+        raise
 
 
 def remove_inbox_tree(photos: Photos, path: Path) -> bool:
@@ -484,17 +492,25 @@ def file_sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
-def carry_sidecar(source: Path, destination: Path) -> bool:
+def carry_sidecar(source: Path, destination: Path, recording: Callable[[str | None], None] | None = None) -> bool:
     found = sidecar_of(source)
     if found.is_symlink() or not found.is_file():
         return False
     target = checked_sidecar(sidecar_of(destination))
     data = found.read_bytes()
     if target.exists():
+        if recording is not None:
+            recording(None)
         if target.read_bytes() == data:
             return True
         raise AlreadyExists(target.name)
-    write_once(target, [data])
+    if recording is None:
+        write_once(target, [data])
+        return True
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".xmp-") as folder:
+        temp = Path(folder) / target.name
+        temp.write_bytes(data)
+        claim_exclusively(temp, target, hashlib.sha1(data, usedforsecurity=False).hexdigest(), recording)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
     return True
 
 
@@ -727,34 +743,20 @@ def take_back(record: Path, placing: Placing, copy_kept: Callable[[Path, str], b
     return ours
 
 
-def take_back_old_copy(marker: Path, token: str, made: Path, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
-    sha1, new_sidecar = file_sha1(marker), marker.with_name(f"{PLACING}{token}-{sidecar_of(made).name}")
+def take_back_old_copy(marker: Path, made: Path, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
+    sha1 = file_sha1(marker)
     if not regular(made) or not os.path.samefile(marker, made):
         if copy_kept(marker, sha1):
             marker.unlink()
         return False
     if recorded(made, sha1):
         marker.unlink()
-        new_sidecar.unlink(missing_ok=True)
         return False
     if not copy_kept(made, sha1):
         return False
-    if new_sidecar.is_file():
-        if regular(sidecar_of(made)):
-            sidecar_of(made).unlink()
-        new_sidecar.unlink()
     made.unlink()
     marker.unlink()
     return True
-
-
-def take_back_old_sidecar(marker: Path, token: str, made: Path, recorded: Callable[[Path, str], bool]) -> None:
-    photo = made.with_name(made.name.removesuffix(SIDECAR_SUFFIX))
-    if marker.with_name(f"{PLACING}{token}-{photo.name}").exists():
-        return
-    if regular(made) and not (regular(photo) and recorded(photo, file_sha1(photo))):
-        made.unlink()
-    marker.unlink()
 
 
 def sweep_old_marker(marker: Path, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
@@ -763,13 +765,10 @@ def sweep_old_marker(marker: Path, older_than: float, committed: Callable[[str],
     if match is None or not regular(marker) or not settled(marker, older_than):
         return False
     token, made = match.group(1), marker.with_name(match.group(2))
-    if committed(token):
+    if committed(token) or marker.suffix == SIDECAR_SUFFIX:
         marker.unlink()
         return False
-    if marker.suffix == SIDECAR_SUFFIX:
-        take_back_old_sidecar(marker, token, made, recorded)
-        return False
-    return take_back_old_copy(marker, token, made, copy_kept, recorded)
+    return take_back_old_copy(marker, made, copy_kept, recorded)
 
 
 def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
