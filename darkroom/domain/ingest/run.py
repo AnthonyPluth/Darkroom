@@ -16,7 +16,7 @@ from darkroom.domain import accounts, alerts, dedupe, events, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
-from darkroom.storage import locks
+from darkroom.storage import locks, paths
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -138,8 +138,8 @@ def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun
 
 def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: Tools, report: bool) -> Prepared:
     person = default_person(opened, export)
-    staging = unpack.staging_dir(photos, person, export)
-    if not staging.is_dir():
+    staging = staging_of(opened, photos, export)
+    if staging is None:
         raise StageFailed("the export's staging folder is missing")
     prepared = Prepared(staging, pairing.pair(staging).items)
     tags = tools.read([item.path for item in prepared.items]) if prepared.items else {}
@@ -432,17 +432,21 @@ def failed_items_run(opened: Session, export: Export) -> ImportRun | None:
     return last if last is not None and last.status == "done" and last.failed > 0 else None
 
 
-def staging_present(opened: Session, photos: Photos, export: Export) -> bool:
-    try:
-        return unpack.staging_dir(photos, default_person(opened, export), export).is_dir()
-    except StageFailed:
-        return False
+def staging_of(opened: Session, photos: Photos, export: Export) -> Path | None:
+    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
+        try:
+            found = photos.staging(slug, unpack.staging_name(export))
+        except paths.OutsideRoot:
+            continue
+        if found.is_dir() and not found.is_symlink():
+            return found
+    return None
 
 
 def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
     if failed_items_run(opened, export) is None:
         raise AlreadyImported("this export is already imported")
-    if photos is None or not staging_present(opened, photos, export):
+    if photos is None or staging_of(opened, photos, export) is None:
         raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
     export.status, export.stage = "importing", "unpacked"
     opened.add(ImportRun(export_id=export.id, started=now, status="queued", stage="unpacked"))

@@ -360,6 +360,21 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.world.count(ImportRun), 1)
         self.assertEqual(run.waiting_exports(self.world.opened), [])
 
+    def test_a_retry_finds_the_staging_after_the_accounts_default_person_changed(self):
+        from darkroom.storage.models import GoogleAccount
+
+        self.import_with_one_item_failing()
+        self.world.opened.get(GoogleAccount, self.world.account).default_person_id = self.world.ids["sam"]
+        self.world.opened.commit()
+        self.assertTrue(self.staging().is_dir())
+        before = self.originals()
+        self.assertEqual(self.retry(), [self.export_id])
+        last = run.latest_run(self.world.opened, self.export_id)
+        self.assertEqual((last.status, last.failed), ("done", 0))
+        self.assertEqual(self.originals(), before)
+        self.clean(NOW + 30 * DAY)
+        self.assertFalse(self.staging().exists())
+
     def test_requesting_twice_queues_one_retry_and_keeps_its_stage(self):
         self.import_with_one_item_failing()
         for _ in range(2):
