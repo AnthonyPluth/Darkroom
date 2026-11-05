@@ -3,7 +3,8 @@ import unittest
 
 from sqlalchemy import select
 
-from darkroom.domain import browser_jobs
+from darkroom import dates
+from darkroom.domain import browser_jobs, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
@@ -52,10 +53,18 @@ class AccountJobsApiTests(ApiCase):
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
         self.assertEqual(status, 409, reply)
-        self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": {"schedule_created": 100.0, "schedule_end": 200.0}})
+        self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": {"schedule_created": 100.0, "schedule_end": 4_000_000_000.0}})
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
         self.assertEqual(status, 409, reply)
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/connect")[0], 201)
+
+    def test_a_schedule_that_has_ended_may_be_created_again_once(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": {"schedule_created": 100.0, "schedule_end": 200.0}})
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        self.assertEqual(status, 409, reply)
 
     def test_after_an_unconfirmed_schedule_the_person_must_say_they_checked_takeout(self):
         self.call("POST", f"/api/accounts/{self.account_id}/schedule")
@@ -68,6 +77,53 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual((status, reply["job"]["message"], reply["job"]["needs_check"]), (200, "ScheduleNotConfirmed: check Takeout before trying again", False))
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked")[0], 409)
         self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+
+    def unconfirmed_renewal(self, end):
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            account.schedule_created, account.schedule_end = end - 365 * 86400, end
+            renewal.watch_schedules(opened, self.settings, dates.utc_now().timestamp())
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "ScheduleNotConfirmed: check Takeout before trying again"})
+        return job["id"]
+
+    def test_a_renewal_takeout_has_is_recorded_through_the_check_and_shown_as_found(self):
+        end = dates.utc_now().timestamp() + 20 * 86400
+        job_id = self.unconfirmed_renewal(end)
+        listed = {entry["id"]: entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"]}
+        self.assertEqual((listed[job_id]["needs_check"], listed[job_id]["checked"]), (True, None))
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": "yes"})[0], 400)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
+        self.assertEqual((status, reply["job"]["id"], reply["job"]["needs_check"], reply["job"]["checked"]), (200, job_id, False, "found"))
+        view = self.account_view()
+        self.assertGreater(view["schedule_end"], end)
+        self.assertEqual(view["schedule_end"], dates.one_year_after(view["schedule_created"]))
+        with db.session(self.engine) as opened:
+            kinds = {(alert.kind, alert.closed is None) for alert in opened.execute(select(Alert).where(Alert.account_id == self.account_id)).scalars() if alert.kind.startswith("schedule")}
+        self.assertEqual(kinds, {("schedule_ending", False), ("schedule_renewal_unconfirmed", False), ("schedule_renewed", False)})
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})[0], 409)
+
+    def test_a_renewal_takeout_does_not_have_is_reported_as_not_renewed(self):
+        end = dates.utc_now().timestamp() + 20 * 86400
+        job_id = self.unconfirmed_renewal(end)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": False})
+        self.assertEqual((status, reply["job"]["id"], reply["job"]["checked"]), (200, job_id, "missing"))
+        self.assertEqual(self.account_view()["schedule_end"], end)
+        with db.session(self.engine) as opened:
+            open_kinds = {alert.kind for alert in opened.execute(select(Alert).where(Alert.account_id == self.account_id, Alert.closed.is_(None))).scalars()}
+        self.assertIn("schedule_renewal_failed", open_kinds)
+        self.assertNotIn("schedule_renewal_unconfirmed", open_kinds)
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 409)
+
+    def test_a_found_renewal_that_would_not_extend_the_schedule_is_refused_with_409(self):
+        job_id = self.unconfirmed_renewal(dates.utc_now().timestamp() + 20 * 86400)
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account_id).schedule_end = 9_000_000_000.0
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
+        self.assertEqual(status, 409)
+        self.assertIn("must end after", reply["error"])
+        self.assertEqual(self.account_view()["schedule_end"], 9_000_000_000.0)
+        self.assertTrue(next(entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"] if entry["id"] == job_id)["needs_check"])
 
     def test_checking_an_unknown_account_is_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/schedule/checked", "/api/accounts/abc/schedule/checked"):

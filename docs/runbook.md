@@ -27,3 +27,23 @@ What else the workflows need, set once:
 - Labels `safety-critical` and `security` (they make a pull request risky for the second review), `fleet` and `review-mining` (the "Repeated review findings" issue).
 
 A push straight to `main` is refused by the ruleset; every change lands through a pull request, and merging one releases (`.github/workflows/docker.yml` on `main` works out the next version from the pull request's title, builds the images and publishes the release).
+
+## The Takeout schedule renewal
+
+About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal (#40); renewing on request is a later addition.
+
+### "Takeout schedule renewal not confirmed"
+
+The worker clicked Create export but Takeout did not confirm it, or the worker stopped reporting. Takeout may have the new schedule.
+
+1. Open Takeout's export list for the account the alert names (in the remote browser, or signed in as that account anywhere) and look for a new scheduled export (every 2 months, created around the time of the renew job).
+2. On the Exports page, press "Takeout has the new schedule" if it is there. Darkroom records it, ending a year after the renew job started, closes the alert and confirms the renewal; the next renewal is queued 3 weeks before that date.
+3. Press "Takeout has no new schedule" if it is not. The alert becomes "Takeout schedule not renewed" (below). Don't create one by hand in Takeout: Darkroom would not know about it, and next year's renewal would not happen.
+
+### "Takeout schedule not renewed"
+
+The renewal did not happen and the current schedule still ends on the date the alert gives; its scheduled exports keep coming until then.
+
+1. Fix what made the job fail: the failure alert and the Exports page link the capture (see "Google changed a page" when that is the cause).
+2. Once the schedule has ended, press Create schedule on the Exports page. It is enabled only then, and only with no schedule or renew job open. When that job is done, the "not renewed" alert closes and next year's renewal follows as usual.
+3. Exports between the end and the new schedule are not made. If that gap matters, a "renew now" action is the later addition to ask for.
