@@ -8,7 +8,7 @@ import secrets
 import shutil
 import tempfile
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +20,8 @@ SIDECAR_SUFFIX = ".xmp"
 DROPPING = ".dropping-"
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SIDECAR_SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}\.([0-9a-f]{{40}})-(.+{re.escape(SIDECAR_SUFFIX)})$")
+PLACING = ".placing-"
+PLACED = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})-(.+)$")
 UPLOADS_TMP = ".uploads_tmp"
 
 
@@ -197,11 +199,15 @@ def copy_exclusive(source: Path, destination: Path) -> None:
         raise
 
 
-def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
+def write_once(destination: Path, chunks: Iterable[bytes], marker: Path | None = None) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
-    handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
-    temp = Path(temp_name)
+    if marker is None:
+        handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
+        temp = Path(temp_name)
+    else:
+        handle, temp = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), marker
+    linked = False
     try:
         with os.fdopen(handle, "wb") as out:
             for chunk in chunks:
@@ -213,13 +219,34 @@ def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
             raise AlreadyExists(destination.name)
         try:
             os.link(temp, destination)
+            linked = True
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
         except OSError:
             copy_exclusive(temp, destination)
     finally:
-        temp.unlink(missing_ok=True)
+        if marker is None or not linked:
+            temp.unlink(missing_ok=True)
     return digest.hexdigest()
+
+
+def placing_token() -> str:
+    return secrets.token_hex(8)
+
+
+def placing_marker(destination: Path, token: str) -> Path:
+    return destination.with_name(f"{PLACING}{token}-{destination.name}")
+
+
+def mark_new_sidecar(media: Path, token: str) -> None:
+    os.close(os.open(placing_marker(sidecar_of(media), token), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+
+
+def clear_placing(destination: Path, token: str, committed: bool) -> None:
+    for made in (destination, sidecar_of(destination)):
+        if committed or not (made.exists() or made.is_symlink()):
+            with contextlib.suppress(OSError):
+                placing_marker(made, token).unlink(missing_ok=True)
 
 
 class Readable(Protocol):
@@ -466,13 +493,17 @@ def put_sidecar_back(path: Path, recorded: Callable[[Path, str], bool]) -> bool:
     return move_without_replacing(path, sidecar)
 
 
-def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> Swept:
-    swept = Swept()
+def leftovers(photos: Photos, prefix: str, older_than: float) -> Iterator[list[Path]]:
     for folder in photos.kept_folders():
         if folder.name != "google-only" or folder.is_symlink() or not folder.is_dir():
             continue
-        found = [path for path in sorted(folder.rglob(f"{DROPPING}*"))
-                 if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
+        yield [path for path in sorted(folder.rglob(f"{prefix}*"))
+               if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
+
+
+def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> Swept:
+    swept = Swept()
+    for found in leftovers(photos, DROPPING, older_than):
         for path in [path for path in found if path.suffix != SIDECAR_SUFFIX]:
             sha1, original = file_sha1(path), set_aside_name(path)
             if original is not None and recorded(original, sha1) and put_back(path, original):
@@ -492,3 +523,55 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
             path.unlink()
             swept.dropped += 1
     return swept
+
+
+def regular(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def take_back_placed(marker: Path, token: str, made: Path, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
+    sha1, new_sidecar = file_sha1(marker), placing_marker(sidecar_of(made), token)
+    if not regular(made) or not os.path.samefile(marker, made):
+        if copy_kept(marker, sha1):
+            marker.unlink()
+        return False
+    if recorded(made, sha1):
+        marker.unlink()
+        new_sidecar.unlink(missing_ok=True)
+        return False
+    if not copy_kept(made, sha1):
+        return False
+    if new_sidecar.is_file():
+        if regular(sidecar_of(made)):
+            sidecar_of(made).unlink()
+        new_sidecar.unlink()
+    made.unlink()
+    marker.unlink()
+    return True
+
+
+def take_back_sidecar(marker: Path, token: str, made: Path, recorded: Callable[[Path, str], bool]) -> None:
+    photo = made.with_name(made.name.removesuffix(SIDECAR_SUFFIX))
+    if placing_marker(photo, token).exists():
+        return
+    if regular(made) and not (regular(photo) and recorded(photo, file_sha1(photo))):
+        made.unlink()
+    marker.unlink()
+
+
+def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
+                  recorded: Callable[[Path, str], bool]) -> int:
+    taken_back = 0
+    for found in leftovers(photos, PLACING, older_than):
+        for marker in sorted(found, key=lambda path: path.suffix == SIDECAR_SUFFIX):
+            match = PLACED.match(marker.name)
+            if match is None or not regular(marker):
+                continue
+            token, made = match.group(1), marker.with_name(match.group(2))
+            if committed(token):
+                marker.unlink()
+            elif marker.suffix == SIDECAR_SUFFIX:
+                take_back_sidecar(marker, token, made, recorded)
+            elif take_back_placed(marker, token, made, copy_kept, recorded):
+                taken_back += 1
+    return taken_back
