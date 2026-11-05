@@ -127,8 +127,76 @@ final class ResourceIngesterTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let key = ResourceKey(assetID: "a/b|c", kind: .liveVideo)
-        await FileIngestVersions(url: url).setVersion("v9", for: key)
+        try await FileIngestVersions(url: url).setVersion("v9", for: key)
         let reopened = await FileIngestVersions(url: url).version(for: key)
         XCTAssertEqual(reopened, "v9")
+    }
+
+    func testVersionIsNotAcceptedWhenTheFileCannotBeWritten() async throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-such-\(UUID().uuidString)").appendingPathComponent("versions.json")
+        let versions = FileIngestVersions(url: missing)
+        let key = ResourceKey(assetID: "a", kind: .photo)
+        do {
+            try await versions.setVersion("v1", for: key)
+            XCTFail("the write should have failed")
+        } catch {}
+        let stored = await versions.version(for: key)
+        XCTAssertNil(stored)
+    }
+
+    func testFailedVersionSaveLeavesTheStoreUntouchedAndCountsFailed() async throws {
+        struct Unwritable: IngestVersions {
+            struct Full: Error {}
+            func version(for key: ResourceKey) async -> String? { "v1" }
+            func setVersion(_ version: String?, for key: ResourceKey) async throws { throw Full() }
+        }
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let old = LocalResource(key: photo("IMG_1").key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await store.upsert([old])
+        await exporter.set(contents: Data("new".utf8), for: old.key)
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: [photo("IMG_1", "v2")]), exporter: exporter, store: store, versions: Unwritable()
+        )
+        let summary = try await ingester.run()
+        XCTAssertEqual(summary, IngestSummary(failed: 1))
+        let record = try await store.record(for: old.key)
+        XCTAssertEqual(record?.resource, old)
+    }
+
+    func testCancellationDuringHashingLeavesTheStoreAndVersionsUntouched() async throws {
+        let exporter = CancellingExporter()
+        let store = InMemoryResourceStore()
+        let versions = InMemoryIngestVersions()
+        let a = photo("IMG_1")
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: [a]), exporter: exporter, store: store, versions: versions
+        )
+        let task = Task { try await ingester.run() }
+        do {
+            _ = try await task.value
+            XCTFail("the run should have been cancelled")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let record = try await store.record(for: a.key)
+        XCTAssertNil(record)
+        let version = await versions.version(for: a.key)
+        XCTAssertNil(version)
+        let destinations = await exporter.destinations
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destinations[0].path))
+    }
+}
+
+/// Writes a multi-chunk file, then cancels the task that is exporting, so the cancellation lands before hashing starts.
+private actor CancellingExporter: ResourceExporter {
+    private(set) var destinations: [URL] = []
+
+    func export(_ resource: PhotoResource, to destination: URL) async throws -> ExportOutcome {
+        destinations.append(destination)
+        try Data(count: 3 * SHA1Hasher.chunkSize).write(to: destination)
+        withUnsafeCurrentTask { $0?.cancel() }
+        return .exported
     }
 }
