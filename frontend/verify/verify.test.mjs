@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -58,8 +58,16 @@ describe("flowProblems", () => {
     expect(flowProblems({ ...ok, host: "localhost" })).toHaveLength(1);
   });
 
+  it("has a page for every one the app's navigation lists, so a new page can't be skipped", () => {
+    const nav = readFileSync(join(import.meta.dirname, "../src/lib/nav.svelte.ts"), "utf8");
+    const paths = [...nav.matchAll(/\{ path: "([^"]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) expect(Object.values(ROUTES), `no page visits ${path}: add it to PAGES in verify.mjs and ROUTES in routes.mjs`).toContain(path);
+    expect(Object.keys(ROUTES)).toEqual(PAGES);
+  });
+
   it("has the app's pages, each with a route", () => {
-    expect(PAGES).toEqual(["sign-in", "status", "people"]);
+    expect(PAGES).toEqual(["sign-in", "status", "people", "exports", "imports", "review", "browser"]);
     expect(Object.keys(ROUTES)).toEqual(PAGES);
     expect(SIGNED_OUT_PAGES).toEqual(["sign-in"]);
     expect([routeOf("status"), routeOf("people"), routeOf("sign-in"), routeOf("exports")]).toEqual(["/", "/people", "/", "/exports"]);

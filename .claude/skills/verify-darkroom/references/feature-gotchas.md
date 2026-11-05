@@ -20,3 +20,15 @@ Hand-edited. `tools/user_feature_map.py` merges these into [feature-map.md](feat
 
 ## sign-out
 - Starts signed in on People, clears the session cookie and reloads, so the last screenshot is the sign-in page.
+
+## exports
+- The demo has one Google account that needs a sign-in and one with a working session; Connect and Create schedule only queue browser jobs the demo has no worker for.
+
+## imports
+- The demo has one imported export (its run is listed) and three photos with no location (the videos); filters and the paging change what the list shows, not the demo data.
+
+## review
+- The demo has one pending pair: a library copy and a slightly different held copy of the same photo. Keep both, skip and undo change demo data; `reset` puts it back.
+
+## browser
+- The remote browser view needs a VNC address the demo doesn't have, so the page shows its not-set-up state.
