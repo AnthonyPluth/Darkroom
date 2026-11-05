@@ -1,10 +1,11 @@
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHROMIUM_ARGS, allowedRequest, checksAfter, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
+import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
 
 describe("flowProblems", () => {
   const ok = { name: "open-people", page: "status", steps: [{ goto: "/people" }, { click: "text=People", timeout: 500 }] };
@@ -162,6 +163,14 @@ describe("readFlows", () => {
     expect(readFlows(folder).flows.map((f) => f.name)).toEqual(["a", "b"]);
     expect(readFlows(join(folder, "none"))).toEqual({ flows: [] });
   });
+
+  it("refuses two files with one flow name, naming both", () => {
+    write("a.json", JSON.stringify({ name: "same", steps: [{ goto: "/people" }] }));
+    write("b.json", JSON.stringify({ name: "same", steps: [{ goto: "/" }] }));
+    expect(readFlows(folder).error).toBe("flows a.json and b.json are both named same: a flow's name is its identity, so each file needs its own");
+    write("b.json", JSON.stringify({ name: "other", steps: [{ goto: "/" }] }));
+    expect(readFlows(folder).error).toBeUndefined();
+  });
 });
 
 describe("the assertions a screenshot must not undo", () => {
@@ -228,5 +237,34 @@ describe("a page's request to any other host", () => {
     expect(allowedRequest(`${base}/api/me`, base)).toBe(true);
     expect(allowedRequest(`${otherBase}/leak`, base)).toBe(false);
     expect(allowedRequest("https://example.com/", base)).toBe(false);
+  });
+});
+
+describe("the committed images", () => {
+  const folder = mkdtempSync(join(tmpdir(), "darkroom-images-"));
+  afterAll(() => rmSync(folder, { recursive: true, force: true }));
+  const put = (dir, name, text) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), text); };
+  const names = (dir) => readdirSync(dir).sort();
+
+  it("are replaced only after a run: a whole run swaps them all, a partial one only the pages it took", () => {
+    const images = join(folder, "images-a"), staging = join(folder, "staging-a");
+    put(images, "old-phone.png", "old"); put(images, "status-phone.png", "before");
+    put(staging, "status-phone.png", "after");
+    commitImages(staging, images, false);
+    expect(names(images)).toEqual(["old-phone.png", "status-phone.png"]);
+    expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("after");
+    commitImages(staging, images, true);
+    expect(names(images)).toEqual(["status-phone.png"]);
+  });
+
+  it("are left byte for byte when a run fails", () => {
+    const images = join(folder, "images-b"), session = join(folder, "session.json");
+    put(images, "status-phone.png", "baseline");
+    writeFileSync(session, JSON.stringify({ cookie: "darkroom_session", token: "t" }));
+    const run = spawnSync(process.execPath, [join(import.meta.dirname, "verify.mjs"), "--url", "http://127.0.0.1:9", "--session", session, "--images", images, "--out", join(folder, "out"), "status"], { encoding: "utf8", timeout: 120000 });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("FAIL:");
+    expect(names(images)).toEqual(["status-phone.png"]);
+    expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("baseline");
   });
 });
