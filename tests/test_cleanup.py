@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
-from tests.import_world import DAY, NOW, World, sha1_of, tree
+from tests.import_world import DAY, NOW, World, tree
 
 LATER = NOW + 14 * DAY
 TOO_SOON = NOW + 13 * DAY
@@ -430,67 +430,6 @@ class InterruptedRemovalTests(Imported):
             self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
             self.assertEqual(sidecar_aside.read_bytes(), xmp_data)
             self.assertFalse(aside.exists())
-
-    def sidecar_set_aside(self):
-        folder = self.root / "jo" / "google-only" / "2017" / "07"
-        photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
-        aside = folder / f"{paths.DROPPING}0123456789abcdef-IMG_2001.JPG.xmp"
-        xmp_data = sidecar.read_bytes()
-        os.rename(sidecar, aside)
-        return photo, sidecar, aside, xmp_data
-
-    def test_a_lone_sidecar_set_aside_beside_its_recorded_photo_is_put_back(self):
-        before = self.kept_tree()
-        _, sidecar, aside, xmp_data = self.sidecar_set_aside()
-        report = self.clean(at=TOO_SOON)
-        self.assertEqual((report.restored, report.dropped), (1, 0))
-        self.assertEqual(sidecar.read_bytes(), xmp_data)
-        self.assertFalse(aside.exists())
-        self.assertEqual(self.kept_tree(), before)
-
-    def test_a_lone_sidecar_whose_photo_no_row_records_stays_set_aside(self):
-        photo, sidecar, aside, xmp_data = self.sidecar_set_aside()
-        row = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%/IMG_2001.JPG"))).scalar_one()
-        for change in ("sha1", "photo"):
-            with self.subTest(change=change):
-                if change == "sha1":
-                    row.sha1 = "0" * 40
-                    self.world.opened.commit()
-                else:
-                    row.sha1 = sha1_of(photo)
-                    self.world.opened.commit()
-                    photo.write_bytes(b"a different photo now at that path")
-                data = photo.read_bytes()
-                report = self.clean(at=TOO_SOON)
-                self.assertEqual((report.restored, report.dropped), (0, 0))
-                self.assertFalse(sidecar.exists())
-                self.assertEqual((aside.read_bytes(), photo.read_bytes()), (xmp_data, data))
-
-    def test_a_lone_sidecar_never_replaces_one_at_its_place_or_goes_through_a_link(self):
-        outside = self.root.parent / "outside.JPG"
-        outside.write_bytes(b"a file outside the photo folder")
-        for kind in ("sidecar", "link"):
-            with self.subTest(kind=kind):
-                photo, sidecar, aside, xmp_data = self.sidecar_set_aside()
-                data = photo.read_bytes()
-                if kind == "sidecar":
-                    sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
-                else:
-                    os.rename(photo, photo.with_name("moved.JPG"))
-                    photo.symlink_to(outside)
-                report = self.clean(at=TOO_SOON)
-                self.assertEqual(report.restored, 0)
-                self.assertEqual(aside.read_bytes(), xmp_data)
-                if kind == "sidecar":
-                    self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
-                    sidecar.unlink()
-                else:
-                    self.assertFalse(sidecar.exists())
-                    self.assertEqual(outside.read_bytes(), b"a file outside the photo folder")
-                    photo.unlink()
-                    os.rename(photo.with_name("moved.JPG"), photo)
-                    self.assertEqual(photo.read_bytes(), data)
-                os.rename(aside, sidecar)
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")

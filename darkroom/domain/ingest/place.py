@@ -115,29 +115,6 @@ def copy_into(folder: Path, source: Path, sha1: str) -> Placed:
     raise PlaceFailed("both names are taken by other files")
 
 
-@dataclass(frozen=True)
-class Staged:
-    path: Path
-    staged: Path | None
-
-
-def stage_into(folder: Path, source: Path, sha1: str) -> Staged:
-    for name in names(source, sha1):
-        destination = folder / name
-        if destination.parent != folder:
-            raise PlaceFailed("the file name is not a plain name")
-        if destination.exists() or destination.is_symlink():
-            if holds(destination, sha1):
-                return Staged(destination, None)
-            continue
-        staged = paths.staged_beside(destination)
-        if paths.write_once(staged, chunks(source)) != sha1:
-            staged.unlink(missing_ok=True)
-            raise PlaceFailed("the file changed while it was copied")
-        return Staged(destination, staged)
-    raise PlaceFailed("both names are taken by other files")
-
-
 def relative(photos: Photos, path: Path) -> str:
     return str(path.relative_to(photos.root))
 

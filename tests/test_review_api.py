@@ -1,5 +1,4 @@
 import os
-import time
 import unittest
 from unittest import mock
 
@@ -440,6 +439,54 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before)
 
+    def adopted_then_reassigned(self, photo_at_target):
+        photo, _ = self.already_there(None)
+        data = photo.read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        target = self.world.root / "sam" / "google-only" / "2019" / "08" / PAIR_NAME
+        if photo_at_target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 200, body)
+        return review_id, kept_id, photo, target, data
+
+    def test_undo_after_keep_both_adopted_a_photo_and_a_reassign_moved_it_keeps_the_photo(self):
+        for photo_at_target in (False, True):
+            with self.subTest(photo_at_target=photo_at_target):
+                review_id, _, photo, target, data = self.adopted_then_reassigned(photo_at_target)
+                self.assertFalse(photo.exists())
+                self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+                self.assertEqual(target.read_bytes(), data)
+                self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+                self.assertEqual(self.pending().id, review_id)
+                self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+                target.unlink()
+
+    def test_undo_after_an_adopted_photo_was_reassigned_twice_keeps_it_where_it_ended(self):
+        review_id, kept_id, photo, target, data = self.adopted_then_reassigned(False)
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["jo"]})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(photo.read_bytes(), data)
+        self.assertFalse(target.exists())
+
+    def test_undo_after_keep_both_adopted_a_row_and_a_reassign_moved_it_keeps_the_row_with_its_photo(self):
+        photo, _ = self.already_there(None)
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(photo.relative_to(self.world.root)),
+                             sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0, export_id=self.export.id))
+        opened.commit()
+        data = photo.read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        self.assertEqual(self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        row = self.opened.get(MediaItem, kept_id)
+        self.assertEqual((self.world.root / row.path).read_bytes(), data)
+
     def test_the_reassign_event_records_what_it_adopted_and_still_names_who_moved_it(self):
         _, kept_id, _, _, _ = self.kept_then_reassigned(sidecar_at_target=True)
         (detail,) = self.opened.execute(select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept_id}")).scalars()
@@ -509,24 +556,6 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.tree(), before_tree)
         self.assertEqual(self.pending().id, review_id)
         self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
-
-    def test_an_undo_cut_off_before_its_commit_gets_its_sidecar_back_from_cleanup(self):
-        photo, sidecar = self.already_there(None)
-        review_id, resolved = self.resolve("keep_both")
-        if not sidecar.exists():
-            sidecar.write_bytes(b"<x:xmpmeta>the sidecar keep both made</x:xmpmeta>")
-        kept_tree = self.tree()
-        opened = self.opened
-        review.undo(opened, self.world.photos, review_id, resolved + 1, review.FileEffects())
-        self.assertFalse(sidecar.exists())
-        opened.rollback()
-        swept = paths.sweep_dropping(self.world.photos, time.time() + 60, cleanup.copy_kept(opened, self.world.photos),
-                                     cleanup.still_recorded(opened, self.world.photos))
-        self.assertEqual((swept.restored, swept.dropped), (1, 0))
-        self.assertEqual(self.tree(), kept_tree)
-        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "kept_both")
-        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
-        self.assertTrue(photo.is_file())
 
     def test_a_keep_both_that_fails_puts_back_a_sidecar_it_changed(self):
         _, sidecar = self.already_there(b"<x:xmpmeta>edited by you</x:xmpmeta>")

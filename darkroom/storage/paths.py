@@ -390,10 +390,6 @@ def restore_sidecar(destination: Path, data: bytes) -> None:
         os.replace(temp, destination)
 
 
-def staged_beside(destination: Path) -> Path:
-    return destination.with_name(f"{DROPPING}{secrets.token_hex(8)}-{destination.name}")
-
-
 def set_sidecar_aside(photos: Photos, relative: str) -> SetAside:
     sidecar = sidecar_of(photos.google_only_file(relative))
     if sidecar.is_symlink() or not sidecar.is_file():
@@ -474,19 +470,8 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
         for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
             original = set_aside_name(photo)
-            if photo.exists() or photo.is_symlink():
-                continue
-            if original is not None and (original.exists() or original.is_symlink()):
-                if sidecar_put_back(path, original, recorded):
-                    swept.restored += 1
+            if photo.exists() or photo.is_symlink() or (original is not None and (original.exists() or original.is_symlink())):
                 continue
             path.unlink()
             swept.dropped += 1
     return swept
-
-
-def sidecar_put_back(sidecar: Path, photo: Path, recorded: Callable[[Path, str], bool]) -> bool:
-    home = sidecar_of(photo)
-    if photo.is_symlink() or not photo.is_file() or home.exists() or home.is_symlink():
-        return False
-    return recorded(photo, file_sha1(photo)) and move_without_replacing(sidecar, home)
