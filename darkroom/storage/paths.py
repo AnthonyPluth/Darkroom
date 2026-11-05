@@ -743,42 +743,19 @@ def take_back(record: Path, placing: Placing, copy_kept: Callable[[Path, str], b
     return ours
 
 
-def take_back_old_copy(marker: Path, made: Path, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
-    sha1 = file_sha1(marker)
-    if not regular(made) or not os.path.samefile(marker, made):
-        if copy_kept(marker, sha1):
-            marker.unlink()
-        return False
-    if recorded(made, sha1):
+def sweep_old_marker(marker: Path, older_than: float) -> None:
+    if OLD_PLACING_MARKER.match(marker.name) is not None and regular(marker) and settled(marker, older_than):
         marker.unlink()
-        return False
-    if not copy_kept(made, sha1):
-        return False
-    made.unlink()
-    marker.unlink()
-    return True
-
-
-def sweep_old_marker(marker: Path, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
-                     recorded: Callable[[Path, str], bool]) -> bool:
-    match = OLD_PLACING_MARKER.match(marker.name)
-    if match is None or not regular(marker) or not settled(marker, older_than):
-        return False
-    token, made = match.group(1), marker.with_name(match.group(2))
-    if committed(token) or marker.suffix == SIDECAR_SUFFIX:
-        marker.unlink()
-        return False
-    return take_back_old_copy(marker, made, copy_kept, recorded)
 
 
 def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
                   recorded: Callable[[Path, str], bool]) -> int:
     taken_back = 0
     for found in leftovers(photos, PLACING):
-        for record in sorted(found, key=lambda path: path.suffix == SIDECAR_SUFFIX):
+        for record in found:
             match = PLACING_RECORD.match(record.name)
             if match is None:
-                taken_back += sweep_old_marker(record, older_than, committed, copy_kept, recorded)
+                sweep_old_marker(record, older_than)
                 continue
             placing = None if not written_before(record, older_than) else read_placing(record)
             if placing is None:

@@ -581,18 +581,20 @@ class InterruptedReassignTests(ReviewCase):
     def key(self, path):
         return str(path.relative_to(self.world.root))
 
-    def test_markers_left_by_the_previous_release_are_still_swept(self):
+    def test_markers_left_by_the_previous_release_are_cleared_and_never_remove_a_copy(self):
         item_id, path = self.kept()
         before = self.tree()
         self.dies_while_reassigning(item_id)
         self.as_old_markers(self.target(path))
         sidecar = paths.sidecar_of(self.target(path))
-        data = sidecar.read_bytes()
+        data, xmp_data = self.target(path).read_bytes(), sidecar.read_bytes()
         report = self.clean()
-        self.assertEqual((report.taken_back, report.restored), (1, 1))
-        self.assertFalse(self.target(path).exists())
-        self.assertEqual(sidecar.read_bytes(), data)
-        self.assertEqual({key: value for key, value in self.tree().items() if key != self.key(sidecar)}, before)
+        self.assertEqual((report.taken_back, report.restored), (0, 1))
+        self.assertEqual((self.target(path).read_bytes(), sidecar.read_bytes()), (data, xmp_data))
+        self.assertEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
+        left = {self.key(self.target(path)), self.key(sidecar)}
+        self.assertEqual({key: value for key, value in self.tree().items() if key not in left}, before)
+        self.target(path).unlink()
         sidecar.unlink()
         with mock.patch.object(paths, "clear_placing"):
             self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
@@ -621,32 +623,6 @@ class InterruptedReassignTests(ReviewCase):
                 self.assertEqual({key: value for key, value in self.tree().items() if key != self.key(sidecar)}, before)
                 self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*")), [])
                 sidecar.unlink()
-
-    def test_an_old_marker_keeps_a_copy_a_row_records(self):
-        item_id, path = self.kept()
-        target = self.target(path)
-        self.dies_while_reassigning(item_id)
-        self.as_old_markers(target)
-        opened = self.opened
-        opened.add(MediaItem(person_id=self.world.ids["sam"], source="takeout", path=self.key(target), sha1=sha1_of(target),
-                             bytes=target.stat().st_size, indexed_at=1.0))
-        opened.commit()
-        data = target.read_bytes()
-        self.assertEqual(self.clean().taken_back, 0)
-        self.assertEqual(target.read_bytes(), data)
-        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*{target.name}")), [])
-
-    def test_an_old_marker_keeps_the_only_copy_left_and_its_marker(self):
-        item_id, path = self.kept()
-        target = self.target(path)
-        self.dies_while_reassigning(item_id)
-        for aside in (self.world.root / path).parent.glob(f"{paths.DROPPING}*"):
-            aside.unlink()
-        token = self.as_old_markers(target)
-        data = target.read_bytes()
-        self.assertEqual(self.clean().taken_back, 0)
-        self.assertEqual(target.read_bytes(), data)
-        self.assertTrue(target.with_name(f"{paths.PLACING}{token}-{target.name}").is_file())
 
     def test_an_old_marker_whose_place_now_holds_another_photo_never_touches_it(self):
         item_id, path = self.kept()
