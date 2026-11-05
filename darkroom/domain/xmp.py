@@ -95,3 +95,34 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
         return False
     return write(sidecar, gaps(own, existing, google, with_date))
+
+
+def same_place(lat: float | None, lon: float | None, other_lat: float | None, other_lon: float | None) -> bool:
+    if lat is None or lon is None or other_lat is None or other_lon is None:
+        return lat is None and lon is None and other_lat is None and other_lon is None
+    return abs(lat - other_lat) < 1e-6 and abs(lon - other_lon) < 1e-6
+
+
+def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    described = new.description is not None and new.description != old.description and not has_description(own)
+    if described and new.description is not None and media.text(media.tag(existing, "Description")) == old.description:
+        fields[DESCRIPTION] = new.description
+    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+        lat, lon, _ = media.location(existing)
+        if same_place(lat, lon, old.lat, old.lon):
+            fields[LATITUDE], fields[LONGITUDE] = f"{new.lat:.7f}", f"{new.lon:.7f}"
+    return fields
+
+
+def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp) -> bool:
+    sidecar = paths.sidecar_of(media_path)
+    present = sidecar.exists() or sidecar.is_symlink()
+    if present:
+        paths.checked_sidecar(sidecar)
+    tags = read([media_path, sidecar] if present else [media_path])
+    own = tags.get(media_path)
+    existing = tags.get(sidecar, {}) if present else {}
+    if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
+        return False
+    return write(sidecar, changes(own, existing, old, new))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,6 +38,7 @@ class PlaceReport:
     held: int = 0
     sidecars: int = 0
     skipped: int = 0
+    refreshed: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,23 @@ def fill_original(opened: Session, photos: Photos, entry: Entry, report: PlaceRe
         report.sidecars += 1
 
 
+def matched_takeout(opened: Session, decision: DedupeDecision) -> MediaItem | None:
+    if decision.decided_by != "auto" or decision.tier != 1 or decision.matched_item_id is None:
+        return None
+    matched = opened.get(MediaItem, decision.matched_item_id)
+    return matched if matched is not None and matched.source == "takeout" else None
+
+
+def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> None:
+    old, new = xmp.GoogleMetadata.of(matched.sidecar_json), xmp.GoogleMetadata.of(entry.fields.sidecar_json)
+    path = photos.root / matched.path
+    if old == new or not path.is_file() or path.is_symlink() or not xmp.refresh(path, old, new, read, write):
+        report.skipped += 1
+        return
+    matched.sidecar_json = entry.fields.sidecar_json
+    report.refreshed.append(matched.id)
+
+
 def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Entry],
           read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> PlaceReport:
     report = PlaceReport()
@@ -195,6 +213,8 @@ def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Ent
             place_google_only(opened, photos, export, entry, report, read, write)
         elif decision.tier == 4:
             hold_for_review(opened, photos, export, entry, report)
+        elif (matched := matched_takeout(opened, decision)) is not None:
+            refresh_takeout(photos, matched, entry, report, read, write)
         elif decision.tier in dedupe.CONFIRMING_TIERS:
             fill_original(opened, photos, entry, report, read, write)
         else:
