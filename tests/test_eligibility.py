@@ -213,6 +213,8 @@ class ConfirmAndDeletedTests(unittest.TestCase):
                                             "NEVER-SEEN": eligibility.UNKNOWN_ASSET})
         self.assertEqual(confirmed.asset.deleted_at, self.home.now)
         self.assertEqual((listed_only.asset.deleted_at, other.asset.deleted_at), (None, None))
+        details = [event.detail for event in self.home.opened.execute(select(Event).where(Event.type == "cleanup_deleted").order_by(Event.id)).scalars()]
+        self.assertEqual(details, ["1 recorded, 0 refused", "0 recorded, 3 refused"])
 
     def test_a_deleted_asset_is_never_offered_again(self):
         photo = self.home.photo(self.phone, through=self.google)
