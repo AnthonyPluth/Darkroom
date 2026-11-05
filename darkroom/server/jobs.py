@@ -143,7 +143,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
         push_alerts(settings, engine, found_pusher, at)
 
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
-    scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now)
+    scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now, own_thread=True)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
     def expire_browser_leases(at: float) -> None:
         with db.session(engine) as opened:
