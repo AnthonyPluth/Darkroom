@@ -11,7 +11,7 @@ from darkroom.server import contract
 from darkroom.server.api.browser_internal import engine_of
 from darkroom.server.common import Request, Response, error_response, json_response
 from darkroom.storage import db
-from darkroom.storage.models import Export, ImportRun
+from darkroom.storage.models import Export, ExportPart, ImportRun
 
 ID_DIGITS = 12
 LIST_LIMIT = 200
@@ -34,8 +34,11 @@ def counts(raw: str | None) -> dict[str, int]:
 
 def view(opened: Session, row: ImportRun) -> dict[str, object]:
     export = opened.get(Export, row.export_id)
+    parts = opened.execute(select(ExportPart).where(ExportPart.export_id == row.export_id).order_by(ExportPart.number)).scalars()
     return {
         "id": row.id, "export_id": row.export_id, "account_id": None if export is None else export.account_id,
+        "export_kind": None if export is None else export.kind, "export_created_at": None if export is None else export.created_at,
+        "part_count": None if export is None else export.part_count, "parts": [{"number": part.number, "status": part.status} for part in parts],
         "started": row.started, "finished": row.finished, "stage": row.stage, "status": row.status,
         "added": row.added, "skipped_t1": row.skipped_t1, "skipped_t2": row.skipped_t2, "skipped_t3": row.skipped_t3,
         "review": row.review, "missing_gps": row.missing_gps, "failed": row.failed,

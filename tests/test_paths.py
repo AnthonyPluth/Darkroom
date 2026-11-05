@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,6 +172,122 @@ class WriteOnceTests(unittest.TestCase):
                 paths.write_once(destination, [b"data"])
         self.assertEqual(list(self.folder.iterdir()), [])
 
+
+
+class DropLibraryCopyTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.root = self.base / "photos"
+        self.root.mkdir()
+        self.photos = paths.Photos(self.root)
+        self.photos.ensure_person_tree("jo")
+        self.photos.ensure_person_tree("sam")
+        self.copy = self.write("jo/google-only/2020/01/a.jpg", b"same bytes")
+        self.write("jo/google-only/2020/01/a.jpg.xmp", b"<xmp/>")
+        self.kept = self.write("sam/google-only/2020/01/a.jpg", b"same bytes")
+
+    def write(self, relative, data):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def test_an_identical_copy_and_its_sidecar_are_removed(self):
+        paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        self.assertFalse(self.copy.exists())
+        self.assertFalse(self.copy.with_name("a.jpg.xmp").exists())
+        self.assertEqual(self.kept.read_bytes(), b"same bytes")
+
+    def test_putting_back_never_replaces_a_file_made_meanwhile(self):
+        aside = paths.set_library_copy_aside(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        newer = self.write("jo/google-only/2020/01/a.jpg", b"made while it was set aside")
+        newer_sidecar = self.write("jo/google-only/2020/01/a.jpg.xmp", b"<new/>")
+        staged = sorted(path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING))
+        with self.assertRaises(FileExistsError):
+            aside.restore()
+        self.assertEqual((newer.read_bytes(), newer_sidecar.read_bytes()), (b"made while it was set aside", b"<new/>"))
+        self.assertEqual(sorted(path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)), staged)
+        self.assertEqual(len(staged), 2)
+
+    def test_putting_back_restores_one_file_when_the_other_place_is_taken(self):
+        aside = paths.set_library_copy_aside(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        newer_sidecar = self.write("jo/google-only/2020/01/a.jpg.xmp", b"<new/>")
+        with self.assertRaises(FileExistsError):
+            aside.restore()
+        self.assertEqual(self.copy.read_bytes(), b"same bytes")
+        self.assertEqual(newer_sidecar.read_bytes(), b"<new/>")
+
+    def test_putting_back_a_set_aside_sidecar_works_when_nothing_is_in_the_way(self):
+        paths.set_sidecar_aside(self.photos, "jo/google-only/2020/01/a.jpg").restore()
+        self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertEqual([path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)], [])
+
+    def test_nothing_outside_a_google_only_folder_is_removed(self):
+        original = self.write("jo/originals/a.jpg", b"same bytes")
+        held = self.write("_inbox/jo/review/export-1/a.jpg", b"same bytes")
+        for relative in ("jo/originals/a.jpg", "_inbox/jo/review/export-1/a.jpg", "jo/google-only", "jo/google-only/../originals/a.jpg",
+                         "../photos/jo/google-only/2020/01/a.jpg", "jo/google-only//a.jpg", "Jo/google-only/2020/01/a.jpg"):
+            with self.subTest(relative=relative), self.assertRaises((paths.NotALibraryCopy, paths.OutsideRoot)):
+                paths.drop_library_copy(self.photos, relative, self.kept)
+        self.assertTrue(original.is_file() and held.is_file() and self.copy.is_file())
+
+    def test_a_copy_is_kept_unless_an_identical_file_stays(self):
+        different = self.write("sam/google-only/2020/01/b.jpg", b"other bytes")
+        outside = self.base / "outside.jpg"
+        outside.write_bytes(b"same bytes")
+        link = self.root / "sam" / "google-only" / "link.jpg"
+        link.symlink_to(self.kept)
+        for kept in (different, self.copy, outside, link, self.root / "missing.jpg"):
+            with self.subTest(kept=kept), self.assertRaises(paths.NotALibraryCopy):
+                paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", kept)
+        self.assertEqual(self.copy.read_bytes(), b"same bytes")
+
+    def test_a_sidecar_is_carried_byte_for_byte_and_never_over_another(self):
+        target = self.root / "sam" / "google-only" / "2020" / "01" / "c.jpg"
+        self.assertTrue(paths.carry_sidecar(self.copy, target))
+        self.assertEqual(target.with_name("c.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertTrue(paths.carry_sidecar(self.copy, target))
+        target.with_name("c.jpg.xmp").write_bytes(b"other")
+        with self.assertRaises(paths.AlreadyExists):
+            paths.carry_sidecar(self.copy, target)
+        self.assertEqual(target.with_name("c.jpg.xmp").read_bytes(), b"other")
+        self.assertFalse(paths.carry_sidecar(self.kept, target))
+
+    def test_the_sidecar_can_be_left_in_place(self):
+        paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept, with_sidecar=False)
+        self.assertFalse(self.copy.exists())
+        self.assertTrue(self.copy.with_name("a.jpg.xmp").is_file())
+
+    def test_a_failure_part_way_restores_both_files(self):
+        real = os.rename
+
+        def rename(source, target):
+            if str(source).endswith(".xmp"):
+                raise PermissionError("made to fail")
+            return real(source, target)
+
+        with mock.patch.object(paths.os, "rename", side_effect=rename), self.assertRaises(PermissionError):
+            paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        self.assertEqual(self.copy.read_bytes(), b"same bytes")
+        self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertEqual(sorted(path.name for path in self.copy.parent.iterdir()), ["a.jpg", "a.jpg.xmp"])
+
+    def test_a_staged_file_that_cannot_be_deleted_still_counts_as_gone(self):
+        with mock.patch.object(paths.Path, "unlink", side_effect=PermissionError("made to fail")):
+            paths.drop_library_copy(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        self.assertFalse(self.copy.exists())
+        self.assertFalse(self.copy.with_name("a.jpg.xmp").exists())
+
+    def test_a_linked_copy_is_never_followed(self):
+        target = self.base / "elsewhere.jpg"
+        target.write_bytes(b"same bytes")
+        link = self.root / "jo" / "google-only" / "2020" / "01" / "link.jpg"
+        link.symlink_to(target)
+        with self.assertRaises(paths.NotALibraryCopy):
+            paths.drop_library_copy(self.photos, "jo/google-only/2020/01/link.jpg", self.kept)
+        self.assertTrue(target.is_file())
 
 if __name__ == "__main__":
     unittest.main()

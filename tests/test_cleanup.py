@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
 from tests.import_world import DAY, NOW, World, tree
 
 LATER = NOW + 14 * DAY
@@ -297,6 +297,165 @@ class ReviewHoldTests(Imported):
         self.hold.unlink()
         self.assertEqual(self.clean(NOW + 100 * DAY).holds, 1)
         self.assertIsNone(self.review().hold_path)
+
+
+class InterruptedRemovalTests(Imported):
+    def leftover(self, name, data=None):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        path = folder / f"{paths.DROPPING}0123456789abcdef-{name}"
+        path.write_bytes((folder / "IMG_2001.JPG").read_bytes() if data is None else data)
+        return path
+
+    def test_an_old_dropping_file_in_google_only_is_swept_and_counted(self):
+        stale = self.leftover("IMG_9.JPG")
+        before = {key: value for key, value in self.kept_tree().items() if paths.DROPPING not in key}
+        report = self.clean(at=TOO_SOON)
+        self.assertFalse(stale.exists())
+        self.assertEqual(report.dropped, 1)
+        self.assertEqual({key: value for key, value in self.kept_tree().items()}, before)
+        details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
+        self.assertTrue(any(detail.endswith("1 interrupted removals cleared") for detail in details))
+        self.assertFalse(any("IMG_9" in detail for detail in details))
+
+    def test_a_dropping_file_with_no_identical_copy_left_is_kept(self):
+        for data in (b"the only copy of this photo", None):
+            with self.subTest(identical_copy_is_a_library_row=data is None):
+                stale = self.leftover("IMG_9.JPG", data)
+                if data is None:
+                    (self.root / "jo" / "google-only" / "2017" / "07" / "IMG_2001.JPG").unlink()
+                report = self.clean(at=TOO_SOON)
+                self.assertTrue(stale.is_file())
+                self.assertEqual(report.dropped, 0)
+
+    def test_a_dropping_file_whose_copy_is_a_pending_review_hold_is_swept(self):
+        stale = self.leftover("IMG_1005.JPG", self.hold.read_bytes())
+        self.assertEqual(self.clean(at=TOO_SOON).dropped, 1)
+        self.assertFalse(stale.exists())
+
+    def test_a_dropping_file_whose_only_copy_is_a_decided_pairs_hold_is_kept(self):
+        review = self.review()
+        review.status, review.resolved_at = "kept_both", TOO_SOON - DAY
+        self.world.opened.commit()
+        stale = self.leftover("IMG_1005.JPG", self.hold.read_bytes())
+        self.assertEqual(self.clean(at=TOO_SOON).dropped, 0)
+        self.assertTrue(stale.is_file())
+        self.assertTrue(self.hold.is_file())
+
+    def test_a_dropping_sidecar_goes_only_when_its_photo_is_gone_or_goes_too(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        for photo_data, expected in ((None, False), (b"the only copy of this photo", True), (b"", False)):
+            with self.subTest(photo_data=photo_data):
+                sidecar = folder / f"{paths.DROPPING}0123456789abcdef-IMG_9.JPG.xmp"
+                sidecar.write_bytes(b"<x:xmpmeta>a sidecar whose delete failed</x:xmpmeta>")
+                photo = folder / f"{paths.DROPPING}0123456789abcdef-IMG_9.JPG"
+                if photo_data == b"":
+                    photo.write_bytes((folder / "IMG_2001.JPG").read_bytes())
+                elif photo_data is not None:
+                    photo.write_bytes(photo_data)
+                self.clean(at=TOO_SOON)
+                self.assertEqual(sidecar.is_file(), expected)
+                self.assertEqual(photo.is_file(), expected)
+                sidecar.unlink(missing_ok=True)
+                photo.unlink(missing_ok=True)
+
+    def test_a_dropping_file_a_row_still_records_is_put_back_with_its_sidecar(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
+        data, xmp_data = photo.read_bytes(), sidecar.read_bytes()
+        os.rename(photo, folder / f"{paths.DROPPING}0123456789abcdef-IMG_2001.JPG")
+        os.rename(sidecar, folder / f"{paths.DROPPING}0123456789abcdef-IMG_2001.JPG.xmp")
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((photo.read_bytes(), sidecar.read_bytes()), (data, xmp_data))
+        self.assertEqual(list(folder.glob(f"{paths.DROPPING}*")), [])
+        self.assertEqual((report.restored, report.dropped), (1, 0))
+        details = [row.detail for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
+        self.assertTrue(any(detail.endswith("1 interrupted removals put back") for detail in details))
+
+    def set_aside(self, name="IMG_2001.JPG"):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        photo, sidecar = folder / name, folder / f"{name}.xmp"
+        aside, sidecar_aside = folder / f"{paths.DROPPING}0123456789abcdef-{name}", folder / f"{paths.DROPPING}0123456789abcdef-{name}.xmp"
+        data, xmp_data = photo.read_bytes(), sidecar.read_bytes()
+        os.rename(photo, aside)
+        os.rename(sidecar, sidecar_aside)
+        return photo, sidecar, aside, sidecar_aside, data, xmp_data
+
+    def test_a_put_back_never_replaces_what_is_at_the_original_path(self):
+        outside = self.root.parent / "outside.JPG"
+        outside.write_bytes(b"a file outside the photo folder")
+        for kind in ("file", "link"):
+            with self.subTest(kind=kind):
+                photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+                if kind == "file":
+                    photo.write_bytes(b"a different photo now at that path")
+                else:
+                    photo.symlink_to(outside)
+                report = self.clean(at=TOO_SOON)
+                self.assertEqual(report.restored, 0)
+                if kind == "file":
+                    self.assertEqual(photo.read_bytes(), b"a different photo now at that path")
+                else:
+                    self.assertEqual((photo.is_symlink(), outside.read_bytes()), (True, b"a file outside the photo folder"))
+                self.assertEqual((aside.read_bytes(), sidecar_aside.read_bytes()), (data, xmp_data))
+                self.assertFalse(sidecar.exists())
+                photo.unlink()
+                os.rename(aside, photo)
+                os.rename(sidecar_aside, sidecar)
+
+    def test_a_row_with_a_different_sha1_gets_no_put_back(self):
+        photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+        row = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%/IMG_2001.JPG"))).scalar_one()
+        row.sha1 = "0" * 40
+        self.world.opened.commit()
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (0, 0))
+        self.assertFalse(photo.exists())
+        self.assertFalse(sidecar.exists())
+        self.assertEqual((aside.read_bytes(), sidecar_aside.read_bytes()), (data, xmp_data))
+
+    def test_a_dropping_name_no_row_records_is_not_put_back(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        stale = self.leftover("IMG_77.JPG")
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (0, 1))
+        self.assertFalse((folder / "IMG_77.JPG").exists())
+        self.assertFalse(stale.exists())
+
+    def test_a_sidecar_whose_photo_was_put_back_without_it_is_kept(self):
+        photo, sidecar, aside, sidecar_aside, data, xmp_data = self.set_aside()
+        sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+        for _ in range(2):
+            self.clean(at=TOO_SOON)
+            self.assertEqual(photo.read_bytes(), data)
+            self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+            self.assertEqual(sidecar_aside.read_bytes(), xmp_data)
+            self.assertFalse(aside.exists())
+
+    def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
+        fresh = self.leftover("IMG_9.JPG")
+        report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1)
+        self.assertTrue(fresh.exists())
+        self.assertEqual(report.dropped, 0)
+
+    def test_only_google_only_dropping_files_are_swept(self):
+        original = self.root / "jo" / "originals" / f"{paths.DROPPING}0123456789abcdef-IMG_1.JPG"
+        original.write_bytes(b"an original with an odd name")
+        outside = self.root.parent / "elsewhere.JPG"
+        outside.write_bytes(b"outside")
+        link = self.root / "jo" / "google-only" / f"{paths.DROPPING}link-x.JPG"
+        link.symlink_to(outside)
+        self.clean(at=TOO_SOON)
+        self.assertTrue(original.is_file())
+        self.assertTrue(outside.is_file())
+        self.assertTrue(link.is_symlink())
+
+    def test_a_sweep_that_fails_is_recorded_and_cleanup_goes_on(self):
+        self.leftover("IMG_9.JPG")
+        with mock.patch.object(paths, "sweep_dropping", side_effect=PermissionError("read-only")):
+            report = self.clean(at=TOO_SOON)
+        self.assertEqual(report.failed, 1)
+        events = [(row.subject, row.detail) for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed")).scalars()]
+        self.assertIn(("google-only", "PermissionError"), events)
 
 
 class RemovableTests(unittest.TestCase):
