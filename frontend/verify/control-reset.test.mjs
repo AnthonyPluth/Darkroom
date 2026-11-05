@@ -82,8 +82,11 @@ describe("setUpContext", () => {
     try {
       await expect(setUpContext(browser, {}, async () => { throw new Error("sign-in failed"); })).rejects.toThrow("sign-in failed");
       expect(browser.contexts()).toHaveLength(0);
-      const kept = await setUpContext(browser, {}, async () => {});
-      expect(browser.contexts()).toEqual([kept]);
+      await expect(setUpContext(browser, {}, async (made) => { made.newPage = async () => { throw new Error("no page"); }; return made.newPage(); })).rejects.toThrow("no page");
+      expect(browser.contexts()).toHaveLength(0);
+      const kept = await setUpContext(browser, {}, async (made) => made.newPage());
+      expect(browser.contexts()).toEqual([kept.context]);
+      expect(kept.value.context()).toBe(kept.context);
     } finally { await browser.close(); }
   });
 });

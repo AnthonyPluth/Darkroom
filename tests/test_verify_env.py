@@ -359,7 +359,7 @@ def contextlib_redirect():
 class SessionStartHookTests(unittest.TestCase):
     HOOK = ROOT / ".claude" / "hooks" / "session-start.local.sh"
 
-    def installs(self, browsers_path: str, cache_has_chromium: bool, preinstalled: bool) -> bool:
+    def installs(self, browsers_path: str | None, cache_has_chromium: bool, preinstalled: bool) -> bool:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             work = Path(tmp) / "work"
@@ -374,23 +374,33 @@ class SessionStartHookTests(unittest.TestCase):
                 (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64").mkdir(parents=True)
                 (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64" / "chrome").write_text("")
             home.mkdir(exist_ok=True)
-            pre = Path(browsers_path)
+            pre = Path(browsers_path or tmp) / "browsers"
             if preinstalled:
                 (pre / "chromium-2" / "chrome-linux").mkdir(parents=True)
                 (pre / "chromium-2" / "chrome-linux" / "chrome").write_text("")
-            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home), "PLAYWRIGHT_BROWSERS_PATH": str(pre)}
+            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home)}
+            if browsers_path is not None:
+                env["PLAYWRIGHT_BROWSERS_PATH"] = str(pre)
             subprocess.run(["bash", "-c", f". {self.HOOK}"], cwd=work, env=env, check=True, capture_output=True)
             return marker.exists()
 
-    def test_chromium_in_either_place_is_enough_and_in_neither_is_installed(self):
+    def test_a_configured_browsers_path_is_the_only_place_looked_in(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(self.installs(str(Path(tmp) / "a"), cache_has_chromium=True, preinstalled=False))
+            self.assertTrue(self.installs(str(Path(tmp) / "x"), cache_has_chromium=True, preinstalled=False))
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(self.installs(str(Path(tmp) / "b"), cache_has_chromium=False, preinstalled=True))
+            self.assertFalse(self.installs(str(Path(tmp) / "y"), cache_has_chromium=False, preinstalled=True))
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(self.installs(str(Path(tmp) / "c"), cache_has_chromium=True, preinstalled=True))
+            self.assertFalse(self.installs(None, cache_has_chromium=True, preinstalled=False))
+
+    def test_chromium_in_the_configured_path_or_the_user_cache_is_enough_and_in_neither_is_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertTrue(self.installs(str(Path(tmp) / "d"), cache_has_chromium=False, preinstalled=False))
+            self.assertFalse(self.installs(str(Path(tmp) / "a"), cache_has_chromium=False, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(None, cache_has_chromium=True, preinstalled=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "b"), cache_has_chromium=True, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.installs(str(Path(tmp) / "c"), cache_has_chromium=False, preinstalled=False))
 
 
 if __name__ == "__main__":

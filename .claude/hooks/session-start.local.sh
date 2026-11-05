@@ -1,6 +1,10 @@
 chromium_present() {
   local root
-  for root in "${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}" "${HOME}/.cache/ms-playwright"; do
+  local roots=("/opt/pw-browsers" "${HOME}/.cache/ms-playwright")
+  if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    roots=("${PLAYWRIGHT_BROWSERS_PATH}")
+  fi
+  for root in "${roots[@]}"; do
     if compgen -G "${root}/chromium-*/chrome-linux*/chrome" >/dev/null; then
       return 0
     fi
