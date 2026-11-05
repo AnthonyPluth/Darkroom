@@ -370,6 +370,8 @@ class SetAside:
         for _, aside in self.staged:
             with contextlib.suppress(OSError):
                 aside.unlink()
+        if any(aside.exists() or aside.is_symlink() for _, aside in self.staged):
+            return
         for record in self.records:
             with contextlib.suppress(OSError):
                 record.unlink()
