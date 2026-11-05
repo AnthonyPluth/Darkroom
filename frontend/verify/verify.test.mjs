@@ -112,7 +112,7 @@ describe("CHROMIUM_ARGS", () => {
 describe("findChromium", () => {
   const tree = (files) => ({ exists: (p) => files.some((f) => f === p || f.startsWith(`${p}/`)), list: () => ["ffmpeg-1011", "chromium-1194", "chromium-1200"] });
 
-  it("looks in the user's Playwright cache when the variable is unset, as the session-start hook does, and uses the newest Chromium there", () => {
+  it("uses the newest preinstalled Chromium, wherever its folder is", () => {
     const home = { HOME: "/home/dev" };
     expect(browsersRoot(home)).toBe("/home/dev/.cache/ms-playwright");
     const { exists, list } = tree(["/home/dev/.cache/ms-playwright/chromium-1194/chrome-linux/chrome"]);
@@ -143,8 +143,7 @@ describe("the session-start hook", () => {
       mkdirSync(join(work, "frontend"));
       mkdirSync(join(work, "bin"));
       writeFileSync(join(work, "bin", "npx"), `#!/bin/sh\ntouch ${join(work, "installed")}\n`, { mode: 0o755 });
-      const { PLAYWRIGHT_BROWSERS_PATH, ...rest } = env;
-      spawnSync("bash", ["-c", `. ${HOOK}`], { cwd: work, env: { PATH: `${join(work, "bin")}:/usr/bin:/bin`, HOME: home, ...rest }, encoding: "utf8" });
+      spawnSync("bash", ["-c", `. ${HOOK}`], { cwd: work, env: { PATH: `${join(work, "bin")}:/usr/bin:/bin`, HOME: home, ...env }, encoding: "utf8" });
       return readdirSync(work).includes("installed");
     } finally { rmSync(work, { recursive: true, force: true }); }
   };
