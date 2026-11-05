@@ -446,7 +446,7 @@ def request_import(opened: Session, export_id: int) -> Export:
         raise LookupError("no such export")
     if export.status == "imported":
         raise AlreadyImported("this export is already imported")
-    if export.status not in IMPORTABLE:
+    if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
     if export.stage in EARLY_STAGES:
         export.stage = "queued"

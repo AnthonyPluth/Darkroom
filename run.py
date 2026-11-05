@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
-from darkroom.providers import exiftool
+from darkroom.providers import apns, exiftool
 from darkroom.dates import utc_now
 from darkroom.domain import demo, index
 from darkroom.domain.ingest import run as ingest_run
@@ -32,6 +32,7 @@ def check_config() -> int:
     except (exiftool.Missing, OSError) as error:
         found.append(str(error))
     found += oidc.recheck_problems(settings, utc_now().timestamp())
+    found += apns.key_problems(settings)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
     if not found:
@@ -97,6 +98,9 @@ def import_one(opened: Session, settings: config.Settings, export: Export, now: 
         return 0
     except (ingest_run.Busy, ingest_run.NotReady) as error:
         print(f"export {export.id}: {error}", file=sys.stderr)
+        return 1
+    if done.status in ingest_run.WAITING:
+        print(f"export {export.id}: the import did not fail; its last step could not be saved, so it will resume on the server's next import tick or when you run this command again", file=sys.stderr)
         return 1
     if done.status != "done":
         print(f"export {export.id}: {done.error or 'the import failed'}; see the events on the status page", file=sys.stderr)

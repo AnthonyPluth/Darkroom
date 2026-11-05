@@ -12,6 +12,7 @@ dependencies = [
     "imagehash (>=4.3,<5.0)",
     "pillow-heif (>=0.20,<2.0)",
     "timezonefinder (>=6.5,<9.0)",
+    "h2 (>=4.3,<5.0)",
 ]
 
 [project.optional-dependencies]
@@ -109,7 +110,7 @@ broken_contract_guidance = "Reach the database through darkroom.storage.db."
 id = "network-through-tls"
 name = "Only darkroom.tls opens outbound connections"
 type = "protected"
-protected_modules = ["ssl", "http"]
+protected_modules = ["ssl", "http", "socket", "h2"]
 allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
@@ -143,7 +144,7 @@ broken_contract_guidance = "Drive the browser through darkroom_browser.live; par
 id = "providers-alone"
 name = "Providers import no other provider"
 type = "independence"
-modules = ["darkroom.providers.exiftool", "darkroom.providers.immich"]
+modules = ["darkroom.providers.apns", "darkroom.providers.exiftool", "darkroom.providers.immich"]
 
 [[tool.importlinter.contracts]]
 id = "subprocess-only-exiftool"

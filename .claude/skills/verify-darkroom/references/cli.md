@@ -37,6 +37,7 @@ Interact:
 Observe:
   console      The console messages and page errors since the last call.
   network      The requests since the last call: method, path, status, and the ones that failed.
+  fake-immich  What the fake Immich recorded while a --with-import session was seeded.
 
 Flows:
   flows        List make verify's flows (frontend/verify/flows/), with the page and widths each starts on.
@@ -72,7 +73,8 @@ tools/control start [options]
 
 Start a session: a demo server on fresh demo data under the frozen clock, and a browser on it.
 
-The demo data is what make verify seeds (`run.py demo`), so pages look as in docs/screenshots/. The browser is signed in as the demo member.
+The demo data is `run.py demo`'s. The browser is signed in as the demo member.
+--with-import adds what make verify seeds on top: a second export built from the demo originals, imported through `run.py import-takeout` against a fake Immich on 127.0.0.1 (`fake-immich scans` lists the rescans it recorded). Only with it do pages look as in docs/screenshots/.
 The server and the seed run under libfaketime at make verify's frozen moment, and the browser's clock is fixed at the same moment (UTC).
 One session per checkout, on a port and data of its own: a running make verify is left alone.
 Refuses when the machine is busy (more than 1.5 runnable processes per CPU) unless --anyway. A stale session (its process gone) is cleaned up first.
@@ -81,10 +83,12 @@ Options:
   --viewport <phone|desktop|laptop|wide>  the browser's size to start at (default phone)
   --idle-minutes <number>  stop by itself after this long with no command (default 30)
   --anyway  start even though the machine is busy (pages may load slowly)
+  --with-import  also import a made-up Takeout export against a fake Immich, so Imports and the review queue hold a real run
 
 Examples:
   tools/control start
   tools/control start --viewport desktop
+  tools/control start --with-import
 ```
 
 ### stop
@@ -369,6 +373,20 @@ Paths only: no query strings, bodies or ids (numbers become :id). make verify fa
 
 Examples:
   tools/control network --text
+```
+
+### fake-immich
+
+```text
+tools/control fake-immich <scans>
+
+What the fake Immich recorded while a --with-import session was seeded.
+
+`scans` lists the library rescans the import asked the fake for: one per library whose files changed, with the person it belongs to.
+Only a session started with `start --with-import` has them; the fake itself stops once the import is done, and nothing leaves 127.0.0.1.
+
+Examples:
+  tools/control fake-immich scans --text
 ```
 
 ## Flows
