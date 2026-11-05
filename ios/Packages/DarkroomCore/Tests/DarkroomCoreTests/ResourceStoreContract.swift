@@ -26,6 +26,19 @@ enum ResourceStoreContract {
         XCTAssertEqual(record, ResourceRecord(resource: original))
     }
 
+    static func conditionalSetStateOnlyTouchesRowsWithTheSameContent(_ store: ResourceStore) async throws {
+        let old = resource("a", state: .checked, sha1: "old")
+        try await store.upsert([old, resource("b", state: .uploading)])
+        try await store.upsert([resource("a", sha1: "new")])
+        let applied = try await store.setState(.uploaded, ifUnchanged: [old, resource("b", state: .uploading), resource("gone")], failureReason: nil)
+        XCTAssertEqual(applied, 1)
+        let a = try await store.record(for: key("a"))
+        let b = try await store.record(for: key("b"))
+        XCTAssertEqual(a?.resource.state, .hashed)
+        XCTAssertEqual(a?.resource.sha1, "new")
+        XCTAssertEqual(b?.resource.state, .uploaded)
+    }
+
     static func unknownKeyHasNoRecord(_ store: ResourceStore) async throws {
         let record = try await store.record(for: key("nope"))
         XCTAssertNil(record)
