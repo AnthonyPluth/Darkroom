@@ -76,14 +76,23 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Reach it:** the navigation's Imports, at `/imports`; control `tools/control goto imports`.
 - **Drive it:** `tools/control goto imports`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="imports"`.
 - **What usually breaks:**
-  - The demo has one imported export (its run is listed) and three photos with no location (the videos); filters and the paging change what the list shows, not the demo data.
+  - With the import (make verify, `start --with-import`) the demo has two runs; a plain `start` has only the earlier one, a recorded row. The newer one is a real import of a made-up export (`tools/demo_import.py`) with 4 added, 7 skipped as duplicates, 2 sent to review and 3 missing GPS. The list of photos with no location is the three videos of the originals, whichever run it is under; filters and the paging change what the list shows, not the demo data.
 
 ## Review (`review`)
 
 - **Reach it:** the navigation's Review, at `/review`; control `tools/control goto review`.
 - **Drive it:** `tools/control goto review`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="review"`.
 - **What usually breaks:**
-  - The demo has one pending pair: a library copy and a slightly different held copy of the same photo. Keep both, skip and undo change demo data; `reset` puts it back.
+  - The demo has one pending pair, the recorded one (IMG_0101); with the import (make verify, `start --with-import`) it has three, the other two being the likely re-encodes the import held back (IMG_0001(1) and IMG_0102(1)). Each pair is a library copy beside a slightly different held copy. Keep both, skip and undo change demo data; `reset` puts it back.
+
+### Flows on Review
+
+#### `review-item`
+
+- **Starts at:** `review`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Review queue`, `Likely re-encode`, `In library`, `From export`.
+- **Drive it:** `tools/control flow review-item`; or `poetry run python tools/verify.py run --flow review-item`.
 
 ## Browser (`browser`)
 

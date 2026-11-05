@@ -100,3 +100,79 @@ describe("overlapping loads", () => {
     expect(loader.current).toEqual({ kind: "error", message: "down" });
   });
 });
+
+describe("a poll that races an explicit load", () => {
+  const deferred = () => {
+    const releases: Array<(value: number) => void> = [];
+    const loader = new Loader(() => new Promise<number>((resolve) => releases.push(resolve)));
+    return { loader, releases };
+  };
+
+  it("drops a poll that started before an explicit load that started after it, even when it finishes before that load settles", async () => {
+    const { loader, releases } = deferred();
+    const polled = loader.poll();
+    const reloaded = loader.load(true);
+    releases[0](1);
+    await polled;
+    expect(loader.current).toEqual({ kind: "loading" });
+    releases[1](2);
+    await reloaded;
+    expect(loader.current).toEqual({ kind: "ready", data: 2 });
+  });
+
+  it("drops the stale poll without losing the data already on screen", async () => {
+    const { loader, releases } = deferred();
+    const first = loader.load();
+    releases[0](1);
+    await first;
+    const polled = loader.poll();
+    const reloaded = loader.load(true);
+    releases[1](99);
+    await polled;
+    expect(loader.current).toEqual({ kind: "ready", data: 1 });
+    releases[2](2);
+    await reloaded;
+    expect(loader.current).toEqual({ kind: "ready", data: 2 });
+  });
+
+  it("keeps the failure of an explicit load when a stale poll succeeds first", async () => {
+    const releases: Array<(value: number) => void> = [];
+    const rejects: Array<(err: Error) => void> = [];
+    let calls = 0;
+    const loader = new Loader(() => new Promise<number>((resolve, reject) => {
+      releases[calls] = resolve;
+      rejects[calls++] = reject;
+    }));
+    const polled = loader.poll();
+    const reloaded = loader.load(true);
+    releases[0](1);
+    await polled;
+    rejects[1](new Error("down"));
+    await reloaded;
+    expect(loader.current).toEqual({ kind: "error", message: "down" });
+  });
+
+  it("applies a poll that started after the explicit load", async () => {
+    const { loader, releases } = deferred();
+    const reloaded = loader.load(true);
+    const polled = loader.poll();
+    releases[1](2);
+    await polled;
+    expect(loader.current).toEqual({ kind: "ready", data: 2 });
+    releases[0](1);
+    await reloaded;
+    expect(loader.current).toEqual({ kind: "ready", data: 2 });
+  });
+
+  it("still applies polls on their own, as the polling does for a page that never reloads", async () => {
+    let version = 0;
+    const loader = new Loader(slow(() => ++version));
+    void loader.load();
+    const timer = setInterval(() => void loader.poll(), INTERVAL);
+    await vi.advanceTimersByTimeAsync(SLOW);
+    expect(loader.current).toEqual({ kind: "ready", data: 1 });
+    await vi.advanceTimersByTimeAsync(INTERVAL);
+    expect(loader.current).toEqual({ kind: "ready", data: 2 });
+    clearInterval(timer);
+  });
+});
