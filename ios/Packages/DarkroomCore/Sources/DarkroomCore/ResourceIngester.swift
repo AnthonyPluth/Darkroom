@@ -90,6 +90,7 @@ public struct ResourceIngester: Sendable {
 
     private func forgetResourcesGone(from present: Set<ResourceKey>) async throws -> Int {
         let gone = try await store.records(in: Set(ResourceState.allCases)).map(\.resource.key).filter { !present.contains($0) }
+        try Task.checkCancellation()
         guard !gone.isEmpty else { return 0 }
         for key in gone {
             try Task.checkCancellation()
@@ -97,6 +98,7 @@ public struct ResourceIngester: Sendable {
         }
         try Task.checkCancellation()
         try await store.remove(gone)
+        try Task.checkCancellation()
         return gone.count
     }
 

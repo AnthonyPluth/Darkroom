@@ -329,6 +329,37 @@ final class ResourceIngesterTests: XCTestCase {
         }
     }
 
+    func testCancellationWhileReadingAnEmptyStoreIsNotASuccessfulRun() async throws {
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: []), exporter: FakeExporter(),
+            store: CancellingRemovalStore(inner: InMemoryResourceStore(), cancelOnRead: true), versions: InMemoryIngestVersions()
+        )
+        let task = Task { try await ingester.run() }
+        do {
+            let summary = try await task.value
+            XCTFail("the run should have been cancelled, not returned \(summary)")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testCancellationWhileRemovingGoneResourcesIsNotASuccessfulRun() async throws {
+        let inner = InMemoryResourceStore()
+        let gone = photo("IMG_9")
+        try await inner.upsert([LocalResource(key: gone.key, sha1: "s", bytes: 1, filename: "IMG_9.HEIC", state: .hashed)])
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: []), exporter: FakeExporter(),
+            store: CancellingRemovalStore(inner: inner, cancelOnRead: false), versions: InMemoryIngestVersions()
+        )
+        let task = Task { try await ingester.run() }
+        do {
+            let summary = try await task.value
+            XCTFail("the run should have been cancelled, not returned \(summary)")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
     func testTemporaryFilesAreRemoved() async throws {
         let exporter = FakeExporter()
         let store = InMemoryResourceStore()
@@ -584,6 +615,28 @@ private struct RemovalRefusingStore: ResourceStore {
         try await inner.setState(state, for: keys, failureReason: failureReason)
     }
     func remove(_ keys: [ResourceKey]) async throws { throw Refused() }
+    func recordAttempt(for keys: [ResourceKey]) async throws { try await inner.recordAttempt(for: keys) }
+    func recordRehash(for key: ResourceKey) async throws { try await inner.recordRehash(for: key) }
+    func counts() async throws -> [ResourceState: Int] { try await inner.counts() }
+}
+
+private struct CancellingRemovalStore: ResourceStore {
+    let inner: InMemoryResourceStore
+    let cancelOnRead: Bool
+    func upsert(_ resources: [LocalResource]) async throws { try await inner.upsert(resources) }
+    func record(for key: ResourceKey) async throws -> ResourceRecord? { try await inner.record(for: key) }
+    func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] {
+        let found = try await inner.records(in: states)
+        if cancelOnRead { withUnsafeCurrentTask { $0?.cancel() } }
+        return found
+    }
+    func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
+        try await inner.setState(state, for: keys, failureReason: failureReason)
+    }
+    func remove(_ keys: [ResourceKey]) async throws {
+        try await inner.remove(keys)
+        withUnsafeCurrentTask { $0?.cancel() }
+    }
     func recordAttempt(for keys: [ResourceKey]) async throws { try await inner.recordAttempt(for: keys) }
     func recordRehash(for key: ResourceKey) async throws { try await inner.recordRehash(for: key) }
     func counts() async throws -> [ResourceState: Int] { try await inner.counts() }
