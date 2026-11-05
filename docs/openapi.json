@@ -373,6 +373,28 @@
         "required": [],
         "type": "object"
       },
+      "ConfirmReply": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rejected": {
+            "items": {
+              "$ref": "#/components/schemas/Refusal"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "confirmed",
+          "rejected"
+        ],
+        "type": "object"
+      },
       "DecisionReply": {
         "additionalProperties": false,
         "properties": {
@@ -525,6 +547,43 @@
         ],
         "type": "object"
       },
+      "DeletedBody": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "asset_ids"
+        ],
+        "type": "object"
+      },
+      "DeletedReply": {
+        "additionalProperties": false,
+        "properties": {
+          "recorded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rejected": {
+            "items": {
+              "$ref": "#/components/schemas/Refusal"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "recorded",
+          "rejected"
+        ],
+        "type": "object"
+      },
       "DeviceAssetDecl": {
         "additionalProperties": false,
         "properties": {
@@ -596,6 +655,21 @@
         ],
         "type": "object"
       },
+      "DevicePatchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "cleanup_enabled": {
+            "type": "boolean"
+          },
+          "icloud_photos_off": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cleanup_enabled"
+        ],
+        "type": "object"
+      },
       "DeviceReply": {
         "additionalProperties": false,
         "properties": {
@@ -635,10 +709,33 @@
       "DeviceState": {
         "additionalProperties": false,
         "properties": {
+          "cleanup_enabled": {
+            "type": "boolean"
+          },
           "eligible": {
             "anyOf": [
               {
                 "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligible_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligible_checked": {
+            "anyOf": [
+              {
+                "type": "number"
               },
               {
                 "type": "null"
@@ -666,7 +763,10 @@
           }
         },
         "required": [
+          "cleanup_enabled",
           "eligible",
+          "eligible_bytes",
+          "eligible_checked",
           "id",
           "last_checkin",
           "name",
@@ -763,6 +863,70 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "EligibleAsset": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "resources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "asset_id",
+          "bytes",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "EligibleBody": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceAssetDecl"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "assets"
+        ],
+        "type": "object"
+      },
+      "EligibleReply": {
+        "additionalProperties": false,
+        "properties": {
+          "cleanup_enabled": {
+            "type": "boolean"
+          },
+          "eligible": {
+            "items": {
+              "$ref": "#/components/schemas/EligibleAsset"
+            },
+            "type": "array"
+          },
+          "rejected": {
+            "items": {
+              "$ref": "#/components/schemas/Refusal"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cleanup_enabled",
+          "eligible",
+          "rejected"
+        ],
         "type": "object"
       },
       "EnqueueBody": {
@@ -2121,6 +2285,26 @@
         ],
         "type": "object"
       },
+      "Refusal": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "message",
+          "reason"
+        ],
+        "type": "object"
+      },
       "ResolveBody": {
         "additionalProperties": false,
         "properties": {
@@ -2869,9 +3053,131 @@
         "x-auth": "device"
       }
     },
+    "/api/device/deleted": {
+      "post": {
+        "operationId": "deleted",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletedBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/eligible": {
+      "post": {
+        "operationId": "eligible",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EligibleBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EligibleReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/eligible/confirm": {
+      "post": {
+        "operationId": "confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EligibleBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
     "/api/devices/{id}": {
       "delete": {
         "operationId": "revoke_device",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      },
+      "patch": {
+        "operationId": "update_device",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePatchBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "2XX": {
             "content": {
