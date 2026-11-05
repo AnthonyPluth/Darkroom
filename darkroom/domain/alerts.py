@@ -83,7 +83,12 @@ def schedule_renewed(account: str, end: str) -> Wording:
     return Wording("Takeout schedule renewed", f"The export schedule for {account} now runs until {end}.")
 
 
-def schedule_renewal_failed(account: str, end: str) -> Wording:
+def schedule_renewal_failed(account: str, end: str, ended: bool = False) -> Wording:
+    if ended:
+        return Wording(
+            "Takeout schedule not renewed",
+            f"The export schedule for {account} was not renewed, and it ended on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Press Create schedule on the Exports page to make a new one.",
+        )
     return Wording(
         "Takeout schedule not renewed",
         f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Once it has ended, press Create schedule on the Exports page to make a new one.",
