@@ -168,7 +168,7 @@ class CrashTests(unittest.TestCase):
                 return [apns.Result("sent", "") for _ in tokens]
 
         targets = [push_tokens.Target(0, "digest", "token")]
-        with mock.patch.object(push_tokens, "targets", return_value=targets):
+        with mock.patch.object(push_tokens, "targets", return_value=targets), mock.patch.object(push_tokens, "still_held", return_value=True):
             push.deliver_due(world.opened, world.settings, Pusher(), NOW + 120)
             push.deliver_due(world.opened, world.settings, Pusher(), NOW + 240)
         queued = [e.subject for e in world.opened.execute(select(Event).where(Event.type == "alert_queued")).scalars()]

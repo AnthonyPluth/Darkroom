@@ -72,8 +72,15 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         return 0
     push = apns.Push(alert.kind, alert.id, alerts.TITLES.get(alert.kind, FALLBACK_TITLE))
     opened.commit()
-    results = pusher.send([target.token for target in targets], push)
-    for target, result in zip(targets, results, strict=True):
+    opened.expire_all()
+    held = [target for target in targets if push_tokens.still_held(opened, settings, target, now)]
+    if not held:
+        skipped(opened, targets, now)
+        settle(opened, alert, due_at, "alert_no_device", now)
+        return 0
+    results = pusher.send([target.token for target in held], push)
+    skipped(opened, [target for target in targets if target not in held], now)
+    for target, result in zip(held, results, strict=True):
         record(opened, target, result, now)
     sent = sum(result.outcome == "sent" for result in results)
     failed = [result for result in results if result.outcome == "failed"]
@@ -89,6 +96,13 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
 
 def retry_left(alert: Alert, now: float) -> bool:
     return now + RETRY_AFTER - (alert.last_sent if alert.last_sent is not None else alert.opened) <= RETRY_FOR
+
+
+def skipped(opened: Session, targets: list[push_tokens.Target], now: float) -> None:
+    for target in targets:
+        device = opened.get(Device, target.device_id)
+        subject = push_tokens.subject_of(opened, device) if device is not None else str(target.device_id)
+        events.record(opened, now, "push_skipped", subject, device.name if device is not None else None)
 
 
 def record(opened: Session, target: push_tokens.Target, result: apns.Result, now: float) -> None:

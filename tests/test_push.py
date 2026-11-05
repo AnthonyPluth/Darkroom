@@ -4,6 +4,7 @@ import json
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from sqlalchemy import select
@@ -226,6 +227,49 @@ class RetryTests(PushWorld):
 
         self.deliver(RequeuingPusher())
         self.assertEqual(self.alert(alert_id).push_due, self.now + 30)
+
+
+class LateRevocationTests(PushWorld):
+    def targets_then(self, change):
+        real = push_tokens.targets
+
+        def wrapped(opened, settings, person_ids, now):
+            found = real(opened, settings, person_ids, now)
+            with db.session(self.engine) as other:
+                change(other)
+            return found
+
+        return mock.patch.object(push_tokens, "targets", wrapped)
+
+    def test_a_device_revoked_after_its_token_was_read_is_not_pushed(self):
+        self.open(alerts.person(self.person_id))
+        pusher = FakePusher()
+        with self.targets_then(lambda other: devices.revoke(other, self.device_id, self.now)):
+            self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_no_device"])
+
+    def test_an_owner_whose_access_lapsed_after_the_token_was_read_is_skipped_and_the_others_still_get_it(self):
+        with db.session(self.engine) as opened:
+            account = GoogleAccount(email="a@example.test", default_person_id=self.person_id, created=1.0)
+            opened.add(account)
+            opened.flush()
+            pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=self.sam_id))
+            account_id = account.id
+        self.open(alerts.account(account_id))
+        pusher = FakePusher()
+
+        def lapse(other):
+            other.get(User, "sub-jo").last_seen = 1.0
+
+        with self.targets_then(lapse):
+            self.assertEqual(self.deliver(pusher), 1)
+        self.assertEqual(pusher.sent[0][0], [SAM_TOKEN])
+        self.assertIn(("push_skipped", "jo"), self.events())
+        self.assertIn(("alert_sent", "a@example.test"), self.events())
 
 
 class BrokenPusherTests(PushWorld):

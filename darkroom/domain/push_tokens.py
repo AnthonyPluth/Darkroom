@@ -136,6 +136,13 @@ def targets(opened: Session, settings: Settings, person_ids: set[int], now: floa
     return found
 
 
+def still_held(opened: Session, settings: Settings, target: Target, now: float) -> bool:
+    device = opened.get(Device, target.device_id, populate_existing=True)
+    if device is None or device.revoked_at is not None or device.push_token_digest != target.digest:
+        return False
+    return not access_lapsed(opened, settings, device, now)
+
+
 def forget_reported(opened: Session, target: Target, unregistered_at: float | None, now: float) -> bool:
     device = opened.get(Device, target.device_id)
     if device is None or device.push_token_digest != target.digest:
