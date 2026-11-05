@@ -1,18 +1,19 @@
 import { chromium } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
 import { commitSwap, replaceServer, rollbackSwap, setUpContext } from "./control-reset.mjs";
-import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn, signedInNow } from "./verify.mjs";
+import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn, signedInNow, signedOutConsoleAllowed } from "./verify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUFFER = 500;
 const START_ROUTE = "";
+const IMPORT_FILE = "demo-import.json";
 const EVAL_SETTLE_MS = 500;
 
 const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
@@ -21,7 +22,7 @@ const firstLine = (e) => String(e?.message ?? e).split("\n")[0];
 
 function options(argv) {
   const get = (name) => { const i = argv.indexOf(`--${name}`); return i < 0 ? undefined : argv[i + 1]; };
-  return { dir: get("dir"), python: get("python"), now: get("now"), viewport: get("viewport") ?? "phone", idleMinutes: Number(get("idle-minutes") ?? 30) };
+  return { dir: get("dir"), python: get("python"), now: get("now"), viewport: get("viewport") ?? "phone", idleMinutes: Number(get("idle-minutes") ?? 30), withImport: argv.includes("--with-import") };
 }
 
 function runToEnd(program, args, env) {
@@ -85,6 +86,9 @@ async function main() {
     try { const u = new URL(page.url()); return `${u.pathname}${u.hash}`; } catch { return page.url(); }
   }
 
+  let flowSignedOut = false;
+  const afterSignOut = new WeakSet();
+  const logConsole = (entry) => { if (flowSignedOut) afterSignOut.add(entry); keep(consoleBuffer, entry); };
   const keep = (list, entry) => { list.push(entry); if (list.length > BUFFER) list.shift(); };
 
   const guardsWrites = (url) => allowedRequest(url.href, base) && isGuardedPath(url.pathname);
@@ -124,8 +128,8 @@ async function main() {
     signedIn = true;
     tab.setDefaultTimeout(30000);
     tab.setDefaultNavigationTimeout(30000);
-    tab.on("console", (m) => keep(consoleBuffer, { type: m.type(), text: scrubText(firstLine(m.text())).slice(0, 300), route: route() }));
-    tab.on("pageerror", (e) => keep(consoleBuffer, { type: "pageerror", text: scrubText(firstLine(e)).slice(0, 300), route: route() }));
+    tab.on("console", (m) => logConsole({ type: m.type(), text: scrubText(firstLine(m.text())).slice(0, 300), route: route() }));
+    tab.on("pageerror", (e) => logConsole({ type: "pageerror", text: scrubText(firstLine(e)).slice(0, 300), route: route() }));
     tab.on("response", (r) => { const path = scrubUrl(r.url(), base); if (path) keep(requests, { method: r.request().method(), path, status: r.status(), type: r.request().resourceType() }); });
     tab.on("requestfailed", (r) => {
       const path = scrubUrl(r.url(), base), why = r.failure()?.errorText ?? "failed";
@@ -152,7 +156,7 @@ async function main() {
   try {
     mkdirSync(sessionDir, { recursive: true });
     log("seeding the demo data under the frozen clock");
-    await runToEnd(opt.python, [VERIFY_PY, "seed", "--data", seedDir], process.env);
+    await runToEnd(opt.python, [VERIFY_PY, "seed", "--data", seedDir, ...(opt.withImport ? ["--with-import"] : [])], process.env);
     cookie = sessionCookie(join(seedDir, "data", SESSION_FILE));
     ({ server, base } = await launchServer());
     log(`demo server at ${base}`);
@@ -327,6 +331,12 @@ async function main() {
       const messages = consoleBuffer.splice(0);
       return { messages, errors: messages.filter((m) => m.type === "error" || m.type === "pageerror").length };
     },
+    async "fake-immich"() {
+      const file = join(seedDir, "data", IMPORT_FILE);
+      if (!existsSync(file)) throw new ControlError("no_import", "this session was started without an import, so the fake Immich recorded nothing", `\`${PROG} stop\`, then \`${PROG} start --with-import\``);
+      const { scans, files, parts, person } = JSON.parse(readFileSync(file, "utf8"));
+      return { importedFor: person, files, parts, count: scans.length, scans };
+    },
     async network() {
       const list = requests.splice(0);
       const failed = list.filter((r) => r.failed || r.status >= 400);
@@ -391,12 +401,13 @@ async function main() {
       files.push(rel(target));
     };
     await openPage(vp);
-    if (SIGNED_OUT_PAGES.includes(flow.page)) { await ctx.clearCookies(); signedIn = false; }
+    flowSignedOut = SIGNED_OUT_PAGES.includes(flow.page);
+    if (flowSignedOut) { await ctx.clearCookies(); signedIn = false; }
     await page.goto(`${base}${routeOf(flow.page ?? "status")}`, { waitUntil: loadedWhen(signedIn) });
     for (const [i, step] of flow.steps.entries()) {
       const started = Date.now();
       try {
-        await runStep(page, step, (n) => shotAs(`flow-${flow.name}-${n}`), saveDownload);
+        await runStep(page, step, (n) => shotAs(`flow-${flow.name}-${n}`), saveDownload, () => { flowSignedOut = true; });
         checks = checksAfter(checks, step);
         steps.push({ n: i + 1, step: JSON.stringify(step), ok: true, ms: Date.now() - started });
       } catch (e) {
@@ -411,8 +422,9 @@ async function main() {
       try { await shotAs(`flow-${flow.name}`); } catch (e) { problems.push(`the last screenshot: ${firstLine(e)}`); }
     }
     signedIn = await signedInNow(ctx);
-    const allowed = [...(flow.allow_console ?? []), ...(signedIn ? [] : [SIGNED_OUT_CONSOLE])];
-    for (const m of consoleBuffer) if ((m.type === "error" || m.type === "pageerror") && !allowed.some((t) => m.text.includes(t))) problems.push(`console ${m.type}: ${m.text}`);
+    flowSignedOut = false;
+    const allowed = flow.allow_console ?? [];
+    for (const m of consoleBuffer) if ((m.type === "error" || m.type === "pageerror") && !allowed.some((t) => m.text.includes(t)) && !signedOutConsoleAllowed(m.text, afterSignOut.has(m))) problems.push(`console ${m.type}: ${m.text}`);
     for (const r of requests) if (r.status >= 500) problems.push(`${r.status} from ${r.method} ${r.path}`);
     const result = { flow: name, viewport: vp, steps, files, notes };
     if (problems.length) throw Object.assign(new ControlError("flow_failed", `${name} failed: ${problems.join("; ")}`, "the -FAILED- image and `console` show what the page did; make verify would fail the same way"), { data: result });
