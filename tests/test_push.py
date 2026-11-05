@@ -336,6 +336,63 @@ class PartialDeliveryTests(PushWorld):
         self.assertIsNone(self.alert(alert_id).push_due)
         self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
 
+    def test_a_device_whose_token_was_refused_as_invalid_is_pushed_on_the_retry_once_it_registers_a_working_token(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("invalid_token", "Unregistered", self.now - 10), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(self.alert(alert_id).push_due, self.now + push.RETRY_AFTER)
+        self.register(self.device_id, JO_TOKEN, self.now + 1)
+        pusher.replies = {}
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 2)
+        self.assertEqual([tokens for tokens, _ in pusher.sent], [[JO_TOKEN, SAM_TOKEN], [JO_TOKEN, SAM_TOKEN]])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_a_retry_that_finds_every_remaining_device_already_refused_settles_the_alert_as_failed(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = push.Delivered(frozenset(), frozenset({self.device_id, self.sam_device})).dump()
+        pusher = FakePusher()
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_failed")
+
+    def test_an_alert_whose_every_eligible_device_vanished_after_a_partial_push_is_recorded_as_sent(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 1)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertEqual(len(pusher.sent), 1)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_an_alert_whose_every_device_vanished_before_any_push_succeeded_is_still_recorded_as_not_delivered(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("failed", "TooManyRequests"), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_no_device")
+
+
+    def test_a_delivery_record_that_is_not_an_object_pushes_every_device(self):
+        about = alerts.account(self.two_person_account())
+        for raw in ("null", "[]", '"x"', "3", '{"sent": [1]}'):
+            with self.subTest(raw=raw):
+                alert_id = self.open(about, key=raw)
+                with db.session(self.engine) as opened:
+                    opened.get(Alert, alert_id).pushed_devices = raw
+                pusher = FakePusher()
+                self.assertEqual(self.deliver(pusher), 2)
+                self.assertEqual(pusher.sent[0][0], [JO_TOKEN, SAM_TOKEN])
+
 
 class LateRevocationTests(PushWorld):
     def targets_then(self, change):
@@ -356,6 +413,16 @@ class LateRevocationTests(PushWorld):
             self.assertEqual(self.deliver(pusher), 0)
         self.assertEqual(pusher.sent, [])
         self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_no_device"])
+
+    def test_the_last_pending_device_revoked_after_its_token_was_read_leaves_the_alert_sent_when_another_device_got_it(self):
+        alert_id = self.open(alerts.account(self.account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = push.Delivered(frozenset({self.device_id})).dump()
+        pusher = FakePusher()
+        with self.targets_then(lambda other: devices.revoke(other, self.sam_device, self.now)):
+            self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_sent"])
 
     def test_an_owner_whose_access_lapsed_after_the_token_was_read_is_skipped_and_the_others_still_get_it(self):
         self.open(alerts.account(self.account()))

@@ -93,10 +93,10 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         settle(opened, alert, due_at, "alert_disabled", now)
         return 0
     targets = push_tokens.targets(opened, settings, recipients(opened, alert), now)
-    if not targets:
-        settle(opened, alert, due_at, "alert_no_device", now)
-        return 0
     delivered = delivered_of(alert)
+    if not targets:
+        settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_no_device", now)
+        return 0
     pending = [target for target in targets if target.device_id not in delivered.devices]
     if not pending:
         settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_failed", now)
@@ -111,7 +111,7 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         return 0
     if not held:
         skipped(opened, pending, now)
-        settle(opened, fresh, due_at, "alert_no_device" if wanted(fresh) else "", now)
+        settle(opened, fresh, due_at, ("alert_sent" if delivered.sent else "alert_no_device") if wanted(fresh) else "", now)
         return 0
     results = pusher.send([target.token for target in held], push)
     opened.rollback()
