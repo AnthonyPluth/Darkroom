@@ -254,7 +254,7 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
     owner = people["avery"]
     account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
     export = Export(account_id=account.id, kind="incremental", google_id="demo-export-1", created_at=now - 4 * DAY, ready_at=now - 3 * DAY,
-                    expires_at=now + 4 * DAY, part_count=1, status="imported", stage="done")
+                    expires_at=now + 4 * DAY, part_count=1, status="imported", stage="done", owner_person_id=owner.id)
     opened.add(export)
     opened.flush()
     opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-1.zip", bytes=2_400_000, downloads_used=1, attempts=1, status="done"))

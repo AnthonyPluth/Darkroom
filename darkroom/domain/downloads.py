@@ -72,8 +72,7 @@ def waiting_export(opened: Session, job_id: int) -> Export:
 
 
 def person_of(opened: Session, export: Export) -> Person:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+    person = exports.claim_owner(opened, export)
     if person is None:
         raise Refused("the export's account has no default person")
     return person
@@ -227,7 +226,7 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
-    if job.result != ATTEMPTED or exports.all_done(opened, export):
+    if (job.result == ATTEMPTED) == exports.all_done(opened, export):
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:

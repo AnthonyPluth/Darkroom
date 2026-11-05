@@ -89,6 +89,14 @@ class ExpiryAlertTests(ExpiryCase):
             downloads.finish(opened, self.settings, job.id, EXPIRES - DAY + 60)
         self.assertEqual(self.expiring()[0][2], EXPIRES - DAY + 60)
 
+    def test_an_alert_whose_repeat_falls_after_the_expiry_is_closed_before_it_is_sent_again(self):
+        opened_at = EXPIRES - 2 * DAY
+        self.watch(opened_at)
+        scheduler = jobs.build(self.settings, self.engine, NOW)
+        scheduler.run_one("alerts.tick", opened_at + 4 * DAY)
+        ((_, sent, closed),) = self.expiring()
+        self.assertEqual((sent, closed), (1, opened_at + 4 * DAY))
+
     def test_the_alert_closes_when_the_export_expires(self):
         self.watch(EXPIRES - DAY)
         self.watch(EXPIRES)

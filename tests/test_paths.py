@@ -174,6 +174,42 @@ class WriteOnceTests(unittest.TestCase):
 
 
 
+class PlacingMarkerTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.destination = self.folder / "a.jpg"
+        self.marker = paths.placing_marker(self.destination, "0123456789abcdef")
+
+    def test_the_marker_is_the_same_file_as_the_copy_from_the_start(self):
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        self.assertTrue(os.path.samefile(self.marker, self.destination))
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), [".placing-0123456789abcdef-a.jpg", "a.jpg"])
+
+    def test_a_copy_that_was_not_made_leaves_no_marker(self):
+        self.destination.write_bytes(b"already there")
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_once(self.destination, [b"photo"], self.marker)
+        with mock.patch("os.link", side_effect=OSError("cross-device")):
+            paths.write_once(self.folder / "b.jpg", [b"photo"], paths.placing_marker(self.folder / "b.jpg", "0123456789abcdef"))
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), ["a.jpg", "b.jpg"])
+
+    def test_clearing_keeps_the_markers_of_what_a_failed_attempt_could_not_remove(self):
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        paths.mark_new_sidecar(self.destination, "0123456789abcdef")
+        sidecar_marker = paths.placing_marker(paths.sidecar_of(self.destination), "0123456789abcdef")
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
+        self.assertTrue(self.marker.is_file())
+        self.assertFalse(sidecar_marker.exists())
+        self.destination.unlink()
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
+        self.assertFalse(self.marker.exists())
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=True)
+        self.assertEqual([path.name for path in self.folder.iterdir()], ["a.jpg"])
+
+
 class DropLibraryCopyTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()

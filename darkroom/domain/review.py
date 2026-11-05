@@ -10,7 +10,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, devices, events, media, thumbs, xmp
+from darkroom.domain import accounts, dedupe, devices, events, exports, media, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -82,6 +82,10 @@ class FileEffects:
         if had_sidecar and sidecar.is_file() and not sidecar.is_symlink():
             before = sidecar.read_bytes()
             self.undo.append(lambda: paths.restore_sidecar(sidecar, before))
+
+    def placing(self, destination: Path, token: str) -> None:
+        self.undo.append(lambda: paths.clear_placing(destination, token, committed=False))
+        self.done.append(lambda: paths.clear_placing(destination, token, committed=True))
 
     def set_aside(self, aside: paths.SetAside) -> None:
         self.undo.append(aside.restore)
@@ -303,10 +307,9 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
 def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader,
               write: xmp.Writer) -> tuple[set[int], list[str]]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
-    account = opened.get(GoogleAccount, hit.export.account_id)
-    if hold is None or account is None:
+    person = exports.owner_of(opened, hit.export)
+    if hold is None:
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
-    person = opened.get(Person, account.default_person_id)
     if person is None:
         raise WrongState("the export's account has no default person")
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
@@ -530,11 +533,14 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState("a later import matched this photo; reverse that decision before reassigning it")
     if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.sha1 == item.sha1).limit(1)).first():
         raise WrongState(f"{target.name} already has this photo")
-    lineage = adopted_lineage(opened, item)
+    lineage, token = adopted_lineage(opened, item), paths.placing_token()
     try:
-        placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
+        placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1, token)
+        effects.placing(placed.path, token)
         had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
         effects.made(photos, placed, source, had_sidecar)
+        if not had_sidecar:
+            paths.mark_new_sidecar(placed.path, token)
         old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
@@ -547,7 +553,7 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]
         item.person_id, item.path = target.id, new_path
         opened.flush()
-        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}"
+        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}{cleanup.REASSIGN_COPY}{token}"
                       + (f"{ADOPTED}{', '.join(adopted)}" if adopted else "") + ("" if by is None else f", by person {by}"))
         opened.flush()
         effects.set_aside(paths.set_library_copy_aside(photos, old_path, placed.path))

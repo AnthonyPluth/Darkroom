@@ -23,7 +23,9 @@ public protocol ResourceStore: Sendable {
     func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int
     @discardableResult
     func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool
+    func remove(_ keys: [ResourceKey]) async throws
     func recordAttempt(for keys: [ResourceKey]) async throws
+    func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int?
     func recordRehash(for key: ResourceKey) async throws
     func counts() async throws -> [ResourceState: Int]
 }
@@ -47,6 +49,12 @@ extension ResourceStore {
         }
         try await setState(state, for: current, failureReason: failureReason)
         return current.count
+    }
+
+    public func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int? {
+        guard let record = try await record(for: resource.key), record.resource.hasSameContent(as: resource) else { return nil }
+        try await recordAttempt(for: [resource.key])
+        return record.attempts + 1
     }
 
     public func resources(in states: Set<ResourceState>) async throws -> [LocalResource] {
@@ -107,8 +115,21 @@ public actor InMemoryResourceStore: ResourceStore {
         return true
     }
 
+    public func remove(_ keys: [ResourceKey]) async throws {
+        let gone = Set(keys)
+        for key in gone { storage[key] = nil }
+        insertionOrder.removeAll { gone.contains($0) }
+    }
+
     public func recordAttempt(for keys: [ResourceKey]) async throws {
         for key in keys { storage[key]?.attempts += 1 }
+    }
+
+    public func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int? {
+        guard var record = storage[resource.key], record.resource.hasSameContent(as: resource) else { return nil }
+        record.attempts += 1
+        storage[resource.key] = record
+        return record.attempts
     }
 
     public func recordRehash(for key: ResourceKey) async throws {

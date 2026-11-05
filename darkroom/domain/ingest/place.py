@@ -8,12 +8,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, media, xmp
+from darkroom.domain import dedupe, exports, media, xmp
 from darkroom.domain.ingest import pairing, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 CHUNK = 1024 * 1024
@@ -94,7 +94,7 @@ def holds(destination: Path, sha1: str) -> bool:
     return destination.is_file() and not destination.is_symlink() and media.sha1_of(destination)[0] == sha1
 
 
-def copy_into(folder: Path, source: Path, sha1: str) -> Placed:
+def copy_into(folder: Path, source: Path, sha1: str, token: str | None = None) -> Placed:
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
@@ -103,14 +103,17 @@ def copy_into(folder: Path, source: Path, sha1: str) -> Placed:
             if holds(destination, sha1):
                 return Placed(destination, False)
             continue
+        marker = None if token is None else paths.placing_marker(destination, token)
         try:
-            written = paths.write_once(destination, chunks(source))
+            written = paths.write_once(destination, chunks(source), marker)
         except paths.AlreadyExists:
             if holds(destination, sha1):
                 return Placed(destination, False)
             continue
         if written != sha1:
             destination.unlink(missing_ok=True)
+            if marker is not None:
+                marker.unlink(missing_ok=True)
             raise PlaceFailed("the staged file changed while it was copied")
         return Placed(destination, True)
     raise PlaceFailed("both names are taken by other files")
@@ -129,8 +132,7 @@ def counted(report: PlaceReport, placed: Placed) -> None:
 
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
                       copied: Callable[[Placed], None] = lambda placed: None) -> MediaItem:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+    person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
     folder = google_only_folder(photos, person.slug, entry.fields)

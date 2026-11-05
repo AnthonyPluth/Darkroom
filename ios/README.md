@@ -4,7 +4,7 @@ The app replaces Möbius Sync: it uploads each photo's original resources to Dar
 
 - `project.yml`: the XcodeGen spec. The Xcode project is generated from it and never committed.
 - `Darkroom/`: the app target (SwiftUI lifecycle, iOS 17+): `DarkroomApp`, `AppDelegate` (background `URLSession` completion handler plumbing), a placeholder `RootView` that shows only the build version, and `Keychain`.
-- `Packages/DarkroomCore/`: a SwiftPM package with the logic, no UIKit or PhotoKit (Foundation and swift-crypto only): `APIClient`, `SHA1Hasher`, the request and reply models, `UploadPlanner`, `ResourceStore` with its state machine, an in-memory implementation and `SQLiteResourceStore` (the one the app persists in), `ReachabilityPolicy` and the `CleanupFlow` placeholder.
+- `Packages/DarkroomCore/`: a SwiftPM package with the logic, no UIKit or PhotoKit (Foundation and swift-crypto only): `APIClient`, `SHA1Hasher`, the request and reply models, `UploadPlanner`, `ResourceStore` with its state machine, an in-memory implementation and `SQLiteResourceStore` (the one the app persists in), `ReachabilityPolicy`, and `CleanupFlow`, the pure state machine of a cleanup round (list, confirm, delete, report) with the `CleanupAPI` calls it drives.
 - `Config/Base.xcconfig`, `Local.xcconfig.example`: build settings. Your own `Local.xcconfig` is gitignored.
 
 ## First build on a Mac
@@ -26,7 +26,7 @@ Which one to use is decided in #10 item 7.
 
 ## Tests
 
-`swift test --package-path ios/Packages/DarkroomCore` runs the DarkroomCore tests on macOS, and on Linux where a Swift 6 toolchain exists (it needs no Apple frameworks). They cover the planner, the hasher against known SHA-1 vectors, the API client against a stubbed `URLProtocol`, the resource state machine and both stores (a shared contract, plus the SQLite store reopened from disk) and the reachability policy. The SQLite store and its tests build only where the `SQLite3` module exists (Apple platforms), so a Linux run skips them. The app target has no tests of its own.
+`swift test --package-path ios/Packages/DarkroomCore` runs the DarkroomCore tests on macOS, and on Linux where a Swift 6 toolchain exists (it needs no Apple frameworks). They cover the planner, the hasher against known SHA-1 vectors, the API client against a stubbed `URLProtocol`, the resource state machine, the cleanup flow (its rules are listed in `.github/agent-review/invariants.md`) and both stores (a shared contract, plus the SQLite store reopened from disk) and the reachability policy. The SQLite store and its tests build only where the `SQLite3` module exists (Apple platforms), so a Linux run skips them. The app target has no tests of its own.
 
 `swiftformat` reads `ios/.swiftformat`.
 

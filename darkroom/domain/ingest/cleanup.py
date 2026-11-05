@@ -18,6 +18,7 @@ DAY = 24 * 3600.0
 KEEP_FOR = 14 * DAY
 DROPPING_GRACE = 3600.0
 VERIFIED = "cleanup_holds_verified"
+REASSIGN_COPY = ", copy "
 
 
 @dataclass
@@ -30,6 +31,7 @@ class CleanupReport:
     failed: int = 0
     dropped: int = 0
     restored: int = 0
+    taken_back: int = 0
 
 
 def imported_at(opened: Session, export: Export) -> float | None:
@@ -252,6 +254,14 @@ def still_recorded(opened: Session, photos: Photos) -> Callable[[Path, str], boo
     return recorded
 
 
+def reassign_committed(opened: Session) -> Callable[[str], bool]:
+    def committed(token: str) -> bool:
+        return opened.execute(
+            select(Event.id).where(Event.type == "media_reassigned", Event.detail.contains(f"{REASSIGN_COPY}{token}")).limit(1)
+        ).first() is not None
+    return committed
+
+
 def undone_count(opened: Session, review_id: int) -> int:
     return opened.execute(select(func.count(Event.id)).where(Event.type == "review_undone", Event.subject == f"review {review_id}")).scalar_one()
 
@@ -282,14 +292,16 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
         swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos),
                                      undo_committed(opened))
         report.dropped, report.restored = swept.dropped, swept.restored
+        report.taken_back = paths.sweep_placing(photos, now - DROPPING_GRACE, reassign_committed(opened), copy_kept(opened, photos), still_recorded(opened, photos))
     except OSError as error:
         report.failed += 1
         events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)
     opened.flush()
-    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped or report.restored:
+    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped or report.restored or report.taken_back:
         detail = (f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
                   + (f", {report.failed} failed" if report.failed else "")
                   + (f", {report.dropped} interrupted removals cleared" if report.dropped else "")
-                  + (f", {report.restored} interrupted removals put back" if report.restored else ""))
+                  + (f", {report.restored} interrupted removals put back" if report.restored else "")
+                  + (f", {report.taken_back} interrupted moves taken back" if report.taken_back else ""))
         events.record(opened, now, "cleanup", "inbox", detail)
     return report
