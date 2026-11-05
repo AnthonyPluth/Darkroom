@@ -80,10 +80,15 @@ def person_of(opened: Session, export: Export) -> Person:
 
 
 def export_folder(settings: Settings, person: Person, export: Export) -> Path:
+    photos = Photos(settings.photos_root)
     try:
-        return Photos(settings.photos_root).export_tree(person.slug, folder_name(export))
+        inbox, folder = photos.inbox(person.slug), photos.export_tree(person.slug, folder_name(export))
     except OutsideRoot as error:
         raise Refused("the export's inbox folder is not inside the photo folder") from error
+    written = photos.root / "_inbox" / person.slug / folder_name(export)
+    if any(path.is_symlink() for path in (written, written.parent, written.parent.parent)) or folder.parent != inbox:
+        raise Refused("the export's inbox folder is not inside the person's inbox")
+    return folder
 
 
 def part_plan(part: ExportPart) -> dict[str, object]:
@@ -91,9 +96,10 @@ def part_plan(part: ExportPart) -> dict[str, object]:
             "downloads_used": part.downloads_used, "attempts": part.attempts}
 
 
-def plan(opened: Session, job_id: int) -> dict[str, object]:
+def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     person = person_of(opened, export)
+    export_folder(settings, person, export)
     return {"export_id": export.id, "google_id": export.google_id or "", "person": person.slug, "folder": folder_name(export),
             "part_count": export.part_count or 0, "parts": [part_plan(part) for part in exports.parts_of(opened, export.id)]}
 
@@ -199,13 +205,12 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
 
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
     export = waiting_export(opened, job_id)
-    parts = exports.parts_of(opened, export.id)
-    if not parts or export.part_count != len(parts) or any(part.status != "done" for part in parts):
+    if not exports.all_done(opened, export):
         raise Refused(f"not every part of export {export.id} is downloaded")
     export.inbox_dir = str(export_folder(settings, person_of(opened, export), export))
     export.status = "downloaded"
     alerts.close(opened, expiry_key(export.id), now)
-    events.record(opened, now, "export_downloaded", str(export.id), f"{len(parts)} parts")
+    events.record(opened, now, "export_downloaded", str(export.id), f"{export.part_count} parts")
     run.request_import(opened, export.id)
     return export
 
@@ -218,7 +223,7 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
-    if job.result != ATTEMPTED:
+    if job.result != ATTEMPTED or exports.all_done(opened, export):
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:

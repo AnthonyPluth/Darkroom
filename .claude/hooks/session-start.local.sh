@@ -1,6 +1,6 @@
 chromium_present() {
   local root
-  local roots=("/opt/pw-browsers" "${HOME}/.cache/ms-playwright")
+  local roots=("${HOME}/.cache/ms-playwright")
   if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
     roots=("${PLAYWRIGHT_BROWSERS_PATH}")
   fi

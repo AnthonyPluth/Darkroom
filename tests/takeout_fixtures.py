@@ -86,8 +86,8 @@ class TakeoutBuilder:
         return fixtures.TINY_VIDEO.read_bytes() + bytes([self.random.randrange(256)])
 
     def add(self, media_name: str, data: bytes, folder: str, part: int, form: str | None, sidecar_part: int | None,
-            gps: tuple[float, float] | None, description: str, sidecar_name: str | None = None) -> Item:
-        taken = 1_500_000_000 + len(self.items) * 3600
+            gps: tuple[float, float] | None, description: str, sidecar_name: str | None = None, taken: int | None = None) -> Item:
+        taken = 1_500_000_000 + len(self.items) * 3600 if taken is None else taken
         name = sidecar_name or (self.sidecar_for(media_name, form) if form else None)
         payload = self.sidecar_json(media_name, taken, gps, description) if name else None
         item = Item(media_name, folder, part, data, name, part if sidecar_part is None else sidecar_part, payload)
@@ -95,11 +95,12 @@ class TakeoutBuilder:
         return item
 
     def photo(self, name: str, year: int = 2019, form: str | None = "json", part: int = 0, sidecar_part: int | None = None,
-              album: str | None = None, gps: tuple[float, float] | None = (40.7, -74.0), description: str = "", data: bytes | None = None) -> Item:
+              album: str | None = None, gps: tuple[float, float] | None = (40.7, -74.0), description: str = "", data: bytes | None = None,
+              taken: int | None = None) -> Item:
         payload = data if data is not None else self.image_bytes(Path(name).suffix)
-        item = self.add(name, payload, f"Photos from {year}", part, form, sidecar_part, gps, description)
+        item = self.add(name, payload, f"Photos from {year}", part, form, sidecar_part, gps, description, taken=taken)
         if album:
-            self.add(name, payload, album, part, form, sidecar_part, gps, description)
+            self.add(name, payload, album, part, form, sidecar_part, gps, description, taken=taken)
         return item
 
     def numbered_duplicate(self, base: str, extension: str, year: int = 2019, part: int = 0) -> tuple[Item, Item]:

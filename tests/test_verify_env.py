@@ -402,6 +402,10 @@ class SessionStartHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertTrue(self.installs(str(Path(tmp) / "c"), cache_has_chromium=False, preinstalled=False))
 
+    def test_chromium_only_under_opt_pw_browsers_is_not_trusted_when_the_variable_is_unset(self):
+        self.assertNotIn("/opt/pw-browsers", self.HOOK.read_text())
+        self.assertTrue(self.installs(None, cache_has_chromium=False, preinstalled=False))
+
 
 if __name__ == "__main__":
     unittest.main()

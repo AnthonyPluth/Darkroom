@@ -19,6 +19,15 @@ describe("parseArgs", () => {
     expect(c.parseArgs(["start", "--text"]).text).toBe(true);
   });
 
+  it("takes --with-import on start and only scans for fake-immich", () => {
+    expect(c.parseArgs(["start", "--with-import"]).options).toMatchObject({ "with-import": true });
+    expect(c.parseArgs(["start"]).options["with-import"]).toBeUndefined();
+    expect(c.parseArgs(["fake-immich", "scans"])).toMatchObject({ command: "fake-immich", args: ["scans"] });
+    expect(usage(["fake-immich"])?.message).toMatch(/fake-immich needs/);
+    expect(usage(["fake-immich", "mode"])?.message).toBe("fake-immich takes scans, not \"mode\"");
+    expect(c.SESSION_COMMANDS).toContain("fake-immich");
+  });
+
   it("passes everything after -- as arguments", () => {
     expect(c.parseArgs(["type", "textbox", "Amount", "--", "-5"]).args).toEqual(["textbox", "Amount", "-5"]);
   });

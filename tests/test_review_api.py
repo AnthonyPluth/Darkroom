@@ -487,6 +487,47 @@ class UndoTests(ReviewCase):
         row = self.opened.get(MediaItem, kept_id)
         self.assertEqual((self.world.root / row.path).read_bytes(), data)
 
+    def test_undo_after_an_adopted_sidecar_was_deleted_and_a_reassign_wrote_a_new_one_removes_it(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        folder.mkdir(parents=True, exist_ok=True)
+        sidecar = folder / f"{PAIR_NAME}.xmp"
+        sidecar.write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        sidecar.unlink()
+        sam = {key: value for key, value in self.tree().items() if key.startswith("sam/")}
+
+        def fill(path, *args, **kwargs):
+            paths.sidecar_of(path).write_bytes(b"<x:xmpmeta>from the Takeout metadata</x:xmpmeta>")
+            return True
+
+        with mock.patch.object(review.xmp, "fill", side_effect=fill):
+            self.assertEqual(self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.world.root / self.opened.get(MediaItem, kept_id).path
+        self.assertEqual(target.with_name(f"{PAIR_NAME}.xmp").read_bytes(), b"<x:xmpmeta>from the Takeout metadata</x:xmpmeta>")
+        (detail,) = self.opened.execute(select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept_id}")).scalars()
+        self.assertEqual(review.adopted_in(detail), set())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+        self.assertEqual({key: value for key, value in self.tree().items() if key.startswith("sam/")}, sam)
+        self.assertEqual(self.pending().id, review_id)
+
+    def test_a_reassign_still_carries_an_adopted_sidecar_as_adopted(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{PAIR_NAME}.xmp").write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        carried = (folder / f"{PAIR_NAME}.xmp").read_bytes()
+        self.assertEqual(self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.world.root / self.opened.get(MediaItem, kept_id).path
+        (detail,) = self.opened.execute(select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept_id}")).scalars()
+        self.assertEqual(review.adopted_in(detail), {"sidecar"})
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertFalse(target.exists())
+        self.assertEqual(target.with_name(f"{PAIR_NAME}.xmp").read_bytes(), carried)
+
     def test_the_reassign_event_records_what_it_adopted_and_still_names_who_moved_it(self):
         _, kept_id, _, _, _ = self.kept_then_reassigned(sidecar_at_target=True)
         (detail,) = self.opened.execute(select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept_id}")).scalars()
