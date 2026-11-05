@@ -120,8 +120,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 
     def check_exports(at: float) -> None:
-        with db.session(engine) as opened:
-            queued = exports.check_due(opened, at, scheduler.zone)
+        try:
+            with db.session(engine) as opened:
+                queued = exports.check_due(opened, at, scheduler.zone)
+        except browser_jobs.Busy:
+            monitoring.log("export status checks postponed: the database was busy")
+            return
         if queued:
             monitoring.log("export status checks queued", count=queued)
 

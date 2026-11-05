@@ -223,6 +223,8 @@ def check_now(opened: Session, now: float, only: Sequence[int] | None = None) ->
             continue
         try:
             queued.append(browser_jobs.enqueue_once(opened, account.id, STATUS_KIND, now))
+        except browser_jobs.Busy:
+            raise
         except browser_jobs.AlreadyOpen:
             skipped += 1
     return queued, skipped

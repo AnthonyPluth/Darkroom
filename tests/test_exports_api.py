@@ -1,9 +1,11 @@
 import json
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.dates import utc_now
+from darkroom.domain import browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Export, GoogleAccount
 from tests.api_world import ApiCase
@@ -67,6 +69,13 @@ class ExportsApiTests(ApiCase):
         self.assertEqual((status, reply["jobs"], reply["skipped"]), (200, [], 2))
         with db.session(self.engine) as opened:
             self.assertEqual(len(opened.execute(select(BrowserJob)).scalars().all()), 2)
+
+    def test_check_now_says_when_darkroom_is_busy_and_queues_nothing(self):
+        with mock.patch.object(browser_jobs, "enqueue_once", side_effect=browser_jobs.Busy("Darkroom is busy with another change; try again in a moment")):
+            status, reply = self.call("POST", "/api/exports/check-now")
+        self.assertEqual((status, reply), (503, {"error": "Darkroom is busy with another change; try again in a moment"}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(BrowserJob)).scalars().all(), [])
 
     def test_check_now_with_no_connected_account_queues_nothing(self):
         self.set_account(self.account_id, session_state="needs_sign_in")

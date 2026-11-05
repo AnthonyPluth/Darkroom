@@ -184,6 +184,30 @@ class BuildTests(unittest.TestCase):
             queued = [(job.account_id, job.kind) for job in opened.execute(select(BrowserJob)).scalars()]
         self.assertEqual(queued, [(1, "status")])
 
+    def test_the_daily_check_is_postponed_when_the_database_is_busy_and_runs_on_the_next_tick(self):
+        from unittest import mock
+        from zoneinfo import ZoneInfo
+
+        from sqlalchemy import select
+
+        from darkroom.domain import browser_jobs, exports
+        from darkroom.storage.models import BrowserJob, GoogleAccount
+        from tests.shared import add_person, settings_from
+
+        engine = own_database(self)
+        with db.session(engine) as opened:
+            person = add_person(opened, "jo")
+            opened.add(GoogleAccount(email="jo@example.test", default_person_id=person, created=1.0, session_state="ok"))
+        scheduler = jobs.build(settings_from(), engine, 0)
+        morning = exports.check_slot(1, at(5, 12), ZoneInfo("UTC"))
+        with mock.patch.object(browser_jobs, "enqueue_once", side_effect=browser_jobs.Busy("busy")):
+            scheduler.run_one("exports.check", morning + 1)
+        with db.session(engine) as opened:
+            self.assertEqual(opened.execute(select(BrowserJob)).scalars().all(), [])
+        scheduler.run_one("exports.check", morning + 601)
+        with db.session(engine) as opened:
+            self.assertEqual([(job.account_id, job.kind) for job in opened.execute(select(BrowserJob)).scalars()], [(1, "status")])
+
 
 if __name__ == "__main__":
     unittest.main()

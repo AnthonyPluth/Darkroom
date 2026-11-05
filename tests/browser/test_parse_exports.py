@@ -81,7 +81,17 @@ class ParseExportsTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(takeout.UnreadableExports):
                 takeout.parse_exports(text)
         self.assertFalse(takeout.exports_page_ready("<p>nothing</p>"))
-        self.assertTrue(takeout.exports_page_ready(page()))
+        self.assertTrue(takeout.exports_page_ready(page(ready())))
+
+    def test_the_heading_alone_is_not_a_loaded_list(self):
+        self.assertFalse(takeout.exports_page_ready(page()))
+        self.assertFalse(takeout.exports_page_ready(page(nav="<p>Loading</p>")))
+
+    def test_an_explicit_empty_list_is_loaded(self):
+        for sentence in ("You have no exports.", "You haven\u2019t created any exports yet."):
+            with self.subTest(sentence=sentence):
+                self.assertTrue(takeout.exports_page_ready(page(f"<li>{sentence}</li>")))
+                self.assertEqual(takeout.parse_exports(page(f"<li>{sentence}</li>")), [])
 
     def test_anything_unreadable_is_refused_with_a_fixed_message_naming_no_page_text(self):
         canary = "CANARY-PAGE-TEXT"

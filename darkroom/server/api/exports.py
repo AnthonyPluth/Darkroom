@@ -30,7 +30,10 @@ def one(request: Request) -> Annotated[Response, contract.ExportReply]:
 
 
 def check_now(request: Request) -> Annotated[Response, contract.CheckNowReply]:
-    with db.session(engine_of(request)) as opened:
-        queued, skipped = exports.check_now(opened, now())
-        jobs = [browser_jobs.as_dict(job, request.settings) for job in queued]
+    try:
+        with db.session(engine_of(request)) as opened:
+            queued, skipped = exports.check_now(opened, now())
+            jobs = [browser_jobs.as_dict(job, request.settings) for job in queued]
+    except browser_jobs.Busy as error:
+        return error_response(str(error), 503)
     return json_response({"jobs": jobs, "skipped": skipped}, 201 if jobs else 200)

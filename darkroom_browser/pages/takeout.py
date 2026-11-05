@@ -71,6 +71,7 @@ LIST_TAGS = ("ul", "ol", "div", "section")
 SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
 SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(kb|mb|gb|tb)\b")
 PART_NUMBER = re.compile(r"\bpart\s+(\d{1,4})\b")
+EMPTY_LIST_PHRASES = ("no exports", "haven't created any exports", "have not created any exports")
 IN_PROGRESS_PHRASES = ("in progress", "being created", "creating your export", "we're creating")
 MAX_EXPORTS = 100
 MAX_PARTS = 200
@@ -269,4 +270,12 @@ def parse_exports(page: str) -> list[ExportListing]:
 
 
 def exports_page_ready(page: str) -> bool:
-    return "manage your exports" in visible_text(page)
+    text = visible_text(page).replace("\u2019", "'")
+    if "manage your exports" not in text:
+        return False
+    if any(phrase in text for phrase in EMPTY_LIST_PHRASES):
+        return True
+    reader = ExportPageReader()
+    reader.feed(page)
+    reader.close()
+    return any(is_export(item) for item in reader.items)

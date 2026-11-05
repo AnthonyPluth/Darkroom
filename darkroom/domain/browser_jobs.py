@@ -49,6 +49,10 @@ class AlreadyOpen(ValueError):
     pass
 
 
+class Busy(AlreadyOpen):
+    pass
+
+
 class NothingToCheck(LookupError):
     pass
 
@@ -121,7 +125,7 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     except OperationalError as error:
         if "database is locked" not in str(error.orig):
             raise
-        raise AlreadyOpen("Darkroom is busy with another change; try again in a moment") from None
+        raise Busy("Darkroom is busy with another change; try again in a moment") from None
     if locked is None:
         raise UnknownAccount(f"no Google account {account_id}")
     account = account_of(opened, account_id)

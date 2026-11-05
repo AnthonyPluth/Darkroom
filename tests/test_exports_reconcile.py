@@ -1,9 +1,10 @@
 import json
+import sqlite3
 import unittest
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 
 from darkroom.domain import browser_jobs, exports
 from darkroom.storage import db
@@ -230,6 +231,21 @@ class CheckingTests(ReconcileCase):
             queued, skipped = exports.check_now(opened, NOW + 5)
         self.assertEqual((len(queued), skipped), (0, 1))
         self.assertEqual(len(self.status_jobs()), 1)
+
+    def test_a_locked_database_is_busy_and_not_an_account_that_has_a_job_open(self):
+        database = self.engine.url.database
+        impatient = create_engine(f"sqlite:///{database}", connect_args={"timeout": 0})
+        self.addCleanup(impatient.dispose)
+        holder = sqlite3.connect(database, timeout=0, isolation_level=None)
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")
+        with db.session(impatient) as opened, self.assertRaises(browser_jobs.Busy):
+            exports.check_now(opened, NOW)
+        holder.execute("ROLLBACK")
+        self.assertEqual(self.status_jobs(), [])
+        with db.session(self.engine) as opened:
+            queued, skipped = exports.check_now(opened, NOW)
+        self.assertEqual((len(queued), skipped), (1, 0))
 
     def test_the_daily_check_spreads_accounts_and_runs_each_once_a_day(self):
         ids = [self.account] + [self.add_account(f"a{n}@example.test") for n in range(5)]

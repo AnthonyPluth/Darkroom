@@ -44,6 +44,19 @@ class StatusJobTests(unittest.TestCase):
         self.assertEqual(len(result["exports"]), 3)
         self.assertEqual(clock.slept, [5.0, 5.0])
 
+    def test_a_heading_that_renders_before_the_export_cards_is_not_read_as_an_empty_list(self):
+        browser = ScriptedBrowser([SIGNED_IN, page(), page(), EXPORTS])
+        ctx, clock, _ = context_for(browser)
+        result = status.check_exports(ctx)
+        self.assertEqual(len(result["exports"]), 3)
+        self.assertEqual(clock.slept, [5.0, 5.0])
+
+    def test_an_account_with_no_exports_reports_an_empty_listing_once_the_page_says_so(self):
+        browser = ScriptedBrowser([SIGNED_IN, page(), page("<li>You have no exports.</li>")])
+        ctx, clock, _ = context_for(browser)
+        self.assertEqual(status.check_exports(ctx)["exports"], [])
+        self.assertEqual(clock.slept, [5.0])
+
     def test_a_list_that_never_loads_fails_with_a_fixed_message(self):
         browser = ScriptedBrowser([SIGNED_IN, UNKNOWN])
         ctx, clock, _ = context_for(browser)
