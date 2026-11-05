@@ -101,7 +101,7 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 1. **Unpack** all parts of one export together into staging. Takeout can put a photo in one part and its JSON sidecar in another.
 2. **Pair** each media file with its JSON sidecar. Takeout truncates long names and adds suffixes such as `-edited` and `(1)`, so follow the matching rules immich-go already implements rather than inventing new ones.
 3. **Read metadata** from the file's EXIF first, then the sidecar: `photoTakenTime` (UTC), `geoData` / `geoDataExif` (location) and description.
-4. **Fingerprint**: SHA-1 of the file bytes, a perceptual hash for images, duration for videos.
+4. **Fingerprint**: SHA-1 of the file bytes, a perceptual hash (pHash and dHash) for images, duration for videos. Near-duplicate groups are built from the two hashes and only ever suggest: they confirm nothing and never feed eligibility.
 5. **Dedupe** against the person's index (next section).
 6. **Place** Google-only items in the person's `google-only/YYYY/MM/` folder. Fill metadata gaps with XMP sidecars, never by rewriting files.
 7. **Rescan** that person's Immich library through the API, then report counts.
@@ -233,7 +233,7 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | GoogleAccount | email, default person (owns Google-only items), browser profile path, session state (ok / needs sign-in), schedule end date |
 | Export | account, kind (initial full / incremental), ready at, expires at, part count, status |
 | ExportPart | export, part number, size, downloads used (of 5), status |
-| MediaItem | person, source (phone / Takeout), path, SHA-1, perceptual hash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no), raw sidecar JSON |
+| MediaItem | person, source (phone / Takeout), path, SHA-1, pHash, dHash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no), raw sidecar JSON |
 | DedupeDecision | Takeout item, matched item, tier, reason, decided by (auto / you), decided at |
 | Event | time, type, subject, detail. Feeds alerts and the status page |
 

@@ -10,6 +10,7 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - Secrets (API keys, tokens, `DARKROOM_SECRET_KEY`) are never committed, logged, returned in a reply or put in an error message. `.env.example` lists the configuration; real values stay in `.env`.
 - A device (iPhone) token is stored only as its SHA-256 and shown once, in the sign-in redirect's fragment. It is bound to the Pocket ID account that signed the device in, and refused once the device is revoked, that account's access lapses or the person's email moves to another account, and is looked up only by `darkroom/domain/devices.py`'s `authenticate` (Semgrep's `darkroom-device-token-single-path`). The device API is in `docs/api/device.md`.
 - Every route declares who may call it (`session`, `device`, `worker` or `public`), and an unlisted kind answers 401. A new route needs a test.
+- The APNs auth key (`APNS_KEY_FILE`) is read only by `darkroom/providers/apns.py` (Semgrep's `darkroom-apns-key-one-reader`), which refuses a file others can read; neither the key nor the provider token it signs is logged, stored or put in an error. Setup is in `docs/deploy/push.md`.
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner).
 
 ## Reporting a problem

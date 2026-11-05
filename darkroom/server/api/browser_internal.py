@@ -158,7 +158,7 @@ def download_plan(request: Annotated[Request, contract.DownloadPlanBody]) -> Ann
     def work(opened: Session, moment: float) -> dict[str, object]:
         body_of(request)
         browser_jobs.heartbeat(opened, job_id_of(request), moment)
-        return downloads.plan(opened, job_id_of(request))
+        return downloads.plan(opened, request.settings, job_id_of(request))
 
     return reply_with(request, work)
 

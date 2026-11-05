@@ -47,6 +47,44 @@ describe("replaceServer", () => {
   });
 });
 
+describe("replaceServer when committing fails", () => {
+  it("rolls back and reports the commit failure", async () => {
+    const { state, deps } = session();
+    const failure = replaceServer(deps({
+      commit: async () => { state.server = "new"; throw new Error("no space left on device\nmore"); },
+      rollback: async () => { state.server = "old"; state.log.push("rollback"); },
+    }));
+    await expect(failure).rejects.toBeInstanceOf(ReplaceFailed);
+    await expect(failure).rejects.toMatchObject({ stage: "commit", message: "no space left on device" });
+    expect(state).toEqual({ server: "old", base: "http://127.0.0.1:1", log: ["open http://127.0.0.1:2", "rollback"] });
+  });
+
+  it("still reports the commit failure when the rollback itself fails", async () => {
+    const { deps } = session();
+    const failure = replaceServer(deps({ commit: async () => { throw new Error("full disk"); }, rollback: async () => { throw new Error("stuck"); } }));
+    await expect(failure).rejects.toMatchObject({ stage: "commit", message: "full disk" });
+  });
+
+  it("leaves the old session intact and stops the fresh server and browser when saving the new state throws", async () => {
+    const calls = [];
+    const prior = { ctx: fake("old-ctx", calls), page: "old-page", server: fake("old-server", calls), base: "b1", signedIn: true };
+    const fresh = { server: fake("new-server", calls), base: "b2" };
+    const live = { ctx: prior.ctx, page: prior.page, server: prior.server, base: prior.base, signedIn: true };
+    const saved = [];
+    const save = (p) => { saved.push(p.base); if (p.base === "b2") throw new Error("no space left on device"); };
+    const failure = replaceServer({
+      launch: async () => fresh,
+      open: async (f) => { live.base = f.base; live.ctx = fake("new-ctx", calls); live.page = "new-page"; },
+      rollback: async (f) => { Object.assign(live, await rollbackSwap({ prior, current: { ctx: live.ctx, fresh: f }, save })); },
+      commit: async (f) => { live.server = f.server; await commitSwap({ prior, fresh: f, save: () => save(f) }); },
+    });
+    await expect(failure).rejects.toMatchObject({ stage: "commit", message: "no space left on device" });
+    expect(live).toMatchObject({ ctx: prior.ctx, page: "old-page", server: prior.server, base: "b1", signedIn: true });
+    expect(calls).toEqual(["close new-ctx", "stop new-server"]);
+    expect(saved).toEqual(["b2", "b1"]);
+  });
+});
+
 const fake = (name, calls) => ({ name, close: async () => { calls.push(`close ${name}`); }, stop: async () => { calls.push(`stop ${name}`); } });
 
 describe("rollbackSwap and commitSwap", () => {
@@ -58,6 +96,14 @@ describe("rollbackSwap and commitSwap", () => {
     expect(back).toBe(prior);
     expect(calls).toEqual(["close new-ctx", "stop new-server"]);
     expect(saved).toEqual(["b1"]);
+  });
+
+  it("rollback still closes the new browser and stops the new server when saving the old session throws", async () => {
+    const calls = [];
+    const prior = { ctx: fake("old-ctx", calls), server: fake("old-server", calls), base: "b1" };
+    const back = await rollbackSwap({ prior, current: { ctx: fake("new-ctx", calls), fresh: { server: fake("new-server", calls) } }, save: () => { throw new Error("full disk"); } });
+    expect(back).toBe(prior);
+    expect(calls).toEqual(["close new-ctx", "stop new-server"]);
   });
 
   it("rollback doesn't close the old browser when the new one was never opened", async () => {
