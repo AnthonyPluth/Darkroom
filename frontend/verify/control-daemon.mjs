@@ -7,7 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
-import { LOADING, SESSION_FILE, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn } from "./verify.mjs";
+import { replaceServer } from "./control-reset.mjs";
+import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn } from "./verify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUFFER = 500;
@@ -72,12 +73,12 @@ async function main() {
   process.on("unhandledRejection", (e) => { log(`unhandled: ${e?.stack ?? e}`); shutdown("an internal error", 1); });
   const touch = () => { clearTimeout(idle); idle = setTimeout(() => shutdown(`idle for ${opt.idleMinutes} minutes`), opt.idleMinutes * 60000); };
 
-  async function newServer() {
-    server = await startServer({
+  async function launchServer() {
+    const made = await startServer({
       command: (port, folder) => [opt.python, VERIFY_PY, "serve", "--parent", String(process.pid), "--seed", seedDir, "--data", folder, "--port", String(port)],
       folder: join(sessionDir, `data-${++servers}`), timeout: 60000, cwd: ROOT,
     });
-    base = `http://127.0.0.1:${server.port}`;
+    return { server: made, base: `http://127.0.0.1:${made.port}` };
   }
 
   function route() {
@@ -111,11 +112,12 @@ async function main() {
     }
   }
 
-  async function openPage(viewport) {
+  async function openPage(viewport, { retire = true } = {}) {
     const previous = ctx;
     const fresh = await browser.newContext(contextOptions(viewport));
     await prepareContext(fresh, opt.now);
     await fresh.route(offServer, abortOffServer);
+    await blockWebSockets(fresh, base, (host) => blockedHosts.push(host));
     await signIn(fresh, base, cookie);
     signedIn = true;
     const tab = await fresh.newPage();
@@ -143,7 +145,7 @@ async function main() {
     ctx = fresh;
     page = tab;
     save({ viewport });
-    if (previous) await previous.close().catch(() => null);
+    if (previous && retire) await previous.close().catch(() => null);
   }
 
   try {
@@ -151,7 +153,7 @@ async function main() {
     log("seeding the demo data under the frozen clock");
     await runToEnd(opt.python, [VERIFY_PY, "seed", "--data", seedDir], process.env);
     cookie = sessionCookie(join(seedDir, "data", SESSION_FILE));
-    await newServer();
+    ({ server, base } = await launchServer());
     log(`demo server at ${base}`);
     const launch = launchOptions();
     browser = await chromium.launch({ ...launch, args: [...launch.args, ...UNREACHABLE_ARGS] });
@@ -332,17 +334,32 @@ async function main() {
     async flow({ args, options: o }) { return runFlow(args[0], o); },
     async reset() {
       const at = route();
-      const old = server, oldBase = base;
-      try { await newServer(); } catch (e) {
-        if (server && server !== old) await server.stop().catch(() => null);
-        server = old;
-        base = oldBase;
-        throw new ControlError("reset_failed", `couldn't start a demo server on fresh data: ${firstLine(e)}`, `the session still has its old server and data; try again, or \`${PROG} stop\` and \`${PROG} start\``);
+      const prior = { server, base, ctx, page, signedIn };
+      try {
+        await replaceServer({
+          launch: launchServer,
+          open: async (fresh) => {
+            base = fresh.base;
+            await openPage(state.viewport, { retire: false });
+            await page.goto(`${base}${at}`, { waitUntil: "networkidle" });
+          },
+          rollback: async (fresh) => {
+            if (ctx !== prior.ctx) await ctx.close().catch(() => null);
+            ({ ctx, page, base, signedIn, server } = prior);
+            save({ viewport: state.viewport, base, port: server.port });
+            await fresh.server.stop();
+          },
+          commit: async (fresh) => {
+            const old = prior;
+            server = fresh.server;
+            save({ base, port: server.port });
+            await old.ctx.close().catch(() => null);
+            await old.server.stop().catch((e) => log(`stopping the old demo server: ${firstLine(e)}`));
+          },
+        });
+      } catch (e) {
+        throw new ControlError("reset_failed", `couldn't reset to fresh data: ${firstLine(e)}`, `the session still has its old server, data and browser; try again, or \`${PROG} stop\` and \`${PROG} start\``);
       }
-      await old.stop().catch((e) => log(`stopping the old demo server: ${firstLine(e)}`));
-      save({ base, port: server.port });
-      await openPage(state.viewport);
-      await page.goto(`${base}${at}`, { waitUntil: "networkidle" });
       return { reset: true, server: base, route: route(), ...(await settledNow()) };
     },
   };

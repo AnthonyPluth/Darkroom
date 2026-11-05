@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
+import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, runStep, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
 
 describe("flowProblems", () => {
   const ok = { name: "open-people", page: "status", steps: [{ goto: "/people" }, { click: "text=People", timeout: 500 }] };
@@ -215,6 +215,7 @@ describe("a page's request to any other host", () => {
     otherBase = `http://127.0.0.1:${other.address().port}`;
     home = await listen((req, res) => {
       res.setHeader("Content-Type", "text/html");
+      if (req.url === "/ws") return res.end(`<!doctype html><title>t</title><main><h1>Home</h1></main><script>new WebSocket(${JSON.stringify(`ws://127.0.0.1:${other.address().port}/socket`)});</script>`);
       res.end(`<!doctype html><title>t</title><main><h1>Home</h1></main><script>fetch(${JSON.stringify(`${otherBase}/leak`)}, { mode: "no-cors" }).catch(() => {});</script>`);
     });
     base = `http://127.0.0.1:${home.address().port}`;
@@ -234,6 +235,20 @@ describe("a page's request to any other host", () => {
         await page.waitForTimeout(500);
       }, { audit: false, signedIn: false });
       expect(hits).toEqual([]);
+      expect(result.problems.some((p) => p.includes(`127.0.0.1:${other.address().port}`) && p.includes("blocked before it was sent"))).toBe(true);
+    } finally { rmSync(out, { recursive: true, force: true }); }
+  });
+
+  it("is blocked for a WebSocket too: nothing is sent to the other host, and it is reported", async () => {
+    let upgrades = 0;
+    other.on("upgrade", (_req, socket) => { upgrades++; socket.destroy(); });
+    const out = mkdtempSync(join(tmpdir(), "darkroom-visit-"));
+    try {
+      const result = await visit({ browser, now: FROZEN_NOW, images: out, out, base, cookie: null }, "sockets", "desktop", async (page) => {
+        await page.goto(`${base}/ws`, { waitUntil: "load" });
+        await page.waitForTimeout(500);
+      }, { audit: false, signedIn: false });
+      expect(upgrades).toBe(0);
       expect(result.problems.some((p) => p.includes(`127.0.0.1:${other.address().port}`) && p.includes("blocked before it was sent"))).toBe(true);
     } finally { rmSync(out, { recursive: true, force: true }); }
   });
@@ -272,4 +287,23 @@ describe("the committed images", () => {
     expect(names(images)).toEqual(["status-phone.png"]);
     expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("baseline");
   }, 150000);
+});
+
+describe("a download step whose click fails", () => {
+  it("ends in the flow's error path with nothing left unhandled", async () => {
+    const browser = await chromium.launch(launchOptions());
+    const unhandled = [];
+    const listener = (e) => unhandled.push(e);
+    process.on("unhandledRejection", listener);
+    try {
+      const page = await browser.newPage();
+      await page.setContent("<main><h1>Home</h1></main>");
+      await expect(runStep(page, { download: { selector: "button.nope", name: "x" }, timeout: 300 }, null, async () => {})).rejects.toThrow(/Timeout/);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+      await browser.close();
+    }
+  });
 });
