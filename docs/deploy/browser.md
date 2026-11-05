@@ -58,7 +58,9 @@ Nothing else of the photo share is mounted: the worker cannot see or touch `orig
 
 If the share was used before this change, the folders the worker made (`.downloads/<id>/`, `export-<id>/.partial/`) may lack the group. Fix them once, on the host: `chgrp -R 10010 "$PHOTOS_ROOT/_inbox" && find "$PHOTOS_ROOT/_inbox" -type d -exec chmod 2770 {} +`.
 
-Chromium makes some folders inside its profile (`_browser/<id>/profile/`) with mode `0700`, whatever the umask, so deleting an account can still fail to remove `_browser/<id>`. The delete then answers 500 and changes nothing ("the account's browser folder could not be removed"). Remove that folder on the host and delete the account again (#108, item 44).
+Chromium makes some folders inside its profile (`_browser/<id>/profile/`) with mode `0700`, whatever the umask. When a job closes its browser, the worker adds the group's read, write and search bits (`chmod -R g+rwX`, never following a link and never touching others' bits) to everything under `_browser/<id>/`, so deleting the account can remove the folder. If the worker was killed or Chromium crashed before that ran, or the profile was last used by an earlier release, the folder keeps its `0700` folders: the delete then answers 500 and changes nothing ("the account's browser folder could not be removed"). Open the account's browser once more (any job closes it the same way), or remove the folder on the host, and delete the account again.
+
+A download that stops receiving data is cancelled after five minutes: the worker watches the size of `_inbox/.downloads/<account id>/` while it waits, and when nothing has grown for that long it cancels the download, empties that folder and reports the part as `interrupted`, which counts as one of its attempts.
 
 ## Running a `noop` job end to end
 

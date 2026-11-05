@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
-import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from darkroom_browser import selectors
 from darkroom_browser.context import DownloadInterrupted
-from darkroom_browser.jobs.download import downloads_folder, sweep_downloads
+from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
+from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
@@ -20,11 +22,14 @@ class NotTypeable(ValueError):
 
 
 class Live:
-    def __init__(self, page: Any, context: Any = None, playwright: Any = None, downloads: Path | None = None) -> None:
+    def __init__(self, page: Any, context: Any = None, playwright: Any = None, downloads: Path | None = None, profile: Path | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.page = page
         self.context = context
         self.playwright = playwright
         self.downloads = downloads
+        self.profile = profile
+        self.clock = clock
 
     def goto(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
@@ -51,28 +56,46 @@ class Live:
             self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
         download = started.value
         target = folder / Path(download.suggested_filename).name
-        stop = threading.Event()
-        watcher = threading.Thread(target=self.watch_size, args=(stop, progress), daemon=True)
-        watcher.start()
-        try:
-            failure = download.failure()
-            if failure is not None:
-                raise DownloadInterrupted(str(failure)[:200])
-            shutil.move(download.path(), target)
-        finally:
-            stop.set()
-            watcher.join(timeout=5)
+        self.wait_for_download(download, progress)
+        shutil.move(download.path(), target)
         return target
 
-    def watch_size(self, stop: threading.Event, progress: Callable[[int], None] | None) -> None:
-        if progress is None or self.downloads is None:
+    def wait_for_download(self, download: Any, progress: Callable[[int], None] | None) -> None:
+        if self.downloads is None:
+            self.raise_if_failed(download)
             return
-        while not stop.wait(PROGRESS_SECONDS):
-            try:
-                size = sum(each.stat().st_size for each in self.downloads.iterdir() if each.is_file() and not each.is_symlink())
-                progress(size)
-            except Exception:
-                continue
+        started = self.clock()
+        watch = StallWatch(started)
+        reported = started
+        while True:
+            now = self.clock()
+            state = folder_state(self.downloads)
+            verdict = watch.judge(now, state)
+            if verdict is not Verdict.WAIT:
+                break
+            if progress is not None and now - reported >= PROGRESS_SECONDS:
+                reported = now
+                with contextlib.suppress(Exception):
+                    progress(state.size)
+            self.page.wait_for_timeout(POLL_MS)
+        if verdict is Verdict.STALLED:
+            self.cancel_stalled(download)
+        else:
+            self.raise_if_failed(download)
+
+    def cancel_stalled(self, download: Any) -> None:
+        with contextlib.suppress(Exception):
+            download.cancel()
+        if download.failure() is None:
+            return
+        if self.downloads is not None:
+            sweep_downloads(self.downloads)
+        raise DownloadInterrupted(f"no data arrived for {int(STALL_SECONDS)} seconds")
+
+    def raise_if_failed(self, download: Any) -> None:
+        failure = download.failure()
+        if failure is not None:
+            raise DownloadInterrupted(str(failure)[:200])
 
     def screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +113,9 @@ class Live:
                     closable.close()
             except Exception as error:
                 failure = failure or error
+        if self.profile is not None:
+            with contextlib.suppress(OSError):
+                share_tree(self.profile.parent)
         if failure is not None:
             raise failure
 
@@ -104,4 +130,4 @@ def open_context(profile_dir: Path) -> Live:
     context = playwright.chromium.launch_persistent_context(user_data_dir=str(profile_dir), headless=False, viewport=VIEWPORT, accept_downloads=True,
                                                             downloads_path=str(downloads))
     page = context.pages[0] if context.pages else context.new_page()
-    return Live(page, context, playwright, downloads)
+    return Live(page, context, playwright, downloads, profile_dir)

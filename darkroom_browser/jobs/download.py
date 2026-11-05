@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,27 @@ def make_shared(path: Path) -> None:
     except FileExistsError:
         return
     os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the shared inbox group (gid 10010) needs rwx, others get nothing
+
+
+def share_tree(root: Path) -> int:
+    failed = 0
+    if root.is_symlink():
+        return 1
+    for current, folders, files in os.walk(root, followlinks=False):
+        here = Path(current)
+        for path in [here, *(here / name for name in folders), *(here / name for name in files)]:
+            if path.is_symlink():
+                continue
+            found = path.lstat().st_mode
+            mode = stat.S_IMODE(found)
+            wanted = mode | stat.S_IRGRP | stat.S_IWGRP | (stat.S_IXGRP if stat.S_ISDIR(found) or mode & 0o111 else 0)
+            if wanted == mode:
+                continue
+            try:
+                os.chmod(path, wanted)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- adds only the shared group's bits (g+rwX) so Darkroom can retire the profile; others get nothing
+            except OSError:
+                failed += 1
+    return failed
 
 
 def downloads_folder(profile_dir: Path) -> Path:
