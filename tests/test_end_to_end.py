@@ -74,7 +74,12 @@ class EndToEndTests(unittest.TestCase):
 
     def tick(self, moment):
         self.clock.to(moment)
-        return self.scheduler.run_due(moment)
+        ran = self.scheduler.run_due(moment)
+        for job in self.scheduler.jobs.values():
+            if job.worker is not None:
+                job.worker.join(timeout=30)
+                self.assertFalse(job.worker.is_alive(), job.name)
+        return ran
 
     def query(self, work):
         with db.session(self.world.engine) as opened:
