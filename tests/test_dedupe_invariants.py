@@ -87,6 +87,56 @@ class CandidateSetIsTheServedPeople(Household):
         self.assertEqual((self.world.decisions(), self.world.confirmed()), ([], set()))
 
 
+class OwnedExportKeepsTheScopeNarrow(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        self.jo, self.sam, self.lee = self.world.person("jo"), self.world.person("sam"), self.world.person("lee")
+        self.account = self.world.account("sam@x.test", self.sam)
+        self.export = self.world.export(self.account)
+        self.export.owner_person_id = self.jo
+        self.world.opened.flush()
+
+    def apply(self, decision):
+        return dedupe.apply(self.world.opened, decision, self.export, 10.0)
+
+    def test_load_adds_only_the_given_owner_and_nobody_else(self):
+        plain = dedupe.PersonIndex.load(self.world.opened, self.account)
+        owned = dedupe.PersonIndex.load(self.world.opened, self.account, self.jo)
+        self.assertEqual((plain.person_ids, owned.person_ids), (frozenset({self.sam}), frozenset({self.sam, self.jo})))
+        self.assertNotIn(self.lee, owned.person_ids)
+        self.world.item(self.lee)
+        self.assertEqual({shot.person_id for shot in dedupe.PersonIndex.load(self.world.opened, self.account, self.jo).phone}, set())
+
+    def test_apply_accepts_the_owner_but_refuses_a_third_person_as_the_assigned_person(self):
+        self.apply(dedupe.Decision("a.jpg", self.account, self.jo, 5, "google_only", "no match"))
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("b.jpg", self.account, self.lee, 5, "google_only", "no match"))
+        self.assertEqual([row.person_id for row in self.world.decisions()], [self.jo])
+
+    def test_apply_refuses_a_matched_phone_item_of_a_third_person(self):
+        theirs = self.world.item(self.lee)
+        forged = dedupe.Decision("c.jpg", self.account, self.jo, 1, "skip", "same SHA-1", theirs.id, "phone")
+        with self.assertRaises(ValueError):
+            self.apply(forged)
+        self.assertEqual((self.world.decisions(), self.world.confirmed()), ([], set()))
+
+    def test_a_match_on_the_unserved_owners_phone_item_is_recorded_but_never_confirms_it(self):
+        mine = self.world.item(self.jo)
+        self.apply(dedupe.Decision("d.jpg", self.account, self.jo, 1, "skip", "same SHA-1", mine.id, "phone"))
+        self.assertEqual(len(self.world.decisions()), 1)
+        self.assertEqual(self.world.confirmed(), set())
+
+    def test_an_export_without_an_owner_adds_nobody(self):
+        self.export.owner_person_id = None
+        self.world.opened.flush()
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("e.jpg", self.account, self.jo, 5, "google_only", "no match"))
+        mine = self.world.item(self.jo)
+        with self.assertRaises(ValueError):
+            self.apply(dedupe.Decision("f.jpg", self.account, self.sam, 1, "skip", "same SHA-1", mine.id, "phone"))
+        self.assertEqual(self.world.decisions(), [])
+
+
 class NothingIsDeletedMovedOrWritten(Household):
     def tree(self, root):
         return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob("*")) if p.is_file()}

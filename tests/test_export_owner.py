@@ -151,7 +151,10 @@ class OwnerNoLongerServedTests(unittest.TestCase):
         change_default(self.world, "sam")
         self.export.owner_person_id = None
         self.world.opened.commit()
-        self.assertEqual(accounts.served_people(self.world.opened, self.world.account), {self.world.ids["sam"]})
+        self.assertEqual(dedupe.PersonIndex.load(self.world.opened, self.world.account).person_ids, {self.world.ids["sam"]})
+        stray = dedupe.Decision("x.jpg", self.world.account, self.world.ids["jo"], 5, "google_only", "no match")
+        with self.assertRaises(ValueError):
+            dedupe.apply(self.world.opened, stray, self.export, NOW)
 
 
 class OldExportsTests(unittest.TestCase):
