@@ -321,7 +321,8 @@ describe("the Exports page", () => {
     const failed = { ...failedSchedule, id: 13, account_id: 11, kind: "download", message: "DownloadFailed: part 2 failed after 3 attempts" };
     show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [waiting, failed] } });
     const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
-    expect(within(jo).getByText("Download: waiting for you to sign in.")).toBeInTheDocument();
+    expect(within(jo).getByText("Download: waiting for you to confirm your identity in the remote browser.")).toBeInTheDocument();
+    expect(within(jo).queryByText("Download: waiting for you to sign in.")).not.toBeInTheDocument();
     expect(within(jo).getByRole("link", { name: "Open remote browser" })).toBeInTheDocument();
     const family = screen.getByRole("region", { name: "family.photos@example.com" });
     expect(within(family).getByText("Download: failed, part 2 failed after 3 attempts.")).toBeInTheDocument();

@@ -280,7 +280,7 @@ def seed_download(opened: Session, now: float) -> None:
     owner = opened.execute(select(Person).where(Person.slug == "casey")).scalar_one()
     account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
     export = Export(account_id=account.id, kind="incremental", google_id="demo-export-2", created_at=now - DAY, ready_at=now - 2 * HOUR,
-                    expires_at=now + 7 * DAY - 2 * HOUR, part_count=3, status="downloading", download_tries=0)
+                    expires_at=now + 7 * DAY - 2 * HOUR, part_count=3, status="downloading", download_tries=0, owner_person_id=owner.id)
     opened.add(export)
     opened.flush()
     opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-2-001.zip", bytes=3_200_000, bytes_done=3_200_000, downloads_used=1, attempts=1,

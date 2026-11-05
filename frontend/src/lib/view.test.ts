@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
-import { downloadingExport, expiredExport, failedExport, importedExport, preparingExport, queuedConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, lastExportSentence, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
+import { downloadingExport, expiredExport, failedExport, importedExport, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -117,5 +117,15 @@ describe("failedCaptures", () => {
   it("includes a failed export check with a capture", () => {
     const job = { ...queuedConnect, id: 9, kind: "status", status: "failed", has_capture: true, capture_files: ["page.html"] };
     expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([9]);
+  });
+});
+
+describe("jobSentence", () => {
+  it("tells apart the reasons a job waits for the person", () => {
+    const waiting = (message: string) => jobSentence({ ...waitingConnect, message }, "Download");
+    expect(waiting("sign_in")).toBe("Download: waiting for you to sign in.");
+    expect(waiting("verify")).toBe("Download: waiting for you to confirm your identity in the remote browser.");
+    expect(waiting("wrong_account")).toBe("Download: waiting for you to switch to the right Google account.");
+    expect(waiting("")).toBe("Download: waiting for you to sign in.");
   });
 });
