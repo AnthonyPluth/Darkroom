@@ -28,32 +28,40 @@
 
   const loader = new Loader(async () => {
     const generation = reservePending();
+    let from = after;
+    let skips = skipped;
     const [firstPage, resolved, people] = await Promise.all([
-      pendingPage(after),
+      pendingPage(from),
       apiCall<"GET /api/review">("/api/review?status=kept_both", { failed: "Couldn't load the past decisions" }),
       apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
     ]);
     let pending = firstPage;
-    let first = pending.reviews.find((review) => !skipped.includes(review.id));
+    let first = pending.reviews.find((review) => !skips.includes(review.id));
     while (!first && pending.reviews.length > 0 && pending.before + pending.reviews.length < pending.pending) {
-      after = pending.reviews[pending.reviews.length - 1].id;
-      pending = await pendingPage(after);
-      first = pending.reviews.find((review) => !skipped.includes(review.id));
+      from = pending.reviews[pending.reviews.length - 1].id;
+      pending = await pendingPage(from);
+      first = pending.reviews.find((review) => !skips.includes(review.id));
     }
     if (!first) {
-      skipped = [];
-      if (after !== null) {
-        after = null;
+      skips = [];
+      if (from !== null) {
+        from = null;
         pending = await pendingPage(null);
       }
       first = pending.reviews[0];
     }
     const position = first ? pending.before + pending.reviews.indexOf(first) + 1 : 0;
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
-    reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
-    showPending(generation, pending.pending);
     const past = [...resolved.reviews].sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
-    return { pending: pending.reviews, pendingCount: pending.pending, position, detail, past, people: people.people, now: nowSeconds() };
+    return {
+      pending: pending.reviews, pendingCount: pending.pending, position, detail, past, people: people.people, now: nowSeconds(),
+      generation, from, skips, reassignTo: String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? ""),
+    };
+  }, (data) => {
+    after = data.from;
+    skipped = data.skips;
+    reassignTo = data.reassignTo;
+    showPending(data.generation, data.pendingCount);
   });
 
   onMount(() => void loader.load());
