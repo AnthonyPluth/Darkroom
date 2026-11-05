@@ -204,6 +204,7 @@ public actor CleanupRunner {
         if case .reporting = flow.state, case let .report(request)? = try flow.handle(.retryReport) {
             return try await send(request)
         }
+        if flow.phase == .confirming || flow.phase == .deleting { throw CleanupFlowError.notNow(flow.phase) }
         return try await sendEarlierReport() ?? outcome()
     }
 

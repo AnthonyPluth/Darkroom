@@ -69,12 +69,14 @@ private actor FakeLibrary: PhotoDeleter {
     var keep: Set<String> = []
     var resourcesError: Error?
     var watched: PendingDeletionReport?
+    var onDelete: (@Sendable () async -> Void)?
     private(set) var deleteCalls: [[String]] = []
     private(set) var recordsAtDelete: [PendingDeletion?] = []
 
     func set(keep: Set<String>) { self.keep = keep }
     func set(resourcesError: Error?) { self.resourcesError = resourcesError }
     func set(watched: PendingDeletionReport?) { self.watched = watched }
+    func set(onDelete: (@Sendable () async -> Void)?) { self.onDelete = onDelete }
     func drop(_ id: String) { assets[id] = nil }
 
     func add(_ resource: PhotoResource) {
@@ -88,6 +90,10 @@ private actor FakeLibrary: PhotoDeleter {
     }
 
     func delete(_ assetIDs: [String]) async -> [String] {
+        if let hook = onDelete {
+            onDelete = nil
+            await hook()
+        }
         if let watched { recordsAtDelete.append(try? await watched.load()) }
         deleteCalls.append(assetIDs)
         let removed = assetIDs.filter { assets[$0] != nil && !keep.contains($0) }
@@ -141,6 +147,12 @@ private actor UnclearablePendingReport: PendingDeletionReport {
         if clearsFail { throw CocoaError(.fileWriteNoPermission) }
         stored = nil
     }
+}
+
+private actor Outcomes {
+    private(set) var errors: [CleanupFlowError?] = []
+
+    func add(_ error: CleanupFlowError?) { errors.append(error) }
 }
 
 private final class Clock: @unchecked Sendable {
@@ -865,5 +877,40 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertNil(missing)
         let elsewhere = try await FilePendingDeletionReport(url: directory.appendingPathComponent("no/none.json")).load()
         XCTAssertNil(elsewhere)
+    }
+
+    func testARetryWhilePhotoKitDeletesLeavesTheRoundsIntentInPlace() async throws {
+        let rig = try await rig(["a"])
+        await rig.library.set(keep: ["a"])
+        await rig.library.set(watched: rig.pending)
+        let runner = rig.runner()
+        let seen = Outcomes()
+        await rig.library.set(onDelete: {
+            do {
+                _ = try await runner.retryReport()
+                await seen.add(nil)
+            } catch {
+                await seen.add(error as? CleanupFlowError)
+            }
+        })
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        let errors = await seen.errors
+        XCTAssertEqual(errors, [.notNow(.deleting)])
+        let records = await rig.library.recordsAtDelete
+        XCTAssertEqual(records, [.deleting(["a"])])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.notRemoved, ["a"])
+        let reports = await rig.api.deletedCalls
+        XCTAssertTrue(reports.isEmpty)
+    }
+
+    func testARetryWhenNoRoundIsRunningStillSendsAnEarlierReport() async throws {
+        let rig = try await rig(["b"])
+        try await rig.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
+        let outcome = try await rig.runner().retryReport()
+        XCTAssertEqual(outcome, .idle)
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
     }
 }
