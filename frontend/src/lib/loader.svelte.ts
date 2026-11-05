@@ -5,12 +5,16 @@ export type Loaded<T> = { kind: "loading" } | { kind: "ready"; data: T } | { kin
 export class Loader<T> {
   current = $state.raw<Loaded<T>>({ kind: "loading" });
 
+  private generation = 0;
+
   constructor(private readonly fetchAll: () => Promise<T>) {}
 
   async load(quiet = false): Promise<void> {
+    const generation = ++this.generation;
     if (!quiet) this.current = { kind: "loading" };
     let message = "";
     const data = await actGet(this.fetchAll, { onError: (m) => (message = m) });
+    if (generation !== this.generation) return;
     this.current = data === null ? { kind: "error", message } : { kind: "ready", data };
   }
 }

@@ -510,6 +510,29 @@ class UndoTests(ReviewCase):
         self.assertEqual((row.sha1, row.bytes), (sha1_of(self.hold()), 1))
         self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
 
+    def test_undo_after_keep_both_over_a_stale_row_and_a_reassign_to_an_empty_place_keeps_the_photo_the_row_points_at(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        relative = str((folder / PAIR_NAME).relative_to(self.world.root))
+        opened = self.opened
+        stale = MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1=sha1_of(self.hold()), bytes=1, indexed_at=1.0,
+                          export_id=self.export.id)
+        opened.add(stale)
+        opened.commit()
+        data = self.hold().read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        self.assertEqual(self.call("POST", f"/api/media/{stale.id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.world.root / self.opened.get(MediaItem, stale.id).path
+        self.assertTrue(target.is_relative_to(self.world.root / "sam" / "google-only"))
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        row = self.opened.get(MediaItem, stale.id)
+        self.assertEqual((row.person_id, row.path), (self.world.ids["sam"], str(target.relative_to(self.world.root))))
+        self.assertEqual(target.read_bytes(), data)
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
     def test_keep_both_over_a_stale_row_with_other_bytes_is_refused_and_changes_nothing(self):
         folder = self.world.root / "jo" / "google-only" / "2019" / "08"
         relative = str((folder / PAIR_NAME).relative_to(self.world.root))

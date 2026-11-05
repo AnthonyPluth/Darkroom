@@ -195,6 +195,41 @@ describe("the count in the navigation", () => {
     await screen.findByRole("heading", { name: "Pair 1 of 3" });
     expect(waiting.count).toBe(3);
   });
+
+  it("keeps the later reload's count and pair when an earlier reload finishes last", async () => {
+    waiting.count = 0;
+    const counts = [3, 2, 4];
+    const server = serve(routes({
+      "GET /api/review?status=pending": () => ({ reviews: [pending], pending: counts.shift(), before: 0 }),
+      "POST /api/review/7/resolve": { review: { ...pending, status: "kept_both" } },
+      "POST /api/review/7/undo": { review: pending },
+    }));
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let details = 0;
+    let earlier: Promise<Response> | null = null;
+    vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => {
+      if (url === "/api/review/7" && (init.method ?? "GET") === "GET" && ++details === 2) {
+        earlier = held.then(() => server.mock(url, init));
+        return earlier;
+      }
+      return server.mock(url, init);
+    });
+    render(Review);
+    await screen.findByRole("heading", { name: "Pair 1 of 3" });
+    await userEvent.click(screen.getByRole("button", { name: "Keep both" }));
+    await waitFor(() => expect(details).toBe(2));
+    await userEvent.click(within(await screen.findByRole("status")).getByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("heading", { name: "Pair 1 of 4" })).toBeInTheDocument();
+    expect(waiting.count).toBe(4);
+    release();
+    await earlier;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("heading", { name: "Pair 1 of 4" })).toBeInTheDocument();
+    expect(screen.getByText("4 pairs look like the same photo saved twice. Nothing is removed until you decide.")).toBeInTheDocument();
+    expect(waiting.count).toBe(4);
+  });
 });
 
 describe("past decisions", () => {

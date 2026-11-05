@@ -10,20 +10,23 @@ class Pending {
 
 export const pending = new Pending();
 
-export function showPending(count: number): void {
-  pending.generation += 1;
-  pending.count = count;
+export function reservePending(): number {
+  return ++pending.generation;
+}
+
+export function showPending(generation: number, count: number): void {
+  if (generation === pending.generation) {
+    pending.count = count;
+  }
 }
 
 export async function refreshPending(): Promise<void> {
-  const generation = ++pending.generation;
+  const generation = reservePending();
   let count = 0;
   try {
     count = (await apiCall<"GET /api/review">(`/api/review?status=pending&after=${PAST_THE_LAST_PAIR}`)).pending;
   } catch {
     ignoreFailure();
   }
-  if (generation === pending.generation) {
-    pending.count = count;
-  }
+  showPending(generation, count);
 }
