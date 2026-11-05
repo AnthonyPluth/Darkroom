@@ -37,7 +37,7 @@ final class ResourceIngesterTests: XCTestCase {
     }
 
     private func make(_ resources: [PhotoResource], exporter: FakeExporter, store: InMemoryResourceStore,
-                      versions: InMemoryIngestVersions = InMemoryIngestVersions()) -> ResourceIngester {
+                      versions: IngestVersions = InMemoryIngestVersions()) -> ResourceIngester {
         ResourceIngester(library: FakeLibrary(resources: resources), exporter: exporter, store: store, versions: versions)
     }
 
@@ -218,7 +218,7 @@ final class ResourceIngesterTests: XCTestCase {
             LocalResource(key: ResourceKey(assetID: "gone-\(index)", kind: .photo), sha1: "s", bytes: 1, filename: "f.HEIC", state: state)
         }
         try await store.upsert(stale)
-        for resource in stale { try await versions.setVersion("v1", for: resource.key) }
+        for resource in stale { await versions.setVersion("v1", for: resource.key) }
         let summary = try await make([], exporter: FakeExporter(), store: store, versions: versions).run()
         XCTAssertEqual(summary, IngestSummary(removed: stale.count))
         let counts = try await store.counts()
@@ -234,7 +234,7 @@ final class ResourceIngesterTests: XCTestCase {
         let versions = InMemoryIngestVersions()
         let a = photo("IMG_1")
         try await store.upsert([LocalResource(key: a.key, sha1: "s", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)])
-        try await versions.setVersion("v1", for: a.key)
+        await versions.setVersion("v1", for: a.key)
         let ingester = ResourceIngester(library: Unavailable(), exporter: FakeExporter(), store: store, versions: versions)
         do {
             _ = try await ingester.run()
@@ -251,7 +251,7 @@ final class ResourceIngesterTests: XCTestCase {
         let versions = InMemoryIngestVersions()
         let gone = photo("IMG_9")
         try await store.upsert([LocalResource(key: gone.key, sha1: "s", bytes: 1, filename: "IMG_9.HEIC", state: .hashed)])
-        try await versions.setVersion("v1", for: gone.key)
+        await versions.setVersion("v1", for: gone.key)
         let failing = ResourceIngester(
             library: FakeLibrary(resources: []), exporter: FakeExporter(), store: RemovalRefusingStore(inner: store), versions: versions
         )
@@ -296,7 +296,7 @@ final class ResourceIngesterTests: XCTestCase {
         let inner = InMemoryIngestVersions()
         let a = photo("IMG_1")
         try await store.upsert([LocalResource(key: a.key, sha1: "s", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)])
-        try await inner.setVersion("v1", for: a.key)
+        await inner.setVersion("v1", for: a.key)
         let ingester = ResourceIngester(
             library: FakeLibrary(resources: [a]), exporter: FakeExporter(), store: store, versions: CancellingVersions(inner: inner)
         )
@@ -564,7 +564,7 @@ private struct CancellingVersions: IngestVersions {
         withUnsafeCurrentTask { $0?.cancel() }
         return stored
     }
-    func setVersion(_ version: String?, for key: ResourceKey) async throws { try await inner.setVersion(version, for: key) }
+    func setVersion(_ version: String?, for key: ResourceKey) async throws { await inner.setVersion(version, for: key) }
 }
 
 private struct CancellingCloudExporter: ResourceExporter {
