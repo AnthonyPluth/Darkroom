@@ -135,7 +135,7 @@
         {/each}
         {#each failed as job (job.id)}
           <p class="text-ink-muted">
-            Capture of the failed {JOB_NAMES[job.kind] ?? "job"}:
+            Capture of the {job.needs_check || job.checked !== null ? "unconfirmed" : "failed"} {JOB_NAMES[job.kind] ?? "job"}:
             {#if job.capture_files.includes("screenshot.png")}
               <a class="font-semibold underline" href="/api/browser/failures/{job.id}/screenshot.png" target="_blank" rel="noopener">screenshot</a>{job.capture_files.length > 1 ? "," : "."}
             {/if}

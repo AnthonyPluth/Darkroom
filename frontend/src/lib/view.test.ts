@@ -157,4 +157,12 @@ describe("jobSentence after a check", () => {
     expect(jobSentence({ ...renew, checked: "missing" }, "Renew schedule")).toBe("Renew schedule: not confirmed by Takeout, and you found none there.");
     expect(jobSentence(renew, "Renew schedule")).toBe("Renew schedule: failed, unsure.");
   });
+
+  it("says an attempt waiting for an answer was not confirmed, never that it failed", () => {
+    for (const kind of ["renew", "schedule"]) {
+      const sentence = jobSentence({ ...renew, kind, needs_check: true, message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again" }, "Doing");
+      expect(sentence).toBe("Doing: not confirmed by Takeout; say below what you found.");
+      expect(sentence).not.toMatch(/failed|trying again/);
+    }
+  });
 });
