@@ -23,6 +23,7 @@ SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
 UPLOADS_TMP = ".uploads_tmp"
+DOWNLOADS = ".downloads"
 
 
 class OutsideRoot(ValueError):
@@ -125,6 +126,21 @@ class Photos:
             shutil.rmtree(target)
         except OSError as error:
             raise ProfileNotRemoved("the account's browser folder could not be removed") from error
+
+    def retire_account_downloads(self, account: str) -> None:
+        name = self.name_part(account)
+        inbox = self.root / "_inbox"
+        target = inbox / DOWNLOADS / name
+        if any(each.is_symlink() for each in (inbox, inbox / DOWNLOADS, target)):
+            raise ProfileNotRemoved("the account's downloads folder is a link, so it was not removed")
+        if not target.exists():
+            return
+        if not target.is_dir() or target.resolve() != target:
+            raise ProfileNotRemoved("the account's downloads folder is not where it should be, so it was not removed")
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise ProfileNotRemoved("the account's downloads folder could not be removed") from error
 
     def inbox_root(self) -> Path:
         return self.inside("_inbox")

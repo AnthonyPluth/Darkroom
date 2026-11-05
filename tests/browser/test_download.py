@@ -266,6 +266,65 @@ class DownloadJobTests(DownloadWorld):
         self.assertEqual(browser.downloaded, [])
 
 
+class DownloadsFolderTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.profile = self.root / "_browser" / "7" / "profile"
+        self.staging = self.root / "_inbox" / ".downloads"
+        self.held = self.root / "_inbox" / "jo" / "review" / "export-1"
+        self.held.mkdir(parents=True)
+        (self.held / "IMG_1.JPG").write_bytes(b"held")
+
+    def assert_held_copies_survive(self):
+        self.assertEqual(sorted(each.name for each in self.held.iterdir()), ["IMG_1.JPG"])
+        self.assertEqual((self.held / "IMG_1.JPG").read_bytes(), b"held")
+
+    def test_the_folder_is_the_accounts_folder_under_the_inbox_and_is_made_when_missing(self):
+        folder = download.downloads_folder(self.profile)
+        self.assertEqual(folder, self.staging / "7")
+        self.assertTrue(folder.is_dir())
+
+    def test_a_profile_that_is_not_an_accounts_profile_folder_is_refused(self):
+        for profile in (self.root / "_browser" / ".." / "profile", self.root / "_browser" / "7" / "other", self.root / "_browser" / "jo" / "profile"):
+            with self.assertRaises(download.DownloadsFolderRefused, msg=profile):
+                download.downloads_folder(profile)
+        self.assertFalse(self.staging.exists())
+
+    def test_a_link_at_the_inbox_the_downloads_folder_or_the_accounts_folder_is_refused_and_nothing_is_removed(self):
+        for link, target in ((self.staging / "7", self.held), (self.staging, self.held.parent), (self.root / "_inbox", self.held.parent)):
+            with self.subTest(link=str(link.relative_to(self.root))):
+                moved = None
+                if link == self.root / "_inbox":
+                    moved = self.root / "inbox-real"
+                    link.rename(moved)
+                    target = moved / "jo" / "review"
+                    self.held = target / "export-1"
+                elif link != self.staging:
+                    self.staging.mkdir(parents=True)
+                link.symlink_to(target, target_is_directory=True)
+                with self.assertRaises(download.DownloadsFolderRefused):
+                    download.downloads_folder(self.profile)
+                self.assert_held_copies_survive()
+                link.unlink()
+                if link == self.staging / "7":
+                    self.staging.rmdir()
+                if moved is not None:
+                    moved.rename(link)
+                    self.held = link / "jo" / "review" / "export-1"
+
+    def test_the_sweep_removes_regular_leftovers_and_only_the_link_of_a_linked_one(self):
+        folder = download.downloads_folder(self.profile)
+        (folder / "0b7c-guid").write_bytes(b"half a part")
+        (folder / "held-link").symlink_to(self.held / "IMG_1.JPG")
+        (folder / "folder-link").symlink_to(self.held, target_is_directory=True)
+        (folder / "a-folder").mkdir()
+        self.assertEqual(download.sweep_downloads(folder), 3)
+        self.assertEqual([each.name for each in folder.iterdir()], ["a-folder"])
+        self.assert_held_copies_survive()
+
+
 class InboxFolderTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
