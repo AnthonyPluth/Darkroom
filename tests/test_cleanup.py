@@ -453,6 +453,19 @@ class InterruptedRemovalTests(Imported):
         self.assertFalse(paths.record_of(aside).exists())
         self.assertEqual(self.kept_tree(), self.kept)
 
+    def test_a_sidecar_set_aside_alone_waits_out_the_grace_period_of_its_record_not_of_its_inode(self):
+        _, sidecar, aside, xmp_data = self.sidecar_set_aside()
+        record = paths.record_of(aside)
+        just_written = TOO_SOON - cleanup.DROPPING_GRACE + 60
+        os.utime(record, (just_written, just_written))
+        self.assertLess(aside.stat().st_ctime, TOO_SOON - cleanup.DROPPING_GRACE)
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (0, 0))
+        self.assertEqual((aside.read_bytes(), record.is_file(), sidecar.exists()), (xmp_data, True, False))
+        report = self.clean(at=just_written + cleanup.DROPPING_GRACE + 1)
+        self.assertEqual(report.restored, 1)
+        self.assertEqual(sidecar.read_bytes(), xmp_data)
+
     def test_a_record_whose_sidecar_was_never_set_aside_is_removed_and_nothing_else_changes(self):
         folder = self.root / "jo" / "google-only" / "2017" / "07"
         record = folder / f"{paths.DROPPING}0123456789abcdef.json"
