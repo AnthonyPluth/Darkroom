@@ -4,7 +4,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import accounts, exports, people
+from darkroom.domain import accounts, dedupe, exports, people
 from darkroom.domain.ingest import run
 from darkroom.storage import db
 from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem
@@ -118,9 +118,30 @@ class OwnerNoLongerServedTests(unittest.TestCase):
         for name in ("IMG_1002.JPG", "IMG_1004.JPG"):
             self.assertEqual(by_name[name], self.world.ids["sam"], name)
 
+    def test_a_match_on_the_unserved_owners_phone_item_succeeds_but_never_confirms_it(self):
+        from darkroom.domain.ingest import run as ingest
+        change_default(self.world, "sam")
+        done = self.world.run_import(self.export)
+        self.assertEqual((done.status, done.failed), ("done", 0))
+        jo = self.world.ids["jo"]
+        tier_one = self.world.opened.execute(
+            select(DedupeDecision).where(DedupeDecision.person_id == jo, DedupeDecision.tier.in_((1, 2)))
+        ).scalars().all()
+        self.assertTrue(tier_one)
+        for row in tier_one:
+            matched = self.world.opened.get(MediaItem, row.matched_item_id)
+            self.assertEqual(matched.person_id, jo)
+            self.assertFalse(matched.confirmed_in_google)
+        phone = self.world.opened.execute(select(MediaItem).where(MediaItem.person_id == jo, MediaItem.source == "phone")).scalars().all()
+        self.assertFalse(any(item.confirmed_in_google for item in phone))
+        count = ingest.unmatched_count(self.world.opened, jo, NOW + 365 * 86400)
+        self.assertEqual(count, len(phone))
+        for row in tier_one:
+            dedupe.reverse(self.world.opened, row.id, NOW, "owner")
+        self.assertFalse(any(item.confirmed_in_google for item in phone))
+
     def test_the_owners_originals_are_indexed_for_the_export(self):
         change_default(self.world, "sam")
-        from darkroom.domain import dedupe
         index = dedupe.PersonIndex.load(self.world.opened, self.world.account, self.world.ids["jo"])
         self.assertEqual(index.person_ids, {self.world.ids["jo"], self.world.ids["sam"]})
         without = dedupe.PersonIndex.load(self.world.opened, self.world.account)
