@@ -20,7 +20,11 @@ class BadToken(ValueError):
     pass
 
 
-class HeldByAnotherPerson(LookupError):
+class HeldByAnotherPerson(ValueError):
+    pass
+
+
+class DeviceGone(LookupError):
     pass
 
 
@@ -48,6 +52,13 @@ def forget(opened: Session, device: Device, now: float) -> bool:
     return True
 
 
+def forget_own(opened: Session, device_id: int, now: float) -> bool:
+    device = opened.get(Device, device_id)
+    if device is None or device.revoked_at is not None:
+        raise DeviceGone("no such device")
+    return forget(opened, device, now)
+
+
 def holders(opened: Session, digest: str, device: Device) -> list[Device]:
     return list(opened.execute(select(Device).where(Device.push_token_digest == digest, Device.id != device.id)).scalars())
 
@@ -56,7 +67,7 @@ def register(opened: Session, settings: Settings, device_id: int, raw: str, now:
     token = normalized(raw)
     device = opened.get(Device, device_id)
     if device is None or device.revoked_at is not None:
-        raise LookupError("no such device")
+        raise DeviceGone("no such device")
     digest = digest_of(token)
     sealed = secretbox.seal(token, settings.secret_key)
     if device.push_token_digest == digest and unsealed(device, settings.secret_key) == token:

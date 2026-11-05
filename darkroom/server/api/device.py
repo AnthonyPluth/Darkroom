@@ -156,6 +156,8 @@ def register_push_token(request: Annotated[Request, contract.DevicePushTokenBody
         return error_response(str(error), 400)
     try:
         changed = register_once_more_if_raced(request, who.device_id, token)
+    except push_tokens.DeviceGone:
+        return error_response(SIGN_IN, 401)
     except push_tokens.HeldByAnotherPerson as error:
         return error_response(str(error), 409)
     except secretbox.Unreadable:
@@ -179,7 +181,10 @@ def forget_push_token(request: Request) -> Annotated[Response, contract.Ok]:
     who = device_of(request)
     if who is None or who.device_id is None:
         return error_response(SIGN_IN, 401)
-    with db.session(engine_of(request)) as opened:
-        changed = push_tokens.forget(opened, devices.get(opened, who.device_id), now())
+    try:
+        with db.session(engine_of(request)) as opened:
+            changed = push_tokens.forget_own(opened, who.device_id, now())
+    except push_tokens.DeviceGone:
+        return error_response(SIGN_IN, 401)
     monitoring.log("push token cleared", changed=changed)
     return json_response({"ok": True})

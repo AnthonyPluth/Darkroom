@@ -8,6 +8,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import devices, push_tokens
+from darkroom.server.api import device as device_api
 from darkroom.storage import db, secretbox
 from darkroom.storage.models import Device, Event, User
 from tests.device_world import OTHER_TOKEN, TOKEN, DeviceCase
@@ -160,6 +161,24 @@ class PushTokenTests(DeviceCase):
             push_tokens.register(opened, self.settings, self.device_id, PUSH_TOKEN, 6.0)
         with db.session(self.engine) as opened, self.assertRaises(LookupError):
             push_tokens.register(opened, self.settings, 999, PUSH_TOKEN, 6.0)
+
+    def test_a_device_revoked_between_sign_in_and_the_request_gets_401(self):
+        _, other_id = self.enrol("jo", "jo@example.test", OTHER_TOKEN)
+        self.register()
+        real = device_api.device_of
+
+        def revoked_right_after(request):
+            who = real(request)
+            with db.session(self.engine) as opened:
+                devices.revoke(opened, who.device_id, 5.0)
+            return who
+
+        for method, body, device_token, device_id in (("PUT", {"token": OTHER_PUSH_TOKEN}, TOKEN, self.device_id), ("DELETE", None, OTHER_TOKEN, other_id)):
+            with self.subTest(method=method), mock.patch.object(device_api, "device_of", revoked_right_after), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.call(method, "/api/device/push-token", body, device_token)[0], 401)
+                self.assertIsNotNone(self.device(device_id).revoked_at)
+        self.assertIsNone(self.device().push_token_digest)
+        self.assertEqual(self.kinds(), ["push_token_registered", "push_token_cleared"])
 
     def test_a_token_is_not_read_with_another_key_tampered_with_or_from_a_revoked_device(self):
         self.register()
