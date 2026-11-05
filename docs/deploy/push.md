@@ -9,7 +9,9 @@ Darkroom sends its alerts to the Darkroom iPhone app through Apple's push servic
 | `APNS_BUNDLE_ID` | The iPhone app's bundle ID, the push topic. |
 | `APNS_KEY_FILE` | Absolute path, inside the container, to the `.p8` auth key. |
 
-Set all four or none; with none set, alerts are recorded as events and not delivered. To set it up:
+Set all four or none; with none set, alerts are recorded as events and not delivered.
+
+Once they are set, an alert goes to the iPhones of the person it concerns (an alert about a Google account goes to every person that account serves), and only to an iPhone that is not revoked, whose owner can still sign in and that has sent its push token. A job sends the queued pushes every minute, checking each device again right before handing its token to APNs (a device revoked by then, holding a different token, whose owner can no longer sign in, or whose person the alert no longer concerns, for example because the account no longer serves them, is skipped and recorded as `push_skipped`); while Apple can't be reached it tries again every 5 minutes for an hour. Each push is recorded as an event (`push_sent`, `push_failed`, `push_token_invalid`), and so is what happened to the alert (`alert_sent`, `alert_failed`, `alert_no_device`, or `alert_disabled` when the settings were removed meanwhile). A token Apple reports invalid is forgotten, unless the iPhone sent it again after the time Apple gives. To set it up:
 
 1. In the Apple Developer account, under Certificates, Identifiers & Profiles, Keys, create a key with Apple Push Notifications service enabled, and download its `AuthKey_<key id>.p8` (Apple lets you download it once).
 2. Put it next to Darkroom's data on Unraid, readable only by the container's user (`chmod 600`), and mount it read-only, for example `./secrets/AuthKey.p8:/run/secrets/apns.p8:ro`, with `APNS_KEY_FILE=/run/secrets/apns.p8`.

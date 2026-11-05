@@ -280,7 +280,8 @@ def check_unmatched(opened: Session, settings: config.Settings, export: Export, 
                 continue
             wanted.add(key)
             wording = alerts.originals_unmatched(person.name, None if pixel is None else pixel.name, count)
-            alert = alerts.open_alert_committed(opened, settings, key, "originals_unmatched", person.slug, wording, None, now, notifier=notifier)
+            alert = alerts.open_alert_committed(opened, settings, key, "originals_unmatched", person.slug, wording, None, now, notifier=notifier,
+                                                 about=alerts.person(person.id))
             alert.message = wording.message
     prefix = f"originals_unmatched:{export.account_id}:"
     for alert in opened.execute(select(Alert).where(Alert.key.startswith(prefix), Alert.closed.is_(None))).scalars():
@@ -326,7 +327,7 @@ def rescan(opened: Session, settings: config.Settings, client: immich.Client, pe
     except immich.ImmichFailed as error:
         events.record(opened, now, "immich_failed", person.slug, str(error)[:200])
         alerts.open_alert(opened, settings, f"immich:failed:{export.id}:{person.id}", "failure", person.slug,
-                          alerts.failure(f"The Immich rescan of {person.name}'s library"), None, now, notifier=notifier)
+                          alerts.failure(f"The Immich rescan of {person.name}'s library"), None, now, notifier=notifier, about=alerts.person(person.id))
         return False
     events.record(opened, now, "immich_rescanned", person.slug)
     return True
@@ -363,7 +364,7 @@ def stage_report(opened: Session, settings: config.Settings, export: Export, run
     key = f"export_imported:{export.id}"
     if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
         alerts.open_alert_committed(opened, settings, key, "export_imported", f"export {export.id}", alerts.export_imported(summary_of(export, run)),
-                                    None, now, tools.notifier)
+                                    None, now, tools.notifier, about=alerts.account(export.account_id))
         try:
             mark(opened, export, run, "reported")
         except Exception as error:
@@ -383,7 +384,8 @@ def failed(opened: Session, settings: config.Settings, export_id: int, run_id: i
         run.status, run.error, run.finished = "failed", public[:500], now
     events.record(opened, now, "import_failed", f"export {export_id}", public[:200])
     alerts.open_alert(opened, settings, f"import:failed:{export_id}:{run_id}", "failure", f"export {export_id}",
-                      alerts.failure(f"The import of export {export_id}"), None, now, notifier=tools.notifier)
+                      alerts.failure(f"The import of export {export_id}"), None, now, notifier=tools.notifier,
+                      about=alerts.account(export.account_id) if export is not None else alerts.NOBODY)
     opened.commit()
     monitoring.log("import failed", export=export_id, error=type(error).__name__)
 

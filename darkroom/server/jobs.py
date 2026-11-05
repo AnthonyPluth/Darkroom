@@ -8,10 +8,11 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
 
-from darkroom import monitoring, oidc
+from darkroom import dates, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, renewal
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, push, renewal
 from darkroom.domain.ingest import cleanup, run
+from darkroom.providers import apns
 from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
@@ -88,6 +89,7 @@ class Scheduler:
 
 
 ALERT_TICK_SECONDS = 600.0
+PUSH_TICK_SECONDS = 60.0
 INDEX_SECONDS = 3600.0
 INDEX_FIRST_AFTER_SECONDS = 120.0
 SESSION_RECHECK_SECONDS = 3600.0
@@ -108,8 +110,21 @@ def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.Rech
     return summary
 
 
-def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
+def wall_clock() -> float:
+    return dates.utc_now().timestamp()
+
+
+def push_alerts(settings: Settings, engine: Engine, pusher: apns.Pusher | None, at: float) -> int:
+    with db.session(engine) as opened:
+        pushed = push.deliver_due(opened, settings, pusher, at)
+    if pushed:
+        monitoring.log("alert pushes sent", count=pushed)
+    return pushed
+
+
+def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
+    found_pusher = pusher if pusher is not None else apns.of(settings, wall_clock)
 
     def tick_alerts(at: float) -> None:
         with db.session(engine) as opened:
@@ -125,7 +140,11 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
             for person in opened.query(Person).order_by(Person.id):
                 index.index_person(opened, photos, person, at)
 
+    def send_pushes(at: float) -> None:
+        push_alerts(settings, engine, found_pusher, at)
+
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
+    scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
     def expire_browser_leases(at: float) -> None:
         with db.session(engine) as opened:

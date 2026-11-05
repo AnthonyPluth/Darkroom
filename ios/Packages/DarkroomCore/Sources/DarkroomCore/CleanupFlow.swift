@@ -72,7 +72,7 @@ public enum CleanupEvent: Equatable, Sendable {
     case remove(shown: [String], current: [AssetDescriptor], at: Date)
     case confirmed(ConfirmReply)
     case confirmFailed
-    case deletionEnded(removed: [String])
+    case deletionEnded(removed: [String], changed: [String] = [])
     case reported(DeletedReply)
     case reportFailed
     case retryReport
@@ -117,9 +117,9 @@ public struct CleanupFlow: Equatable, Sendable {
             guard case let .confirming(list, _, _) = state else { throw CleanupFlowError.notNow(phase) }
             state = .fetched(list)
             return nil
-        case let .deletionEnded(removed):
+        case let .deletionEnded(removed, changed):
             guard case let .deleting(confirmed, report) = state else { throw CleanupFlowError.notNow(phase) }
-            return deletionEnded(removed: removed, confirmed: confirmed, report: report)
+            return deletionEnded(removed: removed, changed: changed, confirmed: confirmed, report: report)
         case let .reported(reply):
             guard case let .reporting(request, report) = state else { throw CleanupFlowError.notNow(phase) }
             var finished = report
@@ -212,11 +212,18 @@ public struct CleanupFlow: Equatable, Sendable {
         return .delete(assetIDs: confirmed)
     }
 
-    private mutating func deletionEnded(removed: [String], confirmed: [String], report: CleanupReport) -> CleanupCommand? {
+    private mutating func deletionEnded(
+        removed: [String],
+        changed: [String],
+        confirmed: [String],
+        report: CleanupReport
+    ) -> CleanupCommand? {
         var report = report
         let gone = Set(removed)
+        let moved = Set(changed).subtracting(gone)
+        report.changed += confirmed.filter { moved.contains($0) }
         report.removed = confirmed.filter { gone.contains($0) }
-        report.notRemoved = confirmed.filter { !gone.contains($0) }
+        report.notRemoved = confirmed.filter { !gone.contains($0) && !moved.contains($0) }
         guard !report.removed.isEmpty else {
             state = .finished(report)
             return nil

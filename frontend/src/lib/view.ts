@@ -18,6 +18,8 @@ export function alertChip(kind: string): { tone: Tone; label: string } {
     case "failure": return { tone: "bad", label: "Failed" };
     case "originals_unmatched": return { tone: "warn", label: "Check backup" };
     case "schedule_ending": return { tone: "warn", label: "Schedule ending" };
+    case "schedule_renewal_failed": return { tone: "bad", label: "Not renewed" };
+    case "schedule_renewal_unconfirmed": return { tone: "warn", label: "Renewal unconfirmed" };
     case "export_expiring": return { tone: "warn", label: "Export expiring" };
     default: return { tone: "warn", label: "Needs a look" };
   }
@@ -64,6 +66,11 @@ export function failedCaptures(jobs: readonly BrowserJobView[], accountId: numbe
 export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
   const latest = latestJob(jobs, accountId, "schedule");
   return latest !== undefined && latest.needs_check ? latest : undefined;
+}
+
+export function maybeRenewed(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
+  const latest = latestJob(jobs, accountId, "renew");
+  return latest !== undefined && latest.status === "failed" && (latest.message.startsWith("ScheduleNotConfirmed") || latest.message === "the worker stopped reporting") ? latest : undefined;
 }
 
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {

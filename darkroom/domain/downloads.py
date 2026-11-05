@@ -262,7 +262,8 @@ def watch_expiry(opened: Session, settings: Settings, now: float) -> int:
         key = expiry_key(export.id)
         if opened.execute(select(Alert.id).where(Alert.key == key, Alert.closed.is_(None)).limit(1)).first() is None:
             link = f"{settings.public_url}/exports" if settings.public_url else None
-            alerts.open_alert(opened, settings, key, EXPIRING, f"export {export.id}", expiring_wording(opened, settings, export, expires_at), link, now)
+            alerts.open_alert(opened, settings, key, EXPIRING, f"export {export.id}", expiring_wording(opened, settings, export, expires_at), link, now,
+                              about=alerts.account(export.account_id))
             opened_now += 1
     keep = {expiry_key(each) for each in still_open}
     for alert in opened.execute(select(Alert).where(Alert.kind == EXPIRING, Alert.closed.is_(None))).scalars():

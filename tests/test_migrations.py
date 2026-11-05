@@ -274,6 +274,32 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0014_alert_recipients_finds_whom_old_alerts_concern_and_can_be_undone_without_losing_alerts(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0013")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (2, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (3, 2, 'initial', 'downloaded')")
+            connection.exec_driver_sql("INSERT INTO browser_jobs (id, account_id, kind, status, created) VALUES (4, 2, 'export_status', 'failed', 1.0)")
+            for key, kind, subject in [("sign-in:2", "sign_in_needed", "a@x.test"), ("unmatched:1", "originals_unmatched", "jo"),
+                                       ("immich:failed:3:1", "failure", "jo"), ("expiring:3", "export_expiring", "export 3"),
+                                       ("browser:failed:4", "failure", "4"), ("other", "failure", "nobody")]:
+                connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count) VALUES (?, ?, ?, 'm', 1.0, 1)", (key, kind, subject))
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, person_id, account_id, push_due FROM alerts ORDER BY id").all(),
+                             [("sign-in:2", None, 2, None), ("unmatched:1", 1, None, None), ("immich:failed:3:1", 1, None, None),
+                              ("expiring:3", None, 2, None), ("browser:failed:4", None, 2, None), ("other", None, None, None)])
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0013")
+        self.assertFalse({"person_id", "account_id", "push_due"} & {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(len(connection.exec_driver_sql("SELECT key FROM alerts").all()), 6)
+
     def test_0012_device_push_tokens_leaves_old_devices_without_a_token_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

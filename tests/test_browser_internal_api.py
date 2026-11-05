@@ -83,7 +83,7 @@ class WorkerRoundTripTests(WorkerApiServer):
         with db.session(self.engine) as opened:
             opened.get(GoogleAccount, self.account).schedule_end = 1_000_000.0
             job_id = browser_jobs.queue(opened, self.account, browser_jobs.RENEW_KIND, {"ending": 1_000_000.0}, 1.0).id
-            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0)
+            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0, about=alerts.account(self.account))
         self.assertEqual(self.claim()["kind"], "renew")
         bad = {"result": {"schedule_created": 900_000.0, "schedule_end": 1_000_000.0}}
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/done", bad), (400, {"error": "a renewal must end after the schedule it renews"}))
@@ -98,7 +98,7 @@ class WorkerRoundTripTests(WorkerApiServer):
         with db.session(self.engine) as opened:
             opened.get(GoogleAccount, self.account).schedule_end = 1_000_000.0
             job_id = browser_jobs.queue(opened, self.account, browser_jobs.RENEW_KIND, {"ending": 1_000_000.0}, 1.0).id
-            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0)
+            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0, about=alerts.account(self.account))
         self.assertEqual(self.claim()["kind"], "renew")
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "UnexpectedPage"})[0], 200)
         with db.session(self.engine) as opened:
