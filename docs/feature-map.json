@@ -96,6 +96,7 @@
       ],
       "tests": [
         "tests/test_browser_internal_api.py",
+        "tests/test_cleanup_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
         "tests/test_device_checkin.py",
@@ -194,6 +195,15 @@
       "frontend": [
         "frontend/src/pages/People.svelte"
       ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/devices/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.devices.update_device",
+      "frontend": [],
       "tests": [
         "tests/test_every_route.py"
       ]
@@ -451,6 +461,36 @@
       "tests": [
         "tests/test_device_auth.py",
         "tests/test_device_checkin.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/eligible",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.eligible",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/eligible/confirm",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.confirm",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/deleted",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.deleted",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
         "tests/test_every_route.py"
       ]
     },

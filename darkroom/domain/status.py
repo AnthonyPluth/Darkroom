@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, browser_jobs
+from darkroom.domain import accounts, browser_jobs, eligibility
 from darkroom.domain.ingest import run
 from darkroom.storage.models import Alert, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
 
@@ -40,6 +40,12 @@ def account_state(account: GoogleAccount) -> dict[str, object]:
             "schedule_end": account.schedule_end}
 
 
+def device_state(opened: Session, device: Device) -> dict[str, object]:
+    eligible, size = eligibility.counts(opened, device)
+    return {"id": device.id, "name": device.name, "last_checkin": device.last_checkin, "pending_uploads": device.pending_uploads,
+            "cleanup_enabled": device.cleanup_enabled, "eligible": eligible, "eligible_bytes": size, "eligible_checked": device.eligibility_checked_at}
+
+
 def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None]) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
@@ -56,7 +62,7 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "unknown_time": counts[2],
         "accounts": [account_state(account) for account in people_accounts],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
-        "devices": [{"id": d.id, "name": d.name, "last_checkin": d.last_checkin, "pending_uploads": d.pending_uploads, "eligible": None} for d in devices],
+        "devices": [device_state(opened, device) for device in devices],
         "last_import": last_import(opened, serving),
         "unmatched": unmatched.get(person.slug),
         "alerts": concerning,

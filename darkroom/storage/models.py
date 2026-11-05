@@ -39,6 +39,7 @@ class Device(Base):
     pending_uploads: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created: Mapped[float] = mapped_column(Float, nullable=False)
     revoked_at: Mapped[float | None] = mapped_column(Float)
+    eligibility_checked_at: Mapped[float | None] = mapped_column(Float)
 
 
 class GoogleAccount(Base):
