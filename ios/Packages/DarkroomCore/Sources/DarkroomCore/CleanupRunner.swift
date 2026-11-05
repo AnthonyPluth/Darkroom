@@ -5,22 +5,45 @@ public protocol PhotoDeleter: Sendable {
     func delete(_ assetIDs: [String]) async -> [String]
 }
 
+public struct PendingDeletion: Codable, Equatable, Sendable {
+    public enum Stage: String, Codable, Sendable {
+        case deleting
+        case deleted
+    }
+
+    public let stage: Stage
+    public let request: DeletedRequest
+
+    public init(stage: Stage, request: DeletedRequest) {
+        self.stage = stage
+        self.request = request
+    }
+
+    public static func deleting(_ assetIDs: [String]) -> PendingDeletion {
+        PendingDeletion(stage: .deleting, request: DeletedRequest(assetIDs: assetIDs))
+    }
+
+    public static func deleted(_ request: DeletedRequest) -> PendingDeletion {
+        PendingDeletion(stage: .deleted, request: request)
+    }
+}
+
 public protocol PendingDeletionReport: Sendable {
-    func load() async -> DeletedRequest?
-    func save(_ request: DeletedRequest?) async throws
+    func load() async throws -> PendingDeletion?
+    func save(_ pending: PendingDeletion?) async throws
 }
 
 public actor InMemoryPendingDeletionReport: PendingDeletionReport {
-    private var stored: DeletedRequest?
+    private var stored: PendingDeletion?
 
     public init() {}
 
-    public func load() -> DeletedRequest? {
+    public func load() -> PendingDeletion? {
         stored
     }
 
-    public func save(_ request: DeletedRequest?) {
-        stored = request
+    public func save(_ pending: PendingDeletion?) {
+        stored = pending
     }
 }
 
@@ -31,19 +54,24 @@ public actor FilePendingDeletionReport: PendingDeletionReport {
         self.url = url
     }
 
-    public func load() -> DeletedRequest? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(DeletedRequest.self, from: data)
+    public func load() throws -> PendingDeletion? {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return nil
+        }
+        return try JSONDecoder().decode(PendingDeletion.self, from: data)
     }
 
-    public func save(_ request: DeletedRequest?) throws {
-        guard let request else {
+    public func save(_ pending: PendingDeletion?) throws {
+        guard let pending else {
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
             return
         }
-        try JSONEncoder().encode(request).write(to: url, options: .atomic)
+        try JSONEncoder().encode(pending).write(to: url, options: .atomic)
     }
 }
 
@@ -56,6 +84,8 @@ public actor CleanupRunner {
         case finished(CleanupReport)
         case reportPending(CleanupReport)
         case reportUnsaved(CleanupReport)
+        case recordNotCleared(CleanupReport)
+        case reportUnreadable
         case needsSignIn
     }
 
@@ -63,8 +93,12 @@ public actor CleanupRunner {
     public static let reportRefusedMessage = "Darkroom refused the report of this removal."
 
     private struct Current {
-        var present: Set<String> = []
         var ready: [AssetDescriptor] = []
+    }
+
+    private struct Uncleared {
+        let record: PendingDeletion
+        let report: CleanupReport
     }
 
     private let api: CleanupAPI
@@ -76,6 +110,8 @@ public actor CleanupRunner {
     private var flow = CleanupFlow()
     private var reportInFlight: Task<Outcome?, Error>?
     private var confirmedAs: [String: AssetDescriptor] = [:]
+    private var written: PendingDeletion?
+    private var uncleared: Uncleared?
 
     public init(
         api: CleanupAPI,
@@ -129,7 +165,7 @@ public actor CleanupRunner {
     public func remove(shown: [String]) async throws -> Outcome {
         guard case .fetched = flow.state else { throw CleanupFlowError.notNow(flow.phase) }
         let now = try await current(among: shown)
-        var command = try flow.handle(.remove(shown: shown.filter { now.present.contains($0) }, current: now.ready, at: clock()))
+        var command = try flow.handle(.remove(shown: shown, current: now.ready, at: clock()))
         while let next = command {
             switch next {
             case .fetchEligible:
@@ -147,6 +183,7 @@ public actor CleanupRunner {
                 }
                 command = try flow.handle(.confirmed(reply))
             case let .delete(assetIDs):
+                _ = await keep(.deleting(assetIDs))
                 let unchanged = await stillAsConfirmed(assetIDs)
                 let changed = assetIDs.filter { !unchanged.contains($0) }
                 let kept = assetIDs.filter { unchanged.contains($0) }
@@ -156,6 +193,9 @@ public actor CleanupRunner {
             case let .report(request):
                 return try await send(request)
             }
+        }
+        if case let .finished(report) = flow.state, let notCleared = await clear(showing: report) {
+            return notCleared
         }
         return outcome()
     }
@@ -184,7 +224,7 @@ public actor CleanupRunner {
     }
 
     private func deliver(_ request: DeletedRequest) async throws -> Outcome? {
-        let kept = (try? await pending.save(request)) != nil
+        let kept = await keep(.deleted(request)) || written != nil
         let reply: DeletedReply
         do {
             reply = try await api.deleted(request)
@@ -197,29 +237,76 @@ public actor CleanupRunner {
             }
             reply = refused
         }
-        try? await pending.save(nil)
         _ = try flow.handle(.reported(reply))
-        return outcome()
+        guard case let .finished(report) = flow.state else { return outcome() }
+        return await clear(showing: report) ?? outcome()
     }
 
     private func deliverEarlier() async throws -> Outcome? {
-        guard let saved = await pending.load() else { return nil }
+        let saved: PendingDeletion?
+        do {
+            saved = try await pending.load()
+        } catch {
+            return .reportUnreadable
+        }
+        written = saved
+        guard let saved else {
+            uncleared = nil
+            return nil
+        }
+        if let uncleared, uncleared.record == saved {
+            return await clear(showing: uncleared.report)
+        }
+        let request: DeletedRequest
+        switch saved.stage {
+        case .deleted:
+            request = saved.request
+        case .deleting:
+            let present = Set(try await deleter.resources(of: saved.request.assetIDs).map(\.assetID))
+            let gone = saved.request.assetIDs.filter { !present.contains($0) }
+            guard !gone.isEmpty else { return await clear(showing: CleanupReport()) }
+            request = DeletedRequest(assetIDs: gone)
+            _ = await keep(.deleted(request))
+        }
         var report = CleanupReport()
-        report.removed = saved.assetIDs
+        report.removed = request.assetIDs
         let reply: DeletedReply
         do {
-            reply = try await api.deleted(saved)
+            reply = try await api.deleted(request)
         } catch {
-            guard let refused = Self.refusal(error, for: saved) else {
+            guard let refused = Self.refusal(error, for: request) else {
                 return Self.needsSignIn(error) ? .needsSignIn : .reportPending(report)
             }
             reply = refused
         }
-        try? await pending.save(nil)
-        let sent = Set(saved.assetIDs)
+        let sent = Set(request.assetIDs)
         report.recorded = reply.recorded.filter { sent.contains($0) }
         report.unrecorded = reply.rejected.filter { sent.contains($0.assetID) }
+        if let notCleared = await clear(showing: report) { return notCleared }
         return report.unrecorded.isEmpty ? nil : .finished(report)
+    }
+
+    private func keep(_ record: PendingDeletion) async -> Bool {
+        do {
+            try await pending.save(record)
+        } catch {
+            return false
+        }
+        written = record
+        return true
+    }
+
+    private func clear(showing report: CleanupReport) async -> Outcome? {
+        guard let record = written else { return nil }
+        do {
+            try await pending.save(nil)
+        } catch {
+            uncleared = Uncleared(record: record, report: report)
+            return .recordNotCleared(report)
+        }
+        written = nil
+        uncleared = nil
+        return nil
     }
 
     private func stillAsConfirmed(_ assetIDs: [String]) async -> Set<String> {
@@ -281,7 +368,7 @@ public actor CleanupRunner {
         for resource in try await deleter.resources(of: ids ?? known) {
             library[resource.assetID, default: []].append(resource)
         }
-        var result = Current(present: Set(library.keys))
+        var result = Current()
         for id in known {
             guard let now = library[id], let rows = stored[id], now.contains(where: { $0.kind == .photo }) else { continue }
             var kinds: Set<ResourceKind> = []
