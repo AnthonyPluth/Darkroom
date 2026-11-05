@@ -2,6 +2,8 @@ export const ROUTES = { "sign-in": "/", status: "/", people: "/people", exports:
 export const SIGNED_OUT_PAGES = ["sign-in"];
 export const routeOf = (name) => ROUTES[name] ?? `/${name}`;
 
+export const httpUrlOf = (url) => url.replace(/^ws(s?):/i, "http$1:");
+
 export const LOOPBACK_HOSTS = ["127.0.0.1", "localhost"];
 
 export function sameServer(url, base) {

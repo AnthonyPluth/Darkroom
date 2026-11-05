@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
 import { planVisits, runPool, summarize, urlsOf } from "./jobs.mjs";
-import { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, routeOf, sameServer } from "./routes.mjs";
+import { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer } from "./routes.mjs";
 
-export { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, routeOf, sameServer };
+export { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer };
 
 export const VIEWPORTS = { phone: { width: 440, height: 956 }, desktop: { width: 1280, height: 800 }, laptop: { width: 1024, height: 768 }, wide: { width: 1440, height: 900 } };
 export const DEFAULT_VIEWPORTS = ["phone", "desktop"];
@@ -53,8 +53,16 @@ export const signIn = (ctx, base, cookie) => ctx.addCookies([{ ...cookie, url: b
 
 export const hostOf = (url) => { try { return new URL(url).host || url; } catch { return "an address that is not a URL"; } };
 
+export async function blockWebSockets(ctx, base, report) {
+  await ctx.routeWebSocket((url) => !allowedRequest(httpUrlOf(url.href), base), (socket) => {
+    report(hostOf(socket.url()));
+    return socket.close();
+  });
+}
+
 export async function blockOtherHosts(ctx, base) {
   const blocked = [];
+  await blockWebSockets(ctx, base, (host) => blocked.push(host));
   await ctx.route((url) => !allowedRequest(url.href, base), (route) => {
     blocked.push(hostOf(route.request().url()));
     return route.abort("blockedbyclient");
@@ -112,9 +120,8 @@ export async function runStep(page, step, shot, saveDownload) {
   } else if ("upload" in step) {
     await page.locator(step.upload.selector).first().setInputFiles(join(REPO, step.upload.file), { timeout });
   } else if ("download" in step) {
-    const pending = page.waitForEvent("download", { timeout });
-    await page.locator(step.download.selector).first().click({ timeout });
-    await saveDownload(step.download.name, await pending);
+    const [download] = await Promise.all([page.waitForEvent("download", { timeout }), page.locator(step.download.selector).first().click({ timeout })]);
+    await saveDownload(step.download.name, download);
   } else if ("scroll_to" in step) {
     await page.locator(step.scroll_to).first().evaluate((el) => el.scrollIntoView({ block: "start" }), undefined, { timeout });
   } else if ("wait_for" in step) {
