@@ -16,6 +16,8 @@ from darkroom_browser.pages import takeout
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
 PERSON = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FOLDER = re.compile(r"^export-[0-9]{1,12}$")
+ACCOUNT = re.compile(r"^[0-9]{1,12}$")
+DOWNLOADS = ".downloads"
 PARTIAL = ".partial"
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
@@ -23,6 +25,34 @@ MIN_SLACK = 1024 * 1024
 
 class DownloadFailed(JobFailure):
     pass
+
+
+class DownloadsFolderRefused(JobFailure):
+    pass
+
+
+def downloads_folder(profile_dir: Path) -> Path:
+    account = profile_dir.parent.name
+    if profile_dir.name != "profile" or not ACCOUNT.match(account):
+        raise DownloadsFolderRefused("the browser profile is not an account's profile folder")
+    inbox = profile_dir.parent.parent.parent / "_inbox"
+    folder = inbox / DOWNLOADS / account
+    for each in (inbox, inbox / DOWNLOADS, folder):
+        if each.is_symlink():
+            raise DownloadsFolderRefused("Chromium's download folder is a link")
+    folder.mkdir(parents=True, exist_ok=True)
+    if folder.resolve() != inbox.resolve() / DOWNLOADS / account:
+        raise DownloadsFolderRefused("Chromium's download folder is not where it should be")
+    return folder
+
+
+def sweep_downloads(folder: Path) -> int:
+    removed = 0
+    for leftover in folder.iterdir():
+        if leftover.is_symlink() or leftover.is_file():
+            leftover.unlink()
+            removed += 1
+    return removed
 
 
 def text_of(plan: dict[str, Any], name: str, pattern: re.Pattern[str]) -> str:
