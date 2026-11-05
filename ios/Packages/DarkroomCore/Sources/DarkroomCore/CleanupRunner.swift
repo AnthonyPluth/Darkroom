@@ -97,8 +97,9 @@ public actor CleanupRunner {
         while let next = command {
             switch next {
             case .fetchEligible:
-                _ = try await refresh()
-                return .refetched
+                let refreshed = try await refresh()
+                if case .listed = refreshed { return .refetched }
+                return refreshed
             case let .confirm(request):
                 let reply: ConfirmReply
                 do {

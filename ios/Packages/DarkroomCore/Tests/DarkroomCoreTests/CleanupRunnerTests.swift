@@ -211,6 +211,27 @@ final class CleanupRunnerTests: XCTestCase {
         guard case .fetched = state else { return XCTFail("not fetched again: \(state)") }
     }
 
+    func testARefetchThatFailsSaysWhyInsteadOfRefetched() async throws {
+        let rig = try await rig(["a"])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        rig.clock.advance(EligibleList.maxAge)
+        await rig.api.set(eligibleError: APIError.unauthorized)
+        let signedOut = try await runner.remove(shown: ["a"])
+        XCTAssertEqual(signedOut, .needsSignIn)
+        await rig.api.set(eligibleError: nil)
+        await rig.api.set(eligible: ["a"], enabled: false)
+        _ = try await runner.refresh()
+        await rig.api.set(eligible: ["a"])
+        _ = try await runner.refresh()
+        rig.clock.advance(EligibleList.maxAge)
+        await rig.api.set(eligible: [])
+        let nothingLeft = try await runner.remove(shown: ["a"])
+        XCTAssertEqual(nothingLeft, .idle)
+        let confirms = await rig.api.confirmCalls.count
+        XCTAssertEqual(confirms, 0)
+    }
+
     func testCancellingTheSystemDialogReportsNothing() async throws {
         let rig = try await rig(["a", "b"])
         await rig.library.set(keep: ["a", "b"])
