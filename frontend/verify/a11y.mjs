@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 
 const AXE_SOURCE = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 export const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-export const AXE_OFF = ["region", "landmark-one-main", "page-has-heading-one", "landmark-unique", "scrollable-region-focusable"];
+export const AXE_OFF = ["region", "landmark-one-main", "page-has-heading-one", "landmark-unique"];
 export const MIN_TAP = 44;
 export const MAX_TABS = 80;
 export const TAP_TARGETS_FAIL = false;

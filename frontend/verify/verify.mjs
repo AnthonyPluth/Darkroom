@@ -78,7 +78,8 @@ export function flowProblems(flow) {
     else if (keys[0] === "download" && (typeof s.download?.selector !== "string" || !/^[\w-]+$/.test(s.download?.name ?? ""))) out.push(`step ${i + 1}: download needs a selector and a name of letters, digits, - or _`);
   }
   if (flow?.page !== undefined && !PAGES.includes(flow.page)) out.push(`unknown page ${flow.page}`);
-  for (const v of flow?.viewports ?? []) if (!(v in VIEWPORTS)) out.push(`unknown viewport ${v}`);
+  if (flow?.viewports !== undefined && !(Array.isArray(flow.viewports) && flow.viewports.length)) out.push("viewports is a list of at least one width");
+  for (const v of Array.isArray(flow?.viewports) ? flow.viewports : []) if (!(v in VIEWPORTS)) out.push(`unknown viewport ${v}`);
   if (flow?.allow_console !== undefined && !(Array.isArray(flow.allow_console) && flow.allow_console.every((t) => typeof t === "string"))) out.push("allow_console is a list of texts");
   if (flow?.scheme !== undefined) out.push("scheme is not an option: the app is dark only");
   if (flow?.host !== undefined) out.push("host is not an option: the session's cookie belongs to 127.0.0.1");

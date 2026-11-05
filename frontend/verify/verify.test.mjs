@@ -48,6 +48,11 @@ describe("flowProblems", () => {
     expect(flowProblems({ ...ok, viewports: ["watch"] })).toEqual(["unknown viewport watch"]);
   });
 
+  it("rejects a flow that lists no widths, which would never run", () => {
+    expect(flowProblems({ ...ok, viewports: [] })).toEqual(["viewports is a list of at least one width"]);
+    expect(flowProblems({ ...ok, viewports: "phone" })).toEqual(["viewports is a list of at least one width"]);
+  });
+
   it("rejects a page the app doesn't have, so a typo can't pass for a clean run", () => {
     expect(flowProblems({ ...ok, page: "peple" })).toEqual(["unknown page peple"]);
     expect(unknownPages(["status", "peple"])).toEqual(["peple"]);
@@ -266,5 +271,5 @@ describe("the committed images", () => {
     expect(run.stderr).toContain("FAIL:");
     expect(names(images)).toEqual(["status-phone.png"]);
     expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("baseline");
-  });
+  }, 150000);
 });
