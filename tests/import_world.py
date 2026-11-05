@@ -142,12 +142,13 @@ class World:
         self.test.assertEqual(len(exports), 1)
         return exports[0]
 
-    def downloaded(self) -> Export:
+    def downloaded(self, owner: str | None = None) -> Export:
         inbox = self.photos.inbox(self.people[0]) / "google-123"
         parts = self.tiered_export(inbox)
         self.index_all()
         export = Export(account_id=self.account, kind="initial", google_id="google-123", created_at=NOW - DAY, ready_at=NOW,
-                        expires_at=NOW + 7 * DAY, part_count=len(parts), status="downloaded", inbox_dir=str(inbox))
+                        expires_at=NOW + 7 * DAY, part_count=len(parts), status="downloaded", inbox_dir=str(inbox),
+                        owner_person_id=None if owner is None else self.ids[owner])
         self.opened.add(export)
         self.opened.flush()
         self.opened.add_all(ExportPart(export_id=export.id, number=number, filename=part.name, bytes=part.stat().st_size, status="done")

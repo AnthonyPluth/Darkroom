@@ -172,7 +172,7 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp, Export.inbox_dir == str(inbox))).scalars().first()
         if export is None:
             export = Export(account_id=account.id, kind="manual", google_id=stamp, created_at=now, ready_at=now, status="downloaded",
-                            inbox_dir=str(inbox), part_count=max(numbered))
+                            inbox_dir=str(inbox), part_count=max(numbered), owner_person_id=person.id)
             opened.add(export)
             opened.flush()
         known = {part.number for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id)).scalars()}

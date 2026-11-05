@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, dedupe, events, xmp
+from darkroom.domain import accounts, alerts, dedupe, events, exports, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
@@ -110,9 +110,8 @@ def current_run(opened: Session, export: Export, now: float) -> ImportRun:
     return run
 
 
-def default_person(opened: Session, export: Export) -> Person:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+def owner_person(opened: Session, export: Export, claim: bool = False) -> Person:
+    person = exports.claim_owner(opened, export) if claim else exports.owner_of(opened, export)
     if person is None:
         raise StageFailed("the export's account has no default person")
     return person
@@ -128,7 +127,7 @@ def mark(opened: Session, export: Export, run: ImportRun, stage: str) -> None:
 
 
 def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun, now: float) -> None:
-    person = default_person(opened, export)
+    person = owner_person(opened, export, claim=True)
     report = unpack.unpack(opened, photos, person, export, now)
     if export.status == "failed":
         raise StageFailed(f"the export could not be unpacked: {'; '.join(report.public) or 'see the events'}")
@@ -137,7 +136,7 @@ def stage_unpack(opened: Session, photos: Photos, export: Export, run: ImportRun
 
 
 def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: Tools, report: bool) -> Prepared:
-    person = default_person(opened, export)
+    person = owner_person(opened, export)
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
@@ -163,7 +162,7 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
     known = stored_decisions(opened, export)
     candidates = [dedupe.candidate_of(item, prepared.fields[item.path], prepared.staging) for item in prepared.items if item.path in prepared.fields]
     if any(candidate.source_path not in known for candidate in candidates):
-        index = dedupe.PersonIndex.load(opened, export.account_id)
+        index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
         for decision in dedupe.decide_all(index, candidates, dedupe.load_settings(opened)):
             if decision.source_path in known:
                 continue
@@ -435,7 +434,9 @@ def failed_items_run(opened: Session, export: Export) -> ImportRun | None:
 
 
 def staging_of(opened: Session, photos: Photos, export: Export) -> Path | None:
-    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
+    owner = None if export.owner_person_id is None else opened.get(Person, export.owner_person_id)
+    slugs = [owner.slug] if owner is not None else opened.execute(select(Person.slug).order_by(Person.id)).scalars()
+    for slug in slugs:
         try:
             found = photos.staging(slug, unpack.staging_name(export))
         except paths.OutsideRoot:
