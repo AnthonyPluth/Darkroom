@@ -99,6 +99,9 @@ def import_one(opened: Session, settings: config.Settings, export: Export, now: 
     except (ingest_run.Busy, ingest_run.NotReady) as error:
         print(f"export {export.id}: {error}", file=sys.stderr)
         return 1
+    if done.status in ingest_run.WAITING:
+        print(f"export {export.id}: the import did not fail; its last step could not be saved, so it will resume on the server's next import tick or when you run this command again", file=sys.stderr)
+        return 1
     if done.status != "done":
         print(f"export {export.id}: {done.error or 'the import failed'}; see the events on the status page", file=sys.stderr)
         return 1

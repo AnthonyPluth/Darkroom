@@ -11,7 +11,7 @@ Use it while you work, to see what you changed. `make verify` is the batch check
 
 ## The loop
 
-1. **Launch.** `tools/control doctor --text`, then `tools/control start`. It refuses a busy machine (`--anyway` overrides) and leaves a running make verify alone. Rebuild first (`cd frontend && npm run build`) after a change under `frontend/src`, or you see the old app; a session started before the build keeps serving the old files until `reset`.
+1. **Launch.** `tools/control doctor --text`, then `tools/control start` (`start --with-import` for the data make verify seeds, a real import on top of the demo, which the Imports and Review pages show). It refuses a busy machine (`--anyway` overrides) and leaves a running make verify alone. Rebuild first (`cd frontend && npm run build`) after a change under `frontend/src`, or you see the old app; a session started before the build keeps serving the old files until `reset`.
 2. **Drive.** `goto <page>` (`status`, `people`, `sign-in`, or a path such as `/exports`), `snapshot --text` (the roles and names to target), `click button "Add person"`, `type textbox Name 'Sam Example'`, `press Escape`, `viewport desktop`, `flow <name>`.
 3. **Prove.** `screenshot` at `viewport phone` and at `viewport desktop`, then open each image and look at it. Read `console` and `network`: make verify fails a page on a console error or a 5xx, so treat them as failures too.
 4. **Clean up.** `tools/control stop`. After a crash: `tools/control cleanup`.
