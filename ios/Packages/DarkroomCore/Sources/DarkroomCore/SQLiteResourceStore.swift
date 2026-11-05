@@ -57,12 +57,7 @@ public actor SQLiteResourceStore: ResourceStore {
     }
 
     public func record(for key: ResourceKey) async throws -> ResourceRecord? {
-        let sql = "SELECT \(Self.columns) FROM resources WHERE asset_id = ? AND kind = ?"
-        return try withStatement(sql) { statement in
-            bind(key.assetID, at: 1, in: statement)
-            bind(key.kind.rawValue, at: 2, in: statement)
-            return try step(statement) ? Self.record(from: statement) : nil
-        }
+        try storedRecord(for: key)
     }
 
     public func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] {
@@ -106,13 +101,7 @@ public actor SQLiteResourceStore: ResourceStore {
     public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
         var current: [ResourceKey] = []
         for resource in resources {
-            let sql = "SELECT \(Self.columns) FROM resources WHERE asset_id = ? AND kind = ?"
-            let stored: ResourceRecord? = try withStatement(sql) { statement in
-                bind(resource.key.assetID, at: 1, in: statement)
-                bind(resource.key.kind.rawValue, at: 2, in: statement)
-                return try step(statement) ? Self.record(from: statement) : nil
-            }
-            if let stored, stored.resource.hasSameContent(as: resource), stored.resource.state.canMove(to: state) {
+            if let stored = try storedRecord(for: resource.key), stored.resource.hasSameContent(as: resource), stored.resource.state.canMove(to: state) {
                 current.append(resource.key)
             }
         }
@@ -133,6 +122,14 @@ public actor SQLiteResourceStore: ResourceStore {
         }
     }
 
+    public func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int? {
+        try transaction { () throws -> Int? in
+            guard let stored = try storedRecord(for: resource.key), stored.resource.hasSameContent(as: resource) else { return nil }
+            try increment("attempts", for: resource.key)
+            return stored.attempts + 1
+        }
+    }
+
     public func recordRehash(for key: ResourceKey) async throws {
         try increment("rehashes", for: key)
     }
@@ -146,6 +143,15 @@ public actor SQLiteResourceStore: ResourceStore {
                 }
             }
             return found
+        }
+    }
+
+    private func storedRecord(for key: ResourceKey) throws -> ResourceRecord? {
+        let sql = "SELECT \(Self.columns) FROM resources WHERE asset_id = ? AND kind = ?"
+        return try withStatement(sql) { statement in
+            bind(key.assetID, at: 1, in: statement)
+            bind(key.kind.rawValue, at: 2, in: statement)
+            return try step(statement) ? Self.record(from: statement) : nil
         }
     }
 

@@ -89,6 +89,7 @@ public struct APIClient: Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw APIError.transport(String(describing: (error as? URLError)?.code.rawValue ?? -1))
         }
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }

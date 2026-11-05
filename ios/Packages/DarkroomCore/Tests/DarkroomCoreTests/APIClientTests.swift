@@ -194,6 +194,19 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testACancelledRequestThrowsCancellationNotATransportError() async {
+        StubProtocol.reset(error: URLError(.timedOut))
+        let api = client()
+        let call = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await api.check(CheckRequest(assets: []))
+        }
+        switch await call.result {
+        case .success: XCTFail("expected cancellation")
+        case .failure(let error): XCTAssertTrue(error is CancellationError, "threw \(error)")
+        }
+    }
+
     func testMalformedReplyIsADecodingError() async {
         StubProtocol.reset(json: "not json")
         do {
