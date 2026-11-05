@@ -19,6 +19,7 @@ KEEP_FOR = 14 * DAY
 DROPPING_GRACE = 3600.0
 VERIFIED = "cleanup_holds_verified"
 REASSIGN_COPY = ", copy "
+MOVES = ("media_reassigned", "review_undone")
 
 
 @dataclass
@@ -254,10 +255,10 @@ def still_recorded(opened: Session, photos: Photos) -> Callable[[Path, str], boo
     return recorded
 
 
-def reassign_committed(opened: Session) -> Callable[[str], bool]:
+def move_committed(opened: Session) -> Callable[[str], bool]:
     def committed(token: str) -> bool:
         return opened.execute(
-            select(Event.id).where(Event.type == "media_reassigned", Event.detail.contains(f"{REASSIGN_COPY}{token}")).limit(1)
+            select(Event.id).where(Event.type.in_(MOVES), Event.detail.contains(f"{REASSIGN_COPY}{token}")).limit(1)
         ).first() is not None
     return committed
 
@@ -292,7 +293,7 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
         swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos),
                                      undo_committed(opened))
         report.dropped, report.restored = swept.dropped, swept.restored
-        report.taken_back = paths.sweep_placing(photos, now - DROPPING_GRACE, reassign_committed(opened), copy_kept(opened, photos), still_recorded(opened, photos))
+        report.taken_back = paths.sweep_placing(photos, now - DROPPING_GRACE, move_committed(opened), copy_kept(opened, photos), still_recorded(opened, photos))
     except OSError as error:
         report.failed += 1
         events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)
