@@ -17,6 +17,8 @@ describe("alertChip", () => {
     expect(alertChip("failure")).toEqual({ tone: "bad", label: "Failed" });
     expect(alertChip("originals_unmatched").label).toBe("Check backup");
     expect(alertChip("schedule_ending").label).toBe("Schedule ending");
+    expect(alertChip("schedule_renewal_failed")).toEqual({ tone: "bad", label: "Not renewed" });
+    expect(alertChip("schedule_renewal_unconfirmed")).toEqual({ tone: "warn", label: "Renewal unconfirmed" });
     expect(alertChip("export_expiring").label).toBe("Export expiring");
     expect(alertChip("anything_else")).toEqual({ tone: "warn", label: "Needs a look" });
   });
