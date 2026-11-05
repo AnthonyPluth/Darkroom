@@ -58,18 +58,24 @@ public actor InMemoryIngestVersions: IngestVersions {
     }
 }
 
-/// Keeps the versions in a JSON file so a relaunch does not re-hash what has not changed.
+/// Keeps the versions in an append-only journal file (one JSON line per change) so a relaunch does not re-hash what
+/// has not changed, and a save costs one small append however many resources there are.
 public actor FileIngestVersions: IngestVersions {
+    private struct Entry: Codable {
+        let key: String
+        let version: String?
+    }
+
     private let url: URL
-    private var storage: [String: String]
+    private var storage: [String: String] = [:]
 
     public init(url: URL) {
         self.url = url
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            storage = decoded
-        } else {
-            storage = [:]
+        guard let data = try? Data(contentsOf: url) else { return }
+        let decoder = JSONDecoder()
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            guard let entry = try? decoder.decode(Entry.self, from: Data(line)) else { continue }
+            storage[entry.key] = entry.version
         }
     }
 
@@ -82,12 +88,20 @@ public actor FileIngestVersions: IngestVersions {
     }
 
     public func setVersion(_ version: String?, for key: ResourceKey) throws {
-        var updated = storage
-        updated[Self.name(key)] = version
-        let data = try JSONEncoder().encode(updated)
-        try data.write(to: url, options: .atomic)
-        // Only a version that reached the disk is accepted, so a relaunch agrees with this run.
-        storage = updated
+        let name = Self.name(key)
+        var line = Data("\n".utf8)
+        line.append(try JSONEncoder().encode(Entry(key: name, version: version)))
+        line.append(Data("\n".utf8))
+        if !FileManager.default.fileExists(atPath: url.path),
+           !FileManager.default.createFile(atPath: url.path, contents: nil) {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: line)
+        try handle.synchronize()
+        storage[name] = version
     }
 }
 

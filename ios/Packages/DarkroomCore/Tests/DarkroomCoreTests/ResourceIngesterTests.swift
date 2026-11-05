@@ -153,6 +153,48 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(reopened, "v9")
     }
 
+    func testSavingAVersionAppendsInsteadOfRewritingTheFile() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let versions = FileIngestVersions(url: url)
+        var previous = Data()
+        for index in 0..<20 {
+            try await versions.setVersion("v\(index)", for: ResourceKey(assetID: "asset-\(index)", kind: .photo))
+            let current = try Data(contentsOf: url)
+            XCTAssertTrue(current.starts(with: previous))
+            XCTAssertGreaterThan(current.count, previous.count)
+            previous = current
+        }
+        let reopened = FileIngestVersions(url: url)
+        let first = await reopened.version(for: ResourceKey(assetID: "asset-0", kind: .photo))
+        let last = await reopened.version(for: ResourceKey(assetID: "asset-19", kind: .photo))
+        XCTAssertEqual(first, "v0")
+        XCTAssertEqual(last, "v19")
+    }
+
+    func testForgottenAndTornJournalEntriesAreHandledOnReopen() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let key = ResourceKey(assetID: "a", kind: .photo)
+        let other = ResourceKey(assetID: "b", kind: .photo)
+        let versions = FileIngestVersions(url: url)
+        try await versions.setVersion("v1", for: key)
+        try await versions.setVersion(nil, for: key)
+        try await versions.setVersion("v2", for: other)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n{\"key\":\"photo|c\",\"ver".utf8))
+        try handle.close()
+        try await FileIngestVersions(url: url).setVersion("v3", for: ResourceKey(assetID: "d", kind: .photo))
+        let reopened = FileIngestVersions(url: url)
+        let forgotten = await reopened.version(for: key)
+        let kept = await reopened.version(for: other)
+        let afterTear = await reopened.version(for: ResourceKey(assetID: "d", kind: .photo))
+        XCTAssertNil(forgotten)
+        XCTAssertEqual(kept, "v2")
+        XCTAssertEqual(afterTear, "v3")
+    }
+
     func testVersionIsNotAcceptedWhenTheFileCannotBeWritten() async throws {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("no-such-\(UUID().uuidString)").appendingPathComponent("versions.json")
