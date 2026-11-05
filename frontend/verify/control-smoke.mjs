@@ -1,0 +1,125 @@
+import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "../..");
+const dir = join(root, "artifacts", "control-smoke");
+const env = { ...process.env, DARKROOM_CONTROL_DIR: dir };
+
+function control(...args) { return controlWith(env, ...args); }
+
+function controlWith(withEnv, ...args) {
+  console.log(`$ tools/control ${args.join(" ")}`);
+  const r = spawnSync(process.execPath, [join(here, "control.mjs"), ...args], { cwd: root, env: withEnv, encoding: "utf8", timeout: 300000 });
+  const out = (r.stdout ?? "").trim();
+  console.log(out.length > 6000 ? `${out.slice(0, 6000)}…` : out);
+  const parse = () => { try { return JSON.parse(out); } catch { return null; } };
+  return { code: r.status, json: parse(), out };
+}
+
+function expect(ok, what) {
+  if (ok) { console.log(`  ok: ${what}`); return; }
+  console.error(`  FAIL: ${what}`);
+  control("stop");
+  process.exit(1);
+}
+
+const pngWidth = (file) => readFileSync(file).readUInt32BE(16);
+
+rmSync(dir, { recursive: true, force: true });
+let r = control("doctor");
+expect(r.json && r.json.checks.filter((c) => !c.ok && c.name !== "machine load").length === 0, "doctor: every check passes (the machine's load aside)");
+
+const fake = join(dir, "fake-browsers");
+mkdirSync(join(fake, "chromium-0", "chrome-linux"), { recursive: true });
+writeFileSync(join(fake, "chromium-0", "chrome-linux", "chrome"), "#!/bin/sh\necho 'not a browser' >&2\nexit 1\n", { mode: 0o755 });
+r = controlWith({ ...env, PLAYWRIGHT_BROWSERS_PATH: fake }, "start", "--anyway");
+expect(r.code === 1 && r.json?.error?.code === "start_failed" && !r.json.error.message.includes("its process ended") && !existsSync(join(dir, "state.json")),
+  "a start that fails reports the session's own error, and leaves no state behind");
+rmSync(fake, { recursive: true, force: true });
+
+r = control("start", "--anyway");
+expect(r.code === 0 && r.json?.ok && r.json.url.startsWith("http://127.0.0.1:"), "start: a session on a loopback demo server");
+expect(r.json.clock.browser.startsWith("Mon Jun 15 2026 12:00:00"), "the browser's clock is at the frozen moment, noon");
+
+r = control("start");
+expect(r.code === 1 && r.json?.error?.code === "already_running", "a second start is refused, and says what to do");
+
+r = control("info");
+expect(r.json?.ok && r.json.viewport.width === 440 && r.json.route === "/", "info: the phone width, on Status");
+
+r = control("snapshot", "--text");
+expect(r.code === 0 && r.out.includes('heading "Status" [level=1]'), "snapshot: the accessibility tree, with the page's heading");
+
+r = control("goto", "people");
+expect(r.json?.ok && r.json.route === "/people" && r.json.settled === true, "goto people: the page settles");
+r = control("snapshot", "--text");
+expect(r.out.includes('heading "People" [level=1]') && r.out.includes("Avery Example"), "the browser is signed in as the demo member, on made-up people");
+r = control("goto", "sign-in");
+expect(r.json?.ok && r.json.settled === true, "goto sign-in: the signed-out page settles");
+r = control("snapshot", "--text");
+expect(r.out.includes('heading "Sign in" [level=1]'), "the browser is signed out on the sign-in page");
+control("goto", "status");
+r = control("screenshot");
+const shot = r.json?.path && join(root, r.json.path);
+expect(r.json?.ok && existsSync(shot) && pngWidth(shot) === 440, "screenshot: a full-page PNG at the phone's width, under artifacts/");
+const baseline = join(root, "docs", "screenshots", "status-phone.png");
+console.log(`  note: ${readFileSync(shot).equals(readFileSync(baseline)) ? "byte for byte the same as" : "differs from (another Chromium build?)"} docs/screenshots/status-phone.png`);
+
+r = control("click", "button", "Definitely not on the page", "--timeout", "500");
+expect(r.code === 1 && r.json?.error?.code === "no_match" && r.json.error.hint.includes("snapshot"), "a click on nothing fails with what to do instead");
+
+r = control("goto", "https://example.com");
+expect(r.code === 1 && r.json?.error?.code === "refused", "goto anywhere but its own server is refused");
+
+r = control("eval", "() => fetch('/api/control-smoke', { method: 'POST' }).then((r) => r.status)");
+expect(r.code === 1 && r.json?.error?.code === "not_read_only", "eval is read-only without --write: a POST is blocked, and said so");
+control("console");
+control("network");
+
+let hits = 0;
+const outside = createServer((req, res) => { hits++; res.end("hit"); });
+await new Promise((resolve) => outside.listen(0, "127.0.0.1", resolve));
+const outsideUrl = `http://127.0.0.1:${outside.address().port}`;
+r = control("eval", `() => fetch('${outsideUrl}/hit', { mode: 'no-cors' }).then(() => 'sent', () => 'refused')`);
+expect(r.json?.value === "refused" && hits === 0, "a fetch to another address sends nothing");
+r = control("eval", "--write", `() => { const a = document.createElement('a'); a.href = '${outsideUrl}/link'; document.body.append(a); a.click(); return 'clicked'; }`);
+expect(/blocked before they were sent/.test(r.json?.warning ?? ""), "a click on a link to another address is reported as blocked before it was sent");
+await new Promise((resolve) => setTimeout(resolve, 1500));
+r = control("info");
+expect(hits === 0 && r.json?.ok && r.json.session.server.startsWith("http://127.0.0.1:"), "nothing reached that address (the page never asked), and the page is still on the session's server");
+r = control("eval", "() => { setTimeout(() => fetch('/api/control-smoke', { method: 'POST' }), 100); return 'scheduled'; }");
+expect(r.code === 1 && r.json?.error?.code === "not_read_only", "a write that eval schedules for later is blocked too");
+r = control("eval", "() => { setTimeout(() => fetch('/api/control-smoke', { method: 'POST' }), 2500); return 'scheduled'; }");
+expect(r.code === 0, "a read-only eval whose write comes after it returned is accepted");
+await new Promise((resolve) => setTimeout(resolve, 3500));
+r = control("info");
+expect(/change\(s\) the page tried to make while no command was acting were blocked/.test(r.json?.warning ?? ""), "that late write was blocked, and the next command says so");
+outside.close();
+
+r = control("flow", "open-people", "--viewport", "desktop");
+expect(r.code === 0 && r.json?.steps?.every((s) => s.ok) && r.json.files.length === 2, "flow: open-people passes, step by step, with its 2 images");
+
+r = control("flow", "sign-out", "--viewport", "phone");
+expect(r.code === 0 && r.json?.steps?.every((s) => s.ok), "flow: sign-out passes, and the session is then the signed-out browser");
+
+r = control("flow", "open-peple");
+expect(r.code === 1 && r.json?.error?.code === "no_such_flow" && r.json.error.hint.includes("open-people"), "a flow that doesn't exist says which one was meant");
+
+r = control("reset", "--dry-run");
+expect(r.json?.dryRun === true, "reset --dry-run says what it would do");
+r = control("reset");
+expect(r.json?.ok && r.json.reset, "reset: fresh data on a new server");
+
+const pid = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).pid;
+r = control("stop");
+expect(r.json?.ok && r.json.stopped, "stop");
+let alive = true;
+try { process.kill(pid, 0); } catch { alive = false; }
+expect(!alive && !existsSync(join(dir, "state.json")) && !existsSync(join(dir, `session-${pid}`)), "nothing left: the daemon gone, its state and data removed");
+r = control("doctor");
+expect(r.json?.checks.find((c) => c.name === "leftover processes")?.ok, "doctor finds no leftover processes");
+console.log("control-smoke: passed");

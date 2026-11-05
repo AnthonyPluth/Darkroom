@@ -76,8 +76,12 @@ export default defineConfig(
     },
   },
   {
-    files: ["frontend/*.{js,ts}"],
+    files: ["frontend/*.{js,ts}", "frontend/verify/*.mjs"],
     languageOptions: { globals: { ...globals.node } },
+  },
+  {
+    files: ["frontend/verify/a11y.mjs"],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
   {
     files: ["frontend/**/*.svelte", "frontend/**/*.svelte.ts"],

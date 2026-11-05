@@ -48,6 +48,18 @@ tested-from = "0001"
 image-homes = ["darkroom/static/", "docs/design/", "ios/Darkroom/Assets.xcassets/"]
 skills = ".claude/skills"
 extra-checks = "tools.app_checks:CHECKS"
+feature-maps = ["tools/user_feature_map.py"]
+
+[tool.fleet.screenshots]
+dir = "docs/screenshots/"
+names = "pages"
+verify = "frontend/verify/verify.mjs"
+flows = "frontend/verify/flows"
+
+[[tool.fleet.generated]]
+path = ".claude/skills/verify-darkroom/references/cli.md"
+command = "make --no-print-directory -s verify-skill-print"
+fix = "make verify-skill"
 
 [tool.fleet.no-comments]
 paths = ["darkroom", "darkroom_browser", "tests", "tools", "frontend/src", "run.py", ".semgrep"]

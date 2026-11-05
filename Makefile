@@ -15,7 +15,8 @@ FLEET ?= tools/fleet
 NPM ?= npm
 
 .PHONY: setup check lint python-lint semgrep test test-parallel fix fleet-checks fleet-sync feature-map feature-map-check \
-	api-contract api-contract-check frontend-install frontend-check frontend-typecheck frontend-lint frontend-test frontend-build
+	api-contract api-contract-check frontend-install frontend-check frontend-typecheck frontend-lint frontend-test frontend-build \
+	verify verify-skill verify-skill-print user-feature-map control-smoke
 
 check: lint feature-map-check api-contract-check fleet-checks test-parallel frontend-check
 
@@ -92,3 +93,32 @@ frontend-test: frontend/node_modules
 
 frontend-build: frontend/node_modules
 	cd frontend && $(NPM) run build
+
+# Every page of the web app at phone (440x956) and desktop (1280x800) width, on made-up demo data served by tools/verify.py
+# under libfaketime (so the clock is fixed), with the scripted flows in frontend/verify/flows and an accessibility audit (axe
+# WCAG 2.2 AA, 44 px tap targets at phone width, a visible focus ring). Full-page images go to docs/screenshots/ (committed: they
+# are the visual baselines, and the only screenshots a pull request may carry); the report and the flows' images go to
+# artifacts/verify/ (ignored). It fails on a console error, a 5xx, a request to any address but its own server, or an
+# accessibility problem. It runs VERIFY_JOBS servers at once (default: the CPU count, at most 4).
+# `make verify PAGES="status people"` visits only those pages.
+verify: frontend/node_modules frontend-build
+	$(PYTHON) tools/verify.py run $(PAGES)
+
+# tools/control's command reference in the verify-darkroom skill (.claude/skills/verify-darkroom/references/cli.md), generated
+# from the CLI's own help. make fleet-checks fails when it is out of date.
+verify-skill:
+	node frontend/verify/control.mjs help --markdown > .claude/skills/verify-darkroom/references/cli.md
+
+verify-skill-print:
+	@node frontend/verify/control.mjs help --markdown
+
+# What a person can do, by page and flow (.claude/skills/verify-darkroom/references/feature-map.md), generated from the verify
+# pages and flows plus references/feature-gotchas.md (hand-edited). make fleet-checks fails when it is out of date.
+user-feature-map:
+	$(PYTHON) tools/user_feature_map.py
+
+# tools/control end to end on the real demo server under the frozen clock: doctor, start, snapshot, screenshot, flows, reset and
+# stop (frontend/verify/control-smoke.mjs; the Control smoke workflow runs it too). Needs what make verify needs; writes only
+# under artifacts/control-smoke/.
+control-smoke: frontend/node_modules frontend-build
+	DARKROOM_PYTHON="$$($(PYTHON) -c 'import sys; print(sys.executable)')" node frontend/verify/control-smoke.mjs

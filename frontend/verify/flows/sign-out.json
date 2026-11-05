@@ -1,0 +1,11 @@
+{
+  "name": "sign-out",
+  "page": "people",
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "People" } },
+    { "sign_out": true },
+    { "expect_text": { "selector": "h1", "text": "Sign in" } },
+    { "screenshot": "signed-out" }
+  ],
+  "allow_console": ["the server responded with a status of 401"]
+}
