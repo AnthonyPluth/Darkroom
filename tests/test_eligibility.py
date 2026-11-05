@@ -194,13 +194,25 @@ class ConfirmAndDeletedTests(unittest.TestCase):
         self.assertEqual(confirmed.asset.deleted_at, self.home.now)
         self.assertIsNone(confirmed.asset.eligible_at)
         self.assertEqual((listed_only.asset.deleted_at, other.asset.deleted_at), (None, None))
-        again, refused = eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id], self.home.now + 5)
-        self.assertEqual((again, reasons(refused)), ([], {confirmed.id: eligibility.ALREADY_DELETED}))
-        self.assertEqual(confirmed.asset.deleted_at, self.home.now)
         event = self.home.opened.execute(select(Event).where(Event.type == "cleanup_deleted").order_by(Event.id)).scalars().first()
         self.assertEqual(event.detail, "1 recorded, 3 refused")
         with self.assertRaises(ValueError):
             eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id, confirmed.id], self.home.now)
+
+    def test_a_repeated_report_of_a_recorded_deletion_is_recorded_again_and_changes_nothing(self):
+        confirmed = self.home.photo(self.phone, through=self.google)
+        listed_only = self.home.photo(self.phone, through=self.google)
+        other = self.home.photo(self.home.device(self.jo), through=self.google)
+        self.home.confirm(self.phone, confirmed)
+        self.home.eligible(self.phone, listed_only)
+        eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id], self.home.now)
+        ids = [confirmed.id, listed_only.id, other.id, "NEVER-SEEN"]
+        again, refused = eligibility.record_deleted(self.home.opened, self.phone.id, ids, self.home.now + 5)
+        self.assertEqual(again, [confirmed.id])
+        self.assertEqual(reasons(refused), {listed_only.id: eligibility.NOT_CONFIRMED_FOR_DELETION, other.id: eligibility.UNKNOWN_ASSET,
+                                            "NEVER-SEEN": eligibility.UNKNOWN_ASSET})
+        self.assertEqual(confirmed.asset.deleted_at, self.home.now)
+        self.assertEqual((listed_only.asset.deleted_at, other.asset.deleted_at), (None, None))
 
     def test_a_deleted_asset_is_never_offered_again(self):
         photo = self.home.photo(self.phone, through=self.google)

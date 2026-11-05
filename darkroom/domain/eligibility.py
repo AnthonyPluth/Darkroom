@@ -307,7 +307,7 @@ def record_deleted(opened: Session, device_id: int, asset_ids: Sequence[str], no
         if asset is None:
             rejected.append(Rejected(photokit_id, UNKNOWN_ASSET))
         elif asset.deleted_at is not None:
-            rejected.append(Rejected(photokit_id, ALREADY_DELETED))
+            recorded.append(photokit_id)
         elif asset.eligible_confirmed_at is None:
             rejected.append(Rejected(photokit_id, NOT_CONFIRMED_FOR_DELETION))
         else:
