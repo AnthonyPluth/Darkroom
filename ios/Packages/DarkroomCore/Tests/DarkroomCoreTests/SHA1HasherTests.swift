@@ -41,4 +41,21 @@ final class SHA1HasherTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         XCTAssertThrowsError(try SHA1Hasher.hash(ofFileAt: url))
     }
+
+    func testCancelledTaskStopsHashing() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cancel-\(UUID().uuidString)")
+        try Data(count: 3 * SHA1Hasher.chunkSize).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let task = Task { () throws -> String in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try SHA1Hasher.hash(ofFileAt: url, checkingCancellation: true)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("hashing should have stopped")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertNoThrow(try SHA1Hasher.hash(ofFileAt: url))
+    }
 }
