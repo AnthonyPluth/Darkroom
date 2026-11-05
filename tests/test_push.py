@@ -260,6 +260,140 @@ class RetryTests(PushWorld):
         self.assertEqual(self.alert(alert_id).push_due, self.now + 30)
 
 
+class PartialDeliveryTests(PushWorld):
+    def two_person_account(self):
+        with db.session(self.engine) as opened:
+            account = GoogleAccount(email="a@example.test", default_person_id=self.person_id, created=1.0)
+            opened.add(account)
+            opened.flush()
+            pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=self.sam_id))
+            return account.id
+
+    def test_a_device_apns_could_not_reach_is_retried_alone_after_another_device_was_pushed(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 1)
+        self.assertEqual(self.alert(alert_id).push_due, self.now + push.RETRY_AFTER)
+        pusher.replies = {}
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 1)
+        self.assertEqual([tokens for tokens, _ in pusher.sent], [[JO_TOKEN, SAM_TOKEN], [SAM_TOKEN]])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-2:], ["push_sent", "alert_sent"])
+        self.assertEqual(self.deliver(pusher, self.now + 2 * push.RETRY_AFTER), 0)
+        self.assertEqual(len(pusher.sent), 2)
+
+    def test_a_device_apns_refused_for_another_reason_is_not_pushed_again_while_the_other_is_retried(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("failed", "TooManyRequests"), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        pusher.replies = {SAM_TOKEN: apns.Result("failed", "Unreachable")}
+        self.deliver(pusher, self.now + push.RETRY_AFTER)
+        self.assertEqual([tokens for tokens, _ in pusher.sent], [[JO_TOKEN, SAM_TOKEN], [SAM_TOKEN]])
+        self.assertIsNotNone(self.alert(alert_id).push_due)
+
+    def test_an_alert_whose_retries_run_out_is_recorded_as_sent_when_one_device_got_it(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        at = self.now
+        while self.alert(alert_id).push_due is not None:
+            self.deliver(pusher, at)
+            at += push.RETRY_AFTER
+        self.assertEqual(pusher.sent[0][0], [JO_TOKEN, SAM_TOKEN])
+        self.assertTrue(all(tokens == [SAM_TOKEN] for tokens, _ in pusher.sent[1:]))
+        self.assertEqual([t for t, _ in self.events()].count("push_sent"), 1)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_a_repeat_of_the_alert_is_pushed_to_every_device_again(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.deliver(pusher)
+        self.assertIsNotNone(self.alert(alert_id).pushed_devices)
+        with db.session(self.engine) as opened:
+            self.assertEqual(alerts.tick(opened, self.settings, self.now + alerts.DAY, notifier=alerts.queued), 1)
+        self.assertIsNone(self.alert(alert_id).pushed_devices)
+        pusher.replies = {}
+        self.assertEqual(self.deliver(pusher, self.now + alerts.DAY), 2)
+        self.assertEqual(pusher.sent[-1][0], [JO_TOKEN, SAM_TOKEN])
+
+    def test_an_unreadable_delivery_record_pushes_every_device(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = "not json"
+        pusher = FakePusher()
+        self.assertEqual(self.deliver(pusher), 2)
+        self.assertEqual(pusher.sent[0][0], [JO_TOKEN, SAM_TOKEN])
+
+    def test_a_retry_that_finds_every_device_already_pushed_settles_the_alert_without_sending(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = push.Delivered(frozenset({self.device_id, self.sam_device})).dump()
+        pusher = FakePusher()
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_a_device_whose_token_was_refused_as_invalid_is_pushed_on_the_retry_once_it_registers_a_working_token(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("invalid_token", "Unregistered", self.now - 10), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(self.alert(alert_id).push_due, self.now + push.RETRY_AFTER)
+        self.register(self.device_id, JO_TOKEN, self.now + 1)
+        pusher.replies = {}
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 2)
+        self.assertEqual([tokens for tokens, _ in pusher.sent], [[JO_TOKEN, SAM_TOKEN], [JO_TOKEN, SAM_TOKEN]])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_a_retry_that_finds_every_remaining_device_already_refused_settles_the_alert_as_failed(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = push.Delivered(frozenset(), frozenset({self.device_id, self.sam_device})).dump()
+        pusher = FakePusher()
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_failed")
+
+    def test_an_alert_whose_every_eligible_device_vanished_after_a_partial_push_is_recorded_as_sent(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 1)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertEqual(len(pusher.sent), 1)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_an_alert_whose_every_device_vanished_before_any_push_succeeded_is_still_recorded_as_not_delivered(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("failed", "TooManyRequests"), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_no_device")
+
+
+    def test_a_delivery_record_that_is_not_an_object_pushes_every_device(self):
+        about = alerts.account(self.two_person_account())
+        for raw in ("null", "[]", '"x"', "3", '{"sent": [1]}'):
+            with self.subTest(raw=raw):
+                alert_id = self.open(about, key=raw)
+                with db.session(self.engine) as opened:
+                    opened.get(Alert, alert_id).pushed_devices = raw
+                pusher = FakePusher()
+                self.assertEqual(self.deliver(pusher), 2)
+                self.assertEqual(pusher.sent[0][0], [JO_TOKEN, SAM_TOKEN])
+
+
 class LateRevocationTests(PushWorld):
     def targets_then(self, change):
         real = push_tokens.targets
@@ -279,6 +413,16 @@ class LateRevocationTests(PushWorld):
             self.assertEqual(self.deliver(pusher), 0)
         self.assertEqual(pusher.sent, [])
         self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_no_device"])
+
+    def test_the_last_pending_device_revoked_after_its_token_was_read_leaves_the_alert_sent_when_another_device_got_it(self):
+        alert_id = self.open(alerts.account(self.account()))
+        with db.session(self.engine) as opened:
+            opened.get(Alert, alert_id).pushed_devices = push.Delivered(frozenset({self.device_id})).dump()
+        pusher = FakePusher()
+        with self.targets_then(lambda other: devices.revoke(other, self.sam_device, self.now)):
+            self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(pusher.sent, [])
+        self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_sent"])
 
     def test_an_owner_whose_access_lapsed_after_the_token_was_read_is_skipped_and_the_others_still_get_it(self):
         self.open(alerts.account(self.account()))
@@ -391,6 +535,31 @@ class EndToEndTests(PushWorld):
         self.open(alerts.person(self.person_id))
         scheduler.run_one("alerts.push", self.now)
         self.assertEqual(pusher.sent[0][0], [JO_TOKEN])
+
+    def test_a_slow_apns_holds_up_neither_the_scheduler_nor_a_second_push_run(self):
+        import threading
+
+        started, release = threading.Event(), threading.Event()
+
+        class SlowPusher(FakePusher):
+            def send(self, tokens, push_):
+                started.set()
+                release.wait(10)
+                return super().send(tokens, push_)
+
+        pusher = SlowPusher()
+        scheduler = jobs.build(self.settings, self.engine, self.now, pusher=pusher)
+        self.assertTrue(scheduler.jobs["alerts.push"].own_thread)
+        self.addCleanup(release.set)
+        self.open(alerts.person(self.person_id))
+        ran = scheduler.run_due(self.now)
+        self.assertIn("alerts.push", ran)
+        self.assertIn("browser.leases", ran)
+        self.assertTrue(started.wait(5))
+        self.assertNotIn("alerts.push", scheduler.run_due(self.now + jobs.PUSH_TICK_SECONDS))
+        release.set()
+        scheduler.jobs["alerts.push"].worker.join(10)
+        self.assertEqual(len(pusher.sent), 1)
 
 
 if __name__ == "__main__":

@@ -484,6 +484,132 @@ class SharedFolderTests(unittest.TestCase):
 
         self.assertEqual(as_user(DARKROOM_UID, darkroom_cannot_remove), 3)
 
+    def make_chromium_profile(self, profile):
+        profile.mkdir(parents=True)
+        os.chmod(profile, 0o700)
+        for name in ("Default", "Default/Cache", "Crashpad"):
+            (profile / name).mkdir(parents=True, exist_ok=True)
+            os.chmod(profile / name, 0o700)
+        (profile / "Default" / "Cookies").write_bytes(b"jar")
+        os.chmod(profile / "Default" / "Cookies", 0o600)
+        (profile / "Default" / "Cache" / "index").write_bytes(b"i")
+        os.chmod(profile / "Default" / "Cache" / "index", 0o600)
+        (profile / "chrome-helper").write_bytes(b"#!")
+        os.chmod(profile / "chrome-helper", 0o700)
+        (profile / "SingletonLock").symlink_to("host-1234")
+
+    def test_sharing_a_profile_opens_its_folders_to_the_group_and_leaves_every_file_alone(self):
+        profile = self.root / "_browser" / "7" / "profile"
+        self.make_chromium_profile(profile)
+        self.assertEqual(download.share_tree(profile.parent), 0)
+        self.assertEqual(mode_of(profile), 0o770)
+        self.assertEqual(mode_of(profile / "Default" / "Cache"), 0o770)
+        self.assertEqual(mode_of(profile / "Default" / "Cookies"), 0o600)
+        self.assertEqual(mode_of(profile / "Default" / "Cache" / "index"), 0o600)
+        self.assertEqual(mode_of(profile / "chrome-helper"), 0o700)
+        for each in [profile.parent, *profile.parent.rglob("*")]:
+            if not each.is_symlink():
+                self.assertEqual(mode_of(each) & stat.S_IRWXO, 0, each)
+
+    def test_sharing_keeps_the_setgid_bit_and_changes_nothing_already_shared(self):
+        folder = self.root / "_browser" / "7"
+        folder.mkdir(parents=True)
+        os.chmod(folder, 0o2770)
+        (folder / "report").write_bytes(b"r")
+        os.chmod(folder / "report", 0o660)
+        self.assertEqual(download.share_tree(folder), 0)
+        self.assertEqual((mode_of(folder), mode_of(folder / "report")), (0o2770, 0o660))
+
+    def test_sharing_never_follows_or_changes_a_link(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        os.chmod(outside, 0o700)
+        (outside / "secret").write_bytes(b"s")
+        os.chmod(outside / "secret", 0o600)
+        profile = self.root / "_browser" / "7" / "profile"
+        profile.mkdir(parents=True)
+        (profile / "folder-link").symlink_to(outside, target_is_directory=True)
+        (profile / "file-link").symlink_to(outside / "secret")
+        self.assertEqual(download.share_tree(profile.parent), 0)
+        self.assertEqual((mode_of(outside), mode_of(outside / "secret")), (0o700, 0o600))
+
+    def test_a_root_that_is_a_link_is_refused_untouched(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        os.chmod(outside, 0o700)
+        (self.root / "link").symlink_to(outside, target_is_directory=True)
+        self.assertEqual(download.share_tree(self.root / "link"), 1)
+        self.assertEqual(mode_of(outside), 0o700)
+
+    def test_a_path_the_worker_cannot_change_is_counted_not_raised(self):
+        from unittest import mock
+
+        profile = self.root / "_browser" / "7" / "profile"
+        self.make_chromium_profile(profile)
+        with mock.patch("os.chmod", side_effect=PermissionError("not yours")):
+            self.assertGreater(download.share_tree(profile.parent), 0)
+
+    def test_closing_the_browser_shares_the_account_folder_after_chromium_has_exited(self):
+        from unittest import mock
+
+        from darkroom_browser import live
+
+        profile = self.root / "_browser" / "7" / "profile"
+        self.make_chromium_profile(profile)
+        seen = []
+        context = mock.Mock()
+        context.close.side_effect = lambda: seen.append(mode_of(profile))
+        live.Live(mock.Mock(), context, mock.Mock(), None, profile).close()
+        self.assertEqual(seen, [0o700])
+        self.assertEqual(mode_of(profile), 0o770)
+
+    def test_closing_still_reports_the_browsers_error_when_sharing_the_folder_fails(self):
+        from unittest import mock
+
+        from darkroom_browser import live
+
+        profile = self.root / "_browser" / "7" / "profile"
+        self.make_chromium_profile(profile)
+        context = mock.Mock()
+        context.close.side_effect = RuntimeError("chromium crashed")
+        with mock.patch.object(live, "share_tree", side_effect=OSError("gone")):
+            with self.assertRaisesRegex(RuntimeError, "chromium crashed"):
+                live.Live(mock.Mock(), context, mock.Mock(), None, profile).close()
+
+    @unittest.skipUnless(os.geteuid() == 0, "switching to Darkroom's and the worker's users needs root")
+    def test_darkroom_retires_a_chromium_profile_only_once_the_worker_has_shared_it(self):
+        os.chmod(self.root, 0o755)
+        photos_root = self.root / "photos"
+        photos_root.mkdir(mode=0o755)
+        os.chmod(photos_root, 0o755)
+        os.chown(photos_root, DARKROOM_UID, SHARE_GID)
+        browser_folder = photos_root / "_browser"
+        browser_folder.mkdir()
+        os.chown(browser_folder, WORKER_UID, SHARE_GID)
+        os.chmod(browser_folder, 0o2770)
+        photos = Photos(photos_root)
+
+        def worker_browses():
+            self.make_chromium_profile(photos_root / "_browser" / "7" / "profile")
+            os.chmod(photos_root / "_browser" / "7", 0o2770)
+
+        def darkroom_retires():
+            try:
+                photos.retire_browser_account("7")
+            except paths.ProfileNotRemoved:
+                return 3
+            return 0
+
+        def worker_closes_chromium():
+            return download.share_tree(photos_root / "_browser" / "7")
+
+        self.assertEqual(as_user(WORKER_UID, worker_browses), 0)
+        self.assertEqual(as_user(DARKROOM_UID, darkroom_retires), 3)
+        self.assertTrue((photos_root / "_browser" / "7" / "profile").exists())
+        self.assertEqual(as_user(WORKER_UID, worker_closes_chromium), 0)
+        self.assertEqual(as_user(DARKROOM_UID, darkroom_retires), 0)
+        self.assertFalse((photos_root / "_browser" / "7").exists())
+
 
 class InboxFolderTests(unittest.TestCase):
     def setUp(self):

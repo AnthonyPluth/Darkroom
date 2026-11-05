@@ -140,6 +140,7 @@ def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording,
     alert.sent_count += 1
     if outcome == QUEUED:
         alert.push_due = now
+        alert.pushed_devices = None
     events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
     return outcome
 

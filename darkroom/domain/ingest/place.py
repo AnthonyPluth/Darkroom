@@ -93,7 +93,7 @@ def holds(destination: Path, sha1: str) -> bool:
     return destination.is_file() and not destination.is_symlink() and media.sha1_of(destination)[0] == sha1
 
 
-def copy_into(folder: Path, source: Path, sha1: str, token: str | None = None) -> Placed:
+def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path], None] | None = None) -> Placed:
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
@@ -102,27 +102,32 @@ def copy_into(folder: Path, source: Path, sha1: str, token: str | None = None) -
             if holds(destination, sha1):
                 return Placed(destination, False)
             continue
-        marker = None if token is None else paths.placing_marker(destination, token)
+        if marking is not None:
+            marking(destination)
         try:
-            written = paths.write_once(destination, chunks(source), marker)
+            written = paths.write_once(destination, chunks(source))
         except paths.AlreadyExists:
             if holds(destination, sha1):
                 return Placed(destination, False)
             continue
         if written != sha1:
             destination.unlink(missing_ok=True)
-            if marker is not None:
-                marker.unlink(missing_ok=True)
             raise PlaceFailed("the staged file changed while it was copied")
         return Placed(destination, True)
     raise PlaceFailed("both names are taken by other files")
 
 
 def copy_exactly(destination: Path, source: Path, sha1: str, token: str) -> Placed:
-    marker = paths.placing_marker(destination, token)
-    if paths.write_once(destination, chunks(source), marker) != sha1:
+    record = paths.placing_record(destination, token)
+    paths.mark_placing(destination, token, paths.Placing(destination.name, sha1, True, False))
+    try:
+        written = paths.write_once(destination, chunks(source))
+    except paths.AlreadyExists:
+        record.unlink(missing_ok=True)
+        raise
+    if written != sha1:
         destination.unlink(missing_ok=True)
-        marker.unlink(missing_ok=True)
+        record.unlink(missing_ok=True)
         raise PlaceFailed("the file changed while it was copied")
     return Placed(destination, True)
 

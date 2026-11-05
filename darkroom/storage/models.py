@@ -43,6 +43,7 @@ class Device(Base):
     push_token_sealed: Mapped[str | None] = mapped_column(Text)
     push_token_digest: Mapped[str | None] = mapped_column(String)
     push_token_at: Mapped[float | None] = mapped_column(Float)
+    wake_pushed_at: Mapped[float | None] = mapped_column(Float)
     __table_args__ = (Index("ix_devices_push_token_digest", "push_token_digest", unique=True),)
 
 
@@ -264,6 +265,7 @@ class Alert(Base):
     person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("google_accounts.id", ondelete="SET NULL"))
     push_due: Mapped[float | None] = mapped_column(Float)
+    pushed_devices: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("ix_alerts_key", "key"),)
 
 

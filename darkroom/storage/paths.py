@@ -24,7 +24,7 @@ SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
 PLACING = ".placing-"
-PLACED = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})-(.+)$")
+PLACING_RECORD = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})\.json$")
 UPLOADS_TMP = ".uploads_tmp"
 DOWNLOADS = ".downloads"
 SHARED_FOLDER_MODE = 0o2770
@@ -255,15 +255,11 @@ def copy_exclusive(source: Path, destination: Path) -> None:
         raise
 
 
-def write_once(destination: Path, chunks: Iterable[bytes], marker: Path | None = None) -> str:
+def write_once(destination: Path, chunks: Iterable[bytes]) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
-    if marker is None:
-        handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
-        temp = Path(temp_name)
-    else:
-        handle, temp = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), marker
-    linked = False
+    handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
+    temp = Path(temp_name)
     try:
         with os.fdopen(handle, "wb") as out:
             for chunk in chunks:
@@ -275,14 +271,12 @@ def write_once(destination: Path, chunks: Iterable[bytes], marker: Path | None =
             raise AlreadyExists(destination.name)
         try:
             os.link(temp, destination)
-            linked = True
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
         except OSError:
             copy_exclusive(temp, destination)
     finally:
-        if marker is None or not linked:
-            temp.unlink(missing_ok=True)
+        temp.unlink(missing_ok=True)
     return digest.hexdigest()
 
 
@@ -290,19 +284,60 @@ def placing_token() -> str:
     return secrets.token_hex(8)
 
 
-def placing_marker(destination: Path, token: str) -> Path:
-    return destination.with_name(f"{PLACING}{token}-{destination.name}")
+def placing_record(destination: Path, token: str) -> Path:
+    return destination.with_name(f"{PLACING}{token}.json")
 
 
-def mark_new_sidecar(media: Path, token: str) -> None:
-    os.close(os.open(placing_marker(sidecar_of(media), token), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+@dataclass(frozen=True)
+class Placing:
+    name: str
+    sha1: str
+    made: bool
+    new_sidecar: bool
+    sidecar_sha1: str | None = None
+
+
+def mark_placing(destination: Path, token: str, placing: Placing) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = {"name": placing.name, "sha1": placing.sha1, "made": placing.made, "sidecar": placing.new_sidecar, "sidecar_sha1": placing.sidecar_sha1}
+    handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(json.dumps(data).encode())
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp_name, placing_record(destination, token))
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def read_placing(record: Path) -> Placing | None:
+    try:
+        data = json.loads(record.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"name", "sha1", "made", "sidecar", "sidecar_sha1"}:
+        return None
+    name, sha1, made, new_sidecar, sidecar_sha1 = data["name"], data["sha1"], data["made"], data["sidecar"], data["sidecar_sha1"]
+    if not (isinstance(name, str) and name and not name.startswith(".") and "/" not in name and "\0" not in name
+            and isinstance(sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sha1) and type(made) is bool and type(new_sidecar) is bool
+            and (sidecar_sha1 is None or (new_sidecar and isinstance(sidecar_sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sidecar_sha1)))):
+        return None
+    return Placing(name, sha1, made, new_sidecar, sidecar_sha1)
+
+
+def present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
 
 
 def clear_placing(destination: Path, token: str, committed: bool) -> None:
-    for made in (destination, sidecar_of(destination)):
-        if committed or not (made.exists() or made.is_symlink()):
-            with contextlib.suppress(OSError):
-                placing_marker(made, token).unlink(missing_ok=True)
+    record = placing_record(destination, token)
+    found = None if committed else read_placing(record)
+    if found is not None and ((found.made and present(destination)) or (found.new_sidecar and present(sidecar_of(destination)))):
+        return
+    with contextlib.suppress(OSError):
+        record.unlink(missing_ok=True)
 
 
 class Readable(Protocol):
@@ -597,20 +632,29 @@ def put_sidecar_back(path: Path, recorded: Callable[[Path, str], bool], undo_com
     return "restored"
 
 
-def leftovers(photos: Photos, prefix: str, older_than: float) -> Iterator[list[Path]]:
+def leftovers(photos: Photos, prefix: str) -> Iterator[list[Path]]:
     for folder in photos.kept_folders():
         if folder.name != "google-only" or folder.is_symlink() or not folder.is_dir():
             continue
         yield [path for path in sorted(folder.rglob(f"{prefix}*"))
-               if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
+               if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve())]
+
+
+def settled(path: Path, older_than: float) -> bool:
+    return path.stat().st_ctime < older_than
+
+
+def written_before(record: Path, older_than: float) -> bool:
+    found = record.stat()
+    return max(found.st_mtime, found.st_ctime) < older_than
 
 
 def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool],
                    undo_committed: Callable[[int, int], bool | None]) -> Swept:
     swept = Swept()
-    for found in leftovers(photos, DROPPING, older_than):
+    for found in leftovers(photos, DROPPING):
         records = [path for path in found if SET_ASIDE_RECORD.match(path.name)]
-        for path in [path for path in found if path.suffix != SIDECAR_SUFFIX and path not in records]:
+        for path in [path for path in found if path.suffix != SIDECAR_SUFFIX and path not in records and settled(path, older_than)]:
             sha1, original = file_sha1(path), set_aside_name(path)
             if original is not None and recorded(original, sha1) and put_back(path, original):
                 swept.restored += 1
@@ -619,9 +663,12 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
                 swept.dropped += 1
         for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
             if record_of(path).is_file():
-                outcome = put_sidecar_back(path, recorded, undo_committed)
-                swept.restored += outcome == "restored"
-                swept.dropped += outcome == "dropped"
+                if written_before(record_of(path), older_than):
+                    outcome = put_sidecar_back(path, recorded, undo_committed)
+                    swept.restored += outcome == "restored"
+                    swept.dropped += outcome == "dropped"
+                continue
+            if not settled(path, older_than):
                 continue
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
             original = set_aside_name(photo)
@@ -630,7 +677,7 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
             path.unlink()
             swept.dropped += 1
         for record in records:
-            if not any(record.parent.glob(f"{record.name.removesuffix('.json')}-*")):
+            if record.is_file() and written_before(record, older_than) and not any(record.parent.glob(f"{record.name.removesuffix('.json')}-*")):
                 record.unlink(missing_ok=True)
     return swept
 
@@ -639,49 +686,37 @@ def regular(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def take_back_placed(marker: Path, token: str, made: Path, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
-    sha1, new_sidecar = file_sha1(marker), placing_marker(sidecar_of(made), token)
-    if not regular(made) or not os.path.samefile(marker, made):
-        if copy_kept(marker, sha1):
-            marker.unlink()
-        return False
-    if recorded(made, sha1):
-        marker.unlink()
-        new_sidecar.unlink(missing_ok=True)
-        return False
-    if not copy_kept(made, sha1):
-        return False
-    if new_sidecar.is_file():
-        if regular(sidecar_of(made)):
-            sidecar_of(made).unlink()
-        new_sidecar.unlink()
-    made.unlink()
-    marker.unlink()
-    return True
+def regular_sha1(path: Path) -> str | None:
+    return file_sha1(path) if regular(path) else None
 
 
-def take_back_sidecar(marker: Path, token: str, made: Path, recorded: Callable[[Path, str], bool]) -> None:
-    photo = made.with_name(made.name.removesuffix(SIDECAR_SUFFIX))
-    if placing_marker(photo, token).exists():
-        return
-    if regular(made) and not (regular(photo) and recorded(photo, file_sha1(photo))):
+def take_back(record: Path, placing: Placing, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
+    made = record.with_name(placing.name)
+    sidecar = sidecar_of(made)
+    sha1 = regular_sha1(made)
+    kept_by_a_row = sha1 is not None and recorded(made, sha1)
+    ours = placing.made and sha1 == placing.sha1 and not kept_by_a_row
+    if ours and not copy_kept(made, placing.sha1):
+        return False
+    if placing.sidecar_sha1 is not None and regular_sha1(sidecar) == placing.sidecar_sha1 and not kept_by_a_row:
+        sidecar.unlink()
+    if ours:
         made.unlink()
-    marker.unlink()
+    record.unlink()
+    return ours
 
 
 def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
                   recorded: Callable[[Path, str], bool]) -> int:
     taken_back = 0
-    for found in leftovers(photos, PLACING, older_than):
-        for marker in sorted(found, key=lambda path: path.suffix == SIDECAR_SUFFIX):
-            match = PLACED.match(marker.name)
-            if match is None or not regular(marker):
+    for found in leftovers(photos, PLACING):
+        for record in found:
+            match = PLACING_RECORD.match(record.name)
+            placing = None if match is None or not written_before(record, older_than) else read_placing(record)
+            if match is None or placing is None:
                 continue
-            token, made = match.group(1), marker.with_name(match.group(2))
-            if committed(token):
-                marker.unlink()
-            elif marker.suffix == SIDECAR_SUFFIX:
-                take_back_sidecar(marker, token, made, recorded)
-            elif take_back_placed(marker, token, made, copy_kept, recorded):
+            if committed(match.group(1)):
+                record.unlink()
+            elif take_back(record, placing, copy_kept, recorded):
                 taken_back += 1
     return taken_back

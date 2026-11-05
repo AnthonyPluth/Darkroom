@@ -302,20 +302,22 @@ def record_deleted(opened: Session, device_id: int, asset_ids: Sequence[str], no
         raise ValueError("the same asset is listed twice")
     recorded: list[str] = []
     rejected: list[Rejected] = []
+    newly = 0
     for photokit_id in asset_ids:
         asset = asset_of(opened, device.id, photokit_id)
         if asset is None:
             rejected.append(Rejected(photokit_id, UNKNOWN_ASSET))
         elif asset.deleted_at is not None:
-            rejected.append(Rejected(photokit_id, ALREADY_DELETED))
+            recorded.append(photokit_id)
         elif asset.eligible_confirmed_at is None:
             rejected.append(Rejected(photokit_id, NOT_CONFIRMED_FOR_DELETION))
         else:
             asset.deleted_at = now
             asset.eligible_at = None
             recorded.append(photokit_id)
+            newly += 1
     opened.flush()
-    events.record(opened, now, "cleanup_deleted", subject_of(opened, device), f"{len(recorded)} recorded, {len(rejected)} refused")
+    events.record(opened, now, "cleanup_deleted", subject_of(opened, device), f"{newly} recorded, {len(rejected)} refused")
     return recorded, rejected
 
 
