@@ -232,5 +232,25 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number, bytes, downloads_used FROM export_parts").one(), (1, 100, 2))
 
 
+    def test_0010_media_dhash_leaves_old_items_without_one_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0009")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, phash, indexed_at) VALUES (1, 1, 'phone', 'jo/a.jpg', 'abc', 5, 'f0f0f0f0f0f0f0f0', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT phash, dhash FROM media_items").one(), ("f0f0f0f0f0f0f0f0", None))
+            connection.exec_driver_sql("UPDATE media_items SET dhash = '0f0f0f0f0f0f0f0f'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0009")
+        self.assertNotIn("dhash", {column["name"] for column in inspect(self.engine).get_columns("media_items")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT phash FROM media_items").scalars().all(), ["f0f0f0f0f0f0f0f0"])
+
+
 if __name__ == "__main__":
     unittest.main()

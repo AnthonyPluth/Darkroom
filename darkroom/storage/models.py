@@ -139,6 +139,7 @@ class MediaItem(Base):
     bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     mtime: Mapped[float | None] = mapped_column(Float)
     phash: Mapped[str | None] = mapped_column(String)
+    dhash: Mapped[str | None] = mapped_column(String)
     captured_utc: Mapped[float | None] = mapped_column(Float)
     captured_local: Mapped[str | None] = mapped_column(String)
     offset_minutes: Mapped[int | None] = mapped_column(Integer)
