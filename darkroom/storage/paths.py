@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Iterator
@@ -25,6 +26,8 @@ TOKEN = len(DROPPING) + 16
 PLACING = ".placing-"
 PLACING_RECORD = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})\.json$")
 UPLOADS_TMP = ".uploads_tmp"
+DOWNLOADS = ".downloads"
+SHARED_FOLDER_MODE = 0o2770
 
 
 class OutsideRoot(ValueError):
@@ -128,6 +131,36 @@ class Photos:
         except OSError as error:
             raise ProfileNotRemoved("the account's browser folder could not be removed") from error
 
+    def retire_account_downloads(self, account: str) -> None:
+        name = self.name_part(account)
+        inbox = self.root / "_inbox"
+        target = inbox / DOWNLOADS / name
+        if any(each.is_symlink() for each in (inbox, inbox / DOWNLOADS, target)):
+            raise ProfileNotRemoved("the account's downloads folder is a link, so it was not removed")
+        if not target.exists():
+            return
+        if not target.is_dir() or target.resolve() != target:
+            raise ProfileNotRemoved("the account's downloads folder is not where it should be, so it was not removed")
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise ProfileNotRemoved("the account's downloads folder could not be removed") from error
+
+    def share_inbox(self) -> list[Path]:
+        inbox = self.root / "_inbox"
+        made = [make_shared(inbox), make_shared(inbox / DOWNLOADS)]
+        for each in sorted(inbox.iterdir()):
+            if SLUG.match(each.name) and not each.is_symlink() and each.is_dir():
+                share_folder(each)
+                made.append(each)
+        return made
+
+    def make_export_folder(self, person: str, export: str) -> Path:
+        inbox = self.root / "_inbox"
+        make_shared(inbox)
+        make_shared(inbox / self.person_part(person))
+        return make_shared(inbox / self.person_part(person) / self.name_part(export))
+
     def inbox_root(self) -> Path:
         return self.inside("_inbox")
 
@@ -177,12 +210,33 @@ class Photos:
                 for path in reversed(missing):
                     path.mkdir()
                     made.append(path)
+                    if path.is_relative_to(self.root / "_inbox"):
+                        share_folder(path)
         except OSError:
             for path in reversed(made):
                 with contextlib.suppress(OSError):
                     path.rmdir()
             raise
         return folders
+
+
+def share_folder(path: Path) -> None:
+    found = path.lstat()
+    if not stat.S_ISDIR(found.st_mode):
+        raise NotInTheInbox(f"{path.name} is not a folder")
+    if found.st_uid != os.geteuid():
+        return
+    if found.st_gid != os.getegid():
+        os.chown(path, -1, os.getegid(), follow_symlinks=False)
+    if stat.S_IMODE(path.lstat().st_mode) != SHARED_FOLDER_MODE:
+        os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the shared inbox group (gid 10010) needs rwx, others get nothing
+
+
+def make_shared(path: Path) -> Path:
+    with contextlib.suppress(FileExistsError):
+        path.mkdir()
+    share_folder(path)
+    return path
 
 
 def copy_exclusive(source: Path, destination: Path) -> None:

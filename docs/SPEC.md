@@ -78,9 +78,9 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 **Limits it must respect**
 
-- Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest.
+- Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that started a download and failed before every part was downloaded, or a job that had nothing left to download and only had to finish a complete export; a job that fails right after downloading the last part is not counted) is marked failed, which frees the account.
 - Google often asks you to verify it's you before a download. The job pauses, sends a push alert to the person's iPhone app linking to the noVNC view, and resumes after you sign in.
-- Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed.
+- Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
 
@@ -129,7 +129,7 @@ Matching runs against everyone the export's Google account serves, in this order
 **Rules**
 
 - Nothing is auto-deleted. Every decision is stored with its tier and reason, and can be reversed from the review queue.
-- A matched item belongs to whoever's iPhone uploaded the original. A Google-only item goes to the account's default person and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
+- A matched item belongs to whoever's iPhone uploaded the original. A Google-only item goes to the person who owned the export when it was created (the account's default person at that moment; old exports without an owner use the current default) and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
 - A tier 1 or 2 match also proves Google has the original. That proof is what makes the photo eligible for deletion on the iPhone.
 - Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same phone item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
 
@@ -230,7 +230,7 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | Device | person, iPhone name, sign-in token (secret), last check-in |
 | Pixel | name, Syncthing device ID, Google account, people served (one by default, several optional) |
 | PhoneAsset | device, PhotoKit asset ID, resources (photo / Live Photo video / edit) with SHA-1 each, uploaded at, eligible at, deleted at |
-| GoogleAccount | email, default person (owns Google-only items), browser profile path, session state (ok / needs sign-in), schedule end date |
+| GoogleAccount | email, default person (owns Google-only items of exports created while they were the default), browser profile path, session state (ok / needs sign-in), schedule end date |
 | Export | account, kind (initial full / incremental), ready at, expires at, part count, status |
 | ExportPart | export, part number, size, downloads used (of 5), status |
 | MediaItem | person, source (phone / Takeout), path, SHA-1, pHash, dHash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no), raw sidecar JSON |

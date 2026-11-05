@@ -43,10 +43,22 @@ The route is internal-only (reached over the LAN or Tailscale, like `darkroom` i
 
 | Host | Container | Mode | Why |
 | --- | --- | --- | --- |
-| `${PHOTOS_ROOT}/_inbox` | `/photos/_inbox` | rw | Downloaded Takeout parts land in the person's inbox (#31). |
+| `${PHOTOS_ROOT}/_inbox` | `/photos/_inbox` | rw | The download job writes each Takeout part to `<person>/export-<export id>/.partial/`, checks its size and zip integrity, then moves it to `<person>/export-<export id>/`. Chromium keeps a download in progress under `.downloads/<account id>/`, on the same mount, so a finished part moves without a copy. The worker empties that folder's files when it opens a browser, and refuses to start the job if `_inbox`, `.downloads` or the account's folder is a link; deleting the account removes the folder. |
 | `${PHOTOS_ROOT}/_browser` | `/photos/_browser` | rw | `<account id>/profile/` holds the persistent Chromium profile (the signed-in session), `<account id>/failures/<job id>/` the screenshot and scrubbed page snapshot of a failed job. |
 
 Nothing else of the photo share is mounted: the worker cannot see or touch `originals/`.
+
+### Users and the shared group
+
+`darkroom` runs as uid 10001 and `darkroom-browser` as uid 10002, and both have the group `darkroom-share` (gid 10010) as their primary group: both images create it, and `docker-compose.yml` pins `user: "10001:10010"` and `user: "10002:10010"`. Run the containers with that group (on Unraid, set the same `--user` in each container's Extra Parameters), because the two processes share folders only through it:
+
+- Darkroom makes `_inbox`, `_inbox/.downloads`, each person's `_inbox/<person>/` and `manual/`, and each export's `_inbox/<person>/export-<id>/` (when the worker asks for its download plan) with mode `2770`: owner and group can read, write and enter, and nobody else can even list them, so what the inbox holds is never readable outside the group. The setgid bit keeps every folder made under them in group 10010. The mode is set with `chmod` after `mkdir`, so it doesn't depend on the umask. When `darkroom` starts it gives the folders it owns under `_inbox` (`_inbox`, `.downloads` and each person's inbox) that group and mode, so a share set up before this change is fixed on the next start.
+- The worker runs with umask `007` and makes `.downloads/<account id>/`, any missing export folder and `.partial/` with mode `2770` too, and sets each finished part to `0660`, so Darkroom can read the parts, unpack them and remove the export folder, and deleting an account can remove `.downloads/<account id>/`.
+- A folder in the chain that is a link is refused on both sides, as before.
+
+If the share was used before this change, the folders the worker made (`.downloads/<id>/`, `export-<id>/.partial/`) may lack the group. Fix them once, on the host: `chgrp -R 10010 "$PHOTOS_ROOT/_inbox" && find "$PHOTOS_ROOT/_inbox" -type d -exec chmod 2770 {} +`.
+
+Chromium makes some folders inside its profile (`_browser/<id>/profile/`) with mode `0700`, whatever the umask, so deleting an account can still fail to remove `_browser/<id>`. The delete then answers 500 and changes nothing ("the account's browser folder could not be removed"). Remove that folder on the host and delete the account again (#108, item 44).
 
 ## Running a `noop` job end to end
 

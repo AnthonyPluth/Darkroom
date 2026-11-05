@@ -3,25 +3,29 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
-from darkroom.domain import browser_jobs, events, exports
+from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import run
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person
-from darkroom.storage.paths import OutsideRoot, Photos
+from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
+from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
 
 MAX_DOWNLOADS = 5
 MAX_ATTEMPTS = 3
+EXPIRY_NOTICE = 4 * alerts.DAY
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
 FAILURES = ("corrupt", "wrong_size", "not_started", "interrupted", "bad_name")
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
 ATTEMPTED = json.dumps({"attempted": True})
+EXPIRING = "export_expiring"
 
 
 class NotADownload(ValueError):
@@ -34,6 +38,10 @@ class Refused(ValueError):
 
 def folder_name(export: Export) -> str:
     return f"export-{export.id}"
+
+
+def expiry_key(export_id: int) -> str:
+    return f"export:expiring:{export_id}"
 
 
 def export_of(opened: Session, job: BrowserJob) -> Export | None:
@@ -64,8 +72,7 @@ def waiting_export(opened: Session, job_id: int) -> Export:
 
 
 def person_of(opened: Session, export: Export) -> Person:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+    person = exports.claim_owner(opened, export)
     if person is None:
         raise Refused("the export's account has no default person")
     return person
@@ -92,6 +99,10 @@ def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     person = person_of(opened, export)
     export_folder(settings, person, export)
+    try:
+        Photos(settings.photos_root).make_export_folder(person.slug, folder_name(export))
+    except (OSError, OutsideRoot, NotInTheInbox) as error:
+        raise Refused("the export's inbox folder could not be made for the browser worker") from error
     return {"export_id": export.id, "google_id": export.google_id or "", "person": person.slug, "folder": folder_name(export),
             "part_count": export.part_count or 0, "parts": [part_plan(part) for part in exports.parts_of(opened, export.id)]}
 
@@ -201,6 +212,7 @@ def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Expo
         raise Refused(f"not every part of export {export.id} is downloaded")
     export.inbox_dir = str(export_folder(settings, person_of(opened, export), export))
     export.status = "downloaded"
+    alerts.close(opened, expiry_key(export.id), now)
     events.record(opened, now, "export_downloaded", str(export.id), f"{export.part_count} parts")
     run.request_import(opened, export.id)
     return export
@@ -214,7 +226,7 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
-    if job.result != ATTEMPTED or exports.all_done(opened, export):
+    if (job.result == ATTEMPTED) == exports.all_done(opened, export):
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:
@@ -225,3 +237,35 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
 def jobs_failed(opened: Session, jobs: Sequence[BrowserJob], now: float) -> int:
     return sum(1 for job in jobs if job_failed(opened, job, now) is not None)
 
+
+def on_day(moment: float, zone: str) -> str:
+    local = datetime.fromtimestamp(moment, ZoneInfo(zone))
+    return f"{local.day} {local:%b %Y at %H:%M}"
+
+
+def expiring_wording(opened: Session, settings: Settings, export: Export, expires_at: float) -> alerts.Wording:
+    account = opened.get(GoogleAccount, export.account_id)
+    label = f"{export.id} for {account.email}" if account is not None else str(export.id)
+    return alerts.export_expiring(label, on_day(expires_at, settings.timezone))
+
+
+def watch_expiry(opened: Session, settings: Settings, now: float) -> int:
+    opened_now = 0
+    waiting = opened.execute(select(Export).where(Export.status.in_(exports.STILL_WAITING), Export.ready_at.is_not(None), Export.expires_at.is_not(None))).scalars()
+    still_open: set[int] = set()
+    for export in waiting:
+        expires_at = export.expires_at
+        assert expires_at is not None
+        if now >= expires_at or expires_at - now > EXPIRY_NOTICE:
+            continue
+        still_open.add(export.id)
+        key = expiry_key(export.id)
+        if opened.execute(select(Alert.id).where(Alert.key == key, Alert.closed.is_(None)).limit(1)).first() is None:
+            link = f"{settings.public_url}/exports" if settings.public_url else None
+            alerts.open_alert(opened, settings, key, EXPIRING, f"export {export.id}", expiring_wording(opened, settings, export, expires_at), link, now)
+            opened_now += 1
+    keep = {expiry_key(each) for each in still_open}
+    for alert in opened.execute(select(Alert).where(Alert.kind == EXPIRING, Alert.closed.is_(None))).scalars():
+        if alert.key not in keep:
+            alert.closed = now
+    return opened_now

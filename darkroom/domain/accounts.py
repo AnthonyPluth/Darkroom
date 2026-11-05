@@ -164,6 +164,8 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
             follow_alerts(opened, account.email, email)
         account.email = email
     if default_person_id is not None:
+        if default_person_id != account.default_person_id:
+            exports.pin_owners(opened, account)
         account.default_person_id = default_person_id
     opened.flush()
     events.record(opened, now, "account_updated", str(account.id))
@@ -197,5 +199,6 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None
     alerts.close(opened, browser_jobs.sign_in_key(account_id), now)
     for alert in opened.execute(select(Alert).where(Alert.closed.is_(None), Alert.subject == email)).scalars():
         alert.closed = now
+    photos.retire_account_downloads(str(account_id))
     photos.retire_browser_account(str(account_id))
     events.record(opened, now, "account_deleted", str(account_id))

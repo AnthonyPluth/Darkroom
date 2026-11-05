@@ -147,6 +147,10 @@ export interface DevicePatchBody {
   icloud_photos_off?: boolean;
 }
 
+export interface DevicePushTokenBody {
+  token: string;
+}
+
 export interface DeviceReply {
   device: DeviceView;
 }
@@ -654,6 +658,8 @@ export interface Endpoints {
   "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
   "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
+  "PUT /api/device/push-token": { body: DevicePushTokenBody; reply: Ok };
+  "DELETE /api/device/push-token": { body: never; reply: Ok };
   "POST /api/device/eligible": { body: EligibleBody; reply: EligibleReply };
   "POST /api/device/eligible/confirm": { body: EligibleBody; reply: ConfirmReply };
   "POST /api/device/deleted": { body: DeletedBody; reply: DeletedReply };

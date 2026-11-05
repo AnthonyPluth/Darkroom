@@ -76,6 +76,12 @@ class Client:
     def waiting(self, job_id: int, reason: str) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/waiting", {"reason": reason})
 
+    def download_plan(self, job_id: int) -> dict[str, Any]:
+        return self.post(f"/internal/browser/jobs/{job_id}/download", {})
+
+    def part(self, job_id: int, number: int, body: dict[str, object]) -> dict[str, Any]:
+        return self.post(f"/internal/browser/jobs/{job_id}/parts/{number}", body)
+
     def done(self, job_id: int, result: dict[str, object]) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/done", {"result": result})
 

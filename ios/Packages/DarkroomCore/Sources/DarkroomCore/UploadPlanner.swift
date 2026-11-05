@@ -24,6 +24,10 @@ public struct LocalResource: Equatable, Sendable {
         self.state = state
     }
 
+    func hasSameContent(as other: LocalResource) -> Bool {
+        sha1 == other.sha1 && bytes == other.bytes && filename == other.filename
+    }
+
     var descriptor: ResourceDescriptor {
         ResourceDescriptor(kind: key.kind, sha1: sha1, bytes: bytes, filename: filename)
     }
@@ -49,7 +53,8 @@ public enum UploadPlanner {
         precondition(batchSize > 0)
         var assetOrder: [String] = []
         var byAsset: [String: [LocalResource]] = [:]
-        for resource in resources where resource.state == .hashed {
+        let pending = Set(resources.filter { $0.state == .hashed }.map(\.key.assetID))
+        for resource in resources where pending.contains(resource.key.assetID) && resource.state != .notLocal {
             if byAsset[resource.key.assetID] == nil { assetOrder.append(resource.key.assetID) }
             byAsset[resource.key.assetID, default: []].append(resource)
         }
@@ -64,19 +69,23 @@ public enum UploadPlanner {
         }
     }
 
-    public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
+    public static func declared(in batch: CheckRequest, among resources: [LocalResource]) -> [LocalResource] {
         var checked: [ResourceKey: ResourceDescriptor] = [:]
         for asset in batch.assets {
             for descriptor in asset.resources {
                 checked[ResourceKey(assetID: asset.id, kind: descriptor.kind)] = descriptor
             }
         }
+        return resources.filter { $0.state == .hashed && checked[$0.key] == $0.descriptor }
+    }
+
+    public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
         let needed = Set(reply.needed.map(\.key))
         var assetOrder: [String: Int] = [:]
         for resource in resources where assetOrder[resource.key.assetID] == nil {
             assetOrder[resource.key.assetID] = assetOrder.count
         }
-        let hashed = resources.filter { $0.state == .hashed && checked[$0.key] == $0.descriptor }
+        let hashed = declared(in: batch, among: resources)
         let queue = hashed
             .filter { needed.contains($0.key) }
             .sorted {

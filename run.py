@@ -19,7 +19,7 @@ from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
 from darkroom.storage import db
 from darkroom.storage.models import Export, Person
-from darkroom.storage.paths import Photos
+from darkroom.storage.paths import NotInTheInbox, Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
 
@@ -92,6 +92,9 @@ def unpack_only_export(opened: Session, photos: Photos, person: Person, export: 
 
 def import_one(opened: Session, settings: config.Settings, export: Export, now: float) -> int:
     try:
+        if export.status == "imported":
+            ingest_run.request_import(opened, export.id, Photos(settings.photos_root), now)
+            opened.commit()
         done = ingest_run.import_export(opened, settings, export, now)
     except ingest_run.AlreadyImported:
         print(f"Export {export.id} is already imported.")
@@ -231,6 +234,10 @@ def serve() -> int:
             print(f"config: {line}", file=sys.stderr)
         return 1
     migrate(settings)
+    try:
+        Photos(settings.photos_root).share_inbox()
+    except (OSError, NotInTheInbox) as error:
+        monitoring.log("inbox folders not shared with the browser worker", error=type(error).__name__)
     engine = db.make_engine(db.database_url(settings))
     scheduler = jobs.build(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
