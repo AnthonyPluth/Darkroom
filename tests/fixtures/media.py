@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
+import random
 import shutil
 import subprocess
 from pathlib import Path
 
 import pillow_heif
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance
 
 pillow_heif.register_heif_opener()
 TINY_VIDEO = Path(__file__).resolve().parent / "tiny.mp4"
@@ -60,4 +62,41 @@ def make_video(path: Path, creation: str | None = None) -> Path:
     shutil.copyfile(TINY_VIDEO, path)
     if creation:
         set_tags(path, {"QuickTime:CreateDate": creation, "Keys:CreationDate": creation})
+    return path
+
+
+def scene(seed: int, size: tuple[int, int] = (320, 240)) -> Image.Image:
+    chance = random.Random(seed)
+    image = Image.new("RGB", size, (chance.randrange(256), chance.randrange(256), chance.randrange(256)))
+    draw = ImageDraw.Draw(image)
+    for _ in range(14):
+        left, top = chance.randrange(size[0]), chance.randrange(size[1])
+        box = (left, top, min(size[0], left + chance.randrange(30, 160)), min(size[1], top + chance.randrange(30, 120)))
+        colour = (chance.randrange(256), chance.randrange(256), chance.randrange(256))
+        (draw.ellipse if chance.random() < 0.5 else draw.rectangle)(box, fill=colour)
+    return image
+
+
+def recompressed(image: Image.Image, quality: int = 35) -> Image.Image:
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality)
+    buffer.seek(0)
+    return Image.open(buffer).convert("RGB")
+
+
+def resized(image: Image.Image, factor: float = 0.5) -> Image.Image:
+    return image.resize((round(image.width * factor), round(image.height * factor)))
+
+
+def brightened(image: Image.Image, factor: float = 1.12) -> Image.Image:
+    return ImageEnhance.Brightness(image).enhance(factor)
+
+
+def shifted(image: Image.Image, across: int, down: int) -> Image.Image:
+    return ImageChops.offset(image, across, down)
+
+
+def save_jpeg(image: Image.Image, path: Path, quality: int = 92) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, format="JPEG", quality=quality)
     return path

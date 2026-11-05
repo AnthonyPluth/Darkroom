@@ -1,0 +1,116 @@
+import XCTest
+@testable import DarkroomCore
+
+enum ResourceStoreContract {
+    static func resource(_ asset: String, _ kind: ResourceKind = .photo, state: ResourceState = .hashed, sha1: String? = nil) -> LocalResource {
+        LocalResource(key: ResourceKey(assetID: asset, kind: kind), sha1: sha1 ?? asset, bytes: 7, filename: "\(asset).bin", state: state)
+    }
+
+    static func key(_ asset: String, _ kind: ResourceKind = .photo) -> ResourceKey {
+        ResourceKey(assetID: asset, kind: kind)
+    }
+
+    static func upsertReplacesByKeyAndKeepsInsertionOrder(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b"), resource("a", .liveVideo)])
+        try await store.upsert([resource("a", state: .checked, sha1: "new")])
+        let all = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(all.map { "\($0.key.assetID).\($0.key.kind.rawValue)" }, ["a.photo", "b.photo", "a.live_video"])
+        XCTAssertEqual(all[0].sha1, "new")
+        XCTAssertEqual(all[0].state, .checked)
+    }
+
+    static func upsertStoresEveryField(_ store: ResourceStore) async throws {
+        let original = LocalResource(key: key("a", .adjusted), sha1: "abc", bytes: 5_000_000_000, filename: "IMG 1_adjusted.HEIC", state: .hashed)
+        try await store.upsert([original])
+        let record = try await store.record(for: original.key)
+        XCTAssertEqual(record, ResourceRecord(resource: original))
+    }
+
+    static func unknownKeyHasNoRecord(_ store: ResourceStore) async throws {
+        let record = try await store.record(for: key("nope"))
+        XCTAssertNil(record)
+    }
+
+    static func walksTheUploadPath(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a")])
+        for state in [ResourceState.checked, .uploading, .uploaded] {
+            try await store.setState(state, for: [key("a")], failureReason: nil)
+            let record = try await store.record(for: key("a"))
+            XCTAssertEqual(record?.resource.state, state)
+        }
+    }
+
+    static func illegalTransitionThrowsAndChangesNothing(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b", state: .checked)])
+        do {
+            try await store.setState(.uploading, for: [key("b"), key("a")], failureReason: nil)
+            XCTFail("hashed cannot move to uploading")
+        } catch let error as ResourceStoreError {
+            XCTAssertEqual(error, .illegalTransition(key: key("a"), from: .hashed, to: .uploading))
+        }
+        let states = try await store.resources(in: Set(ResourceState.allCases)).map(\.state)
+        XCTAssertEqual(states, [.hashed, .checked])
+    }
+
+    static func uploadedAndNotLocalAreTerminal(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a", state: .uploaded), resource("b", state: .notLocal)])
+        for asset in ["a", "b"] {
+            do {
+                try await store.setState(.hashed, for: [key(asset)], failureReason: nil)
+                XCTFail("\(asset) must stay put")
+            } catch is ResourceStoreError {}
+        }
+    }
+
+    static func failureKeepsItsReasonUntilTheResourceMovesOn(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a")])
+        try await store.setState(.failed, for: [key("a")], failureReason: "the server refused the file")
+        var record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.failureReason, "the server refused the file")
+        try await store.setState(.hashed, for: [key("a")], failureReason: "ignored")
+        record = try await store.record(for: key("a"))
+        XCTAssertNil(record?.failureReason)
+        XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
+    static func sameStateMoveIsAllowedAndUpdatesTheReason(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a")])
+        try await store.setState(.failed, for: [key("a")], failureReason: "first")
+        try await store.setState(.failed, for: [key("a")], failureReason: "second")
+        let record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.failureReason, "second")
+    }
+
+    static func setStateIgnoresKeysThatAreGone(_ store: ResourceStore) async throws {
+        try await store.setState(.uploaded, for: [key("x")], failureReason: nil)
+        let counts = try await store.counts()
+        XCTAssertTrue(counts.isEmpty)
+    }
+
+    static func attemptsAndRehashesCountUpAndResetOnUpsert(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b")])
+        try await store.recordAttempt(for: [key("a"), key("b")])
+        try await store.recordAttempt(for: [key("a")])
+        try await store.recordRehash(for: key("a"))
+        var record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.attempts, 2)
+        XCTAssertEqual(record?.rehashes, 1)
+        let other = try await store.record(for: key("b"))
+        XCTAssertEqual(other?.attempts, 1)
+        XCTAssertEqual(other?.rehashes, 0)
+        try await store.upsert([resource("a", sha1: "changed")])
+        record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.attempts, 0)
+        XCTAssertEqual(record?.rehashes, 0)
+    }
+
+    static func countsAndFilteringByState(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b", state: .uploaded), resource("c", state: .uploaded), resource("d", state: .notLocal)])
+        let counts = try await store.counts()
+        XCTAssertEqual(counts, [.hashed: 1, .uploaded: 2, .notLocal: 1])
+        let pending = try await store.resources(in: [.hashed, .notLocal])
+        XCTAssertEqual(pending.map(\.key.assetID), ["a", "d"])
+        let none = try await store.resources(in: [])
+        XCTAssertTrue(none.isEmpty)
+    }
+}
