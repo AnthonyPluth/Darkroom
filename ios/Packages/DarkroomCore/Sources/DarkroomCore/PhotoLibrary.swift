@@ -39,7 +39,9 @@ public protocol ResourceExporter: Sendable {
 
 public protocol IngestVersions: Sendable {
     func version(for key: ResourceKey) async -> String?
-    func setVersion(_ version: String, for key: ResourceKey) async
+    /// Durable when it returns: it throws if the version could not be saved, and then the old version stands.
+    /// Nil forgets the version.
+    func setVersion(_ version: String?, for key: ResourceKey) async throws
 }
 
 public actor InMemoryIngestVersions: IngestVersions {
@@ -51,7 +53,7 @@ public actor InMemoryIngestVersions: IngestVersions {
         storage[key]
     }
 
-    public func setVersion(_ version: String, for key: ResourceKey) {
+    public func setVersion(_ version: String?, for key: ResourceKey) {
         storage[key] = version
     }
 }
@@ -79,11 +81,13 @@ public actor FileIngestVersions: IngestVersions {
         storage[Self.name(key)]
     }
 
-    public func setVersion(_ version: String, for key: ResourceKey) {
-        storage[Self.name(key)] = version
-        if let data = try? JSONEncoder().encode(storage) {
-            try? data.write(to: url, options: .atomic)
-        }
+    public func setVersion(_ version: String?, for key: ResourceKey) throws {
+        var updated = storage
+        updated[Self.name(key)] = version
+        let data = try JSONEncoder().encode(updated)
+        try data.write(to: url, options: .atomic)
+        // Only a version that reached the disk is accepted, so a relaunch agrees with this run.
+        storage = updated
     }
 }
 
