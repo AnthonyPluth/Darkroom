@@ -387,6 +387,46 @@ class InterruptedReassignTests(ReviewCase):
         self.assertEqual(report.taken_back, 0)
         self.assertEqual(self.tree(), before)
 
+    def without_markers(self, files):
+        return {key: value for key, value in files.items() if paths.PLACING not in key}
+
+    def retried(self, item_id, path, crash):
+        self.dies_while_reassigning(item_id, crash)
+        self.assertNotEqual(list(self.target(path).parent.glob(f"{paths.PLACING}*")), [])
+        self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.target(path)
+        self.assertEqual(self.opened.get(MediaItem, item_id).path, str(target.relative_to(self.world.root)))
+        return target, self.without_markers(self.tree())
+
+    def test_a_retry_that_adopted_an_interrupted_copy_keeps_it_and_its_sidecar_while_another_copy_exists(self):
+        item_id, path = self.kept()
+        source = self.world.root / path
+        twin = source.with_name(f"twin-{source.name}")
+        twin.write_bytes(source.read_bytes())
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(twin.relative_to(self.world.root)),
+                             sha1=sha1_of(twin), bytes=twin.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        target, moved = self.retried(item_id, path, "carry_sidecar")
+        data, xmp_data = target.read_bytes(), target.with_name(f"{target.name}.xmp").read_bytes()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual((target.read_bytes(), target.with_name(f"{target.name}.xmp").read_bytes()), (data, xmp_data))
+        self.assertEqual(self.tree(), moved)
+        self.assertEqual(self.opened.get(MediaItem, item_id).path, str(target.relative_to(self.world.root)))
+
+    def test_a_retry_that_adopted_a_sidecar_an_interrupted_reassign_wrote_keeps_it(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((self.world.root / path).read_bytes())
+        target, moved = self.retried(item_id, path, "set_library_copy_aside")
+        xmp_data = target.with_name(f"{target.name}.xmp").read_bytes()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual(target.with_name(f"{target.name}.xmp").read_bytes(), xmp_data)
+        self.assertEqual(self.tree(), moved)
+
     def test_a_marker_whose_place_now_holds_another_file_never_touches_that_file(self):
         item_id, path = self.kept()
         target = self.target(path)
