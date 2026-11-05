@@ -152,7 +152,7 @@ class PersonIndex:
         object.__setattr__(self, "peer_times", Buckets(self.peers))
 
     @classmethod
-    def load(cls, opened: Session, account_id: int) -> PersonIndex:
+    def load(cls, opened: Session, account_id: int, owner_person_id: int | None = None) -> PersonIndex:
         account = opened.get(GoogleAccount, account_id)
         if account is None:
             raise LookupError("no such Google account")
@@ -164,7 +164,7 @@ class PersonIndex:
             select(MediaItem).join(Export, Export.id == MediaItem.export_id)
             .where(MediaItem.source == "takeout", MediaItem.person_id.in_(people), Export.account_id == account_id).order_by(MediaItem.id)
         ).scalars()
-        return cls(account_id, account.default_person_id, frozenset(people), tuple(shot_of(i) for i in phone), tuple(shot_of(i) for i in takeout))
+        return cls(account_id, owner_person_id or account.default_person_id, frozenset(people), tuple(shot_of(i) for i in phone), tuple(shot_of(i) for i in takeout))
 
 
 def shot_of(item: MediaItem) -> Shot:

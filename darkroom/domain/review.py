@@ -10,7 +10,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, devices, events, media, thumbs, xmp
+from darkroom.domain import accounts, dedupe, devices, events, exports, media, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -303,10 +303,9 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
 def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader,
               write: xmp.Writer) -> tuple[set[int], list[str]]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
-    account = opened.get(GoogleAccount, hit.export.account_id)
-    if hold is None or account is None:
+    person = exports.owner_of(opened, hit.export)
+    if hold is None:
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
-    person = opened.get(Person, account.default_person_id)
     if person is None:
         raise WrongState("the export's account has no default person")
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)

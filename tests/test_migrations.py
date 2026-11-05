@@ -251,6 +251,28 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT number, bytes, downloads_used FROM export_parts").one(), (1, 100, 2))
 
+    def test_0012_export_owner_leaves_old_exports_without_one_and_can_be_undone_without_losing_exports(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0011")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloaded')")
+            connection.exec_driver_sql("INSERT INTO export_parts (export_id, number, bytes) VALUES (1, 1, 100)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT owner_person_id, status FROM exports").one(), (None, "downloaded"))
+            connection.exec_driver_sql("UPDATE exports SET owner_person_id = 1")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0011")
+        self.assertNotIn("owner_person_id", {column["name"] for column in inspect(self.engine).get_columns("exports")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT status FROM exports").scalars().all(), ["downloaded"])
+            self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
+
 
 if __name__ == "__main__":
     unittest.main()

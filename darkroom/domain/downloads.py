@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from darkroom.config import Settings
 from darkroom.domain import browser_jobs, events, exports
 from darkroom.domain.ingest import run
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person
+from darkroom.storage.models import BrowserJob, Export, ExportPart, Person
 from darkroom.storage.paths import OutsideRoot, Photos
 
 MAX_DOWNLOADS = 5
@@ -64,8 +64,7 @@ def waiting_export(opened: Session, job_id: int) -> Export:
 
 
 def person_of(opened: Session, export: Export) -> Person:
-    account = opened.get(GoogleAccount, export.account_id)
-    person = None if account is None else opened.get(Person, account.default_person_id)
+    person = exports.claim_owner(opened, export)
     if person is None:
         raise Refused("the export's account has no default person")
     return person
