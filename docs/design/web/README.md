@@ -40,3 +40,5 @@ Approved departures (#27), approved by the owner and recorded on #16 (https://gi
 
 1. Imports shows one row per export run ("3 of 5 parts downloaded") instead of one row per export part ("Part 3 of 5"), because the counts exist only per export.
 2. Review, Past decisions: a reversed decision shows "Reversed, so it can't be undone" in place of Undo.
+3. Review: Reassign on the pending pair is one action that keeps both files and then moves the kept copy to the chosen person (hidden when the account serves one person); undoing it takes the copy back.
+4. Imports, Missing GPS: the thumbnail is a plain placeholder tile where no thumbnail can be made.
