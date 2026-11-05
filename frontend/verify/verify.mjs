@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
@@ -248,14 +248,24 @@ export function runVisit(env, v) {
 export function readFlows(flowsDir) {
   if (!existsSync(flowsDir)) return { flows: [] };
   const flows = [];
+  const files = new Map();
   for (const f of readdirSync(flowsDir).filter((x) => x.endsWith(".json")).sort()) {
     let flow;
     try { flow = JSON.parse(readFileSync(join(flowsDir, f), "utf8")); } catch (e) { return { error: `flow ${f} isn't valid JSON (${e.message})` }; }
     const bad = flowProblems(flow);
     if (bad.length) return { error: `flow ${f}: ${bad.join("; ")}` };
+    const same = flows.find((other) => other.name === flow.name);
+    if (same) return { error: `flows ${files.get(same.name)} and ${f} are both named ${flow.name}: a flow's name is its identity, so each file needs its own` };
+    files.set(flow.name, f);
     flows.push(flow);
   }
   return { flows };
+}
+
+export function commitImages(staging, images, replaceAll) {
+  mkdirSync(images, { recursive: true });
+  if (replaceAll) for (const f of readdirSync(images).filter((x) => x.endsWith(".png"))) rmSync(join(images, f));
+  for (const f of readdirSync(staging).filter((x) => x.endsWith(".png"))) copyFileSync(join(staging, f), join(images, f));
 }
 
 async function main() {
@@ -287,22 +297,23 @@ async function main() {
 
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
-  if (!args.length && !only.length) rmSync(images, { recursive: true, force: true });
-  mkdirSync(images, { recursive: true });
+  const staging = join(out, "images");
+  mkdirSync(staging, { recursive: true });
   const started = Date.now();
   const { outcomes, failures } = await runPool({
     visits,
     workers: urls.length,
-    prepare: async (worker) => ({ browser: await chromium.launch(launchOptions()), base: urls[worker], cookie, now, images, out }),
+    prepare: async (worker) => ({ browser: await chromium.launch(launchOptions()), base: urls[worker], cookie, now, images: staging, out }),
     work: (v, env) => runVisit(env, v),
     release: (env) => env.browser.close(),
   });
   const { problems, notes, results } = summarize({ outcomes, failures, urls });
   const seconds = Math.round((Date.now() - started) / 1000);
 
+  if (!problems.length) commitImages(staging, images, !args.length && !only.length);
   writeFileSync(join(out, "report.json"), JSON.stringify({ base: urls[0], instances: urls, seconds, results, problems, notes }, null, 2));
   const shots = results.reduce((n, r) => n + r.screenshots.length, 0);
-  console.log(`verify: ${results.length} visits, ${shots} screenshots in ${images}, ${seconds} s on ${urls.length} server${urls.length === 1 ? "" : "s"}`);
+  console.log(`verify: ${results.length} visits, ${shots} screenshots ${problems.length ? `in ${staging} (${images} is untouched)` : `in ${images}`}, ${seconds} s on ${urls.length} server${urls.length === 1 ? "" : "s"}`);
   for (const n of notes) console.log(`  note: ${n}`);
   for (const p of problems) console.error(`  FAIL: ${p}`);
   console.log(problems.length ? `verify: FAILED (${problems.length} problem${problems.length === 1 ? "" : "s"})` : "verify: OK, no console errors, 5xx responses or accessibility problems");
