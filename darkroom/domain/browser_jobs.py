@@ -190,9 +190,8 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     job.status = "waiting_for_user"
     job.message = reason
     account = account_of(opened, job.account_id)
-    if reason in WAITING_REASONS:
-        account.session_state = "needs_sign_in"
-        account.session_checked = now
+    account.session_state = "needs_sign_in"
+    account.session_checked = now
     kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
     alerts.close_other_kinds(opened, sign_in_key(job.account_id), kind, now)
     alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now)
