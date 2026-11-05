@@ -295,10 +295,6 @@ class FrozenDemoServerTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(self.seed))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RunTests(unittest.TestCase):
     def test_jobs_come_from_the_flag_then_the_environment_then_the_cpu_count_capped_at_four(self):
         self.assertEqual(verify.resolve_jobs(None, {}, cpus=8), 4)
@@ -358,3 +354,7 @@ def contextlib_redirect():
             return manager.__exit__(*args)
 
     return Both()
+
+
+if __name__ == "__main__":
+    unittest.main()
