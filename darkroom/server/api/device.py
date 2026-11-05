@@ -4,10 +4,10 @@ from typing import Annotated
 from urllib.parse import unquote
 
 from darkroom import monitoring, validate
-from darkroom.domain import devices, uploads
+from darkroom.domain import devices, push_tokens, uploads
 from darkroom.server import contract
 from darkroom.server.common import Principal, Request, Response, engine_of, error_response, header, json_response, now
-from darkroom.storage import db, paths
+from darkroom.storage import db, paths, secretbox
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
@@ -140,4 +140,32 @@ def checkin(request: Annotated[Request, contract.DeviceCheckinBody]) -> Annotate
         return error_response(str(error), 400)
     with db.session(engine_of(request)) as opened:
         devices.check_in(opened, who.device_id, pending, version, now())
+    return json_response({"ok": True})
+
+
+def register_push_token(request: Annotated[Request, contract.DevicePushTokenBody]) -> Annotated[Response, contract.Ok]:
+    who = device_of(request)
+    if who is None or who.device_id is None:
+        return error_response(SIGN_IN, 401)
+    try:
+        body = validate.json_object(request.body, limit=4 * 1024)
+        token = push_tokens.normalized(validate.text(body, "token", limit=push_tokens.MAX_RAW))
+    except (validate.Invalid, push_tokens.BadToken) as error:
+        return error_response(str(error), 400)
+    try:
+        with db.session(engine_of(request)) as opened:
+            changed = push_tokens.register(opened, request.settings.secret_key, who.device_id, token, now())
+    except secretbox.Unreadable:
+        return error_response("push alerts need DARKROOM_SECRET_KEY to be set on the server", 503)
+    monitoring.log("push token registered", changed=changed)
+    return json_response({"ok": True})
+
+
+def forget_push_token(request: Request) -> Annotated[Response, contract.Ok]:
+    who = device_of(request)
+    if who is None or who.device_id is None:
+        return error_response(SIGN_IN, 401)
+    with db.session(engine_of(request)) as opened:
+        changed = push_tokens.forget(opened, devices.get(opened, who.device_id), now())
+    monitoring.log("push token cleared", changed=changed)
     return json_response({"ok": True})

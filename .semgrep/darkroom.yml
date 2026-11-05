@@ -208,6 +208,21 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/config.py", "/darkroom/providers/apns.py"]
 
+  - id: darkroom-push-token-one-module
+    message: >-
+      A device's APNs push token is stored sealed with secretbox, and only darkroom/domain/push_tokens.py seals,
+      unseals, matches or clears it (so a revoked device never keeps one, and the plain token never reaches a reply, a
+      log or another column). Go through push_tokens.register, forget or token_of instead of touching
+      Device.push_token_sealed or push_token_digest here.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $X.push_token_sealed
+      - pattern: $X.push_token_digest
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/push_tokens.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+
   - id: darkroom-eligibility-single-path
     message: >-
       Whether a photo may be deleted from an iPhone is decided only in darkroom/domain/eligibility.py, from scratch at

@@ -624,6 +624,26 @@
       ]
     },
     {
+      "route": "PUT /api/device/push-token",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.register_push_token",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_push_tokens.py"
+      ]
+    },
+    {
+      "route": "DELETE /api/device/push-token",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.forget_push_token",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_push_tokens.py"
+      ]
+    },
+    {
       "route": "POST /api/device/eligible",
       "auth": "device",
       "handler": "darkroom.server.api.cleanup.eligible",

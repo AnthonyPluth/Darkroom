@@ -228,6 +228,33 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT phash FROM media_items").scalars().all(), ["f0f0f0f0f0f0f0f0"])
 
+    def test_0011_device_push_tokens_leaves_old_devices_without_a_token_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0010")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 1)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (2, 1, 'Old', 'h2', 1.0, 0)")
+            connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT push_token_sealed, push_token_digest, push_token_at, cleanup_enabled FROM devices WHERE id = 1").one(),
+                             (None, None, None, 1))
+            connection.exec_driver_sql("UPDATE devices SET push_token_sealed = 'enc:v1:x', push_token_digest = 'd', push_token_at = 2.5 WHERE id = 1")
+            with self.assertRaises(IntegrityError):
+                connection.exec_driver_sql("UPDATE devices SET push_token_digest = 'd' WHERE id = 2")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0010")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("devices")}
+        self.assertFalse({"push_token_sealed", "push_token_digest", "push_token_at"} & columns)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT name, cleanup_enabled FROM devices ORDER BY id").all(), [("iPhone", 1), ("Old", 0)])
+            self.assertEqual(connection.exec_driver_sql("SELECT photokit_id FROM phone_assets").scalars().all(), ["A"])
+
 
 if __name__ == "__main__":
     unittest.main()

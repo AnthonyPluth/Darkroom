@@ -559,3 +559,7 @@ class DevicePatchBody(TypedDict):
 class DeviceCheckinBody(TypedDict):
     pending_uploads: int
     app_version: NotRequired[str | None]
+
+
+class DevicePushTokenBody(TypedDict):
+    token: str
