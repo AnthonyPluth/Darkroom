@@ -1,0 +1,11 @@
+{
+  "name": "exports",
+  "page": "exports",
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "Exports" } },
+    { "expect_text": { "selector": "main", "text": "Earlier exports" } },
+    { "expect_text": { "selector": "main", "text": "Imported" } },
+    { "expect_text": { "selector": "main", "text": "Check exports now" } },
+    { "screenshot": "overview" }
+  ]
+}
