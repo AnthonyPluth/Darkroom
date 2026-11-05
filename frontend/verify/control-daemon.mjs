@@ -1,7 +1,7 @@
 import { chromium } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_PAGES, VIEWPORTS, al
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUFFER = 500;
 const START_ROUTE = "";
+const IMPORT_FILE = "demo-import.json";
 const EVAL_SETTLE_MS = 500;
 
 const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
@@ -21,7 +22,7 @@ const firstLine = (e) => String(e?.message ?? e).split("\n")[0];
 
 function options(argv) {
   const get = (name) => { const i = argv.indexOf(`--${name}`); return i < 0 ? undefined : argv[i + 1]; };
-  return { dir: get("dir"), python: get("python"), now: get("now"), viewport: get("viewport") ?? "phone", idleMinutes: Number(get("idle-minutes") ?? 30) };
+  return { dir: get("dir"), python: get("python"), now: get("now"), viewport: get("viewport") ?? "phone", idleMinutes: Number(get("idle-minutes") ?? 30), withImport: argv.includes("--with-import") };
 }
 
 function runToEnd(program, args, env) {
@@ -155,7 +156,7 @@ async function main() {
   try {
     mkdirSync(sessionDir, { recursive: true });
     log("seeding the demo data under the frozen clock");
-    await runToEnd(opt.python, [VERIFY_PY, "seed", "--data", seedDir], process.env);
+    await runToEnd(opt.python, [VERIFY_PY, "seed", "--data", seedDir, ...(opt.withImport ? ["--with-import"] : [])], process.env);
     cookie = sessionCookie(join(seedDir, "data", SESSION_FILE));
     ({ server, base } = await launchServer());
     log(`demo server at ${base}`);
@@ -329,6 +330,12 @@ async function main() {
     async console() {
       const messages = consoleBuffer.splice(0);
       return { messages, errors: messages.filter((m) => m.type === "error" || m.type === "pageerror").length };
+    },
+    async "fake-immich"() {
+      const file = join(seedDir, "data", IMPORT_FILE);
+      if (!existsSync(file)) throw new ControlError("no_import", "this session was started without an import, so the fake Immich recorded nothing", `\`${PROG} stop\`, then \`${PROG} start --with-import\``);
+      const { scans, files, parts, person } = JSON.parse(readFileSync(file, "utf8"));
+      return { importedFor: person, files, parts, count: scans.length, scans };
     },
     async network() {
       const list = requests.splice(0);
