@@ -198,7 +198,8 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     account.session_checked = now
     kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
     alerts.close_other_kinds(opened, sign_in_key(job.account_id), kind, now)
-    alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now)
+    alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now,
+                      about=alerts.account(job.account_id))
     events.record(opened, now, "browser_job_waiting", str(job.id), reason)
     return job
 
@@ -256,7 +257,8 @@ def fail(opened: Session, settings: Settings, job: BrowserJob, message: str, fil
     job.failure_dir = failure_folder(job.account_id, job.id) if present else None
     link = capture_link(settings, job, present)
     account = account_of(opened, job.account_id)
-    alerts.open_alert(opened, settings, f"browser:failed:{job.id}", "failure", str(job.id), alerts.failure(f"Browser job {job.id} ({job.kind}) for {account.email}"), link, now)
+    alerts.open_alert(opened, settings, f"browser:failed:{job.id}", "failure", str(job.id), alerts.failure(f"Browser job {job.id} ({job.kind}) for {account.email}"), link, now,
+                      about=alerts.account(job.account_id))
     events.record(opened, now, "browser_job_failed", str(job.id), message)
     return job
 

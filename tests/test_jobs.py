@@ -131,7 +131,8 @@ class BuildTests(unittest.TestCase):
         scheduler = jobs.build(settings, engine)
         self.assertEqual(scheduler.jobs["alerts.tick"].interval, 600.0)
         with db.session(engine) as opened:
-            alerts.open_alert(opened, settings, "k", "sign_in_needed", "x", alerts.sign_in_needed("x"), None, 0.0, notifier=lambda *a: "sent")
+            alerts.open_alert(opened, settings, "k", "sign_in_needed", "x", alerts.sign_in_needed("x"), None, 0.0, notifier=lambda *a: "sent",
+                              about=alerts.NOBODY)
         scheduler.run_one("alerts.tick", 24 * 3600.0)
         with db.session(engine) as opened:
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_disabled", "alert_sent"])
