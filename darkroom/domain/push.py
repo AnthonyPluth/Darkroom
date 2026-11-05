@@ -60,7 +60,7 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
     if alert is None or alert.push_due is None:
         return 0
     due_at = alert.push_due
-    if alert.closed is not None and alert.kind not in alerts.ONE_SHOT_KINDS:
+    if not wanted(alert):
         settle(opened, alert, due_at, "", now)
         return 0
     if pusher is None:
@@ -72,11 +72,15 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         return 0
     push = apns.Push(alert.kind, alert.id, alerts.TITLES.get(alert.kind, FALLBACK_TITLE))
     opened.commit()
-    opened.expire_all()
-    held = [target for target in targets if push_tokens.still_held(opened, settings, target, now)]
+    held = cleared(opened, settings, alert_id, targets, now)
+    fresh = opened.get(Alert, alert_id)
+    if fresh is None:
+        skipped(opened, targets, now)
+        opened.commit()
+        return 0
     if not held:
         skipped(opened, targets, now)
-        settle(opened, alert, due_at, "alert_no_device", now)
+        settle(opened, fresh, due_at, "alert_no_device" if wanted(fresh) else "", now)
         return 0
     results = pusher.send([target.token for target in held], push)
     skipped(opened, [target for target in targets if target not in held], now)
@@ -92,6 +96,19 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         return 0
     settle(opened, alert, due_at, "alert_sent" if sent else "alert_failed" if failed else "alert_no_device", now)
     return sent
+
+
+def wanted(alert: Alert) -> bool:
+    return alert.push_due is not None and (alert.closed is None or alert.kind in alerts.ONE_SHOT_KINDS)
+
+
+def cleared(opened: Session, settings: Settings, alert_id: int, targets: list[push_tokens.Target], now: float) -> list[push_tokens.Target]:
+    opened.expire_all()
+    alert = opened.get(Alert, alert_id)
+    if alert is None or not wanted(alert):
+        return []
+    people = recipients(opened, alert)
+    return [target for target in targets if push_tokens.still_held(opened, settings, target, people, now)]
 
 
 def retry_left(alert: Alert, now: float) -> bool:

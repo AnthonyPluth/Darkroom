@@ -136,9 +136,9 @@ def targets(opened: Session, settings: Settings, person_ids: set[int], now: floa
     return found
 
 
-def still_held(opened: Session, settings: Settings, target: Target, now: float) -> bool:
+def still_held(opened: Session, settings: Settings, target: Target, person_ids: set[int], now: float) -> bool:
     device = opened.get(Device, target.device_id, populate_existing=True)
-    if device is None or device.revoked_at is not None or device.push_token_digest != target.digest:
+    if device is None or device.revoked_at is not None or device.push_token_digest != target.digest or device.person_id not in person_ids:
         return False
     return not access_lapsed(opened, settings, device, now)
 

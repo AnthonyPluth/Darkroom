@@ -72,6 +72,17 @@ class PushWorld(DeviceCase):
             return [(e.type, e.subject) for e in opened.execute(select(Event).order_by(Event.id)).scalars()
                     if e.type.startswith(prefix) and e.type not in ("push_token_registered",)]
 
+    def account(self):
+        with db.session(self.engine) as opened:
+            account = GoogleAccount(email="a@example.test", default_person_id=self.person_id, created=1.0)
+            opened.add(account)
+            opened.flush()
+            pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=self.sam_id))
+            return account.id
+
     def token(self, device_id):
         with db.session(self.engine) as opened:
             device = opened.get(Device, device_id)
@@ -181,16 +192,6 @@ class InvalidTokenTests(PushWorld):
         self.deliver(ReplacingPusher())
         self.assertEqual(self.token(self.device_id), MAX_TOKEN)
 
-    def account(self):
-        with db.session(self.engine) as opened:
-            account = GoogleAccount(email="a@example.test", default_person_id=self.person_id, created=1.0)
-            opened.add(account)
-            opened.flush()
-            pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
-            opened.add(pixel)
-            opened.flush()
-            opened.add(PixelPerson(pixel_id=pixel.id, person_id=self.sam_id))
-            return account.id
 
 
 class RetryTests(PushWorld):
@@ -250,16 +251,7 @@ class LateRevocationTests(PushWorld):
         self.assertEqual([t for t, _ in self.events()][-2:], ["push_skipped", "alert_no_device"])
 
     def test_an_owner_whose_access_lapsed_after_the_token_was_read_is_skipped_and_the_others_still_get_it(self):
-        with db.session(self.engine) as opened:
-            account = GoogleAccount(email="a@example.test", default_person_id=self.person_id, created=1.0)
-            opened.add(account)
-            opened.flush()
-            pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
-            opened.add(pixel)
-            opened.flush()
-            opened.add(PixelPerson(pixel_id=pixel.id, person_id=self.sam_id))
-            account_id = account.id
-        self.open(alerts.account(account_id))
+        self.open(alerts.account(self.account()))
         pusher = FakePusher()
 
         def lapse(other):
@@ -270,6 +262,45 @@ class LateRevocationTests(PushWorld):
         self.assertEqual(pusher.sent[0][0], [SAM_TOKEN])
         self.assertIn(("push_skipped", "jo"), self.events())
         self.assertIn(("alert_sent", "a@example.test"), self.events())
+
+    def sent_after(self, change, about=None):
+        account_id = self.account()
+        self.open(about or alerts.account(account_id))
+        pusher = FakePusher()
+        with self.targets_then(lambda other: change(other, account_id)):
+            self.deliver(pusher)
+        return [token for tokens, _ in pusher.sent for token in tokens]
+
+    def test_a_person_the_account_stopped_serving_as_its_default_is_skipped(self):
+        def move_default(other, account_id):
+            other.get(GoogleAccount, account_id).default_person_id = self.sam_id
+
+        self.assertEqual(self.sent_after(move_default), [SAM_TOKEN])
+        self.assertIn(("push_skipped", "jo"), self.events())
+
+    def test_a_person_taken_off_the_accounts_pixel_is_skipped(self):
+        def unserve(other, account_id):
+            other.query(PixelPerson).filter_by(person_id=self.sam_id).delete()
+
+        self.assertEqual(self.sent_after(unserve), [JO_TOKEN])
+        self.assertIn(("push_skipped", "sam"), self.events())
+
+    def test_nobody_is_pushed_once_the_account_is_deleted(self):
+        def delete(other, account_id):
+            other.query(Pixel).filter_by(google_account_id=account_id).delete()
+            other.query(GoogleAccount).filter_by(id=account_id).delete()
+
+        self.assertEqual(self.sent_after(delete), [])
+        self.assertEqual([t for t, _ in self.events()][-3:], ["push_skipped", "push_skipped", "alert_no_device"])
+
+    def test_a_device_whose_token_was_replaced_is_not_sent_the_old_one(self):
+        self.assertEqual(self.sent_after(lambda other, _: push_tokens.register(other, self.settings, self.device_id, MAX_TOKEN, self.now),
+                                         about=alerts.person(self.person_id)), [])
+        self.assertIn(("push_skipped", "jo"), self.events())
+
+    def test_an_alert_closed_after_its_targets_were_read_is_not_pushed_or_counted_as_undelivered(self):
+        self.assertEqual(self.sent_after(lambda other, _: alerts.close(other, "k", self.now), about=alerts.person(self.person_id)), [])
+        self.assertNotIn("alert_no_device", [t for t, _ in self.events()])
 
 
 class BrokenPusherTests(PushWorld):
