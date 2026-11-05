@@ -1,4 +1,4 @@
-import type { AccountState, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
+import type { AccountState, AccountView, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -70,7 +70,11 @@ export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number)
 
 export function maybeRenewed(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
   const latest = latestJob(jobs, accountId, "renew");
-  return latest !== undefined && latest.status === "failed" && (latest.message.startsWith("ScheduleNotConfirmed") || latest.message === "the worker stopped reporting") ? latest : undefined;
+  return latest !== undefined && latest.needs_check ? latest : undefined;
+}
+
+export function scheduleLive(account: AccountView, now: number): boolean {
+  return account.schedule_created !== null && (account.schedule_end === null || account.schedule_end > now);
 }
 
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
@@ -79,7 +83,10 @@ export function jobSentence(job: BrowserJobView | undefined, doing: string): str
     case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
     case "waiting_for_user": return job.message === "wrong_account" ? `${doing}: waiting for you to switch to the right Google account.` : `${doing}: waiting for you to sign in.`;
-    case "failed": return `${doing}: failed${failureReason(job)}.`;
+    case "failed":
+      if (job.checked === "found") return `${doing}: not confirmed by Takeout, then you found it there.`;
+      if (job.checked === "missing") return `${doing}: not confirmed by Takeout, and you found none there.`;
+      return `${doing}: failed${failureReason(job)}.`;
     default: return `${doing}: done.`;
   }
 }

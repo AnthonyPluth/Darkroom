@@ -5,7 +5,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -51,7 +51,7 @@
   }
 
   const connect = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
-  const checked = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST" }));
+  const checked = (id: number, found: boolean) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST", body: { found } }));
   const schedule = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule">(`/api/accounts/${id}/schedule`, { method: "POST" }));
 </script>
 
@@ -146,13 +146,20 @@
         {/each}
         {#if maybeRenewal}
           <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
-            <p>Darkroom could not confirm the renewal. Takeout may already have the new schedule: open Takeout's export list and look. Darkroom will not retry, so it will not create a second one.</p>
+            <p>Darkroom could not confirm the renewal. Takeout may already have the new schedule: open Takeout's export list, look, and say what you found. Darkroom will not retry, so it will not create a second one.</p>
+            <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, true)}>Takeout has the new schedule</button>
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, false)}>Takeout has no new schedule</button>
+            </div>
           </div>
         {/if}
         {#if maybe}
           <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
             <p>Takeout may already have this schedule. Open Takeout's export list and look before creating another.</p>
-            <button type="button" class="btn self-start" disabled={busy > 0} onclick={() => checked(account.id)}>I checked Takeout, there is no schedule</button>
+            <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, true)}>Takeout has the schedule</button>
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, false)}>I checked Takeout, there is no schedule</button>
+            </div>
           </div>
         {/if}
         <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
@@ -160,9 +167,9 @@
             <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>
-          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || account.schedule_created !== null || maybe !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
+          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || renewing !== undefined || scheduleLive(account, data.now) || maybe !== undefined || maybeRenewal !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
         </div>
-        {#if account.schedule_created !== null}
+        {#if scheduleLive(account, data.now)}
           <p class="text-ink-muted">The schedule exports Google Photos every 2 months for 1 year.</p>
         {:else}
           <p class="text-ink-muted">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every 2 months for 1 year.</p>

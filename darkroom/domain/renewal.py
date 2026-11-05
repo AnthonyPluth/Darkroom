@@ -51,8 +51,10 @@ def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end
     if browser_jobs.left_uncertain(job):
         files = browser_jobs.captured_files(settings, job, browser_jobs.CAPTURE_FILES) if job.failure_dir is not None else []
         link = browser_jobs.capture_link(settings, job, files) or ending_link(settings)
+        alerts.close_other_kinds(opened, failed_key(account.id), RENEWAL_UNCONFIRMED, now)
         alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_UNCONFIRMED, account.email, alerts.schedule_renewal_unconfirmed(account.email, day), link, now, about=alerts.account(account.id))
         return
+    alerts.close_other_kinds(opened, failed_key(account.id), RENEWAL_FAILED, now)
     alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day), ending_link(settings), now, about=alerts.account(account.id))
 
 
@@ -94,12 +96,35 @@ def jobs_failed(opened: Session, settings: Settings, jobs: Sequence[BrowserJob],
         job_failed(opened, settings, job, now)
 
 
+def settle(opened: Session, account_id: int, now: float) -> None:
+    alerts.close(opened, ending_key(account_id), now)
+    alerts.close(opened, failed_key(account_id), now)
+
+
+def schedule_recorded(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
+    if job.kind == browser_jobs.RENEW_KIND:
+        renewed(opened, settings, job, now)
+    elif job.kind == "schedule":
+        settle(opened, job.account_id, now)
+
+
+def checked(opened: Session, settings: Settings, account_id: int, found: bool, now: float) -> BrowserJob:
+    job = browser_jobs.mark_schedule_checked(opened, account_id, now, found)
+    if found:
+        schedule_recorded(opened, settings, job, now)
+        return job
+    account = browser_jobs.account_of(opened, account_id)
+    if job.kind == browser_jobs.RENEW_KIND and account.schedule_end is not None:
+        open_failed(opened, settings, account, account.schedule_end, job, now)
+        events.record(opened, now, "schedule_renewal_failed", f"account {account.id}", f"not found in Takeout; the schedule still ends {on_date(account.schedule_end, settings.timezone)}")
+    return job
+
+
 def renewed(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
     account = browser_jobs.account_of(opened, job.account_id)
     end = account.schedule_end
     assert end is not None
-    alerts.close(opened, ending_key(account.id), now)
-    alerts.close(opened, failed_key(account.id), now)
+    settle(opened, account.id, now)
     wording = alerts.schedule_renewed(account.email, on_date(end, settings.timezone))
     alerts.open_alert(opened, settings, renewed_key(account.id, end), RENEWED, account.email, wording, None, now, about=alerts.account(account.id))
     events.record(opened, now, "schedule_renewed", f"account {account.id}", f"the schedule now runs until {on_date(end, settings.timezone)}")

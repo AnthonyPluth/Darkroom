@@ -129,9 +129,9 @@ def done(request: Annotated[Request, contract.DoneBody]) -> Annotated[Response, 
             downloads.finish(opened, request.settings, job_id, moment)
             monitoring.log("export downloaded")
         job = browser_jobs.done(opened, job_id, result, moment)
-        if job.kind == browser_jobs.RENEW_KIND:
-            renewal.renewed(opened, request.settings, job, moment)
-            monitoring.log("export schedule renewed")
+        if job.kind in browser_jobs.SCHEDULE_KINDS:
+            renewal.schedule_recorded(opened, request.settings, job, moment)
+            monitoring.log("export schedule recorded", kind=job.kind)
         if listing is not None:
             found = exports.reconcile(opened, browser_jobs.account_of(opened, job.account_id), listing, moment)
             monitoring.log("export listing reconciled", announced=found.announced, in_progress=found.in_progress, expired=found.expired, requeued=found.requeued)

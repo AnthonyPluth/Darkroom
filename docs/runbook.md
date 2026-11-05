@@ -67,11 +67,27 @@ python run.py import-takeout --person <slug> [--account <google email>] [--dir <
 
 It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Importing the same export twice is refused.
 
-### The schedule is ending, and a failed renewal
+### The schedule renewal
 
-About 3 weeks before the schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
+About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal (#40); renewing on request is a later addition. The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
 
-A failed renewal is not retried (the owner's decision, #40). The "Takeout schedule ending" alert closes and "Takeout schedule not renewed" replaces it: it says the renewal did not happen and the date the schedule ends, and repeats at 24 hours and 4 days. The failure alert links the capture, and the Exports page shows "Renew schedule: failed" with the same capture links. Fix the cause as above, then create the schedule by hand in Takeout (Google Photos only, `.zip`, 50 GB parts, every 2 months for 1 year) before it ends. Darkroom has no action yet to renew on request or to record a hand-made schedule, so its end date and the "not renewed" alert stay as they are; decide whether to add a "renew now" action if this happens. If the worker could not confirm the renewal (Takeout did not confirm it, or the worker was lost), the alert is "Takeout schedule renewal not confirmed" instead: open Takeout's export list, and create a schedule by hand only if there is no new one; Darkroom does not retry, so it will not create a second. While a renew job is open (queued, running or waiting for a sign-in), the Google account's email cannot be changed.
+#### "Takeout schedule renewal not confirmed"
+
+The worker clicked Create export but Takeout did not confirm it, or the worker stopped reporting. Takeout may have the new schedule.
+
+1. Open Takeout's export list for the account the alert names (in the remote browser, or signed in as that account anywhere) and look for a new scheduled export (every 2 months, created around the time of the renew job).
+2. On the Exports page, press "Takeout has the new schedule" if it is there. Darkroom records it, ending a year after the renew job started, closes the alert and confirms the renewal; the next renewal is queued 3 weeks before that date.
+3. Press "Takeout has no new schedule" if it is not. The alert becomes "Takeout schedule not renewed" (below). Don't create one by hand in Takeout: Darkroom would not know about it, and next year's renewal would not happen.
+
+#### "Takeout schedule not renewed"
+
+The renewal did not happen and the current schedule still ends on the date the alert gives; its scheduled exports keep coming until then.
+
+1. Fix what made the job fail: the failure alert and the Exports page link the capture (see "Google changed a page" when that is the cause).
+2. Once the schedule has ended, press Create schedule on the Exports page. It is enabled only then, and only with no schedule or renew job open. When that job is done, the "not renewed" alert closes and next year's renewal follows as usual.
+3. Exports between the end and the new schedule are not made. If that gap matters, a "renew now" action is the later addition to ask for.
+
+While a renew job is open (queued, running or waiting for a sign-in), the Google account's email cannot be changed.
 
 ### Reading an import summary
 
