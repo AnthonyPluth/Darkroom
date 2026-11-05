@@ -13,6 +13,7 @@ export async function refreshPending(): Promise<void> {
   try {
     pending.count = (await apiCall<"GET /api/review">(`/api/review?status=pending&after=${PAST_THE_LAST_PAIR}`)).pending;
   } catch {
+    pending.count = 0;
     ignoreFailure();
   }
 }

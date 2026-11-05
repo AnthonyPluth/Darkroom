@@ -94,6 +94,16 @@ describe("signed in", () => {
     expect(within(rail).getByRole("link", { name: "Review" })).toHaveTextContent(/^Review$/);
   });
 
+  it("hides the count again when a later refresh fails", async () => {
+    let answer: unknown = { reviews: [], pending: 4, before: 4 };
+    start({ ...quiet, "GET /api/review?status=pending&after=2147483647": () => answer });
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    expect(await within(rail).findByLabelText("4 waiting")).toBeInTheDocument();
+    answer = reply(500, { error: "down" });
+    await userEvent.click(within(rail).getByRole("link", { name: "People" }));
+    await waitFor(() => expect(screen.queryByLabelText(/waiting/)).not.toBeInTheDocument());
+  });
+
   it("shows no count and no error when the count cannot be fetched", async () => {
     start(quiet);
     const rail = await screen.findByRole("navigation", { name: "Main" });

@@ -11,7 +11,7 @@ from darkroom.server import auth, routes
 from darkroom.server.common import Principal
 from darkroom.server.api import review as review_api
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, MediaItem, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, MediaItem, Person, ReviewItem, User
 from tests.import_world import NOW, sha1_of
 from tests.privacy import no_leaks
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
@@ -662,6 +662,7 @@ class DecidedByTests(ReviewCase):
     def sign_in_as(self, slug):
         opened = self.opened
         opened.get(Person, self.world.ids[slug]).email = f"{slug}@example.com"
+        opened.merge(User(sub=slug, email=f"{slug}@example.com", email_verified=True))
         opened.commit()
         return mock.patch.object(auth, "LOCAL_OWNER", Principal("session", slug, f"{slug}@example.com", slug.title(), ()))
 
@@ -712,3 +713,24 @@ class DecidedByTests(ReviewCase):
         with mock.patch.object(review_api, "now", return_value=NOW + DAY), self.sign_in_as("sam"):
             self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
         self.assertEqual([row["decided_by_person_id"] for row in self.listed()], [self.world.ids["sam"]])
+
+    def test_two_people_with_one_email_or_an_unverified_email_give_nobody(self):
+        review_id = self.pending().id
+        opened = self.opened
+        opened.get(Person, self.world.ids["jo"]).email = "shared@example.com"
+        opened.get(Person, self.world.ids["sam"]).email = "shared@example.com"
+        opened.commit()
+        opened.add(User(sub="x", email="shared@example.com", email_verified=True))
+        opened.commit()
+        principal = Principal("session", "x", "shared@example.com", "Shared", ())
+        with mock.patch.object(auth, "LOCAL_OWNER", principal):
+            status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+            self.assertEqual((status, body["review"]["decided_by_person_id"]), (200, None))
+            self.call("POST", f"/api/review/{review_id}/undo")
+        opened = self.opened
+        opened.get(Person, self.world.ids["sam"]).email = None
+        opened.get(User, "x").email_verified = False
+        opened.commit()
+        with mock.patch.object(auth, "LOCAL_OWNER", principal):
+            body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[1]
+        self.assertIsNone(body["review"]["decided_by_person_id"])

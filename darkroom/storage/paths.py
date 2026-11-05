@@ -368,8 +368,9 @@ class SetAside:
                 aside.unlink()
 
     def restore(self) -> None:
-        for path, aside in reversed(self.staged):
-            os.rename(aside, path)
+        taken = [path for path, aside in reversed(self.staged) if not move_without_replacing(aside, path)]
+        if taken:
+            raise AlreadyExists(taken[0].name)
 
 
 def drop_new_sidecar(photos: Photos, relative: str) -> None:

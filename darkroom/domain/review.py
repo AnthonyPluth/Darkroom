@@ -10,12 +10,12 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, events, media, thumbs, xmp
+from darkroom.domain import accounts, dedupe, devices, events, media, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -328,10 +328,12 @@ def by_prefix(by: int | None) -> str:
     return "" if by is None else f"by person {by}: "
 
 
-def person_with_email(opened: Session, email: str | None) -> int | None:
-    if not email:
+def person_of_session(opened: Session, sub: str, email: str | None) -> int | None:
+    verified = opened.execute(select(User.email_verified).where(User.sub == sub)).scalar_one_or_none() or False
+    try:
+        return devices.person_for(opened, email, verified).id
+    except devices.NoPerson:
         return None
-    return opened.execute(select(Person.id).where(func.lower(Person.email) == email.lower()).order_by(Person.id).limit(1)).scalar_one_or_none()
 
 
 def actor_of(detail: str | None) -> int | None:

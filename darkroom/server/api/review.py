@@ -30,8 +30,8 @@ def photos_of(request: Request) -> Photos:
     return Photos(request.settings.photos_root)
 
 
-def email_of(request: Request) -> str | None:
-    return None if request.user is None else request.user.email
+def who(request: Request) -> tuple[str, str | None]:
+    return ("", None) if request.user is None else (request.user.sub, request.user.email)
 
 
 def whole(request: Request, name: str, maximum: int = 2**31 - 1) -> int | None:
@@ -113,7 +113,7 @@ def resolve(request: Annotated[Request, contract.ResolveBody]) -> Annotated[Resp
         at = now()
         with db.session(engine_of(request)) as opened:
             with review.saving(opened) as effects:
-                changed = review.resolve(opened, photos_of(request), wanted, action, at, effects, by=review.person_with_email(opened, email_of(request)))
+                changed = review.resolve(opened, photos_of(request), wanted, action, at, effects, by=review.person_of_session(opened, *who(request)))
                 hit = review.found(opened, wanted)
                 reply = review.summary(opened, hit.review, hit.decision)
             rescan(opened, request.settings, changed, at)
@@ -134,7 +134,7 @@ def undo(request: Request) -> Annotated[Response, contract.ReviewReply]:
         at = now()
         with db.session(engine_of(request)) as opened:
             with review.saving(opened) as effects:
-                changed = review.undo(opened, photos_of(request), wanted, at, effects, by=review.person_with_email(opened, email_of(request)))
+                changed = review.undo(opened, photos_of(request), wanted, at, effects, by=review.person_of_session(opened, *who(request)))
                 hit = review.found(opened, wanted)
                 reply = review.summary(opened, hit.review, hit.decision)
             rescan(opened, request.settings, changed, at)
@@ -181,7 +181,7 @@ def reassign(request: Annotated[Request, contract.ReassignBody]) -> Annotated[Re
         at = now()
         with db.session(engine_of(request)) as opened:
             with review.saving(opened) as effects:
-                item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at, effects, by=review.person_with_email(opened, email_of(request)))
+                item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at, effects, by=review.person_of_session(opened, *who(request)))
                 reply = review.media_view(item)
             rescan(opened, request.settings, changed, at)
     except validate.Invalid as error:

@@ -200,6 +200,30 @@ class DropLibraryCopyTests(unittest.TestCase):
         self.assertFalse(self.copy.with_name("a.jpg.xmp").exists())
         self.assertEqual(self.kept.read_bytes(), b"same bytes")
 
+    def test_putting_back_never_replaces_a_file_made_meanwhile(self):
+        aside = paths.set_library_copy_aside(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        newer = self.write("jo/google-only/2020/01/a.jpg", b"made while it was set aside")
+        newer_sidecar = self.write("jo/google-only/2020/01/a.jpg.xmp", b"<new/>")
+        staged = sorted(path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING))
+        with self.assertRaises(FileExistsError):
+            aside.restore()
+        self.assertEqual((newer.read_bytes(), newer_sidecar.read_bytes()), (b"made while it was set aside", b"<new/>"))
+        self.assertEqual(sorted(path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)), staged)
+        self.assertEqual(len(staged), 2)
+
+    def test_putting_back_restores_one_file_when_the_other_place_is_taken(self):
+        aside = paths.set_library_copy_aside(self.photos, "jo/google-only/2020/01/a.jpg", self.kept)
+        newer_sidecar = self.write("jo/google-only/2020/01/a.jpg.xmp", b"<new/>")
+        with self.assertRaises(FileExistsError):
+            aside.restore()
+        self.assertEqual(self.copy.read_bytes(), b"same bytes")
+        self.assertEqual(newer_sidecar.read_bytes(), b"<new/>")
+
+    def test_putting_back_a_set_aside_sidecar_works_when_nothing_is_in_the_way(self):
+        paths.set_sidecar_aside(self.photos, "jo/google-only/2020/01/a.jpg").restore()
+        self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertEqual([path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)], [])
+
     def test_nothing_outside_a_google_only_folder_is_removed(self):
         original = self.write("jo/originals/a.jpg", b"same bytes")
         held = self.write("_inbox/jo/review/export-1/a.jpg", b"same bytes")
