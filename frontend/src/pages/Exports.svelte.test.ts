@@ -356,6 +356,9 @@ describe("the Exports page", () => {
     const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
     expect(within(jo).getByText(/could not confirm the renewal/)).toBeInTheDocument();
     expect(within(jo).getByRole("button", { name: "Create schedule" })).toBeDisabled();
+    expect(within(jo).getByText("Renew schedule: not confirmed by Takeout; say below what you found.")).toBeInTheDocument();
+    expect(within(jo).queryByText(/failed|trying again/)).not.toBeInTheDocument();
+    expect(within(jo).getByText(/Capture of the unconfirmed Renew schedule/)).toBeInTheDocument();
     const family = screen.getByRole("region", { name: "family.photos@example.com" });
     expect(within(family).queryByText(/could not confirm the renewal/)).not.toBeInTheDocument();
     expect(within(family).queryByRole("button", { name: "Takeout has the new schedule" })).not.toBeInTheDocument();
