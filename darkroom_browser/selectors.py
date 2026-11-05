@@ -16,6 +16,7 @@ EXPORT_TIME_ATTRIBUTE = "data-time"
 EXPORT_CREATED_TIME = "created"
 EXPORT_EXPIRES_TIME = "expires"
 DOWNLOAD_HOST = "takeout.google.com"
+PART_LINK_TEMPLATE = 'a[href="{href}"]'
 
 TYPEABLE: frozenset[str] = frozenset()
 

@@ -284,3 +284,42 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/eligibility.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+
+  - id: darkroom-no-sweep-outside-guarded-helpers
+    message: >-
+      Removing what a folder listing finds deletes whatever that folder is linked to, such as the held copies under
+      _inbox/<person>/review/. Only darkroom/storage/paths.py and darkroom_browser/jobs/download.py's sweep_downloads,
+      which first refuses a link anywhere on the way (downloads_folder), remove the entries of a listed folder. Go
+      through them instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              for $X in $D.iterdir():
+                  ...
+          - pattern-inside: |
+              for $X in $D.glob(...):
+                  ...
+          - pattern-inside: |
+              for $X in $D.rglob(...):
+                  ...
+          - pattern-inside: |
+              for $X in os.listdir(...):
+                  ...
+          - pattern-inside: |
+              for $X in os.scandir(...):
+                  ...
+      - pattern-either:
+          - pattern: $X.unlink(...)
+          - pattern: $X.rmdir(...)
+          - pattern: os.unlink(...)
+          - pattern: os.remove(...)
+          - pattern: os.rmdir(...)
+          - pattern: shutil.rmtree(...)
+      - pattern-not-inside: |
+          def sweep_downloads(...):
+              ...
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
