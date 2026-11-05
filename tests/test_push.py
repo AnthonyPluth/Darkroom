@@ -157,6 +157,17 @@ class DeliveryTests(PushWorld):
 
 
 class InvalidTokenTests(PushWorld):
+    def pinned(self):
+        real = push_tokens.still_held
+        kept = []
+
+        def pinning(opened, settings, target, person_ids, now):
+            held = real(opened, settings, target, person_ids, now)
+            kept.append(opened.get(Device, target.device_id))
+            return held
+
+        return mock.patch.object(push_tokens, "still_held", pinning)
+
     def test_a_token_apns_reports_invalid_is_forgotten_and_the_other_device_still_gets_the_push(self):
         self.open(alerts.account(self.account()))
         pusher = FakePusher({JO_TOKEN: apns.Result("invalid_token", "Unregistered", self.now + 10)})
@@ -189,8 +200,27 @@ class InvalidTokenTests(PushWorld):
                 world.register(world.device_id, MAX_TOKEN, at=world.now + 1)
                 return [apns.Result("invalid_token", "BadDeviceToken") for _ in tokens]
 
-        self.deliver(ReplacingPusher())
+        with self.pinned():
+            self.deliver(ReplacingPusher())
         self.assertEqual(self.token(self.device_id), MAX_TOKEN)
+        kinds = [t for t, _ in self.events()]
+        self.assertEqual(kinds[-2:], ["push_token_invalid", "alert_no_device"])
+        self.assertNotIn("alert_failed", kinds)
+        self.assertEqual(self.events(("push_token_cleared",)), [])
+
+    def test_a_token_registered_again_while_the_push_was_out_is_kept(self):
+        self.open(alerts.person(self.person_id))
+        world = self
+
+        class ReregisteringPusher(FakePusher):
+            def send(self, tokens, push_):
+                world.register(world.device_id, JO_TOKEN, at=world.now + 20)
+                return [apns.Result("invalid_token", "Unregistered", world.now + 10) for _ in tokens]
+
+        with self.pinned():
+            self.deliver(ReregisteringPusher())
+        self.assertEqual(self.token(self.device_id), JO_TOKEN)
+        self.assertNotIn("alert_failed", [t for t, _ in self.events()])
 
 
 

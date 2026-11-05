@@ -83,6 +83,7 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         settle(opened, fresh, due_at, "alert_no_device" if wanted(fresh) else "", now)
         return 0
     results = pusher.send([target.token for target in held], push)
+    opened.rollback()
     skipped(opened, [target for target in targets if target not in held], now)
     for target, result in zip(held, results, strict=True):
         record(opened, target, result, now)

@@ -144,7 +144,7 @@ def still_held(opened: Session, settings: Settings, target: Target, person_ids: 
 
 
 def forget_reported(opened: Session, target: Target, unregistered_at: float | None, now: float) -> bool:
-    device = opened.get(Device, target.device_id)
+    device = opened.get(Device, target.device_id, populate_existing=True)
     if device is None or device.push_token_digest != target.digest:
         return False
     if unregistered_at is not None and device.push_token_at is not None and device.push_token_at > unregistered_at:
