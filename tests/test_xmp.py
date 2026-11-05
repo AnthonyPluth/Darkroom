@@ -85,6 +85,44 @@ class GapsTests(unittest.TestCase):
         self.assertEqual(xmp.gaps({}, {}, xmp.GoogleMetadata(None, None, None, None), with_date=True), {})
 
 
+class ChangesTests(unittest.TestCase):
+    OLD = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description="Old words")
+    NEW = xmp.GoogleMetadata(lat=45.5, lon=12.4, taken_utc=None, description="New words")
+    WROTE = {"XMP-dc:Description": "Old words", "XMP-exif:GPSLatitude": 45.4, "XMP-exif:GPSLongitude": 12.3}
+
+    def test_a_value_still_the_one_darkroom_wrote_is_replaced(self):
+        self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, self.NEW), {
+            xmp.DESCRIPTION: "New words", xmp.LATITUDE: "45.5000000", xmp.LONGITUDE: "12.4000000"})
+
+    def test_a_value_the_owner_edited_is_left_alone(self):
+        edited = {"XMP-dc:Description": "Mine", "XMP-exif:GPSLatitude": 1.0, "XMP-exif:GPSLongitude": 2.0}
+        self.assertEqual(xmp.changes({}, edited, self.OLD, self.NEW), {})
+
+    def test_a_value_missing_in_google_is_never_removed(self):
+        gone = xmp.GoogleMetadata(lat=None, lon=None, taken_utc=None, description=None)
+        self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, gone), {})
+
+    def test_an_unchanged_value_writes_nothing(self):
+        self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, self.OLD), {})
+
+    def test_a_missing_sidecar_writes_nothing_over_a_value_darkroom_wrote(self):
+        self.assertEqual(xmp.changes({}, {}, self.OLD, self.NEW), {})
+
+    def test_a_value_the_file_itself_carries_is_left_alone(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "IFD0:ImageDescription": "mine"}
+        self.assertEqual(xmp.changes(own, self.WROTE, self.OLD, self.NEW), {})
+
+    def test_only_the_changed_field_is_written(self):
+        same_place = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description="New words")
+        self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, same_place), {xmp.DESCRIPTION: "New words"})
+        moved = xmp.GoogleMetadata(lat=45.5, lon=12.4, taken_utc=None, description="Old words")
+        self.assertEqual(set(xmp.changes({}, self.WROTE, self.OLD, moved)), {xmp.LATITUDE, xmp.LONGITUDE})
+
+    def test_a_date_is_never_changed(self):
+        dated = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=1.0, description="Old words")
+        self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, dated), {})
+
+
 class FillTests(Folder):
     def test_a_sidecar_carries_the_missing_fields_and_reads_back(self):
         photo = fixtures.make_jpeg(self.folder / "IMG_0001.JPG")

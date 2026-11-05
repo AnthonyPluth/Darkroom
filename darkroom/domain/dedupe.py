@@ -306,6 +306,17 @@ def decide_all(index: PersonIndex, items: Iterable[TakeoutCandidate], settings: 
     return [originals[item.source_path] if not item.is_edited else decide(with_originals, item, settings) for item in every]
 
 
+def repeated(opened: Session, decision: Decision, export_id: int) -> bool:
+    if not decision.confirms:
+        return False
+    earlier = select(DedupeDecision.id).where(
+        DedupeDecision.account_id == decision.account_id, DedupeDecision.matched_item_id == decision.matched_item_id,
+        DedupeDecision.export_id != export_id, DedupeDecision.decided_by == "auto", DedupeDecision.reversed_at.is_(None),
+        DedupeDecision.tier.in_(CONFIRMING_TIERS),
+    ).limit(1)
+    return opened.execute(earlier).first() is not None
+
+
 def stored_decision(opened: Session, export_id: int, source_path: str) -> DedupeDecision | None:
     return opened.execute(
         select(DedupeDecision).where(DedupeDecision.export_id == export_id, DedupeDecision.source_path == source_path)

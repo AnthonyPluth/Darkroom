@@ -164,7 +164,7 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
     if any(candidate.source_path not in known for candidate in candidates):
         index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
         for decision in dedupe.decide_all(index, candidates, dedupe.load_settings(opened)):
-            if decision.source_path in known:
+            if decision.source_path in known or dedupe.repeated(opened, decision, export.id):
                 continue
             try:
                 dedupe.apply(opened, decision, export, now)
@@ -174,6 +174,15 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
                 item_failed(opened, export, "dedupe", error, now)
                 opened.commit()
     mark(opened, export, run, "deduped")
+
+
+def repeated_items(opened: Session, export: Export, prepared: Prepared, known: dict[str, DedupeDecision]) -> set[str]:
+    candidates = [dedupe.candidate_of(item, prepared.fields[item.path], prepared.staging) for item in prepared.items if item.path in prepared.fields]
+    if all(candidate.source_path in known for candidate in candidates):
+        return set()
+    index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
+    decisions = dedupe.decide_all(index, candidates, dedupe.load_settings(opened))
+    return {decision.source_path for decision in decisions if decision.source_path not in known and dedupe.repeated(opened, decision, export.id)}
 
 
 def library_owner(opened: Session, row: DedupeDecision) -> int | None:
@@ -186,9 +195,12 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
     changed: set[int] = set(json.loads(run.changed_people or "[]"))
     failed = 0
     known = stored_decisions(opened, export)
+    repeats = repeated_items(opened, export, prepared, known)
     for item in prepared.items:
         fields = prepared.fields.get(item.path)
         row = known.get(prepared.source_of(item)) if fields is not None else None
+        if fields is not None and row is None and prepared.source_of(item) in repeats:
+            continue
         if fields is None or row is None:
             failed += 1
             continue
@@ -203,8 +215,10 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
             item_failed(opened, export, "place", error, now)
             opened.commit()
             continue
+        for item_id in done.refreshed:
+            events.record(opened, now, "metadata_refreshed", f"item {item_id}", "description or location changed in Google")
         owner = library_owner(opened, row)
-        if owner is not None and (done.placed or done.sidecars or (new_row and row.takeout_item_id is not None)):
+        if owner is not None and (done.placed or done.sidecars or done.refreshed or (new_row and row.takeout_item_id is not None)):
             changed.add(owner)
         run.changed_people = json.dumps(sorted(changed))
         opened.commit()
