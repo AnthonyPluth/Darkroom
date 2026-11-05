@@ -12,7 +12,10 @@ export async function replaceServer({ launch, open, rollback, commit }) {
     await rollback(fresh).catch(() => null);
     throw new ReplaceFailed("open", e);
   }
-  await commit(fresh);
+  try { await commit(fresh); } catch (e) {
+    await rollback(fresh).catch(() => null);
+    throw new ReplaceFailed("commit", e);
+  }
 }
 
 export async function setUpContext(browser, options, setUp) {
@@ -27,8 +30,8 @@ export async function setUpContext(browser, options, setUp) {
 
 export async function rollbackSwap({ prior, current, save }) {
   if (current.ctx !== prior.ctx) await current.ctx.close().catch(() => null);
-  save(prior);
-  await current.fresh.server.stop();
+  await Promise.resolve().then(() => save(prior)).catch(() => null);
+  await Promise.resolve().then(() => current.fresh.server.stop()).catch(() => null);
   return prior;
 }
 

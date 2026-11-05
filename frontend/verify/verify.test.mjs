@@ -5,7 +5,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, runStep, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
+import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, runStep, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, signedInNow, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
 
 describe("flowProblems", () => {
   const ok = { name: "open-people", page: "status", steps: [{ goto: "/people" }, { click: "text=People", timeout: 500 }] };
@@ -265,6 +265,69 @@ describe("a page's request to any other host", () => {
   });
 });
 
+describe("a flow that signs out", () => {
+  let browser, home, base;
+  const listen = (handler) => new Promise((resolve) => { const server = createServer(handler); server.listen(0, "127.0.0.1", () => resolve(server)); });
+
+  beforeAll(async () => {
+    home = await listen((req, res) => {
+      if (req.url === "/api/me") {
+        res.statusCode = (req.headers.cookie ?? "").includes("sid=tok") ? 200 : 401;
+        return res.end("{}");
+      }
+      res.setHeader("Content-Type", "text/html");
+      res.end(`<!doctype html><title>t</title><main><h1>Home</h1></main><script>fetch("/api/me");</script>`);
+    });
+    base = `http://127.0.0.1:${home.address().port}`;
+    browser = await chromium.launch(launchOptions());
+  });
+  afterAll(async () => {
+    await browser?.close();
+    home?.close();
+  });
+
+  const run = async (signedIn, work, allowConsole = []) => {
+    const out = mkdtempSync(join(tmpdir(), "darkroom-visit-"));
+    try {
+      return await visit({ browser, now: FROZEN_NOW, images: out, out, base, cookie: { name: "sid", value: "tok" } }, "signs out", "desktop", work, { audit: false, signedIn, allowConsole });
+    } finally { rmSync(out, { recursive: true, force: true }); }
+  };
+
+  it("expects the 401 of the signed-out reload without the flow listing it", async () => {
+    const result = await run(true, async (page) => {
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      await runStep(page, { sign_out: true }, null, null);
+      await runStep(page, { reload: true }, null, null);
+      await page.waitForTimeout(300);
+    });
+    expect(result.consoleErrors.some((c) => c.includes("401"))).toBe(true);
+    expect(result.problems).toEqual([]);
+  });
+
+  it("still fails a 401 on a visit that stays signed in", async () => {
+    const result = await run(true, async (page) => {
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      await page.context().clearCookies();
+      await page.evaluate(() => fetch("/api/me"));
+      await page.context().addCookies([{ name: "sid", value: "tok", url: base }]);
+    });
+    expect(result.problems.some((p) => p.includes("console error") && p.includes("401"))).toBe(true);
+  });
+});
+
+describe("signedInNow", () => {
+  it("is true while the browser holds a cookie and false once the cookies are cleared", async () => {
+    const browser = await chromium.launch(launchOptions());
+    try {
+      const ctx = await browser.newContext();
+      await ctx.addCookies([{ name: "sid", value: "tok", url: "http://127.0.0.1:1" }]);
+      expect(await signedInNow(ctx)).toBe(true);
+      await ctx.clearCookies();
+      expect(await signedInNow(ctx)).toBe(false);
+    } finally { await browser.close(); }
+  });
+});
+
 describe("the committed images", () => {
   const folder = mkdtempSync(join(tmpdir(), "darkroom-images-"));
   afterAll(() => rmSync(folder, { recursive: true, force: true }));
@@ -305,6 +368,45 @@ describe("the committed images", () => {
     expect(names(images)).toEqual(["status-phone.png"]);
     expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("baseline");
   }, 150000);
+});
+
+describe("a download that fails after it starts", () => {
+  let browser, home, base;
+
+  beforeAll(async () => {
+    home = await new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        if (req.url === "/file") {
+          res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": "attachment; filename=x.bin", "Content-Length": "1000000" });
+          res.write("partial");
+          setTimeout(() => res.destroy(), 200);
+          return;
+        }
+        res.setHeader("Content-Type", "text/html");
+        res.end(`<!doctype html><title>t</title><main><h1>Home</h1><a href="/file" download>get</a></main>`);
+      });
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+    base = `http://127.0.0.1:${home.address().port}`;
+    browser = await chromium.launch(launchOptions());
+  });
+  afterAll(async () => {
+    await browser?.close();
+    home?.close();
+  });
+
+  for (const viewport of ["desktop", "laptop"]) {
+    it(`fails the visit at ${viewport}, whether or not the download is kept`, async () => {
+      const out = mkdtempSync(join(tmpdir(), "darkroom-visit-"));
+      try {
+        const result = await visit({ browser, now: FROZEN_NOW, images: out, out, base, cookie: null }, "downloads", viewport, async (page, _shot, saveDownload) => {
+          await page.goto(`${base}/`, { waitUntil: "load" });
+          await runStep(page, { download: { selector: "a", name: "x" } }, null, saveDownload);
+        }, { audit: false, signedIn: false });
+        expect(result.problems.some((p) => p.includes("downloads @") && p.toLowerCase().includes("download"))).toBe(true);
+      } finally { rmSync(out, { recursive: true, force: true }); }
+    }, 30000);
+  }
 });
 
 describe("a download step whose click fails", () => {

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
 import { commitSwap, replaceServer, rollbackSwap, setUpContext } from "./control-reset.mjs";
-import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn } from "./verify.mjs";
+import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn, signedInNow } from "./verify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUFFER = 500;
@@ -235,7 +235,7 @@ async function main() {
   const handlers = {
     async goto({ args, options: o }) {
       const out = args[0] === "sign-in";
-      signedIn = (await ctx.cookies()).length > 0;
+      signedIn = await signedInNow(ctx);
       if (out && signedIn) await ctx.clearCookies();
       else if (!out && !signedIn) await signIn(ctx, base, cookie);
       signedIn = !out;
@@ -410,6 +410,7 @@ async function main() {
     if (!problems.length) {
       try { await shotAs(`flow-${flow.name}`); } catch (e) { problems.push(`the last screenshot: ${firstLine(e)}`); }
     }
+    signedIn = await signedInNow(ctx);
     const allowed = [...(flow.allow_console ?? []), ...(signedIn ? [] : [SIGNED_OUT_CONSOLE])];
     for (const m of consoleBuffer) if ((m.type === "error" || m.type === "pageerror") && !allowed.some((t) => m.text.includes(t))) problems.push(`console ${m.type}: ${m.text}`);
     for (const r of requests) if (r.status >= 500) problems.push(`${r.status} from ${r.method} ${r.path}`);

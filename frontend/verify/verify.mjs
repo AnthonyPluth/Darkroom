@@ -49,6 +49,8 @@ export function sessionCookie(file, read = readFileSync) {
   return { name: cookie, value: token };
 }
 
+export const signedInNow = async (ctx) => (await ctx.cookies()).length > 0;
+
 export const signIn = (ctx, base, cookie) => ctx.addCookies([{ ...cookie, url: base, httpOnly: true, sameSite: "Lax" }]);
 
 export const hostOf = (url) => { try { return new URL(url).host || url; } catch { return "an address that is not a URL"; } };
@@ -160,8 +162,7 @@ export async function recheck(page, checks, timeout = 2000) {
 
 export async function settlePage(page, name, where, notes, scrollToTop = true) {
   if (scrollToTop) await page.evaluate(`window.scrollTo({ top: 0, left: 0, behavior: "instant" })`);
-  const signedIn = (await page.context().cookies()).length > 0;
-  if (signedIn) {
+  if (await signedInNow(page.context())) {
     try { await page.waitForLoadState("networkidle", { timeout: 3000 }); } catch { notes.push(`${where}: still loading after 3 s when ${name} was captured`); }
   } else {
     await page.waitForLoadState("load", { timeout: 3000 }).catch(() => notes.push(`${where}: still loading after 3 s when ${name} was captured`));
@@ -198,7 +199,11 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
       files.push(file);
     };
     const saveDownload = async (name, download, dir = images) => {
-      if (!writesImage(viewport)) return;
+      if (!writesImage(viewport)) {
+        const failure = await download.failure();
+        if (failure) throw new Error(`the download failed (${failure})`);
+        return;
+      }
       const file = screenshotFile(name, viewport);
       await download.saveAs(join(dir, file));
       files.push(file);
@@ -214,7 +219,7 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
       problems.push(`${where}: ${String(e.message).split("\n")[0]}`);
       await shot(`${label.replace(/\W+/g, "-")}-FAILED`, out).catch(() => {});
     }
-    const allowed = signedIn ? allowConsole : [...allowConsole, SIGNED_OUT_CONSOLE];
+    const allowed = signedIn && await signedInNow(ctx) ? allowConsole : [...allowConsole, SIGNED_OUT_CONSOLE];
     for (const c of consoleErrors.filter((c) => !allowed.some((t) => c.includes(t)))) problems.push(`${where}: console error: ${c.slice(0, 300)}`);
     for (const host of new Set(blocked)) problems.push(`${where}: the page asked for ${host}, which isn't the session's server: the request was blocked before it was sent`);
     return { screenshots: files, consoleErrors, problems, notes };
