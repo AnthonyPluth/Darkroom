@@ -262,6 +262,19 @@ def reassign_committed(opened: Session) -> Callable[[str], bool]:
     return committed
 
 
+def undone_count(opened: Session, review_id: int) -> int:
+    return opened.execute(select(func.count(Event.id)).where(Event.type == "review_undone", Event.subject == f"review {review_id}")).scalar_one()
+
+
+def undo_committed(opened: Session) -> Callable[[int, int], bool | None]:
+    def committed(review_id: int, undone_before: int) -> bool | None:
+        if undone_count(opened, review_id) > undone_before:
+            return True
+        review = opened.get(ReviewItem, review_id)
+        return False if review is not None and review.status == "kept_both" else None
+    return committed
+
+
 def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
@@ -276,7 +289,8 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
     try:
-        swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos))
+        swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos),
+                                     undo_committed(opened))
         report.dropped, report.restored = swept.dropped, swept.restored
         report.taken_back = paths.sweep_placing(photos, now - DROPPING_GRACE, reassign_committed(opened), copy_kept(opened, photos), still_recorded(opened, photos))
     except OSError as error:

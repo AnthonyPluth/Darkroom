@@ -746,6 +746,36 @@ class UndoTests(ReviewCase):
         self.assertFalse(sidecar.exists())
         self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
 
+    def test_a_sidecar_left_behind_by_an_undo_that_committed_is_never_put_back(self):
+        photo, sidecar = self.already_there(None)
+        relative = str(photo.relative_to(self.world.root))
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        for kept_again in (False, True):
+            with self.subTest(kept_again=kept_again):
+                review_id, _ = self.resolve("keep_both")
+                if not sidecar.exists():
+                    sidecar.write_bytes(b"<x:xmpmeta>written by keep both</x:xmpmeta>")
+                with mock.patch.object(paths.SetAside, "finish"):
+                    self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+                (aside,) = photo.parent.glob(f"{paths.DROPPING}*")
+                self.assertFalse(sidecar.exists())
+                if kept_again:
+                    self.assertEqual(self.resolve("keep_both")[0], review_id)
+                    sidecar.unlink(missing_ok=True)
+                data, rows = photo.read_bytes(), self.opened.execute(select(MediaItem.id).where(MediaItem.path == relative)).scalars().all()
+                opened = self.opened
+                report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+                opened.commit()
+                self.assertEqual((report.restored, report.dropped), (0, 1))
+                self.assertFalse(aside.exists())
+                self.assertFalse(sidecar.exists())
+                self.assertEqual(photo.read_bytes(), data)
+                self.assertEqual(self.opened.execute(select(MediaItem.id).where(MediaItem.path == relative)).scalars().all(), rows)
+                if kept_again:
+                    self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+
     def test_a_failing_sidecar_removal_on_undo_changes_nothing(self):
         review_id, _ = self.resolve("keep_both")
         kept = self.item_named(PAIR_NAME)

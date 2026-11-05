@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -110,12 +111,8 @@ def add_months(moment: float, months: int) -> float:
     start = datetime.fromtimestamp(moment, UTC)
     index = start.month - 1 + months
     year, month = start.year + index // 12, index % 12 + 1
-    for day in (start.day, 28):
-        try:
-            return start.replace(year=year, month=month, day=day).timestamp()
-        except ValueError:
-            continue
-    return start.timestamp()
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day).timestamp()
 
 
 def next_export_at(account: GoogleAccount, now: float) -> float | None:
@@ -243,7 +240,8 @@ def due_for_check(opened: Session, now: float, zone: ZoneInfo) -> list[int]:
         slot = check_slot(account.id, now, zone)
         if now < slot:
             continue
-        recent = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account.id, BrowserJob.kind == STATUS_KIND, BrowserJob.created >= slot).limit(1)).first()
+        today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        recent = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account.id, BrowserJob.kind == STATUS_KIND, BrowserJob.created >= today).limit(1)).first()
         if recent is None:
             due.append(account.id)
     return due

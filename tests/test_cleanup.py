@@ -435,7 +435,10 @@ class InterruptedRemovalTests(Imported):
         folder = self.root / "jo" / "google-only" / "2017" / "07"
         photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
         xmp_data = sidecar.read_bytes()
-        paths.set_sidecar_aside(self.world.photos, str(photo.relative_to(self.root)))
+        review = self.review()
+        review.status, review.resolved_at = "kept_both", TOO_SOON - DAY
+        self.world.opened.commit()
+        paths.set_sidecar_aside(self.world.photos, str(photo.relative_to(self.root)), review.id, cleanup.undone_count(self.world.opened, review.id))
         (aside,) = folder.glob(f"{paths.DROPPING}*")
         return photo, sidecar, aside, xmp_data
 
@@ -451,7 +454,8 @@ class InterruptedRemovalTests(Imported):
     def test_a_sidecar_set_aside_alone_is_never_put_back_onto_another_photo_or_over_a_sidecar(self):
         outside = self.root.parent / "outside.JPG"
         outside.write_bytes(b"a file outside the photo folder")
-        for case in ("another photo, recorded", "a row with another sha1", "no row at that path", "a sidecar written since", "no photo", "a link"):
+        for case in ("another photo, recorded", "a row with another sha1", "no row at that path", "a sidecar written since", "no photo", "a link",
+                     "the pair is no longer kept"):
             with self.subTest(case=case):
                 photo, sidecar, aside, xmp_data = self.sidecar_set_aside()
                 data = photo.read_bytes()
@@ -468,6 +472,8 @@ class InterruptedRemovalTests(Imported):
                     sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
                 elif case == "no photo":
                     photo.unlink()
+                elif case == "the pair is no longer kept":
+                    self.review().status = "pending"
                 else:
                     photo.unlink()
                     photo.symlink_to(outside)
