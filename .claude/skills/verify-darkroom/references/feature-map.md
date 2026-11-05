@@ -61,6 +61,17 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **What usually breaks:**
   - The demo has one Google account that needs a sign-in and one with a working session; Connect and Create schedule only queue browser jobs the demo has no worker for.
 
+### Flows on Exports
+
+#### `exports`
+
+- **Starts at:** `exports`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Exports`, `Earlier exports`, `Imported`, `Check exports now`.
+- **Drive it:** `tools/control flow exports`; or `poetry run python tools/verify.py run --flow exports`.
+- **What usually breaks:**
+  - The demo has one Google account that needs a sign-in and one with a working session; Connect and Create schedule only queue browser jobs the demo has no worker for.
+
 ## Imports (`imports`)
 
 - **Reach it:** the navigation's Imports, at `/imports`; control `tools/control goto imports`.

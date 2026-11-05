@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import monitoring, validate
 from darkroom.dates import utc_now
-from darkroom.domain import browser_jobs
+from darkroom.domain import browser_jobs, exports
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, error_response, json_response
 from darkroom.storage import db
@@ -107,7 +107,12 @@ def done(request: Annotated[Request, contract.DoneBody]) -> Annotated[Response, 
             raise validate.Invalid("result must be an object")
         if len(request.body) > MAX_RESULT:
             raise validate.Invalid("result is too large")
-        job = browser_jobs.done(opened, job_id_of(request), result, moment)
+        job_id = job_id_of(request)
+        listing = exports.listing_from_result(result) if browser_jobs.open_job(opened, job_id).kind == exports.STATUS_KIND else None
+        job = browser_jobs.done(opened, job_id, result, moment)
+        if listing is not None:
+            found = exports.reconcile(opened, browser_jobs.account_of(opened, job.account_id), listing, moment)
+            monitoring.log("export listing reconciled", announced=found.announced, in_progress=found.in_progress, expired=found.expired)
         monitoring.log("browser job done", kind=job.kind)
         return job
 

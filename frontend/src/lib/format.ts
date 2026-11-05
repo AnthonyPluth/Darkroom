@@ -17,6 +17,7 @@ const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-dig
 const weekday = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
 const dayMonth = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
 const dayMonthYear = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
+const dayMonthYearClock = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 
 function startOfDay(seconds: number): number {
   const date = new Date(seconds * 1000);
@@ -35,6 +36,17 @@ export function when(then: number, now: number): string {
 
 export function onDay(then: number): string {
   return dayMonthYear.format(new Date(then * 1000));
+}
+
+export function onDayAt(then: number): string {
+  return dayMonthYearClock.format(new Date(then * 1000));
+}
+
+export function untilDay(then: number, now: number): string {
+  if (then <= now) return "Ended";
+  const days = Math.ceil((then - now) / DAY);
+  if (days < 14) return days <= 1 ? "Within a day" : `In ${plural(days, "day")}`;
+  return `In ${plural(Math.round(days / 7), "week")}`;
 }
 
 export function count(n: number, one: string, many?: string): string {

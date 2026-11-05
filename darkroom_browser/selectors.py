@@ -11,6 +11,11 @@ CREATE_NEW_EXPORT_HEADING = "text=/create a new export/i"
 MANAGE_EXPORTS_HEADING = "text=/manage your exports/i"
 EXPORT_LIST = "[role='list']"
 DOWNLOAD_LINK = "a[href*='takeout.google.com/download']"
+EXPORT_ID_ATTRIBUTE = "data-export-id"
+EXPORT_TIME_ATTRIBUTE = "data-time"
+EXPORT_CREATED_TIME = "created"
+EXPORT_EXPIRES_TIME = "expires"
+DOWNLOAD_HOST = "takeout.google.com"
 
 TYPEABLE: frozenset[str] = frozenset()
 
