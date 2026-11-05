@@ -78,9 +78,9 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 **Limits it must respect**
 
-- Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest.
+- Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that downloaded something, or a job that only had to finish a complete export) is marked failed, which frees the account.
 - Google often asks you to verify it's you before a download. The job pauses, sends a push alert to the person's iPhone app linking to the noVNC view, and resumes after you sign in.
-- Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed.
+- Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
 
