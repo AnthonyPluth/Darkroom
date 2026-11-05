@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
-import { replaceServer } from "./control-reset.mjs";
+import { commitSwap, replaceServer, rollbackSwap, setUpContext } from "./control-reset.mjs";
 import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn } from "./verify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -114,11 +114,12 @@ async function main() {
 
   async function openPage(viewport, { retire = true } = {}) {
     const previous = ctx;
-    const fresh = await browser.newContext(contextOptions(viewport));
-    await prepareContext(fresh, opt.now);
-    await fresh.route(offServer, abortOffServer);
-    await blockWebSockets(fresh, base, (host) => blockedHosts.push(host));
-    await signIn(fresh, base, cookie);
+    const fresh = await setUpContext(browser, contextOptions(viewport), async (made) => {
+      await prepareContext(made, opt.now);
+      await made.route(offServer, abortOffServer);
+      await blockWebSockets(made, base, (host) => blockedHosts.push(host));
+      await signIn(made, base, cookie);
+    });
     signedIn = true;
     const tab = await fresh.newPage();
     tab.setDefaultTimeout(30000);
@@ -344,17 +345,11 @@ async function main() {
             await page.goto(`${base}${at}`, { waitUntil: "networkidle" });
           },
           rollback: async (fresh) => {
-            if (ctx !== prior.ctx) await ctx.close().catch(() => null);
-            ({ ctx, page, base, signedIn, server } = prior);
-            save({ viewport: state.viewport, base, port: server.port });
-            await fresh.server.stop();
+            ({ ctx, page, base, signedIn, server } = await rollbackSwap({ prior, current: { ctx, fresh }, save: (p) => save({ viewport: state.viewport, base: p.base, port: p.server.port }) }));
           },
           commit: async (fresh) => {
-            const old = prior;
             server = fresh.server;
-            save({ base, port: server.port });
-            await old.ctx.close().catch(() => null);
-            await old.server.stop().catch((e) => log(`stopping the old demo server: ${firstLine(e)}`));
+            await commitSwap({ prior, fresh, save: () => save({ base, port: server.port }), log: (m) => log(`stopping the old demo server: ${m}`) });
           },
         });
       } catch (e) {

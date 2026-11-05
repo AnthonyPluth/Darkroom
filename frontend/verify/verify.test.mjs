@@ -43,6 +43,11 @@ describe("flowProblems", () => {
     expect(flowProblems({ ...ok, steps: [{ sign_out: "yes" }] })).toEqual(["step 1: sign_out takes a boolean"]);
   });
 
+  it("takes only a file-name-safe screenshot name, so a flow can't write outside its images", () => {
+    expect(flowProblems({ ...ok, steps: [{ screenshot: "people-open" }] })).toEqual([]);
+    for (const name of ["x/../../../docs/screenshots/status", "../status", "a/b", "a.b", ""]) expect(flowProblems({ ...ok, steps: [{ screenshot: name }] })).toHaveLength(1);
+  });
+
   it("takes the laptop and wide viewports a flow asks for, and no other", () => {
     expect(flowProblems({ ...ok, viewports: ["laptop", "wide"] })).toEqual([]);
     expect(flowProblems({ ...ok, viewports: ["watch"] })).toEqual(["unknown viewport watch"]);
