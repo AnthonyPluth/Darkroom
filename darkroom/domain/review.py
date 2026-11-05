@@ -484,8 +484,10 @@ def move_back(opened: Session, photos: Photos, review: ReviewItem, item: MediaIt
     effects.placing(placed.path, token)
     effects.made(photos, placed, source, False)
     if with_sidecar:
-        paths.mark_new_sidecar(placed.path, token)
+        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True))
         paths.carry_sidecar(source, placed.path)
+        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True,
+                                                             paths.regular_sha1(paths.sidecar_of(placed.path))))
     effects.set_aside(paths.set_library_copy_aside(photos, item.path, placed.path))
     return back[0], token
 
@@ -609,12 +611,12 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState(f"{target.name} already has this photo")
     lineage, token = adopted_lineage(opened, item), paths.placing_token()
     try:
-        placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1, token)
+        placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1,
+                                 lambda destination: paths.mark_placing(destination, token, paths.Placing(destination.name, item.sha1, True, False)))
         effects.placing(placed.path, token)
-        had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
+        had_sidecar = paths.present(paths.sidecar_of(placed.path))
         effects.made(photos, placed, source, had_sidecar)
-        if not had_sidecar:
-            paths.mark_new_sidecar(placed.path, token)
+        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, not had_sidecar))
         old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
@@ -623,6 +625,9 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
+        if not had_sidecar:
+            paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, True,
+                                                                 paths.regular_sha1(paths.sidecar_of(placed.path))))
         carries = CARRIES_FOUND if "found" in lineage and placed.copied and not had_sidecar else ""
         adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]

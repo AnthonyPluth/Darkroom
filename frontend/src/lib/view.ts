@@ -77,12 +77,20 @@ export function scheduleLive(account: AccountView, now: number): boolean {
   return account.schedule_created !== null && (account.schedule_end === null || account.schedule_end > now);
 }
 
+function waitingSentence(reason: string): string {
+  switch (reason) {
+    case "wrong_account": return "waiting for you to switch to the right Google account.";
+    case "verify": return "waiting for you to confirm your identity in the remote browser.";
+    default: return "waiting for you to sign in.";
+  }
+}
+
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
   if (job === undefined) return null;
   switch (job.status) {
     case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
-    case "waiting_for_user": return job.message === "wrong_account" ? `${doing}: waiting for you to switch to the right Google account.` : `${doing}: waiting for you to sign in.`;
+    case "waiting_for_user": return `${doing}: ${waitingSentence(job.message)}`;
     case "failed":
       if (job.needs_check) return `${doing}: not confirmed by Takeout; say below what you found.`;
       if (job.checked === "found") return `${doing}: not confirmed by Takeout, then you found it there.`;

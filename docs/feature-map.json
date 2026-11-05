@@ -621,7 +621,8 @@
         "tests/test_device_auth.py",
         "tests/test_device_checkin.py",
         "tests/test_device_contract.py",
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_wake.py"
       ]
     },
     {

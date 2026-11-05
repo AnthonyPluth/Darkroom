@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
-import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect } from "../test/server";
+import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
 import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
 
 describe("sessionChip", () => {
@@ -164,5 +164,15 @@ describe("jobSentence after a check", () => {
       expect(sentence).toBe("Doing: not confirmed by Takeout; say below what you found.");
       expect(sentence).not.toMatch(/failed|trying again/);
     }
+  });
+});
+
+describe("jobSentence", () => {
+  it("tells apart the reasons a job waits for the person", () => {
+    const waiting = (message: string) => jobSentence({ ...waitingConnect, message }, "Download");
+    expect(waiting("sign_in")).toBe("Download: waiting for you to sign in.");
+    expect(waiting("verify")).toBe("Download: waiting for you to confirm your identity in the remote browser.");
+    expect(waiting("wrong_account")).toBe("Download: waiting for you to switch to the right Google account.");
+    expect(waiting("")).toBe("Download: waiting for you to sign in.");
   });
 });

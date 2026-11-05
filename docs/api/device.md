@@ -108,4 +108,4 @@ Sent right before deleting, with the same `{"assets": [...]}` shape for exactly 
 
 ### `POST /api/device/deleted`
 
-`{"asset_ids": ["<PhotoKit id>"]}`, up to 500, with what iOS actually removed. Darkroom records the deletion only for this iPhone's assets that a `confirm` passed and no later check refused. Reply: `{"recorded": ["..."], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. A recorded asset is never offered again.
+`{"asset_ids": ["<PhotoKit id>"]}`, up to 500, with what iOS actually removed. Darkroom records the deletion only for this iPhone's assets that a `confirm` passed and no later check refused. Reply: `{"recorded": ["..."], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. A recorded asset is never offered again. Reporting an asset that is already recorded as deleted answers it in `recorded` and changes nothing, so a report whose answer was lost can be sent again.

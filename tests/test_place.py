@@ -203,10 +203,10 @@ class CollisionTests(Household):
         staged = self.staged("a.jpg")
         real = paths.write_once
 
-        def racing(destination, chunks, marker=None):
+        def racing(destination, chunks):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(staged.read_bytes())
-            return real(destination, chunks, marker)
+            return real(destination, chunks)
 
         with mock.patch.object(paths, "write_once", side_effect=racing):
             report = self.place(self.entry(staged))
@@ -217,12 +217,12 @@ class CollisionTests(Household):
         real = paths.write_once
         calls = []
 
-        def racing(destination, chunks, marker=None):
+        def racing(destination, chunks):
             calls.append(destination.name)
             if len(calls) == 1:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"theirs")
-            return real(destination, chunks, marker)
+            return real(destination, chunks)
 
         with mock.patch.object(paths, "write_once", side_effect=racing):
             self.place(self.entry(staged))
@@ -250,7 +250,7 @@ class CollisionTests(Household):
             place.copy_exactly(folder / "b.jpg", staged, sha1_of(staged), "fedcba9876543210")
         with self.assertRaises(place.PlaceFailed):
             place.copy_exactly(folder / "c.jpg", staged, "0" * 40, "fedcba9876543210")
-        self.assertEqual(sorted(path.name for path in folder.iterdir()), [".placing-0123456789abcdef-b.jpg", "b.jpg"])
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), [".placing-0123456789abcdef.json", "b.jpg"])
 
     def test_owner_made_decisions_are_never_placed_or_held(self):
         _, mine = self.phone("sam", self.sam)

@@ -46,8 +46,9 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         email = validate.email(body, "email") if validate.present(body, "email") else None
         person_id = validate.whole_number(body, "default_person_id", minimum=1) if validate.present(body, "default_person_id") else None
         with db.session(engine_of(request)) as opened:
+            before = accounts.served_people(opened, account_id)
             account = accounts.update(opened, account_id, email, person_id, now())
-            dedupe.confirm_newly_served(opened, account.id)
+            dedupe.confirm_newly_served(opened, account.id, before)
             reply = accounts.as_dict(opened, account)
     except validate.Invalid as error:
         return error_response(str(error), 400)
