@@ -9,6 +9,8 @@ private actor FakeCleanupAPI: CleanupAPI {
     var eligibleError: Error?
     var confirmError: Error?
     var deletedErrors: [Error] = []
+    var holdDeleted = false
+    private var held: [CheckedContinuation<Void, Never>] = []
     private(set) var eligibleCalls: [EligibleRequest] = []
     private(set) var confirmCalls: [ConfirmRequest] = []
     private(set) var deletedCalls: [DeletedRequest] = []
@@ -22,6 +24,15 @@ private actor FakeCleanupAPI: CleanupAPI {
     func set(eligibleError: Error?) { self.eligibleError = eligibleError }
     func set(confirmError: Error?) { self.confirmError = confirmError }
     func set(deletedErrors: [Error]) { self.deletedErrors = deletedErrors }
+    func set(holdDeleted: Bool) { self.holdDeleted = holdDeleted }
+    var heldCount: Int { held.count }
+
+    func release() {
+        holdDeleted = false
+        let waiting = held
+        held = []
+        waiting.forEach { $0.resume() }
+    }
 
     func eligible(_ request: EligibleRequest) async throws -> EligibleReply {
         eligibleCalls.append(request)
@@ -42,32 +53,44 @@ private actor FakeCleanupAPI: CleanupAPI {
 
     func deleted(_ request: DeletedRequest) async throws -> DeletedReply {
         deletedCalls.append(request)
+        if holdDeleted {
+            await withCheckedContinuation { held.append($0) }
+        }
         if !deletedErrors.isEmpty { throw deletedErrors.removeFirst() }
         return DeletedReply(recorded: request.assetIDs, rejected: [])
     }
 }
 
 private actor FakeLibrary: PhotoDeleter {
-    var assets: Set<String>
+    var assets: [String: [PhotoResource]] = [:]
     var keep: Set<String> = []
     private(set) var deleteCalls: [[String]] = []
 
-    init(_ assets: Set<String>) {
-        self.assets = assets
+    func set(keep: Set<String>) { self.keep = keep }
+    func drop(_ id: String) { assets[id] = nil }
+
+    func add(_ resource: PhotoResource) {
+        assets[resource.assetID, default: []].removeAll { $0.kind == resource.kind }
+        assets[resource.assetID, default: []].append(resource)
     }
 
-    func set(keep: Set<String>) { self.keep = keep }
-    func drop(_ id: String) { assets.remove(id) }
-
-    func present(_ assetIDs: [String]) -> Set<String> {
-        Set(assetIDs).intersection(assets)
+    func resources(of assetIDs: [String]) -> [PhotoResource] {
+        assetIDs.flatMap { assets[$0] ?? [] }
     }
 
     func delete(_ assetIDs: [String]) -> [String] {
         deleteCalls.append(assetIDs)
-        let removed = assetIDs.filter { assets.contains($0) && !keep.contains($0) }
-        assets.subtract(removed)
+        let removed = assetIDs.filter { assets[$0] != nil && !keep.contains($0) }
+        removed.forEach { assets[$0] = nil }
         return removed
+    }
+}
+
+private actor FailingPendingReport: PendingDeletionReport {
+    func load() -> DeletedRequest? { nil }
+
+    func save(_ request: DeletedRequest?) throws {
+        throw CocoaError(.fileWriteOutOfSpace)
     }
 }
 
@@ -92,13 +115,38 @@ final class CleanupRunnerTests: XCTestCase {
     private struct Rig {
         let api = FakeCleanupAPI()
         let store = InMemoryResourceStore()
-        let library: FakeLibrary
-        let pending = InMemoryPendingDeletionReport()
+        let library = FakeLibrary()
+        let versions = InMemoryIngestVersions()
+        let pending: PendingDeletionReport
         let clock = Clock()
+
+        init(pending: PendingDeletionReport = InMemoryPendingDeletionReport()) {
+            self.pending = pending
+        }
 
         func runner() -> CleanupRunner {
             let clock = clock
-            return CleanupRunner(api: api, store: store, deleter: library, pending: pending, clock: { clock.read() })
+            return CleanupRunner(
+                api: api, store: store, versions: versions, deleter: library, pending: pending, clock: { clock.read() }
+            )
+        }
+
+        func onPhone(_ id: String, _ kind: ResourceKind = .photo, version: String = "v1") async {
+            await library.add(PhotoResource(assetID: id, kind: kind, originalFilename: "\(id).HEIC", version: version))
+        }
+
+        func ingested(_ resources: [LocalResource], version: String = "v1") async throws {
+            try await store.upsert(resources)
+            for resource in resources {
+                await versions.setVersion(version, for: resource.key)
+            }
+        }
+
+        func both(_ resources: [LocalResource]) async throws {
+            try await ingested(resources)
+            for resource in resources {
+                await onPhone(resource.key.assetID, resource.key.kind)
+            }
         }
     }
 
@@ -106,16 +154,21 @@ final class CleanupRunnerTests: XCTestCase {
         LocalResource(key: ResourceKey(assetID: id, kind: kind), sha1: "sha-\(id)-\(kind.rawValue)", bytes: 10, filename: "\(id).HEIC", state: state)
     }
 
-    private func rig(_ ids: [String], eligible: Set<String>? = nil) async throws -> Rig {
-        let rig = Rig(library: FakeLibrary(Set(ids)))
-        try await rig.store.upsert(ids.map { resource($0) })
+    private func rig(
+        _ ids: [String],
+        eligible: Set<String>? = nil,
+        pending: PendingDeletionReport = InMemoryPendingDeletionReport()
+    ) async throws -> Rig {
+        let rig = Rig(pending: pending)
+        try await rig.both(ids.map { resource($0) })
         await rig.api.set(eligible: eligible ?? Set(ids))
         return rig
     }
 
     func testTheListAsksOnlyForPresentAssetsWhoseEveryResourceIsUploaded() async throws {
         let rig = try await rig(["a", "b"])
-        try await rig.store.upsert([resource("c"), resource("c", .liveVideo, state: .checked), resource("d", .liveVideo), resource("gone")])
+        try await rig.both([resource("c"), resource("c", .liveVideo, state: .checked), resource("d", .liveVideo)])
+        try await rig.ingested([resource("gone")])
         await rig.api.set(eligible: ["a", "b", "c", "d", "gone"])
         let outcome = try await rig.runner().refresh()
         let asked = await rig.api.eligibleCalls.flatMap { $0.assets.map(\.id) }
@@ -172,6 +225,75 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertNil(saved)
     }
 
+    func testALivePhotoWhoseVideoHasNoStoreRowIsNeverAskedAbout() async throws {
+        let rig = try await rig(["a", "b"])
+        await rig.onPhone("b", .liveVideo)
+        let runner = rig.runner()
+        let outcome = try await runner.refresh()
+        let asked = await rig.api.eligibleCalls.flatMap { $0.assets.map(\.id) }
+        XCTAssertEqual(asked, ["a"])
+        guard case let .listed(list) = outcome else { return XCTFail("not listed: \(outcome)") }
+        XCTAssertEqual(list.ids, ["a"])
+        _ = try await runner.remove(shown: ["a", "b"])
+        let confirmed = await rig.api.confirmCalls.map { $0.assets.map(\.id) }
+        let deletes = await rig.library.deleteCalls
+        XCTAssertEqual(confirmed, [["a"]])
+        XCTAssertEqual(deletes, [["a"]])
+    }
+
+    func testAnAssetWithNoStoreRowAtAllIsNeverAskedAbout() async throws {
+        let rig = try await rig(["a"])
+        await rig.onPhone("x")
+        await rig.onPhone("x", .adjusted)
+        _ = try await rig.runner().refresh()
+        let asked = await rig.api.eligibleCalls.flatMap { $0.assets.map(\.id) }
+        XCTAssertEqual(asked, ["a"])
+    }
+
+    func testAResourceChangedSinceItsIngestIsNeverAskedAbout() async throws {
+        let rig = try await rig(["a", "b"])
+        await rig.onPhone("b", version: "v2")
+        _ = try await rig.runner().refresh()
+        let asked = await rig.api.eligibleCalls.flatMap { $0.assets.map(\.id) }
+        XCTAssertEqual(asked, ["a"])
+    }
+
+    func testOnlyTheResourcesStillOnThePhoneAreDescribed() async throws {
+        let rig = try await rig(["a"])
+        try await rig.ingested([resource("a", .adjusted)])
+        _ = try await rig.runner().refresh()
+        let kinds = await rig.api.eligibleCalls.flatMap { $0.assets.flatMap { $0.resources.map(\.kind) } }
+        XCTAssertEqual(kinds, [.photo])
+    }
+
+    func testAnEditOnThePhoneSinceTheListIsNotConfirmedOrDeleted() async throws {
+        let rig = try await rig(["a", "b"])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        await rig.onPhone("b", .adjusted)
+        let outcome = try await runner.remove(shown: ["a", "b"])
+        let confirmed = await rig.api.confirmCalls.map { $0.assets.map(\.id) }
+        let deletes = await rig.library.deleteCalls
+        XCTAssertEqual(confirmed, [["a"]])
+        XCTAssertEqual(deletes, [["a"]])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.changed, ["b"])
+    }
+
+    func testALiveVideoOnThePhoneSinceTheListIsNotConfirmedOrDeleted() async throws {
+        let rig = try await rig(["a"])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        await rig.onPhone("a", .liveVideo)
+        let outcome = try await runner.remove(shown: ["a"])
+        let confirms = await rig.api.confirmCalls
+        let deletes = await rig.library.deleteCalls
+        XCTAssertTrue(confirms.isEmpty)
+        XCTAssertTrue(deletes.isEmpty)
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.changed, ["a"])
+    }
+
     func testAPhotoGoneFromThePhoneSinceTheListIsNotConfirmed() async throws {
         let rig = try await rig(["a", "b"])
         let runner = rig.runner()
@@ -186,7 +308,7 @@ final class CleanupRunnerTests: XCTestCase {
         let rig = try await rig(["a", "b"])
         let runner = rig.runner()
         _ = try await runner.refresh()
-        try await rig.store.upsert([resource("b", .adjusted, state: .hashed)])
+        try await rig.both([resource("b", .adjusted, state: .hashed)])
         let outcome = try await runner.remove(shown: ["a", "b"])
         let confirmed = await rig.api.confirmCalls.map { $0.assets.map(\.id) }
         XCTAssertEqual(confirmed, [["a"]])
@@ -313,17 +435,99 @@ final class CleanupRunnerTests: XCTestCase {
         let first = FilePendingDeletionReport(url: url)
         let none = await first.load()
         XCTAssertNil(none)
-        await first.save(DeletedRequest(assetIDs: ["a", "b"]))
+        try await first.save(DeletedRequest(assetIDs: ["a", "b"]))
         let reopened = await FilePendingDeletionReport(url: url).load()
         XCTAssertEqual(reopened?.assetIDs, ["a", "b"])
-        await first.save(nil)
+        try await first.save(nil)
         let cleared = await FilePendingDeletionReport(url: url).load()
         XCTAssertNil(cleared)
+        try await first.save(nil)
+    }
+
+    func testAFilePendingReportThatCannotBeWrittenThrows() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString)")
+            .appendingPathComponent("pending.json")
+        do {
+            try await FilePendingDeletionReport(url: url).save(DeletedRequest(assetIDs: ["a"]))
+            XCTFail("expected a write error")
+        } catch {}
+    }
+
+    func testAReportThatCouldNotBeSavedSaysSoAndIsStillRetried() async throws {
+        let rig = try await rig(["a"], pending: FailingPendingReport())
+        await rig.api.set(deletedErrors: [APIError.transport("-1001")])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case let .reportUnsaved(report) = outcome else { return XCTFail("not unsaved: \(outcome)") }
+        XCTAssertEqual(report.removed, ["a"])
+        let retried = try await runner.retryReport()
+        guard case let .finished(finished) = retried else { return XCTFail("not finished: \(retried)") }
+        XCTAssertEqual(finished.recorded, ["a"])
+    }
+
+    func testAReportTheServerRefusesForGoodIsClearedAndShown() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.rejected(status: 409)])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.unrecorded.map(\.assetID), ["a"])
+        XCTAssertEqual(report.unrecorded.map(\.reason), [CleanupRunner.reportRefusedReason])
+        let saved = await rig.pending.load()
+        XCTAssertNil(saved)
+    }
+
+    func testAnEarlierReportTheServerRefusesForGoodDoesNotBlockCleanup() async throws {
+        let rig = try await rig(["b"])
+        try await rig.pending.save(DeletedRequest(assetIDs: ["a"]))
+        await rig.api.set(deletedErrors: [APIError.rejected(status: 400)])
+        let first = try await rig.runner().refresh()
+        guard case let .finished(report) = first else { return XCTFail("not finished: \(first)") }
+        XCTAssertEqual(report.unrecorded.map(\.assetID), ["a"])
+        let saved = await rig.pending.load()
+        XCTAssertNil(saved)
+        let second = try await rig.runner().refresh()
+        guard case .listed = second else { return XCTFail("not listed: \(second)") }
+    }
+
+    func testARateLimitedReportIsKeptForLater() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.rejected(status: 429)])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case .reportPending = outcome else { return XCTFail("not pending: \(outcome)") }
+        let saved = await rig.pending.load()
+        XCTAssertEqual(saved, DeletedRequest(assetIDs: ["a"]))
+    }
+
+    func testTwoRetriesAtOnceSendTheReportOnce() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.transport("-1001")])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        _ = try await runner.remove(shown: ["a"])
+        await rig.api.set(holdDeleted: true)
+        let first = Task { try await runner.retryReport() }
+        while await rig.api.heldCount == 0 { await Task.yield() }
+        let second = Task { try await runner.retryReport() }
+        for _ in 0..<200 { await Task.yield() }
+        await rig.api.release()
+        let outcomes = [try await first.value, try await second.value]
+        let reports = await rig.api.deletedCalls.count
+        XCTAssertEqual(reports, 2)
+        for outcome in outcomes {
+            guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+            XCTAssertEqual(report.recorded, ["a"])
+        }
     }
 
     func testAReportLeftFromAnEarlierLaunchIsSentBeforeANewList() async throws {
         let rig = try await rig(["b"])
-        await rig.pending.save(DeletedRequest(assetIDs: ["a"]))
+        try await rig.pending.save(DeletedRequest(assetIDs: ["a"]))
         await rig.api.set(deletedErrors: [APIError.transport("-1009")])
         let first = try await rig.runner().refresh()
         guard case let .reportPending(report) = first else { return XCTFail("not pending: \(first)") }

@@ -1,13 +1,13 @@
 import Foundation
 
 public protocol PhotoDeleter: Sendable {
-    func present(_ assetIDs: [String]) async -> Set<String>
+    func resources(of assetIDs: [String]) async throws -> [PhotoResource]
     func delete(_ assetIDs: [String]) async -> [String]
 }
 
 public protocol PendingDeletionReport: Sendable {
     func load() async -> DeletedRequest?
-    func save(_ request: DeletedRequest?) async
+    func save(_ request: DeletedRequest?) async throws
 }
 
 public actor InMemoryPendingDeletionReport: PendingDeletionReport {
@@ -36,13 +36,14 @@ public actor FilePendingDeletionReport: PendingDeletionReport {
         return try? JSONDecoder().decode(DeletedRequest.self, from: data)
     }
 
-    public func save(_ request: DeletedRequest?) {
+    public func save(_ request: DeletedRequest?) throws {
         guard let request else {
-            try? FileManager.default.removeItem(at: url)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
             return
         }
-        guard let data = try? JSONEncoder().encode(request) else { return }
-        try? data.write(to: url, options: .atomic)
+        try JSONEncoder().encode(request).write(to: url, options: .atomic)
     }
 }
 
@@ -54,25 +55,38 @@ public actor CleanupRunner {
         case confirmFailed
         case finished(CleanupReport)
         case reportPending(CleanupReport)
+        case reportUnsaved(CleanupReport)
         case needsSignIn
+    }
+
+    public static let reportRefusedReason = "report_refused"
+    public static let reportRefusedMessage = "Darkroom refused the report of this removal."
+
+    private struct Current {
+        var present: Set<String> = []
+        var ready: [AssetDescriptor] = []
     }
 
     private let api: CleanupAPI
     private let store: ResourceStore
+    private let versions: IngestVersions
     private let deleter: PhotoDeleter
     private let pending: PendingDeletionReport
     private let clock: @Sendable () -> Date
     private var flow = CleanupFlow()
+    private var reportInFlight: Task<Outcome?, Error>?
 
     public init(
         api: CleanupAPI,
         store: ResourceStore,
+        versions: IngestVersions,
         deleter: PhotoDeleter,
         pending: PendingDeletionReport,
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.api = api
         self.store = store
+        self.versions = versions
         self.deleter = deleter
         self.pending = pending
         self.clock = clock
@@ -87,7 +101,7 @@ public actor CleanupRunner {
         }
         guard flow.phase == .idle else { throw CleanupFlowError.notNow(flow.phase) }
         if let earlier = try await sendEarlierReport() { return earlier }
-        let asked = try await candidates()
+        let asked = try await current(among: nil).ready
         guard !asked.isEmpty else { return .idle }
         var merged: [EligibleAsset] = []
         var enabled = true
@@ -113,9 +127,8 @@ public actor CleanupRunner {
 
     public func remove(shown: [String]) async throws -> Outcome {
         guard case .fetched = flow.state else { throw CleanupFlowError.notNow(flow.phase) }
-        let present = await deleter.present(shown)
-        let current = try await candidates().filter { present.contains($0.id) }
-        var command = try flow.handle(.remove(shown: shown.filter { present.contains($0) }, current: current, at: clock()))
+        let now = try await current(among: shown)
+        var command = try flow.handle(.remove(shown: shown.filter { now.present.contains($0) }, current: now.ready, at: clock()))
         while let next = command {
             switch next {
             case .fetchEligible:
@@ -149,31 +162,58 @@ public actor CleanupRunner {
     }
 
     private func send(_ request: DeletedRequest) async throws -> Outcome {
-        await pending.save(request)
+        try await singleFlight { try await self.deliver(request) } ?? outcome()
+    }
+
+    private func sendEarlierReport() async throws -> Outcome? {
+        try await singleFlight { try await self.deliverEarlier() }
+    }
+
+    private func singleFlight(_ work: @escaping @Sendable () async throws -> Outcome?) async throws -> Outcome? {
+        if let running = reportInFlight { return try await running.value }
+        let task = Task(operation: work)
+        reportInFlight = task
+        defer { reportInFlight = nil }
+        return try await task.value
+    }
+
+    private func deliver(_ request: DeletedRequest) async throws -> Outcome? {
+        let kept = (try? await pending.save(request)) != nil
         let reply: DeletedReply
         do {
             reply = try await api.deleted(request)
         } catch {
-            _ = try flow.handle(.reportFailed)
-            guard case let .reporting(_, report) = flow.state else { return outcome() }
-            return Self.needsSignIn(error) ? .needsSignIn : .reportPending(report)
+            guard let refused = Self.refusal(error, for: request) else {
+                _ = try flow.handle(.reportFailed)
+                guard case let .reporting(_, report) = flow.state else { return outcome() }
+                if Self.needsSignIn(error) { return .needsSignIn }
+                return kept ? .reportPending(report) : .reportUnsaved(report)
+            }
+            reply = refused
         }
-        await pending.save(nil)
+        try? await pending.save(nil)
         _ = try flow.handle(.reported(reply))
         return outcome()
     }
 
-    private func sendEarlierReport() async throws -> Outcome? {
+    private func deliverEarlier() async throws -> Outcome? {
         guard let saved = await pending.load() else { return nil }
+        var report = CleanupReport()
+        report.removed = saved.assetIDs
+        let reply: DeletedReply
         do {
-            _ = try await api.deleted(saved)
+            reply = try await api.deleted(saved)
         } catch {
-            var report = CleanupReport()
-            report.removed = saved.assetIDs
-            return Self.needsSignIn(error) ? .needsSignIn : .reportPending(report)
+            guard let refused = Self.refusal(error, for: saved) else {
+                return Self.needsSignIn(error) ? .needsSignIn : .reportPending(report)
+            }
+            reply = refused
         }
-        await pending.save(nil)
-        return nil
+        try? await pending.save(nil)
+        let sent = Set(saved.assetIDs)
+        report.recorded = reply.recorded.filter { sent.contains($0) }
+        report.unrecorded = reply.rejected.filter { sent.contains($0.assetID) }
+        return report.unrecorded.isEmpty ? nil : .finished(report)
     }
 
     private func outcome() -> Outcome {
@@ -185,26 +225,49 @@ public actor CleanupRunner {
         }
     }
 
-    private func candidates() async throws -> [AssetDescriptor] {
+    private func current(among ids: [String]?) async throws -> Current {
         let records = try await store.records(in: Set(ResourceState.allCases))
+        let wanted = ids.map { Set($0) }
         var order: [String] = []
-        var byAsset: [String: [LocalResource]] = [:]
+        var stored: [String: [ResourceKind: LocalResource]] = [:]
+        var settled: Set<String> = []
         for record in records {
             let id = record.resource.key.assetID
-            if byAsset[id] == nil { order.append(id) }
-            byAsset[id, default: []].append(record.resource)
+            if let wanted, !wanted.contains(id) { continue }
+            if stored[id] == nil {
+                order.append(id)
+                settled.insert(id)
+            }
+            stored[id, default: [:]][record.resource.key.kind] = record.resource
+            if record.resource.state != .uploaded { settled.remove(id) }
         }
-        let ready = order.filter { id in
-            let resources = byAsset[id] ?? []
-            return resources.contains { $0.key.kind == .photo } && resources.allSatisfy { $0.state == .uploaded }
+        let known = order.filter { settled.contains($0) && stored[$0]?[.photo] != nil }
+        var library: [String: [PhotoResource]] = [:]
+        for resource in try await deleter.resources(of: ids ?? known) {
+            library[resource.assetID, default: []].append(resource)
         }
-        let present = await deleter.present(ready)
-        return ready.filter { present.contains($0) }.map { id in
-            AssetDescriptor(
-                id: id,
-                resources: (byAsset[id] ?? []).sorted { $0.key.kind.order < $1.key.kind.order }.map(\.descriptor)
-            )
+        var result = Current(present: Set(library.keys))
+        for id in known {
+            guard let now = library[id], let rows = stored[id], now.contains(where: { $0.kind == .photo }) else { continue }
+            var kinds: Set<ResourceKind> = []
+            var descriptors: [ResourceDescriptor] = []
+            for resource in now {
+                guard kinds.insert(resource.kind).inserted, let row = rows[resource.kind] else { break }
+                let ingested = await versions.version(for: resource.key)
+                guard ingested == resource.version else { break }
+                descriptors.append(row.descriptor)
+            }
+            guard descriptors.count == now.count else { continue }
+            result.ready.append(AssetDescriptor(id: id, resources: descriptors.sorted { $0.kind.order < $1.kind.order }))
         }
+        return result
+    }
+
+    private static func refusal(_ error: Error, for request: DeletedRequest) -> DeletedReply? {
+        guard case let .rejected(status)? = error as? APIError, status != 408, status != 429 else { return nil }
+        return DeletedReply(recorded: [], rejected: request.assetIDs.map {
+            RejectedAsset(assetID: $0, reason: reportRefusedReason, message: reportRefusedMessage)
+        })
     }
 
     private static func needsSignIn(_ error: Error) -> Bool {
