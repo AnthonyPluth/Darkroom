@@ -1,10 +1,12 @@
 import os
+import time
 import unittest
 from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.domain import review
+from darkroom.domain.ingest import cleanup
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
@@ -300,6 +302,83 @@ class SharedAccountTests(ReviewCase):
                               ({"person_id": 0}, "person_id must be between 1 and 2147483647")):
             with self.subTest(body=body):
                 self.assertEqual(self.call("POST", f"/api/media/{item.id}/reassign", body), (400, {"error": message}))
+
+
+class InterruptedReassignTests(ReviewCase):
+    def setUp(self):
+        super().setUp()
+        self.item = self.item_named(GOOGLE_ONLY_NAME)
+        self.old = self.world.root / self.item.path
+        self.target = self.world.root / "sam" / "google-only" / self.old.parent.parent.name / self.old.parent.name / GOOGLE_ONLY_NAME
+        self.stray = self.world.root / "sam" / "google-only" / "2017" / "07" / "someone-put-this-here.JPG"
+        self.stray.parent.mkdir(parents=True, exist_ok=True)
+        self.stray.write_bytes(self.old.read_bytes())
+
+    def cut_off(self, committed):
+        opened = self.opened
+        review.reassign(opened, self.world.photos, self.item.id, self.world.ids["sam"], 1.0, review.FileEffects())
+        self.assertFalse(self.target.exists())
+        self.assertEqual(len(list(self.target.parent.glob(f"{paths.DROPPING}*"))), 2)
+        if committed:
+            opened.commit()
+        else:
+            opened.rollback()
+
+    def sweep(self):
+        opened = self.opened
+        return paths.sweep_dropping(self.world.photos, time.time() + 60, cleanup.copy_kept(opened, self.world.photos),
+                                    cleanup.still_recorded(opened, self.world.photos))
+
+    def test_a_reassign_cut_off_before_its_commit_is_undone_by_cleanup(self):
+        before = self.tree()
+        self.cut_off(committed=False)
+        swept = self.sweep()
+        self.assertEqual((swept.restored, swept.dropped), (1, 2))
+        self.assertEqual(self.tree(), before)
+        self.assertEqual([path.name for path in self.world.root.rglob(f"{paths.DROPPING}*")], [])
+        row = self.opened.get(MediaItem, self.item.id)
+        self.assertEqual((row.person_id, row.path), (self.item.person_id, self.item.path))
+
+    def test_cleanup_keeps_the_copy_a_cut_off_reassign_made_while_no_recorded_copy_is_left(self):
+        self.cut_off(committed=False)
+        for aside in self.old.parent.glob(f"{paths.DROPPING}*"):
+            aside.unlink()
+        staged = sorted(self.target.parent.glob(f"{paths.DROPPING}*"))
+        data = [sha1_of(path) for path in staged]
+        before = self.tree()
+        self.assertEqual(self.sweep().dropped, 0)
+        self.assertEqual([sha1_of(path) for path in staged], data)
+        self.assertEqual(self.tree(), before)
+        self.assertTrue(self.stray.is_file())
+
+    def test_a_reassign_cut_off_after_its_commit_is_finished_by_cleanup(self):
+        data, sidecar = sha1_of(self.old), sha1_of(self.old.with_name(f"{GOOGLE_ONLY_NAME}.xmp"))
+        before = {key: value for key, value in self.tree().items() if not key.endswith((GOOGLE_ONLY_NAME, f"{GOOGLE_ONLY_NAME}.xmp"))}
+        self.cut_off(committed=True)
+        self.assertEqual(self.sweep().restored, 1)
+        self.assertEqual(self.sweep().dropped, 2)
+        self.assertEqual((sha1_of(self.target), sha1_of(self.target.with_name(f"{GOOGLE_ONLY_NAME}.xmp"))), (data, sidecar))
+        self.assertFalse(self.old.exists())
+        self.assertEqual([path.name for path in self.world.root.rglob(f"{paths.DROPPING}*")], [])
+        self.assertEqual({key: value for key, value in self.tree().items() if not key.endswith((GOOGLE_ONLY_NAME, f"{GOOGLE_ONLY_NAME}.xmp"))}, before)
+        self.assertEqual(self.opened.get(MediaItem, self.item.id).path, str(self.target.relative_to(self.world.root)))
+
+    def test_a_copy_that_could_not_be_put_in_place_after_the_commit_is_left_for_cleanup(self):
+        with mock.patch.object(paths, "put_back", return_value=False):
+            status, body = self.call("POST", f"/api/media/{self.item.id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(self.sweep().restored, 1)
+        self.assertTrue(self.target.is_file())
+        self.assertTrue(self.target.with_name(f"{GOOGLE_ONLY_NAME}.xmp").is_file())
+        self.assertTrue(self.stray.is_file())
+
+    def test_a_finished_reassign_leaves_nothing_for_cleanup(self):
+        self.assertEqual(self.call("POST", f"/api/media/{self.item.id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        after = self.tree()
+        self.assertEqual([path.name for path in self.world.root.rglob(f"{paths.DROPPING}*")], [])
+        self.assertEqual(self.sweep(), paths.Swept())
+        self.assertEqual(self.tree(), after)
 
 
 class SinglePersonAccountTests(ReviewCase):
