@@ -165,6 +165,31 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(record?.resource, old)
     }
 
+    func testInterruptionBetweenTheVersionAndStoreWritesIsRetriedNotSkipped() async throws {
+        let exporter = FakeExporter()
+        let inner = InMemoryResourceStore()
+        let old = LocalResource(key: photo("IMG_1").key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await inner.upsert([old])
+        await exporter.set(contents: Data("new".utf8), for: old.key)
+        let versions = DyingVersions(initial: "v1")
+        let library = FakeLibrary(resources: [photo("IMG_1", "v2")])
+
+        let crashing = ResourceIngester(library: library, exporter: exporter, store: CrashingStore(inner: inner), versions: versions)
+        let interrupted = try await crashing.run()
+        XCTAssertEqual(interrupted, IngestSummary(failed: 1))
+        let afterCrash = try await inner.record(for: old.key)
+        XCTAssertEqual(afterCrash?.resource, old)
+        let versionAfterCrash = await versions.version(for: old.key)
+        XCTAssertNotEqual(versionAfterCrash, "v2")
+
+        await versions.revive()
+        let relaunch = ResourceIngester(library: library, exporter: exporter, store: inner, versions: versions)
+        let summary = try await relaunch.run()
+        XCTAssertEqual(summary, IngestSummary(hashed: 1))
+        let record = try await inner.record(for: old.key)
+        XCTAssertEqual(record?.resource.sha1, "c2a6b03f190dfb2b4aa91f8af8d477a9bc3401dc")
+    }
+
     func testCancellationDuringHashingLeavesTheStoreAndVersionsUntouched() async throws {
         let exporter = CancellingExporter()
         let store = InMemoryResourceStore()
@@ -198,5 +223,36 @@ private actor CancellingExporter: ResourceExporter {
         try Data(count: 3 * SHA1Hasher.chunkSize).write(to: destination)
         withUnsafeCurrentTask { $0?.cancel() }
         return .exported
+    }
+}
+
+private struct CrashingStore: ResourceStore {
+    struct Crash: Error {}
+    let inner: InMemoryResourceStore
+    func upsert(_ resources: [LocalResource]) async throws { throw Crash() }
+    func record(for key: ResourceKey) async throws -> ResourceRecord? { try await inner.record(for: key) }
+    func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] { try await inner.records(in: states) }
+    func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
+        try await inner.setState(state, for: keys, failureReason: failureReason)
+    }
+    func recordAttempt(for keys: [ResourceKey]) async throws { try await inner.recordAttempt(for: keys) }
+    func recordRehash(for key: ResourceKey) async throws { try await inner.recordRehash(for: key) }
+    func counts() async throws -> [ResourceState: Int] { try await inner.counts() }
+}
+
+private actor DyingVersions: IngestVersions {
+    struct Dead: Error {}
+    private var stored: String?
+    private var writes = 0
+    private var alive = false
+
+    init(initial: String) { stored = initial }
+
+    func revive() { alive = true }
+    func version(for key: ResourceKey) -> String? { stored }
+    func setVersion(_ version: String?, for key: ResourceKey) throws {
+        writes += 1
+        if !alive && writes > 1 { throw Dead() }
+        stored = version
     }
 }

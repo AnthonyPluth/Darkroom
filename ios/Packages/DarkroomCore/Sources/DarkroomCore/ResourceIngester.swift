@@ -51,16 +51,17 @@ public struct ResourceIngester: Sendable {
             let filename = UploadFilename.make(for: resource, assetResources: byAsset[resource.assetID] ?? [resource])
             do {
                 let local = try await ingest(resource, filename: filename)
-                // Nothing is changed for a cancelled task, and the version is saved first: if it cannot be saved the
-                // store is left alone, so a relaunch never finds a changed record that it thinks is unchanged.
                 try Task.checkCancellation()
-                try await versions.setVersion(resource.version, for: resource.key)
+                if previous != nil {
+                    try await versions.setVersion(nil, for: resource.key)
+                }
                 do {
                     try await store.upsert([local])
                 } catch {
                     _ = try? await versions.setVersion(previous, for: resource.key)
                     throw error
                 }
+                try await versions.setVersion(resource.version, for: resource.key)
                 if local.state == .notLocal { summary.notLocal += 1 } else { summary.hashed += 1 }
             } catch is CancellationError {
                 throw CancellationError()
