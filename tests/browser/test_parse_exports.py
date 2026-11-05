@@ -60,10 +60,14 @@ class ParseExportsTests(unittest.TestCase):
         item = ready().replace(' data-export-id="aaaa-1111"', "")
         self.assertEqual(takeout.parse_exports(page(item))[0].google_id, "aaaa-1111")
 
-    def test_a_single_unnumbered_link_is_part_one_and_naive_dates_are_utc(self):
-        item = ready(parts=((1, "3 MB"),), created="2026-11-02T03:10:00").replace("Download part 1 of 1 (3 MB)", "Download (3 MB)")
+    def test_a_single_unnumbered_link_is_part_one_and_an_offset_is_honoured(self):
+        item = ready(parts=((1, "3 MB"),), created="2026-11-02T05:10:00+02:00").replace("Download part 1 of 1 (3 MB)", "Download (3 MB)")
         export = takeout.parse_exports(page(item))[0]
         self.assertEqual((export.parts[0].number, export.parts[0].bytes, export.created_at), (1, 3 * 1024**2, stamp(2026, 11, 2, 3, 10)))
+
+    def test_a_date_with_no_time_zone_is_refused(self):
+        with self.assertRaises(takeout.UnreadableExports):
+            takeout.parse_exports(page(ready(created="2026-11-02T03:10:00")))
 
     def test_links_to_other_places_are_not_parts(self):
         item = ready().replace("</div>", '<a href="https://example.test/takeout/download?j=x" aria-label="Download part 9 (1 GB)">x</a><a href="https://takeout.google.com/settings">Settings</a></div>')

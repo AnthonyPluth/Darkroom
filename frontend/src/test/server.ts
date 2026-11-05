@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, BrowserJobView, DeviceView, EventView, ExportPartView, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
+import type { AccountView, BrowserJobView, DeviceView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -78,7 +78,7 @@ export const failedSchedule: BrowserJobView = { ...queuedConnect, id: 4, account
 
 export const noExports: Exports = { exports: [], schedules: [] };
 
-const part = (number: number, status: string, downloads: number): ExportPartView => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status });
+const part = (number: number, status: string, downloads: number): ExportPartDetail => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status });
 
 export const downloadingExport: ExportView = {
   id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null,

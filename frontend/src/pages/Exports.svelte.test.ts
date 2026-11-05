@@ -242,7 +242,7 @@ describe("the Exports page", () => {
       "GET /api/accounts": { accounts: [joAccount] },
       "GET /api/browser/jobs": { jobs: [] },
       "GET /api/exports": { exports: [downloadingExport, importedExport, failedExport, expiredExport], schedules: [] },
-      "GET /api/imports": { imports: [{ id: 1, export_id: 38, account_id: 10, started: 1, finished: 2, stage: "done", status: "done", added: 5, skipped_t1: 0, skipped_t2: 0, skipped_t3: 0, review: 2, missing_gps: 0, failed: 0, unmatched_by_person: {}, error: null }] },
+      "GET /api/imports": { imports: [{ id: 1, export_id: 38, account_id: 10, export_kind: "incremental", export_created_at: 1, part_count: 2, parts: [], started: 1, finished: 2, stage: "done", status: "done", added: 5, skipped_t1: 0, skipped_t2: 0, skipped_t3: 0, review: 2, missing_gps: 0, failed: 0, unmatched_by_person: {}, error: null }] },
     });
     const section = await screen.findByRole("region", { name: "Earlier exports for jo.photos@example.com" });
     const table = within(section).getByRole("table");

@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
@@ -185,7 +185,7 @@ def read_instant(raw: str) -> float:
     except ValueError:
         raise UnreadableExports("an export on the exports page has a date that could not be read") from None
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
+        raise UnreadableExports("an export on the exports page has a date with no time zone")
     return moment.timestamp()
 
 

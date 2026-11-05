@@ -87,7 +87,7 @@ describe("the exports of an account", () => {
     expect(partsLabel(null)).toBe("Parts not listed yet");
     expect(partsLabel(1)).toBe("1 part");
     expect(partsLabel(5)).toBe("5 parts");
-    const run = { id: 1, export_id: 38, account_id: 10, started: 1, finished: 2, stage: null, status: "done", added: 0, skipped_t1: 0, skipped_t2: 0, skipped_t3: 0, review: 3, missing_gps: 0, failed: 0, unmatched_by_person: {}, error: null };
+    const run = { id: 1, export_id: 38, account_id: 10, export_kind: "incremental", export_created_at: 1, part_count: 2, parts: [], started: 1, finished: 2, stage: null, status: "done", added: 0, skipped_t1: 0, skipped_t2: 0, skipped_t3: 0, review: 3, missing_gps: 0, failed: 0, unmatched_by_person: {}, error: null };
     expect(reviewCount([run], 38)).toBe(3);
     expect(reviewCount([run], 39)).toBe(0);
   });

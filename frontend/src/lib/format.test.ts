@@ -69,6 +69,8 @@ describe("untilDay", () => {
   const now = local(2026, 11, 2, 12, 0);
   it("counts days, then weeks, and says when it has ended", () => {
     expect(untilDay(now - 86_400 * 2, now)).toBe("Ended");
+    expect(untilDay(now - 3600, now)).toBe("Ended");
+    expect(untilDay(now, now)).toBe("Ended");
     expect(untilDay(now + 3600, now)).toBe("Within a day");
     expect(untilDay(now + 86_400 * 3, now)).toBe("In 3 days");
     expect(untilDay(now + 86_400 * 70, now)).toBe("In 10 weeks");

@@ -43,8 +43,8 @@ export function onDayAt(then: number): string {
 }
 
 export function untilDay(then: number, now: number): string {
+  if (then <= now) return "Ended";
   const days = Math.ceil((then - now) / DAY);
-  if (days < 0) return "Ended";
   if (days < 14) return days <= 1 ? "Within a day" : `In ${plural(days, "day")}`;
   return `In ${plural(Math.round(days / 7), "week")}`;
 }

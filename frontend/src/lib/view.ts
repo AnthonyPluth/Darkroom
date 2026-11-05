@@ -1,4 +1,4 @@
-import type { AccountState, BrowserJobView, DeviceState, ExportPartView, ExportView, ImportView, PersonStatus } from "./api-types";
+import type { AccountState, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -100,7 +100,7 @@ export function exportChip(item: ExportView): { tone: Tone; label: string } {
   }
 }
 
-export function partChip(part: ExportPartView, exportStatus: string): { tone: Tone; label: string } {
+export function partChip(part: ExportPartDetail, exportStatus: string): { tone: Tone; label: string } {
   switch (part.status) {
     case "pending": return { tone: "neutral", label: "Waiting" };
     case "downloading": return { tone: "neutral", label: "Downloading" };
