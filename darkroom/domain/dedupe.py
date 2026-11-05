@@ -369,6 +369,20 @@ def confirming(opened: Session, item_id: int, person_id: int) -> bool:
     return any(person_id in people for people in serving.values())
 
 
+def confirm_newly_served(opened: Session, account_id: int) -> None:
+    served = accounts.served_people(opened, account_id)
+    items = opened.execute(
+        select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id).where(
+            DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.confirmed_in_google.is_(False),
+            MediaItem.person_id.in_(served), MediaItem.person_id == DedupeDecision.person_id,
+        )
+    ).scalars().unique()
+    for item in items:
+        item.confirmed_in_google = True
+    opened.flush()
+
+
 def reverse(opened: Session, decision_id: int, now: float, by: DecidedBy) -> DedupeDecision:
     row = opened.get(DedupeDecision, decision_id)
     if row is None:
