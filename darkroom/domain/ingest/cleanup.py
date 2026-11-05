@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -10,11 +11,12 @@ from sqlalchemy.orm import Session
 from darkroom.domain import events, media
 from darkroom.domain.ingest import unpack
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
 KEEP_FOR = 14 * DAY
+DROPPING_GRACE = 3600.0
 VERIFIED = "cleanup_holds_verified"
 
 
@@ -26,6 +28,8 @@ class CleanupReport:
     kept: int = 0
     refused: int = 0
     failed: int = 0
+    dropped: int = 0
+    restored: int = 0
 
 
 def imported_at(opened: Session, export: Export) -> float | None:
@@ -102,15 +106,20 @@ def verified_hashes(opened: Session, photos: Photos, export: Export) -> dict[str
     return found
 
 
-def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
+def saved_hashes(opened: Session, export: Export) -> dict[str, object] | None:
     saved = opened.execute(
         select(Event.detail).where(Event.type == VERIFIED, Event.subject == f"export {export.id}").order_by(Event.id).limit(1)
     ).scalar_one_or_none()
     try:
         expected = json.loads(saved) if saved else None
     except ValueError:
-        return False
-    if not isinstance(expected, dict):
+        return None
+    return expected if isinstance(expected, dict) else None
+
+
+def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
+    expected = saved_hashes(opened, export)
+    if expected is None:
         return False
     for review in pending_reviews(opened, export):
         hold = hold_file(photos, export, review)
@@ -214,6 +223,35 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
             review.hold_path = None
 
 
+def same_file_elsewhere(path: Path, sha1: str, dropping: Path) -> bool:
+    return path != dropping and path.is_file() and not path.is_symlink() and paths.file_sha1(path) == sha1
+
+
+def copy_kept(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
+    def kept(dropping: Path, sha1: str) -> bool:
+        for item in opened.execute(select(MediaItem).where(MediaItem.sha1 == sha1)).scalars():
+            try:
+                if same_file_elsewhere(photos.inside(item.path), sha1, dropping):
+                    return True
+            except paths.OutsideRoot:
+                continue
+        held = (select(ReviewItem, Export).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+                .join(Export, Export.id == DedupeDecision.export_id).where(ReviewItem.hold_path.is_not(None), ReviewItem.status == "pending"))
+        for review, export in opened.execute(held).all():
+            hold = hold_file(photos, export, review)
+            if hold is not None and same_file_elsewhere(hold, sha1, dropping):
+                return True
+        return False
+    return kept
+
+
+def still_recorded(opened: Session, photos: Photos) -> Callable[[Path, str], bool]:
+    def recorded(original: Path, sha1: str) -> bool:
+        relative = str(original.relative_to(photos.root))
+        return opened.execute(select(MediaItem.id).where(MediaItem.path == relative, MediaItem.sha1 == sha1).limit(1)).first() is not None
+    return recorded
+
+
 def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
@@ -227,9 +265,17 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
             report.failed += 1
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
     clean_holds(opened, photos, now, report)
+    try:
+        swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos))
+        report.dropped, report.restored = swept.dropped, swept.restored
+    except OSError as error:
+        report.failed += 1
+        events.record(opened, now, "cleanup_failed", "google-only", type(error).__name__)
     opened.flush()
-    if report.staging or report.parts or report.holds or report.refused or report.failed:
+    if report.staging or report.parts or report.holds or report.refused or report.failed or report.dropped or report.restored:
         detail = (f"{report.staging} staging folders, {report.parts} zip parts, {report.holds} review holds removed; {report.refused} refused"
-                  + (f", {report.failed} failed" if report.failed else ""))
+                  + (f", {report.failed} failed" if report.failed else "")
+                  + (f", {report.dropped} interrupted removals cleared" if report.dropped else "")
+                  + (f", {report.restored} interrupted removals put back" if report.restored else ""))
         events.record(opened, now, "cleanup", "inbox", detail)
     return report

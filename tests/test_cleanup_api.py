@@ -170,14 +170,30 @@ class DeviceSwitchTests(ApiCase):
             status, _ = self.call("PATCH", f"/api/devices/{self.device_id}", {"cleanup_enabled": False})
         self.assertEqual(status, 503)
 
-    def test_status_shows_the_count_and_space_after_the_iphone_has_asked(self):
+    def household(self) -> tuple[Household, Device]:
         opened = Session(self.engine, expire_on_commit=False)
         self.addCleanup(opened.close)
         home = Household(self, opened, self.photos)
         person = home.person(self.jo["slug"])
         device = opened.get(Device, self.device_id)
         device.cleanup_enabled, device.sub = True, f"sub-{person.slug}"
-        photo = home.photo(device, ("photo", "adjusted"), through=home.account(person))
+        return home, device
+
+    def test_reversing_the_match_on_the_review_page_between_the_list_and_confirm_is_refused(self):
+        home, device = self.household()
+        photo = home.photo(device, through=home.account(home.person(self.jo["slug"])))
+        self.assertEqual(len(home.eligible(device, photo).eligible), 1)
+        home.opened.commit()
+        status, _ = self.call("POST", f"/api/decisions/{photo.decisions[0].id}/reverse")
+        self.assertEqual(status, 200)
+        home.opened.expire_all()
+        confirmed, rejected = home.confirm(device, photo)
+        self.assertEqual((confirmed, rejected), ([], [eligibility.Rejected(photo.id, eligibility.NOT_CONFIRMED)]))
+
+    def test_status_shows_the_count_and_space_after_the_iphone_has_asked(self):
+        home, device = self.household()
+        opened = home.opened
+        photo = home.photo(device, ("photo", "adjusted"), through=home.account(home.person(self.jo["slug"])))
         opened.commit()
         shown = self.call("GET", "/api/status")[1]["people"][0]["devices"][0]
         self.assertEqual((shown["eligible"], shown["eligible_bytes"]), (None, None))

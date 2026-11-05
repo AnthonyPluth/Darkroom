@@ -2,16 +2,24 @@
   import { Popover } from "bits-ui";
   import type { Me } from "$lib/api-types";
   import { followLink, pageFor, PAGES, router } from "$lib/nav.svelte";
+  import { pending, refreshPending } from "$lib/pending.svelte";
   import { displayName } from "$lib/session.svelte";
+  import Imports from "./pages/Imports.svelte";
   import Browser from "./pages/Browser.svelte";
   import Exports from "./pages/Exports.svelte";
   import People from "./pages/People.svelte";
   import Placeholder from "./pages/Placeholder.svelte";
+  import Review from "./pages/Review.svelte";
   import Status from "./pages/Status.svelte";
 
   let { me }: { me: Me } = $props();
   const page = $derived(pageFor(router.path));
   const initial = $derived(displayName(me).split(/\s+/)[0] ?? "");
+
+  $effect(() => {
+    void router.path;
+    void refreshPending();
+  });
 </script>
 
 {#snippet signOut()}
@@ -32,9 +40,9 @@
             <a
               href={item.path}
               aria-current={page?.path === item.path ? "page" : undefined}
-              class="flex min-h-10 items-center rounded-md px-3 font-medium hover:bg-raised aria-[current=page]:bg-ink aria-[current=page]:text-surface"
+              class="flex min-h-10 items-center justify-between rounded-md px-3 font-medium hover:bg-raised aria-[current=page]:bg-ink aria-[current=page]:text-surface"
               onclick={(event) => followLink(event, item.path)}
-            >{item.label}</a>
+            >{item.label}{#if item.path === "/review" && pending.count > 0}<span class="min-w-5.5 rounded-full bg-accent px-2 py-px text-center text-xs font-bold text-accent-ink" aria-label="{pending.count} waiting">{pending.count}</span>{/if}</a>
           </li>
         {/each}
       </ul>
@@ -66,6 +74,10 @@
         <Status />
       {:else if page?.path === "/people"}
         <People />
+      {:else if page?.path === "/imports"}
+        <Imports />
+      {:else if page?.path === "/review"}
+        <Review />
       {:else if page?.path === "/exports"}
         <Exports />
       {:else if page?.path === "/browser"}
@@ -84,9 +96,9 @@
             <a
               href={item.path}
               aria-current={page?.path === item.path ? "page" : undefined}
-              class="flex min-h-14 items-center justify-center text-xs font-semibold aria-[current=page]:bg-ink aria-[current=page]:text-surface focus-visible:-outline-offset-3"
+              class="flex min-h-14 flex-col items-center justify-center gap-px text-xs font-semibold aria-[current=page]:bg-ink aria-[current=page]:text-surface focus-visible:-outline-offset-3"
               onclick={(event) => followLink(event, item.path)}
-            >{item.label}</a>
+            >{item.label}{#if item.path === "/review" && pending.count > 0}<span class="rounded-full bg-accent px-1.5 text-[11px] leading-4 font-bold text-accent-ink" aria-label="{pending.count} waiting">{pending.count}</span>{/if}</a>
           </li>
         {/each}
       </ul>

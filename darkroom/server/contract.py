@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class Health(TypedDict):
@@ -274,10 +274,19 @@ class FailedBody(TypedDict):
     files: NotRequired[list[str]]
 
 
+class ExportPartView(TypedDict):
+    number: int
+    status: str
+
+
 class ImportView(TypedDict):
     id: int
     export_id: int
-    account_id: int
+    account_id: int | None
+    export_kind: str | None
+    export_created_at: float | None
+    part_count: int | None
+    parts: list[ExportPartView]
     started: float
     finished: float | None
     stage: str | None
@@ -305,6 +314,129 @@ class ImportQueued(TypedDict):
     export_id: int
     status: str
     stage: str | None
+
+
+class ReviewSummary(TypedDict):
+    id: int
+    status: str
+    decision_id: int
+    export_id: int
+    account_id: int
+    tier: int
+    reason: str
+    decided_at: float
+    reversed: bool
+    resolved_at: float | None
+    undo_until: float | None
+    name: str | None
+    library_name: str | None
+    person_id: int | None
+    kept_item_id: int | None
+    kept_person_id: int | None
+    decided_by_person_id: int | None
+
+
+class Reviews(TypedDict):
+    reviews: list[ReviewSummary]
+    pending: int
+    before: int
+
+
+class ReviewSide(TypedDict):
+    name: str | None
+    path: str | None
+    bytes: int | None
+    captured_utc: float | None
+    captured_local: str | None
+    offset_minutes: int | None
+    make: str | None
+    model: str | None
+    width: int | None
+    height: int | None
+    duration_ms: int | None
+    is_video: bool
+
+
+class LibrarySide(ReviewSide):
+    item_id: int
+    person_id: int
+    source: str
+
+
+class ExportSide(ReviewSide):
+    held: bool
+
+
+class PersonChoice(TypedDict):
+    id: int
+    name: str
+
+
+class ReviewDetail(TypedDict):
+    review: ReviewSummary
+    library: LibrarySide | None
+    export: ExportSide
+    phash_distance: int | None
+    served_people: list[PersonChoice]
+    default_person_id: int | None
+
+
+class ReviewReply(TypedDict):
+    review: ReviewSummary
+
+
+class ResolveBody(TypedDict):
+    action: Literal["keep_both"]
+
+
+class DecisionView(TypedDict):
+    id: int
+    export_id: int
+    account_id: int
+    name: str | None
+    path: str | None
+    person_id: int | None
+    tier: int
+    reason: str
+    decided_by: str
+    decided_at: float
+    reversed_at: float | None
+    matched_item_id: int | None
+    takeout_item_id: int | None
+    review_status: str | None
+
+
+class Decisions(TypedDict):
+    decisions: list[DecisionView]
+    total: int
+    page: int
+    page_size: int
+
+
+class DecisionReply(TypedDict):
+    decision: DecisionView
+
+
+class MediaView(LibrarySide):
+    id: int
+    export_id: int | None
+    lat: float | None
+    lon: float | None
+
+
+class MediaList(TypedDict):
+    media: list[MediaView]
+    total: int
+    page: int
+    page_size: int
+
+
+class MediaReply(TypedDict):
+    media: MediaView
+
+
+class ReassignBody(TypedDict):
+    person_id: int
 
 
 class DeviceResourceDecl(TypedDict):

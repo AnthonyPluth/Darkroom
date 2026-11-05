@@ -167,11 +167,34 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT name FROM devices").scalars().all(), ["iPhone"])
 
-    def test_0009_device_eligibility_checked_leaves_old_devices_unchecked_and_can_be_undone(self):
+    def test_0008_review_sidecar_keeps_old_reviews_without_one_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0007")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (id, export_id, account_id, source_path, person_id, tier, reason, decided_by, decided_at) "
+                                       "VALUES (1, 1, 1, 'Takeout/a.jpg', 1, 4, 'close', 'auto', 1.0)")
+            connection.exec_driver_sql("INSERT INTO review_items (id, decision_id, status) VALUES (1, 1, 'pending')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT sidecar_json, hold_sha1 FROM review_items").one(), (None, None))
+            connection.exec_driver_sql("""UPDATE review_items SET sidecar_json = '{"title": "a.jpg"}', hold_sha1 = 'abc'""")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0007")
+        self.assertFalse({"sidecar_json", "hold_sha1"} & {column["name"] for column in inspect(self.engine).get_columns("review_items")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT status FROM review_items").scalars().all(), ["pending"])
+
+    def test_0009_device_eligibility_checked_leaves_old_devices_unchecked_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0008")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 0)")
         db.migrate(self.engine)
@@ -181,11 +204,10 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.downgrade(config, "0007")
+            command.downgrade(config, "0008")
         self.assertNotIn("eligibility_checked_at", {column["name"] for column in inspect(self.engine).get_columns("devices")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT name FROM devices").scalars().all(), ["iPhone"])
-
 
 if __name__ == "__main__":
     unittest.main()
