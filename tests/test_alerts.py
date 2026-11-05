@@ -117,6 +117,7 @@ class AlertTests(unittest.TestCase):
         self.assertNotIn("delet", without_pixel.lower())
         self.assertIn("2026", alerts.schedule_ending("a@x", "2026-12-01").message)
         self.assertIn("2027", alerts.schedule_renewed("a@x", "2027-12-01").message)
+        self.assertIn("2026", alerts.schedule_renewal_failed("a@x", "2026-12-01").message)
         self.assertIn("E1", alerts.export_expiring("E1", "soon").message)
         self.assertIn("Import", alerts.failure("Import").message)
 

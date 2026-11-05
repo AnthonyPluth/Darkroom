@@ -131,6 +131,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
         with db.session(engine) as opened:
             expired = browser_jobs.expire_leases(opened, settings, at)
             downloads.jobs_failed(opened, expired, at)
+            renewal.jobs_failed(opened, settings, expired, at)
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 
