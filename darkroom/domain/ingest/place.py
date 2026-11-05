@@ -214,8 +214,15 @@ def matched_takeout(opened: Session, decision: DedupeDecision) -> MediaItem | No
 
 def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> None:
     old, new = xmp.GoogleMetadata.of(matched.sidecar_json), xmp.GoogleMetadata.of(entry.fields.sidecar_json)
-    path = photos.root / matched.path
-    if old == new or not path.is_file() or path.is_symlink() or not xmp.refresh(path, old, new, read, write):
+    if old == new:
+        report.skipped += 1
+        return
+    try:
+        path = photos.google_only_file(matched.path)
+    except (paths.NotALibraryCopy, paths.OutsideRoot):
+        report.skipped += 1
+        return
+    if not xmp.refresh(path, old, new, read, write):
         report.skipped += 1
         return
     matched.sidecar_json = entry.fields.sidecar_json
