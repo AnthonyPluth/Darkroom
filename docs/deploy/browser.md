@@ -43,7 +43,7 @@ The route is internal-only (reached over the LAN or Tailscale, like `darkroom` i
 
 | Host | Container | Mode | Why |
 | --- | --- | --- | --- |
-| `${PHOTOS_ROOT}/_inbox` | `/photos/_inbox` | rw | Downloaded Takeout parts land in the person's inbox (#31). |
+| `${PHOTOS_ROOT}/_inbox` | `/photos/_inbox` | rw | The download job writes each Takeout part to `<person>/export-<export id>/.partial/`, checks its size and zip integrity, then moves it to `<person>/export-<export id>/`. Chromium keeps a download in progress under `.downloads/<account id>/`, on the same mount, so a finished part moves without a copy. |
 | `${PHOTOS_ROOT}/_browser` | `/photos/_browser` | rw | `<account id>/profile/` holds the persistent Chromium profile (the signed-in session), `<account id>/failures/<job id>/` the screenshot and scrubbed page snapshot of a failed job. |
 
 Nothing else of the photo share is mounted: the worker cannot see or touch `originals/`.
