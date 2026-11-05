@@ -100,6 +100,42 @@ class ImportsApiTests(unittest.TestCase):
             self.call("GET", "/api/status")
         self.assertFalse(any(PRIVATE_NAME.encode() in reply for reply in self.replies))
 
+    def failing_import(self):
+        from unittest import mock
+
+        from darkroom.domain.ingest import place
+
+        real = place.copy_into
+
+        def failing(folder, source, sha1):
+            if source.name == "IMG_2001.JPG":
+                raise place.PlaceFailed("taken")
+            return real(folder, source, sha1)
+
+        self.call("POST", f"/api/exports/{self.export_id}/import")
+        opened = self.world.reopen()
+        with mock.patch.object(place, "copy_into", failing):
+            run.run_waiting(opened, self.settings, NOW, self.world.tools)
+        self.assertEqual(self.call("GET", "/api/imports")[1]["imports"][0]["failed"], 1)
+
+    def test_an_export_with_failed_items_can_be_requested_again_and_then_finishes(self):
+        self.failing_import()
+        status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
+        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "importing", "stage": "unpacked"}))
+        self.import_now()
+        runs = sorted(self.call("GET", "/api/imports")[1]["imports"], key=lambda r: r["id"])
+        self.assertEqual([(r["status"], r["failed"], r["added"]) for r in runs], [("done", 1, 1), ("done", 0, 2)])
+        self.assertEqual(self.call("POST", f"/api/exports/{self.export_id}/import"), (409, {"error": "this export is already imported"}))
+
+    def test_a_retry_whose_staging_is_gone_is_refused(self):
+        import shutil
+
+        self.failing_import()
+        shutil.rmtree(self.world.root / "_inbox/jo" / f"export-{self.export_id}")
+        status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
+        self.assertEqual(status, 409)
+        self.assertIn("staging folder", body["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

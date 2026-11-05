@@ -117,6 +117,22 @@ enum ResourceStoreContract {
         XCTAssertEqual(record?.rehashes, 0)
     }
 
+    static func conditionalAttemptCountsOnlyAnUnchangedRow(_ store: ResourceStore) async throws {
+        let old = resource("a", state: .uploading, sha1: "old")
+        try await store.upsert([old])
+        let first = try await store.recordAttempt(ifUnchanged: old)
+        let second = try await store.recordAttempt(ifUnchanged: old)
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(second, 2)
+        try await store.upsert([resource("a", sha1: "new")])
+        let stale = try await store.recordAttempt(ifUnchanged: old)
+        let gone = try await store.recordAttempt(ifUnchanged: resource("gone"))
+        XCTAssertNil(stale)
+        XCTAssertNil(gone)
+        let record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.attempts, 0)
+    }
+
     static func countsAndFilteringByState(_ store: ResourceStore) async throws {
         try await store.upsert([resource("a"), resource("b", state: .uploaded), resource("c", state: .uploaded), resource("d", state: .notLocal)])
         let counts = try await store.counts()

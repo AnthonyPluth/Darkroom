@@ -14,7 +14,7 @@ from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import run
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
-from darkroom.storage.paths import OutsideRoot, Photos
+from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
 
 MAX_DOWNLOADS = 5
 MAX_ATTEMPTS = 3
@@ -100,6 +100,10 @@ def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     person = person_of(opened, export)
     export_folder(settings, person, export)
+    try:
+        Photos(settings.photos_root).make_export_folder(person.slug, folder_name(export))
+    except (OSError, OutsideRoot, NotInTheInbox) as error:
+        raise Refused("the export's inbox folder could not be made for the browser worker") from error
     return {"export_id": export.id, "google_id": export.google_id or "", "person": person.slug, "folder": folder_name(export),
             "part_count": export.part_count or 0, "parts": [part_plan(part) for part in exports.parts_of(opened, export.id)]}
 
@@ -223,7 +227,7 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
-    if job.result != ATTEMPTED or exports.all_done(opened, export):
+    if (job.result == ATTEMPTED) == exports.all_done(opened, export):
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:
