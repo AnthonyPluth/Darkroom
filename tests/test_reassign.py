@@ -373,7 +373,7 @@ class InterruptedReassignTests(ReviewCase):
         report = self.clean()
         self.assertEqual(report.taken_back, 0)
         self.assertEqual(self.target(path).read_bytes(), data)
-        self.assertEqual(len(list(self.target(path).parent.glob(f"{paths.PLACING}*"))), 2)
+        self.assertEqual(len(list(self.target(path).parent.glob(f"{paths.PLACING}*"))), 1)
 
     def test_an_interrupted_reassign_onto_an_identical_photo_takes_back_only_the_sidecar_it_wrote(self):
         item_id, path = self.kept()
@@ -435,8 +435,37 @@ class InterruptedReassignTests(ReviewCase):
         target.write_bytes(b"a different photo put there since")
         self.clean()
         self.assertEqual(target.read_bytes(), b"a different photo put there since")
-        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}{'?' * 16}-{target.name}")), [])
+        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*")), [])
         self.assertTrue((self.world.root / path).is_file())
+
+    def test_a_copy_that_could_not_be_hard_linked_is_still_taken_back(self):
+        item_id, path = self.kept()
+        before = self.tree()
+        with mock.patch("os.link", side_effect=PermissionError("this share has no hard links")):
+            self.dies_while_reassigning(item_id)
+        self.assertTrue(self.target(path).is_file())
+        report = self.clean()
+        self.assertEqual((report.taken_back, report.restored), (1, 1))
+        self.assertEqual(self.tree(), before)
+
+    def test_a_photo_with_the_longest_name_a_set_aside_allows_is_reassigned_and_taken_back(self):
+        item_id, path = self.kept()
+        old = self.world.root / path
+        old.with_name(f"{GOOGLE_ONLY_NAME}.xmp").unlink()
+        longest = old.with_name("L" * (255 - len(f"{paths.DROPPING}0123456789abcdef-") - len(old.suffix)) + old.suffix)
+        self.assertEqual(len(longest.name), 228)
+        os.rename(old, longest)
+        opened = self.opened
+        opened.get(MediaItem, item_id).path = str(longest.relative_to(self.world.root))
+        opened.commit()
+        before = self.tree()
+        self.dies_while_reassigning(item_id)
+        self.assertTrue(self.target(str(longest.relative_to(self.world.root))).is_file())
+        self.assertEqual(self.clean().taken_back, 1)
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        self.assertTrue(self.target(str(longest.relative_to(self.world.root))).is_file())
+        self.assertEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
 
 
 class SinglePersonAccountTests(ReviewCase):
