@@ -55,7 +55,8 @@ def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end
         alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_UNCONFIRMED, account.email, alerts.schedule_renewal_unconfirmed(account.email, day), link, now, about=alerts.account(account.id))
         return
     alerts.close_other_kinds(opened, failed_key(account.id), RENEWAL_FAILED, now)
-    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day), ending_link(settings), now, about=alerts.account(account.id))
+    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day, now >= end), ending_link(settings), now,
+                      about=alerts.account(account.id))
 
 
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
@@ -69,6 +70,8 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
         asked = latest_renewal(opened, account, end - NOTICE)
         if asked is not None and asked.status == "failed":
             open_failed(opened, settings, account, end, asked, now)
+            continue
+        if asked is None and browser_jobs.schedule_attempt_pending(opened, account.id):
             continue
         wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone))
         alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
