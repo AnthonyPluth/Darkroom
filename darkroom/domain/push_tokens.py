@@ -124,10 +124,12 @@ def unsealed(device: Device, secret: str) -> str | None:
     return token if TOKEN.fullmatch(token) and digest_of(token) == device.push_token_digest else None
 
 
-def targets(opened: Session, settings: Settings, person_ids: set[int], now: float) -> list[Target]:
-    if not person_ids:
+def targets(opened: Session, settings: Settings, person_ids: set[int], now: float, only: set[int] | None = None) -> list[Target]:
+    if not person_ids or (only is not None and not only):
         return []
     query = select(Device).where(Device.person_id.in_(person_ids), Device.revoked_at.is_(None), Device.push_token_digest.is_not(None)).order_by(Device.id)
+    if only is not None:
+        query = query.where(Device.id.in_(only))
     found = []
     for device in opened.execute(query).scalars():
         token = token_for(opened, settings, device, now)
