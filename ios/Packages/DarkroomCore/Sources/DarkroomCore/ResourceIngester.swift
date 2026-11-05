@@ -49,11 +49,20 @@ public struct ResourceIngester: Sendable {
                 continue
             }
             let filename = UploadFilename.make(for: resource, assetResources: byAsset[resource.assetID] ?? [resource])
+            guard UploadFilename.isAcceptable(filename) else {
+                summary.failed += 1
+                continue
+            }
             do {
                 let local = try await ingest(resource, filename: filename)
+                if local.state == .notLocal, let known, known.resource.state == .notLocal, previous == resource.version {
+                    summary.notLocal += 1
+                    continue
+                }
                 try Task.checkCancellation()
                 if previous != nil {
                     try await versions.setVersion(nil, for: resource.key)
+                    try Task.checkCancellation()
                 }
                 do {
                     try await store.upsert([local])
@@ -61,6 +70,7 @@ public struct ResourceIngester: Sendable {
                     _ = try? await versions.setVersion(previous, for: resource.key)
                     throw error
                 }
+                try Task.checkCancellation()
                 try await versions.setVersion(resource.version, for: resource.key)
                 if local.state == .notLocal { summary.notLocal += 1 } else { summary.hashed += 1 }
             } catch is CancellationError {

@@ -106,6 +106,28 @@ public actor FileIngestVersions: IngestVersions {
 }
 
 public enum UploadFilename {
+    public static let maxLength = 200
+
+    public static func isAcceptable(_ name: String) -> Bool {
+        let scalars = name.unicodeScalars
+        guard !scalars.isEmpty, scalars.count <= maxLength else { return false }
+        guard scalars.allSatisfy({ isPrintable($0) }) else { return false }
+        if name.contains("/") || name.contains("\\") || name.hasPrefix(".") || name.lowercased().hasSuffix(".xmp") {
+            return false
+        }
+        return true
+    }
+
+    private static func isPrintable(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar == " " { return true }
+        switch scalar.properties.generalCategory {
+        case .control, .format, .surrogate, .privateUse, .unassigned, .lineSeparator, .paragraphSeparator, .spaceSeparator:
+            return false
+        default:
+            return true
+        }
+    }
+
     /// `IMG_0001.HEIC` stays, its video is `IMG_0001.MOV`, its edited render is `IMG_0001_adjusted.<ext>`.
     public static func make(for resource: PhotoResource, assetResources: [PhotoResource]) -> String {
         let primary = assetResources.first { $0.kind == .photo } ?? resource
