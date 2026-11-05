@@ -1,0 +1,26 @@
+name: Control smoke
+
+on:
+  push:
+    branches: [main]
+    paths: [frontend/verify/**, tools/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  pull_request:
+    branches: [main]
+    paths: [frontend/verify/**, tools/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: control-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  smoke:
+    name: Control smoke
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@e46ed57c9783080142e148121176bd7d4a321a8a   # v2.3.0
+    with:
+      make-target: control-smoke
+      timeout-minutes: 20
