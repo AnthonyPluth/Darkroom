@@ -44,6 +44,10 @@ final class ResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.setStateIgnoresKeysThatAreGone(make())
     }
 
+    func testRemoveDeletesOnlyTheGivenKeys() async throws {
+        try await ResourceStoreContract.removeDeletesOnlyTheGivenKeysAndLaterInsertsGoLast(make())
+    }
+
     func testAttemptsAndRehashesCountUpAndResetOnUpsert() async throws {
         try await ResourceStoreContract.attemptsAndRehashesCountUpAndResetOnUpsert(make())
     }
