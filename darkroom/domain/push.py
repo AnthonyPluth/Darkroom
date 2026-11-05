@@ -22,13 +22,14 @@ FALLBACK_TITLE = "Darkroom"
 class Delivered:
     sent: frozenset[int] = frozenset()
     failed: frozenset[int] = frozenset()
+    invalid: frozenset[int] = frozenset()
 
     @property
     def devices(self) -> frozenset[int]:
-        return self.sent | self.failed
+        return self.sent | self.failed | self.invalid
 
     def dump(self) -> str:
-        return json.dumps({"sent": sorted(self.sent), "failed": sorted(self.failed)})
+        return json.dumps({"sent": sorted(self.sent), "failed": sorted(self.failed), "invalid": sorted(self.invalid)})
 
 
 def delivered_of(alert: Alert) -> Delivered:
@@ -36,7 +37,7 @@ def delivered_of(alert: Alert) -> Delivered:
         return Delivered()
     try:
         raw = json.loads(alert.pushed_devices)
-        return Delivered(frozenset(int(each) for each in raw["sent"]), frozenset(int(each) for each in raw["failed"]))
+        return Delivered(*(frozenset(int(each) for each in raw.get(name, [])) for name in ("sent", "failed", "invalid")))
     except (ValueError, KeyError, TypeError):
         return Delivered()
 
@@ -93,13 +94,13 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         settle(opened, alert, due_at, "alert_disabled", now)
         return 0
     targets = push_tokens.targets(opened, settings, recipients(opened, alert), now)
-    if not targets:
-        settle(opened, alert, due_at, "alert_no_device", now)
-        return 0
     delivered = delivered_of(alert)
+    if not targets:
+        settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_no_device", now)
+        return 0
     pending = [target for target in targets if target.device_id not in delivered.devices]
     if not pending:
-        settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_failed", now)
+        settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_failed" if delivered.failed else "alert_no_device", now)
         return 0
     push = apns.Push(alert.kind, alert.id, alerts.TITLES.get(alert.kind, FALLBACK_TITLE))
     opened.commit()
@@ -120,13 +121,14 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
         record(opened, target, result, now)
     sent = {target.device_id for target, result in zip(held, results, strict=True) if result.outcome == "sent"}
     failed = {target.device_id for target, result in zip(held, results, strict=True) if result.outcome == "failed"}
+    invalid = {target.device_id for target, result in zip(held, results, strict=True) if result.outcome == "invalid_token"}
     transient = {target.device_id for target, result in zip(held, results, strict=True)
                  if result.outcome == "failed" and result.reason in TRANSPORT_REASONS}
     if transient and retry_left(alert, now):
         opened.refresh(alert)
         if alert.push_due == due_at:
             alert.push_due = now + RETRY_AFTER
-            alert.pushed_devices = Delivered(delivered.sent | sent, delivered.failed | (failed - transient)).dump()
+            alert.pushed_devices = Delivered(delivered.sent | sent, delivered.failed | (failed - transient), delivered.invalid | invalid).dump()
         opened.commit()
         return len(sent)
     all_sent = delivered.sent | sent

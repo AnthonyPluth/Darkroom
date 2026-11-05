@@ -336,6 +336,45 @@ class PartialDeliveryTests(PushWorld):
         self.assertIsNone(self.alert(alert_id).push_due)
         self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
 
+    def test_a_device_whose_token_was_refused_as_invalid_is_not_pushed_again_when_it_registers_again_before_a_retry(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("invalid_token", "Unregistered", self.now - 10), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        self.assertEqual(self.alert(alert_id).push_due, self.now + push.RETRY_AFTER)
+        self.register(self.device_id, JO_TOKEN, self.now + 1)
+        pusher.replies = {}
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 1)
+        self.assertEqual([tokens for tokens, _ in pusher.sent], [[JO_TOKEN, SAM_TOKEN], [SAM_TOKEN]])
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-2:], ["push_sent", "alert_sent"])
+
+    def test_a_delivery_record_from_before_invalid_tokens_were_kept_is_still_read(self):
+        alert = Alert(pushed_devices=json.dumps({"sent": [1], "failed": [2]}))
+        self.assertEqual(push.delivered_of(alert), push.Delivered(frozenset({1}), frozenset({2})))
+
+    def test_an_alert_whose_every_eligible_device_vanished_after_a_partial_push_is_recorded_as_sent(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 1)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertEqual(len(pusher.sent), 1)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_sent")
+
+    def test_an_alert_whose_every_device_vanished_before_any_push_succeeded_is_still_recorded_as_not_delivered(self):
+        alert_id = self.open(alerts.account(self.two_person_account()))
+        pusher = FakePusher({JO_TOKEN: apns.Result("failed", "TooManyRequests"), SAM_TOKEN: apns.Result("failed", "Unreachable")})
+        self.assertEqual(self.deliver(pusher), 0)
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, self.device_id, self.now)
+            devices.revoke(opened, self.sam_device, self.now)
+        self.assertEqual(self.deliver(pusher, self.now + push.RETRY_AFTER), 0)
+        self.assertIsNone(self.alert(alert_id).push_due)
+        self.assertEqual([t for t, _ in self.events()][-1], "alert_no_device")
+
 
 class LateRevocationTests(PushWorld):
     def targets_then(self, change):
