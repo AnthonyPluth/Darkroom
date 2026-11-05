@@ -41,6 +41,51 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(ran, [0])
         self.assertEqual(scheduler.run_due(10), ["broken", "fine"])
 
+    def test_a_job_with_its_own_thread_does_not_hold_up_the_others(self):
+        import threading
+
+        scheduler = jobs.Scheduler()
+        release, started, ran = threading.Event(), threading.Event(), []
+
+        def slow(now):
+            started.set()
+            release.wait(5)
+            ran.append(("slow", now))
+
+        scheduler.every("slow", 10, slow, own_thread=True)
+        scheduler.every("quick", 10, lambda now: ran.append(("quick", now)))
+        self.addCleanup(release.set)
+        self.assertEqual(scheduler.run_due(0), ["slow", "quick"])
+        self.assertTrue(started.wait(5))
+        self.assertEqual(ran, [("quick", 0)])
+        self.assertEqual(scheduler.run_due(10), ["quick"])
+        self.assertEqual(scheduler.run_due(20), ["quick"])
+        self.assertEqual(ran, [("quick", 0), ("quick", 10), ("quick", 20)])
+        release.set()
+        scheduler.jobs["slow"].worker.join(5)
+        self.assertEqual(scheduler.run_due(30), ["slow", "quick"])
+        scheduler.jobs["slow"].worker.join(5)
+        self.assertEqual([entry for entry in ran if entry[0] == "slow"], [("slow", 0), ("slow", 30)])
+
+    def test_a_job_with_its_own_thread_that_fails_is_logged_and_runs_again(self):
+        from unittest import mock
+
+        scheduler = jobs.Scheduler()
+        calls = []
+
+        def broken(now):
+            calls.append(now)
+            raise RuntimeError("boom")
+
+        scheduler.every("broken", 10, broken, own_thread=True)
+        with mock.patch.object(jobs.monitoring, "log") as logged:
+            scheduler.run_due(0)
+            scheduler.jobs["broken"].worker.join(5)
+            scheduler.run_due(10)
+            scheduler.jobs["broken"].worker.join(5)
+        self.assertEqual(calls, [0, 10])
+        logged.assert_called_with("job failed", job="broken", error="RuntimeError")
+
     def test_daily_at_runs_at_the_local_hour_each_day(self):
         scheduler = jobs.Scheduler("UTC")
         ran = []
@@ -130,7 +175,47 @@ class BuildTests(unittest.TestCase):
                 self.assertEqual(opened.query(MediaItem).count(), 1)
 
 
-    def test_the_import_job_runs_requested_imports_on_the_scheduler_thread(self):
+    def test_a_long_import_does_not_delay_the_session_recheck(self):
+        import threading
+        from unittest import mock
+
+        from darkroom import oidc
+        from darkroom.domain.ingest import run
+        from darkroom.storage.models import Export
+        from tests.import_world import NOW, World
+
+        world = World(self, immich_configured=False)
+        export_id = world.hand_dropped().id
+        run.request_import(world.opened, export_id)
+        world.opened.commit()
+        scheduler = jobs.build(world.settings, world.engine, NOW)
+        scheduler.jobs["imports"].next_due = scheduler.jobs["sessions.recheck"].next_due = NOW
+        release, started, rechecked = threading.Event(), threading.Event(), []
+        real = run.run_waiting
+
+        def long_import(opened, settings, at, tools=None):
+            started.set()
+            release.wait(10)
+            return real(opened, settings, at, tools)
+
+        def recheck(opened, settings, at):
+            rechecked.append(at)
+            return oidc.RecheckSummary()
+
+        self.addCleanup(release.set)
+        with mock.patch.object(run, "run_waiting", long_import), mock.patch.object(oidc, "recheck_due", recheck):
+            ran = scheduler.run_due(NOW)
+            self.assertTrue(started.wait(5))
+            self.assertIn("sessions.recheck", ran)
+            self.assertIn("imports", ran)
+            self.assertEqual(rechecked, [NOW])
+            self.assertTrue(scheduler.jobs["imports"].worker.is_alive())
+            self.assertNotEqual(world.reopen().get(Export, export_id).status, "imported")
+            release.set()
+            scheduler.jobs["imports"].worker.join(30)
+        self.assertEqual(world.reopen().get(Export, export_id).status, "imported")
+
+    def test_the_import_job_runs_requested_imports_in_its_own_thread(self):
         from darkroom.domain.ingest import run
         from darkroom.storage.models import Export
         from tests.import_world import NOW, World
@@ -138,7 +223,8 @@ class BuildTests(unittest.TestCase):
         world = World(self, immich_configured=False)
         export_id = world.hand_dropped().id
         scheduler = jobs.build(world.settings, world.engine)
-        self.assertEqual(scheduler.jobs["imports"].interval, 60.0)
+        self.assertEqual((scheduler.jobs["imports"].interval, scheduler.jobs["imports"].own_thread), (60.0, True))
+        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name != "imports"))
         scheduler.run_one("imports", NOW)
         self.assertEqual(world.reopen().get(Export, export_id).status, "downloaded")
         run.request_import(world.opened, export_id)

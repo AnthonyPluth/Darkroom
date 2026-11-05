@@ -435,8 +435,12 @@ class InterruptedRemovalTests(Imported):
         folder = self.root / "jo" / "google-only" / "2017" / "07"
         photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
         xmp_data = sidecar.read_bytes()
-        paths.set_sidecar_aside(self.world.photos, str(photo.relative_to(self.root)))
-        (aside,) = folder.glob(f"{paths.DROPPING}*")
+        review = self.review()
+        review.status, review.resolved_at = "kept_both", TOO_SOON - DAY
+        self.world.opened.commit()
+        paths.set_sidecar_aside(self.world.photos, str(photo.relative_to(self.root)), review.id, cleanup.undone_count(self.world.opened, review.id))
+        (aside,) = folder.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
+        self.assertTrue(paths.record_of(aside).is_file())
         return photo, sidecar, aside, xmp_data
 
     def test_a_sidecar_set_aside_alone_is_put_back_while_a_row_records_its_photo(self):
@@ -446,12 +450,23 @@ class InterruptedRemovalTests(Imported):
         self.assertEqual((report.restored, report.dropped), (1, 0))
         self.assertEqual(sidecar.read_bytes(), xmp_data)
         self.assertFalse(aside.exists())
+        self.assertFalse(paths.record_of(aside).exists())
+        self.assertEqual(self.kept_tree(), self.kept)
+
+    def test_a_record_whose_sidecar_was_never_set_aside_is_removed_and_nothing_else_changes(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        record = folder / f"{paths.DROPPING}0123456789abcdef.json"
+        record.write_bytes(b'{"sha1": "' + b"0" * 40 + b'", "review": 1, "undone": 0}')
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped, report.failed), (0, 0, 0))
+        self.assertFalse(record.exists())
         self.assertEqual(self.kept_tree(), self.kept)
 
     def test_a_sidecar_set_aside_alone_is_never_put_back_onto_another_photo_or_over_a_sidecar(self):
         outside = self.root.parent / "outside.JPG"
         outside.write_bytes(b"a file outside the photo folder")
-        for case in ("another photo, recorded", "a row with another sha1", "no row at that path", "a sidecar written since", "no photo", "a link"):
+        for case in ("another photo, recorded", "a row with another sha1", "no row at that path", "a sidecar written since", "no photo", "a link",
+                     "the pair is no longer kept", "no record", "a record that is not one"):
             with self.subTest(case=case):
                 photo, sidecar, aside, xmp_data = self.sidecar_set_aside()
                 data = photo.read_bytes()
@@ -468,6 +483,12 @@ class InterruptedRemovalTests(Imported):
                     sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
                 elif case == "no photo":
                     photo.unlink()
+                elif case == "the pair is no longer kept":
+                    self.review().status = "pending"
+                elif case == "no record":
+                    paths.record_of(aside).unlink()
+                elif case == "a record that is not one":
+                    paths.record_of(aside).write_bytes(b'{"sha1": "x", "review": 1, "undone": 0}')
                 else:
                     photo.unlink()
                     photo.symlink_to(outside)
@@ -486,6 +507,7 @@ class InterruptedRemovalTests(Imported):
                 photo.write_bytes(data)
                 sidecar.unlink(missing_ok=True)
                 os.rename(aside, sidecar)
+                paths.record_of(aside).unlink(missing_ok=True)
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")

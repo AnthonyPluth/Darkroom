@@ -509,7 +509,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
         elif "row" not in adopted:
             moved = move_back(opened, photos, hit.review, item, hold, "sidecar" in adopted, effects)
         if moved is None and "photo" in adopted and "sidecar" not in adopted:
-            effects.set_aside(paths.set_sidecar_aside(photos, item.path))
+            effects.set_aside(paths.set_sidecar_aside(photos, item.path, hit.review.id, cleanup.undone_count(opened, hit.review.id)))
     except paths.NotALibraryCopy as error:
         raise WrongState("the kept copy is not where it was placed, so it was left alone") from error
     except (OSError, place.PlaceFailed) as error:

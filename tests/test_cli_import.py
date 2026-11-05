@@ -92,6 +92,50 @@ class ImportTakeoutTests(unittest.TestCase):
             self.assertEqual(opened.query(ImportRun).count(), 0)
             self.assertEqual(opened.query(Export).one().status, "downloaded")
 
+    def test_a_run_left_to_resume_is_reported_as_resuming_and_finishes_when_run_again(self):
+        from sqlalchemy.exc import OperationalError
+
+        from darkroom.domain.ingest import run as ingest_run
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        real = ingest_run.mark
+        refused = {"once": True}
+
+        def failing(opened, export, run_row, stage):
+            if stage == "reported" and refused["once"]:
+                refused["once"] = False
+                raise OperationalError("COMMIT", {}, Exception("disk I/O error"))
+            return real(opened, export, run_row, stage)
+
+        with mock.patch.object(ingest_run, "mark", failing):
+            code, out, err = self.call("--person", "jo")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("did not fail", err)
+        self.assertIn("will resume", err)
+        self.assertNotIn("the import failed", err)
+        with db.session(self.engine) as opened:
+            export = opened.query(Export).one()
+            self.assertEqual(export.status, "importing")
+            self.assertEqual(opened.query(ImportRun).one().status, "running")
+        code, out, err = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertNotIn("will resume", err)
+        self.assertRegex(out, r"Export \d+: 16 added")
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Export).one().status, "imported")
+            self.assertEqual(opened.query(ImportRun).count(), 1)
+
+    def test_a_failed_run_still_reports_the_failure(self):
+        from darkroom.domain.ingest import run as ingest_run
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        with mock.patch.object(ingest_run, "stage_report", side_effect=RuntimeError("boom")):
+            code, _, err = self.call("--person", "jo")
+        self.assertEqual(code, 1)
+        self.assertIn("RuntimeError during the import", err)
+        self.assertNotIn("will resume", err)
+
     def test_person_is_required_and_must_exist(self):
         self.assertEqual(self.call()[0], 1)
         code, _, err = self.call("--person", "nobody")

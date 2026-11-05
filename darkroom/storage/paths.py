@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -19,7 +20,8 @@ CHUNK = 1024 * 1024
 SIDECAR_SUFFIX = ".xmp"
 DROPPING = ".dropping-"
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
-SIDECAR_SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}\.([0-9a-f]{{40}})-(.+{re.escape(SIDECAR_SUFFIX)})$")
+SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
+TOKEN = len(DROPPING) + 16
 PLACING = ".placing-"
 PLACED = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})-(.+)$")
 UPLOADS_TMP = ".uploads_tmp"
@@ -387,18 +389,50 @@ def carry_sidecar(source: Path, destination: Path) -> bool:
 
 
 class SetAside:
-    def __init__(self, staged: list[tuple[Path, Path]]) -> None:
+    def __init__(self, staged: list[tuple[Path, Path]], records: list[Path] | None = None) -> None:
         self.staged = staged
+        self.records = records or []
 
     def finish(self) -> None:
         for _, aside in self.staged:
             with contextlib.suppress(OSError):
                 aside.unlink()
+        for record in self.records:
+            with contextlib.suppress(OSError):
+                record.unlink()
 
     def restore(self) -> None:
         taken = [path for path, aside in reversed(self.staged) if not move_without_replacing(aside, path)]
         if taken:
             raise AlreadyExists(taken[0].name)
+        for record in self.records:
+            with contextlib.suppress(OSError):
+                record.unlink()
+
+
+def record_of(aside: Path) -> Path:
+    return aside.with_name(f"{aside.name[:TOKEN]}.json")
+
+
+@dataclass(frozen=True)
+class SidecarRecord:
+    sha1: str
+    review_id: int
+    undone_before: int
+
+
+def read_record(record: Path) -> SidecarRecord | None:
+    try:
+        data = json.loads(record.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"sha1", "review", "undone"}:
+        return None
+    sha1, review_id, undone_before = data["sha1"], data["review"], data["undone"]
+    if not (isinstance(sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sha1) and type(review_id) is int and type(undone_before) is int
+            and review_id > 0 and undone_before >= 0):
+        return None
+    return SidecarRecord(sha1, review_id, undone_before)
 
 
 def drop_new_sidecar(photos: Photos, relative: str) -> None:
@@ -418,14 +452,20 @@ def restore_sidecar(destination: Path, data: bytes) -> None:
         os.replace(temp, destination)
 
 
-def set_sidecar_aside(photos: Photos, relative: str) -> SetAside:
+def set_sidecar_aside(photos: Photos, relative: str, review_id: int, undone_before: int) -> SetAside:
     photo = photos.google_only_file(relative)
     sidecar = sidecar_of(photo)
     if sidecar.is_symlink() or not sidecar.is_file():
         return SetAside([])
-    aside = sidecar.with_name(f"{DROPPING}{secrets.token_hex(8)}.{file_sha1(photo)}-{sidecar.name}")
-    os.rename(sidecar, aside)
-    return SetAside([(sidecar, aside)])
+    aside = sidecar.with_name(f"{DROPPING}{secrets.token_hex(8)}-{sidecar.name}")
+    record = record_of(aside)
+    write_once(record, [json.dumps({"sha1": file_sha1(photo), "review": review_id, "undone": undone_before}).encode()])
+    try:
+        os.rename(sidecar, aside)
+    except OSError:
+        record.unlink(missing_ok=True)
+        raise
+    return SetAside([(sidecar, aside)], [record])
 
 
 def drop_library_copy(photos: Photos, relative: str, kept: Path, with_sidecar: bool = True) -> None:
@@ -482,15 +522,23 @@ def put_back(path: Path, original: Path) -> bool:
     return True
 
 
-def put_sidecar_back(path: Path, recorded: Callable[[Path, str], bool]) -> bool:
-    match = SIDECAR_SET_ASIDE.match(path.name)
-    if match is None:
-        return False
-    sha1, sidecar = match.group(1), path.with_name(match.group(2))
-    photo = sidecar.with_name(sidecar.name.removesuffix(SIDECAR_SUFFIX))
-    if photo.is_symlink() or not photo.is_file() or file_sha1(photo) != sha1 or not recorded(photo, sha1):
-        return False
-    return move_without_replacing(path, sidecar)
+def put_sidecar_back(path: Path, recorded: Callable[[Path, str], bool], undo_committed: Callable[[int, int], bool | None]) -> str | None:
+    original, record = set_aside_name(path), record_of(path)
+    found = None if original is None or record.is_symlink() or not record.is_file() else read_record(record)
+    if original is None or found is None:
+        return None
+    committed = undo_committed(found.review_id, found.undone_before)
+    if committed:
+        path.unlink()
+        record.unlink()
+        return "dropped"
+    photo = original.with_name(original.name.removesuffix(SIDECAR_SUFFIX))
+    if committed is None or photo.is_symlink() or not photo.is_file() or file_sha1(photo) != found.sha1 or not recorded(photo, found.sha1):
+        return None
+    if not move_without_replacing(path, original):
+        return None
+    record.unlink()
+    return "restored"
 
 
 def leftovers(photos: Photos, prefix: str, older_than: float) -> Iterator[list[Path]]:
@@ -501,10 +549,12 @@ def leftovers(photos: Photos, prefix: str, older_than: float) -> Iterator[list[P
                if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(folder.resolve()) and path.stat().st_ctime < older_than]
 
 
-def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> Swept:
+def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool],
+                   undo_committed: Callable[[int, int], bool | None]) -> Swept:
     swept = Swept()
     for found in leftovers(photos, DROPPING, older_than):
-        for path in [path for path in found if path.suffix != SIDECAR_SUFFIX]:
+        records = [path for path in found if SET_ASIDE_RECORD.match(path.name)]
+        for path in [path for path in found if path.suffix != SIDECAR_SUFFIX and path not in records]:
             sha1, original = file_sha1(path), set_aside_name(path)
             if original is not None and recorded(original, sha1) and put_back(path, original):
                 swept.restored += 1
@@ -512,9 +562,10 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
                 path.unlink()
                 swept.dropped += 1
         for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
-            if SIDECAR_SET_ASIDE.match(path.name):
-                if put_sidecar_back(path, recorded):
-                    swept.restored += 1
+            if record_of(path).is_file():
+                outcome = put_sidecar_back(path, recorded, undo_committed)
+                swept.restored += outcome == "restored"
+                swept.dropped += outcome == "dropped"
                 continue
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
             original = set_aside_name(photo)
@@ -522,6 +573,9 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
                 continue
             path.unlink()
             swept.dropped += 1
+        for record in records:
+            if not any(record.parent.glob(f"{record.name.removesuffix('.json')}-*")):
+                record.unlink(missing_ok=True)
     return swept
 
 

@@ -732,7 +732,7 @@ class UndoTests(ReviewCase):
         review.undo(dying, self.world.photos, review_id, resolved_at + 1, review.FileEffects())
         dying.close()
         self.assertFalse(sidecar.exists())
-        (aside,) = photo.parent.glob(f"{paths.DROPPING}*")
+        (aside,) = photo.parent.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
         opened = self.opened
         report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
         opened.commit()
@@ -744,6 +744,70 @@ class UndoTests(ReviewCase):
         self.assertEqual(photo.read_bytes(), data)
         self.assertFalse(sidecar.exists())
         self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_an_undo_of_a_photo_whose_sidecar_name_is_as_long_as_a_set_aside_name_allows_goes_both_ways(self):
+        photo, sidecar = self.already_there(None)
+        review_id, resolved_at = self.resolve("keep_both")
+        if not sidecar.exists():
+            sidecar.write_bytes(b"<x:xmpmeta>written by keep both</x:xmpmeta>")
+        longest = 255 - len(f"{paths.DROPPING}0123456789abcdef-")
+        named = photo.with_name("L" * (longest - len(photo.suffix) - len(paths.SIDECAR_SUFFIX)) + photo.suffix)
+        long_sidecar = paths.sidecar_of(named)
+        self.assertEqual(len(long_sidecar.name), longest)
+        os.rename(photo, named)
+        os.rename(sidecar, long_sidecar)
+        opened = self.opened
+        row = opened.execute(select(MediaItem).where(MediaItem.path == str(photo.relative_to(self.world.root)))).scalar_one()
+        row.path = str(named.relative_to(self.world.root))
+        opened.commit()
+        data, xmp_data, before = named.read_bytes(), long_sidecar.read_bytes(), self.tree()
+        self.opened.close()
+        dying = Session(self.world.engine)
+        review.undo(dying, self.world.photos, review_id, resolved_at + 1, review.FileEffects())
+        dying.close()
+        (aside,) = named.parent.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
+        self.assertEqual(len(aside.name), 255)
+        opened = self.opened
+        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+        opened.commit()
+        self.assertEqual(report.restored, 1)
+        self.assertEqual((named.read_bytes(), long_sidecar.read_bytes()), (data, xmp_data))
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(named.read_bytes(), data)
+        self.assertFalse(long_sidecar.exists())
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_a_sidecar_left_behind_by_an_undo_that_committed_is_never_put_back(self):
+        photo, sidecar = self.already_there(None)
+        relative = str(photo.relative_to(self.world.root))
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        for kept_again in (False, True):
+            with self.subTest(kept_again=kept_again):
+                review_id, _ = self.resolve("keep_both")
+                if not sidecar.exists():
+                    sidecar.write_bytes(b"<x:xmpmeta>written by keep both</x:xmpmeta>")
+                with mock.patch.object(paths.SetAside, "finish"):
+                    self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+                (aside,) = photo.parent.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
+                self.assertFalse(sidecar.exists())
+                if kept_again:
+                    self.assertEqual(self.resolve("keep_both")[0], review_id)
+                    sidecar.unlink(missing_ok=True)
+                data, rows = photo.read_bytes(), self.opened.execute(select(MediaItem.id).where(MediaItem.path == relative)).scalars().all()
+                opened = self.opened
+                report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+                opened.commit()
+                self.assertEqual((report.restored, report.dropped), (0, 1))
+                self.assertFalse(aside.exists())
+                self.assertFalse(paths.record_of(aside).exists())
+                self.assertFalse(sidecar.exists())
+                self.assertEqual(photo.read_bytes(), data)
+                self.assertEqual(self.opened.execute(select(MediaItem.id).where(MediaItem.path == relative)).scalars().all(), rows)
+                if kept_again:
+                    self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
 
     def test_a_failing_sidecar_removal_on_undo_changes_nothing(self):
         review_id, _ = self.resolve("keep_both")

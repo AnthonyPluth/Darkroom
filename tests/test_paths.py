@@ -255,8 +255,14 @@ class DropLibraryCopyTests(unittest.TestCase):
         self.assertEqual(self.copy.read_bytes(), b"same bytes")
         self.assertEqual(newer_sidecar.read_bytes(), b"<new/>")
 
+    def test_a_sidecar_that_cannot_be_set_aside_leaves_no_record(self):
+        with mock.patch("os.rename", side_effect=OSError("name too long")), self.assertRaises(OSError):
+            paths.set_sidecar_aside(self.photos, "jo/google-only/2020/01/a.jpg", 1, 0)
+        self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
+        self.assertEqual([path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)], [])
+
     def test_putting_back_a_set_aside_sidecar_works_when_nothing_is_in_the_way(self):
-        paths.set_sidecar_aside(self.photos, "jo/google-only/2020/01/a.jpg").restore()
+        paths.set_sidecar_aside(self.photos, "jo/google-only/2020/01/a.jpg", 1, 0).restore()
         self.assertEqual(self.copy.with_name("a.jpg.xmp").read_bytes(), b"<xmp/>")
         self.assertEqual([path.name for path in self.copy.parent.iterdir() if path.name.startswith(paths.DROPPING)], [])
 
