@@ -3,6 +3,7 @@ services:
     build: .
     image: ghcr.io/anthonypluth/darkroom:latest
     restart: unless-stopped
+    user: "10001:10010"
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -34,6 +35,7 @@ services:
       dockerfile: Dockerfile.browser
     image: ghcr.io/anthonypluth/darkroom-browser:latest
     restart: unless-stopped
+    user: "10002:10010"
     profiles: [browser]
     depends_on:
       - darkroom
