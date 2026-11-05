@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import hashlib
+import re
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from darkroom.domain import events
+from darkroom.storage import secretbox
+from darkroom.storage.models import Device, Person
+
+TOKEN = re.compile(r"[0-9a-f]{64,200}")
+MAX_RAW = 256
+
+
+class BadToken(ValueError):
+    pass
+
+
+def normalized(raw: str) -> str:
+    token = raw.strip().lower() if len(raw) <= MAX_RAW else ""
+    if not TOKEN.fullmatch(token):
+        raise BadToken("token must be the APNs device token, 64 to 200 hexadecimal characters")
+    return token
+
+
+def digest_of(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def subject_of(opened: Session, device: Device) -> str:
+    person = opened.get(Person, device.person_id)
+    return person.slug if person is not None else str(device.person_id)
+
+
+def forget(opened: Session, device: Device, now: float) -> bool:
+    if device.push_token_sealed is None and device.push_token_digest is None:
+        return False
+    device.push_token_sealed, device.push_token_digest, device.push_token_at = None, None, now
+    events.record(opened, now, "push_token_cleared", subject_of(opened, device), device.name)
+    return True
+
+
+def register(opened: Session, secret: str, device_id: int, raw: str, now: float) -> bool:
+    token = normalized(raw)
+    device = opened.get(Device, device_id)
+    if device is None or device.revoked_at is not None:
+        raise LookupError("no such device")
+    digest = digest_of(token)
+    if device.push_token_digest == digest:
+        device.push_token_at = now
+        return False
+    sealed = secretbox.seal(token, secret)
+    for other in opened.execute(select(Device).where(Device.push_token_digest == digest, Device.id != device.id)).scalars():
+        forget(opened, other, now)
+    opened.flush()
+    device.push_token_sealed, device.push_token_digest, device.push_token_at = sealed, digest, now
+    opened.flush()
+    events.record(opened, now, "push_token_registered", subject_of(opened, device), device.name)
+    return True
+
+
+def token_of(device: Device, secret: str) -> str | None:
+    if device.push_token_sealed is None or device.revoked_at is not None:
+        return None
+    try:
+        token = secretbox.unseal(device.push_token_sealed, secret)
+    except secretbox.Unreadable:
+        return None
+    return token if TOKEN.fullmatch(token) and digest_of(token) == device.push_token_digest else None
