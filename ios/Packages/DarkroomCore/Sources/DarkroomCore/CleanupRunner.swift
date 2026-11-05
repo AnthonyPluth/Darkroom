@@ -259,6 +259,12 @@ public actor CleanupRunner {
             if record.resource.state != .uploaded { settled.remove(id) }
         }
         let known = order.filter { settled.contains($0) && stored[$0]?[.photo] != nil }
+        var ingested: [ResourceKey: String] = [:]
+        for id in known {
+            for key in (stored[id] ?? [:]).values.map(\.key) {
+                ingested[key] = await versions.version(for: key)
+            }
+        }
         var library: [String: [PhotoResource]] = [:]
         for resource in try await deleter.resources(of: ids ?? known) {
             library[resource.assetID, default: []].append(resource)
@@ -269,9 +275,8 @@ public actor CleanupRunner {
             var kinds: Set<ResourceKind> = []
             var descriptors: [ResourceDescriptor] = []
             for resource in now {
-                guard kinds.insert(resource.kind).inserted, let row = rows[resource.kind] else { break }
-                let ingested = await versions.version(for: resource.key)
-                guard ingested == resource.version else { break }
+                guard kinds.insert(resource.kind).inserted, let row = rows[resource.kind],
+                      ingested[resource.key] == resource.version else { break }
                 descriptors.append(row.descriptor)
             }
             guard descriptors.count == now.count else { continue }

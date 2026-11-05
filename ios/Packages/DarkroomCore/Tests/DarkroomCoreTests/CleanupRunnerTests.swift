@@ -89,6 +89,25 @@ private actor FakeLibrary: PhotoDeleter {
     }
 }
 
+private actor FakeVersions: IngestVersions {
+    private var storage: [ResourceKey: String] = [:]
+    private var onLookup: (@Sendable () async -> Void)?
+
+    func set(onLookup: (@Sendable () async -> Void)?) { self.onLookup = onLookup }
+
+    func version(for key: ResourceKey) async -> String? {
+        if let hook = onLookup {
+            onLookup = nil
+            await hook()
+        }
+        return storage[key]
+    }
+
+    func setVersion(_ version: String?, for key: ResourceKey) {
+        storage[key] = version
+    }
+}
+
 private actor FailingPendingReport: PendingDeletionReport {
     func load() -> DeletedRequest? { nil }
 
@@ -119,7 +138,7 @@ final class CleanupRunnerTests: XCTestCase {
         let api = FakeCleanupAPI()
         let store = InMemoryResourceStore()
         let library = FakeLibrary()
-        let versions = InMemoryIngestVersions()
+        let versions = FakeVersions()
         let pending: PendingDeletionReport
         let clock = Clock()
 
@@ -316,6 +335,25 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertEqual(report.changed, ["b"])
         XCTAssertEqual(report.removed, ["a"])
         XCTAssertEqual(report.notRemoved, [])
+    }
+
+    func testAnEditDuringTheLastVersionLookupIsNotDeleted() async throws {
+        let rig = try await rig(["a", "b"])
+        let library = rig.library
+        let versions = rig.versions
+        await rig.api.set(onConfirm: {
+            await versions.set(onLookup: {
+                await library.add(PhotoResource(assetID: "b", kind: .adjusted, originalFilename: "b.HEIC", version: "v1"))
+            })
+        })
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a", "b"])
+        let deletes = await rig.library.deleteCalls
+        XCTAssertEqual(deletes, [["a"]])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.changed, ["b"])
+        XCTAssertEqual(report.removed, ["a"])
     }
 
     func testAVersionChangeDuringTheConfirmCallDeletesNothing() async throws {
