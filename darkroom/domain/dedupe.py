@@ -157,6 +157,8 @@ class PersonIndex:
         if account is None:
             raise LookupError("no such Google account")
         people = accounts.served_people(opened, account_id)
+        if owner_person_id is not None:
+            people = people | {owner_person_id}
         phone = opened.execute(
             select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people)).order_by(MediaItem.id)
         ).scalars()
@@ -338,6 +340,8 @@ def apply(opened: Session, decision: Decision, export: Export, now: float) -> De
     if existing is not None:
         return existing
     people = accounts.served_people(opened, export.account_id)
+    if export.owner_person_id is not None:
+        people = people | {export.owner_person_id}
     if decision.person_id not in people:
         raise ValueError("the decision assigns the item to someone this account does not serve")
     matched = checked_match(opened, decision, export, people)

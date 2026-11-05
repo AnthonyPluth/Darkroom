@@ -99,6 +99,40 @@ class ImportKeepsItsOwnerTests(unittest.TestCase):
         self.assertIsNone(run.staging_of(self.world.opened, self.world.photos, self.world.opened.get(Export, self.export.id)))
 
 
+class OwnerNoLongerServedTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self, pixel_people=("sam",))
+        self.export = self.world.downloaded(owner="jo")
+
+    def test_the_owner_is_in_the_dedupe_scope_when_nothing_serves_them_any_more(self):
+        change_default(self.world, "sam")
+        self.assertEqual(accounts.served_people(self.world.opened, self.world.account), {self.world.ids["sam"]})
+        done = self.world.run_import(self.export)
+        self.assertEqual((done.status, done.failed), ("done", 0))
+        self.assertEqual(google_only(self.world, "jo"), ["IMG_2001.JPG", "IMG_2002.JPG"])
+        self.assertEqual(google_only(self.world, "sam"), [])
+        rows = self.world.opened.execute(select(DedupeDecision.source_path, DedupeDecision.person_id)).all()
+        by_name = {path.rsplit("/", 1)[1]: person for path, person in rows}
+        for name in ("IMG_1001.JPG", "IMG_1003.JPG", "IMG_1005.JPG", "IMG_2001.JPG", "IMG_2002.JPG"):
+            self.assertEqual(by_name[name], self.world.ids["jo"], name)
+        for name in ("IMG_1002.JPG", "IMG_1004.JPG"):
+            self.assertEqual(by_name[name], self.world.ids["sam"], name)
+
+    def test_the_owners_originals_are_indexed_for_the_export(self):
+        change_default(self.world, "sam")
+        from darkroom.domain import dedupe
+        index = dedupe.PersonIndex.load(self.world.opened, self.world.account, self.world.ids["jo"])
+        self.assertEqual(index.person_ids, {self.world.ids["jo"], self.world.ids["sam"]})
+        without = dedupe.PersonIndex.load(self.world.opened, self.world.account)
+        self.assertEqual(without.person_ids, {self.world.ids["sam"]})
+
+    def test_an_export_without_an_owner_does_not_widen_the_scope(self):
+        change_default(self.world, "sam")
+        self.export.owner_person_id = None
+        self.world.opened.commit()
+        self.assertEqual(accounts.served_people(self.world.opened, self.world.account), {self.world.ids["sam"]})
+
+
 class OldExportsTests(unittest.TestCase):
     def setUp(self):
         self.world = World(self)
