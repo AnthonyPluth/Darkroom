@@ -1,7 +1,10 @@
 import ast
+import os
 import re
+import stat
 import tempfile
 import threading
+import traceback
 import unittest
 import zipfile
 from pathlib import Path
@@ -9,8 +12,9 @@ from pathlib import Path
 from sqlalchemy import select
 
 from darkroom.domain import browser_jobs, downloads, exports
-from darkroom.storage import db
+from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
+from darkroom.storage.paths import Photos, remove_inbox_tree
 from darkroom_browser import selectors
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download
@@ -176,6 +180,7 @@ class DownloadJobTests(DownloadWorld):
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         self.assertEqual(sorted(path.name for path in self.folder().iterdir()), [f"takeout-20261102T031000Z-00{n}.zip" for n in (1, 2, 3)])
+        self.assertEqual({path.stat().st_mode & 0o7777 for path in self.folder().iterdir()}, {download.PART_MODE})
         self.assertIn(("progress", 1), self.reporter.events)
         self.finish(job_id)
         self.assertEqual(self.status(), "downloaded")
@@ -323,6 +328,161 @@ class DownloadsFolderTests(unittest.TestCase):
         self.assertEqual(download.sweep_downloads(folder), 3)
         self.assertEqual([each.name for each in folder.iterdir()], ["a-folder"])
         self.assert_held_copies_survive()
+
+
+def mode_of(path):
+    return path.lstat().st_mode & 0o7777
+
+
+DARKROOM_UID = 10001
+WORKER_UID = 10002
+SHARE_GID = 10010
+
+
+def as_user(uid, work):
+    child = os.fork()
+    if child == 0:
+        code = 1
+        try:
+            os.setgroups([])
+            os.setgid(SHARE_GID)
+            os.setuid(uid)
+            os.umask(0o077 if uid == DARKROOM_UID else 0o007)
+            result = work()
+            code = result if isinstance(result, int) else 0
+        except BaseException:
+            traceback.print_exc()
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(child, 0)
+    return os.waitstatus_to_exitcode(status)
+
+
+class SharedFolderTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        previous = os.umask(0o077)
+        self.addCleanup(os.umask, previous)
+
+    def test_the_workers_modes_give_others_nothing(self):
+        self.assertEqual((download.SHARED_FOLDER_MODE, download.PART_MODE), (0o2770, 0o660))
+        self.assertEqual((download.SHARED_FOLDER_MODE & 0o007, download.PART_MODE & 0o007), (0, 0))
+        self.assertEqual(download.SHARED_FOLDER_MODE, paths.SHARED_FOLDER_MODE)
+
+    def test_the_workers_folders_are_shared_whatever_the_umask(self):
+        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        partial = download.fresh_partial(folder)
+        for each in (self.root / "_inbox", downloads.parent, downloads, self.root / "_inbox" / "jo", folder, partial):
+            self.assertEqual(mode_of(each), download.SHARED_FOLDER_MODE, each)
+
+    def assert_a_group_member_can_read_and_remove(self, top, gid):
+        for path in [top, *top.rglob("*")]:
+            found = path.lstat()
+            self.assertEqual(found.st_gid, gid, path)
+            self.assertEqual(stat.S_IMODE(found.st_mode) & stat.S_IRWXO, 0, path)
+            if stat.S_ISDIR(found.st_mode):
+                self.assertTrue(found.st_mode & stat.S_ISGID, path)
+                self.assertEqual(found.st_mode & stat.S_IRWXG, stat.S_IRWXG, path)
+            else:
+                self.assertTrue(stat.S_ISREG(found.st_mode), path)
+                self.assertEqual(found.st_mode & (stat.S_IRGRP | stat.S_IWGRP), stat.S_IRGRP | stat.S_IWGRP, path)
+
+    def test_everything_the_worker_makes_can_be_read_and_removed_by_another_member_of_the_group(self):
+        photos = Photos(self.root)
+        photos.share_inbox()
+        photos.make_export_folder("jo", "export-1")
+        gid = (self.root / "_inbox").lstat().st_gid
+        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        (downloads / "0b7c-guid").write_bytes(b"half")
+        os.chmod(downloads / "0b7c-guid", download.PART_MODE)
+        folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        partial = download.fresh_partial(folder)
+        (partial / "takeout-001.zip").write_bytes(b"part")
+        os.replace(partial / "takeout-001.zip", folder / "takeout-001.zip")
+        os.chmod(folder / "takeout-001.zip", download.PART_MODE)
+        self.assert_a_group_member_can_read_and_remove(self.root / "_inbox", gid)
+
+    def test_the_worker_never_widens_a_folder_darkroom_made_to_others(self):
+        Photos(self.root).make_export_folder("jo", "export-1")
+        download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        for each in (self.root / "_inbox", self.root / "_inbox" / ".downloads", self.root / "_inbox" / "jo", self.root / "_inbox" / "jo" / "export-1"):
+            self.assertEqual(mode_of(each) & stat.S_IRWXO, 0, each)
+
+    def test_a_folder_darkroom_made_keeps_its_mode(self):
+        Photos(self.root).make_export_folder("jo", "export-1")
+        os.chmod(self.root / "_inbox" / "jo", 0o2750)
+        download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        self.assertEqual(mode_of(self.root / "_inbox" / "jo"), 0o2750)
+
+    @unittest.skipUnless(os.geteuid() == 0, "switching to Darkroom's and the worker's users needs root")
+    def test_darkroom_reads_and_retires_what_the_worker_made_through_the_shared_group(self):
+        os.chmod(self.root, 0o755)
+        photos_root = self.root / "photos"
+        photos_root.mkdir(mode=0o755)
+        os.chmod(photos_root, 0o755)
+        os.chown(photos_root, DARKROOM_UID, SHARE_GID)
+        photos = Photos(photos_root)
+
+        def darkroom_prepares():
+            photos.share_inbox()
+            photos.make_export_folder("jo", "export-1")
+
+        def worker_downloads():
+            downloads = download.downloads_folder(photos_root / "_browser" / "7" / "profile")
+            (downloads / "0b7c-guid").write_bytes(b"half")
+            folder = download.inbox_folder(photos_root, {"person": "jo", "folder": "export-1"})
+            partial = download.fresh_partial(folder)
+            part = partial / "takeout-001.zip"
+            part.write_bytes(b"part")
+            os.replace(part, folder / part.name)
+            os.chmod(folder / part.name, download.PART_MODE)
+            download.fresh_partial(folder)
+
+        def darkroom_retires():
+            folder = photos_root / "_inbox" / "jo" / "export-1"
+            assert (folder / "takeout-001.zip").read_bytes() == b"part"
+            assert remove_inbox_tree(photos, folder)
+            photos.retire_account_downloads("7")
+            return None
+
+        (photos_root / "_browser").mkdir()
+        os.chown(photos_root / "_browser", WORKER_UID, SHARE_GID)
+        self.assertEqual(as_user(DARKROOM_UID, darkroom_prepares), 0)
+        self.assertEqual(as_user(WORKER_UID, worker_downloads), 0)
+        self.assertEqual(as_user(DARKROOM_UID, darkroom_retires), 0)
+        self.assertEqual(sorted(each.name for each in (photos_root / "_inbox").iterdir()), [".downloads", "jo"])
+        self.assertEqual(list((photos_root / "_inbox" / ".downloads").iterdir()), [])
+        self.assertEqual(list((photos_root / "_inbox" / "jo").iterdir()), [])
+
+    @unittest.skipUnless(os.geteuid() == 0, "switching to Darkroom's and the worker's users needs root")
+    def test_without_the_shared_group_darkroom_could_not_retire_the_workers_folder(self):
+        os.chmod(self.root, 0o755)
+        photos_root = self.root / "photos"
+        photos_root.mkdir(mode=0o755)
+        os.chmod(photos_root, 0o755)
+        os.chown(photos_root, DARKROOM_UID, SHARE_GID)
+        photos = Photos(photos_root)
+        self.assertEqual(as_user(DARKROOM_UID, lambda: photos.make_export_folder("jo", "export-1")), 0)
+
+        def worker_without_sharing():
+            folder = photos_root / "_inbox" / "jo" / "export-1" / ".partial"
+            folder.mkdir()
+            os.chmod(folder, 0o755)
+            (folder / "takeout-001.zip").write_bytes(b"part")
+
+        self.assertEqual(as_user(WORKER_UID, worker_without_sharing), 0)
+        def darkroom_cannot_remove():
+            try:
+                remove_inbox_tree(photos, photos_root / "_inbox" / "jo" / "export-1")
+            except PermissionError:
+                return 3
+            return 0
+
+        self.assertEqual(as_user(DARKROOM_UID, darkroom_cannot_remove), 3)
 
 
 class InboxFolderTests(unittest.TestCase):
