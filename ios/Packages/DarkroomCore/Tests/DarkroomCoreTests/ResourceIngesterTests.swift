@@ -17,6 +17,7 @@ private actor FakeExporter: ResourceExporter {
 
     func set(contents: Data, for key: ResourceKey) { self.contents[key] = contents }
     func setCloudOnly(_ key: ResourceKey) { cloudOnly.insert(key) }
+    func setLocal(_ key: ResourceKey) { cloudOnly.remove(key) }
     func setBroken(_ key: ResourceKey) { broken.insert(key) }
     func setFixed(_ key: ResourceKey) { broken.remove(key) }
 
@@ -82,6 +83,26 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(changed, IngestSummary(hashed: 1))
         let record = try await store.record(for: a.key)
         XCTAssertEqual(record?.resource.bytes, 4)
+    }
+
+    func testNotLocalResourceIsIngestedOnceItBecomesLocalWithTheSameVersion() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let versions = InMemoryIngestVersions()
+        let a = photo("IMG_1")
+        await exporter.setCloudOnly(a.key)
+        let first = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(first, IngestSummary(notLocal: 1))
+        let stillCloud = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(stillCloud, IngestSummary(notLocal: 1))
+
+        await exporter.setLocal(a.key)
+        await exporter.set(contents: Data("abc".utf8), for: a.key)
+        let downloaded = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(downloaded, IngestSummary(hashed: 1))
+        let record = try await store.record(for: a.key)
+        XCTAssertEqual(record?.resource.state, .hashed)
+        XCTAssertEqual(record?.resource.sha1, "a9993e364706816aba3e25717850c26c9cd0d89d")
     }
 
     func testFailedExportIsCountedNotRecordedAndRetried() async throws {

@@ -44,7 +44,7 @@ public struct ResourceIngester: Sendable {
             try Task.checkCancellation()
             let known = try await store.record(for: resource.key)
             let previous = await versions.version(for: resource.key)
-            if known != nil, previous == resource.version {
+            if let known, known.resource.state != .notLocal, previous == resource.version {
                 summary.skipped += 1
                 continue
             }
