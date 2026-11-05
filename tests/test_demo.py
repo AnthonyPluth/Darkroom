@@ -19,7 +19,7 @@ from darkroom.domain import accounts, alerts, browser_jobs, demo, events
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
-from darkroom.storage.models import Alert, AuthSession, Device, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, AuthSession, DedupeDecision, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos
 from tests.shared import fetch, settings_from, start_server
 
@@ -159,7 +159,22 @@ class SeededDemo(unittest.TestCase):
             self.assertEqual(summary, self.summary)
             self.assertEqual(table_rows(engine), table_rows(self.engine))
             self.assertEqual(file_digests(again / "photos"), file_digests(self.root / "photos"))
-            self.assertEqual(len(file_digests(again / "photos")), self.summary.originals)
+            self.assertEqual(len(file_digests(again / "photos")), self.summary.originals + 1)
+
+    def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
+        exports = self.rows(Export)
+        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental")])
+        runs = self.rows(ImportRun)
+        self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
+        reviews = self.rows(ReviewItem)
+        self.assertEqual([r.status for r in reviews], ["pending"])
+        hold = Photos(self.root / "photos").root / reviews[0].hold_path
+        self.assertTrue(hold.is_file())
+        decision = self.rows(DedupeDecision)[0]
+        self.assertEqual((decision.tier, decision.decided_by), (4, "auto"))
+        matched = next(item for item in self.rows(MediaItem) if item.id == decision.matched_item_id)
+        self.assertTrue(matched.path.endswith("IMG_0101.JPG"))
+        self.assertNotEqual(hold.read_bytes(), (self.root / "photos" / matched.path).read_bytes())
 
     def test_a_seed_for_another_day_moves_with_it(self):
         with tempfile.TemporaryDirectory() as folder:

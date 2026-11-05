@@ -72,7 +72,7 @@ describe("targets, routes and what's reported", () => {
     expect(c.routeUrl(base, "exports")).toBe(`${base}/exports`);
     expect(c.routeUrl(base, "/people")).toBe(`${base}/people`);
     expect(c.routeUrl(base, `${base}/people`)).toBe(`${base}/people`);
-    expect(c.routeUrl(base, "http://localhost:4000/people")).toBe("http://localhost:4000/people");
+    expect(() => c.routeUrl(base, "http://localhost:4000/people")).toThrow(/isn't the session's address, 127\.0\.0\.1/);
     for (const other of ["https://example.com", "http://127.0.0.1:8080/people", "http://localhost:4001/", "http://192.168.1.5:4000/", "https://127.0.0.1:4000/", "file:///etc/passwd"]) {
       expect(() => c.routeUrl(base, other)).toThrow(/isn't this session's demo server/);
     }

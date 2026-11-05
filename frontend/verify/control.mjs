@@ -354,6 +354,7 @@ export function routeUrl(base, route) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(route)) {
     let url;
     try { url = new URL(route); } catch { throw new ControlError("bad_route", `${route} isn't a URL`, "give a page like people or a path like /people"); }
+    if (sameServer(url, base) && url.hostname !== new URL(base).hostname) throw new ControlError("refused", `${url.hostname} isn't the session's address, ${new URL(base).hostname}`, `the session's sign-in belongs to ${new URL(base).hostname}: use ${base}${url.pathname} or just ${url.pathname}`);
     if (!sameServer(url, base)) throw new ControlError("refused", `${url.origin} isn't this session's demo server`, `the session drives only ${base}: give a page like people or a path like /people`);
     return url.href;
   }

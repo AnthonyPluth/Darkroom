@@ -1,4 +1,4 @@
-export const ROUTES = { "sign-in": "/", status: "/", people: "/people" };
+export const ROUTES = { "sign-in": "/", status: "/", people: "/people", exports: "/exports", imports: "/imports", review: "/review", browser: "/browser" };
 export const SIGNED_OUT_PAGES = ["sign-in"];
 export const routeOf = (name) => ROUTES[name] ?? `/${name}`;
 

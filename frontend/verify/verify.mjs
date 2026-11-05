@@ -24,7 +24,7 @@ export async function prepareContext(ctx, now) {
 export const loadedWhen = (signedIn) => (signedIn ? "networkidle" : "load");
 export const SETTLE_MS = 300;
 export const FROZEN_NOW = "2026-06-15T12:00:00Z";
-export const PAGES = ["sign-in", "status", "people"];
+export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser"];
 export const SESSION_FILE = "demo-session.json";
 export const LOADING = "[role=status]:has-text('Loading')";
 
