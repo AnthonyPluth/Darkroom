@@ -123,10 +123,10 @@ class SeededDemoStatusTests(unittest.TestCase):
         people = {p["slug"]: p for p in reply["people"]}
         self.assertEqual(sorted(people), ["avery", "blair", "casey"])
         self.assertTrue(all(p["indexed"] > 0 and len(p["devices"]) == 1 for p in people.values()))
-        self.assertEqual([a["email"] for a in people["blair"]["accounts"]], ["avery.photos@example.com"])
+        self.assertEqual([a["email"] for a in people["blair"]["accounts"]], ["avery.photos@example.com", "blair.photos@example.com"])
         self.assertEqual(people["blair"]["accounts"][0]["session_state"], "needs_sign_in")
-        self.assertEqual([a["kind"] for a in reply["alerts"]], ["sign_in_needed"])
-        self.assertEqual(len(people["avery"]["alerts"]), 1)
+        self.assertEqual(sorted(a["kind"] for a in reply["alerts"]), ["schedule_renewal_failed", "schedule_renewal_unconfirmed", "sign_in_needed"])
+        self.assertEqual(sorted(a["kind"] for a in people["avery"]["alerts"]), ["schedule_renewal_unconfirmed", "sign_in_needed"])
         self.assertEqual(people["casey"]["alerts"], [])
         self.assertEqual(people["casey"]["devices"][0]["pending_uploads"], 3)
 

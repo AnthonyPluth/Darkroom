@@ -243,7 +243,7 @@ class FrozenDemoServerTests(unittest.TestCase):
         frozen = datetime.fromisoformat(verify.FROZEN_NOW_ISO).timestamp()
         with sqlite3.connect(os.path.join(verify.data_dir(self.seed), "darkroom.db")) as connection:
             (created,) = connection.execute("select created from auth_sessions").fetchone()
-            (opened,) = connection.execute("select opened from alerts").fetchone()
+            (opened,) = connection.execute("select opened from alerts where kind = 'sign_in_needed'").fetchone()
         self.assertEqual(created, frozen)
         self.assertEqual(opened, frozen - 2 * 3600)
 

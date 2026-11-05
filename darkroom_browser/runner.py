@@ -17,6 +17,7 @@ BACKOFF_SECONDS = 60.0
 JOIN_SECONDS = 40.0
 GIVE_UP_SECONDS = 120.0
 ABANDONED_EXIT = 3
+SCHEDULE_KINDS = ("schedule", "renew")
 
 OpenBrowser = Callable[[Path], Browser]
 
@@ -183,7 +184,7 @@ class Runner:
         if not self.closed(ctx, watchdog):
             return "abandoned"
         try:
-            self.client.failed(ctx.job_id, unrecorded_message(error) if worked and ctx.kind == "schedule" else failure_message(error), folder, captured.files() if captured is not None else None)
+            self.client.failed(ctx.job_id, unrecorded_message(error) if worked and ctx.kind in SCHEDULE_KINDS else failure_message(error), folder, captured.files() if captured is not None else None)
         except (Unreachable, Refused) as report_error:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
         return "failed"
