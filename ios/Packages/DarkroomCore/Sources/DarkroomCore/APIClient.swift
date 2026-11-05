@@ -39,8 +39,8 @@ public struct APIClient: Sendable {
         try await post("/api/device/eligible/confirm", request)
     }
 
-    public func deleted(_ request: DeletedRequest) async throws {
-        _ = try await send(path: "/api/device/deleted", method: "POST", body: encode(request))
+    public func deleted(_ request: DeletedRequest) async throws -> DeletedReply {
+        try await post("/api/device/deleted", request)
     }
 
     public func uploadRequest(assetID: String, kind: ResourceKind, sha1: String, filename: String) async throws -> URLRequest {
