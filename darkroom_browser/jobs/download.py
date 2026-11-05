@@ -18,6 +18,8 @@ PERSON = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FOLDER = re.compile(r"^export-[0-9]{1,12}$")
 ACCOUNT = re.compile(r"^[0-9]{1,12}$")
 DOWNLOADS = ".downloads"
+SHARED_FOLDER_MODE = 0o2770
+PART_MODE = 0o660
 PARTIAL = ".partial"
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
@@ -31,6 +33,14 @@ class DownloadsFolderRefused(JobFailure):
     pass
 
 
+def make_shared(path: Path) -> None:
+    try:
+        path.mkdir()
+    except FileExistsError:
+        return
+    os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the shared inbox group (gid 10010) needs rwx, others get nothing
+
+
 def downloads_folder(profile_dir: Path) -> Path:
     account = profile_dir.parent.name
     if profile_dir.name != "profile" or not ACCOUNT.match(account):
@@ -40,7 +50,8 @@ def downloads_folder(profile_dir: Path) -> Path:
     for each in (inbox, inbox / DOWNLOADS, folder):
         if each.is_symlink():
             raise DownloadsFolderRefused("Chromium's download folder is a link")
-    folder.mkdir(parents=True, exist_ok=True)
+    for each in (inbox, inbox / DOWNLOADS, folder):
+        make_shared(each)
     if folder.resolve() != inbox.resolve() / DOWNLOADS / account:
         raise DownloadsFolderRefused("Chromium's download folder is not where it should be")
     return folder
@@ -69,7 +80,8 @@ def inbox_folder(root: Path, plan: dict[str, Any]) -> Path:
     for each in (inbox, person, folder):
         if each.is_symlink():
             raise DownloadFailed("the export's inbox folder is a link")
-    folder.mkdir(parents=True, exist_ok=True)
+    for each in (inbox, person, folder):
+        make_shared(each)
     if not folder.resolve().is_relative_to(inbox.resolve()):
         raise DownloadFailed("the export's inbox folder is outside the inbox")
     return folder
@@ -81,7 +93,7 @@ def fresh_partial(folder: Path) -> Path:
         partial.unlink()
     elif partial.exists():
         shutil.rmtree(partial)
-    partial.mkdir()
+    make_shared(partial)
     return partial
 
 
@@ -192,6 +204,7 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
             continue
         size = path.stat().st_size
         os.replace(path, folder / path.name)
+        os.chmod(folder / path.name, PART_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Darkroom reads parts through the shared group, others get nothing
         ctx.reporter.part(ctx.job_id, number, {"event": "done", "filename": path.name, "bytes": size})
         return path.name
 

@@ -32,7 +32,9 @@ COPY darkroom ./darkroom
 COPY --from=web /src/darkroom/static/app ./darkroom/static/app
 COPY run.py ./
 
-RUN useradd --system --uid 10001 --home-dir /app darkroom && mkdir -p /data /photos && chown darkroom /data
+RUN groupadd --system --gid 10010 darkroom-share \
+    && useradd --system --uid 10001 --gid 10010 --home-dir /app darkroom \
+    && mkdir -p /data /photos && chown darkroom /data
 USER darkroom
 
 ENV DARKROOM_HOST=0.0.0.0 DARKROOM_PORT=8000 DARKROOM_DATA_DIR=/data DARKROOM_PHOTOS_ROOT=/photos
