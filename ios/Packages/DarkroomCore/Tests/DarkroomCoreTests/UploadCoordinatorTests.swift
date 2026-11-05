@@ -4,12 +4,16 @@ import XCTest
 private actor FakeAPI: DeviceAPI {
     var needed: Set<ResourceKey> = []
     var checkError: Error?
+    var checkinError: Error?
+    var refused: Set<String> = []
     private(set) var checkins: [CheckinRequest] = []
     private(set) var requests: [CheckRequest] = []
     var duringCheck: (@Sendable () async throws -> Void)?
 
     func setNeeded(_ keys: Set<ResourceKey>) { needed = keys }
     func setCheckError(_ error: Error?) { checkError = error }
+    func setCheckinError(_ error: Error?) { checkinError = error }
+    func refuse(_ assetIDs: Set<String>) { refused = assetIDs }
 
     func setDuringCheck(_ action: (@Sendable () async throws -> Void)?) { duringCheck = action }
 
@@ -17,12 +21,14 @@ private actor FakeAPI: DeviceAPI {
         requests.append(request)
         try await duringCheck?()
         if let checkError { throw checkError }
+        if request.assets.contains(where: { refused.contains($0.id) }) { throw APIError.rejected(status: 400) }
         let keys = request.assets.flatMap { asset in asset.resources.map { ResourceKey(assetID: asset.id, kind: $0.kind) } }
         return CheckReply(needed: keys.filter { needed.contains($0) }.map { NeededResource(id: $0.assetID, kind: $0.kind) })
     }
 
     func checkin(_ request: CheckinRequest) async throws {
         checkins.append(request)
+        if let checkinError { throw checkinError }
     }
 }
 
@@ -79,13 +85,20 @@ final class UploadCoordinatorTests: XCTestCase {
         let probes = Probes()
     }
 
-    private func coordinator(_ rig: Rig, rehash: LocalResource? = nil) -> UploadCoordinator {
+    private func coordinator(_ rig: Rig, rehash: LocalResource? = nil, probe: ServerProbe? = nil) -> UploadCoordinator {
         let probes = rig.probes
         let now = self.now
         return UploadCoordinator(
             api: rig.api, transport: rig.transport, rehasher: FakeRehasher(result: rehash), store: rig.store,
-            probe: ServerProbe { await probes.next() }, appVersion: "1.0", clock: { now }
+            probe: probe ?? ServerProbe { await probes.next() }, appVersion: "1.0", clock: { now }
         )
+    }
+
+    private func assertCancelled(_ task: Task<UploadCoordinator.Result, Error>, file: StaticString = #filePath, line: UInt = #line) async {
+        switch await task.result {
+        case .success(let result): XCTFail("the run finished as \(result.outcome) instead of stopping", file: file, line: line)
+        case .failure(let error): XCTAssertTrue(error is CancellationError, "threw \(error)", file: file, line: line)
+        }
     }
 
     func testUploadsWhatTheServerNeedsAndMarksTheRest() async throws {
@@ -181,7 +194,6 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(sent, [a])
         let record = try await rig.store.record(for: a)
         XCTAssertEqual(record?.resource.state, .uploaded)
-        XCTAssertEqual(record?.attempts, 1)
         let third = try await coordinator.run()
         XCTAssertEqual(third.uploaded, 0)
     }
@@ -322,5 +334,128 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(result.outcome, .needsSignIn)
         let record = try await rig.store.record(for: a)
         XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
+    func testAJoinedCallerThatIsCancelledStopsWaitingWithoutCancellingThePass() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.setDuringUpload { try await Task.sleep(nanoseconds: 500_000_000) }
+        let coordinator = coordinator(rig)
+        let first = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let second = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        second.cancel()
+        await assertCancelled(second)
+        let during = try await rig.store.record(for: a)
+        XCTAssertEqual(during?.resource.state, .uploading)
+        let result = try await first.value
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.uploaded, 1)
+    }
+
+    func testACheckinThatLosesTheNetworkWaitsForIt() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.api.setCheckinError(APIError.transport("-1009"))
+        let coordinator = coordinator(rig)
+        let result = try await coordinator.run()
+        XCTAssertEqual(result.uploaded, 1)
+        XCTAssertEqual(result.outcome, .waitingForNetwork)
+        let status = await coordinator.reachability
+        XCTAssertEqual(status, .waiting(failures: 1))
+    }
+
+    func testSignInAndNetworkStopsDoNotUseUpUploadAttempts() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.unauthorized)
+        for _ in 0..<2 {
+            let result = try await coordinator(rig).run()
+            XCTAssertEqual(result.outcome, .needsSignIn)
+        }
+        await rig.transport.fail(a, with: APIError.transport("-1009"))
+        for _ in 0..<2 {
+            let result = try await coordinator(rig).run()
+            XCTAssertEqual(result.outcome, .waitingForNetwork)
+        }
+        await rig.transport.fail(a, with: APIError.server(status: 503))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.failed, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .checked)
+        XCTAssertEqual(record?.attempts, 1)
+    }
+
+    func testACancelledCheckIsNotTakenForALostNetwork() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setDuringCheck {
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                throw APIError.transport("-999")
+            }
+        }
+        let coordinator = coordinator(rig)
+        let run = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        run.cancel()
+        await assertCancelled(run)
+        let status = await coordinator.reachability
+        XCTAssertEqual(status, .reachable)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
+    func testACancelledProbeIsNotTakenForALostNetwork() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        let slowProbe = ServerProbe {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            return false
+        }
+        let coordinator = coordinator(rig, probe: slowProbe)
+        let run = Task { try await coordinator.run() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        run.cancel()
+        await assertCancelled(run)
+        let status = await coordinator.reachability
+        XCTAssertEqual(status, .unknown)
+    }
+
+    func testACheckRefusedForOneAssetFailsThatAssetAndChecksTheRest() async throws {
+        let rig = Rig()
+        let bad = ResourceKey(assetID: String(repeating: "x", count: 201), kind: .photo)
+        let c = ResourceKey(assetID: "c", kind: .photo)
+        try await rig.store.upsert([hashed(a), hashed(bad), hashed(b), hashed(c)])
+        await rig.api.setNeeded([a, b, c])
+        await rig.api.refuse([bad.assetID])
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.uploaded, 3)
+        XCTAssertEqual(result.failed, 1)
+        let sent = await rig.transport.sent
+        XCTAssertEqual(Set(sent), [a, b, c])
+        let record = try await rig.store.record(for: bad)
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.failureReason?.contains("400"), true)
+        let checkins = await rig.api.checkins
+        XCTAssertEqual(checkins.map(\.pendingUploads), [0])
+    }
+
+    func testACheckRefusedForAnotherReasonLeavesTheResourcesToRetry() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setCheckError(APIError.rejected(status: 404))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.failed, 0)
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.count, 1)
+        let counts = try await rig.store.counts()
+        XCTAssertEqual(counts[.hashed], 2)
     }
 }

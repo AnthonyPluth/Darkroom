@@ -5,12 +5,14 @@ public struct IngestSummary: Equatable, Sendable {
     public var notLocal = 0
     public var skipped = 0
     public var failed = 0
+    public var removed = 0
 
-    public init(hashed: Int = 0, notLocal: Int = 0, skipped: Int = 0, failed: Int = 0) {
+    public init(hashed: Int = 0, notLocal: Int = 0, skipped: Int = 0, failed: Int = 0, removed: Int = 0) {
         self.hashed = hashed
         self.notLocal = notLocal
         self.skipped = skipped
         self.failed = failed
+        self.removed = removed
     }
 }
 
@@ -40,11 +42,13 @@ public struct ResourceIngester: Sendable {
         var summary = IngestSummary()
         let all = try await library.allResources()
         let byAsset = Dictionary(grouping: all, by: \.assetID)
+        summary.removed = try await forgetResourcesGone(from: Set(all.map(\.key)))
         for resource in all {
             try Task.checkCancellation()
             let known = try await store.record(for: resource.key)
             let previous = await versions.version(for: resource.key)
             if let known, known.resource.state != .notLocal, previous == resource.version {
+                try Task.checkCancellation()
                 summary.skipped += 1
                 continue
             }
@@ -56,6 +60,7 @@ public struct ResourceIngester: Sendable {
             do {
                 let local = try await ingest(resource, filename: filename)
                 if local.state == .notLocal, let known, known.resource.state == .notLocal, previous == resource.version {
+                    try Task.checkCancellation()
                     summary.notLocal += 1
                     continue
                 }
@@ -81,6 +86,20 @@ public struct ResourceIngester: Sendable {
             }
         }
         return summary
+    }
+
+    private func forgetResourcesGone(from present: Set<ResourceKey>) async throws -> Int {
+        let gone = try await store.records(in: Set(ResourceState.allCases)).map(\.resource.key).filter { !present.contains($0) }
+        try Task.checkCancellation()
+        guard !gone.isEmpty else { return 0 }
+        for key in gone {
+            try Task.checkCancellation()
+            try await versions.setVersion(nil, for: key)
+        }
+        try Task.checkCancellation()
+        try await store.remove(gone)
+        try Task.checkCancellation()
+        return gone.count
     }
 
     private func ingest(_ resource: PhotoResource, filename: String) async throws -> LocalResource {
