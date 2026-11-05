@@ -418,6 +418,7 @@
         "frontend/src/pages/Exports.svelte"
       ],
       "tests": [
+        "tests/test_download_api.py",
         "tests/test_every_route.py",
         "tests/test_exports_api.py",
         "tests/test_imports_api.py"
@@ -709,6 +710,24 @@
       "route": "POST /internal/browser/jobs/{id}/failed",
       "auth": "worker",
       "handler": "darkroom.server.api.browser_internal.failed",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/download",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.download_plan",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "POST /internal/browser/jobs/{id}/parts/{number}",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.part",
       "frontend": [],
       "tests": [
         "tests/test_browser_internal_api.py"

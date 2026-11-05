@@ -274,6 +274,41 @@ class FailedBody(TypedDict):
     files: NotRequired[list[str]]
 
 
+class DownloadPlanBody(TypedDict):
+    pass
+
+
+class DownloadPartPlan(TypedDict):
+    number: int
+    bytes: int | None
+    status: str
+    filename: str | None
+    downloads_used: int
+    attempts: int
+
+
+class DownloadPlan(TypedDict):
+    export_id: int
+    google_id: str
+    person: str
+    folder: str
+    part_count: int
+    parts: list[DownloadPartPlan]
+
+
+class PartBody(TypedDict):
+    event: Literal["attempt", "progress", "done", "failed"]
+    bytes: NotRequired[int]
+    filename: NotRequired[str]
+    reason: NotRequired[Literal["corrupt", "wrong_size", "not_started", "interrupted", "bad_name"]]
+
+
+class PartReply(TypedDict):
+    allowed: bool
+    gave_up: bool
+    part: DownloadPartPlan
+
+
 class ExportPartDetail(TypedDict):
     number: int
     filename: str | None

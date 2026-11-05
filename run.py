@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
-from darkroom.providers import exiftool
+from darkroom.providers import apns, exiftool
 from darkroom.dates import utc_now
 from darkroom.domain import demo, index
 from darkroom.domain.ingest import run as ingest_run
@@ -32,6 +32,7 @@ def check_config() -> int:
     except (exiftool.Missing, OSError) as error:
         found.append(str(error))
     found += oidc.recheck_problems(settings, utc_now().timestamp())
+    found += apns.key_problems(settings)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
     if not found:

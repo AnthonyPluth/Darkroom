@@ -462,7 +462,7 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
         raise LookupError("no such export")
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
-    if export.status not in IMPORTABLE:
+    if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
     last = latest_run(opened, export.id)
     waiting = last is not None and last.status in WAITING
