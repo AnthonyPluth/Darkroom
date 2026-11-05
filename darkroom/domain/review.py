@@ -535,14 +535,16 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
         had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
         effects.made(photos, placed, source, had_sidecar)
-        adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage), ("sidecar", had_sidecar or "sidecar" in lineage)) if kept]
         old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
-        if not paths.carry_sidecar(source, placed.path):
+        carried = paths.carry_sidecar(source, placed.path)
+        if not carried:
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
+        adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
+                                           ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]
         item.person_id, item.path = target.id, new_path
         opened.flush()
         events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}"

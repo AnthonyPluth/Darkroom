@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -113,12 +114,8 @@ def add_months(moment: float, months: int) -> float:
     start = datetime.fromtimestamp(moment, UTC)
     index = start.month - 1 + months
     year, month = start.year + index // 12, index % 12 + 1
-    for day in (start.day, 28):
-        try:
-            return start.replace(year=year, month=month, day=day).timestamp()
-        except ValueError:
-            continue
-    return start.timestamp()
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day).timestamp()
 
 
 def next_export_at(account: GoogleAccount, now: float) -> float | None:
@@ -178,14 +175,30 @@ def download_open(opened: Session, export: Export) -> bool:
     return any(json.loads(job.payload or "{}").get("export_id") == export.id for job in jobs)
 
 
+def download_underway(opened: Session, account_id: int) -> bool:
+    started = opened.execute(select(Export.id).where(Export.account_id == account_id, Export.status == "downloading").limit(1)).first()
+    queued = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == DOWNLOAD_KIND,
+                                                        BrowserJob.status.in_(browser_jobs.QUEUED_STATUSES)).limit(1)).first()
+    return started is not None or queued is not None
+
+
 def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     export.status = "failed"
     events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
 
 
+def all_done(opened: Session, export: Export) -> bool:
+    parts = parts_of(opened, export.id)
+    return bool(parts) and export.part_count == len(parts) and all(part.status == "done" for part in parts)
+
+
 def retry_download(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
     if download_open(opened, export):
         return None
+    if all_done(opened, export):
+        queue_download(opened, account, export, now)
+        events.record(opened, now, "export_download_requeued", str(export.id), "every part is downloaded")
+        return "requeued"
     if is_late(item, now):
         expire(opened, export, now)
         return "expired"
@@ -219,6 +232,8 @@ def record_new(opened: Session, account: GoogleAccount, item: Listed, now: float
 def update_known(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
     if export.status == "expired":
         return None
+    if export.status in STILL_WAITING and export.ready_at is not None and all_done(opened, export):
+        return retry_download(opened, account, export, item, now)
     if item.state == "expired":
         if export.status in STILL_WAITING:
             expire(opened, export, now)
@@ -277,7 +292,8 @@ def due_for_check(opened: Session, now: float, zone: ZoneInfo) -> list[int]:
         slot = check_slot(account.id, now, zone)
         if now < slot:
             continue
-        recent = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account.id, BrowserJob.kind == STATUS_KIND, BrowserJob.created >= slot).limit(1)).first()
+        today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        recent = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account.id, BrowserJob.kind == STATUS_KIND, BrowserJob.created >= today).limit(1)).first()
         if recent is None:
             due.append(account.id)
     return due

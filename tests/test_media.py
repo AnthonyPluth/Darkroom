@@ -72,11 +72,34 @@ class FingerprintTests(unittest.TestCase):
     def test_a_heic_photo_gets_a_perceptual_hash(self):
         found = self.prints(fixtures.make_heic(self.folder / "a.heic", taken="2020:01:02 03:04:05", offset="+01:00"))
         self.assertIsNotNone(found.phash)
+        self.assertIsNotNone(found.dhash)
         self.assertEqual(found.captured_utc, utc(2020, 1, 2, 2, 4, 5))
+
+    def test_a_photo_gets_a_sixteen_digit_phash_and_dhash_that_differ(self):
+        found = self.prints(fixtures.save_jpeg(fixtures.scene(1), self.folder / "a.jpg"))
+        self.assertRegex(found.phash, r"^[0-9a-f]{16}$")
+        self.assertRegex(found.dhash, r"^[0-9a-f]{16}$")
+        self.assertNotEqual(found.phash, found.dhash)
+
+    def test_a_photo_and_its_recompressed_copy_have_close_hashes_and_another_scene_far_ones(self):
+        original = media.perceptual_hashes(fixtures.save_jpeg(fixtures.scene(1), self.folder / "a.jpg"))
+        copy = media.perceptual_hashes(fixtures.save_jpeg(fixtures.recompressed(fixtures.scene(1)), self.folder / "b.jpg"))
+        other = media.perceptual_hashes(fixtures.save_jpeg(fixtures.scene(2), self.folder / "c.jpg"))
+        close = lambda mine, theirs: (int(mine, 16) ^ int(theirs, 16)).bit_count()
+        self.assertLessEqual(close(original.phash, copy.phash), 2)
+        self.assertLessEqual(close(original.dhash, copy.dhash), 2)
+        self.assertGreater(close(original.phash, other.phash), 16)
+        self.assertGreater(close(original.dhash, other.dhash), 16)
+
+    def test_a_file_that_is_not_a_picture_has_no_hashes(self):
+        broken = self.folder / "broken.jpg"
+        broken.write_bytes(b"not a picture")
+        self.assertEqual(media.perceptual_hashes(broken), media.PerceptualHashes(None, None))
+        self.assertEqual(media.perceptual_hashes(self.folder / "missing.jpg"), media.PerceptualHashes(None, None))
 
     def test_a_video_has_a_duration_and_no_perceptual_hash(self):
         found = self.prints(fixtures.make_video(self.folder / "v.mov"))
-        self.assertIsNone(found.phash)
+        self.assertEqual((found.phash, found.dhash), (None, None))
         self.assertGreater(found.duration_ms, 500)
         self.assertLess(found.duration_ms, 2000)
 

@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -6,7 +7,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from darkroom.domain import browser_jobs, downloads, exports
+from darkroom.domain import accounts, browser_jobs, downloads, exports
+from darkroom.domain.ingest import run
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, ExportPart, GoogleAccount
@@ -120,6 +122,9 @@ class AttemptTests(DownloadCase):
         self.assertEqual(self.export_row()[0], "failed")
         with self.assertRaises(downloads.Refused):
             self.attempt(job, 2)
+        with db.session(self.engine) as opened, self.assertRaises(run.NotReady):
+            run.request_import(opened, self.export)
+        self.assertEqual(self.export_row(), ("failed", 0, None, None))
 
     def test_never_a_sixth_download_even_when_earlier_ones_were_used_outside_this_job(self):
         with db.session(self.engine) as opened:
@@ -245,6 +250,46 @@ class RetryTests(DownloadCase):
             self.assertIn("export_download_failed", opened.execute(select(Event.type)).scalars().all())
             self.assertEqual(len(opened.execute(select(Alert).where(Alert.kind == "failure")).scalars().all()), 3)
 
+    def test_a_job_that_fails_after_the_last_part_is_done_leaves_the_export_to_be_finished(self):
+        first = self.claim()
+        self.attempt(first, 1)
+        self.part_done(first, 1, "takeout-001.zip")
+        self.fail_job(first)
+        self.reconcile(NOW + DAY)
+        second = self.claim(NOW + DAY)
+        self.attempt(second, 2, NOW + DAY)
+        self.fail_job(second, NOW + DAY)
+        self.reconcile(NOW + 2 * DAY)
+        third = self.claim(NOW + 2 * DAY)
+        self.attempt(third, 2, NOW + 2 * DAY)
+        self.part_done(third, 2, "takeout-002.zip", NOW + 2 * DAY)
+        self.fail_job(third, NOW + 2 * DAY)
+        self.assertEqual(self.export_row()[:2], ("downloading", 2))
+        self.assertEqual(self.reconcile(NOW + 3 * DAY).requeued, 1)
+        last = self.claim(NOW + 3 * DAY)
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, last, NOW + 3 * DAY)
+            browser_jobs.done(opened, last, {}, NOW + 3 * DAY)
+        self.assertEqual(self.export_row()[:3], ("downloaded", 2, "queued"))
+
+    def test_a_complete_export_whose_job_failed_is_finished_even_after_it_expires(self):
+        late = {"past its expiry": listed(), "listed as expired": exports.Listed("g-1", NOW - 600, "expired", None, ())}
+        for name, item in late.items():
+            with self.subTest(name):
+                self.setUp()
+                job = self.claim()
+                for number in (1, 2):
+                    self.attempt(job, number)
+                    self.part_done(job, number, f"takeout-00{number}.zip")
+                self.fail_job(job)
+                with db.session(self.engine) as opened:
+                    self.assertEqual(exports.reconcile(opened, opened.get(GoogleAccount, self.account), [item], NOW + 8 * DAY).requeued, 1)
+                self.assertEqual(self.export_row()[0], "downloading")
+                last = self.claim(NOW + 8 * DAY)
+                with db.session(self.engine) as opened:
+                    downloads.finish(opened, self.settings, last, NOW + 8 * DAY)
+                self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+
     def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
         for day in range(4):
             self.fail_job(self.claim(NOW + day * DAY), NOW + day * DAY)
@@ -289,6 +334,98 @@ class RetryTests(DownloadCase):
             self.assertIsNone(downloads.job_failed(opened, job, NOW))
             gone = browser_jobs.queue(opened, self.account, "download", {"export_id": 999}, NOW)
             self.assertIsNone(downloads.job_failed(opened, gone, NOW))
+
+
+class LinkedFolderTests(DownloadCase):
+    def tree(self, folder):
+        return {str(path.relative_to(folder)): path.read_bytes() for path in sorted(folder.rglob("*")) if path.is_file()}
+
+    def lay_out(self, link, target):
+        for child in self.root.iterdir():
+            child.unlink() if child.is_symlink() else shutil.rmtree(child)
+        target.mkdir(parents=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target, target_is_directory=True)
+        inside = self.root / "_inbox" / "jo" / f"export-{self.export}"
+        inside.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(inside / "takeout-001.zip", "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("Takeout/Google Photos/a.bin", b"x" * 4 * MB)
+        return (inside / "takeout-001.zip").stat().st_size
+
+    def test_a_linked_export_or_inbox_folder_is_refused_for_the_plan_and_the_part(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        originals = self.root / "jo" / "originals"
+        inbox = self.root / "_inbox"
+        layouts = {"export folder to originals": (inbox / "jo" / f"export-{self.export}", originals),
+                   "export folder elsewhere": (inbox / "jo" / f"export-{self.export}", self.root / "elsewhere"),
+                   "person's inbox to originals": (inbox / "jo", originals),
+                   "inbox to originals": (inbox, originals)}
+        for name, (link, target) in layouts.items():
+            with self.subTest(name):
+                size = self.lay_out(link, target)
+                before = self.tree(originals) if originals.exists() else {}
+                with self.assertRaises(downloads.Refused):
+                    self.call(downloads.plan, self.settings, job)
+                with self.assertRaises(downloads.Refused):
+                    self.call(lambda opened, size=size: downloads.part_done(opened, self.settings, job, 1, "takeout-001.zip", size, NOW))
+                self.assertEqual(self.part(1)[0], "downloading")
+                self.assertEqual(self.tree(originals) if originals.exists() else {}, before)
+
+    def test_finishing_into_a_folder_that_became_a_link_is_refused(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        originals = self.root / "jo" / "originals"
+        originals.parent.mkdir(parents=True)
+        self.folder().rename(originals)
+        self.folder().symlink_to(originals, target_is_directory=True)
+        with self.assertRaises(downloads.Refused):
+            self.call(lambda opened: downloads.finish(opened, self.settings, job, NOW))
+        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
+
+
+class DefaultPersonTests(DownloadCase):
+    def move_to(self, slug):
+        with db.session(self.engine) as opened:
+            other = add_person(opened, slug)
+            accounts.update(opened, self.account, None, other, NOW)
+            return other
+
+    def held(self):
+        with self.assertRaises(accounts.JobOpen):
+            self.move_to("ann")
+        with db.session(self.engine) as opened, self.assertRaises(accounts.JobOpen):
+            accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
+
+    def test_the_default_person_and_email_stay_while_a_download_is_queued_running_or_between_tries(self):
+        job = self.claim()
+        self.held()
+        self.attempt(job, 1)
+        self.part_done(job, 1, "takeout-001.zip")
+        self.fail_job(job)
+        self.held()
+        self.reconcile(NOW + DAY)
+        self.held()
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((downloads.person_of(opened, opened.get(Export, self.export)).slug, account.email), ("jo", "jo.takeout@example.test"))
+            accounts.update(opened, self.account, account.email, account.default_person_id, NOW)
+
+    def test_the_default_person_can_change_once_the_export_is_downloaded(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, job, NOW)
+            browser_jobs.done(opened, job, {}, NOW)
+        other = self.move_to("ann")
+        with db.session(self.engine) as opened:
+            account = accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
+            self.assertEqual((account.email, account.default_person_id), ("jo.other@example.test", other))
+            self.assertEqual(Path(opened.get(Export, self.export).inbox_dir), self.folder())
 
 
 if __name__ == "__main__":
