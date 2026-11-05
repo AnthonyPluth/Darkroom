@@ -153,12 +153,21 @@ class OwnerNoLongerServedTests(unittest.TestCase):
         from darkroom.domain.ingest import run as ingest
         jo, phone = self.unserved_import()
         change_default(self.world, "jo")
-        dedupe.confirm_newly_served(self.world.opened, self.world.account)
+        dedupe.confirm_newly_served(self.world.opened, self.world.account, set())
         matched = {row.matched_item_id for row in self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.tier.in_((1, 2)), DedupeDecision.person_id == jo)).scalars()}
         self.assertTrue(matched)
         for item in phone:
             self.assertEqual(item.confirmed_in_google, item.id in matched, item.path)
         self.assertEqual(ingest.unmatched_count(self.world.opened, jo, NOW + 365 * 86400), len(phone) - len(matched))
+
+    def test_nothing_is_confirmed_when_the_served_people_did_not_grow(self):
+        jo, phone = self.unserved_import()
+        change_default(self.world, "jo")
+        served = accounts.served_people(self.world.opened, self.world.account)
+        dedupe.confirm_newly_served(self.world.opened, self.world.account, served)
+        self.assertFalse(any(item.confirmed_in_google for item in phone))
+        dedupe.confirm_newly_served(self.world.opened, self.world.account, served - {jo})
+        self.assertTrue(any(item.confirmed_in_google for item in phone))
 
     def test_a_pixel_that_starts_serving_the_owner_confirms_their_matched_items(self):
         from darkroom.domain import pixels
@@ -178,7 +187,7 @@ class OwnerNoLongerServedTests(unittest.TestCase):
         for row in self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.person_id == jo, DedupeDecision.tier.in_((1, 2)))).scalars().all():
             dedupe.reverse(self.world.opened, row.id, NOW, "owner")
         change_default(self.world, "jo")
-        dedupe.confirm_newly_served(self.world.opened, self.world.account)
+        dedupe.confirm_newly_served(self.world.opened, self.world.account, set())
         self.assertFalse(any(item.confirmed_in_google for item in phone))
 
     def test_the_owners_originals_are_indexed_for_the_export(self):

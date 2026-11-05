@@ -369,8 +369,14 @@ def confirming(opened: Session, item_id: int, person_id: int) -> bool:
     return any(person_id in people for people in serving.values())
 
 
-def confirm_newly_served(opened: Session, account_id: int) -> None:
+def confirm_newly_served(opened: Session, account_id: int, before: set[int]) -> None:
     served = accounts.served_people(opened, account_id)
+    if served <= before:
+        return
+    confirm_served_matches(opened, account_id, served)
+
+
+def confirm_served_matches(opened: Session, account_id: int, served: set[int]) -> None:
     items = opened.execute(
         select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id).where(
             DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
