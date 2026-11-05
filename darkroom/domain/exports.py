@@ -184,7 +184,7 @@ def download_underway(opened: Session, account_id: int) -> bool:
 
 def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     export.status = "failed"
-    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
+    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed")
 
 
 def all_done(opened: Session, export: Export) -> bool:
@@ -196,6 +196,9 @@ def retry_download(opened: Session, account: GoogleAccount, export: Export, item
     if download_open(opened, export):
         return None
     if all_done(opened, export):
+        if export.download_tries >= MAX_DOWNLOAD_JOBS:
+            give_up_downloading(opened, export, now)
+            return None
         queue_download(opened, account, export, now)
         events.record(opened, now, "export_download_requeued", str(export.id), "every part is downloaded")
         return "requeued"

@@ -41,6 +41,8 @@ public actor UploadCoordinator {
         case rejected(Int)
     }
 
+    private static let refusedChecks: Set<Int> = [400, 413]
+
     private let api: DeviceAPI
     private let transport: UploadTransport
     private let rehasher: ResourceRehasher
@@ -80,28 +82,37 @@ public actor UploadCoordinator {
         while true {
             if let running = inFlight {
                 do {
-                    return try await running.value
+                    return try await Self.join(running)
                 } catch is CancellationError {
                     try Task.checkCancellation()
-                    await Task.yield()
+                    if inFlight == running { inFlight = nil }
                     continue
                 }
             }
             let pass = Task { try await self.runPass() }
             inFlight = pass
-            do {
-                let result = try await withTaskCancellationHandler {
-                    try await pass.value
-                } onCancel: {
-                    pass.cancel()
-                }
-                inFlight = nil
-                return result
-            } catch {
-                inFlight = nil
-                throw error
+            defer { if inFlight == pass { inFlight = nil } }
+            return try await withTaskCancellationHandler {
+                try await pass.value
+            } onCancel: {
+                pass.cancel()
             }
         }
+    }
+
+    /// Waits for a pass another caller started. This caller's cancellation ends its own wait, never the pass.
+    private static func join(_ pass: Task<Result, Error>) async throws -> Result {
+        let waiter = JoinedPass()
+        Task { waiter.finish(await pass.result) }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { waiter.wait(with: $0) }
+        } onCancel: {
+            waiter.finish(.failure(CancellationError()))
+        }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || Task.isCancelled
     }
 
     private func runPass() async throws -> Result {
@@ -110,7 +121,7 @@ public actor UploadCoordinator {
         let interrupted = try await store.resources(in: [.uploading])
         try await store.setState(.checked, ifUnchanged: interrupted, failureReason: nil)
 
-        guard await networkReady() else {
+        guard try await networkReady() else {
             result.outcome = .waitingForNetwork
             return result
         }
@@ -124,13 +135,14 @@ public actor UploadCoordinator {
             result.outcome = afterUpload
             return result
         }
-        result.outcome = await checkin()
+        result.outcome = try await checkin()
         return result
     }
 
-    private func networkReady() async -> Bool {
+    private func networkReady() async throws -> Bool {
         guard policy.shouldProbe(at: clock()) else { return false }
         let reachable = await probe()
+        try Task.checkCancellation()
         policy.recordProbe(succeeded: reachable, at: clock())
         return reachable
     }
@@ -154,17 +166,29 @@ public actor UploadCoordinator {
     private func checkPhase(_ result: inout Result) async throws -> Outcome {
         let everything = Set(ResourceState.allCases)
         let snapshot = try await store.resources(in: everything)
-        for batch in UploadPlanner.checkBatches(from: snapshot) {
+        var batches = Array(UploadPlanner.checkBatches(from: snapshot).reversed())
+        while let batch = batches.popLast() {
             try Task.checkCancellation()
             let reply: CheckReply
             do {
                 reply = try await api.check(batch)
-            } catch is CancellationError {
-                throw CancellationError()
             } catch {
+                if Self.isCancellation(error) { throw CancellationError() }
                 switch disposition(of: error) {
                 case .signIn: return .needsSignIn
                 case .network: return lostNetwork()
+                case .rejected(let status) where Self.refusedChecks.contains(status):
+                    // The server refuses the whole batch for one bad asset: halve it until that asset is alone, then fail it.
+                    if batch.assets.count > 1 {
+                        let middle = batch.assets.count / 2
+                        batches.append(CheckRequest(assets: Array(batch.assets[middle...])))
+                        batches.append(CheckRequest(assets: Array(batch.assets[..<middle])))
+                    } else {
+                        let current = try await store.resources(in: everything)
+                        let refused = UploadPlanner.declared(in: batch, among: current)
+                        result.failed += try await store.setState(.failed, ifUnchanged: refused, failureReason: "the server refused to check it (\(status))")
+                    }
+                    continue
                 case .retry, .rejected: continue
                 }
             }
@@ -182,15 +206,12 @@ public actor UploadCoordinator {
     private func uploadPhase(_ result: inout Result) async throws -> Outcome {
         for record in try await store.records(in: [.checked]) {
             try Task.checkCancellation()
-            let key = record.resource.key
             let sent = record.resource
             guard try await store.setState(.uploading, ifUnchanged: [sent], failureReason: nil) == 1 else { continue }
-            try await store.recordAttempt(for: [key])
-            let attempts = record.attempts + 1
             do {
                 try await transport.upload(sent)
                 result.uploaded += try await store.setState(.uploaded, ifUnchanged: [sent], failureReason: nil)
-            } catch is CancellationError {
+            } catch let error where Self.isCancellation(error) {
                 try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                 throw CancellationError()
             } catch {
@@ -202,9 +223,10 @@ public actor UploadCoordinator {
                     try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     return lostNetwork()
                 case .retry(let why):
+                    // Only these failures count toward the limit; a sign-in or network stop leaves the count alone.
+                    guard let attempts = try await store.recordAttempt(ifUnchanged: sent) else { continue }
                     if attempts >= maxAttempts {
-                        try await store.setState(.failed, ifUnchanged: [sent], failureReason: "gave up after \(attempts) attempts: \(why)")
-                        result.failed += 1
+                        result.failed += try await store.setState(.failed, ifUnchanged: [sent], failureReason: "gave up after \(attempts) attempts: \(why)")
                     } else {
                         try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     }
@@ -216,8 +238,7 @@ public actor UploadCoordinator {
                         // Not checked, or the asset changed since: check it again.
                         try await store.setState(.hashed, ifUnchanged: [sent], failureReason: nil)
                     default:
-                        try await store.setState(.failed, ifUnchanged: [sent], failureReason: "the server refused it (\(status))")
-                        result.failed += 1
+                        result.failed += try await store.setState(.failed, ifUnchanged: [sent], failureReason: "the server refused it (\(status))")
                     }
                 }
             }
@@ -230,7 +251,7 @@ public actor UploadCoordinator {
         let fresh: LocalResource?
         do {
             fresh = try await rehasher.rehash(old.key)
-        } catch is CancellationError {
+        } catch let error where Self.isCancellation(error) {
             try await store.setState(.checked, ifUnchanged: [old], failureReason: nil)
             throw CancellationError()
         } catch {
@@ -243,18 +264,53 @@ public actor UploadCoordinator {
         let reason = fresh == nil
             ? "the file could not be read again after the server saw different bytes"
             : "the server received different bytes than the hash promised"
-        try await store.setState(.failed, ifUnchanged: [old], failureReason: reason)
-        result.failed += 1
+        result.failed += try await store.setState(.failed, ifUnchanged: [old], failureReason: reason)
     }
 
-    private func checkin() async -> Outcome {
+    private func checkin() async throws -> Outcome {
         guard let counts = try? await store.counts() else { return .finished }
         let pending = [ResourceState.hashed, .checked, .uploading].reduce(0) { $0 + (counts[$1] ?? 0) }
         do {
             try await api.checkin(CheckinRequest(pendingUploads: pending, appVersion: appVersion))
         } catch {
-            if case .signIn = disposition(of: error) { return .needsSignIn }
+            if Self.isCancellation(error) { throw CancellationError() }
+            switch disposition(of: error) {
+            case .signIn: return .needsSignIn
+            case .network: return lostNetwork()
+            case .retry, .rejected: return .finished
+            }
         }
         return .finished
+    }
+}
+
+/// One joined caller's wait: resumed once, by the pass finishing or by the caller being cancelled, whichever is first.
+private final class JoinedPass: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<UploadCoordinator.Result, Error>?
+    private var outcome: Swift.Result<UploadCoordinator.Result, Error>?
+
+    func wait(with continuation: CheckedContinuation<UploadCoordinator.Result, Error>) {
+        lock.lock()
+        guard let outcome else {
+            self.continuation = continuation
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        continuation.resume(with: outcome)
+    }
+
+    func finish(_ outcome: Swift.Result<UploadCoordinator.Result, Error>) {
+        lock.lock()
+        guard self.outcome == nil else {
+            lock.unlock()
+            return
+        }
+        self.outcome = outcome
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume(with: outcome)
     }
 }

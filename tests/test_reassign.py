@@ -1,14 +1,17 @@
 import os
+import time
 import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from darkroom.domain import review
+from darkroom.domain.ingest import cleanup
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
-from tests.import_world import sha1_of
+from tests.import_world import NOW, sha1_of
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
 
 NOT_SERVED = {"error": "the Google account this photo came from doesn't serve that person"}
@@ -41,7 +44,10 @@ class SharedAccountTests(ReviewCase):
         self.assertFalse(self.opened.get(MediaItem, item.id).confirmed_in_google)
         self.assertEqual(self.decision_of(GOOGLE_ONLY_NAME).person_id, self.world.ids["jo"])
         events = [(row.type, row.detail) for row in self.opened.execute(select(Event).where(Event.type == "media_reassigned")).scalars()]
-        self.assertEqual(events, [("media_reassigned", f"person {self.world.ids['jo']} to person {self.world.ids['sam']}")])
+        ((kind, detail),) = events
+        self.assertEqual(kind, "media_reassigned")
+        self.assertRegex(detail, rf"^person {self.world.ids['jo']} to person {self.world.ids['sam']}, copy [0-9a-f]{{16}}$")
+        self.assertEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
 
     def test_the_existing_sidecar_moves_byte_for_byte(self):
         item = self.item_named(GOOGLE_ONLY_NAME)
@@ -300,6 +306,137 @@ class SharedAccountTests(ReviewCase):
                               ({"person_id": 0}, "person_id must be between 1 and 2147483647")):
             with self.subTest(body=body):
                 self.assertEqual(self.call("POST", f"/api/media/{item.id}/reassign", body), (400, {"error": message}))
+
+
+class InterruptedReassignTests(ReviewCase):
+    def dies_while_reassigning(self, item_id, crash=None):
+        self.opened.close()
+        dying = Session(self.world.engine)
+        try:
+            if crash is None:
+                review.reassign(dying, self.world.photos, item_id, self.world.ids["sam"], NOW, review.FileEffects())
+            else:
+                with mock.patch.object(paths, crash, side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                    review.reassign(dying, self.world.photos, item_id, self.world.ids["sam"], NOW, review.FileEffects())
+        finally:
+            dying.close()
+
+    def clean(self):
+        opened = self.opened
+        report = cleanup.clean(opened, self.world.photos, time.time() + cleanup.DROPPING_GRACE + 60)
+        opened.commit()
+        return report
+
+    def kept(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        return item.id, item.path
+
+    def target(self, path):
+        old = self.world.root / path
+        return self.world.root / "sam" / "google-only" / old.parent.parent.name / old.parent.name / old.name
+
+    def test_a_reassign_that_dies_before_its_commit_leaves_no_copy_once_cleanup_runs(self):
+        item_id, path = self.kept()
+        before = self.tree()
+        for crash in ("carry_sidecar", "set_library_copy_aside", None):
+            with self.subTest(dies_before=crash or "the commit"):
+                self.dies_while_reassigning(item_id, crash)
+                self.assertTrue(self.target(path).is_file())
+                report = self.clean()
+                self.assertEqual(report.taken_back, 1)
+                self.assertEqual(report.restored, 1 if crash is None else 0)
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(self.opened.get(MediaItem, item_id).path, path)
+                details = [row.detail for row in self.opened.execute(select(Event).where(Event.type == "cleanup")).scalars()]
+                self.assertTrue(details[-1].endswith("1 interrupted moves taken back"))
+
+    def test_a_committed_reassign_keeps_its_copy_when_its_markers_were_left(self):
+        item_id, path = self.kept()
+        with mock.patch.object(paths, "clear_placing"):
+            self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        self.assertNotEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
+        moved = self.tree()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual(list(self.world.root.rglob(f"{paths.PLACING}*")), [])
+        self.assertEqual(self.tree(), {key: value for key, value in moved.items() if paths.PLACING not in key})
+        self.assertTrue(self.target(path).is_file())
+        self.assertEqual(self.opened.get(MediaItem, item_id).path, str(self.target(path).relative_to(self.world.root)))
+
+    def test_an_interrupted_copy_is_kept_while_no_other_copy_is(self):
+        item_id, path = self.kept()
+        old = self.world.root / path
+        self.dies_while_reassigning(item_id)
+        for aside in old.parent.glob(f"{paths.DROPPING}*"):
+            aside.unlink()
+        data = self.target(path).read_bytes()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual(self.target(path).read_bytes(), data)
+        self.assertEqual(len(list(self.target(path).parent.glob(f"{paths.PLACING}*"))), 2)
+
+    def test_an_interrupted_reassign_onto_an_identical_photo_takes_back_only_the_sidecar_it_wrote(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((self.world.root / path).read_bytes())
+        before = self.tree()
+        self.dies_while_reassigning(item_id)
+        self.assertTrue(target.with_name(f"{target.name}.xmp").is_file())
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual(self.tree(), before)
+
+    def without_markers(self, files):
+        return {key: value for key, value in files.items() if paths.PLACING not in key}
+
+    def retried(self, item_id, path, crash):
+        self.dies_while_reassigning(item_id, crash)
+        self.assertNotEqual(list(self.target(path).parent.glob(f"{paths.PLACING}*")), [])
+        self.assertEqual(self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.target(path)
+        self.assertEqual(self.opened.get(MediaItem, item_id).path, str(target.relative_to(self.world.root)))
+        return target, self.without_markers(self.tree())
+
+    def test_a_retry_that_adopted_an_interrupted_copy_keeps_it_and_its_sidecar_while_another_copy_exists(self):
+        item_id, path = self.kept()
+        source = self.world.root / path
+        twin = source.with_name(f"twin-{source.name}")
+        twin.write_bytes(source.read_bytes())
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(twin.relative_to(self.world.root)),
+                             sha1=sha1_of(twin), bytes=twin.stat().st_size, indexed_at=1.0))
+        opened.commit()
+        target, moved = self.retried(item_id, path, "carry_sidecar")
+        data, xmp_data = target.read_bytes(), target.with_name(f"{target.name}.xmp").read_bytes()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual((target.read_bytes(), target.with_name(f"{target.name}.xmp").read_bytes()), (data, xmp_data))
+        self.assertEqual(self.tree(), moved)
+        self.assertEqual(self.opened.get(MediaItem, item_id).path, str(target.relative_to(self.world.root)))
+
+    def test_a_retry_that_adopted_a_sidecar_an_interrupted_reassign_wrote_keeps_it(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((self.world.root / path).read_bytes())
+        target, moved = self.retried(item_id, path, "set_library_copy_aside")
+        xmp_data = target.with_name(f"{target.name}.xmp").read_bytes()
+        report = self.clean()
+        self.assertEqual(report.taken_back, 0)
+        self.assertEqual(target.with_name(f"{target.name}.xmp").read_bytes(), xmp_data)
+        self.assertEqual(self.tree(), moved)
+
+    def test_a_marker_whose_place_now_holds_another_file_never_touches_that_file(self):
+        item_id, path = self.kept()
+        target = self.target(path)
+        self.dies_while_reassigning(item_id)
+        target.unlink()
+        target.write_bytes(b"a different photo put there since")
+        self.clean()
+        self.assertEqual(target.read_bytes(), b"a different photo put there since")
+        self.assertEqual(list(target.parent.glob(f"{paths.PLACING}{'?' * 16}-{target.name}")), [])
+        self.assertTrue((self.world.root / path).is_file())
 
 
 class SinglePersonAccountTests(ReviewCase):

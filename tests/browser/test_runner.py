@@ -303,7 +303,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertFalse((self.photos / "_browser").exists())
 
     def test_an_unknown_kind_is_reported_as_failed(self):
-        self.fake.enqueue(5, kind="download")
+        self.fake.enqueue(5, kind="upload")
         self.assertEqual(self.make_runner({"noop": lambda ctx: {}}).run_job(self.fake.queue.pop(0)), "failed")
         self.assertEqual(self.fake.bodies("failed"), [{"message": "UnknownJob"}])
 
@@ -517,9 +517,9 @@ class RegistryTests(unittest.TestCase):
         from darkroom_browser import jobs
 
         self.assertIs(jobs.find("noop"), jobs.noop)
-        self.assertEqual(set(jobs.REGISTRY), {"noop", "connect", "schedule", "status"})
+        self.assertEqual(set(jobs.REGISTRY), {"noop", "connect", "schedule", "status", "download"})
         with self.assertRaises(jobs.UnknownJob):
-            jobs.find("download")
+            jobs.find("upload")
 
 
 class ContextTests(unittest.TestCase):

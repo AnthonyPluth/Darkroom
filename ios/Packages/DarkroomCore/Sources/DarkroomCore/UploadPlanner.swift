@@ -69,19 +69,23 @@ public enum UploadPlanner {
         }
     }
 
-    public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
+    public static func declared(in batch: CheckRequest, among resources: [LocalResource]) -> [LocalResource] {
         var checked: [ResourceKey: ResourceDescriptor] = [:]
         for asset in batch.assets {
             for descriptor in asset.resources {
                 checked[ResourceKey(assetID: asset.id, kind: descriptor.kind)] = descriptor
             }
         }
+        return resources.filter { $0.state == .hashed && checked[$0.key] == $0.descriptor }
+    }
+
+    public static func plan(resources: [LocalResource], checked batch: CheckRequest, reply: CheckReply) -> UploadPlan {
         let needed = Set(reply.needed.map(\.key))
         var assetOrder: [String: Int] = [:]
         for resource in resources where assetOrder[resource.key.assetID] == nil {
             assetOrder[resource.key.assetID] = assetOrder.count
         }
-        let hashed = resources.filter { $0.state == .hashed && checked[$0.key] == $0.descriptor }
+        let hashed = declared(in: batch, among: resources)
         let queue = hashed
             .filter { needed.contains($0.key) }
             .sorted {

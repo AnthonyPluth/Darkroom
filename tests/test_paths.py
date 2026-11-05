@@ -174,6 +174,42 @@ class WriteOnceTests(unittest.TestCase):
 
 
 
+class PlacingMarkerTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.destination = self.folder / "a.jpg"
+        self.marker = paths.placing_marker(self.destination, "0123456789abcdef")
+
+    def test_the_marker_is_the_same_file_as_the_copy_from_the_start(self):
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        self.assertTrue(os.path.samefile(self.marker, self.destination))
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), [".placing-0123456789abcdef-a.jpg", "a.jpg"])
+
+    def test_a_copy_that_was_not_made_leaves_no_marker(self):
+        self.destination.write_bytes(b"already there")
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_once(self.destination, [b"photo"], self.marker)
+        with mock.patch("os.link", side_effect=OSError("cross-device")):
+            paths.write_once(self.folder / "b.jpg", [b"photo"], paths.placing_marker(self.folder / "b.jpg", "0123456789abcdef"))
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), ["a.jpg", "b.jpg"])
+
+    def test_clearing_keeps_the_markers_of_what_a_failed_attempt_could_not_remove(self):
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        paths.mark_new_sidecar(self.destination, "0123456789abcdef")
+        sidecar_marker = paths.placing_marker(paths.sidecar_of(self.destination), "0123456789abcdef")
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
+        self.assertTrue(self.marker.is_file())
+        self.assertFalse(sidecar_marker.exists())
+        self.destination.unlink()
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
+        self.assertFalse(self.marker.exists())
+        paths.write_once(self.destination, [b"photo"], self.marker)
+        paths.clear_placing(self.destination, "0123456789abcdef", committed=True)
+        self.assertEqual([path.name for path in self.folder.iterdir()], ["a.jpg"])
+
+
 class DropLibraryCopyTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -311,6 +347,80 @@ class DropLibraryCopyTests(unittest.TestCase):
         with self.assertRaises(paths.NotALibraryCopy):
             paths.drop_library_copy(self.photos, "jo/google-only/2020/01/link.jpg", self.kept)
         self.assertTrue(target.is_file())
+
+SHARED = 0o2770
+
+
+def mode_of(path):
+    return path.lstat().st_mode & 0o7777
+
+
+class SharedInboxTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.photos = paths.Photos(Path(folder.name))
+        self.inbox = self.photos.root / "_inbox"
+
+    def under_umask(self, mask):
+        previous = os.umask(mask)
+        self.addCleanup(os.umask, previous)
+
+    def test_the_shared_mode_is_setgid_and_group_rwx_with_nothing_for_others(self):
+        self.assertEqual(paths.SHARED_FOLDER_MODE, 0o2770)
+        self.assertEqual(paths.SHARED_FOLDER_MODE & 0o007, 0)
+
+    def test_the_inbox_and_the_downloads_folder_are_shared_whatever_the_umask(self):
+        for mask in (0o077, 0o022, 0o000):
+            with self.subTest(umask=oct(mask)):
+                self.under_umask(mask)
+                self.photos.share_inbox()
+                self.assertEqual((mode_of(self.inbox), mode_of(self.inbox / ".downloads")), (SHARED, SHARED))
+                os.chmod(self.inbox / ".downloads", 0o755)
+                os.chmod(self.inbox, 0o755)
+
+    def test_a_persons_inbox_and_manual_folder_are_shared_and_their_library_folders_are_not(self):
+        self.under_umask(0o077)
+        self.photos.ensure_person_tree("jo")
+        for folder in (self.inbox, self.inbox / "jo", self.inbox / "jo" / "manual"):
+            self.assertEqual(mode_of(folder), SHARED, folder)
+        for folder in (self.photos.root / "jo" / "originals", self.photos.root / "jo" / "google-only"):
+            self.assertEqual(mode_of(folder), 0o700, folder)
+
+    def test_an_export_folder_is_shared_with_its_persons_inbox(self):
+        self.under_umask(0o077)
+        folder = self.photos.make_export_folder("jo", "export-4")
+        self.assertEqual(folder, self.inbox / "jo" / "export-4")
+        for each in (self.inbox, self.inbox / "jo", folder):
+            self.assertEqual(mode_of(each), SHARED, each)
+
+    def test_existing_inbox_folders_made_before_sharing_are_shared_at_startup(self):
+        self.under_umask(0o022)
+        (self.inbox / "jo").mkdir(parents=True)
+        (self.inbox / "jo" / "photo.jpg").write_bytes(b"x")
+        shared = self.photos.share_inbox()
+        self.assertEqual(shared, [self.inbox, self.inbox / ".downloads", self.inbox / "jo"])
+        self.assertEqual(mode_of(self.inbox / "jo"), SHARED)
+        self.assertEqual(mode_of(self.inbox / "jo" / "photo.jpg"), 0o644)
+
+    def test_a_link_instead_of_a_shared_folder_is_refused_and_its_target_is_not_changed(self):
+        self.under_umask(0o022)
+        elsewhere = self.photos.root / "jo" / "originals"
+        elsewhere.mkdir(parents=True)
+        self.inbox.mkdir()
+        for link, call in ((self.inbox / ".downloads", self.photos.share_inbox),
+                           (self.inbox / "jo", lambda: self.photos.make_export_folder("jo", "export-1")),
+                           (self.inbox / "sam", lambda: self.photos.make_export_folder("pat", "export-1"))):
+            with self.subTest(link=link.name):
+                if link.name == "sam":
+                    (self.inbox / "pat").mkdir()
+                    link = self.inbox / "pat" / "export-1"
+                link.symlink_to(elsewhere, target_is_directory=True)
+                with self.assertRaises(paths.NotInTheInbox):
+                    call()
+                self.assertEqual(mode_of(elsewhere), 0o755)
+                link.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()
