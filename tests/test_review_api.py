@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from darkroom.domain import review
 from darkroom.domain.ingest import cleanup, place, run
@@ -719,6 +720,31 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/decisions/{later.id}/reverse")[0], 200)
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertFalse((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).exists())
+
+    def test_an_undo_that_dies_before_its_commit_gets_its_sidecar_put_back_by_cleanup(self):
+        photo, sidecar = self.already_there(None)
+        data = photo.read_bytes()
+        review_id, resolved_at = self.resolve("keep_both")
+        if not sidecar.exists():
+            sidecar.write_bytes(b"<x:xmpmeta>written by keep both</x:xmpmeta>")
+        xmp_data, before = sidecar.read_bytes(), self.tree()
+        self.opened.close()
+        dying = Session(self.world.engine)
+        review.undo(dying, self.world.photos, review_id, resolved_at + 1, review.FileEffects())
+        dying.close()
+        self.assertFalse(sidecar.exists())
+        (aside,) = photo.parent.glob(f"{paths.DROPPING}*")
+        opened = self.opened
+        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+        opened.commit()
+        self.assertEqual(report.restored, 1)
+        self.assertEqual((photo.read_bytes(), sidecar.read_bytes()), (data, xmp_data))
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "kept_both")
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(photo.read_bytes(), data)
+        self.assertFalse(sidecar.exists())
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
 
     def test_a_failing_sidecar_removal_on_undo_changes_nothing(self):
         review_id, _ = self.resolve("keep_both")

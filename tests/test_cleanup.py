@@ -431,6 +431,62 @@ class InterruptedRemovalTests(Imported):
             self.assertEqual(sidecar_aside.read_bytes(), xmp_data)
             self.assertFalse(aside.exists())
 
+    def sidecar_set_aside(self):
+        folder = self.root / "jo" / "google-only" / "2017" / "07"
+        photo, sidecar = folder / "IMG_2001.JPG", folder / "IMG_2001.JPG.xmp"
+        xmp_data = sidecar.read_bytes()
+        paths.set_sidecar_aside(self.world.photos, str(photo.relative_to(self.root)))
+        (aside,) = folder.glob(f"{paths.DROPPING}*")
+        return photo, sidecar, aside, xmp_data
+
+    def test_a_sidecar_set_aside_alone_is_put_back_while_a_row_records_its_photo(self):
+        _, sidecar, aside, xmp_data = self.sidecar_set_aside()
+        self.assertFalse(sidecar.exists())
+        report = self.clean(at=TOO_SOON)
+        self.assertEqual((report.restored, report.dropped), (1, 0))
+        self.assertEqual(sidecar.read_bytes(), xmp_data)
+        self.assertFalse(aside.exists())
+        self.assertEqual(self.kept_tree(), self.kept)
+
+    def test_a_sidecar_set_aside_alone_is_never_put_back_onto_another_photo_or_over_a_sidecar(self):
+        outside = self.root.parent / "outside.JPG"
+        outside.write_bytes(b"a file outside the photo folder")
+        for case in ("another photo, recorded", "a row with another sha1", "no row at that path", "a sidecar written since", "no photo", "a link"):
+            with self.subTest(case=case):
+                photo, sidecar, aside, xmp_data = self.sidecar_set_aside()
+                data = photo.read_bytes()
+                row = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%/IMG_2001.JPG"))).scalar_one()
+                kept_row = (row.path, row.sha1)
+                if case == "another photo, recorded":
+                    photo.write_bytes(b"a different photo now at that path")
+                    row.sha1 = paths.file_sha1(photo)
+                elif case == "a row with another sha1":
+                    row.sha1 = "0" * 40
+                elif case == "no row at that path":
+                    row.path = row.path.replace("IMG_2001.JPG", "IMG_2001-elsewhere.JPG")
+                elif case == "a sidecar written since":
+                    sidecar.write_bytes(b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+                elif case == "no photo":
+                    photo.unlink()
+                else:
+                    photo.unlink()
+                    photo.symlink_to(outside)
+                self.world.opened.commit()
+                report = self.clean(at=TOO_SOON)
+                self.assertEqual(report.restored, 0)
+                self.assertEqual(aside.read_bytes(), xmp_data)
+                if case == "a sidecar written since":
+                    self.assertEqual(sidecar.read_bytes(), b"<x:xmpmeta>a sidecar written since</x:xmpmeta>")
+                else:
+                    self.assertFalse(sidecar.exists())
+                self.assertEqual(outside.read_bytes(), b"a file outside the photo folder")
+                row.path, row.sha1 = kept_row
+                self.world.opened.commit()
+                photo.unlink(missing_ok=True)
+                photo.write_bytes(data)
+                sidecar.unlink(missing_ok=True)
+                os.rename(aside, sidecar)
+
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")
         report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1)

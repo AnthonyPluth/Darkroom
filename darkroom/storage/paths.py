@@ -19,6 +19,7 @@ CHUNK = 1024 * 1024
 SIDECAR_SUFFIX = ".xmp"
 DROPPING = ".dropping-"
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
+SIDECAR_SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}\.([0-9a-f]{{40}})-(.+{re.escape(SIDECAR_SUFFIX)})$")
 UPLOADS_TMP = ".uploads_tmp"
 
 
@@ -391,10 +392,11 @@ def restore_sidecar(destination: Path, data: bytes) -> None:
 
 
 def set_sidecar_aside(photos: Photos, relative: str) -> SetAside:
-    sidecar = sidecar_of(photos.google_only_file(relative))
+    photo = photos.google_only_file(relative)
+    sidecar = sidecar_of(photo)
     if sidecar.is_symlink() or not sidecar.is_file():
         return SetAside([])
-    aside = sidecar.with_name(f"{DROPPING}{secrets.token_hex(8)}-{sidecar.name}")
+    aside = sidecar.with_name(f"{DROPPING}{secrets.token_hex(8)}.{file_sha1(photo)}-{sidecar.name}")
     os.rename(sidecar, aside)
     return SetAside([(sidecar, aside)])
 
@@ -453,6 +455,17 @@ def put_back(path: Path, original: Path) -> bool:
     return True
 
 
+def put_sidecar_back(path: Path, recorded: Callable[[Path, str], bool]) -> bool:
+    match = SIDECAR_SET_ASIDE.match(path.name)
+    if match is None:
+        return False
+    sha1, sidecar = match.group(1), path.with_name(match.group(2))
+    photo = sidecar.with_name(sidecar.name.removesuffix(SIDECAR_SUFFIX))
+    if photo.is_symlink() or not photo.is_file() or file_sha1(photo) != sha1 or not recorded(photo, sha1):
+        return False
+    return move_without_replacing(path, sidecar)
+
+
 def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> Swept:
     swept = Swept()
     for folder in photos.kept_folders():
@@ -468,6 +481,10 @@ def sweep_dropping(photos: Photos, older_than: float, copy_kept: Callable[[Path,
                 path.unlink()
                 swept.dropped += 1
         for path in [path for path in found if path.suffix == SIDECAR_SUFFIX and path.is_file()]:
+            if SIDECAR_SET_ASIDE.match(path.name):
+                if put_sidecar_back(path, recorded):
+                    swept.restored += 1
+                continue
             photo = path.with_name(path.name.removesuffix(SIDECAR_SUFFIX))
             original = set_aside_name(photo)
             if photo.exists() or photo.is_symlink() or (original is not None and (original.exists() or original.is_symlink())):
