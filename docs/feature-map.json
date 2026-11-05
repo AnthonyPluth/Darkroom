@@ -507,6 +507,7 @@
       "handler": "darkroom.server.api.review.list_decisions",
       "frontend": [],
       "tests": [
+        "tests/test_cleanup_api.py",
         "tests/test_every_route.py",
         "tests/test_review_api.py"
       ]
