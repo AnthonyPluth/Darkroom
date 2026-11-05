@@ -348,6 +348,16 @@ describe("the Exports page", () => {
     expect(screen.getByRole("link", { name: "screenshot" })).toHaveAttribute("href", "/api/browser/failures/14/screenshot.png");
   });
 
+  it("tells the owner to look in Takeout when a renewal could not be confirmed, and not after a plain failure", async () => {
+    const unsure = { ...failedSchedule, id: 15, account_id: 10, kind: "renew", message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export" };
+    const plain = { ...failedSchedule, id: 16, account_id: 11, kind: "renew", message: "UnexpectedPage: the page changed" };
+    show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [unsure, plain] } });
+    const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
+    expect(within(jo).getByText(/could not confirm the renewal/)).toBeInTheDocument();
+    const family = screen.getByRole("region", { name: "family.photos@example.com" });
+    expect(within(family).queryByText(/could not confirm the renewal/)).not.toBeInTheDocument();
+  });
+
   it("shows why a check failed, with its capture", async () => {
     const failed = { ...failedSchedule, id: 12, kind: "status", message: "ExportsUnreadable: Takeout's list of exports did not load" };
     show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });

@@ -198,6 +198,15 @@ final class CleanupFlowTests: XCTestCase {
         XCTAssertEqual(report(of: flow)?.notRemoved, ["b"])
     }
 
+    func testAConfirmedPhotoThatChangedBeforeTheDeletionIsChangedNotNotRemoved() throws {
+        var flow = try deleting(["a", "b", "c"])
+        let command = try flow.handle(.deletionEnded(removed: ["a"], changed: ["b", "x"]))
+        XCTAssertEqual(command, .report(DeletedRequest(assetIDs: ["a"])))
+        XCTAssertEqual(report(of: flow)?.changed, ["b"])
+        XCTAssertEqual(report(of: flow)?.removed, ["a"])
+        XCTAssertEqual(report(of: flow)?.notRemoved, ["c"])
+    }
+
     func testRemovalsOfIdsThatWereNeverConfirmedAreNotReported() throws {
         var flow = try deleting(["a"])
         XCTAssertNil(try flow.handle(.deletionEnded(removed: ["b", "c"])))
