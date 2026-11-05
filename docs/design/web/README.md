@@ -36,7 +36,7 @@ Approved departures (#29): the Exports and Remote browser pages are built with t
 
 The boards are re-exported from the canvas when the design session next touches them.
 
-Approved departures (#27), approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16, the latest comment on the issue):
+Approved departures (#27), approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6644225186 and https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6645876749):
 
 1. Imports shows one row per export run ("3 of 5 parts downloaded") instead of one row per export part ("Part 3 of 5"), because the counts exist only per export.
 2. Review, Past decisions: a reversed decision shows "Reversed, so it can't be undone" in place of Undo.
