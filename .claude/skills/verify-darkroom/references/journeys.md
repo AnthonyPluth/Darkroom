@@ -73,3 +73,18 @@ tools/control flow sign-out --viewport desktop
 ```
 
 A failed step stops the flow, saves `artifacts/control/flows/flow-<name>-FAILED-<width>.png`, and exits 1; the answer still has every step's result. Afterwards the session is the flow's browser as it ended, so `snapshot` and `screenshot` show where it stopped. Run `reset` before a second run.
+
+## 7. Import a fixture export and look at the result
+
+```sh
+tools/control start --with-import                  # make verify's data: the demo plus a real import against a fake Immich
+tools/control fake-immich scans --text             # the rescans the import asked for: one per library whose files changed
+tools/control goto imports
+tools/control screenshot                           # the run: 4 added, 7 skipped as duplicates, 2 sent to review, 3 missing GPS
+tools/control goto review
+tools/control screenshot                           # the pairs the import held back, library copy beside export copy
+tools/control network --text                       # nothing but 127.0.0.1, and no 5xx
+tools/control flow review-item --text
+```
+
+`--with-import` builds a two-part Takeout export from the demo originals (exact copies, a same-shot re-encode, an `-edited` copy, two likely re-encodes that go to review, Google-only photos with and without a location, a Live Photo pair, a sidecar in the other part) and runs `import-takeout` on it for the demo person, with a fake Immich on 127.0.0.1 standing in for the real one. Without it, `start` seeds only the recorded export, and the Imports and Review pages show less. `make verify` seeds with the import, so its images match `start --with-import`. `fake-immich scans` needs the flag: the fake stops when the import is done.

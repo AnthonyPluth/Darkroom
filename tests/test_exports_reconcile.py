@@ -202,6 +202,25 @@ class NextExportTests(unittest.TestCase):
         self.assertEqual(exports.next_export_at(account, at(2027, 1, 1)), at(2027, 2, 28, 3, 0))
 
 
+    def test_a_short_month_ends_on_its_real_last_day(self):
+        cases = [
+            (at(2026, 12, 31, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
+            (at(2026, 12, 31, 3, 0), at(2027, 3, 1), at(2027, 4, 30, 3, 0)),
+            (at(2026, 12, 31, 3, 0), at(2027, 5, 1), at(2027, 6, 30, 3, 0)),
+            (at(2027, 12, 31, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
+            (at(2027, 12, 30, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
+            (at(2026, 12, 30, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
+            (at(2026, 12, 29, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
+            (at(2027, 12, 29, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
+            (at(2026, 8, 31, 3, 0), at(2026, 9, 1), at(2026, 10, 31, 3, 0)),
+            (at(2026, 8, 31, 3, 0), at(2026, 11, 1), at(2026, 12, 31, 3, 0)),
+        ]
+        for created, now, expected in cases:
+            with self.subTest(created=created, now=now):
+                account = self.account(created, created + 400 * DAY)
+                self.assertEqual(exports.next_export_at(account, now), expected)
+
+
 class CheckingTests(ReconcileCase):
     zone = ZoneInfo("Europe/Berlin")
 
@@ -285,6 +304,26 @@ class CheckingTests(ReconcileCase):
             opened.execute(select(BrowserJob)).scalars().one().status = "done"
         with db.session(self.engine) as opened:
             self.assertEqual(exports.check_due(opened, slot + 600, self.zone), 0)
+
+    def test_a_manual_check_before_the_slot_counts_as_the_days_check(self):
+        slot = exports.check_slot(self.account, NOW, self.zone)
+        start_of_day = datetime.fromtimestamp(slot, self.zone).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        manual = start_of_day + 3600
+        with db.session(self.engine) as opened:
+            queued, _ = exports.check_now(opened, manual)
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(exports.check_due(opened, manual + 60, self.zone), 0)
+        for tick in (slot - 1, slot + 1, slot + 600):
+            with db.session(self.engine) as opened:
+                self.assertEqual(exports.due_for_check(opened, tick, self.zone), [])
+        with db.session(self.engine) as opened:
+            opened.execute(select(BrowserJob)).scalars().one().status = "done"
+        for tick in (slot + 1, slot + 3600):
+            with db.session(self.engine) as opened:
+                self.assertEqual(exports.check_due(opened, tick, self.zone), 0)
+        self.assertEqual(len(self.status_jobs()), 1)
+        with db.session(self.engine) as opened:
+            self.assertEqual(exports.due_for_check(opened, slot + DAY + 1, self.zone), [self.account])
 
     def test_a_status_job_blocks_changing_the_accounts_email_while_open(self):
         with db.session(self.engine) as opened:
