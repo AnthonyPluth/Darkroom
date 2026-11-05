@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, renewal
 from darkroom.domain.ingest import cleanup, run
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -85,6 +85,7 @@ IMPORT_TICK_SECONDS = 60.0
 EXPORT_CHECK_TICK_SECONDS = 600.0
 EXPIRY_WATCH_SECONDS = 3600.0
 CLEANUP_HOUR = 4
+SCHEDULE_WATCH_HOUR = 5
 
 
 def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.RecheckSummary:
@@ -137,6 +138,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
         if opened_now:
             monitoring.log("export expiry alerts opened", count=opened_now)
 
+    def watch_schedules(at: float) -> None:
+        with db.session(engine) as opened:
+            queued = renewal.watch_schedules(opened, settings, at)
+        if queued:
+            monitoring.log("schedule renewals queued", count=queued)
+
     def run_imports(at: float) -> None:
         with db.session(engine) as opened:
             run.run_waiting(opened, settings, at)
@@ -151,5 +158,6 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
     scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now)
     scheduler.every("exports.check", EXPORT_CHECK_TICK_SECONDS, check_exports, now=now)
     scheduler.every("exports.expiry", EXPIRY_WATCH_SECONDS, watch_expiry, now=now)
+    scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)
     scheduler.daily_at("cleanup", CLEANUP_HOUR, clean_inbox, now=now)
     return scheduler

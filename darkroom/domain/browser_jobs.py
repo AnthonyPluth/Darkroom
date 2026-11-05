@@ -18,6 +18,8 @@ from darkroom.storage.paths import OutsideRoot, Photos
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
 GUARDED_KINDS = ("connect", "schedule", "status")
+RENEW_KIND = "renew"
+SCHEDULE_KINDS = ("schedule", RENEW_KIND)
 MAYBE_CREATED = "ScheduleNotConfirmed"
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify", "wrong_account")
@@ -214,7 +216,11 @@ def schedule_times(result: dict[str, object]) -> tuple[float, float]:
 
 def done(opened: Session, job_id: int, result: dict[str, object], now: float) -> BrowserJob:
     job = open_job(opened, job_id)
-    times = schedule_times(result) if job.kind == "schedule" else None
+    times = schedule_times(result) if job.kind in SCHEDULE_KINDS else None
+    if job.kind == RENEW_KIND and times is not None:
+        current = account_of(opened, job.account_id).schedule_end
+        if current is not None and times[1] <= current:
+            raise ValueError("a renewal must end after the schedule it renews")
     job.status = "done"
     job.result = json.dumps(result)
     job.finished = now

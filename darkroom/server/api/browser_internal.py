@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import monitoring, validate
 from darkroom.dates import utc_now
-from darkroom.domain import browser_jobs, downloads, exports
+from darkroom.domain import browser_jobs, downloads, exports, renewal
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, error_response, json_response
 from darkroom.storage import db
@@ -129,6 +129,9 @@ def done(request: Annotated[Request, contract.DoneBody]) -> Annotated[Response, 
             downloads.finish(opened, request.settings, job_id, moment)
             monitoring.log("export downloaded")
         job = browser_jobs.done(opened, job_id, result, moment)
+        if job.kind == browser_jobs.RENEW_KIND:
+            renewal.renewed(opened, request.settings, job, moment)
+            monitoring.log("export schedule renewed")
         if listing is not None:
             found = exports.reconcile(opened, browser_jobs.account_of(opened, job.account_id), listing, moment)
             monitoring.log("export listing reconciled", announced=found.announced, in_progress=found.in_progress, expired=found.expired, requeued=found.requeued)

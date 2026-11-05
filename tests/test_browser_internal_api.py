@@ -6,10 +6,10 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from darkroom.domain import browser_jobs
+from darkroom.domain import alerts, browser_jobs, renewal
 from darkroom.server import auth, routes
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob
+from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
 from tests.shared import fetch, own_database, settings_from, start_server
@@ -78,6 +78,21 @@ class WorkerRoundTripTests(WorkerApiServer):
             status, _, body = self.owner("GET", "/api/status")
             self.assertEqual(status, 200)
             self.assertIsInstance(json.loads(body)["worker_last_seen"], float)
+
+    def test_a_renewal_done_over_the_worker_api_records_the_new_end_and_confirms_it(self):
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_end = 1_000_000.0
+            job_id = browser_jobs.queue(opened, self.account, browser_jobs.RENEW_KIND, {"ending": 1_000_000.0}, 1.0).id
+            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0)
+        self.assertEqual(self.claim()["kind"], "renew")
+        bad = {"result": {"schedule_created": 900_000.0, "schedule_end": 1_000_000.0}}
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/done", bad), (400, {"error": "a renewal must end after the schedule it renews"}))
+        good = {"result": {"schedule_created": 990_000.0, "schedule_end": 990_000.0 + 365 * 86400}}
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/done", good)[0], 200)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).schedule_end, 990_000.0 + 365 * 86400)
+            kinds = {alert.kind: alert.closed is not None for alert in opened.execute(select(Alert)).scalars()}
+        self.assertEqual(kinds, {"schedule_ending": True, "schedule_renewed": True})
 
     def test_waiting_opens_the_sign_in_alert(self):
         job_id = self.enqueue()
