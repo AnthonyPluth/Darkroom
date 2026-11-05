@@ -193,6 +193,16 @@ class PlacingRecordTests(unittest.TestCase):
                 self.assertEqual(paths.read_placing(paths.placing_record(destination, self.token)), placing)
                 paths.placing_record(destination, self.token).unlink()
 
+    def test_writing_a_copy_leaves_only_the_copy_and_never_replaces_one(self):
+        paths.write_once(self.destination, [b"photo"])
+        self.assertEqual([path.name for path in self.folder.iterdir()], ["a.jpg"])
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_once(self.destination, [b"other"])
+        with mock.patch("os.link", side_effect=OSError("cross-device")):
+            paths.write_once(self.folder / "b.jpg", [b"photo"])
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), ["a.jpg", "b.jpg"])
+        self.assertEqual(self.destination.read_bytes(), b"photo")
+
     def test_a_record_that_is_not_one_is_not_read(self):
         record = paths.placing_record(self.destination, self.token)
         good = {"name": "a.jpg", "sha1": "1" * 40, "made": True, "sidecar": True, "sidecar_sha1": None}
