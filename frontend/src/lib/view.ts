@@ -84,6 +84,7 @@ export function jobSentence(job: BrowserJobView | undefined, doing: string): str
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
     case "waiting_for_user": return job.message === "wrong_account" ? `${doing}: waiting for you to switch to the right Google account.` : `${doing}: waiting for you to sign in.`;
     case "failed":
+      if (job.needs_check) return `${doing}: not confirmed by Takeout; say below what you found.`;
       if (job.checked === "found") return `${doing}: not confirmed by Takeout, then you found it there.`;
       if (job.checked === "missing") return `${doing}: not confirmed by Takeout, and you found none there.`;
       return `${doing}: failed${failureReason(job)}.`;
