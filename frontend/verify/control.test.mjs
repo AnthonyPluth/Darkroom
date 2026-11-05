@@ -274,6 +274,14 @@ describe("the state file and stale sessions", () => {
   });
 });
 
+describe("a viewport-only screenshot", () => {
+  it("keeps where the page is scrolled to, and a full-page one starts from the top", () => {
+    expect(c.scrollsToTop({ viewport: true })).toBe(false);
+    expect(c.scrollsToTop({})).toBe(true);
+    expect(c.scrollsToTop({ full: true })).toBe(true);
+  });
+});
+
 describe("cleanup and --dry-run", () => {
   const dir = join(DIR, "plan");
   beforeAll(() => {
@@ -296,6 +304,14 @@ describe("cleanup and --dry-run", () => {
     const plan = c.cleanupPlan({ dir, state: { pid: 11, sessionDir: join(dir, "session-11") }, live: 11, processes, entries, alive: (pid) => pid === 5 });
     expect(plan.remove).toEqual([join(dir, "session-12"), join(dir, "start.lock")]);
     expect(plan.kill.map((p) => p.pid)).toEqual([41]);
+  });
+
+  it("leaves the whole tree of a running session alone, however deep, and stops what is outside it", () => {
+    const processes = [{ pid: 11, parent: 1, what: "control daemon" }, { pid: 31, parent: 11, what: "demo server" }, { pid: 32, parent: 31, what: "demo server" },
+      { pid: 33, parent: 32, what: "demo server" }, { pid: 41, parent: 1, what: "demo server" }, { pid: 42, parent: 41, what: "demo server" }];
+    const plan = c.cleanupPlan({ dir, state: { pid: 11, sessionDir: join(dir, "session-11") }, live: 11, processes, entries: [], alive: () => false });
+    expect(plan.kill.map((p) => p.pid)).toEqual([41, 42]);
+    expect(c.cleanupPlan({ dir, processes, entries: [], alive: () => false }).kill).toHaveLength(6);
   });
 
   it("dry-run says what cleanup and stop would do, and does none of it", async () => {
