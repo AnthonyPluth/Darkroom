@@ -143,8 +143,9 @@ describe("the Exports page", () => {
     const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
     expect(within(region).getByText(/Takeout may already have this schedule/)).toBeInTheDocument();
     expect(within(region).getByRole("button", { name: "Create schedule" })).toBeDisabled();
+    expect(within(region).getByRole("button", { name: "Takeout has the schedule" })).toBeEnabled();
     await userEvent.click(within(region).getByRole("button", { name: "I checked Takeout, there is no schedule" }));
-    expect(server.sent("POST /api/accounts/10/schedule/checked")).toHaveLength(1);
+    expect(server.sent("POST /api/accounts/10/schedule/checked").map((call) => call.body)).toEqual([{ found: false }]);
     await vi.waitFor(() => expect(within(region).getByRole("button", { name: "Create schedule" })).toBeEnabled());
     expect(within(region).queryByText(/Takeout may already have this schedule/)).not.toBeInTheDocument();
   });
@@ -349,13 +350,51 @@ describe("the Exports page", () => {
   });
 
   it("tells the owner to look in Takeout when a renewal could not be confirmed, and not after a plain failure", async () => {
-    const unsure = { ...failedSchedule, id: 15, account_id: 10, kind: "renew", message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export" };
+    const unsure = { ...failedSchedule, id: 15, account_id: 10, kind: "renew", message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export", needs_check: true };
     const plain = { ...failedSchedule, id: 16, account_id: 11, kind: "renew", message: "UnexpectedPage: the page changed" };
     show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [unsure, plain] } });
     const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
     expect(within(jo).getByText(/could not confirm the renewal/)).toBeInTheDocument();
+    expect(within(jo).getByRole("button", { name: "Create schedule" })).toBeDisabled();
     const family = screen.getByRole("region", { name: "family.photos@example.com" });
     expect(within(family).queryByText(/could not confirm the renewal/)).not.toBeInTheDocument();
+    expect(within(family).queryByRole("button", { name: "Takeout has the new schedule" })).not.toBeInTheDocument();
+  });
+
+  for (const [button, found, after] of [
+    ["Takeout has the new schedule", true, "Renew schedule: not confirmed by Takeout, then you found it there."],
+    ["Takeout has no new schedule", false, "Renew schedule: not confirmed by Takeout, and you found none there."],
+  ] as const) {
+    it(`sends "${button}" for an unconfirmed renewal and shows the answer`, async () => {
+      const unsure = { ...failedSchedule, id: 15, account_id: 11, kind: "renew", message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export" };
+      let answered: "found" | "missing" | null = null;
+      const server = show({
+        "GET /api/accounts": { accounts: [familyAccount] },
+        "GET /api/browser/jobs": () => ({ jobs: [{ ...unsure, needs_check: answered === null, checked: answered }] }),
+        "POST /api/accounts/11/schedule/checked": () => {
+          answered = found ? "found" : "missing";
+          return { job: { ...unsure, needs_check: false, checked: answered } };
+        },
+      });
+      const family = await screen.findByRole("region", { name: "family.photos@example.com" });
+      await userEvent.click(within(family).getByRole("button", { name: button }));
+      expect(server.sent("POST /api/accounts/11/schedule/checked").map((call) => call.body)).toEqual([{ found }]);
+      expect(await within(family).findByText(after)).toBeInTheDocument();
+      expect(within(family).queryByText(/could not confirm the renewal/)).not.toBeInTheDocument();
+    });
+  }
+
+  it("offers Create schedule again only once the schedule has ended and no renewal is open", async () => {
+    const live = { ...familyAccount, id: 13, email: "live.photos@example.com" };
+    const ended = { ...familyAccount, id: 12, email: "ended.photos@example.com", schedule_created: 100, schedule_end: 900 };
+    const queuedRenewal = { ...queuedConnect, id: 17, account_id: 11, kind: "renew" };
+    show({ "GET /api/accounts": { accounts: [{ ...ended, id: 11, email: "family.photos@example.com" }, ended, live] }, "GET /api/browser/jobs": { jobs: [queuedRenewal] } });
+    const region = (email: string) => screen.getByRole("region", { name: email });
+    await screen.findByRole("region", { name: "ended.photos@example.com" });
+    expect(within(region("ended.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeEnabled();
+    expect(within(region("family.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeDisabled();
+    expect(within(region("live.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeDisabled();
+    expect(within(region("live.photos@example.com")).getByText("The schedule exports Google Photos every 2 months for 1 year.")).toBeInTheDocument();
   });
 
   it("shows why a check failed, with its capture", async () => {

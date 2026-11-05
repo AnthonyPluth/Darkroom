@@ -9,6 +9,7 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.config import Settings
 from darkroom.domain import alerts, events
 from darkroom.storage import db
@@ -29,6 +30,8 @@ WORKER_LAST_SEEN = "worker_last_seen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
 CAPTURE_FILES = ("screenshot.png", "page.html")
+FOUND = "found"
+MISSING = "missing"
 
 
 class UnknownKind(ValueError):
@@ -60,6 +63,10 @@ class NothingToCheck(LookupError):
 
 
 class BadReason(ValueError):
+    pass
+
+
+class NotExtended(ValueError):
     pass
 
 
@@ -98,17 +105,21 @@ def has_open_onboarding_job(opened: Session, account_id: int) -> bool:
     return found is not None
 
 
-def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
-    latest = opened.execute(select(BrowserJob).where(BrowserJob.account_id == account_id, BrowserJob.kind == "schedule").order_by(BrowserJob.id.desc()).limit(1)).scalar_one_or_none()
-    if latest is None or latest.status != "failed" or json.loads(latest.result or "{}").get("checked"):
+def check_answer(job: BrowserJob) -> str | None:
+    result = json.loads(job.result or "{}") if job.status == "failed" else {}
+    if not isinstance(result, dict) or not result.get("checked"):
         return None
-    message = latest.message or ""
-    return latest if message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE else None
+    return FOUND if result.get("found") else MISSING
 
 
 def left_uncertain(job: BrowserJob) -> bool:
     message = job.message or ""
-    return job.status == "failed" and (message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE)
+    return job.status == "failed" and (message.startswith(MAYBE_CREATED) or message == EXPIRED_MESSAGE) and check_answer(job) is None
+
+
+def unchecked_schedule(opened: Session, account_id: int) -> BrowserJob | None:
+    latest = opened.execute(select(BrowserJob).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(SCHEDULE_KINDS)).order_by(BrowserJob.id.desc()).limit(1)).scalar_one_or_none()
+    return latest if latest is not None and left_uncertain(latest) else None
 
 
 def is_unchecked(opened: Session, job: BrowserJob) -> bool:
@@ -116,13 +127,26 @@ def is_unchecked(opened: Session, job: BrowserJob) -> bool:
     return stuck is not None and stuck.id == job.id
 
 
-def mark_schedule_checked(opened: Session, account_id: int, now: float) -> BrowserJob:
-    account_of(opened, account_id)
+def schedule_live(account: GoogleAccount, now: float) -> bool:
+    return account.schedule_created is not None and (account.schedule_end is None or account.schedule_end > now)
+
+
+def extends(account: GoogleAccount, times: tuple[float, float]) -> tuple[float, float]:
+    if account.schedule_end is not None and times[1] <= account.schedule_end:
+        raise NotExtended("a renewal must end after the schedule it renews")
+    return times
+
+
+def mark_schedule_checked(opened: Session, account_id: int, now: float, found: bool = False) -> BrowserJob:
+    account = account_of(opened, account_id)
     job = unchecked_schedule(opened, account_id)
     if job is None:
         raise NothingToCheck("there is no schedule attempt waiting to be checked")
-    job.result = json.dumps({"checked": True})
-    events.record(opened, now, "schedule_checked", str(job.id))
+    if found:
+        created = job.started if job.started is not None else job.created
+        account.schedule_created, account.schedule_end = extends(account, (created, dates.one_year_after(created)))
+    job.result = json.dumps({"checked": True, "found": True} if found else {"checked": True})
+    events.record(opened, now, "schedule_checked", str(job.id), FOUND if found else MISSING)
     return job
 
 
@@ -136,12 +160,14 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     if locked is None:
         raise UnknownAccount(f"no Google account {account_id}")
     account = account_of(opened, account_id)
-    if kind == "schedule" and account.schedule_created is not None:
+    if kind == "schedule" and schedule_live(account, now):
         raise AlreadyOpen("this account already has an export schedule")
     if kind == "schedule" and unchecked_schedule(opened, account_id) is not None:
         raise AlreadyOpen("the last schedule attempt may have created an export; check Takeout and say so before trying again")
-    statuses = (*QUEUED_STATUSES, "done") if kind == "schedule" else QUEUED_STATUSES
-    busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == kind, BrowserJob.status.in_(statuses)).limit(1)).first()
+    ended = account.schedule_end is not None and account.schedule_end <= now
+    statuses = QUEUED_STATUSES if kind != "schedule" or ended else (*QUEUED_STATUSES, "done")
+    kinds = SCHEDULE_KINDS if kind == "schedule" else (kind,)
+    busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(kinds), BrowserJob.status.in_(statuses)).limit(1)).first()
     if busy is not None:
         raise AlreadyOpen(f"a {kind} job for this account is already waiting, running or done")
     return queue(opened, account_id, kind, {"email": account.email}, now)
@@ -222,11 +248,7 @@ def schedule_times(result: dict[str, object]) -> tuple[float, float]:
 
 def done(opened: Session, job_id: int, result: dict[str, object], now: float) -> BrowserJob:
     job = open_job(opened, job_id)
-    times = schedule_times(result) if job.kind in SCHEDULE_KINDS else None
-    if job.kind == RENEW_KIND and times is not None:
-        current = account_of(opened, job.account_id).schedule_end
-        if current is not None and times[1] <= current:
-            raise ValueError("a renewal must end after the schedule it renews")
+    times = extends(account_of(opened, job.account_id), schedule_times(result)) if job.kind in SCHEDULE_KINDS else None
     job.status = "done"
     job.result = json.dumps(result)
     job.finished = now
@@ -312,7 +334,7 @@ def unresolved_jobs(opened: Session, account_id: int | None) -> list[BrowserJob]
     if account_id is not None:
         query = query.where(BrowserJob.account_id == account_id)
     found = list(opened.execute(query).scalars())
-    accounts = {account_id} if account_id is not None else set(opened.execute(select(BrowserJob.account_id).where(BrowserJob.kind == "schedule", BrowserJob.status == "failed").distinct()).scalars())
+    accounts = {account_id} if account_id is not None else set(opened.execute(select(BrowserJob.account_id).where(BrowserJob.kind.in_(SCHEDULE_KINDS), BrowserJob.status == "failed").distinct()).scalars())
     for each in accounts:
         stuck = unchecked_schedule(opened, each)
         if stuck is not None:
@@ -332,6 +354,7 @@ def as_dict(job: BrowserJob, settings: Settings | None = None, needs_check: bool
         "finished": job.finished,
         "message": job.message or "",
         "needs_check": needs_check,
+        "checked": check_answer(job) if job.kind in SCHEDULE_KINDS else None,
         "has_capture": job.failure_dir is not None,
         "capture_files": captured_files(settings, job, CAPTURE_FILES) if settings is not None and job.failure_dir is not None else [],
     }

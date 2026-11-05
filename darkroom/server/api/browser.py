@@ -33,7 +33,7 @@ def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
         return error_response(str(error), 400)
     with db.session(engine_of(request)) as opened:
         listed = {job.id: job for job in (*browser_jobs.list_jobs(opened, account), *browser_jobs.unresolved_jobs(opened, account))}
-        stuck = {job.id for job in listed.values() if job.kind == "schedule" and browser_jobs.is_unchecked(opened, job)}
+        stuck = {job.id for job in listed.values() if job.kind in browser_jobs.SCHEDULE_KINDS and browser_jobs.is_unchecked(opened, job)}
         jobs = [browser_jobs.as_dict(listed[job_id], request.settings, job_id in stuck) for job_id in sorted(listed, reverse=True)]
     return json_response({"jobs": jobs})
 

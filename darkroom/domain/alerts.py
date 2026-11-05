@@ -86,14 +86,14 @@ def schedule_renewed(account: str, end: str) -> Wording:
 def schedule_renewal_failed(account: str, end: str) -> Wording:
     return Wording(
         "Takeout schedule not renewed",
-        f"Renewing the export schedule for {account} failed, and the schedule ends on {end}. Darkroom does not retry a failed renewal, and renewing on request is not available yet. Open Exports to see what failed, and ask whoever looks after Darkroom to act before {end}.",
+        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Once it has ended, press Create schedule on the Exports page to make a new one.",
     )
 
 
 def schedule_renewal_unconfirmed(account: str, end: str) -> Wording:
     return Wording(
         "Takeout schedule renewal not confirmed",
-        f"Darkroom could not confirm whether the export schedule for {account} was renewed; the current one ends on {end}. Open Takeout's export list and look: if a new schedule is there, nothing more is needed, and if not, create one by hand before {end}. Darkroom does not retry a renewal, so it will not create a second schedule.",
+        f"Darkroom could not confirm whether the export schedule for {account} was renewed; the current one ends on {end}. Open Takeout's export list, then say on the Exports page whether a new schedule is there: Darkroom records it if it is, and reports the renewal as not done if it is not. Darkroom does not retry a renewal, so it will not create a second schedule.",
     )
 
 

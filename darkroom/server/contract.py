@@ -140,6 +140,10 @@ class AccountPatchBody(TypedDict):
     default_person_id: NotRequired[int]
 
 
+class ScheduleCheckedBody(TypedDict):
+    found: NotRequired[bool]
+
+
 class PixelView(TypedDict):
     id: int
     name: str
@@ -215,6 +219,7 @@ class BrowserJobView(TypedDict):
     finished: float | None
     message: str
     needs_check: bool
+    checked: str | None
     has_capture: bool
     capture_files: list[str]
 

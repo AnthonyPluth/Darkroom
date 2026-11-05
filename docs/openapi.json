@@ -250,6 +250,16 @@
             },
             "type": "array"
           },
+          "checked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created": {
             "type": "number"
           },
@@ -305,6 +315,7 @@
         "required": [
           "account_id",
           "capture_files",
+          "checked",
           "created",
           "finished",
           "has_capture",
@@ -2914,6 +2925,16 @@
         ],
         "type": "object"
       },
+      "ScheduleCheckedBody": {
+        "additionalProperties": false,
+        "properties": {
+          "found": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
       "Status": {
         "additionalProperties": false,
         "properties": {
@@ -3185,6 +3206,16 @@
     "/api/accounts/{id}/schedule/checked": {
       "post": {
         "operationId": "schedule_checked",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleCheckedBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "2XX": {
             "content": {
