@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -15,11 +16,12 @@ from sqlalchemy import MetaData, select
 
 import run
 from darkroom import tls
+from darkroom.dates import utc_now
 from darkroom.domain import accounts, alerts, browser_jobs, demo, events
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
-from darkroom.storage.models import Alert, AuthSession, DedupeDecision, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.storage.models import Alert, AuthSession, DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos
 from tests.shared import fetch, settings_from, start_server
 
@@ -175,6 +177,40 @@ class SeededDemo(unittest.TestCase):
         matched = next(item for item in self.rows(MediaItem) if item.id == decision.matched_item_id)
         self.assertTrue(matched.path.endswith("IMG_0101.JPG"))
         self.assertNotEqual(hold.read_bytes(), (self.root / "photos" / matched.path).read_bytes())
+
+    def test_keep_both_and_undo_work_on_the_seeded_pair_and_a_fresh_seed_has_it_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            engine, _ = seed_into(root)
+            self.addCleanup(engine.dispose)
+            settings = settings_from(DARKROOM_DEMO="1", DARKROOM_PUBLIC_URL="http://127.0.0.1")
+            with db.session(engine) as opened:
+                token = demo.sign_in(opened, settings, utc_now().timestamp())
+            settings = dataclasses.replace(settings, photos_root=root / "photos", data_dir=root / "data")
+            base, _ = start_server(self, settings, engine)
+            headers = {"Cookie": f"{auth.SESSION_COOKIE}={token}", "Content-Type": "application/json", "Origin": base}
+            status, _, body = fetch(base, "GET", "/api/review?status=pending", headers)
+            self.assertEqual(status, 200)
+            pending = json.loads(body)["reviews"]
+            self.assertEqual(len(pending), 1)
+            review_id = pending[0]["id"]
+            before = file_digests(root / "photos")
+            status, _, body = fetch(base, "POST", f"/api/review/{review_id}/resolve", headers, json.dumps({"action": "keep_both"}).encode())
+            self.assertEqual((status, json.loads(body)["review"]["status"]), (200, "kept_both"), body)
+            self.assertNotEqual(file_digests(root / "photos"), before)
+            status, _, body = fetch(base, "POST", f"/api/review/{review_id}/undo", headers, b"{}")
+            self.assertEqual((status, json.loads(body)["review"]["status"]), (200, "pending"), body)
+            self.assertEqual(file_digests(root / "photos"), before)
+            with tempfile.TemporaryDirectory() as again:
+                engine2, _ = seed_into(Path(again).resolve())
+                self.addCleanup(engine2.dispose)
+                with db.session(engine2) as opened:
+                    self.assertEqual([r.status for r in opened.query(ReviewItem).all()], ["pending"])
+
+    def test_the_imported_export_has_its_part_downloaded(self):
+        (part,) = self.rows(ExportPart)
+        self.assertEqual((part.status, part.downloads_used), ("done", 1))
+        self.assertGreater(part.bytes, 0)
 
     def test_a_seed_for_another_day_moves_with_it(self):
         with tempfile.TemporaryDirectory() as folder:
