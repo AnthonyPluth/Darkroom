@@ -210,7 +210,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 The web UI is dark mode only: one theme, with no light theme and no theme switch.
 
-**Push alerts** — sent to the Darkroom iPhone app through Apple's push service (APNs, production, TestFlight builds), to the devices of the person an alert concerns; an alert about a Google account goes to the people that account serves. The push carries only the alert kind and an id, never an email address, name or file name; the app fetches the details from Darkroom when it can reach it. Delivery does not depend on being on home Wi-Fi; acting on an alert (for example the sign-in view) needs Darkroom reachable over home Wi-Fi or Tailscale. Until the app ships, alerts are recorded as events and not delivered.
+**Push alerts** — sent to the Darkroom iPhone app through Apple's push service (APNs, production, TestFlight builds), to the devices of the person an alert concerns; an alert about a Google account goes to the people that account serves. The push carries only the alert kind and an id, never an email address, name or file name; the app fetches the details from Darkroom when it can reach it. Delivery does not depend on being on home Wi-Fi; acting on an alert (for example the sign-in view) needs Darkroom reachable over home Wi-Fi or Tailscale. Darkroom sends the push within about a minute of the alert opening or repeating, retries for an hour while Apple can't be reached, records each outcome as an event and forgets a push token Apple reports invalid (unless the device registered it again since). Without the APNs settings, alerts are recorded as events and not delivered.
 
 | Event | Alert |
 | --- | --- |

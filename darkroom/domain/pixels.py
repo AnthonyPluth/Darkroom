@@ -4,7 +4,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, events
+from darkroom.domain import accounts, dedupe, events
 from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelPerson
 
 
@@ -70,6 +70,7 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
     opened.add(pixel)
     opened.flush()
     set_people(opened, pixel.id, chosen)
+    dedupe.confirm_newly_served(opened, account_id)
     events.record(opened, now, "pixel_created", str(pixel.id))
     return pixel
 
@@ -92,6 +93,7 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
         value = fields["syncthing_device_id"]
         pixel.syncthing_device_id = value if isinstance(value, str) else None
     opened.flush()
+    dedupe.confirm_newly_served(opened, account_id)
     events.record(opened, now, "pixel_updated", str(pixel.id))
     return pixel
 
