@@ -43,7 +43,7 @@ A step has one action and an optional `timeout` in milliseconds (default 10000).
 
 - `{"wait_for": selector}` waits for it to appear.
 - `{"expect_text": {"selector": …, "text": …}}` fails unless it contains the text within the timeout; it keeps looking while the page settles.
-- `{"screenshot": "name"}` saves the full page as `flow-<flow name>-<name>-<viewport>.png` to `artifacts/verify/` (ignored by git), at phone and desktop only. Other widths run the steps and checks and write no image. A flow's images are for you to look at; the committed images are the pages' in `docs/screenshots/`.
+- `{"screenshot": "name"}` (letters, digits, `-` or `_`: it becomes part of a file name) saves the full page as `flow-<flow name>-<name>-<viewport>.png` to `artifacts/verify/` (ignored by git), at phone and desktop only. Other widths run the steps and checks and write no image. A flow's images are for you to look at; the committed images are the pages' in `docs/screenshots/`.
 - `{"download": {"selector": "button:has-text('Export')", "name": "export"}}` clicks it, waits for the file the browser downloads and saves it as `flow-<flow name>-<name>-<viewport>.png` in the same place.
 
 ## Writing a flow
