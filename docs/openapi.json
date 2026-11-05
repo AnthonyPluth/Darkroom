@@ -363,6 +363,25 @@
         ],
         "type": "object"
       },
+      "CheckNowReply": {
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/BrowserJobView"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "jobs",
+          "skipped"
+        ],
+        "type": "object"
+      },
       "ClaimBody": {
         "additionalProperties": false,
         "properties": {
@@ -676,6 +695,210 @@
         },
         "required": [
           "events"
+        ],
+        "type": "object"
+      },
+      "ExportPartView": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "downloads_used": {
+            "type": "integer"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "type": "integer"
+          },
+          "progress": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "bytes",
+          "downloads_used",
+          "filename",
+          "number",
+          "progress",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ExportReply": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/ExportView"
+          }
+        },
+        "required": [
+          "export"
+        ],
+        "type": "object"
+      },
+      "ExportSchedule": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "last_export_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_export_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "last_export_at",
+          "next_export_at"
+        ],
+        "type": "object"
+      },
+      "ExportView": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "part_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/ExportPartView"
+            },
+            "type": "array"
+          },
+          "ready_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "created_at",
+          "expires_at",
+          "id",
+          "kind",
+          "part_count",
+          "parts",
+          "ready_at",
+          "stage",
+          "status"
+        ],
+        "type": "object"
+      },
+      "Exports": {
+        "additionalProperties": false,
+        "properties": {
+          "exports": {
+            "items": {
+              "$ref": "#/components/schemas/ExportView"
+            },
+            "type": "array"
+          },
+          "schedules": {
+            "items": {
+              "$ref": "#/components/schemas/ExportSchedule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "exports",
+          "schedules"
         ],
         "type": "object"
       },
@@ -1876,6 +2099,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Events"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports": {
+      "get": {
+        "operationId": "list_exports",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Exports"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports/check-now": {
+      "post": {
+        "operationId": "check_now",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckNowReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports/{id}": {
+      "get": {
+        "operationId": "one",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportReply"
                 }
               }
             },

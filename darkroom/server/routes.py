@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth
-from darkroom.server.api import accounts, browser, browser_internal, device, devices, imports, people, pixels, status
+from darkroom.server.api import accounts, browser, browser_internal, device, devices, exports, imports, people, pixels, status
 from darkroom.server.common import Request, Response
 
 AUTH_KINDS = ("session", "device", "worker", "public")
@@ -51,6 +51,9 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/api/browser/view", browser.view, "session"),
     Route("GET", "/api/browser/failures/{id}/screenshot.png", browser.screenshot, "session"),
     Route("GET", "/api/browser/failures/{id}/page.html", browser.page_snapshot, "session"),
+    Route("GET", "/api/exports", exports.list_exports, "session"),
+    Route("POST", "/api/exports/check-now", exports.check_now, "session"),
+    Route("GET", "/api/exports/{id}", exports.one, "session"),
     Route("POST", "/api/exports/{id}/import", imports.request, "session"),
     Route("GET", "/api/imports", imports.list_imports, "session"),
     Route("GET", "/api/imports/{id}", imports.one, "session"),

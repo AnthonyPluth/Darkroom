@@ -6,6 +6,7 @@ from importlib import metadata
 from darkroom_browser.context import JobContext
 from darkroom_browser.jobs.connect import connect
 from darkroom_browser.jobs.schedule import create_schedule
+from darkroom_browser.jobs.status import check_exports
 
 Job = Callable[[JobContext], dict[str, object]]
 
@@ -27,7 +28,7 @@ def noop(ctx: JobContext) -> dict[str, object]:
 
 
 
-REGISTRY: dict[str, Job] = {"noop": noop, "connect": connect, "schedule": create_schedule}
+REGISTRY: dict[str, Job] = {"noop": noop, "connect": connect, "schedule": create_schedule, "status": check_exports}
 
 
 def find(kind: str) -> Job:

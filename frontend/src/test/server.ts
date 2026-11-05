@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, BrowserJobView, DeviceView, EventView, Me, PersonView, PixelView, Status } from "$lib/api-types";
+import type { AccountView, BrowserJobView, DeviceView, EventView, ExportPartView, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -75,3 +75,19 @@ export const someEvents: EventView[] = [
 export const queuedConnect: BrowserJobView = { id: 5, account_id: 10, kind: "connect", status: "queued", created: 990, started: null, heartbeat: null, finished: null, message: "", needs_check: false, has_capture: false, capture_files: [] };
 export const waitingConnect: BrowserJobView = { ...queuedConnect, id: 6, account_id: 11, status: "waiting_for_user", started: 991, heartbeat: 995, message: "sign_in" };
 export const failedSchedule: BrowserJobView = { ...queuedConnect, id: 4, account_id: 10, kind: "schedule", status: "failed", started: 900, finished: 910, message: "UnexpectedPage", has_capture: true, capture_files: ["screenshot.png", "page.html"] };
+
+export const noExports: Exports = { exports: [], schedules: [] };
+
+const part = (number: number, status: string, downloads: number): ExportPartView => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status });
+
+export const downloadingExport: ExportView = {
+  id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null,
+  parts: [part(1, "done", 1), part(2, "downloading", 1), part(3, "pending", 0)],
+};
+export const preparingExport: ExportView = { id: 41, account_id: 10, kind: "incremental", created_at: 990_000, ready_at: null, expires_at: null, part_count: null, status: "announced", stage: null, parts: [] };
+export const importedExport: ExportView = {
+  id: 38, account_id: 10, kind: "incremental", created_at: 300_000, ready_at: 301_000, expires_at: 900_000, part_count: 2, status: "imported", stage: "done",
+  parts: [part(1, "done", 1), part(2, "done", 1)],
+};
+export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", parts: [part(1, "done", 1), part(2, "failed", 3)] };
+export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [] };

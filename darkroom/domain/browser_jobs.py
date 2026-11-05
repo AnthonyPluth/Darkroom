@@ -17,7 +17,7 @@ from darkroom.storage.paths import OutsideRoot, Photos
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
-GUARDED_KINDS = ("connect", "schedule")
+GUARDED_KINDS = ("connect", "schedule", "status")
 MAYBE_CREATED = "ScheduleNotConfirmed"
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify", "wrong_account")
