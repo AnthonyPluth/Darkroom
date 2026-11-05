@@ -169,7 +169,6 @@ def announce(opened: Session, account: GoogleAccount, export: Export, item: List
 
 
 def queue_download(opened: Session, account: GoogleAccount, export: Export, now: float) -> BrowserJob:
-    export.download_tries += 1
     return browser_jobs.queue(opened, account.id, DOWNLOAD_KIND, {"email": account.email, "export_id": export.id}, now)
 
 
@@ -181,7 +180,7 @@ def download_open(opened: Session, export: Export) -> bool:
 
 def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     export.status = "failed"
-    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed")
+    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
 
 
 def retry_download(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
@@ -194,7 +193,7 @@ def retry_download(opened: Session, account: GoogleAccount, export: Export, item
         give_up_downloading(opened, export, now)
         return None
     queue_download(opened, account, export, now)
-    events.record(opened, now, "export_download_requeued", str(export.id), f"try {export.download_tries} of {MAX_DOWNLOAD_JOBS}")
+    events.record(opened, now, "export_download_requeued", str(export.id), f"{export.download_tries} of {MAX_DOWNLOAD_JOBS} failed tries used")
     return "requeued"
 
 

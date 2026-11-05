@@ -205,7 +205,7 @@ class FinishTests(DownloadCase):
             downloads.finish(opened, self.settings, job, NOW)
             browser_jobs.done(opened, job, {}, NOW)
         status, tries, stage, inbox = self.export_row()
-        self.assertEqual((status, tries, stage), ("downloaded", 1, "queued"))
+        self.assertEqual((status, tries, stage), ("downloaded", 0, "queued"))
         self.assertEqual(Path(inbox), self.folder())
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
@@ -234,6 +234,7 @@ class RetryTests(DownloadCase):
     def test_after_three_failed_download_jobs_the_export_fails_and_is_not_queued_again(self):
         for day in range(3):
             job = self.claim(NOW + day * DAY)
+            self.attempt(job, 1, NOW + day * DAY)
             self.fail_job(job, NOW + day * DAY)
             if day < 2:
                 self.assertEqual(self.reconcile(NOW + (day + 1) * DAY).requeued, 1)
@@ -243,6 +244,14 @@ class RetryTests(DownloadCase):
         with db.session(self.engine) as opened:
             self.assertIn("export_download_failed", opened.execute(select(Event.type)).scalars().all())
             self.assertEqual(len(opened.execute(select(Alert).where(Alert.kind == "failure")).scalars().all()), 3)
+
+    def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
+        for day in range(4):
+            self.fail_job(self.claim(NOW + day * DAY), NOW + day * DAY)
+            self.assertEqual(self.reconcile(NOW + (day + 1) * DAY).requeued, 1)
+        self.assertEqual(self.export_row()[:2], ("announced", 0))
+        self.assertEqual(self.part(1), ("pending", 0, 0, None))
+        self.assertEqual([status for _, status in self.download_jobs()], ["failed"] * 4 + ["queued"])
 
     def test_a_check_that_finds_the_tries_used_up_marks_the_export_failed(self):
         job = self.claim()

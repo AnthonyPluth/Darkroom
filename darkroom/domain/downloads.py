@@ -21,6 +21,7 @@ FAILURES = ("corrupt", "wrong_size", "not_started", "interrupted", "bad_name")
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
+ATTEMPTED = json.dumps({"attempted": True})
 
 
 class NotADownload(ValueError):
@@ -119,6 +120,7 @@ def attempt(opened: Session, job_id: int, number: int, now: float) -> dict[str, 
     if part.status == "failed" or exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)
+    browser_jobs.open_job(opened, job_id).result = ATTEMPTED
     part.downloads_used += 1
     part.attempts += 1
     part.status = "downloading"
@@ -207,6 +209,9 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
+    if job.result != ATTEMPTED:
+        return export
+    export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:
         exports.give_up_downloading(opened, export, now)
     return export
