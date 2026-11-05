@@ -7,7 +7,7 @@ from sqlalchemy import select
 from darkroom.domain import accounts, dedupe, exports, people
 from darkroom.domain.ingest import run
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Pixel
 from tests.import_world import NOW, World
 from tests.test_exports_reconcile import ReconcileCase, listed
 
@@ -138,6 +138,47 @@ class OwnerNoLongerServedTests(unittest.TestCase):
         self.assertEqual(count, len(phone))
         for row in tier_one:
             dedupe.reverse(self.world.opened, row.id, NOW, "owner")
+        self.assertFalse(any(item.confirmed_in_google for item in phone))
+
+    def unserved_import(self):
+        change_default(self.world, "sam")
+        done = self.world.run_import(self.export)
+        self.assertEqual((done.status, done.failed), ("done", 0))
+        jo = self.world.ids["jo"]
+        phone = self.world.opened.execute(select(MediaItem).where(MediaItem.person_id == jo, MediaItem.source == "phone")).scalars().all()
+        self.assertFalse(any(item.confirmed_in_google for item in phone))
+        return jo, phone
+
+    def test_serving_the_owner_again_by_default_person_confirms_their_matched_items(self):
+        from darkroom.domain.ingest import run as ingest
+        jo, phone = self.unserved_import()
+        change_default(self.world, "jo")
+        dedupe.confirm_newly_served(self.world.opened, self.world.account)
+        matched = {row.matched_item_id for row in self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.tier.in_((1, 2)), DedupeDecision.person_id == jo)).scalars()}
+        self.assertTrue(matched)
+        for item in phone:
+            self.assertEqual(item.confirmed_in_google, item.id in matched, item.path)
+        self.assertEqual(ingest.unmatched_count(self.world.opened, jo, NOW + 365 * 86400), len(phone) - len(matched))
+
+    def test_a_pixel_that_starts_serving_the_owner_confirms_their_matched_items(self):
+        from darkroom.domain import pixels
+        jo, phone = self.unserved_import()
+        pixel = self.world.opened.execute(select(Pixel)).scalars().one()
+        pixels.update(self.world.opened, pixel.id, {"people_ids": [self.world.ids["sam"], jo]}, NOW)
+        self.assertTrue(any(item.confirmed_in_google for item in phone))
+
+    def test_a_new_pixel_serving_the_owner_confirms_their_matched_items(self):
+        from darkroom.domain import pixels
+        jo, phone = self.unserved_import()
+        pixels.create(self.world.opened, "second", None, self.world.account, [jo], NOW)
+        self.assertTrue(any(item.confirmed_in_google for item in phone))
+
+    def test_a_reversed_decision_is_not_confirmed_when_the_owner_is_served_again(self):
+        jo, phone = self.unserved_import()
+        for row in self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.person_id == jo, DedupeDecision.tier.in_((1, 2)))).scalars().all():
+            dedupe.reverse(self.world.opened, row.id, NOW, "owner")
+        change_default(self.world, "jo")
+        dedupe.confirm_newly_served(self.world.opened, self.world.account)
         self.assertFalse(any(item.confirmed_in_google for item in phone))
 
     def test_the_owners_originals_are_indexed_for_the_export(self):
