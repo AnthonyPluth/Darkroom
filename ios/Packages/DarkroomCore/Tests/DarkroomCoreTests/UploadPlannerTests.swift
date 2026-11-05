@@ -32,6 +32,17 @@ final class UploadPlannerTests: XCTestCase {
         XCTAssertEqual(batches.flatMap { $0.assets.map(\.id) }, ["b"])
     }
 
+    func testAnAssetWithANewResourceIsCheckedWithItsWholeCurrentSet() {
+        let resources = [
+            resource("a", .photo, state: .uploaded), resource("a", .liveVideo, state: .uploaded), resource("a", .adjusted),
+            resource("b", .photo, state: .uploaded), resource("c", .photo, state: .notLocal), resource("c", .liveVideo),
+        ]
+        let batches = UploadPlanner.checkBatches(from: resources)
+        XCTAssertEqual(batches.flatMap { $0.assets.map(\.id) }, ["a", "c"])
+        XCTAssertEqual(batches[0].assets[0].resources.map(\.kind), [.photo, .liveVideo, .adjusted])
+        XCTAssertEqual(batches[0].assets[1].resources.map(\.kind), [.liveVideo])
+    }
+
     func testBatchSizeIsTwoHundredByDefault() {
         let resources = (0..<450).map { resource("asset-\($0)", .photo) }
         let batches = UploadPlanner.checkBatches(from: resources)
