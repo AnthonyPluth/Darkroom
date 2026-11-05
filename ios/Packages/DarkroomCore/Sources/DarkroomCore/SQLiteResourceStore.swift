@@ -127,6 +127,20 @@ public actor SQLiteResourceStore: ResourceStore {
         return true
     }
 
+    public func remove(_ keys: [ResourceKey]) async throws {
+        try transaction {
+            try withStatement("DELETE FROM resources WHERE asset_id = ? AND kind = ?") { statement in
+                for key in keys {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    bind(key.assetID, at: 1, in: statement)
+                    bind(key.kind.rawValue, at: 2, in: statement)
+                    _ = try step(statement)
+                }
+            }
+        }
+    }
+
     public func recordAttempt(for keys: [ResourceKey]) async throws {
         try transaction {
             for key in keys { try increment("attempts", for: key) }

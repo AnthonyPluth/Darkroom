@@ -100,6 +100,23 @@ enum ResourceStoreContract {
         XCTAssertTrue(counts.isEmpty)
     }
 
+    static func removeDeletesOnlyTheGivenKeysAndLaterInsertsGoLast(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b"), resource("a", .liveVideo), resource("c", state: .uploaded)])
+        try await store.remove([key("b"), key("a", .liveVideo), key("never-stored")])
+        var all = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(all.map(\.key), [key("a"), key("c")])
+        let gone = try await store.record(for: key("b"))
+        XCTAssertNil(gone)
+        let counts = try await store.counts()
+        XCTAssertEqual(counts, [.hashed: 1, .uploaded: 1])
+        try await store.upsert([resource("b")])
+        all = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(all.map(\.key), [key("a"), key("c"), key("b")])
+        try await store.remove([])
+        let unchanged = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(unchanged.count, 3)
+    }
+
     static func attemptsAndRehashesCountUpAndResetOnUpsert(_ store: ResourceStore) async throws {
         try await store.upsert([resource("a"), resource("b")])
         try await store.recordAttempt(for: [key("a"), key("b")])
