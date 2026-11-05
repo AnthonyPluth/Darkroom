@@ -774,8 +774,10 @@ class UndoTests(ReviewCase):
         self.assertEqual((named.read_bytes(), long_sidecar.read_bytes()), (data, xmp_data))
         self.assertEqual(self.tree(), before)
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
-        self.assertEqual(named.read_bytes(), data)
+        self.assertEqual(photo.read_bytes(), data)
+        self.assertFalse(named.exists())
         self.assertFalse(long_sidecar.exists())
+        self.assertFalse(sidecar.exists())
         self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
 
     def test_a_sidecar_left_behind_by_an_undo_that_committed_is_never_put_back(self):
