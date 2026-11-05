@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,6 +28,7 @@ CHECK_WINDOW_MINUTES = 240
 CHECK_STEP_MINUTES = 37
 LIST_LIMIT = 200
 STILL_WAITING = ("announced", "downloading")
+MAX_DOWNLOAD_JOBS = 3
 
 
 class UnreadableListing(ValueError):
@@ -57,6 +59,7 @@ class Reconciled:
     announced: int = 0
     in_progress: int = 0
     expired: int = 0
+    requeued: int = 0
 
 
 def number_of(value: object, name: str, minimum: float = 0) -> float:
@@ -159,7 +162,52 @@ def announce(opened: Session, account: GoogleAccount, export: Export, item: List
     export.expires_at = item.expires_at
     add_parts(opened, export, item)
     events.record(opened, now, "export_announced", str(export.id), f"{len(item.parts)} parts")
-    browser_jobs.queue(opened, account.id, DOWNLOAD_KIND, {"email": account.email, "export_id": export.id}, now)
+    queue_download(opened, account, export, now)
+
+
+def queue_download(opened: Session, account: GoogleAccount, export: Export, now: float) -> BrowserJob:
+    return browser_jobs.queue(opened, account.id, DOWNLOAD_KIND, {"email": account.email, "export_id": export.id}, now)
+
+
+def download_open(opened: Session, export: Export) -> bool:
+    jobs = opened.execute(select(BrowserJob).where(BrowserJob.account_id == export.account_id, BrowserJob.kind == DOWNLOAD_KIND,
+                                                   BrowserJob.status.in_(browser_jobs.QUEUED_STATUSES))).scalars()
+    return any(json.loads(job.payload or "{}").get("export_id") == export.id for job in jobs)
+
+
+def download_underway(opened: Session, account_id: int) -> bool:
+    started = opened.execute(select(Export.id).where(Export.account_id == account_id, Export.status == "downloading").limit(1)).first()
+    queued = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == DOWNLOAD_KIND,
+                                                        BrowserJob.status.in_(browser_jobs.QUEUED_STATUSES)).limit(1)).first()
+    return started is not None or queued is not None
+
+
+def give_up_downloading(opened: Session, export: Export, now: float) -> None:
+    export.status = "failed"
+    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
+
+
+def all_done(opened: Session, export: Export) -> bool:
+    parts = parts_of(opened, export.id)
+    return bool(parts) and export.part_count == len(parts) and all(part.status == "done" for part in parts)
+
+
+def retry_download(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
+    if download_open(opened, export):
+        return None
+    if all_done(opened, export):
+        queue_download(opened, account, export, now)
+        events.record(opened, now, "export_download_requeued", str(export.id), "every part is downloaded")
+        return "requeued"
+    if is_late(item, now):
+        expire(opened, export, now)
+        return "expired"
+    if export.download_tries >= MAX_DOWNLOAD_JOBS:
+        give_up_downloading(opened, export, now)
+        return None
+    queue_download(opened, account, export, now)
+    events.record(opened, now, "export_download_requeued", str(export.id), f"{export.download_tries} of {MAX_DOWNLOAD_JOBS} failed tries used")
+    return "requeued"
 
 
 def is_late(item: Listed, now: float) -> bool:
@@ -184,6 +232,8 @@ def record_new(opened: Session, account: GoogleAccount, item: Listed, now: float
 def update_known(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
     if export.status == "expired":
         return None
+    if export.status in STILL_WAITING and export.ready_at is not None and all_done(opened, export):
+        return retry_download(opened, account, export, item, now)
     if item.state == "expired":
         if export.status in STILL_WAITING:
             expire(opened, export, now)
@@ -195,11 +245,13 @@ def update_known(opened: Session, account: GoogleAccount, export: Export, item: 
             return "expired"
         announce(opened, account, export, item, now)
         return "announced"
+    if item.state == "ready" and export.ready_at is not None and export.status in STILL_WAITING:
+        return retry_download(opened, account, export, item, now)
     return None
 
 
 def reconcile(opened: Session, account: GoogleAccount, listing: Sequence[Listed], now: float) -> Reconciled:
-    counts = {"announced": 0, "in_progress": 0, "expired": 0}
+    counts = {"announced": 0, "in_progress": 0, "expired": 0, "requeued": 0}
     for item in sorted(listing, key=lambda each: each.created_at):
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == item.google_id)).scalar_one_or_none()
         outcome = record_new(opened, account, item, now) if export is None else update_known(opened, account, export, item, now)
@@ -253,7 +305,11 @@ def check_due(opened: Session, now: float, zone: ZoneInfo) -> int:
 
 
 def part_progress(part: ExportPart) -> int:
-    return 100 if part.status == "done" else 0
+    if part.status == "done":
+        return 100
+    if part.status != "downloading" or not part.bytes_done or not part.bytes:
+        return 0
+    return max(0, min(99, part.bytes_done * 100 // part.bytes))
 
 
 def part_dict(part: ExportPart) -> dict[str, object]:

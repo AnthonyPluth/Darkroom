@@ -39,7 +39,9 @@ public protocol ResourceExporter: Sendable {
 
 public protocol IngestVersions: Sendable {
     func version(for key: ResourceKey) async -> String?
-    func setVersion(_ version: String, for key: ResourceKey) async
+    /// Durable when it returns: it throws if the version could not be saved, and then the old version stands.
+    /// Nil forgets the version.
+    func setVersion(_ version: String?, for key: ResourceKey) async throws
 }
 
 public actor InMemoryIngestVersions: IngestVersions {
@@ -51,23 +53,29 @@ public actor InMemoryIngestVersions: IngestVersions {
         storage[key]
     }
 
-    public func setVersion(_ version: String, for key: ResourceKey) {
+    public func setVersion(_ version: String?, for key: ResourceKey) {
         storage[key] = version
     }
 }
 
-/// Keeps the versions in a JSON file so a relaunch does not re-hash what has not changed.
+/// Keeps the versions in an append-only journal file (one JSON line per change) so a relaunch does not re-hash what
+/// has not changed, and a save costs one small append however many resources there are.
 public actor FileIngestVersions: IngestVersions {
+    private struct Entry: Codable {
+        let key: String
+        let version: String?
+    }
+
     private let url: URL
-    private var storage: [String: String]
+    private var storage: [String: String] = [:]
 
     public init(url: URL) {
         self.url = url
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            storage = decoded
-        } else {
-            storage = [:]
+        guard let data = try? Data(contentsOf: url) else { return }
+        let decoder = JSONDecoder()
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            guard let entry = try? decoder.decode(Entry.self, from: Data(line)) else { continue }
+            storage[entry.key] = entry.version
         }
     }
 
@@ -79,15 +87,47 @@ public actor FileIngestVersions: IngestVersions {
         storage[Self.name(key)]
     }
 
-    public func setVersion(_ version: String, for key: ResourceKey) {
-        storage[Self.name(key)] = version
-        if let data = try? JSONEncoder().encode(storage) {
-            try? data.write(to: url, options: .atomic)
+    public func setVersion(_ version: String?, for key: ResourceKey) throws {
+        let name = Self.name(key)
+        var line = Data("\n".utf8)
+        line.append(try JSONEncoder().encode(Entry(key: name, version: version)))
+        line.append(Data("\n".utf8))
+        if !FileManager.default.fileExists(atPath: url.path),
+           !FileManager.default.createFile(atPath: url.path, contents: nil) {
+            throw CocoaError(.fileWriteUnknown)
         }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: line)
+        try handle.synchronize()
+        storage[name] = version
     }
 }
 
 public enum UploadFilename {
+    public static let maxLength = 200
+
+    public static func isAcceptable(_ name: String) -> Bool {
+        let scalars = name.unicodeScalars
+        guard !scalars.isEmpty, scalars.count <= maxLength else { return false }
+        guard scalars.allSatisfy({ isPrintable($0) }) else { return false }
+        if name.contains("/") || name.contains("\\") || name.hasPrefix(".") || name.lowercased().hasSuffix(".xmp") {
+            return false
+        }
+        return true
+    }
+
+    private static func isPrintable(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar == " " { return true }
+        switch scalar.properties.generalCategory {
+        case .control, .format, .surrogate, .privateUse, .unassigned, .lineSeparator, .paragraphSeparator, .spaceSeparator:
+            return false
+        default:
+            return true
+        }
+    }
+
     /// `IMG_0001.HEIC` stays, its video is `IMG_0001.MOV`, its edited render is `IMG_0001_adjusted.<ext>`.
     public static func make(for resource: PhotoResource, assetResources: [PhotoResource]) -> String {
         let primary = assetResources.first { $0.kind == .photo } ?? resource
