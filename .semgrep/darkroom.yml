@@ -228,6 +228,15 @@ rules:
           - metavariable-regex:
               metavariable: $NAME
               regex: ^["']push_token_(sealed|digest|at)["']$
+      - patterns:
+          - pattern-either:
+              - pattern: $CALL(..., $F=$V, ...)
+              - pattern: |
+                  {..., "$F": $V, ...}
+              - pattern: $D["$F"]
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^push_token_(sealed|digest|at)$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/push_tokens.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
