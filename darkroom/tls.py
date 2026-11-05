@@ -35,13 +35,19 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         raise Refused("redirects are not followed")
 
 
+def client_context(cafile: str | None = None) -> ssl.SSLContext:
+    context = ssl.create_default_context(cafile=cafile)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def urlopen(url: str, *, data: bytes | None = None, headers: Mapping[str, str] | None = None,
             method: str | None = None, timeout: float = DEFAULT_TIMEOUT, allow_http: bool = False) -> HTTPResponse:
     scheme = urlsplit(url).scheme
     if scheme != "https" and not (scheme == "http" and allow_http):
         raise Refused("only https addresses are allowed here")
     request = urllib.request.Request(url, data=data, headers=dict(headers or {}), method=method)
-    context = ssl.create_default_context()
+    context = client_context()
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirects())
     response = opener.open(request, timeout=timeout)
     assert isinstance(response, HTTPResponse)
@@ -62,8 +68,7 @@ class Http2:
         self.connection = h2.connection.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding="utf-8"))
 
     def __enter__(self) -> Http2:
-        context = ssl.create_default_context(cafile=self.cafile)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = client_context(self.cafile)
         context.set_alpn_protocols(["h2"])
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
         try:
@@ -71,11 +76,14 @@ class Http2:
         except BaseException:
             raw.close()
             raise
-        if self.sock.selected_alpn_protocol() != "h2":
+        try:
+            if self.sock.selected_alpn_protocol() != "h2":
+                raise StreamFailed("the server does not speak HTTP/2")
+            self.connection.initiate_connection()
+            self.flush()
+        except BaseException:
             self.close()
-            raise StreamFailed("the server does not speak HTTP/2")
-        self.connection.initiate_connection()
-        self.flush()
+            raise
         return self
 
     def __exit__(self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None) -> None:

@@ -21,6 +21,7 @@ TOKEN_LIFETIME = 45 * 60.0
 EXPIRES_AFTER = 24 * 3600
 MAX_KEY_FILE = 16 * 1024
 MAX_PAYLOAD = 4096
+MAX_TIMESTAMP_MS = 10**14
 DEVICE_TOKEN = re.compile(r"[0-9a-f]{64,200}")
 INVALID_TOKEN_REASONS = frozenset({"BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered", "ExpiredToken"})
 
@@ -42,6 +43,7 @@ class Push:
 class Result:
     outcome: Outcome
     reason: str
+    unregistered_at: float | None = None
 
 
 class Pusher(Protocol):
@@ -122,13 +124,17 @@ def payload_of(push: Push) -> bytes:
     return body
 
 
-def reason_of(body: bytes) -> str:
+def reply_of(body: bytes) -> tuple[str, float | None]:
     try:
         found = json.loads(body)
     except ValueError:
-        return ""
-    reason = found.get("reason") if isinstance(found, dict) else None
-    return reason if isinstance(reason, str) and reason.isascii() and reason.isalnum() and len(reason) <= 64 else ""
+        return "", None
+    if not isinstance(found, dict):
+        return "", None
+    reason, stamp = found.get("reason"), found.get("timestamp")
+    reason = reason if isinstance(reason, str) and reason.isascii() and reason.isalnum() and len(reason) <= 64 else ""
+    at = stamp / 1000 if isinstance(stamp, int) and not isinstance(stamp, bool) and 0 < stamp < MAX_TIMESTAMP_MS else None
+    return reason, at
 
 
 @dataclass
@@ -175,15 +181,15 @@ class Apns:
 
     def one(self, connection: tls.Http2, token: str, push: Push, body: bytes) -> Result:
         reply = connection.post(f"/3/device/{token}", self.headers(push, self.clock()), body)
-        reason = reason_of(reply.body)
+        reason, unregistered_at = reply_of(reply.body)
         if reply.status == 403 and reason == "ExpiredProviderToken":
             self.signer.forget()
             reply = connection.post(f"/3/device/{token}", self.headers(push, self.clock()), body)
-            reason = reason_of(reply.body)
+            reason, unregistered_at = reply_of(reply.body)
         if reply.status == 200:
             return Result("sent", "")
         if reply.status in (400, 410) and reason in INVALID_TOKEN_REASONS:
-            return Result("invalid_token", reason)
+            return Result("invalid_token", reason, unregistered_at if reply.status == 410 else None)
         return Result("failed", reason or f"HTTP {reply.status}")
 
 

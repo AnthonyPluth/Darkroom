@@ -3,7 +3,9 @@ import io
 import json
 import os
 import socket
+import ssl
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -185,10 +187,21 @@ class SendTests(ApnsWorld):
         with self.assertRaises(ValueError):
             apns.payload_of(apns.Push("failure", 1, "x" * 5000))
 
-    def test_reasons_are_read_only_when_they_are_plain_words(self):
-        self.assertEqual(apns.reason_of(b'{"reason":"BadDeviceToken"}'), "BadDeviceToken")
+    def test_reasons_and_timestamps_are_read_only_when_they_are_well_formed(self):
+        self.assertEqual(apns.reply_of(b'{"reason":"BadDeviceToken"}'), ("BadDeviceToken", None))
+        self.assertEqual(apns.reply_of(b'{"reason":"Unregistered","timestamp":1800000000123}'), ("Unregistered", 1800000000.123))
         for body in (b"", b"not json", b"[]", b'{"reason": 5}', b'{"reason":"has spaces in it"}', b'{"reason":"' + b"x" * 65 + b'"}'):
-            self.assertEqual(apns.reason_of(body), "", body)
+            self.assertEqual(apns.reply_of(body), ("", None), body)
+        for stamp in (b'"1800000000123"', b"true", b"-1", b"0", b"1.5", b"100000000000000"):
+            self.assertEqual(apns.reply_of(b'{"reason":"Unregistered","timestamp":' + stamp + b"}"), ("Unregistered", None), stamp)
+
+    def test_a_410_carries_when_apns_last_knew_the_token_valid(self):
+        fake = self.start()
+        fake.state.replies = {TOKEN_A: (410, "Unregistered"), TOKEN_B: (410, "ExpiredToken"), TOKEN_C: (400, "BadDeviceToken")}
+        fake.state.unregistered_at = {TOKEN_A: 1_799_999_000_500, TOKEN_C: 1_799_999_000_500}
+        results = self.client().send([TOKEN_A, TOKEN_B, TOKEN_C], PUSH)
+        self.assertEqual(results, [apns.Result("invalid_token", "Unregistered", 1_799_999_000.5), apns.Result("invalid_token", "ExpiredToken", None),
+                                   apns.Result("invalid_token", "BadDeviceToken", None)])
 
 
 class SettingsTests(unittest.TestCase):
@@ -299,6 +312,51 @@ class Http2Tests(ApnsWorld):
         self.assertEqual(reply.status, 403)
         self.assertEqual(json.loads(reply.body), {"reason": "InvalidProviderToken"})
         connection.close()
+
+    def test_the_socket_is_closed_when_the_http2_preface_cannot_be_sent(self):
+        fake = self.start()
+        fake.state.close_after_handshake = True
+        connection = tls.Http2(HOST, fake.port, cafile=str(fake.cafile))
+        opened: list[socket.socket] = []
+        real_flush = connection.flush
+
+        def flush_after_the_server_hung_up() -> None:
+            if connection.sock is not None and not opened:
+                opened.append(connection.sock)
+                self.assertTrue(fake.state.closed_after_handshake.wait(5))
+                time.sleep(0.2)
+            real_flush()
+
+        with mock.patch.object(connection, "flush", side_effect=flush_after_the_server_hung_up), self.assertRaises(OSError):
+            connection.__enter__()
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0].fileno(), -1)
+        self.assertIsNone(connection.sock)
+
+
+class TlsFloorTests(unittest.TestCase):
+    def test_every_client_context_refuses_anything_older_than_tls_1_2(self):
+        self.assertGreaterEqual(tls.client_context().minimum_version, ssl.TLSVersion.TLSv1_2)
+        made: list[ssl.SSLContext] = []
+
+        def recorded(cafile: str | None = None) -> ssl.SSLContext:
+            made.append(real(cafile))
+            return made[-1]
+
+        real = tls.client_context
+        with socket.socket() as unused:
+            unused.bind((HOST, 0))
+            port = unused.getsockname()[1]
+        with mock.patch.object(tls, "client_context", side_effect=recorded):
+            with self.assertRaises(OSError):
+                tls.urlopen(f"https://{HOST}:{port}/", timeout=2)
+            with self.assertRaises(OSError), tls.Http2(HOST, port, timeout=2):
+                pass
+        self.assertEqual(len(made), 2)
+        for context in made:
+            self.assertGreaterEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
 
 
 if __name__ == "__main__":

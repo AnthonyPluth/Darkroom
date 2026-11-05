@@ -5,6 +5,7 @@ import ipaddress
 import json
 import socket
 import ssl
+import struct
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,9 @@ class Received:
 class State:
     public_key: ec.EllipticCurvePublicKey
     replies: dict[str, tuple[int, str]] = field(default_factory=dict)
+    unregistered_at: dict[str, object] = field(default_factory=dict)
+    close_after_handshake: bool = False
+    closed_after_handshake: threading.Event = field(default_factory=threading.Event)
     expire_tokens: int = 0
     drop_after: int | None = None
     alpn: str = "h2"
@@ -125,7 +129,8 @@ def serve_connection(state: State, sock: ssl.SSLSocket) -> None:
                         sock.close()
                         return
                     status, reason = answer(state, received)
-                    body = json.dumps({"reason": reason}).encode() if reason else b""
+                    stamp = state.unregistered_at.get(received.path.rsplit("/", 1)[-1])
+                    body = json.dumps({"reason": reason} | ({"timestamp": stamp} if stamp is not None else {})).encode() if reason else b""
                     reply = [(":status", str(status)), ("apns-id", f"fake-{len(state.received)}")]
                     connection.send_headers(event.stream_id, reply, end_stream=not body)
                     if body:
@@ -168,5 +173,10 @@ class FakeApns:
                 sock = self.context.wrap_socket(raw, server_side=True)
             except (OSError, ssl.SSLError):
                 raw.close()
+                continue
+            if self.state.close_after_handshake:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                sock.close()
+                self.state.closed_after_handshake.set()
                 continue
             threading.Thread(target=serve_connection, args=(self.state, sock), daemon=True).start()
