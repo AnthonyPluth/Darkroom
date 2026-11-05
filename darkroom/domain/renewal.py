@@ -51,9 +51,9 @@ def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end
     if browser_jobs.left_uncertain(job):
         files = browser_jobs.captured_files(settings, job, browser_jobs.CAPTURE_FILES) if job.failure_dir is not None else []
         link = browser_jobs.capture_link(settings, job, files) or ending_link(settings)
-        alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_UNCONFIRMED, account.email, alerts.schedule_renewal_unconfirmed(account.email, day), link, now)
+        alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_UNCONFIRMED, account.email, alerts.schedule_renewal_unconfirmed(account.email, day), link, now, about=alerts.account(account.id))
         return
-    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day), ending_link(settings), now)
+    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day), ending_link(settings), now, about=alerts.account(account.id))
 
 
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
@@ -69,7 +69,7 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
             open_failed(opened, settings, account, end, asked, now)
             continue
         wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone))
-        alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now)
+        alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
         if asked is not None:
             continue
         browser_jobs.queue(opened, account.id, browser_jobs.RENEW_KIND, {"email": account.email, "ending": end}, now)
@@ -101,5 +101,5 @@ def renewed(opened: Session, settings: Settings, job: BrowserJob, now: float) ->
     alerts.close(opened, ending_key(account.id), now)
     alerts.close(opened, failed_key(account.id), now)
     wording = alerts.schedule_renewed(account.email, on_date(end, settings.timezone))
-    alerts.open_alert(opened, settings, renewed_key(account.id, end), RENEWED, account.email, wording, None, now)
+    alerts.open_alert(opened, settings, renewed_key(account.id, end), RENEWED, account.email, wording, None, now, about=alerts.account(account.id))
     events.record(opened, now, "schedule_renewed", f"account {account.id}", f"the schedule now runs until {on_date(end, settings.timezone)}")
