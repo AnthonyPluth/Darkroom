@@ -41,10 +41,17 @@ class JobOpen(ValueError):
 
 
 def served_people(opened: Session, account_id: int) -> set[int]:
-    account = opened.get(GoogleAccount, account_id)
-    if account is None:
-        return set()
-    return {account.default_person_id} | served_by_pixels(opened, account_id)
+    return served_people_of(opened, {account_id}).get(account_id, set())
+
+
+def served_people_of(opened: Session, account_ids: set[int]) -> dict[int, set[int]]:
+    if not account_ids:
+        return {}
+    served = {row.id: {row.default_person_id} for row in opened.execute(select(GoogleAccount.id, GoogleAccount.default_person_id).where(GoogleAccount.id.in_(account_ids)))}
+    pixels = select(Pixel.google_account_id, PixelPerson.person_id).join(Pixel, Pixel.id == PixelPerson.pixel_id).where(Pixel.google_account_id.in_(list(served)))
+    for account_id, person_id in opened.execute(pixels):
+        served[account_id].add(person_id)
+    return served
 
 
 def served_by_pixels(opened: Session, account_id: int, except_pixel_id: int | None = None) -> set[int]:

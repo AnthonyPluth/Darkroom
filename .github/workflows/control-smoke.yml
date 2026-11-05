@@ -1,0 +1,47 @@
+name: Control smoke
+
+on:
+  push:
+    branches: [main]
+    paths: [frontend/verify/**, tools/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  pull_request:
+    branches: [main]
+    paths: [frontend/verify/**, tools/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: control-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    name: Control smoke
+    runs-on: ubuntu-latest   # hosted: small repository
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install exiftool and libfaketime (the demo seed reads photos with exiftool, and the clock is frozen with libfaketime)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
+      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install the web app's dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Install the browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Drive the app with tools/control
+        run: make control-smoke

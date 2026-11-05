@@ -43,7 +43,10 @@ class DeviceState(TypedDict):
     name: str
     last_checkin: float | None
     pending_uploads: int
+    cleanup_enabled: bool
     eligible: int | None
+    eligible_bytes: int | None
+    eligible_checked: float | None
 
 
 class PersonStatus(TypedDict):
@@ -510,6 +513,47 @@ class UploadReply(TypedDict):
     sha1: str
     already: bool
     indexed: bool
+
+
+class EligibleBody(TypedDict):
+    assets: list[DeviceAssetDecl]
+
+
+class EligibleAsset(TypedDict):
+    asset_id: str
+    bytes: int
+    resources: list[str]
+
+
+class Refusal(TypedDict):
+    asset_id: str
+    reason: str
+    message: str
+
+
+class EligibleReply(TypedDict):
+    cleanup_enabled: bool
+    eligible: list[EligibleAsset]
+    rejected: list[Refusal]
+
+
+class ConfirmReply(TypedDict):
+    confirmed: list[str]
+    rejected: list[Refusal]
+
+
+class DeletedBody(TypedDict):
+    asset_ids: list[str]
+
+
+class DeletedReply(TypedDict):
+    recorded: list[str]
+    rejected: list[Refusal]
+
+
+class DevicePatchBody(TypedDict):
+    cleanup_enabled: bool
+    icloud_photos_off: NotRequired[bool]
 
 
 class DeviceCheckinBody(TypedDict):

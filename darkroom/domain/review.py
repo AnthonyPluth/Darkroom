@@ -28,6 +28,7 @@ PAGE_SIZE = 50
 LIST_LIMIT = 500
 ADOPTED = "; adopted what was already there: "
 BY_PERSON = re.compile(r"(?:^|, )by person (\d+)$|^by person (\d+): ")
+BY_PERSON_SUFFIX = re.compile(r", by person \d+$")
 
 
 MOVE_FAILURES = (paths.NotALibraryCopy, paths.NotASidecar, OSError, exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)
@@ -74,13 +75,13 @@ class FileEffects:
 
     def made(self, photos: Photos, placed: place.Placed, kept: Path, had_sidecar: bool) -> None:
         relative, sidecar = place.relative(photos, placed.path), paths.sidecar_of(placed.path)
-        if had_sidecar and sidecar.is_file() and not sidecar.is_symlink():
-            before = sidecar.read_bytes()
-            self.undo.append(lambda: paths.restore_sidecar(sidecar, before))
         if placed.copied:
             self.undo.append(lambda: paths.drop_library_copy(photos, relative, kept, with_sidecar=not had_sidecar))
         elif not had_sidecar:
             self.undo.append(lambda: paths.drop_new_sidecar(photos, relative))
+        if had_sidecar and sidecar.is_file() and not sidecar.is_symlink():
+            before = sidecar.read_bytes()
+            self.undo.append(lambda: paths.restore_sidecar(sidecar, before))
 
     def set_aside(self, aside: paths.SetAside) -> None:
         self.undo.append(aside.restore)
@@ -313,9 +314,13 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
 
     def copied(placed: place.Placed) -> None:
         had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
-        recorded = opened.execute(select(MediaItem.id).where(MediaItem.person_id == person.id, MediaItem.path == place.relative(photos, placed.path))).first()
-        adopted.extend(name for name, kept in (("photo", not placed.copied), ("sidecar", had_sidecar), ("row", recorded is not None)) if kept)
         effects.made(photos, placed, hold, had_sidecar)
+        recorded = opened.execute(
+            select(MediaItem.sha1).where(MediaItem.person_id == person.id, MediaItem.path == place.relative(photos, placed.path))
+        ).scalar_one_or_none()
+        if recorded is not None and recorded != fields.sha1:
+            raise WrongState("another photo is recorded at that place in google-only, so the pair was not kept")
+        adopted.extend(name for name, kept in (("photo", not placed.copied), ("sidecar", had_sidecar), ("row", recorded is not None)) if kept)
 
     try:
         row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write, copied)
@@ -355,13 +360,32 @@ def decided_by(opened: Session, review: ReviewItem, kept: MediaItem | None) -> i
     return actor_of(moved) if moved is not None else actor_of(kept_event.detail)
 
 
-def adopted_by(opened: Session, review: ReviewItem) -> set[str]:
-    detail = opened.execute(
-        select(Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
-    ).scalar_one_or_none()
+def adopted_in(detail: str | None) -> set[str]:
     if detail is None or ADOPTED not in detail:
         return set()
-    return set(detail.split(ADOPTED, 1)[1].split(", "))
+    return set(BY_PERSON_SUFFIX.sub("", detail.split(ADOPTED, 1)[1]).split(", "))
+
+
+def adopted_by(opened: Session, review: ReviewItem, item: MediaItem) -> set[str]:
+    kept = opened.execute(
+        select(Event.id, Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
+    ).first()
+    if kept is None:
+        return set()
+    moved = opened.execute(
+        select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {item.id}", Event.id > kept.id).order_by(Event.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    adopted = adopted_in(kept.detail)
+    return adopted if moved is None else (adopted & {"row"}) | (adopted_in(moved) & {"photo", "sidecar"})
+
+
+def adopted_lineage(opened: Session, item: MediaItem) -> set[str]:
+    kept = opened.execute(
+        select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
+        .where(DedupeDecision.takeout_item_id == item.id, ReviewItem.status == "kept_both").order_by(ReviewItem.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    adopted = set() if kept is None else adopted_by(opened, kept, item)
+    return (adopted & {"photo", "sidecar"}) | ({"photo"} if "row" in adopted else set())
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
@@ -404,7 +428,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     if shared:
         hit.decision.takeout_item_id = None
         return set()
-    adopted = adopted_by(opened, hit.review)
+    adopted = adopted_by(opened, hit.review, item)
     try:
         if "photo" not in adopted:
             effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold, with_sidecar="sidecar" not in adopted))
@@ -506,10 +530,12 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState("a later import matched this photo; reverse that decision before reassigning it")
     if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.sha1 == item.sha1).limit(1)).first():
         raise WrongState(f"{target.name} already has this photo")
+    lineage = adopted_lineage(opened, item)
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1)
         had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
         effects.made(photos, placed, source, had_sidecar)
+        adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage), ("sidecar", had_sidecar or "sidecar" in lineage)) if kept]
         old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
@@ -519,7 +545,8 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
         item.person_id, item.path = target.id, new_path
         opened.flush()
-        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}" + ("" if by is None else f", by person {by}"))
+        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}"
+                      + (f"{ADOPTED}{', '.join(adopted)}" if adopted else "") + ("" if by is None else f", by person {by}"))
         opened.flush()
         effects.set_aside(paths.set_library_copy_aside(photos, old_path, placed.path))
     except (place.PlaceFailed, *MOVE_FAILURES) as error:

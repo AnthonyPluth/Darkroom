@@ -16,7 +16,7 @@ def env_list(name: str, default: str = "") -> tuple[str, ...]:
 
 
 def whole_seconds(raw: str) -> int:
-    return int(raw) if raw.isdigit() and len(raw) <= 9 else 0
+    return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 9 else 0
 
 
 def env_flag(name: str) -> bool:

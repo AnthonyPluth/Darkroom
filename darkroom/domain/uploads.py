@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import index, media
+from darkroom.domain import eligibility, index, media
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import Device, MediaItem, Person, PhoneAsset, PhoneResource
@@ -146,7 +146,7 @@ def check(opened: Session, device_id: int, person_id: int, assets: list[Asset], 
             if row.uploaded_at is None:
                 needed.append((declared.photokit_id, resource.kind))
         if changed:
-            asset.eligible_at, asset.eligible_confirmed_at = None, None
+            eligibility.forget(asset)
     opened.flush()
     return needed
 

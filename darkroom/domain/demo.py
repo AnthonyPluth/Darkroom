@@ -10,12 +10,13 @@ from pathlib import Path
 
 from PIL import ExifTags, Image
 from pillow_heif import register_heif_opener
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import oidc
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, index, media
-from darkroom.storage.models import Device, GoogleAccount, Person, Pixel, PixelPerson
+from darkroom.storage.models import DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -245,6 +246,36 @@ def seed_account(opened: Session, settings: Settings, people: dict[str, Person],
     return 1
 
 
+DUPLICATE_OF = "IMG_0101"
+DUPLICATE_REASON = "Looks like IMG_0101.JPG, but the two differ slightly (recompressed): worth a look"
+
+
+def seed_import(opened: Session, photos: Photos, people: dict[str, Person], today: date, now: float) -> None:
+    owner = people["avery"]
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
+    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-1", created_at=now - 4 * DAY, ready_at=now - 3 * DAY,
+                    expires_at=now + 4 * DAY, part_count=1, status="imported", stage="done")
+    opened.add(export)
+    opened.flush()
+    opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-1.zip", bytes=2_400_000, downloads_used=1, attempts=1, status="done"))
+    opened.add(ImportRun(export_id=export.id, started=now - 3 * DAY, finished=now - 3 * DAY + 600, stage="done", added=2, skipped_t1=1, skipped_t2=1,
+                         skipped_t3=0, review=1, missing_gps=3, failed=0, status="done"))
+    shot = next(candidate for candidate in SHOTS["blair"] if candidate.stem == DUPLICATE_OF)
+    matched = opened.execute(select(MediaItem).where(MediaItem.person_id == people["blair"].id, MediaItem.path.like(f"%{DUPLICATE_OF}.%"))).scalar_one()
+    source = f"Takeout/Google Photos/{DUPLICATE_OF}.JPG"
+    decision = DedupeDecision(export_id=export.id, account_id=account.id, source_path=source, person_id=people["blair"].id, matched_item_id=matched.id,
+                              tier=4, reason=DUPLICATE_REASON, decided_by="auto", decided_at=now - 3 * DAY + 300)
+    opened.add(decision)
+    opened.flush()
+    blair = people["blair"].slug
+    hold = photos.review_hold(blair, f"export-{export.id}") / f"{DUPLICATE_OF}.JPG"
+    local, utc = taken_at(shot, today)
+    held = Shot(shot.stem, shot.kind, shot.days_ago, shot.clock, shot.offset, shot.gps, (shot.colour[0], shot.colour[1], shot.colour[2] + 20))
+    create_only(hold, encoded(held, local, "JPEG"), utc)
+    opened.add(ReviewItem(decision_id=decision.id, status="pending", hold_path=f"_inbox/{blair}/review/export-{export.id}/{hold.name}",
+                          hold_sha1=media.sha1_of(hold)[0]))
+
+
 def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Summary:
     now = noon(today)
     people: dict[str, Person] = {}
@@ -254,6 +285,8 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
         people[who.slug] = person
         originals, indexed, failed = originals + written, indexed + report.new, failed + report.failed
     opened_alerts = sum(seed_account(opened, settings, people, spec, now) for spec in ACCOUNTS)
+    opened.flush()
+    seed_import(opened, photos, people, today, now)
     opened.flush()
     return Summary(len(PEOPLE), len(ACCOUNTS), len(ACCOUNTS), len(PEOPLE), originals, indexed, failed, opened_alerts)
 

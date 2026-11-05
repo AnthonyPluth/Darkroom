@@ -99,6 +99,7 @@
       ],
       "tests": [
         "tests/test_browser_internal_api.py",
+        "tests/test_cleanup_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
         "tests/test_device_checkin.py",
@@ -199,6 +200,15 @@
       "frontend": [
         "frontend/src/pages/People.svelte"
       ],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "PATCH /api/devices/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.devices.update_device",
+      "frontend": [],
       "tests": [
         "tests/test_every_route.py"
       ]
@@ -476,6 +486,7 @@
         "frontend/src/pages/Review.svelte"
       ],
       "tests": [
+        "tests/test_demo.py",
         "tests/test_every_route.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py",
@@ -534,6 +545,7 @@
       "handler": "darkroom.server.api.review.list_decisions",
       "frontend": [],
       "tests": [
+        "tests/test_cleanup_api.py",
         "tests/test_every_route.py",
         "tests/test_review_api.py"
       ]
@@ -582,6 +594,7 @@
         "tests/device_world.py",
         "tests/test_device_auth.py",
         "tests/test_device_checkin.py",
+        "tests/test_device_contract.py",
         "tests/test_every_route.py",
         "tests/test_upload.py"
       ]
@@ -604,6 +617,40 @@
       "tests": [
         "tests/test_device_auth.py",
         "tests/test_device_checkin.py",
+        "tests/test_device_contract.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/eligible",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.eligible",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
+        "tests/test_device_contract.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/eligible/confirm",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.confirm",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
+        "tests/test_device_contract.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
+      "route": "POST /api/device/deleted",
+      "auth": "device",
+      "handler": "darkroom.server.api.cleanup.deleted",
+      "frontend": [],
+      "tests": [
+        "tests/test_cleanup_api.py",
+        "tests/test_device_contract.py",
         "tests/test_every_route.py"
       ]
     },

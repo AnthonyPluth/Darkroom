@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth
-from darkroom.server.api import accounts, browser, browser_internal, device, devices, exports, imports, people, pixels, review, status
+from darkroom.server.api import accounts, browser, browser_internal, cleanup, device, devices, exports, imports, people, pixels, review, status
 from darkroom.server.common import Request, Response
 
 AUTH_KINDS = ("session", "device", "worker", "public")
@@ -35,6 +35,7 @@ ROUTES: tuple[Route, ...] = (
     Route("DELETE", "/api/people/{id}", people.delete_person, "session"),
     Route("GET", "/api/people/{id}/devices", people.list_person_devices, "session"),
     Route("DELETE", "/api/devices/{id}", devices.revoke_device, "session"),
+    Route("PATCH", "/api/devices/{id}", devices.update_device, "session"),
     Route("GET", "/api/accounts", accounts.list_accounts, "session"),
     Route("POST", "/api/accounts", accounts.create_account, "session"),
     Route("PATCH", "/api/accounts/{id}", accounts.update_account, "session"),
@@ -69,6 +70,9 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/device/assets/check", device.check_assets, "device"),
     Route("PUT", "/api/device/assets/{id}/resources/{kind}", device.upload_resource, "device", streams=True),
     Route("POST", "/api/device/checkin", device.checkin, "device"),
+    Route("POST", "/api/device/eligible", cleanup.eligible, "device"),
+    Route("POST", "/api/device/eligible/confirm", cleanup.confirm, "device"),
+    Route("POST", "/api/device/deleted", cleanup.deleted, "device"),
     Route("POST", "/internal/browser/jobs/claim", browser_internal.claim, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/heartbeat", browser_internal.heartbeat, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/progress", browser_internal.progress, "worker"),
