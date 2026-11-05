@@ -67,6 +67,18 @@ class CleanupApiTests(DeviceCase):
             types = [event.type for event in opened.execute(select(Event).order_by(Event.id)).scalars()]
         self.assertEqual(types, ["cleanup_confirmed", "cleanup_deleted"])
 
+    def test_sending_the_deleted_report_again_records_the_same_ids_and_changes_nothing(self):
+        good = self.home.photo(self.phone, through=self.google)
+        self.commit()
+        self.call("POST", "/api/device/eligible/confirm", body_of(self.home, good))
+        first = self.call("POST", "/api/device/deleted", {"asset_ids": [good.id]})
+        with db.session(self.engine) as opened:
+            deleted_at = opened.execute(select(PhoneAsset.deleted_at)).scalar_one()
+        again = self.call("POST", "/api/device/deleted", {"asset_ids": [good.id]})
+        self.assertEqual((first, again), ((200, {"recorded": [good.id], "rejected": []}), (200, {"recorded": [good.id], "rejected": []})))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(PhoneAsset.deleted_at)).scalar_one(), deleted_at)
+
     def test_a_reversal_or_a_removed_file_after_the_list_is_refused_at_confirm(self):
         reversed_one = self.home.photo(self.phone, through=self.google)
         removed_one = self.home.photo(self.phone, through=self.google)

@@ -1,10 +1,11 @@
 import json
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom import dates
-from darkroom.domain import browser_jobs, renewal
+from darkroom.domain import browser_jobs, dedupe, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
@@ -226,6 +227,16 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 409)
         self.worker(f"/internal/browser/jobs/{job_id}/failed", {"message": "UnexpectedPage"})
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+
+    def test_a_rename_or_an_unchanged_default_person_does_not_scan_for_items_to_confirm(self):
+        sam = self.person("Sam Example")["id"]
+        with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"default_person_id": self.person_id})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {})[0], 200)
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"default_person_id": sam})[0], 200)
+            scan.assert_called_once()
 
     def test_a_default_person_change_that_serves_a_matched_owner_confirms_their_items(self):
         sam = self.person("Sam Example")["id"]

@@ -274,6 +274,45 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0016_device_wake_pushed_leaves_old_devices_unwoken_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0015")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, last_checkin) VALUES (1, 1, 'iPhone', 'h', 1.0, 5.0)")
+            connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT last_checkin, wake_pushed_at FROM devices").all(), [(5.0, None)])
+            connection.exec_driver_sql("UPDATE devices SET wake_pushed_at = 6.5")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0015")
+        self.assertNotIn("wake_pushed_at", {column["name"] for column in inspect(self.engine).get_columns("devices")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT last_checkin FROM devices").all(), [(5.0,)])
+            self.assertEqual(connection.exec_driver_sql("SELECT photokit_id FROM phone_assets").scalars().all(), ["A"])
+
+    def test_0015_alert_pushed_devices_leaves_old_alerts_without_a_record_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0014")
+            connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count, push_due) VALUES ('k', 'failure', 's', 'm', 1.0, 1, 2.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, push_due, pushed_devices FROM alerts").all(), [("k", 2.0, None)])
+            connection.exec_driver_sql("UPDATE alerts SET pushed_devices = '{}'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0014")
+        self.assertNotIn("pushed_devices", {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, push_due FROM alerts").all(), [("k", 2.0)])
+
     def test_0014_alert_recipients_finds_whom_old_alerts_concern_and_can_be_undone_without_losing_alerts(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

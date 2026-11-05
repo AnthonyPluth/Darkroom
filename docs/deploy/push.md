@@ -18,3 +18,9 @@ Once they are set, an alert goes to the iPhones of the person it concerns (an al
 3. Run `python run.py check-config`. It checks the IDs' format, that the file is a regular file only its owner can read, and that it holds an unencrypted P-256 key, without printing any of the key.
 
 Darkroom reads the key only in `darkroom/providers/apns.py` (Semgrep's `darkroom-apns-key-one-reader`), signs a provider token with it (ES256, reused for 45 minutes, as Apple asks), and never logs or stores the key or the token.
+
+## Wake pushes
+
+The job that sends alerts also sends a silent wake push to an iPhone that has not checked in for more than a day (any signed-in request from the app counts as a check-in), so the app can look for new photos and videos without being opened (#60). A wake goes to the same production host, only to an iPhone that is not revoked, whose owner can still sign in and that has sent its push token, and is checked again right before the token goes to APNs (it is skipped if the iPhone checked in meanwhile). It is a `background` push with `content-available` and nothing else: no alert, sound, badge, title, kind, id, name or count.
+
+Each iPhone is sent at most one wake per 24 hours, whether or not Apple accepted it: the time is recorded before sending, a failed wake is not retried before the next interval, and a check-in does not reset it. A wake is recorded as an event (`wake_sent`, `wake_failed`, or `wake_token_invalid`, which also forgets the token as above). With the settings above unset, no wake is sent. iOS throttles silent pushes and does not deliver them to an app the user force-quit, so a wake supplements the app's nightly processing task.

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -174,39 +175,59 @@ class WriteOnceTests(unittest.TestCase):
 
 
 
-class PlacingMarkerTests(unittest.TestCase):
+class PlacingRecordTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
         self.destination = self.folder / "a.jpg"
-        self.marker = paths.placing_marker(self.destination, "0123456789abcdef")
+        self.token = "0123456789abcdef"
 
-    def test_the_marker_is_the_same_file_as_the_copy_from_the_start(self):
-        paths.write_once(self.destination, [b"photo"], self.marker)
-        self.assertTrue(os.path.samefile(self.marker, self.destination))
-        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), [".placing-0123456789abcdef-a.jpg", "a.jpg"])
+    def test_the_record_has_the_same_short_name_whatever_the_photo_is_called(self):
+        for name in ("a.jpg", "L" * 251 + ".jpg"):
+            with self.subTest(length=len(name)):
+                destination = self.folder / name
+                placing = paths.Placing(name, "1" * 40, True, True, "2" * 40)
+                paths.mark_placing(destination, self.token, placing)
+                self.assertEqual([path.name for path in self.folder.iterdir()], [".placing-0123456789abcdef.json"])
+                self.assertEqual(paths.read_placing(paths.placing_record(destination, self.token)), placing)
+                paths.placing_record(destination, self.token).unlink()
 
-    def test_a_copy_that_was_not_made_leaves_no_marker(self):
-        self.destination.write_bytes(b"already there")
+    def test_writing_a_copy_leaves_only_the_copy_and_never_replaces_one(self):
+        paths.write_once(self.destination, [b"photo"])
+        self.assertEqual([path.name for path in self.folder.iterdir()], ["a.jpg"])
         with self.assertRaises(paths.AlreadyExists):
-            paths.write_once(self.destination, [b"photo"], self.marker)
+            paths.write_once(self.destination, [b"other"])
         with mock.patch("os.link", side_effect=OSError("cross-device")):
-            paths.write_once(self.folder / "b.jpg", [b"photo"], paths.placing_marker(self.folder / "b.jpg", "0123456789abcdef"))
+            paths.write_once(self.folder / "b.jpg", [b"photo"])
         self.assertEqual(sorted(path.name for path in self.folder.iterdir()), ["a.jpg", "b.jpg"])
+        self.assertEqual(self.destination.read_bytes(), b"photo")
 
-    def test_clearing_keeps_the_markers_of_what_a_failed_attempt_could_not_remove(self):
-        paths.write_once(self.destination, [b"photo"], self.marker)
-        paths.mark_new_sidecar(self.destination, "0123456789abcdef")
-        sidecar_marker = paths.placing_marker(paths.sidecar_of(self.destination), "0123456789abcdef")
-        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
-        self.assertTrue(self.marker.is_file())
-        self.assertFalse(sidecar_marker.exists())
-        self.destination.unlink()
-        paths.clear_placing(self.destination, "0123456789abcdef", committed=False)
-        self.assertFalse(self.marker.exists())
-        paths.write_once(self.destination, [b"photo"], self.marker)
-        paths.clear_placing(self.destination, "0123456789abcdef", committed=True)
+    def test_a_record_that_is_not_one_is_not_read(self):
+        record = paths.placing_record(self.destination, self.token)
+        good = {"name": "a.jpg", "sha1": "1" * 40, "made": True, "sidecar": True, "sidecar_sha1": None}
+        for data in ({**good, "name": "../a.jpg"}, {**good, "name": ".placing-x"}, {**good, "name": ""}, {**good, "sha1": "x"},
+                     {**good, "made": 1}, {**good, "sidecar_sha1": "x"}, {**good, "sidecar": False, "sidecar_sha1": "2" * 40}, {key: value for key, value in good.items() if key != "sidecar"}, [good]):
+            with self.subTest(data=data):
+                record.write_text(json.dumps(data))
+                self.assertIsNone(paths.read_placing(record))
+        record.write_bytes(b"not json")
+        self.assertIsNone(paths.read_placing(record))
+
+    def test_clearing_keeps_the_record_while_anything_it_names_is_still_there(self):
+        record = paths.placing_record(self.destination, self.token)
+        paths.write_once(self.destination, [b"photo"])
+        paths.sidecar_of(self.destination).write_bytes(b"<x/>")
+        paths.mark_placing(self.destination, self.token, paths.Placing("a.jpg", "1" * 40, True, True))
+        for left in (self.destination, paths.sidecar_of(self.destination)):
+            paths.clear_placing(self.destination, self.token, committed=False)
+            self.assertTrue(record.is_file())
+            left.unlink()
+        paths.clear_placing(self.destination, self.token, committed=False)
+        self.assertFalse(record.exists())
+        paths.write_once(self.destination, [b"photo"])
+        paths.mark_placing(self.destination, self.token, paths.Placing("a.jpg", "1" * 40, True, True))
+        paths.clear_placing(self.destination, self.token, committed=True)
         self.assertEqual([path.name for path in self.folder.iterdir()], ["a.jpg"])
 
 
