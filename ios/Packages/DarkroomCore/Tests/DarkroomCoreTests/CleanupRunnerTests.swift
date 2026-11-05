@@ -10,6 +10,7 @@ private actor FakeCleanupAPI: CleanupAPI {
     var confirmError: Error?
     var deletedErrors: [Error] = []
     var holdDeleted = false
+    var onConfirm: (@Sendable () async -> Void)?
     private var held: [CheckedContinuation<Void, Never>] = []
     private(set) var eligibleCalls: [EligibleRequest] = []
     private(set) var confirmCalls: [ConfirmRequest] = []
@@ -25,6 +26,7 @@ private actor FakeCleanupAPI: CleanupAPI {
     func set(confirmError: Error?) { self.confirmError = confirmError }
     func set(deletedErrors: [Error]) { self.deletedErrors = deletedErrors }
     func set(holdDeleted: Bool) { self.holdDeleted = holdDeleted }
+    func set(onConfirm: (@Sendable () async -> Void)?) { self.onConfirm = onConfirm }
     var heldCount: Int { held.count }
 
     func release() {
@@ -43,6 +45,7 @@ private actor FakeCleanupAPI: CleanupAPI {
 
     func confirm(_ request: ConfirmRequest) async throws -> ConfirmReply {
         confirmCalls.append(request)
+        if let onConfirm { await onConfirm() }
         if let confirmError { throw confirmError }
         let ids = request.assets.map(\.id)
         return ConfirmReply(
@@ -290,6 +293,44 @@ final class CleanupRunnerTests: XCTestCase {
         let deletes = await rig.library.deleteCalls
         XCTAssertTrue(confirms.isEmpty)
         XCTAssertTrue(deletes.isEmpty)
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.changed, ["a"])
+    }
+
+    func testAnEditDuringTheConfirmCallIsNotDeleted() async throws {
+        let rig = try await rig(["a", "b"])
+        let library = rig.library
+        await rig.api.set(onConfirm: {
+            await library.add(PhotoResource(assetID: "b", kind: .adjusted, originalFilename: "b.HEIC", version: "v1"))
+        })
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a", "b"])
+        let confirmed = await rig.api.confirmCalls.map { $0.assets.map(\.id) }
+        let deletes = await rig.library.deleteCalls
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(confirmed, [["a", "b"]])
+        XCTAssertEqual(deletes, [["a"]])
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.changed, ["b"])
+        XCTAssertEqual(report.removed, ["a"])
+        XCTAssertEqual(report.notRemoved, [])
+    }
+
+    func testAVersionChangeDuringTheConfirmCallDeletesNothing() async throws {
+        let rig = try await rig(["a"])
+        let library = rig.library
+        await rig.api.set(onConfirm: {
+            await library.add(PhotoResource(assetID: "a", kind: .photo, originalFilename: "a.HEIC", version: "v2"))
+        })
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        let deletes = await rig.library.deleteCalls
+        let reports = await rig.api.deletedCalls
+        XCTAssertTrue(deletes.isEmpty)
+        XCTAssertTrue(reports.isEmpty)
         guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
         XCTAssertEqual(report.changed, ["a"])
     }

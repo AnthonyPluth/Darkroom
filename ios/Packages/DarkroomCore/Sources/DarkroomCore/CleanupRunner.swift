@@ -75,6 +75,7 @@ public actor CleanupRunner {
     private let clock: @Sendable () -> Date
     private var flow = CleanupFlow()
     private var reportInFlight: Task<Outcome?, Error>?
+    private var confirmedAs: [String: AssetDescriptor] = [:]
 
     public init(
         api: CleanupAPI,
@@ -136,6 +137,7 @@ public actor CleanupRunner {
                 if case .listed = refreshed { return .refetched }
                 return refreshed
             case let .confirm(request):
+                confirmedAs = Dictionary(request.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 let reply: ConfirmReply
                 do {
                     reply = try await api.confirm(request)
@@ -145,8 +147,12 @@ public actor CleanupRunner {
                 }
                 command = try flow.handle(.confirmed(reply))
             case let .delete(assetIDs):
-                let removed = await deleter.delete(assetIDs)
-                command = try flow.handle(.deletionEnded(removed: removed))
+                let unchanged = await stillAsConfirmed(assetIDs)
+                let changed = assetIDs.filter { !unchanged.contains($0) }
+                let kept = assetIDs.filter { unchanged.contains($0) }
+                var removed: [String] = []
+                if !kept.isEmpty { removed = await deleter.delete(kept) }
+                command = try flow.handle(.deletionEnded(removed: removed, changed: changed))
             case let .report(request):
                 return try await send(request)
             }
@@ -214,6 +220,17 @@ public actor CleanupRunner {
         report.recorded = reply.recorded.filter { sent.contains($0) }
         report.unrecorded = reply.rejected.filter { sent.contains($0.assetID) }
         return report.unrecorded.isEmpty ? nil : .finished(report)
+    }
+
+    private func stillAsConfirmed(_ assetIDs: [String]) async -> Set<String> {
+        let sent = confirmedAs
+        guard let now = try? await current(among: assetIDs) else { return [] }
+        var unchanged: Set<String> = []
+        for asset in now.ready {
+            guard let confirmed = sent[asset.id], CleanupFlow.sameResources(asset, confirmed) else { continue }
+            unchanged.insert(asset.id)
+        }
+        return unchanged
     }
 
     private func outcome() -> Outcome {
