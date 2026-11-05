@@ -7,7 +7,7 @@ export class Loader<T> {
 
   private generation = 0;
 
-  constructor(private readonly fetchAll: () => Promise<T>) {}
+  constructor(private readonly fetchAll: () => Promise<T>, private readonly applied: (data: T) => void = () => {}) {}
 
   async load(quiet = false): Promise<void> {
     const generation = ++this.generation;
@@ -15,6 +15,7 @@ export class Loader<T> {
     let message = "";
     const data = await actGet(this.fetchAll, { onError: (m) => (message = m) });
     if (generation !== this.generation) return;
+    if (data !== null) this.applied(data);
     this.current = data === null ? { kind: "error", message } : { kind: "ready", data };
   }
 }
