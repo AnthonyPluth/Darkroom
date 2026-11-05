@@ -5,11 +5,17 @@ private actor FakeAPI: DeviceAPI {
     var needed: Set<ResourceKey> = []
     var checkError: Error?
     private(set) var checkins: [CheckinRequest] = []
+    private(set) var requests: [CheckRequest] = []
+    var duringCheck: (@Sendable () async throws -> Void)?
 
     func setNeeded(_ keys: Set<ResourceKey>) { needed = keys }
     func setCheckError(_ error: Error?) { checkError = error }
 
+    func setDuringCheck(_ action: (@Sendable () async throws -> Void)?) { duringCheck = action }
+
     func check(_ request: CheckRequest) async throws -> CheckReply {
+        requests.append(request)
+        try await duringCheck?()
         if let checkError { throw checkError }
         let keys = request.assets.flatMap { asset in asset.resources.map { ResourceKey(assetID: asset.id, kind: $0.kind) } }
         return CheckReply(needed: keys.filter { needed.contains($0) }.map { NeededResource(id: $0.assetID, kind: $0.kind) })
@@ -84,6 +90,33 @@ final class UploadCoordinatorTests: XCTestCase {
         let checkins = await rig.api.checkins
         XCTAssertEqual(checkins.map(\.pendingUploads), [0])
         XCTAssertEqual(checkins.first?.appVersion, "1.0")
+    }
+
+    func testACheckIsSentWithTheAssetsWholeResourceSet() async throws {
+        let rig = Rig()
+        let video = ResourceKey(assetID: "a", kind: .liveVideo)
+        var uploaded = hashed(a)
+        uploaded.state = .uploaded
+        try await rig.store.upsert([uploaded, hashed(video)])
+        await rig.api.setNeeded([video])
+        _ = try await coordinator(rig).run()
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.first?.assets.first?.resources.map(\.kind), [.photo, .liveVideo])
+        let counts = try await rig.store.counts()
+        XCTAssertEqual(counts[.uploaded], 2)
+    }
+
+    func testAResourceChangedWhileTheCheckWasInFlightIsNotMarkedUploaded() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        let store = rig.store
+        let changed = hashed(a, sha1: "new")
+        await rig.api.setDuringCheck { try await store.upsert([changed]) }
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.alreadyOnServer, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.sha1, "new")
+        XCTAssertEqual(record?.resource.state, .hashed)
     }
 
     func testInterruptedUploadsAreRecoveredAndRetried() async throws {

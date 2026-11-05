@@ -123,8 +123,9 @@ public actor UploadCoordinator {
     }
 
     private func checkPhase(_ result: inout Result) async throws -> Outcome {
-        let hashed = try await store.resources(in: [.hashed])
-        for batch in UploadPlanner.checkBatches(from: hashed) {
+        let everything = Set(ResourceState.allCases)
+        let snapshot = try await store.resources(in: everything)
+        for batch in UploadPlanner.checkBatches(from: snapshot) {
             try Task.checkCancellation()
             let reply: CheckReply
             do {
@@ -138,7 +139,8 @@ public actor UploadCoordinator {
                 case .retry, .rejected: continue
                 }
             }
-            let plan = UploadPlanner.plan(resources: hashed, checked: batch, reply: reply)
+            let current = try await store.resources(in: everything)
+            let plan = UploadPlanner.plan(resources: current, checked: batch, reply: reply)
             try await store.setState(.uploaded, for: plan.markUploaded, failureReason: nil)
             try await store.setState(.checked, for: plan.queue, failureReason: nil)
             result.alreadyOnServer += plan.markUploaded.count
