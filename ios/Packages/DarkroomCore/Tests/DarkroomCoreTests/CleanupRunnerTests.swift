@@ -307,6 +307,20 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertNil(cleared)
     }
 
+    func testAFilePendingReportSurvivesARelaunchAndIsClearedWhenDone() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pending-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = FilePendingDeletionReport(url: url)
+        let none = await first.load()
+        XCTAssertNil(none)
+        await first.save(DeletedRequest(assetIDs: ["a", "b"]))
+        let reopened = await FilePendingDeletionReport(url: url).load()
+        XCTAssertEqual(reopened?.assetIDs, ["a", "b"])
+        await first.save(nil)
+        let cleared = await FilePendingDeletionReport(url: url).load()
+        XCTAssertNil(cleared)
+    }
+
     func testAReportLeftFromAnEarlierLaunchIsSentBeforeANewList() async throws {
         let rig = try await rig(["b"])
         await rig.pending.save(DeletedRequest(assetIDs: ["a"]))

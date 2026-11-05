@@ -24,6 +24,28 @@ public actor InMemoryPendingDeletionReport: PendingDeletionReport {
     }
 }
 
+public actor FilePendingDeletionReport: PendingDeletionReport {
+    private let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public func load() -> DeletedRequest? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(DeletedRequest.self, from: data)
+    }
+
+    public func save(_ request: DeletedRequest?) {
+        guard let request else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(request) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 public actor CleanupRunner {
     public enum Outcome: Equatable, Sendable {
         case idle
