@@ -1,6 +1,6 @@
 # Runbook
 
-What the owner sets up by hand around the repository. The deployment of the browser worker is in [deploy/browser.md](deploy/browser.md).
+What the owner sets up by hand around the repository, and what to do when the Takeout import needs a person. The deployment of the browser worker is in [deploy/browser.md](deploy/browser.md).
 
 ## Branch protection
 
@@ -27,3 +27,65 @@ What else the workflows need, set once:
 - Labels `safety-critical` and `security` (they make a pull request risky for the second review), `fleet` and `review-mining` (the "Repeated review findings" issue).
 
 A push straight to `main` is refused by the ruleset; every change lands through a pull request, and merging one releases (`.github/workflows/docker.yml` on `main` works out the next version from the pull request's title, builds the images and publishes the release).
+
+## Takeout import: when it needs a person
+
+The browser worker is the fragile part; everything after the inbox works without it. Each alert below names the account or export it is about, and the Exports page shows the same jobs.
+
+### A job is waiting for sign-in
+
+Alert "Google sign-in needed" (or "Wrong Google account"). The worker never types a password or a 2FA code; it stops and waits.
+
+1. Open the link in the alert (the `VNC_URL` browser view, behind the same sign-in as Darkroom).
+2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page.
+3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes. If the job already timed out, press Connect on the Exports page.
+
+"Wrong Google account" means the browser is signed in as someone else: sign out there and sign in as the named account.
+
+### An export expired
+
+Takeout keeps an export for about a week. The alert "A Takeout export is about to expire" means Darkroom has not finished downloading it; an export marked expired on the Exports page is gone.
+
+- If it is only about to expire, check that the worker is running and has not hit a failure alert (below). The daily check re-queues a download that failed, up to its limits.
+- If it expired, download it by hand while it is listed or ask Takeout for a new export, then hand-drop the parts (below). The scheduled exports continue every 2 months regardless.
+
+### Google changed a page
+
+Alert "Darkroom needs a look" with a link to the capture of the failed job. The capture is a screenshot and a scrubbed copy of the page (the screenshot is the link, else the page), at `/api/browser/failures/<job>/screenshot.png` and `/api/browser/failures/<job>/page.html`, and on the photo share under `_browser/<account>/failures/<job>/`.
+
+1. Open the capture and compare it with what the worker expected (the job's message names the step, for example `UnexpectedPage` or a missing control).
+2. Every selector and label the worker looks for is in `darkroom_browser/selectors.py`. Change the one that moved, update the matching page fixture and test under `tests/browser/`, and deploy a new worker image.
+3. Run the step again from the Exports page (Connect, Create schedule or Check exports now; downloads queue themselves). Until the fix is deployed, use the fallback: download the parts by hand and hand-drop them.
+
+### Hand-dropping an export
+
+Put the Takeout `.zip` parts, all of one export, in `<photos>/_inbox/<person>/manual/` and run, on the Darkroom host:
+
+```
+python run.py import-takeout --person <slug> [--account <google email>] [--dir <other folder>]
+```
+
+It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Importing the same export twice is refused.
+
+### The schedule is ending, and a failed renewal
+
+About 3 weeks before the schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
+
+A failed renewal is not retried (the owner's decision, #40): the ending alert keeps repeating and the failure alert links the capture. Fix the cause as above, then create the schedule by hand in Takeout (Google Photos only, `.zip`, 50 GB parts, every 2 months for 1 year). Darkroom has no action yet to record a hand-made schedule, so the ending alert keeps repeating until one is added; decide whether to add a "renew now" action if this happens.
+
+### Reading an import summary
+
+"Export N: A added, S skipped as duplicates, R in review, G missing GPS" counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; that is why later exports show small numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a `metadata_refreshed` event on the status page), unless you edited that sidecar since.
+
+### "Some originals are not in Google Photos"
+
+The alert says how many of a person's originals still have no match in Google a week after they were uploaded, for that person's Pixel. Photos only count once Google has them, so the usual cause is that the folder is not backed up:
+
+1. On the Pixel that serves that person, open Google Photos, then Settings, Backup, Device folders (the exact menu names vary by version), and turn on backup for the folder the iPhone uploads land in.
+2. Wait for the backup to finish and for the next scheduled export; the alert closes by itself when the count reaches zero after an import.
+
+If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library and nothing is deleted from the iPhone until they match.
+
+### Rotating the worker token
+
+`DARKROOM_BROWSER_TOKEN` is a shared secret of at least 32 printable ASCII characters. Make a new one with `openssl rand -hex 32`, put it in `.env`, and restart both the `darkroom` and `darkroom-browser` containers. Until both run with the new value the worker gets 401 and does no jobs; queued jobs wait.
