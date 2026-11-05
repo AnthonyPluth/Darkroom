@@ -100,6 +100,11 @@ def queue(opened: Session, account_id: int, kind: str, payload: dict[str, object
     return job
 
 
+def schedule_attempt_pending(opened: Session, account_id: int) -> bool:
+    found = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(SCHEDULE_KINDS), BrowserJob.status.in_(QUEUED_STATUSES)).limit(1)).first()
+    return found is not None or unchecked_schedule(opened, account_id) is not None
+
+
 def has_open_onboarding_job(opened: Session, account_id: int) -> bool:
     found = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(GUARDED_KINDS), BrowserJob.status.in_(QUEUED_STATUSES)).limit(1)).first()
     return found is not None
@@ -290,6 +295,9 @@ def fail(opened: Session, settings: Settings, job: BrowserJob, message: str, fil
     job.failure_dir = failure_folder(job.account_id, job.id) if present else None
     link = capture_link(settings, job, present)
     account = account_of(opened, job.account_id)
+    if job.kind == RENEW_KIND and left_uncertain(job):
+        events.record(opened, now, "browser_job_failed", str(job.id), message)
+        return job
     alerts.open_alert(opened, settings, f"browser:failed:{job.id}", "failure", str(job.id), alerts.failure(f"Browser job {job.id} ({job.kind}) for {account.email}"), link, now,
                       about=alerts.account(job.account_id))
     events.record(opened, now, "browser_job_failed", str(job.id), message)
