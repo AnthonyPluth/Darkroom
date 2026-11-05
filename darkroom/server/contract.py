@@ -274,9 +274,52 @@ class FailedBody(TypedDict):
     files: NotRequired[list[str]]
 
 
+class ExportPartDetail(TypedDict):
+    number: int
+    filename: str | None
+    bytes: int | None
+    progress: int
+    downloads_used: int
+    attempts: int
+    status: str
+
+
 class ExportPartView(TypedDict):
     number: int
     status: str
+
+
+class ExportView(TypedDict):
+    id: int
+    account_id: int
+    kind: str
+    created_at: float | None
+    ready_at: float | None
+    expires_at: float | None
+    part_count: int | None
+    status: str
+    stage: str | None
+    parts: list[ExportPartDetail]
+
+
+class ExportSchedule(TypedDict):
+    account_id: int
+    last_export_at: float | None
+    next_export_at: float | None
+
+
+class Exports(TypedDict):
+    exports: list[ExportView]
+    schedules: list[ExportSchedule]
+
+
+class ExportReply(TypedDict):
+    export: ExportView
+
+
+class CheckNowReply(TypedDict):
+    jobs: list[BrowserJobView]
+    skipped: int
 
 
 class ImportView(TypedDict):

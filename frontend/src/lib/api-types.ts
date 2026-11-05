@@ -73,6 +73,11 @@ export interface BrowserView {
   worker_last_seen: number | null;
 }
 
+export interface CheckNowReply {
+  jobs: BrowserJobView[];
+  skipped: number;
+}
+
 export interface ClaimBody {
   worker?: string;
 }
@@ -217,9 +222,29 @@ export interface Events {
   events: EventView[];
 }
 
+export interface ExportPartDetail {
+  number: number;
+  filename: string | null;
+  bytes: number | null;
+  progress: number;
+  downloads_used: number;
+  attempts: number;
+  status: string;
+}
+
 export interface ExportPartView {
   number: number;
   status: string;
+}
+
+export interface ExportReply {
+  export: ExportView;
+}
+
+export interface ExportSchedule {
+  account_id: number;
+  last_export_at: number | null;
+  next_export_at: number | null;
 }
 
 export interface ExportSide {
@@ -236,6 +261,24 @@ export interface ExportSide {
   duration_ms: number | null;
   is_video: boolean;
   held: boolean;
+}
+
+export interface ExportView {
+  id: number;
+  account_id: number;
+  kind: string;
+  created_at: number | null;
+  ready_at: number | null;
+  expires_at: number | null;
+  part_count: number | null;
+  status: string;
+  stage: string | null;
+  parts: ExportPartDetail[];
+}
+
+export interface Exports {
+  exports: ExportView[];
+  schedules: ExportSchedule[];
 }
 
 export interface FailedBody {
@@ -561,6 +604,9 @@ export interface Endpoints {
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
   "GET /api/browser/view": { body: never; reply: BrowserView };
+  "GET /api/exports": { body: never; reply: Exports };
+  "POST /api/exports/check-now": { body: never; reply: CheckNowReply };
+  "GET /api/exports/{id}": { body: never; reply: ExportReply };
   "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
   "GET /api/imports": { body: never; reply: Imports };
   "GET /api/imports/{id}": { body: never; reply: ImportReply };

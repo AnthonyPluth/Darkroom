@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, checkedIn, count, names, nowSeconds, onDay, when } from "./format";
+import { ago, checkedIn, count, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
 
 const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m - 1, d, h, min).getTime() / 1000;
 
@@ -56,5 +56,24 @@ describe("small helpers", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(5_000));
     expect(nowSeconds()).toBe(5);
+  });
+});
+
+describe("onDayAt", () => {
+  it("gives the day and the clock time", () => {
+    expect(onDayAt(local(2026, 10, 2, 3, 10))).toBe("2 Oct 2026, 03:10");
+  });
+});
+
+describe("untilDay", () => {
+  const now = local(2026, 11, 2, 12, 0);
+  it("counts days, then weeks, and says when it has ended", () => {
+    expect(untilDay(now - 86_400 * 2, now)).toBe("Ended");
+    expect(untilDay(now - 3600, now)).toBe("Ended");
+    expect(untilDay(now, now)).toBe("Ended");
+    expect(untilDay(now + 3600, now)).toBe("Within a day");
+    expect(untilDay(now + 86_400 * 3, now)).toBe("In 3 days");
+    expect(untilDay(now + 86_400 * 70, now)).toBe("In 10 weeks");
+    expect(untilDay(now + 86_400 * 14, now)).toBe("In 2 weeks");
   });
 });

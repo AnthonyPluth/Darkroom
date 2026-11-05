@@ -104,7 +104,7 @@ class AuthProblemTests(unittest.TestCase):
         self.assertEqual(settings_from().upload_read_timeout, 3600)
         self.assertEqual(settings_from(UPLOAD_READ_TIMEOUT="90").upload_read_timeout, 90)
         self.assertEqual(config.refuses_to_start(settings_from(UPLOAD_READ_TIMEOUT="90")), [])
-        for value in ("0", "-5", "1h", "1.5", "9999999999"):
+        for value in ("0", "-5", "1h", "1.5", "9999999999", "\u00b2", "9\u00b2", "\u0661\u0662"):
             with self.subTest(value=value):
                 bad = settings_from(UPLOAD_READ_TIMEOUT=value)
                 self.assertEqual(bad.upload_read_timeout, 0)

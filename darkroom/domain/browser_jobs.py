@@ -17,7 +17,7 @@ from darkroom.storage.paths import OutsideRoot, Photos
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
-GUARDED_KINDS = ("connect", "schedule")
+GUARDED_KINDS = ("connect", "schedule", "status")
 MAYBE_CREATED = "ScheduleNotConfirmed"
 QUEUED_STATUSES = ("queued", "running", "waiting_for_user")
 WAITING_REASONS = ("sign_in", "verify", "wrong_account")
@@ -46,6 +46,10 @@ class NotOpen(ValueError):
 
 
 class AlreadyOpen(ValueError):
+    pass
+
+
+class Busy(AlreadyOpen):
     pass
 
 
@@ -121,7 +125,7 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     except OperationalError as error:
         if "database is locked" not in str(error.orig):
             raise
-        raise AlreadyOpen("Darkroom is busy with another change; try again in a moment") from None
+        raise Busy("Darkroom is busy with another change; try again in a moment") from None
     if locked is None:
         raise UnknownAccount(f"no Google account {account_id}")
     account = account_of(opened, account_id)
@@ -190,9 +194,8 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     job.status = "waiting_for_user"
     job.message = reason
     account = account_of(opened, job.account_id)
-    if reason in WAITING_REASONS:
-        account.session_state = "needs_sign_in"
-        account.session_checked = now
+    account.session_state = "needs_sign_in"
+    account.session_checked = now
     kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
     alerts.close_other_kinds(opened, sign_in_key(job.account_id), kind, now)
     alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now)

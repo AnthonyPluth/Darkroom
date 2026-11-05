@@ -517,7 +517,7 @@ class RegistryTests(unittest.TestCase):
         from darkroom_browser import jobs
 
         self.assertIs(jobs.find("noop"), jobs.noop)
-        self.assertEqual(set(jobs.REGISTRY), {"noop", "connect", "schedule"})
+        self.assertEqual(set(jobs.REGISTRY), {"noop", "connect", "schedule", "status"})
         with self.assertRaises(jobs.UnknownJob):
             jobs.find("download")
 

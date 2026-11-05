@@ -376,11 +376,130 @@ class UndoTests(ReviewCase):
             self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before)
 
+    def kept_then_reassigned(self, photo_at_target=True, sidecar_at_target=False):
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        mine = self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME
+        target = self.world.root / "sam" / "google-only" / "2019" / "08" / PAIR_NAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        mine.with_name(f"{PAIR_NAME}.xmp").write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        if photo_at_target:
+            target.write_bytes(mine.read_bytes())
+        if sidecar_at_target:
+            target.with_name(f"{PAIR_NAME}.xmp").write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        before = self.tree()
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 200, body)
+        return review_id, kept_id, mine, target, before
+
+    def test_undo_after_a_reassign_over_an_identical_photo_and_sidecar_leaves_both_byte_for_byte(self):
+        review_id, _, mine, target, before = self.kept_then_reassigned(sidecar_at_target=True)
+        sam = {key: value for key, value in before.items() if key.startswith("sam/")}
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual({key: value for key, value in self.tree().items() if key.startswith("sam/")}, sam)
+        self.assertEqual(target.with_name(f"{PAIR_NAME}.xmp").read_bytes(), b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        self.assertFalse(mine.exists())
+        self.assertEqual(self.pending().id, review_id)
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_undo_after_a_reassign_over_an_identical_photo_takes_only_the_sidecar_the_reassign_made(self):
+        review_id, _, _, target, before = self.kept_then_reassigned()
+        self.assertTrue(target.with_name(f"{PAIR_NAME}.xmp").is_file())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(sha1_of(target), before[str(target.relative_to(self.world.root))])
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+
+    def test_undo_after_a_reassign_over_nothing_removes_what_the_reassign_made(self):
+        review_id, _, mine, target, _ = self.kept_then_reassigned(photo_at_target=False)
+        self.assertTrue(target.is_file())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+        self.assertFalse(mine.exists())
+        self.assertEqual(self.pending().id, review_id)
+
+    def test_undo_after_two_reassigns_follows_the_last_one(self):
+        review_id, kept_id, mine, target, _ = self.kept_then_reassigned(photo_at_target=False)
+        mine.write_bytes(target.read_bytes())
+        mine.with_name(f"{PAIR_NAME}.xmp").write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        jo = {key: value for key, value in self.tree().items() if key.startswith("jo/")}
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["jo"]})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual({key: value for key, value in self.tree().items() if key.startswith("jo/")}, jo)
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+
+    def test_undo_after_two_reassigns_over_nothing_removes_the_copy(self):
+        before = self.tree()
+        review_id, kept_id, mine, _, _ = self.kept_then_reassigned(photo_at_target=False)
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["jo"]})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(mine.is_file())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(self.tree(), before)
+
+    def adopted_then_reassigned(self, photo_at_target):
+        photo, _ = self.already_there(None)
+        data = photo.read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        target = self.world.root / "sam" / "google-only" / "2019" / "08" / PAIR_NAME
+        if photo_at_target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 200, body)
+        return review_id, kept_id, photo, target, data
+
+    def test_undo_after_keep_both_adopted_a_photo_and_a_reassign_moved_it_keeps_the_photo(self):
+        for photo_at_target in (False, True):
+            with self.subTest(photo_at_target=photo_at_target):
+                review_id, _, photo, target, data = self.adopted_then_reassigned(photo_at_target)
+                self.assertFalse(photo.exists())
+                self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+                self.assertEqual(target.read_bytes(), data)
+                self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+                self.assertEqual(self.pending().id, review_id)
+                self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+                target.unlink()
+
+    def test_undo_after_an_adopted_photo_was_reassigned_twice_keeps_it_where_it_ended(self):
+        review_id, kept_id, photo, target, data = self.adopted_then_reassigned(False)
+        status, body = self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["jo"]})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        self.assertEqual(photo.read_bytes(), data)
+        self.assertFalse(target.exists())
+
+    def test_undo_after_keep_both_adopted_a_row_and_a_reassign_moved_it_keeps_the_row_with_its_photo(self):
+        photo, _ = self.already_there(None)
+        opened = self.opened
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=str(photo.relative_to(self.world.root)),
+                             sha1=sha1_of(photo), bytes=photo.stat().st_size, indexed_at=1.0, export_id=self.export.id))
+        opened.commit()
+        data = photo.read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        kept_id = self.item_named(PAIR_NAME).id
+        self.assertEqual(self.call("POST", f"/api/media/{kept_id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        row = self.opened.get(MediaItem, kept_id)
+        self.assertEqual((self.world.root / row.path).read_bytes(), data)
+
+    def test_the_reassign_event_records_what_it_adopted_and_still_names_who_moved_it(self):
+        _, kept_id, _, _, _ = self.kept_then_reassigned(sidecar_at_target=True)
+        (detail,) = self.opened.execute(select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {kept_id}")).scalars()
+        self.assertIn(f"{review.ADOPTED}photo, sidecar", detail)
+        self.assertEqual(review.adopted_in(detail), {"photo", "sidecar"})
+        self.assertEqual(review.adopted_in(f"{detail}, by person 7"), {"photo", "sidecar"})
+        self.assertEqual(review.actor_of(f"{detail}, by person 7"), 7)
+
     def test_undo_after_keep_both_over_a_stale_row_restores_the_stale_state(self):
         folder = self.world.root / "jo" / "google-only" / "2019" / "08"
         relative = str((folder / PAIR_NAME).relative_to(self.world.root))
         opened = self.opened
-        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1="0" * 40, bytes=1, indexed_at=1.0))
+        opened.add(MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1=sha1_of(self.hold()), bytes=1, indexed_at=1.0))
         opened.commit()
         before_tree = self.tree()
         review_id, _ = self.resolve("keep_both")
@@ -388,8 +507,78 @@ class UndoTests(ReviewCase):
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), before_tree)
         (row,) = self.opened.execute(select(MediaItem).where(MediaItem.path == relative)).scalars()
-        self.assertEqual((row.sha1, row.bytes), ("0" * 40, 1))
+        self.assertEqual((row.sha1, row.bytes), (sha1_of(self.hold()), 1))
         self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
+
+    def test_undo_after_keep_both_over_a_stale_row_and_a_reassign_to_an_empty_place_keeps_the_photo_the_row_points_at(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        relative = str((folder / PAIR_NAME).relative_to(self.world.root))
+        opened = self.opened
+        stale = MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1=sha1_of(self.hold()), bytes=1, indexed_at=1.0,
+                          export_id=self.export.id)
+        opened.add(stale)
+        opened.commit()
+        data = self.hold().read_bytes()
+        review_id, _ = self.resolve("keep_both")
+        self.assertEqual(self.call("POST", f"/api/media/{stale.id}/reassign", {"person_id": self.world.ids["sam"]})[0], 200)
+        target = self.world.root / self.opened.get(MediaItem, stale.id).path
+        self.assertTrue(target.is_relative_to(self.world.root / "sam" / "google-only"))
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
+        row = self.opened.get(MediaItem, stale.id)
+        self.assertEqual((row.person_id, row.path), (self.world.ids["sam"], str(target.relative_to(self.world.root))))
+        self.assertEqual(target.read_bytes(), data)
+        self.assertFalse(target.with_name(f"{PAIR_NAME}.xmp").exists())
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
+        self.assertEqual([path.name for path in self.world.root.rglob(".dropping-*")], [])
+
+    def test_keep_both_over_a_stale_row_with_other_bytes_is_refused_and_changes_nothing(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        relative = str((folder / PAIR_NAME).relative_to(self.world.root))
+        for file_there in (False, True):
+            with self.subTest(file_there=file_there):
+                opened = self.opened
+                stale = MediaItem(person_id=self.world.ids["jo"], source="takeout", path=relative, sha1="0" * 40, bytes=1, indexed_at=1.0)
+                opened.add(stale)
+                opened.commit()
+                if file_there:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    (folder / PAIR_NAME).write_bytes(self.hold().read_bytes())
+                before_tree, before_flags, review_id = self.tree(), self.confirmed(), self.pending().id
+                self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                                 (409, {"error": "another photo is recorded at that place in google-only, so the pair was not kept"}))
+                self.assertEqual((self.tree(), self.confirmed()), (before_tree, before_flags))
+                row = self.opened.get(MediaItem, stale.id)
+                self.assertEqual((row.sha1, row.bytes, row.path), ("0" * 40, 1, relative))
+                decision = self.opened.get(DedupeDecision, self.pending().decision_id)
+                self.assertIsNone(decision.takeout_item_id)
+                self.assertEqual(self.opened.get(ReviewItem, review_id).status, "pending")
+                opened = self.opened
+                opened.delete(opened.get(MediaItem, stale.id))
+                opened.commit()
+                (folder / PAIR_NAME).unlink(missing_ok=True)
+
+    def test_a_new_photo_beside_a_sidecar_that_cannot_be_read_is_taken_back(self):
+        folder = self.world.root / "jo" / "google-only" / "2019" / "08"
+        folder.mkdir(parents=True, exist_ok=True)
+        sidecar = folder / f"{PAIR_NAME}.xmp"
+        sidecar.write_bytes(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        before_tree, review_id = self.tree(), self.pending().id
+        real = type(sidecar).read_bytes
+
+        def read_bytes(path):
+            if path == sidecar:
+                raise PermissionError("made unreadable")
+            return real(path)
+
+        with mock.patch.object(type(sidecar), "read_bytes", autospec=True, side_effect=read_bytes):
+            self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"}),
+                             (409, {"error": "the held copy could not be placed in google-only; nothing was changed"}))
+        self.assertFalse((folder / PAIR_NAME).exists())
+        self.assertEqual(self.tree(), before_tree)
+        self.assertEqual(self.pending().id, review_id)
+        self.assertEqual(self.opened.execute(select(MediaItem).where(MediaItem.path.like(f"%{PAIR_NAME}"), MediaItem.source == "takeout")).all(), [])
 
     def test_a_keep_both_that_fails_puts_back_a_sidecar_it_changed(self):
         _, sidecar = self.already_there(b"<x:xmpmeta>edited by you</x:xmpmeta>")

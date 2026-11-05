@@ -363,6 +363,7 @@
       "tests": [
         "tests/test_accounts_jobs_api.py",
         "tests/test_browser_internal_api.py",
+        "tests/test_exports_api.py",
         "tests/test_tools.py"
       ]
     },
@@ -374,6 +375,7 @@
       "tests": [
         "tests/test_accounts_jobs_api.py",
         "tests/test_browser_internal_api.py",
+        "tests/test_exports_api.py",
         "tests/test_tools.py"
       ]
     },
@@ -409,6 +411,40 @@
       ]
     },
     {
+      "route": "GET /api/exports",
+      "auth": "session",
+      "handler": "darkroom.server.api.exports.list_exports",
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_exports_api.py",
+        "tests/test_imports_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/exports/check-now",
+      "auth": "session",
+      "handler": "darkroom.server.api.exports.check_now",
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
+      "tests": [
+        "tests/test_exports_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/exports/{id}",
+      "auth": "session",
+      "handler": "darkroom.server.api.exports.one",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_imports_api.py"
+      ]
+    },
+    {
       "route": "POST /api/exports/{id}/import",
       "auth": "session",
       "handler": "darkroom.server.api.imports.request",
@@ -423,6 +459,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.imports.list_imports",
       "frontend": [
+        "frontend/src/pages/Exports.svelte",
         "frontend/src/pages/Imports.svelte"
       ],
       "tests": [
@@ -625,7 +662,8 @@
       "tests": [
         "tests/browser/fake_darkroom.py",
         "tests/test_accounts_jobs_api.py",
-        "tests/test_browser_internal_api.py"
+        "tests/test_browser_internal_api.py",
+        "tests/test_exports_api.py"
       ]
     },
     {

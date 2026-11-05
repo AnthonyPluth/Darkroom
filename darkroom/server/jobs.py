@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, events, index
+from darkroom.domain import alerts, browser_jobs, events, exports, index
 from darkroom.domain.ingest import cleanup, run
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -82,6 +82,7 @@ INDEX_FIRST_AFTER_SECONDS = 120.0
 SESSION_RECHECK_SECONDS = 3600.0
 BROWSER_LEASE_TICK_SECONDS = 60.0
 IMPORT_TICK_SECONDS = 60.0
+EXPORT_CHECK_TICK_SECONDS = 600.0
 CLEANUP_HOUR = 4
 
 
@@ -118,6 +119,16 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 
+    def check_exports(at: float) -> None:
+        try:
+            with db.session(engine) as opened:
+                queued = exports.check_due(opened, at, scheduler.zone)
+        except browser_jobs.Busy:
+            monitoring.log("export status checks postponed: the database was busy")
+            return
+        if queued:
+            monitoring.log("export status checks queued", count=queued)
+
     def run_imports(at: float) -> None:
         with db.session(engine) as opened:
             run.run_waiting(opened, settings, at)
@@ -130,5 +141,6 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
     scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now)
+    scheduler.every("exports.check", EXPORT_CHECK_TICK_SECONDS, check_exports, now=now)
     scheduler.daily_at("cleanup", CLEANUP_HOUR, clean_inbox, now=now)
     return scheduler
