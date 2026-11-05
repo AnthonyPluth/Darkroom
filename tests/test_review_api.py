@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select
@@ -997,6 +998,21 @@ class AdoptedPhotoMovesBackTests(ReviewCase):
                 self.assertEqual(self.opened.get(ReviewItem, review_id).status, "kept_both")
         self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo")[0], 200)
         self.assertEqual(self.tree(), expected)
+
+    def test_an_undo_that_dies_once_the_sidecar_is_back_takes_the_sidecar_back_too(self):
+        review_id, _, found, _, _ = self.adopted_then_reassigned(b"<x:xmpmeta>edited by you</x:xmpmeta>")
+        before, real = self.tree(), os.link
+
+        def dies_once_the_sidecar_is_there(origin, destination):
+            real(origin, destination)
+            if Path(destination) == paths.sidecar_of(found):
+                raise KeyboardInterrupt
+
+        with mock.patch.object(paths.os, "link", side_effect=dies_once_the_sidecar_is_there), self.assertRaises(KeyboardInterrupt):
+            self.dies_while_undoing(review_id, None)
+        self.assertTrue(paths.sidecar_of(found).is_file())
+        self.assertEqual(self.clean().taken_back, 1)
+        self.assertEqual(self.tree(), before)
 
     def test_a_committed_undo_whose_markers_and_set_aside_copy_were_left_is_finished_by_cleanup(self):
         review_id, _, _, moved, expected = self.adopted_then_reassigned()
