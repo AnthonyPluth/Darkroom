@@ -25,6 +25,7 @@ SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
 PLACING = ".placing-"
 PLACING_RECORD = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})\.json$")
+OLD_PLACING_MARKER = re.compile(rf"^{re.escape(PLACING)}([0-9a-f]{{16}})-(.+)$")
 UPLOADS_TMP = ".uploads_tmp"
 DOWNLOADS = ".downloads"
 SHARED_FOLDER_MODE = 0o2770
@@ -435,6 +436,34 @@ def write_sidecar(destination: Path, render: Callable[[Path, Path | None], None]
             copy_exclusive(temp, destination)
 
 
+def write_new_sidecar(destination: Path, write: Callable[[Path], bool], recording: Callable[[str | None], None]) -> bool:
+    checked_sidecar(destination)
+    if present(destination):
+        raise AlreadyExists(destination.name)
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".xmp-") as folder:
+        temp = Path(folder) / destination.name
+        if not write(temp):
+            return False
+        if not regular(temp):
+            raise NotASidecar("no sidecar was written")
+        claim_exclusively(temp, destination, file_sha1(temp), recording)
+    return True
+
+
+def claim_exclusively(temp: Path, destination: Path, sha1: str, recording: Callable[[str | None], None]) -> None:
+    recording(sha1)
+    try:
+        try:
+            os.link(temp, destination)
+        except FileExistsError as error:
+            raise AlreadyExists(destination.name) from error
+        except OSError:
+            copy_exclusive(temp, destination)
+    except AlreadyExists:
+        recording(None)
+        raise
+
+
 def remove_inbox_tree(photos: Photos, path: Path) -> bool:
     if not path.exists() and not path.is_symlink():
         return False
@@ -463,17 +492,25 @@ def file_sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
-def carry_sidecar(source: Path, destination: Path) -> bool:
+def carry_sidecar(source: Path, destination: Path, recording: Callable[[str | None], None] | None = None) -> bool:
     found = sidecar_of(source)
     if found.is_symlink() or not found.is_file():
         return False
     target = checked_sidecar(sidecar_of(destination))
     data = found.read_bytes()
     if target.exists():
+        if recording is not None:
+            recording(None)
         if target.read_bytes() == data:
             return True
         raise AlreadyExists(target.name)
-    write_once(target, [data])
+    if recording is None:
+        write_once(target, [data])
+        return True
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".xmp-") as folder:
+        temp = Path(folder) / target.name
+        temp.write_bytes(data)
+        claim_exclusively(temp, target, hashlib.sha1(data, usedforsecurity=False).hexdigest(), recording)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
     return True
 
 
@@ -698,12 +735,17 @@ def take_back(record: Path, placing: Placing, copy_kept: Callable[[Path, str], b
     ours = placing.made and sha1 == placing.sha1 and not kept_by_a_row
     if ours and not copy_kept(made, placing.sha1):
         return False
-    if placing.sidecar_sha1 is not None and regular_sha1(sidecar) == placing.sidecar_sha1 and not kept_by_a_row:
+    if placing.sidecar_sha1 is not None and sha1 == placing.sha1 and regular_sha1(sidecar) == placing.sidecar_sha1 and not kept_by_a_row:
         sidecar.unlink()
     if ours:
         made.unlink()
     record.unlink()
     return ours
+
+
+def sweep_old_marker(marker: Path, older_than: float) -> None:
+    if OLD_PLACING_MARKER.match(marker.name) is not None and regular(marker) and settled(marker, older_than):
+        marker.unlink()
 
 
 def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], bool], copy_kept: Callable[[Path, str], bool],
@@ -712,8 +754,11 @@ def sweep_placing(photos: Photos, older_than: float, committed: Callable[[str], 
     for found in leftovers(photos, PLACING):
         for record in found:
             match = PLACING_RECORD.match(record.name)
-            placing = None if match is None or not written_before(record, older_than) else read_placing(record)
-            if match is None or placing is None:
+            if match is None:
+                sweep_old_marker(record, older_than)
+                continue
+            placing = None if not written_before(record, older_than) else read_placing(record)
+            if placing is None:
                 continue
             if committed(match.group(1)):
                 record.unlink()

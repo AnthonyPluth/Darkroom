@@ -1,9 +1,10 @@
+import dataclasses
 import unittest
 
 from sqlalchemy import select
 
 from darkroom.domain import dedupe, exports
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelPerson
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
 
@@ -31,7 +32,7 @@ class IncrementalCase(unittest.TestCase):
     def take_bytes(self, seed):
         return TakeoutBuilder(self.world.base / f"scratch-{seed}", seed=seed).image_bytes(".JPG")
 
-    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW):
+    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW, owner=None):
         self.count += 1
         google_id = f"google-{self.count}"
         inbox = self.world.photos.inbox("jo") / google_id
@@ -44,7 +45,8 @@ class IncrementalCase(unittest.TestCase):
             builder.photo(name, gps=None)
         parts = builder.build().parts
         found = Export(account_id=self.world.account, kind="incremental", google_id=google_id, created_at=at - DAY, ready_at=at,
-                       expires_at=at + 7 * DAY, part_count=len(parts), status="downloaded", inbox_dir=str(inbox))
+                       expires_at=at + 7 * DAY, part_count=len(parts), status="downloaded", inbox_dir=str(inbox),
+                       owner_person_id=None if owner is None else self.world.ids[owner])
         self.world.opened.add(found)
         self.world.opened.flush()
         self.world.opened.add_all(ExportPart(export_id=found.id, number=number, filename=part.name, bytes=part.stat().st_size, status="done")
@@ -122,6 +124,77 @@ class IncrementalTests(IncrementalCase):
         self.assertIn("Our holiday", text)
         self.assertNotIn(DAWN, text)
 
+    def snapshot(self, folder):
+        return {str(p.relative_to(folder)): (p.read_bytes() if p.is_file() else None) for p in sorted(folder.rglob("*"))}
+
+    def assert_refresh_refused(self, outside):
+        before = self.snapshot(outside)
+        again = self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(self.snapshot(outside), before)
+        self.assertEqual(self.refreshed(), [])
+        stored = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
+        self.assertIn(CANAL, stored.sidecar_json)
+
+    def test_a_linked_folder_on_the_way_is_not_written_through(self):
+        self.imported()
+        outside = self.world.base / "elsewhere"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        (self.world.root / "jo/google-only/2017").rename(outside)
+        (self.world.root / "jo/google-only/2017").symlink_to(outside)
+        self.assert_refresh_refused(outside)
+
+    def test_a_linked_month_folder_is_not_written_through(self):
+        self.imported()
+        outside = self.world.base / "elsewhere-month"
+        (self.world.root / "jo/google-only/2017/07").rename(outside)
+        (self.world.root / "jo/google-only/2017/07").symlink_to(outside)
+        self.assert_refresh_refused(outside)
+
+    def test_a_linked_file_is_not_written_through(self):
+        self.imported()
+        outside = self.world.base / "elsewhere-file"
+        outside.mkdir()
+        photo = self.world.root / "jo/google-only/2017/07/IMG_2.JPG"
+        photo.rename(outside / "IMG_2.JPG")
+        photo.symlink_to(outside / "IMG_2.JPG")
+        self.assert_refresh_refused(outside)
+
+    def test_a_stored_path_outside_google_only_is_not_written_beside(self):
+        self.imported()
+        stored = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
+        originals = self.world.root / "jo/originals"
+        self.world.original("jo", "IMG_9.JPG", self.canal)
+        stored.path = "jo/originals/IMG_9.JPG"
+        self.world.opened.commit()
+        before = self.snapshot(originals)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(self.snapshot(originals), before)
+        self.assertEqual(self.refreshed(), [])
+        stored.path = "../escape/IMG_2.JPG"
+        self.world.opened.commit()
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        self.assertFalse((self.world.root.parent / "escape").exists())
+        self.assertEqual(self.refreshed(), [])
+
+    def test_a_refresh_that_cannot_read_the_photo_keeps_the_stored_record_and_logs_nothing(self):
+        self.imported()
+        real = self.world.tools.read
+        library = self.world.root / "jo/google-only"
+
+        def failing(paths):
+            found = real(paths)
+            return {path: {"Error": "unreadable"} if library in path.parents else tags for path, tags in found.items()}
+
+        self.world.tools = dataclasses.replace(self.world.tools, read=failing)
+        before = self.canal_sidecar().read_bytes()
+        again = self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(self.canal_sidecar().read_bytes(), before)
+        self.assertEqual(self.refreshed(), [])
+        stored = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
+        self.assertIn(CANAL, stored.sidecar_json)
+
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):
         self.imported()
         confirming = next(d for d in self.decisions() if d.matched_item_id is not None and d.tier == 1)
@@ -131,6 +204,18 @@ class IncrementalTests(IncrementalCase):
         again = [d for d in self.decisions() if d.matched_item_id == confirming.matched_item_id and d.reversed_at is None]
         self.assertEqual(len(again), 1)
         self.assertEqual(again[0].export_id, 2)
+
+
+class OwnerNoLongerServedTests(IncrementalCase):
+    def test_a_repeated_match_for_an_owner_the_account_no_longer_serves_is_still_a_repeat(self):
+        first = self.world.run_import(self.export(owner="sam"), NOW)
+        self.assertEqual(first.failed, 0)
+        self.world.opened.query(PixelPerson).filter(PixelPerson.person_id == self.world.ids["sam"]).delete()
+        self.world.opened.commit()
+        before = self.phone_matches()
+        again = self.world.run_import(self.export(owner="sam", at=NOW + DAY), NOW + DAY)
+        self.assertEqual((again.status, again.failed), ("done", 0))
+        self.assertEqual(self.phone_matches(), before)
 
 
 class SinglePersonTests(IncrementalTests):

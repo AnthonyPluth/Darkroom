@@ -180,7 +180,7 @@ def repeated_items(opened: Session, export: Export, prepared: Prepared, known: d
     candidates = [dedupe.candidate_of(item, prepared.fields[item.path], prepared.staging) for item in prepared.items if item.path in prepared.fields]
     if all(candidate.source_path in known for candidate in candidates):
         return set()
-    index = dedupe.PersonIndex.load(opened, export.account_id)
+    index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
     decisions = dedupe.decide_all(index, candidates, dedupe.load_settings(opened))
     return {decision.source_path for decision in decisions if decision.source_path not in known and dedupe.repeated(opened, decision, export.id)}
 

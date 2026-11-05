@@ -484,10 +484,8 @@ def move_back(opened: Session, photos: Photos, review: ReviewItem, item: MediaIt
     effects.placing(placed.path, token)
     effects.made(photos, placed, source, False)
     if with_sidecar:
-        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True))
-        paths.carry_sidecar(source, placed.path)
-        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True,
-                                                             paths.regular_sha1(paths.sidecar_of(placed.path))))
+        paths.carry_sidecar(source, placed.path, lambda sidecar_sha1: paths.mark_placing(
+            placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True, sidecar_sha1)))
     effects.set_aside(paths.set_library_copy_aside(photos, item.path, placed.path))
     return back[0], token
 
@@ -612,7 +610,7 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     lineage, token = adopted_lineage(opened, item), paths.placing_token()
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1,
-                                 lambda destination: paths.mark_placing(destination, token, paths.Placing(destination.name, item.sha1, True, False)))
+                                 lambda destination, made: paths.mark_placing(destination, token, paths.Placing(destination.name, item.sha1, made, False)))
         effects.placing(placed.path, token)
         had_sidecar = paths.present(paths.sidecar_of(placed.path))
         effects.made(photos, placed, source, had_sidecar)
@@ -620,14 +618,15 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         old_path, new_path = item.path, place.relative(photos, placed.path)
         if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.path == new_path, MediaItem.id != item.id).limit(1)).first():
             raise WrongState(f"another photo of {target.name}'s is recorded at that place, so the photo was left where it was")
-        carried = paths.carry_sidecar(source, placed.path)
+        def recording(sidecar_sha1: str | None) -> None:
+            paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, True, sidecar_sha1))
+
+        carried = paths.carry_sidecar(source, placed.path, None if had_sidecar else recording)
         if not carried:
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
-            xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read, write)
-        if not had_sidecar:
-            paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, True,
-                                                                 paths.regular_sha1(paths.sidecar_of(placed.path))))
+            xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read,
+                     lambda sidecar, tags: paths.write_new_sidecar(sidecar, lambda temp: write(temp, tags), recording))
         carries = CARRIES_FOUND if "found" in lineage and placed.copied and not had_sidecar else ""
         adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]
