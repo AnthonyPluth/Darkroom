@@ -57,7 +57,7 @@ export function failureReason(job: BrowserJobView): string {
 }
 
 export function failedCaptures(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView[] {
-  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status")];
+  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status"), latestJob(jobs, accountId, "download")];
   return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.capture_files.length > 0 ? [job] : []));
 }
 
@@ -66,12 +66,20 @@ export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number)
   return latest !== undefined && latest.needs_check ? latest : undefined;
 }
 
+function waitingSentence(reason: string): string {
+  switch (reason) {
+    case "wrong_account": return "waiting for you to switch to the right Google account.";
+    case "verify": return "waiting for you to confirm your identity in the remote browser.";
+    default: return "waiting for you to sign in.";
+  }
+}
+
 export function jobSentence(job: BrowserJobView | undefined, doing: string): string | null {
   if (job === undefined) return null;
   switch (job.status) {
     case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
-    case "waiting_for_user": return job.message === "wrong_account" ? `${doing}: waiting for you to switch to the right Google account.` : `${doing}: waiting for you to sign in.`;
+    case "waiting_for_user": return `${doing}: ${waitingSentence(job.message)}`;
     case "failed": return `${doing}: failed${failureReason(job)}.`;
     default: return `${doing}: done.`;
   }
@@ -82,7 +90,7 @@ export function workerChip(lastSeen: number | null, now: number): { tone: Tone; 
   return now - lastSeen <= 120 ? { tone: "ok", label: "Connected" } : { tone: "bad", label: "Worker not responding" };
 }
 
-export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports" };
+export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports", download: "Download" };
 
 const ACTIVE = ["announced", "downloading", "downloaded", "unpacking", "importing"];
 

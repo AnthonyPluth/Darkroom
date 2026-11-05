@@ -5,7 +5,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.domain import accounts, alerts, browser_jobs
+from darkroom.domain import accounts, alerts, browser_jobs, dedupe
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
@@ -28,6 +28,20 @@ class PixelsApiTests(ApiCase):
         pixel = self.pixel(self.account["id"], syncthing_device_id="ABCD123-EFGH456")
         self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], "ABCD123-EFGH456", self.account["id"]))
         self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel]})
+
+    def test_only_a_pixel_that_starts_serving_someone_new_scans_for_items_to_confirm(self):
+        with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
+            pixel = self.pixel(self.account["id"], "First")
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": "ABCD123-EFGH456"})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"]]})[0], 200)
+            scan.assert_not_called()
+            self.pixel(self.account["id"], "Second", people_ids=[self.jo["id"]])
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"], self.sam["id"]]})[0], 200)
+            self.assertEqual(scan.call_count, 1)
+            self.pixel(self.account["id"], "Third", people_ids=[self.kai["id"]])
+            self.assertEqual(scan.call_count, 2)
 
     def test_a_pixel_with_one_person_and_a_pixel_with_three_round_trip(self):
         one = self.pixel(self.account["id"], "Solo", people_ids=[self.sam["id"]])
@@ -149,7 +163,7 @@ class AccountsApiTests(ApiCase):
 
     def sign_in_alert(self, email):
         with db.session(self.engine) as opened:
-            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", email, alerts.sign_in_needed(email), None, 10.0)
+            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", email, alerts.sign_in_needed(email), None, 10.0, about=alerts.NOBODY)
 
     def alerts_of_jo(self):
         status, reply = self.call("GET", "/api/status")
@@ -181,7 +195,7 @@ class AccountsApiTests(ApiCase):
         other = self.account(jo["id"], "b@example.test")
         self.sign_in_alert("b@example.test")
         with db.session(self.engine) as opened:
-            alerts.open_alert(opened, self.settings, "k2", "sign_in_needed", "a@example.test", alerts.sign_in_needed("a@example.test"), None, 11.0)
+            alerts.open_alert(opened, self.settings, "k2", "sign_in_needed", "a@example.test", alerts.sign_in_needed("a@example.test"), None, 11.0, about=alerts.NOBODY)
             alerts.close(opened, "k2", 12.0)
         self.call("PATCH", f"/api/accounts/{account['id']}", {"email": "c@example.test"})
         self.assertEqual([subject for subject, _ in self.alerts_of_jo()[0]], ["b@example.test"])
@@ -274,9 +288,9 @@ class AccountsApiTests(ApiCase):
         other = self.account(jo["id"], "stay@example.test")
         with db.session(self.engine) as opened:
             alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(account["id"]), "sign_in_needed", "gone@example.test",
-                              alerts.sign_in_needed("gone@example.test"), None, 10.0)
+                              alerts.sign_in_needed("gone@example.test"), None, 10.0, about=alerts.account(account["id"]))
             alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(other["id"]), "sign_in_needed", "stay@example.test",
-                              alerts.sign_in_needed("stay@example.test"), None, 10.0)
+                              alerts.sign_in_needed("stay@example.test"), None, 10.0, about=alerts.account(other["id"]))
         self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 200)
         self.assertEqual([a["subject"] for a in self.call("GET", "/api/status")[1]["alerts"]], ["stay@example.test"])
         with db.session(self.engine) as opened:

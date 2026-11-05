@@ -4,7 +4,7 @@ The app replaces Möbius Sync: it uploads each photo's original resources to Dar
 
 - `project.yml`: the XcodeGen spec. The Xcode project is generated from it and never committed.
 - `Darkroom/`: the app target (SwiftUI lifecycle, iOS 17+): `DarkroomApp`, `AppDelegate` (background `URLSession` completion handler plumbing), a placeholder `RootView` that shows only the build version, and `Keychain`.
-- `Packages/DarkroomCore/`: a SwiftPM package with the logic, no UIKit or PhotoKit (Foundation and swift-crypto only): `APIClient`, `SHA1Hasher`, the request and reply models, `UploadPlanner`, `ResourceStore` with its state machine, an in-memory implementation and `SQLiteResourceStore` (the one the app persists in), `ReachabilityPolicy`, and `CleanupFlow`, the pure state machine of a cleanup round (list, confirm, delete, report) with the `CleanupAPI` calls it drives.
+- `Packages/DarkroomCore/`: a SwiftPM package with the logic, no UIKit or PhotoKit (Foundation and swift-crypto only): `APIClient`, `SHA1Hasher`, the request and reply models, `UploadPlanner`, `ResourceStore` with its state machine, an in-memory implementation and `SQLiteResourceStore` (the one the app persists in), `ReachabilityPolicy`, and `CleanupFlow`, the pure state machine of a cleanup round (list, confirm, delete, report) with the `CleanupAPI` calls it drives, and `CleanupRunner`, which runs a round against the API, the store and a `PhotoDeleter` (the PhotoKit adapter, the background refresh and the notification come with the app's screens).
 - `Config/Base.xcconfig`, `Local.xcconfig.example`: build settings. Your own `Local.xcconfig` is gitignored.
 
 ## First build on a Mac

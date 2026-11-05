@@ -117,6 +117,21 @@ def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path], N
     raise PlaceFailed("both names are taken by other files")
 
 
+def copy_exactly(destination: Path, source: Path, sha1: str, token: str) -> Placed:
+    record = paths.placing_record(destination, token)
+    paths.mark_placing(destination, token, paths.Placing(destination.name, sha1, True, False))
+    try:
+        written = paths.write_once(destination, chunks(source))
+    except paths.AlreadyExists:
+        record.unlink(missing_ok=True)
+        raise
+    if written != sha1:
+        destination.unlink(missing_ok=True)
+        record.unlink(missing_ok=True)
+        raise PlaceFailed("the file changed while it was copied")
+    return Placed(destination, True)
+
+
 def relative(photos: Photos, path: Path) -> str:
     return str(path.relative_to(photos.root))
 

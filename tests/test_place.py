@@ -242,6 +242,16 @@ class CollisionTests(Household):
             self.place(entry)
         self.assertEqual([p for p in (self.root / "jo/google-only").rglob("*") if p.is_file()], [])
 
+    def test_an_exact_copy_never_replaces_and_leaves_nothing_when_its_bytes_differ(self):
+        staged, folder = self.staged("a.jpg"), self.folder()
+        placed = place.copy_exactly(folder / "b.jpg", staged, sha1_of(staged), "0123456789abcdef")
+        self.assertEqual((placed.copied, sha1_of(placed.path)), (True, sha1_of(staged)))
+        with self.assertRaises(paths.AlreadyExists):
+            place.copy_exactly(folder / "b.jpg", staged, sha1_of(staged), "fedcba9876543210")
+        with self.assertRaises(place.PlaceFailed):
+            place.copy_exactly(folder / "c.jpg", staged, "0" * 40, "fedcba9876543210")
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), [".placing-0123456789abcdef.json", "b.jpg"])
+
     def test_owner_made_decisions_are_never_placed_or_held(self):
         _, mine = self.phone("sam", self.sam)
         for tier, kwargs in ((5, {}), (4, {"person": self.sam, "matched": mine})):

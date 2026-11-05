@@ -4,7 +4,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, events
+from darkroom.domain import accounts, dedupe, events
 from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelPerson
 
 
@@ -66,10 +66,12 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
     account = require_account(opened, account_id)
     chosen = people_ids if people_ids is not None else [account.default_person_id]
     require_people(opened, chosen)
+    before = accounts.served_people(opened, account_id)
     pixel = Pixel(name=name, syncthing_device_id=syncthing_device_id, google_account_id=account_id, created=now)
     opened.add(pixel)
     opened.flush()
     set_people(opened, pixel.id, chosen)
+    dedupe.confirm_newly_served(opened, account_id, before)
     events.record(opened, now, "pixel_created", str(pixel.id))
     return pixel
 
@@ -83,6 +85,7 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     assert isinstance(chosen, list)
     require_people(opened, chosen)
     require_still_served(opened, pixel, set(chosen) if account_id == pixel.google_account_id else set())
+    before = accounts.served_people(opened, account_id)
     pixel.google_account_id = account_id
     if "people_ids" in fields:
         set_people(opened, pixel.id, chosen)
@@ -92,6 +95,7 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
         value = fields["syncthing_device_id"]
         pixel.syncthing_device_id = value if isinstance(value, str) else None
     opened.flush()
+    dedupe.confirm_newly_served(opened, account_id, before)
     events.record(opened, now, "pixel_updated", str(pixel.id))
     return pixel
 

@@ -308,6 +308,28 @@ describe("the Exports page", () => {
     expect(view.sent("GET /api/exports")).toHaveLength(1);
   });
 
+  it("says how a running download is going", async () => {
+    const running = { ...waitingConnect, id: 9, account_id: 10, kind: "download", status: "running", message: "downloading part 2 of 3" };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [running] } });
+    const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
+    expect(within(jo).getByText("Download: running, downloading part 2 of 3.")).toBeInTheDocument();
+    expect(within(jo).queryByRole("link", { name: "Open remote browser" })).not.toBeInTheDocument();
+  });
+
+  it("links to the remote browser when a download waits for a verification, and shows a failed download's capture", async () => {
+    const waiting = { ...waitingConnect, id: 9, account_id: 10, kind: "download", message: "verify" };
+    const failed = { ...failedSchedule, id: 13, account_id: 11, kind: "download", message: "DownloadFailed: part 2 failed after 3 attempts" };
+    show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [waiting, failed] } });
+    const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
+    expect(within(jo).getByText("Download: waiting for you to confirm your identity in the remote browser.")).toBeInTheDocument();
+    expect(within(jo).queryByText("Download: waiting for you to sign in.")).not.toBeInTheDocument();
+    expect(within(jo).getByRole("link", { name: "Open remote browser" })).toBeInTheDocument();
+    const family = screen.getByRole("region", { name: "family.photos@example.com" });
+    expect(within(family).getByText("Download: failed, part 2 failed after 3 attempts.")).toBeInTheDocument();
+    expect(within(family).getByText(/Capture of the failed Download/)).toBeInTheDocument();
+    expect(within(family).getByRole("link", { name: "screenshot" })).toHaveAttribute("href", "/api/browser/failures/13/screenshot.png");
+  });
+
   it("shows why a check failed, with its capture", async () => {
     const failed = { ...failedSchedule, id: 12, kind: "status", message: "ExportsUnreadable: Takeout's list of exports did not load" };
     show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });

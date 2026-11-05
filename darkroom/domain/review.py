@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -29,6 +30,10 @@ LIST_LIMIT = 500
 ADOPTED = "; adopted what was already there: "
 BY_PERSON = re.compile(r"(?:^|, )by person (\d+)$|^by person (\d+): ")
 BY_PERSON_SUFFIX = re.compile(r", by person \d+$")
+FOUND_AT = "; found at "
+FOUND = re.compile(r"; found at person (\d+), place ([0-9a-f]{16})$")
+CARRIES_FOUND = ", carrying what keep both found"
+MOVED_BACK = "moved the photo back to where keep both found it"
 
 
 MOVE_FAILURES = (paths.NotALibraryCopy, paths.NotASidecar, OSError, exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)
@@ -304,8 +309,12 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     return item, fields
 
 
+def place_digest(relative: str) -> str:
+    return hashlib.sha256(relative.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
 def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader,
-              write: xmp.Writer) -> tuple[set[int], list[str]]:
+              write: xmp.Writer) -> tuple[set[int], list[str], str]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     person = exports.owner_of(opened, hit.export)
     if hold is None:
@@ -314,6 +323,7 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
         raise WrongState("the export's account has no default person")
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
     adopted: list[str] = []
+    found: list[str] = []
 
     def copied(placed: place.Placed) -> None:
         had_sidecar = paths.sidecar_of(placed.path).exists() or paths.sidecar_of(placed.path).is_symlink()
@@ -324,12 +334,14 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
         if recorded is not None and recorded != fields.sha1:
             raise WrongState("another photo is recorded at that place in google-only, so the pair was not kept")
         adopted.extend(name for name, kept in (("photo", not placed.copied), ("sidecar", had_sidecar), ("row", recorded is not None)) if kept)
+        if not placed.copied:
+            found.append(f"{FOUND_AT}person {person.id}, place {place_digest(place.relative(photos, placed.path))}")
 
     try:
         row = place.place_google_only(opened, photos, hit.export, place.Entry(item, fields, hit.decision), place.PlaceReport(), read, write, copied)
     except (place.PlaceFailed, *MOVE_FAILURES) as error:
         raise WrongState("the held copy could not be placed in google-only; nothing was changed") from error
-    return {row.person_id}, adopted
+    return {row.person_id}, adopted, "".join(found)
 
 
 def by_prefix(by: int | None) -> str:
@@ -366,29 +378,53 @@ def decided_by(opened: Session, review: ReviewItem, kept: MediaItem | None) -> i
 def adopted_in(detail: str | None) -> set[str]:
     if detail is None or ADOPTED not in detail:
         return set()
-    return set(BY_PERSON_SUFFIX.sub("", detail.split(ADOPTED, 1)[1]).split(", "))
+    return set(BY_PERSON_SUFFIX.sub("", detail.split(ADOPTED, 1)[1].split(FOUND_AT, 1)[0]).split(", "))
 
 
-def adopted_by(opened: Session, review: ReviewItem, item: MediaItem) -> set[str]:
+def kept_and_moved(opened: Session, review: ReviewItem, item: MediaItem) -> tuple[str, str | None] | None:
     kept = opened.execute(
         select(Event.id, Event.detail).where(Event.type == "review_resolved", Event.subject == f"review {review.id}").order_by(Event.id.desc()).limit(1)
     ).first()
     if kept is None:
-        return set()
+        return None
     moved = opened.execute(
         select(Event.detail).where(Event.type == "media_reassigned", Event.subject == f"item {item.id}", Event.id > kept.id).order_by(Event.id.desc()).limit(1)
     ).scalar_one_or_none()
-    adopted = adopted_in(kept.detail)
+    return kept.detail or "", moved
+
+
+def adopted_by(opened: Session, review: ReviewItem, item: MediaItem) -> set[str]:
+    events_of = kept_and_moved(opened, review, item)
+    if events_of is None:
+        return set()
+    kept, moved = events_of
+    adopted = adopted_in(kept)
     return adopted if moved is None else (adopted & {"row"}) | (adopted_in(moved) & {"photo", "sidecar"})
 
 
-def adopted_lineage(opened: Session, item: MediaItem) -> set[str]:
-    kept = opened.execute(
+def found_by(opened: Session, review: ReviewItem, item: MediaItem) -> tuple[int, str] | None:
+    events_of = kept_and_moved(opened, review, item)
+    match = None if events_of is None else FOUND.search(events_of[0])
+    if events_of is None or match is None or {"photo", "row"} & adopted_in(events_of[0]) != {"photo"}:
+        return None
+    moved = events_of[1]
+    if moved is not None and CARRIES_FOUND not in moved.split(ADOPTED, 1)[0]:
+        return None
+    return int(match.group(1)), match.group(2)
+
+
+def kept_review(opened: Session, item: MediaItem) -> ReviewItem | None:
+    return opened.execute(
         select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
         .where(DedupeDecision.takeout_item_id == item.id, ReviewItem.status == "kept_both").order_by(ReviewItem.id.desc()).limit(1)
     ).scalar_one_or_none()
+
+
+def adopted_lineage(opened: Session, item: MediaItem) -> set[str]:
+    kept = kept_review(opened, item)
     adopted = set() if kept is None else adopted_by(opened, kept, item)
-    return (adopted & {"photo", "sidecar"}) | ({"photo"} if "row" in adopted else set())
+    found = set() if kept is None or found_by(opened, kept, item) is None else {"found"}
+    return (adopted & {"photo", "sidecar"}) | ({"photo"} if "row" in adopted else set()) | found
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
@@ -401,13 +437,12 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
     if hit.decision.reversed_at is not None:
         raise WrongState("this pair's dedupe decision was reversed")
     changed = Changed(hit.export)
-    if action == "keep_both":
-        people, adopted = keep_both(opened, photos, hit, now, effects, read, write)
-        changed.people |= people
+    people, adopted, found_at = keep_both(opened, photos, hit, now, effects, read, write)
+    changed.people |= people
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
     events.record(opened, now, "review_resolved", f"review {hit.review.id}",
-                  by_prefix(by) + action + (f"{ADOPTED}{', '.join(adopted)}" if adopted else ""))
+                  by_prefix(by) + action + (f"{ADOPTED}{', '.join(adopted)}" if adopted else "") + found_at)
     return changed
 
 
@@ -421,31 +456,72 @@ def still_referenced(opened: Session, item: MediaItem, decision: DedupeDecision)
     return matched, shared
 
 
-def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: FileEffects) -> set[int]:
+def found_place(opened: Session, photos: Photos, item: MediaItem, hold: Path, found: tuple[int, str]) -> tuple[int, Path] | None:
+    person = opened.get(Person, found[0])
+    if person is None:
+        return None
+    folder = place.google_only_folder(photos, person.slug, item)
+    if not folder.is_relative_to(photos.root / person.slug / "google-only"):
+        return None
+    for name in place.names(hold, item.sha1):
+        if place_digest(place.relative(photos, folder / name)) == found[1]:
+            return person.id, folder / name
+    return None
+
+
+def move_back(opened: Session, photos: Photos, review: ReviewItem, item: MediaItem, hold: Path, with_sidecar: bool,
+              effects: FileEffects) -> tuple[int, str] | None:
+    found = found_by(opened, review, item)
+    back = None if found is None else found_place(opened, photos, item, hold, found)
+    source = photos.google_only_file(item.path)
+    if back is None or back[1] == source or any(path.exists() or path.is_symlink() for path in (back[1], paths.sidecar_of(back[1]))):
+        return None
+    token = paths.placing_token()
+    try:
+        placed = place.copy_exactly(back[1], source, item.sha1, token)
+    except paths.AlreadyExists:
+        return None
+    effects.placing(placed.path, token)
+    effects.made(photos, placed, source, False)
+    if with_sidecar:
+        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True))
+        paths.carry_sidecar(source, placed.path)
+        paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, True, True,
+                                                             paths.regular_sha1(paths.sidecar_of(placed.path))))
+    effects.set_aside(paths.set_library_copy_aside(photos, item.path, placed.path))
+    return back[0], token
+
+
+def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: FileEffects) -> tuple[set[int], str | None]:
     item = None if hit.decision.takeout_item_id is None else opened.get(MediaItem, hit.decision.takeout_item_id)
     if item is None:
-        return set()
+        return set(), None
     matched, shared = still_referenced(opened, item, hit.decision)
     if matched:
         raise WrongState("a later import matched the kept copy; reverse that decision before undoing this one")
     if shared:
         hit.decision.takeout_item_id = None
-        return set()
+        return set(), None
     adopted = adopted_by(opened, hit.review, item)
+    moved = None
     try:
         if "photo" not in adopted:
             effects.set_aside(paths.set_library_copy_aside(photos, item.path, hold, with_sidecar="sidecar" not in adopted))
-        elif "sidecar" not in adopted:
+        elif "row" not in adopted:
+            moved = move_back(opened, photos, hit.review, item, hold, "sidecar" in adopted, effects)
+        if moved is None and "photo" in adopted and "sidecar" not in adopted:
             effects.set_aside(paths.set_sidecar_aside(photos, item.path, hit.review.id, cleanup.undone_count(opened, hit.review.id)))
     except paths.NotALibraryCopy as error:
         raise WrongState("the kept copy is not where it was placed, so it was left alone") from error
-    except OSError as error:
+    except (OSError, place.PlaceFailed) as error:
         raise WrongState("the kept copy could not be removed, so nothing was changed") from error
     hit.decision.takeout_item_id = None
     owner = item.person_id
     if "row" not in adopted:
         opened.delete(item)
-    return set() if {"row", "photo", "sidecar"} <= adopted else {owner}
+    if moved is not None:
+        return {owner, moved[0]}, moved[1]
+    return set() if {"row", "photo", "sidecar"} <= adopted else {owner}, None
 
 
 def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects, by: int | None = None) -> Changed:
@@ -459,12 +535,12 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
-    changed = Changed(hit.export)
-    if hit.review.status == "kept_both":
-        changed.people |= take_back(opened, photos, hit, hold, effects)
+    people, token = take_back(opened, photos, hit, hold, effects)
+    changed = Changed(hit.export, people)
     hit.review.status, hit.review.resolved_at = "pending", None
     opened.flush()
-    events.record(opened, now, "review_undone", f"review {hit.review.id}", None if by is None else by_prefix(by).rstrip(": "))
+    said = ([] if token is None else [f"{MOVED_BACK}{cleanup.REASSIGN_COPY}{token}"]) + ([] if by is None else [by_prefix(by).rstrip(": ")])
+    events.record(opened, now, "review_undone", f"review {hit.review.id}", ", ".join(said) or None)
     return changed
 
 
@@ -552,11 +628,12 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         if not had_sidecar:
             paths.mark_placing(placed.path, token, paths.Placing(placed.path.name, item.sha1, placed.copied, True,
                                                                  paths.regular_sha1(paths.sidecar_of(placed.path))))
+        carries = CARRIES_FOUND if "found" in lineage and placed.copied and not had_sidecar else ""
         adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]
         item.person_id, item.path = target.id, new_path
         opened.flush()
-        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}{cleanup.REASSIGN_COPY}{token}"
+        events.record(opened, now, "media_reassigned", f"item {item.id}", f"person {current.id} to person {target.id}{cleanup.REASSIGN_COPY}{token}{carries}"
                       + (f"{ADOPTED}{', '.join(adopted)}" if adopted else "") + ("" if by is None else f", by person {by}"))
         opened.flush()
         effects.set_aside(paths.set_library_copy_aside(photos, old_path, placed.path))

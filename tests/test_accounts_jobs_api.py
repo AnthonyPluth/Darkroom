@@ -1,10 +1,12 @@
 import json
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
+from darkroom.domain import dedupe
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
 from tests.shared import fetch
 
@@ -105,6 +107,36 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 409)
         self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+
+    def test_a_rename_or_an_unchanged_default_person_does_not_scan_for_items_to_confirm(self):
+        sam = self.person("Sam Example")["id"]
+        with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"default_person_id": self.person_id})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {})[0], 200)
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"default_person_id": sam})[0], 200)
+            scan.assert_called_once()
+
+    def test_a_default_person_change_that_serves_a_matched_owner_confirms_their_items(self):
+        sam = self.person("Sam Example")["id"]
+        with db.session(self.engine) as opened:
+            export = Export(account_id=self.account_id, kind="manual", owner_person_id=sam)
+            phone = MediaItem(person_id=sam, source="phone", path="sam/a.jpg", sha1="a" * 40, bytes=1, indexed_at=1.0)
+            opened.add_all([export, phone])
+            opened.flush()
+            opened.add(DedupeDecision(
+                export_id=export.id, account_id=self.account_id, source_path="a.jpg", person_id=sam, matched_item_id=phone.id,
+                tier=1, reason="same SHA-1", decided_by="auto", decided_at=1.0,
+            ))
+            phone_id = phone.id
+        def confirmed():
+            with db.session(self.engine) as opened:
+                return opened.get(MediaItem, phone_id).confirmed_in_google
+
+        self.assertFalse(confirmed())
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"default_person_id": sam})[0], 200)
+        self.assertTrue(confirmed())
 
     def test_an_unresolved_schedule_attempt_stays_in_the_job_list_beyond_the_history_cap(self):
         self.call("POST", f"/api/accounts/{self.account_id}/schedule")

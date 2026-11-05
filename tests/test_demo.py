@@ -17,7 +17,7 @@ from sqlalchemy import MetaData, select
 import run
 from darkroom import tls
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, browser_jobs, demo, events
+from darkroom.domain import accounts, alerts, browser_jobs, demo, events, exports
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
@@ -165,7 +165,7 @@ class SeededDemo(unittest.TestCase):
 
     def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
         exports = self.rows(Export)
-        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental")])
+        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental")])
         runs = self.rows(ImportRun)
         self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
         reviews = self.rows(ReviewItem)
@@ -208,9 +208,31 @@ class SeededDemo(unittest.TestCase):
                     self.assertEqual([r.status for r in opened.query(ReviewItem).all()], ["pending"])
 
     def test_the_imported_export_has_its_part_downloaded(self):
-        (part,) = self.rows(ExportPart)
+        part = self.rows(ExportPart)[0]
         self.assertEqual((part.status, part.downloads_used), ("done", 1))
         self.assertGreater(part.bytes, 0)
+
+    def test_a_second_export_is_part_way_through_its_download(self):
+        parts = self.rows(ExportPart)[1:]
+        self.assertEqual([(part.number, part.status) for part in parts], [(1, "done"), (2, "downloading"), (3, "pending")])
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, parts[0].export_id)
+            self.assertEqual([each["progress"] for each in exports.as_dict(opened, export)["parts"]], [100, 40, 0])
+
+    def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
+        with db.session(self.engine) as opened:
+            seeded = list(opened.query(Export).order_by(Export.id))
+            self.assertEqual(len(seeded), 2)
+            for export in seeded:
+                account = opened.get(GoogleAccount, export.account_id)
+                self.assertIsNotNone(export.owner_person_id)
+                self.assertEqual(export.owner_person_id, account.default_person_id)
+            other = opened.query(Person).filter(Person.id != seeded[1].owner_person_id).first()
+            opened.get(GoogleAccount, seeded[1].account_id).default_person_id = other.id
+            opened.flush()
+            self.assertEqual(exports.owner_of(opened, seeded[1]).id, seeded[1].owner_person_id)
+            self.assertNotEqual(exports.owner_of(opened, seeded[1]).id, other.id)
+            opened.rollback()
 
     def test_a_seed_for_another_day_moves_with_it(self):
         with tempfile.TemporaryDirectory() as folder:

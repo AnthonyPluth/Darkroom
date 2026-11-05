@@ -90,7 +90,8 @@
       {@const maybe = maybeCreated(data.jobs, account.id)}
       {@const failed = failedCaptures(data.jobs, account.id)}
       {@const checking = openJob(data.jobs, account.id, "status")}
-      {@const notes = [jobSentence(connecting ?? latestJob(data.jobs, account.id, "connect"), "Connect"), jobSentence(scheduling ?? latestJob(data.jobs, account.id, "schedule"), "Create schedule"), jobSentence(checking ?? latestJob(data.jobs, account.id, "status"), "Check exports")].filter((note) => note !== null)}
+      {@const downloading = openJob(data.jobs, account.id, "download")}
+      {@const notes = [jobSentence(connecting ?? latestJob(data.jobs, account.id, "connect"), "Connect"), jobSentence(scheduling ?? latestJob(data.jobs, account.id, "schedule"), "Create schedule"), jobSentence(checking ?? latestJob(data.jobs, account.id, "status"), "Check exports"), jobSentence(downloading ?? latestJob(data.jobs, account.id, "download"), "Download")].filter((note) => note !== null)}
       {@const mine = accountExports(data.exports, account.id)}
       {@const current = currentExport(mine)}
       {@const earlier = earlierExports(mine, current)}
@@ -148,7 +149,7 @@
           </div>
         {/if}
         <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
-          {#if connecting?.status === "waiting_for_user" || scheduling?.status === "waiting_for_user" || checking?.status === "waiting_for_user"}
+          {#if [connecting, scheduling, checking, downloading].some((job) => job?.status === "waiting_for_user")}
             <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>

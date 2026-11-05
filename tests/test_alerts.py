@@ -30,7 +30,7 @@ class AlertTests(unittest.TestCase):
 
     def open_sign_in(self, opened, now):
         return alerts.open_alert(opened, self.settings, "sign-in:a", "sign_in_needed", "a@x.test", alerts.sign_in_needed("a@x.test"),
-                                 "https://d.example/browser", now, notifier=self.notifier)
+                                 "https://d.example/browser", now, notifier=self.notifier, about=alerts.NOBODY)
 
     def tick(self, now):
         with db.session(self.engine) as opened:
@@ -71,14 +71,14 @@ class AlertTests(unittest.TestCase):
     def test_one_shot_alerts_are_closed_at_once(self):
         with db.session(self.engine) as opened:
             alert = alerts.open_alert(opened, self.settings, "imported:1", "export_imported", "jo", alerts.export_imported("3 added"), None, 0.0,
-                                      repeats=alerts.ONCE, notifier=self.notifier)
+                                      repeats=alerts.ONCE, notifier=self.notifier, about=alerts.NOBODY)
             self.assertEqual(alert.closed, 0.0)
         self.assertEqual(self.tick(10 * DAY), 0)
 
     def test_one_shot_kinds_close_at_once_without_asking(self):
         with db.session(self.engine) as opened:
             for kind in ("export_imported", "schedule_renewed", "failure"):
-                alert = alerts.open_alert(opened, self.settings, f"k:{kind}", kind, "x", alerts.failure("x"), None, 0.0, notifier=self.notifier)
+                alert = alerts.open_alert(opened, self.settings, f"k:{kind}", kind, "x", alerts.failure("x"), None, 0.0, notifier=self.notifier, about=alerts.NOBODY)
                 self.assertEqual(alert.closed, 0.0)
         self.assertEqual(self.tick(10 * DAY), 0)
 
