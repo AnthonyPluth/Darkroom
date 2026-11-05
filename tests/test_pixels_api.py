@@ -5,7 +5,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.storage import db
-from darkroom.domain import accounts, alerts, browser_jobs
+from darkroom.domain import accounts, alerts, browser_jobs, dedupe
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
 from tests.api_world import ApiCase
 
@@ -28,6 +28,20 @@ class PixelsApiTests(ApiCase):
         pixel = self.pixel(self.account["id"], syncthing_device_id="ABCD123-EFGH456")
         self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], "ABCD123-EFGH456", self.account["id"]))
         self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel]})
+
+    def test_only_a_pixel_that_starts_serving_someone_new_scans_for_items_to_confirm(self):
+        with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
+            pixel = self.pixel(self.account["id"], "First")
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": "ABCD123-EFGH456"})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"]]})[0], 200)
+            scan.assert_not_called()
+            self.pixel(self.account["id"], "Second", people_ids=[self.jo["id"]])
+            scan.assert_not_called()
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"], self.sam["id"]]})[0], 200)
+            self.assertEqual(scan.call_count, 1)
+            self.pixel(self.account["id"], "Third", people_ids=[self.kai["id"]])
+            self.assertEqual(scan.call_count, 2)
 
     def test_a_pixel_with_one_person_and_a_pixel_with_three_round_trip(self):
         one = self.pixel(self.account["id"], "Solo", people_ids=[self.sam["id"]])
