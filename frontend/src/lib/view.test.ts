@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
-import { downloadingExport, expiredExport, failedExport, importedExport, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
+import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -17,6 +17,8 @@ describe("alertChip", () => {
     expect(alertChip("failure")).toEqual({ tone: "bad", label: "Failed" });
     expect(alertChip("originals_unmatched").label).toBe("Check backup");
     expect(alertChip("schedule_ending").label).toBe("Schedule ending");
+    expect(alertChip("schedule_renewal_failed")).toEqual({ tone: "bad", label: "Not renewed" });
+    expect(alertChip("schedule_renewal_unconfirmed")).toEqual({ tone: "warn", label: "Renewal unconfirmed" });
     expect(alertChip("export_expiring").label).toBe("Export expiring");
     expect(alertChip("anything_else")).toEqual({ tone: "warn", label: "Needs a look" });
   });
@@ -117,6 +119,51 @@ describe("failedCaptures", () => {
   it("includes a failed export check with a capture", () => {
     const job = { ...queuedConnect, id: 9, kind: "status", status: "failed", has_capture: true, capture_files: ["page.html"] };
     expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([9]);
+  });
+
+  it("includes a failed renewal with a capture", () => {
+    const job = { ...queuedConnect, id: 11, kind: "renew", status: "failed", has_capture: true, capture_files: ["screenshot.png"] };
+    expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([11]);
+  });
+});
+
+describe("maybeRenewed", () => {
+  const renew = { ...queuedConnect, id: 15, kind: "renew", status: "failed", message: "ScheduleNotConfirmed: unsure" };
+  it("finds the renewal the server says needs a check", () => {
+    expect(maybeRenewed([{ ...renew, needs_check: true }], 10)?.id).toBe(15);
+  });
+
+  it("ignores a renewal the server does not flag, whatever its message, and other accounts", () => {
+    expect(maybeRenewed([renew], 10)).toBeUndefined();
+    expect(maybeRenewed([{ ...renew, message: "the worker stopped reporting" }], 10)).toBeUndefined();
+    expect(maybeRenewed([{ ...renew, needs_check: true }], 11)).toBeUndefined();
+    expect(maybeRenewed([{ ...renew, needs_check: true, kind: "schedule" }], 10)).toBeUndefined();
+  });
+});
+
+describe("scheduleLive", () => {
+  it("is live from its creation until it ends, and not without one", () => {
+    expect(scheduleLive(familyAccount, 4_999_999)).toBe(true);
+    expect(scheduleLive(familyAccount, 5_000_000)).toBe(false);
+    expect(scheduleLive(joAccount, 1)).toBe(false);
+    expect(scheduleLive({ ...joAccount, schedule_created: 10 }, 1_000_000)).toBe(true);
+  });
+});
+
+describe("jobSentence after a check", () => {
+  const renew = { ...queuedConnect, kind: "renew", status: "failed", message: "ScheduleNotConfirmed: unsure" };
+  it("says what the owner found instead of the failure", () => {
+    expect(jobSentence({ ...renew, checked: "found" }, "Renew schedule")).toBe("Renew schedule: not confirmed by Takeout, then you found it there.");
+    expect(jobSentence({ ...renew, checked: "missing" }, "Renew schedule")).toBe("Renew schedule: not confirmed by Takeout, and you found none there.");
+    expect(jobSentence(renew, "Renew schedule")).toBe("Renew schedule: failed, unsure.");
+  });
+
+  it("says an attempt waiting for an answer was not confirmed, never that it failed", () => {
+    for (const kind of ["renew", "schedule"]) {
+      const sentence = jobSentence({ ...renew, kind, needs_check: true, message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again" }, "Doing");
+      expect(sentence).toBe("Doing: not confirmed by Takeout; say below what you found.");
+      expect(sentence).not.toMatch(/failed|trying again/);
+    }
   });
 });
 

@@ -60,6 +60,7 @@ export interface BrowserJobView {
   finished: number | null;
   message: string;
   needs_check: boolean;
+  checked: string | null;
   has_capture: boolean;
   capture_files: string[];
 }
@@ -586,6 +587,10 @@ export interface Reviews {
   before: number;
 }
 
+export interface ScheduleCheckedBody {
+  found?: boolean;
+}
+
 export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
@@ -633,7 +638,7 @@ export interface Endpoints {
   "DELETE /api/accounts/{id}": { body: never; reply: Ok };
   "POST /api/accounts/{id}/connect": { body: never; reply: BrowserJobReply };
   "POST /api/accounts/{id}/schedule": { body: never; reply: BrowserJobReply };
-  "POST /api/accounts/{id}/schedule/checked": { body: never; reply: BrowserJobReply };
+  "POST /api/accounts/{id}/schedule/checked": { body: ScheduleCheckedBody; reply: BrowserJobReply };
   "GET /api/pixels": { body: never; reply: Pixels };
   "POST /api/pixels": { body: PixelCreateBody; reply: PixelReply };
   "PATCH /api/pixels/{id}": { body: PixelPatchBody; reply: PixelReply };

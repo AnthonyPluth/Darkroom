@@ -26,6 +26,8 @@ TITLES = {
     "originals_unmatched": "Some originals are not in Google Photos",
     "schedule_ending": "Takeout schedule ending",
     "schedule_renewed": "Takeout schedule renewed",
+    "schedule_renewal_failed": "Takeout schedule not renewed",
+    "schedule_renewal_unconfirmed": "Takeout schedule renewal not confirmed",
     "export_expiring": "A Takeout export is about to expire",
     "failure": "Darkroom needs a look",
 }
@@ -79,6 +81,25 @@ def schedule_ending(account: str, end: str) -> Wording:
 
 def schedule_renewed(account: str, end: str) -> Wording:
     return Wording("Takeout schedule renewed", f"The export schedule for {account} now runs until {end}.")
+
+
+def schedule_renewal_failed(account: str, end: str, ended: bool = False) -> Wording:
+    if ended:
+        return Wording(
+            "Takeout schedule not renewed",
+            f"The export schedule for {account} was not renewed, and it ended on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Press Create schedule on the Exports page to make a new one.",
+        )
+    return Wording(
+        "Takeout schedule not renewed",
+        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Once it has ended, press Create schedule on the Exports page to make a new one.",
+    )
+
+
+def schedule_renewal_unconfirmed(account: str, end: str) -> Wording:
+    return Wording(
+        "Takeout schedule renewal not confirmed",
+        f"Darkroom could not confirm whether the export schedule for {account} was renewed; the current one ends on {end}. Open Takeout's export list, then say on the Exports page whether a new schedule is there: Darkroom records it if it is, and reports the renewal as not done if it is not. Darkroom does not retry a renewal, so it will not create a second schedule.",
+    )
 
 
 def export_expiring(export: str, expires: str) -> Wording:

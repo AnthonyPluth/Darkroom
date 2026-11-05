@@ -71,7 +71,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 | Job | When | What it does |
 | --- | --- | --- |
 | Connect account | Onboarding, and whenever a session expires | Opens Takeout in the noVNC view. You sign in, including 2FA. The worker confirms the session and saves the profile |
-| Create schedule | Once per account | Google Photos only, download link by email, .zip, 50 GB parts, scheduled export (every 2 months for 1 year) |
+| Create schedule | Once per account, and again once a schedule has ended unrenewed | Google Photos only, download link by email, .zip, 50 GB parts, scheduled export (every 2 months for 1 year) |
 | Check status | Daily | Reads the Takeout downloads page for new exports. No Gmail access needed |
 | Download | When an export is ready | Downloads every part to the person's inbox on Unraid, one at a time. Verifies the part count and runs a zip integrity test |
 | Renew | About 3 weeks before the schedule ends | Creates the next year's schedule and records the new end date |
@@ -218,6 +218,8 @@ The web UI is dark mode only: one theme, with no light theme and no theme switch
 | Export imported | Summary: added, skipped, in review, missing GPS |
 | Originals unmatched after a full export cycle | Per person and Pixel: check that their folder is backed up in Google Photos |
 | Schedule ending | About 3 weeks before, then a confirmation once renewed |
+| Schedule renewal failed | When the renewal fails, or the owner finds no new schedule in Takeout after an unconfirmed one: it did not happen, is not retried and the end date stands; once the schedule has ended, Create schedule makes a new one. It replaces the ending alert (a deliberate departure from #40's "leave the ending alert open", whose text promises a renewal that will not come), repeated at 24 hours and 4 days. Renewing on request is a later addition |
+| Schedule renewal not confirmed | When Darkroom cannot tell whether the renewal worked (Takeout did not confirm it, or the worker was lost): look in Takeout and answer on the Exports page. "Takeout has the new schedule" records it (ending a year after the renew job started, which must be after the current end) and confirms it like a renewal; "Takeout has no new schedule" turns it into "Schedule renewal failed". Darkroom does not retry, so it creates no second schedule. Same repeats |
 | Failure (download, unpack, page change) | Immediately, with a link to the screenshot |
 
 ## Data model

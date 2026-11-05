@@ -5,7 +5,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, openJob, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -51,7 +51,7 @@
   }
 
   const connect = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
-  const checked = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST" }));
+  const checked = (id: number, found: boolean) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST", body: { found } }));
   const schedule = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule">(`/api/accounts/${id}/schedule`, { method: "POST" }));
 </script>
 
@@ -88,10 +88,12 @@
       {@const connecting = openJob(data.jobs, account.id, "connect")}
       {@const scheduling = openJob(data.jobs, account.id, "schedule")}
       {@const maybe = maybeCreated(data.jobs, account.id)}
+      {@const maybeRenewal = maybeRenewed(data.jobs, account.id)}
       {@const failed = failedCaptures(data.jobs, account.id)}
       {@const checking = openJob(data.jobs, account.id, "status")}
       {@const downloading = openJob(data.jobs, account.id, "download")}
-      {@const notes = [jobSentence(connecting ?? latestJob(data.jobs, account.id, "connect"), "Connect"), jobSentence(scheduling ?? latestJob(data.jobs, account.id, "schedule"), "Create schedule"), jobSentence(checking ?? latestJob(data.jobs, account.id, "status"), "Check exports"), jobSentence(downloading ?? latestJob(data.jobs, account.id, "download"), "Download")].filter((note) => note !== null)}
+      {@const renewing = openJob(data.jobs, account.id, "renew")}
+      {@const notes = [jobSentence(connecting ?? latestJob(data.jobs, account.id, "connect"), "Connect"), jobSentence(scheduling ?? latestJob(data.jobs, account.id, "schedule"), "Create schedule"), jobSentence(checking ?? latestJob(data.jobs, account.id, "status"), "Check exports"), jobSentence(downloading ?? latestJob(data.jobs, account.id, "download"), "Download"), jobSentence(renewing ?? latestJob(data.jobs, account.id, "renew"), "Renew schedule")].filter((note) => note !== null)}
       {@const mine = accountExports(data.exports, account.id)}
       {@const current = currentExport(mine)}
       {@const earlier = earlierExports(mine, current)}
@@ -133,7 +135,7 @@
         {/each}
         {#each failed as job (job.id)}
           <p class="text-ink-muted">
-            Capture of the failed {JOB_NAMES[job.kind] ?? "job"}:
+            Capture of the {job.needs_check || job.checked !== null ? "unconfirmed" : "failed"} {JOB_NAMES[job.kind] ?? "job"}:
             {#if job.capture_files.includes("screenshot.png")}
               <a class="font-semibold underline" href="/api/browser/failures/{job.id}/screenshot.png" target="_blank" rel="noopener">screenshot</a>{job.capture_files.length > 1 ? "," : "."}
             {/if}
@@ -142,20 +144,32 @@
             {/if}
           </p>
         {/each}
+        {#if maybeRenewal}
+          <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
+            <p>Darkroom could not confirm the renewal. Takeout may already have the new schedule: open Takeout's export list, look, and say what you found. Darkroom will not retry, so it will not create a second one.</p>
+            <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, true)}>Takeout has the new schedule</button>
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, false)}>Takeout has no new schedule</button>
+            </div>
+          </div>
+        {/if}
         {#if maybe}
           <div class="flex flex-col gap-2 rounded-md border border-warn bg-warn-bg p-3 text-warn" role="status">
             <p>Takeout may already have this schedule. Open Takeout's export list and look before creating another.</p>
-            <button type="button" class="btn self-start" disabled={busy > 0} onclick={() => checked(account.id)}>I checked Takeout, there is no schedule</button>
+            <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, true)}>Takeout has the schedule</button>
+              <button type="button" class="btn" disabled={busy > 0} onclick={() => checked(account.id, false)}>I checked Takeout, there is no schedule</button>
+            </div>
           </div>
         {/if}
         <div class="flex flex-col gap-2 md:flex-row md:flex-wrap">
-          {#if [connecting, scheduling, checking, downloading].some((job) => job?.status === "waiting_for_user")}
+          {#if [connecting, scheduling, checking, downloading, renewing].some((job) => job?.status === "waiting_for_user")}
             <a class="btn btn-primary" href="/browser" onclick={(e) => followLink(e, "/browser")}>Open remote browser</a>
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>
-          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || account.schedule_created !== null || maybe !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
+          <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || renewing !== undefined || scheduleLive(account, data.now) || maybe !== undefined || maybeRenewal !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
         </div>
-        {#if account.schedule_created !== null}
+        {#if scheduleLive(account, data.now)}
           <p class="text-ink-muted">The schedule exports Google Photos every 2 months for 1 year.</p>
         {:else}
           <p class="text-ink-muted">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every 2 months for 1 year.</p>

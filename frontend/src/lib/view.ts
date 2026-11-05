@@ -1,4 +1,4 @@
-import type { AccountState, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
+import type { AccountState, AccountView, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -18,6 +18,8 @@ export function alertChip(kind: string): { tone: Tone; label: string } {
     case "failure": return { tone: "bad", label: "Failed" };
     case "originals_unmatched": return { tone: "warn", label: "Check backup" };
     case "schedule_ending": return { tone: "warn", label: "Schedule ending" };
+    case "schedule_renewal_failed": return { tone: "bad", label: "Not renewed" };
+    case "schedule_renewal_unconfirmed": return { tone: "warn", label: "Renewal unconfirmed" };
     case "export_expiring": return { tone: "warn", label: "Export expiring" };
     default: return { tone: "warn", label: "Needs a look" };
   }
@@ -57,13 +59,22 @@ export function failureReason(job: BrowserJobView): string {
 }
 
 export function failedCaptures(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView[] {
-  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status"), latestJob(jobs, accountId, "download")];
+  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status"), latestJob(jobs, accountId, "download"), latestJob(jobs, accountId, "renew")];
   return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.capture_files.length > 0 ? [job] : []));
 }
 
 export function maybeCreated(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
   const latest = latestJob(jobs, accountId, "schedule");
   return latest !== undefined && latest.needs_check ? latest : undefined;
+}
+
+export function maybeRenewed(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView | undefined {
+  const latest = latestJob(jobs, accountId, "renew");
+  return latest !== undefined && latest.needs_check ? latest : undefined;
+}
+
+export function scheduleLive(account: AccountView, now: number): boolean {
+  return account.schedule_created !== null && (account.schedule_end === null || account.schedule_end > now);
 }
 
 function waitingSentence(reason: string): string {
@@ -80,7 +91,11 @@ export function jobSentence(job: BrowserJobView | undefined, doing: string): str
     case "queued": return `${doing}: waiting for the browser worker to pick it up.`;
     case "running": return `${doing}: running${job.message ? `, ${job.message}` : ""}.`;
     case "waiting_for_user": return `${doing}: ${waitingSentence(job.message)}`;
-    case "failed": return `${doing}: failed${failureReason(job)}.`;
+    case "failed":
+      if (job.needs_check) return `${doing}: not confirmed by Takeout; say below what you found.`;
+      if (job.checked === "found") return `${doing}: not confirmed by Takeout, then you found it there.`;
+      if (job.checked === "missing") return `${doing}: not confirmed by Takeout, and you found none there.`;
+      return `${doing}: failed${failureReason(job)}.`;
     default: return `${doing}: done.`;
   }
 }
@@ -90,7 +105,7 @@ export function workerChip(lastSeen: number | null, now: number): { tone: Tone; 
   return now - lastSeen <= 120 ? { tone: "ok", label: "Connected" } : { tone: "bad", label: "Worker not responding" };
 }
 
-export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports", download: "Download" };
+export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports", download: "Download", renew: "Renew schedule" };
 
 const ACTIVE = ["announced", "downloading", "downloaded", "unpacking", "importing"];
 

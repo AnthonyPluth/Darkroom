@@ -17,7 +17,7 @@ from sqlalchemy import MetaData, select
 import run
 from darkroom import tls
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, browser_jobs, demo, events, exports
+from darkroom.domain import accounts, alerts, browser_jobs, demo, events, exports, renewal
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
@@ -74,16 +74,17 @@ class SeededDemo(unittest.TestCase):
         with db.session(self.engine) as opened:
             return opened.query(model).order_by(model.id).all()
 
-    def test_three_people_two_accounts_a_shared_pixel_and_one_iphone_each(self):
+    def test_three_people_three_accounts_a_shared_pixel_and_one_iphone_each(self):
         people = self.rows(Person)
         self.assertEqual([p.slug for p in people], ["avery", "blair", "casey"])
-        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels, self.summary.devices), (3, 2, 2, 3))
+        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels, self.summary.devices), (3, 3, 2, 3))
         by_slug = {p.slug: p.id for p in people}
-        shared, single = self.rows(GoogleAccount)
+        shared, single, ended = self.rows(GoogleAccount)
+        self.assertEqual((ended.default_person_id, ended.session_state), (by_slug["blair"], "ok"))
         with db.session(self.engine) as opened:
             self.assertEqual(accounts.served_people(opened, shared.id), {by_slug["avery"], by_slug["blair"]})
             self.assertEqual(accounts.served_people(opened, single.id), {by_slug["casey"]})
-            self.assertEqual(accounts.accounts_serving(opened, by_slug["blair"]), {shared.id})
+            self.assertEqual(accounts.accounts_serving(opened, by_slug["blair"]), {shared.id, ended.id})
         self.assertEqual((shared.default_person_id, single.default_person_id), (by_slug["avery"], by_slug["casey"]))
         self.assertEqual((shared.session_state, single.session_state), ("needs_sign_in", "ok"))
         pixels = self.rows(Pixel)
@@ -114,15 +115,18 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual({(item.width, item.height) for item in items}, {demo.SIZE})
         self.assertTrue(all(path.is_file() for path in [self.root / "photos" / item.path for item in items]))
 
-    def test_one_open_sign_in_alert_went_to_the_recorder_never_the_network(self):
-        (alert,) = self.rows(Alert)
-        (shared, _) = self.rows(GoogleAccount)
+    def test_the_open_alerts_went_to_the_recorder_never_the_network(self):
+        alert, unsure, failed = sorted(self.rows(Alert), key=lambda each: each.kind != "sign_in_needed")
+        (shared, _, ended) = self.rows(GoogleAccount)
+        self.assertEqual((unsure.kind, unsure.key, unsure.closed), ("schedule_renewal_unconfirmed", renewal.failed_key(shared.id), None))
+        self.assertEqual((failed.kind, failed.key, failed.closed), ("schedule_renewal_failed", renewal.failed_key(ended.id), None))
+        self.assertEqual(self.summary.alerts, 3)
         self.assertEqual((alert.kind, alert.subject, alert.key, alert.closed), ("sign_in_needed", shared.email, browser_jobs.sign_in_key(shared.id), None))
         self.assertEqual(alert.opened, NOON - 2 * 3600)
         self.assertIn(("Google sign-in needed", alerts.sign_in_needed(shared.email).message, None), alerts.RECORDED)
         with db.session(self.engine) as opened:
             types = [e.type for e in events.recent(opened)]
-        self.assertEqual(types.count("alert_sent"), 1)
+        self.assertEqual(types.count("alert_sent"), 3)
         self.assertEqual(types.count("device_checkin"), 3)
         self.assertEqual(types.count("originals_indexed"), 3)
 

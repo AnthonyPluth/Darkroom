@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from darkroom import oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, events, index, media
-from darkroom.storage.models import DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.domain import alerts, browser_jobs, events, index, media, renewal
+from darkroom.storage.models import BrowserJob, DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -51,11 +51,12 @@ class DemoPerson:
 class DemoAccount:
     email: str
     default: str
-    pixel: str
-    syncthing_device_id: str
+    pixel: str | None
+    syncthing_device_id: str | None
     serves: tuple[str, ...]
     session_state: str
     schedule_days_left: int
+    renewal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,9 +77,13 @@ PEOPLE = (
     DemoPerson("casey", "Casey Example", "casey@example.com", "Casey's iPhone", "0.0.9", 20 * 24.0, 3),
 )
 
+RENEWAL_UNSURE = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again"
+RENEWAL_FAILED = "UnexpectedPage: the page stayed unrecognised for more than 5 minutes"
+
 ACCOUNTS = (
-    DemoAccount("avery.photos@example.com", "avery", "Family Pixel", "DEMO-FAMILY-PIXEL", ("avery", "blair"), "needs_sign_in", 20),
+    DemoAccount("avery.photos@example.com", "avery", "Family Pixel", "DEMO-FAMILY-PIXEL", ("avery", "blair"), "needs_sign_in", 20, RENEWAL_UNSURE),
     DemoAccount("casey.photos@example.com", "casey", "Casey's Pixel", "DEMO-CASEY-PIXEL", ("casey",), "ok", 300),
+    DemoAccount("blair.photos@example.com", "blair", None, None, (), "ok", -10, RENEWAL_FAILED),
 )
 
 SHOTS: dict[str, tuple[Shot, ...]] = {
@@ -233,16 +238,29 @@ def seed_account(opened: Session, settings: Settings, people: dict[str, Person],
                             schedule_created=now - (365 - spec.schedule_days_left) * DAY, schedule_end=now + spec.schedule_days_left * DAY, created=now - 300 * DAY)
     opened.add(account)
     opened.flush()
-    pixel = Pixel(name=spec.pixel, syncthing_device_id=spec.syncthing_device_id, google_account_id=account.id, created=now - 300 * DAY)
-    opened.add(pixel)
-    opened.flush()
-    for slug in spec.serves:
-        opened.add(PixelPerson(pixel_id=pixel.id, person_id=people[slug].id))
-    opened.flush()
+    if spec.pixel is not None:
+        pixel = Pixel(name=spec.pixel, syncthing_device_id=spec.syncthing_device_id, google_account_id=account.id, created=now - 300 * DAY)
+        opened.add(pixel)
+        opened.flush()
+        for slug in spec.serves:
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=people[slug].id))
+        opened.flush()
+    renewing = seed_renewal(opened, settings, account, spec.renewal) if spec.renewal is not None else 0
     if spec.session_state != "needs_sign_in":
-        return 0
+        return renewing
     alerts.open_alert(opened, settings, browser_jobs.sign_in_key(account.id), "sign_in_needed", account.email, alerts.sign_in_needed(account.email),
                       settings.vnc_url or None, now - 2 * HOUR, notifier=alerts.recorded, about=alerts.account(account.id))
+    return renewing + 1
+
+
+def seed_renewal(opened: Session, settings: Settings, account: GoogleAccount, message: str) -> int:
+    assert account.schedule_end is not None
+    asked = account.schedule_end - renewal.NOTICE + 5 * HOUR
+    job = BrowserJob(account_id=account.id, kind=browser_jobs.RENEW_KIND, status="failed", payload="{}", created=asked, started=asked + 60, heartbeat=asked + 300,
+                     finished=asked + 300, message=message)
+    opened.add(job)
+    opened.flush()
+    renewal.job_failed(opened, settings, job, asked + 300)
     return 1
 
 
@@ -302,7 +320,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_import(opened, photos, people, today, now)
     seed_download(opened, now)
     opened.flush()
-    return Summary(len(PEOPLE), len(ACCOUNTS), len(ACCOUNTS), len(PEOPLE), originals, indexed, failed, opened_alerts)
+    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), len(PEOPLE), originals, indexed, failed, opened_alerts)
 
 
 def sign_in(opened: Session, settings: Settings, now: float) -> str:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from darkroom import validate
-from darkroom.domain import accounts, browser_jobs, dedupe
+from darkroom.domain import accounts, browser_jobs, dedupe, renewal
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
 from darkroom.storage import db
@@ -93,16 +93,20 @@ def start_job(request: Request, kind: str) -> Response:
     return json_response({"job": reply}, 201)
 
 
-def schedule_checked(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+def schedule_checked(request: Annotated[Request, contract.ScheduleCheckedBody]) -> Annotated[Response, contract.BrowserJobReply]:
     account_id = path_id(request)
     if account_id is None:
         return error_response(NO_ACCOUNT, 404)
     try:
+        body = validate.json_object(request.body, limit=MAX_BODY) if request.body else {}
+        found = validate.boolean(body, "found", required=False)
         with db.session(engine_of(request)) as opened:
-            reply = browser_jobs.as_dict(browser_jobs.mark_schedule_checked(opened, account_id, now()), request.settings)
+            reply = browser_jobs.as_dict(renewal.checked(opened, request.settings, account_id, found, now()), request.settings)
+    except validate.Invalid as error:
+        return error_response(str(error), 400)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)
-    except browser_jobs.NothingToCheck as error:
+    except (browser_jobs.NothingToCheck, browser_jobs.NotExtended) as error:
         return error_response(str(error), 409)
     return json_response({"job": reply})
 

@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import dates, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, push, wake
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, push, renewal, wake
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import apns
 from darkroom.storage import db
@@ -98,6 +98,7 @@ IMPORT_TICK_SECONDS = 60.0
 EXPORT_CHECK_TICK_SECONDS = 600.0
 EXPIRY_WATCH_SECONDS = 3600.0
 CLEANUP_HOUR = 4
+SCHEDULE_WATCH_HOUR = 5
 
 
 def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.RecheckSummary:
@@ -153,6 +154,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
         with db.session(engine) as opened:
             expired = browser_jobs.expire_leases(opened, settings, at)
             downloads.jobs_failed(opened, expired, at)
+            renewal.jobs_failed(opened, settings, expired, at)
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 
@@ -172,6 +174,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
         if opened_now:
             monitoring.log("export expiry alerts opened", count=opened_now)
 
+    def watch_schedules(at: float) -> None:
+        with db.session(engine) as opened:
+            queued = renewal.watch_schedules(opened, settings, at)
+        if queued:
+            monitoring.log("schedule renewals queued", count=queued)
+
     def run_imports(at: float) -> None:
         with db.session(engine) as opened:
             run.run_waiting(opened, settings, at)
@@ -186,5 +194,6 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
     scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True)
     scheduler.every("exports.check", EXPORT_CHECK_TICK_SECONDS, check_exports, now=now)
     scheduler.every("exports.expiry", EXPIRY_WATCH_SECONDS, watch_expiry, now=now)
+    scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)
     scheduler.daily_at("cleanup", CLEANUP_HOUR, clean_inbox, now=now)
     return scheduler

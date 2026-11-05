@@ -666,12 +666,12 @@ class RegistryTests(unittest.TestCase):
                     elif isinstance(kind, ast.Name) and kind.id in constants:
                         kinds.add(constants[kind.id])
                     elif isinstance(kind, ast.Attribute) and kind.attr.endswith("_KIND"):
-                        kinds.add(getattr(exports, kind.attr))
+                        kinds.add(getattr(exports, kind.attr, None) or getattr(browser_jobs, kind.attr))
         return kinds
 
     def test_every_kind_the_backend_can_queue_has_a_job_in_the_worker(self):
         kinds = self.queued_kinds()
-        self.assertTrue({"noop", "connect", "schedule", "status", "download"} <= kinds)
+        self.assertTrue({"noop", "connect", "schedule", "status", "download", "renew"} <= kinds)
         self.assertEqual(sorted(kinds - set(REGISTRY)), [])
 
     def test_the_download_job_is_registered(self):
