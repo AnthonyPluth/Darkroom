@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 
 from sqlalchemy import select
@@ -175,6 +176,24 @@ class IncrementalTests(IncrementalCase):
         self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
         self.assertFalse((self.world.root.parent / "escape").exists())
         self.assertEqual(self.refreshed(), [])
+
+    def test_a_refresh_that_cannot_read_the_photo_keeps_the_stored_record_and_logs_nothing(self):
+        self.imported()
+        real = self.world.tools.read
+        library = self.world.root / "jo/google-only"
+
+        def failing(paths):
+            found = real(paths)
+            return {path: {"Error": "unreadable"} if library in path.parents else tags for path, tags in found.items()}
+
+        self.world.tools = dataclasses.replace(self.world.tools, read=failing)
+        before = self.canal_sidecar().read_bytes()
+        again = self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(self.canal_sidecar().read_bytes(), before)
+        self.assertEqual(self.refreshed(), [])
+        stored = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
+        self.assertIn(CANAL, stored.sidecar_json)
 
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):
         self.imported()
