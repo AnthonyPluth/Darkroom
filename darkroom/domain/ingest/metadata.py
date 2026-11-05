@@ -49,7 +49,7 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
         if local is None and offset is not None:
             local = (moment + timedelta(minutes=offset)).replace(tzinfo=None).isoformat(timespec="seconds")
     return MediaItem(
-        person_id=person_id, source="takeout", path=relative, sha1=print_.sha1, bytes=print_.bytes, phash=print_.phash,
+        person_id=person_id, source="takeout", path=relative, sha1=print_.sha1, bytes=print_.bytes, phash=print_.phash, dhash=print_.dhash,
         captured_utc=utc, captured_local=local, offset_minutes=offset, time_source=time_source,
         width=print_.width, height=print_.height, duration_ms=print_.duration_ms, make=print_.make, model=print_.model,
         lat=lat, lon=lon, gps_source=gps_source, sidecar_json=sidecar.raw if sidecar else None, export_id=export_id, indexed_at=now,

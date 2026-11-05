@@ -26,6 +26,8 @@ class Registered:
     interval: float | None
     hour: int | None
     next_due: float
+    own_thread: bool = False
+    worker: threading.Thread | None = None
 
 
 class Scheduler:
@@ -34,8 +36,8 @@ class Scheduler:
         self.jobs: dict[str, Registered] = {}
         self.stopping = threading.Event()
 
-    def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0) -> None:
-        self.jobs[name] = Registered(name, run, interval, None, now + first_after)
+    def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
+        self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
 
     def daily_at(self, name: str, hour: int, run: Job, now: float = 0.0) -> None:
         self.jobs[name] = Registered(name, run, None, hour, self.next_daily(hour, now))
@@ -47,15 +49,24 @@ class Scheduler:
             target += timedelta(days=1)
         return target.timestamp()
 
+    def guarded(self, job: Registered, now: float) -> None:
+        try:
+            job.run(now)
+        except Exception as error:
+            monitoring.log("job failed", job=job.name, error=type(error).__name__)
+
     def run_due(self, now: float) -> list[str]:
         ran = []
         for job in self.jobs.values():
             if now < job.next_due:
                 continue
-            try:
-                job.run(now)
-            except Exception as error:
-                monitoring.log("job failed", job=job.name, error=type(error).__name__)
+            if job.own_thread:
+                if job.worker is not None and job.worker.is_alive():
+                    continue
+                job.worker = threading.Thread(target=self.guarded, args=(job, now), name=f"job-{job.name}", daemon=True)
+                job.worker.start()
+            else:
+                self.guarded(job, now)
             job.next_due = now + job.interval if job.interval is not None else self.next_daily(job.hour or 0, now)
             ran.append(job.name)
         return ran
@@ -155,7 +166,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
 
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
-    scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now)
+    scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True)
     scheduler.every("exports.check", EXPORT_CHECK_TICK_SECONDS, check_exports, now=now)
     scheduler.every("exports.expiry", EXPIRY_WATCH_SECONDS, watch_expiry, now=now)
     scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)

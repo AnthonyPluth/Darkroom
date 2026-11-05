@@ -208,11 +208,31 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("eligibility_checked_at", {column["name"] for column in inspect(self.engine).get_columns("devices")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT name FROM devices").scalars().all(), ["iPhone"])
-    def test_0010_export_downloads_starts_old_exports_at_no_tries_and_can_be_undone_without_losing_parts(self):
+
+    def test_0010_media_dhash_leaves_old_items_without_one_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0009")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, phash, indexed_at) VALUES (1, 1, 'phone', 'jo/a.jpg', 'abc', 5, 'f0f0f0f0f0f0f0f0', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT phash, dhash FROM media_items").one(), ("f0f0f0f0f0f0f0f0", None))
+            connection.exec_driver_sql("UPDATE media_items SET dhash = '0f0f0f0f0f0f0f0f'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0009")
+        self.assertNotIn("dhash", {column["name"] for column in inspect(self.engine).get_columns("media_items")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT phash FROM media_items").scalars().all(), ["f0f0f0f0f0f0f0f0"])
+
+    def test_0011_export_downloads_starts_old_exports_at_no_tries_and_can_be_undone_without_losing_parts(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0010")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'announced')")
@@ -225,7 +245,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.downgrade(config, "0009")
+            command.downgrade(config, "0010")
         self.assertNotIn("download_tries", {column["name"] for column in inspect(self.engine).get_columns("exports")})
         self.assertNotIn("bytes_done", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:

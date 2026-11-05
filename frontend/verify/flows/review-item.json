@@ -1,0 +1,13 @@
+{
+  "name": "review-item",
+  "page": "review",
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "Review queue" } },
+    { "expect_text": { "selector": "section[aria-label='Current pair']", "text": "Likely re-encode" } },
+    { "expect_text": { "selector": "section[aria-label='Current pair']", "text": "In library" } },
+    { "expect_text": { "selector": "section[aria-label='Current pair']", "text": "From export" } },
+    { "wait_for": "img[alt='The photo already in the library']" },
+    { "wait_for": "img[alt='The photo from the export']" },
+    { "screenshot": "pair" }
+  ]
+}

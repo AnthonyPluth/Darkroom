@@ -19,7 +19,7 @@ Each `*.json` file here is a flow that `make verify` runs after visiting the pag
 
 - `page` is the page the flow starts on, one of `PAGES` in `verify.mjs` (default `status`). The flow starts signed in as the demo member, except on `sign-in`, where it starts signed out.
 - `viewports` defaults to phone and desktop. `laptop` (1024 px) and `wide` (1440 px) are there for a flow that lists them. The app is dark only, so every flow runs in the dark colour scheme.
-- `allow_console` (a list of texts) names console errors a flow expects. A signed-out page always allows the browser's own "401" line: the app asks `/api/me` and a signed-out visitor is answered with 401.
+- `allow_console` (a list of texts) names console errors a flow expects. A page that is signed out when the flow ends (it starts on `sign-in`, or a `sign_out` step ran) allows the browser's own "401" line: the app asks `/api/me` and a signed-out visitor is answered with 401.
 
 A flow ends with a screenshot, and fails the run on a failed step, a console error, a 5xx response or a request to any address but the demo server's own.
 
@@ -36,7 +36,7 @@ A step has one action and an optional `timeout` in milliseconds (default 10000).
 - `{"click_if_present": selector}` clicks it when it shows up within a second (`timeout` changes that) and does nothing when it doesn't, for a step that only one width needs.
 - `{"upload": {"selector": "input[type=file]", "file": "tests/fixtures/…"}}` chooses a file of the repository (made-up data) in a file input.
 - `{"scroll_to": selector}` scrolls it to the top of the screen. An image is always the whole page, taken from the top, so this only matters to a later step.
-- `{"sign_out": true}` clears the session cookie and reloads: the page is then the sign-in page.
+- `{"sign_out": true}` clears the session cookie and reloads: the page is then the sign-in page, and the flow no longer needs `allow_console` for the 401.
 - `{"reload": true}` reloads the page.
 
 **Checking and capturing**

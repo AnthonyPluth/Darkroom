@@ -117,8 +117,17 @@ def log_tail(path: str) -> str:
         return ""
 
 
-def seed_demo(root: str, library: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(demo_command(root), env=frozen_env(clean_env(root), library), cwd=ROOT, capture_output=True, text=True)
+def import_command(root: str) -> list[str]:
+    return [sys.executable, "-m", "tools.demo_import", "--data", root]
+
+
+def seed_demo(root: str, library: str, with_import: bool = False) -> subprocess.CompletedProcess[str]:
+    env = frozen_env(clean_env(root), library)
+    seeded = subprocess.run(demo_command(root), env=env, cwd=ROOT, capture_output=True, text=True)
+    if seeded.returncode or not with_import:
+        return seeded
+    imported = subprocess.run(import_command(root), env=env, cwd=ROOT, capture_output=True, text=True)
+    return subprocess.CompletedProcess(imported.args, imported.returncode, seeded.stdout + imported.stdout, seeded.stderr + imported.stderr)
 
 
 def die_with_parent(parent: int | None = None, sig: int = signal.SIGTERM) -> None:
@@ -131,6 +140,7 @@ def die_with_parent(parent: int | None = None, sig: int = signal.SIGTERM) -> Non
 def seed(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="python tools/verify.py seed")
     p.add_argument("--data", required=True)
+    p.add_argument("--with-import", action="store_true", help="also import a made-up Takeout export against a fake Immich")
     a = p.parse_args(argv)
     library = find_faketime()
     if not library:
@@ -141,7 +151,7 @@ def seed(argv: list[str]) -> int:
     except OSError as e:
         print(f"verify: couldn't make {a.data} for the demo data: {e.strerror or e}", file=sys.stderr)
         return 2
-    done = seed_demo(a.data, library)
+    done = seed_demo(a.data, library, a.with_import)
     if done.returncode:
         shutil.rmtree(a.data, ignore_errors=True)
         print(f"verify: couldn't fill the demo database:\n{done.stdout}{done.stderr}", file=sys.stderr)
@@ -236,7 +246,7 @@ def stop_instances(instances: list[Instance]) -> None:
 def start_instances(root: str, jobs: int, library: str) -> list[Instance]:
     folders = [os.path.join(root, f"instance-{i + 1}") for i in range(jobs)]
     os.mkdir(folders[0])
-    seeded = seed_demo(folders[0], library)
+    seeded = seed_demo(folders[0], library, with_import=True)
     if seeded.returncode:
         raise RuntimeError(f"couldn't fill the demo database:\n{seeded.stdout}{seeded.stderr}")
     for folder in folders[1:]:
@@ -350,7 +360,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["status"]:
         print(json.dumps(status()))
         return 0
-    print("usage: python tools/verify.py run [PAGE...] (make verify), seed --data D (D must not exist yet), serve --parent PID --seed S --data D --port P, or status", file=sys.stderr)
+    print("usage: python tools/verify.py run [PAGE...] (make verify), seed --data D [--with-import] (D must not exist yet), serve --parent PID --seed S --data D --port P, or status", file=sys.stderr)
     return 1
 
 
