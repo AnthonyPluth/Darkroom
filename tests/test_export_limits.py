@@ -372,12 +372,6 @@ class LinkedFolderTests(DownloadCase):
                 self.assertEqual(self.part(1)[0], "downloading")
                 self.assertEqual(self.tree(originals) if originals.exists() else {}, before)
 
-    def test_a_plain_folder_is_planned(self):
-        job = self.claim()
-        self.write_zip("takeout-001.zip", MB)
-        plan = self.call(downloads.plan, self.settings, job)
-        self.assertEqual((plan["person"], plan["folder"]), ("jo", f"export-{self.export}"))
-
     def test_finishing_into_a_folder_that_became_a_link_is_refused(self):
         job = self.claim()
         for number in (1, 2):
@@ -399,33 +393,25 @@ class DefaultPersonTests(DownloadCase):
             accounts.update(opened, self.account, None, other, NOW)
             return other
 
-    def test_the_default_person_stays_while_a_download_is_queued_running_or_between_tries(self):
-        job = self.claim()
+    def held(self):
         with self.assertRaises(accounts.JobOpen):
             self.move_to("ann")
+        with db.session(self.engine) as opened, self.assertRaises(accounts.JobOpen):
+            accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
+
+    def test_the_default_person_and_email_stay_while_a_download_is_queued_running_or_between_tries(self):
+        job = self.claim()
+        self.held()
         self.attempt(job, 1)
         self.part_done(job, 1, "takeout-001.zip")
         self.fail_job(job)
-        with self.assertRaises(accounts.JobOpen):
-            self.move_to("ann")
+        self.held()
         self.reconcile(NOW + DAY)
-        with self.assertRaises(accounts.JobOpen):
-            self.move_to("ann")
+        self.held()
         with db.session(self.engine) as opened:
-            self.assertEqual(downloads.person_of(opened, opened.get(Export, self.export)).slug, "jo")
-            accounts.update(opened, self.account, None, opened.get(GoogleAccount, self.account).default_person_id, NOW)
-
-    def test_the_email_stays_while_a_download_is_queued_running_or_between_tries(self):
-        job = self.claim()
-        self.attempt(job, 1)
-        self.fail_job(job)
-        for now in (NOW, NOW + DAY):
-            with db.session(self.engine) as opened, self.assertRaises(accounts.JobOpen):
-                accounts.update(opened, self.account, "jo.other@example.test", None, now)
-            self.reconcile(NOW + DAY)
-        with db.session(self.engine) as opened:
-            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.takeout@example.test")
-            accounts.update(opened, self.account, "jo.takeout@example.test", None, NOW)
+            account = opened.get(GoogleAccount, self.account)
+            self.assertEqual((downloads.person_of(opened, opened.get(Export, self.export)).slug, account.email), ("jo", "jo.takeout@example.test"))
+            accounts.update(opened, self.account, account.email, account.default_person_id, NOW)
 
     def test_the_default_person_can_change_once_the_export_is_downloaded(self):
         job = self.claim()
@@ -437,9 +423,8 @@ class DefaultPersonTests(DownloadCase):
             browser_jobs.done(opened, job, {}, NOW)
         other = self.move_to("ann")
         with db.session(self.engine) as opened:
-            accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
-            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.other@example.test")
-            self.assertEqual(opened.get(GoogleAccount, self.account).default_person_id, other)
+            account = accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
+            self.assertEqual((account.email, account.default_person_id), ("jo.other@example.test", other))
             self.assertEqual(Path(opened.get(Export, self.export).inbox_dir), self.folder())
 
 

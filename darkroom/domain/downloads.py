@@ -197,12 +197,11 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
 
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
     export = waiting_export(opened, job_id)
-    parts = exports.parts_of(opened, export.id)
     if not exports.all_done(opened, export):
         raise Refused(f"not every part of export {export.id} is downloaded")
     export.inbox_dir = str(export_folder(settings, person_of(opened, export), export))
     export.status = "downloaded"
-    events.record(opened, now, "export_downloaded", str(export.id), f"{len(parts)} parts")
+    events.record(opened, now, "export_downloaded", str(export.id), f"{export.part_count} parts")
     run.request_import(opened, export.id)
     return export
 
