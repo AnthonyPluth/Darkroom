@@ -203,10 +203,10 @@ class CollisionTests(Household):
         staged = self.staged("a.jpg")
         real = paths.write_once
 
-        def racing(destination, chunks):
+        def racing(destination, chunks, marker=None):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(staged.read_bytes())
-            return real(destination, chunks)
+            return real(destination, chunks, marker)
 
         with mock.patch.object(paths, "write_once", side_effect=racing):
             report = self.place(self.entry(staged))
@@ -217,12 +217,12 @@ class CollisionTests(Household):
         real = paths.write_once
         calls = []
 
-        def racing(destination, chunks):
+        def racing(destination, chunks, marker=None):
             calls.append(destination.name)
             if len(calls) == 1:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"theirs")
-            return real(destination, chunks)
+            return real(destination, chunks, marker)
 
         with mock.patch.object(paths, "write_once", side_effect=racing):
             self.place(self.entry(staged))

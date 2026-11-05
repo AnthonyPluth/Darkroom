@@ -9,10 +9,11 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import browser_jobs, events
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount
+from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person
 
 State = Literal["in_progress", "ready", "expired"]
 STATES: tuple[State, ...] = ("in_progress", "ready", "expired")
@@ -182,9 +183,28 @@ def download_underway(opened: Session, account_id: int) -> bool:
     return started is not None or queued is not None
 
 
+def owner_of(opened: Session, export: Export) -> Person | None:
+    person_id = export.owner_person_id
+    if person_id is None:
+        account = opened.get(GoogleAccount, export.account_id)
+        person_id = None if account is None else account.default_person_id
+    return None if person_id is None else opened.get(Person, person_id)
+
+
+def claim_owner(opened: Session, export: Export) -> Person | None:
+    person = owner_of(opened, export)
+    if person is not None and export.owner_person_id is None:
+        export.owner_person_id = person.id
+    return person
+
+
+def pin_owners(opened: Session, account: GoogleAccount) -> None:
+    opened.execute(sql_update(Export).where(Export.account_id == account.id, Export.owner_person_id.is_(None)).values(owner_person_id=account.default_person_id))
+
+
 def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     export.status = "failed"
-    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
+    events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed")
 
 
 def all_done(opened: Session, export: Export) -> bool:
@@ -196,6 +216,9 @@ def retry_download(opened: Session, account: GoogleAccount, export: Export, item
     if download_open(opened, export):
         return None
     if all_done(opened, export):
+        if export.download_tries >= MAX_DOWNLOAD_JOBS:
+            give_up_downloading(opened, export, now)
+            return None
         queue_download(opened, account, export, now)
         events.record(opened, now, "export_download_requeued", str(export.id), "every part is downloaded")
         return "requeued"
@@ -216,7 +239,7 @@ def is_late(item: Listed, now: float) -> bool:
 
 def record_new(opened: Session, account: GoogleAccount, item: Listed, now: float) -> str:
     export = Export(account_id=account.id, kind=kind_for(opened, account, item.created_at), google_id=item.google_id, created_at=item.created_at,
-                    expires_at=item.expires_at, status="announced")
+                    expires_at=item.expires_at, status="announced", owner_person_id=account.default_person_id)
     opened.add(export)
     opened.flush()
     if item.state != "in_progress" and is_late(item, now):

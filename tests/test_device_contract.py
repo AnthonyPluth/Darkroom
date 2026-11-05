@@ -24,12 +24,13 @@ REQUESTS = {
 REPLIES = {
     "CheckReply": contract.DeviceCheckReply, "NeededResource": contract.NeededResource, "EligibleReply": contract.EligibleReply,
     "EligibleAsset": contract.EligibleAsset, "ConfirmReply": contract.ConfirmReply, "RejectedAsset": contract.Refusal,
+    "DeletedReply": contract.DeletedReply,
 }
 ROUTES = {
     ("POST", "/api/device/assets/check"): ("CheckRequest", "CheckReply"),
     ("POST", "/api/device/eligible"): ("EligibleRequest", "EligibleReply"),
     ("POST", "/api/device/eligible/confirm"): ("ConfirmRequest", "ConfirmReply"),
-    ("POST", "/api/device/deleted"): ("DeletedRequest", None),
+    ("POST", "/api/device/deleted"): ("DeletedRequest", "DeletedReply"),
     ("POST", "/api/device/checkin"): ("CheckinRequest", None),
 }
 
@@ -90,6 +91,9 @@ class SwiftModelsMatchTheServer(unittest.TestCase):
     def test_the_parser_reads_the_models(self):
         self.assertEqual(self.structs["EligibleAsset"], {"asset_id": "String", "bytes": "Int64"})
         self.assertEqual(self.structs["DeletedRequest"], {"asset_ids": "[String]"})
+        self.assertEqual(self.structs["EligibleReply"], {"cleanup_enabled": "Bool", "eligible": "[EligibleAsset]", "rejected": "[RejectedAsset]"})
+        self.assertEqual(self.structs["RejectedAsset"], {"asset_id": "String", "reason": "String", "message": "String"})
+        self.assertEqual(self.structs["DeletedReply"], {"recorded": "[String]", "rejected": "[RejectedAsset]"})
         self.assertIn("ResourceKind", self.enums)
         for name in (*REQUESTS, *REPLIES):
             self.assertIn(name, self.structs)
@@ -174,3 +178,4 @@ class LiveRepliesDecodeAsTheAppExpects(DeviceCase):
         self.assertEqual((confirmed["confirmed"], [entry["asset_id"] for entry in confirmed["rejected"]]), ([good.id], [unmatched.id]))
         status, deleted = self.call("POST", "/api/device/deleted", {"asset_ids": [good.id]})
         self.assertEqual((status, deleted["recorded"]), (200, [good.id]))
+        self.decodes("DeletedReply", deleted)

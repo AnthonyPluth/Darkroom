@@ -40,6 +40,10 @@ class Device(Base):
     created: Mapped[float] = mapped_column(Float, nullable=False)
     revoked_at: Mapped[float | None] = mapped_column(Float)
     eligibility_checked_at: Mapped[float | None] = mapped_column(Float)
+    push_token_sealed: Mapped[str | None] = mapped_column(Text)
+    push_token_digest: Mapped[str | None] = mapped_column(String)
+    push_token_at: Mapped[float | None] = mapped_column(Float)
+    __table_args__ = (Index("ix_devices_push_token_digest", "push_token_digest", unique=True),)
 
 
 class GoogleAccount(Base):
@@ -102,6 +106,7 @@ class Export(Base):
     stage: Mapped[str | None] = mapped_column(String)
     inbox_dir: Mapped[str | None] = mapped_column(String)
     download_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    owner_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"))
 
 
 class ExportPart(Base):
