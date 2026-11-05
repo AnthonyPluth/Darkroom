@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +16,29 @@ RETRY_AFTER = 300.0
 RETRY_FOR = 3600.0
 TRANSPORT_REASONS = frozenset({"Unreachable", "KeyUnusable"})
 FALLBACK_TITLE = "Darkroom"
+
+
+@dataclass(frozen=True)
+class Delivered:
+    sent: frozenset[int] = frozenset()
+    failed: frozenset[int] = frozenset()
+
+    @property
+    def devices(self) -> frozenset[int]:
+        return self.sent | self.failed
+
+    def dump(self) -> str:
+        return json.dumps({"sent": sorted(self.sent), "failed": sorted(self.failed)})
+
+
+def delivered_of(alert: Alert) -> Delivered:
+    if not alert.pushed_devices:
+        return Delivered()
+    try:
+        raw = json.loads(alert.pushed_devices)
+        return Delivered(frozenset(int(each) for each in raw["sent"]), frozenset(int(each) for each in raw["failed"]))
+    except (ValueError, KeyError, TypeError):
+        return Delivered()
 
 
 def recipients(opened: Session, alert: Alert) -> set[int]:
@@ -70,33 +96,43 @@ def deliver_one(opened: Session, settings: Settings, pusher: apns.Pusher | None,
     if not targets:
         settle(opened, alert, due_at, "alert_no_device", now)
         return 0
+    delivered = delivered_of(alert)
+    pending = [target for target in targets if target.device_id not in delivered.devices]
+    if not pending:
+        settle(opened, alert, due_at, "alert_sent" if delivered.sent else "alert_failed", now)
+        return 0
     push = apns.Push(alert.kind, alert.id, alerts.TITLES.get(alert.kind, FALLBACK_TITLE))
     opened.commit()
-    held = cleared(opened, settings, alert_id, targets, now)
+    held = cleared(opened, settings, alert_id, pending, now)
     fresh = opened.get(Alert, alert_id)
     if fresh is None:
-        skipped(opened, targets, now)
+        skipped(opened, pending, now)
         opened.commit()
         return 0
     if not held:
-        skipped(opened, targets, now)
+        skipped(opened, pending, now)
         settle(opened, fresh, due_at, "alert_no_device" if wanted(fresh) else "", now)
         return 0
     results = pusher.send([target.token for target in held], push)
     opened.rollback()
-    skipped(opened, [target for target in targets if target not in held], now)
+    skipped(opened, [target for target in pending if target not in held], now)
     for target, result in zip(held, results, strict=True):
         record(opened, target, result, now)
-    sent = sum(result.outcome == "sent" for result in results)
-    failed = [result for result in results if result.outcome == "failed"]
-    if not sent and failed and all(result.reason in TRANSPORT_REASONS for result in failed) and retry_left(alert, now):
+    sent = {target.device_id for target, result in zip(held, results, strict=True) if result.outcome == "sent"}
+    failed = {target.device_id for target, result in zip(held, results, strict=True) if result.outcome == "failed"}
+    transient = {target.device_id for target, result in zip(held, results, strict=True)
+                 if result.outcome == "failed" and result.reason in TRANSPORT_REASONS}
+    if transient and retry_left(alert, now):
         opened.refresh(alert)
         if alert.push_due == due_at:
             alert.push_due = now + RETRY_AFTER
+            alert.pushed_devices = Delivered(delivered.sent | sent, delivered.failed | (failed - transient)).dump()
         opened.commit()
-        return 0
-    settle(opened, alert, due_at, "alert_sent" if sent else "alert_failed" if failed else "alert_no_device", now)
-    return sent
+        return len(sent)
+    all_sent = delivered.sent | sent
+    all_failed = delivered.failed | failed
+    settle(opened, alert, due_at, "alert_sent" if all_sent else "alert_failed" if all_failed else "alert_no_device", now)
+    return len(sent)
 
 
 def wanted(alert: Alert) -> bool:
