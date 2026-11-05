@@ -193,6 +193,26 @@ export interface DoneBody {
   result?: Record<string, unknown>;
 }
 
+export interface DownloadPartPlan {
+  number: number;
+  bytes: number | null;
+  status: string;
+  filename: string | null;
+  downloads_used: number;
+  attempts: number;
+}
+
+export interface DownloadPlan {
+  export_id: number;
+  google_id: string;
+  person: string;
+  folder: string;
+  part_count: number;
+  parts: DownloadPartPlan[];
+}
+
+export type DownloadPlanBody = Record<string, never>;
+
 export interface EligibleAsset {
   asset_id: string;
   bytes: number;
@@ -400,6 +420,19 @@ export interface NeededResource {
 
 export interface Ok {
   ok: boolean;
+}
+
+export interface PartBody {
+  event: "attempt" | "progress" | "done" | "failed";
+  bytes?: number;
+  filename?: string;
+  reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name";
+}
+
+export interface PartReply {
+  allowed: boolean;
+  gave_up: boolean;
+  part: DownloadPartPlan;
 }
 
 export interface People {
@@ -636,4 +669,6 @@ export interface Endpoints {
   "POST /internal/browser/jobs/{id}/waiting": { body: WaitingBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/done": { body: DoneBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/failed": { body: FailedBody; reply: WorkerReply };
+  "POST /internal/browser/jobs/{id}/download": { body: DownloadPlanBody; reply: DownloadPlan };
+  "POST /internal/browser/jobs/{id}/parts/{number}": { body: PartBody; reply: PartReply };
 }

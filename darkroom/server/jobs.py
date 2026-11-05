@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, events, exports, index
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index
 from darkroom.domain.ingest import cleanup, run
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -127,6 +127,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
     def expire_browser_leases(at: float) -> None:
         with db.session(engine) as opened:
             expired = browser_jobs.expire_leases(opened, settings, at)
+            downloads.jobs_failed(opened, expired, at)
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 

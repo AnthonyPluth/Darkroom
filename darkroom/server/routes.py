@@ -81,6 +81,8 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/internal/browser/jobs/{id}/waiting", browser_internal.waiting, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/done", browser_internal.done, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/failed", browser_internal.failed, "worker"),
+    Route("POST", "/internal/browser/jobs/{id}/download", browser_internal.download_plan, "worker"),
+    Route("POST", "/internal/browser/jobs/{id}/parts/{number}", browser_internal.part, "worker"),
 )
 
 

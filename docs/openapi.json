@@ -896,6 +896,93 @@
         "required": [],
         "type": "object"
       },
+      "DownloadPartPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "downloads_used": {
+            "type": "integer"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "bytes",
+          "downloads_used",
+          "filename",
+          "number",
+          "status"
+        ],
+        "type": "object"
+      },
+      "DownloadPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "export_id": {
+            "type": "integer"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "google_id": {
+            "type": "string"
+          },
+          "part_count": {
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/DownloadPartPlan"
+            },
+            "type": "array"
+          },
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "export_id",
+          "folder",
+          "google_id",
+          "part_count",
+          "parts",
+          "person"
+        ],
+        "type": "object"
+      },
+      "DownloadPlanBody": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
       "EligibleAsset": {
         "additionalProperties": false,
         "properties": {
@@ -2041,6 +2128,58 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "PartBody": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "event": {
+            "enum": [
+              "attempt",
+              "progress",
+              "done",
+              "failed"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "corrupt",
+              "wrong_size",
+              "not_started",
+              "interrupted",
+              "bad_name"
+            ]
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "type": "object"
+      },
+      "PartReply": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "gave_up": {
+            "type": "boolean"
+          },
+          "part": {
+            "$ref": "#/components/schemas/DownloadPartPlan"
+          }
+        },
+        "required": [
+          "allowed",
+          "gave_up",
+          "part"
         ],
         "type": "object"
       },
@@ -4204,6 +4343,37 @@
         "x-auth": "worker"
       }
     },
+    "/internal/browser/jobs/{id}/download": {
+      "post": {
+        "operationId": "download_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadPlanBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadPlan"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
     "/internal/browser/jobs/{id}/failed": {
       "post": {
         "operationId": "failed",
@@ -4254,6 +4424,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkerReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/parts/{number}": {
+      "post": {
+        "operationId": "part",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartReply"
                 }
               }
             },
