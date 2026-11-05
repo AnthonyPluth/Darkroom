@@ -242,7 +242,7 @@ def seed_account(opened: Session, settings: Settings, people: dict[str, Person],
     if spec.session_state != "needs_sign_in":
         return 0
     alerts.open_alert(opened, settings, browser_jobs.sign_in_key(account.id), "sign_in_needed", account.email, alerts.sign_in_needed(account.email),
-                      settings.vnc_url or None, now - 2 * HOUR, notifier=alerts.recorded)
+                      settings.vnc_url or None, now - 2 * HOUR, notifier=alerts.recorded, about=alerts.account(account.id))
     return 1
 
 

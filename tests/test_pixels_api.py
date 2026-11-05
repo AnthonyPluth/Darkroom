@@ -149,7 +149,7 @@ class AccountsApiTests(ApiCase):
 
     def sign_in_alert(self, email):
         with db.session(self.engine) as opened:
-            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", email, alerts.sign_in_needed(email), None, 10.0)
+            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", email, alerts.sign_in_needed(email), None, 10.0, about=alerts.NOBODY)
 
     def alerts_of_jo(self):
         status, reply = self.call("GET", "/api/status")
@@ -181,7 +181,7 @@ class AccountsApiTests(ApiCase):
         other = self.account(jo["id"], "b@example.test")
         self.sign_in_alert("b@example.test")
         with db.session(self.engine) as opened:
-            alerts.open_alert(opened, self.settings, "k2", "sign_in_needed", "a@example.test", alerts.sign_in_needed("a@example.test"), None, 11.0)
+            alerts.open_alert(opened, self.settings, "k2", "sign_in_needed", "a@example.test", alerts.sign_in_needed("a@example.test"), None, 11.0, about=alerts.NOBODY)
             alerts.close(opened, "k2", 12.0)
         self.call("PATCH", f"/api/accounts/{account['id']}", {"email": "c@example.test"})
         self.assertEqual([subject for subject, _ in self.alerts_of_jo()[0]], ["b@example.test"])
@@ -274,9 +274,9 @@ class AccountsApiTests(ApiCase):
         other = self.account(jo["id"], "stay@example.test")
         with db.session(self.engine) as opened:
             alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(account["id"]), "sign_in_needed", "gone@example.test",
-                              alerts.sign_in_needed("gone@example.test"), None, 10.0)
+                              alerts.sign_in_needed("gone@example.test"), None, 10.0, about=alerts.account(account["id"]))
             alerts.open_alert(opened, self.settings, browser_jobs.sign_in_key(other["id"]), "sign_in_needed", "stay@example.test",
-                              alerts.sign_in_needed("stay@example.test"), None, 10.0)
+                              alerts.sign_in_needed("stay@example.test"), None, 10.0, about=alerts.account(other["id"]))
         self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}")[0], 200)
         self.assertEqual([a["subject"] for a in self.call("GET", "/api/status")[1]["alerts"]], ["stay@example.test"])
         with db.session(self.engine) as opened:

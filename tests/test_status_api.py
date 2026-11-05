@@ -61,9 +61,9 @@ class StatusApiTests(ApiCase):
         account = self.account(jo["id"])
         self.pixel(account["id"], people_ids=[jo["id"], sam["id"]])
         with db.session(self.engine) as opened:
-            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", "jo.photos@example.test", alerts.sign_in_needed("jo.photos@example.test"), None, 10.0)
-            alerts.open_alert(opened, self.settings, "k2", "originals_unmatched", "sam", alerts.originals_unmatched("Sam", "Pixel A", 4), None, 20.0)
-            alerts.open_alert(opened, self.settings, "k3", "export_imported", "jo", alerts.export_imported("done"), None, 30.0)
+            alerts.open_alert(opened, self.settings, "k1", "sign_in_needed", "jo.photos@example.test", alerts.sign_in_needed("jo.photos@example.test"), None, 10.0, about=alerts.NOBODY)
+            alerts.open_alert(opened, self.settings, "k2", "originals_unmatched", "sam", alerts.originals_unmatched("Sam", "Pixel A", 4), None, 20.0, about=alerts.NOBODY)
+            alerts.open_alert(opened, self.settings, "k3", "export_imported", "jo", alerts.export_imported("done"), None, 30.0, about=alerts.NOBODY)
         reply = self.call("GET", "/api/status")[1]
         self.assertEqual([a["kind"] for a in reply["alerts"]], ["sign_in_needed", "originals_unmatched"])
         by_person = {p["slug"]: [a["kind"] for a in p["alerts"]] for p in reply["people"]}
