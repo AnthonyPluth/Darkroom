@@ -195,10 +195,15 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
     return outcome(part, True, False)
 
 
+def all_done(opened: Session, export: Export) -> bool:
+    parts = exports.parts_of(opened, export.id)
+    return bool(parts) and export.part_count == len(parts) and all(part.status == "done" for part in parts)
+
+
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
     export = waiting_export(opened, job_id)
     parts = exports.parts_of(opened, export.id)
-    if not parts or export.part_count != len(parts) or any(part.status != "done" for part in parts):
+    if not all_done(opened, export):
         raise Refused(f"not every part of export {export.id} is downloaded")
     export.inbox_dir = str(export_folder(settings, person_of(opened, export), export))
     export.status = "downloaded"
@@ -215,7 +220,7 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
         if part.status == "downloading":
             part.status = "pending"
             part.bytes_done = None
-    if job.result != ATTEMPTED:
+    if job.result != ATTEMPTED or all_done(opened, export):
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:

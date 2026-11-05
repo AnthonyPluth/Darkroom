@@ -246,6 +246,28 @@ class RetryTests(DownloadCase):
             self.assertIn("export_download_failed", opened.execute(select(Event.type)).scalars().all())
             self.assertEqual(len(opened.execute(select(Alert).where(Alert.kind == "failure")).scalars().all()), 3)
 
+    def test_a_job_that_fails_after_the_last_part_is_done_leaves_the_export_to_be_finished(self):
+        first = self.claim()
+        self.attempt(first, 1)
+        self.part_done(first, 1, "takeout-001.zip")
+        self.fail_job(first)
+        self.reconcile(NOW + DAY)
+        second = self.claim(NOW + DAY)
+        self.attempt(second, 2, NOW + DAY)
+        self.fail_job(second, NOW + DAY)
+        self.reconcile(NOW + 2 * DAY)
+        third = self.claim(NOW + 2 * DAY)
+        self.attempt(third, 2, NOW + 2 * DAY)
+        self.part_done(third, 2, "takeout-002.zip", NOW + 2 * DAY)
+        self.fail_job(third, NOW + 2 * DAY)
+        self.assertEqual(self.export_row()[:2], ("downloading", 2))
+        self.assertEqual(self.reconcile(NOW + 3 * DAY).requeued, 1)
+        last = self.claim(NOW + 3 * DAY)
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, last, NOW + 3 * DAY)
+            browser_jobs.done(opened, last, {}, NOW + 3 * DAY)
+        self.assertEqual(self.export_row()[:3], ("downloaded", 2, "queued"))
+
     def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
         for day in range(4):
             self.fail_job(self.claim(NOW + day * DAY), NOW + day * DAY)
