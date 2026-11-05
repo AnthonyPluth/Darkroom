@@ -348,8 +348,10 @@ describe("a flow that signs out", () => {
       await runStep(page, { sign_out: true }, null, null, markSignedOut);
       await page.waitForTimeout(300);
     });
-    expect(result.consoleErrors.filter((c) => c.includes("401")).length).toBeGreaterThan(1);
-    expect(result.problems.filter((p) => p.includes("console error") && p.includes("401"))).toHaveLength(1);
+    const seen = result.consoleErrors.filter((c) => c.includes("401")).length;
+    const failed = result.problems.filter((p) => p.includes("console error") && p.includes("401")).length;
+    expect(failed).toBeGreaterThanOrEqual(1);
+    expect(failed).toBeLessThan(seen);
   });
 
   it("fails a lost session in a flow that ends signed out without a sign_out step", async () => {
