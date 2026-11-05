@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Annotated
 from urllib.parse import unquote
 
+from sqlalchemy.exc import IntegrityError
+
 from darkroom import monitoring, validate
 from darkroom.domain import devices, push_tokens, uploads
 from darkroom.server import contract
@@ -153,12 +155,24 @@ def register_push_token(request: Annotated[Request, contract.DevicePushTokenBody
     except (validate.Invalid, push_tokens.BadToken) as error:
         return error_response(str(error), 400)
     try:
-        with db.session(engine_of(request)) as opened:
-            changed = push_tokens.register(opened, request.settings.secret_key, who.device_id, token, now())
+        changed = register_once_more_if_raced(request, who.device_id, token)
+    except push_tokens.HeldByAnotherPerson as error:
+        return error_response(str(error), 409)
     except secretbox.Unreadable:
         return error_response("push alerts need DARKROOM_SECRET_KEY to be set on the server", 503)
     monitoring.log("push token registered", changed=changed)
     return json_response({"ok": True})
+
+
+def register_once_more_if_raced(request: Request, device_id: int, token: str) -> bool:
+    for attempt in range(2):
+        try:
+            with db.session(engine_of(request)) as opened:
+                return push_tokens.register(opened, request.settings, device_id, token, now())
+        except IntegrityError:
+            if attempt:
+                raise
+    raise AssertionError("unreachable")
 
 
 def forget_push_token(request: Request) -> Annotated[Response, contract.Ok]:

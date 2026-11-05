@@ -6,6 +6,8 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from darkroom import oidc
+from darkroom.config import Settings
 from darkroom.domain import events
 from darkroom.storage import secretbox
 from darkroom.storage.models import Device, Person
@@ -15,6 +17,10 @@ MAX_RAW = 256
 
 
 class BadToken(ValueError):
+    pass
+
+
+class HeldByAnotherPerson(LookupError):
     pass
 
 
@@ -42,7 +48,11 @@ def forget(opened: Session, device: Device, now: float) -> bool:
     return True
 
 
-def register(opened: Session, secret: str, device_id: int, raw: str, now: float) -> bool:
+def holders(opened: Session, digest: str, device: Device) -> list[Device]:
+    return list(opened.execute(select(Device).where(Device.push_token_digest == digest, Device.id != device.id)).scalars())
+
+
+def register(opened: Session, settings: Settings, device_id: int, raw: str, now: float) -> bool:
     token = normalized(raw)
     device = opened.get(Device, device_id)
     if device is None or device.revoked_at is not None:
@@ -51,8 +61,10 @@ def register(opened: Session, secret: str, device_id: int, raw: str, now: float)
     if device.push_token_digest == digest:
         device.push_token_at = now
         return False
-    sealed = secretbox.seal(token, secret)
-    for other in opened.execute(select(Device).where(Device.push_token_digest == digest, Device.id != device.id)).scalars():
+    sealed = secretbox.seal(token, settings.secret_key)
+    for other in holders(opened, digest, device):
+        if other.person_id != device.person_id and token_for(opened, settings, other, now) is not None:
+            raise HeldByAnotherPerson("another person's iPhone has this push token; sign that iPhone out first")
         forget(opened, other, now)
     opened.flush()
     device.push_token_sealed, device.push_token_digest, device.push_token_at = sealed, digest, now
@@ -61,11 +73,18 @@ def register(opened: Session, secret: str, device_id: int, raw: str, now: float)
     return True
 
 
-def token_of(device: Device, secret: str) -> str | None:
-    if device.push_token_sealed is None or device.revoked_at is not None:
+def access_lapsed(opened: Session, settings: Settings, device: Device, now: float) -> bool:
+    if device.revoked_at is not None:
+        return True
+    person = opened.get(Person, device.person_id)
+    return person is None or oidc.device_access_lapsed(opened, settings, device.sub, person.email, now) is not None
+
+
+def token_for(opened: Session, settings: Settings, device: Device, now: float) -> str | None:
+    if device.push_token_sealed is None or access_lapsed(opened, settings, device, now):
         return None
     try:
-        token = secretbox.unseal(device.push_token_sealed, secret)
+        token = secretbox.unseal(device.push_token_sealed, settings.secret_key)
     except secretbox.Unreadable:
         return None
     return token if TOKEN.fullmatch(token) and digest_of(token) == device.push_token_digest else None
