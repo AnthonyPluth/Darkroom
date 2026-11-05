@@ -312,5 +312,75 @@ class DropLibraryCopyTests(unittest.TestCase):
             paths.drop_library_copy(self.photos, "jo/google-only/2020/01/link.jpg", self.kept)
         self.assertTrue(target.is_file())
 
+SHARED = 0o2770
+
+
+def mode_of(path):
+    return path.lstat().st_mode & 0o7777
+
+
+class SharedInboxTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.photos = paths.Photos(Path(folder.name))
+        self.inbox = self.photos.root / "_inbox"
+
+    def under_umask(self, mask):
+        previous = os.umask(mask)
+        self.addCleanup(os.umask, previous)
+
+    def test_the_inbox_and_the_downloads_folder_are_shared_whatever_the_umask(self):
+        for mask in (0o077, 0o022, 0o000):
+            with self.subTest(umask=oct(mask)):
+                self.under_umask(mask)
+                self.photos.share_inbox()
+                self.assertEqual((mode_of(self.inbox), mode_of(self.inbox / ".downloads")), (SHARED, SHARED))
+                os.chmod(self.inbox / ".downloads", 0o755)
+                os.chmod(self.inbox, 0o755)
+
+    def test_a_persons_inbox_and_manual_folder_are_shared_and_their_library_folders_are_not(self):
+        self.under_umask(0o077)
+        self.photos.ensure_person_tree("jo")
+        for folder in (self.inbox, self.inbox / "jo", self.inbox / "jo" / "manual"):
+            self.assertEqual(mode_of(folder), SHARED, folder)
+        for folder in (self.photos.root / "jo" / "originals", self.photos.root / "jo" / "google-only"):
+            self.assertEqual(mode_of(folder), 0o700, folder)
+
+    def test_an_export_folder_is_shared_with_its_persons_inbox(self):
+        self.under_umask(0o077)
+        folder = self.photos.make_export_folder("jo", "export-4")
+        self.assertEqual(folder, self.inbox / "jo" / "export-4")
+        for each in (self.inbox, self.inbox / "jo", folder):
+            self.assertEqual(mode_of(each), SHARED, each)
+
+    def test_existing_inbox_folders_made_before_sharing_are_shared_at_startup(self):
+        self.under_umask(0o022)
+        (self.inbox / "jo").mkdir(parents=True)
+        (self.inbox / "jo" / "photo.jpg").write_bytes(b"x")
+        shared = self.photos.share_inbox()
+        self.assertEqual(shared, [self.inbox, self.inbox / ".downloads", self.inbox / "jo"])
+        self.assertEqual(mode_of(self.inbox / "jo"), SHARED)
+        self.assertEqual(mode_of(self.inbox / "jo" / "photo.jpg"), 0o644)
+
+    def test_a_link_instead_of_a_shared_folder_is_refused_and_its_target_is_not_changed(self):
+        self.under_umask(0o022)
+        elsewhere = self.photos.root / "jo" / "originals"
+        elsewhere.mkdir(parents=True)
+        self.inbox.mkdir()
+        for link, call in ((self.inbox / ".downloads", self.photos.share_inbox),
+                           (self.inbox / "jo", lambda: self.photos.make_export_folder("jo", "export-1")),
+                           (self.inbox / "sam", lambda: self.photos.make_export_folder("pat", "export-1"))):
+            with self.subTest(link=link.name):
+                if link.name == "sam":
+                    (self.inbox / "pat").mkdir()
+                    link = self.inbox / "pat" / "export-1"
+                link.symlink_to(elsewhere, target_is_directory=True)
+                with self.assertRaises(paths.NotInTheInbox):
+                    call()
+                self.assertEqual(mode_of(elsewhere), 0o755)
+                link.unlink()
+
+
 if __name__ == "__main__":
     unittest.main()
