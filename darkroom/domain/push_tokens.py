@@ -58,12 +58,12 @@ def register(opened: Session, settings: Settings, device_id: int, raw: str, now:
     if device is None or device.revoked_at is not None:
         raise LookupError("no such device")
     digest = digest_of(token)
-    if device.push_token_digest == digest:
+    sealed = secretbox.seal(token, settings.secret_key)
+    if device.push_token_digest == digest and unsealed(device, settings.secret_key) == token:
         device.push_token_at = now
         return False
-    sealed = secretbox.seal(token, settings.secret_key)
     for other in holders(opened, digest, device):
-        if other.person_id != device.person_id and token_for(opened, settings, other, now) is not None:
+        if other.person_id != device.person_id and not access_lapsed(opened, settings, other, now):
             raise HeldByAnotherPerson("another person's iPhone has this push token; sign that iPhone out first")
         forget(opened, other, now)
     opened.flush()
@@ -81,10 +81,16 @@ def access_lapsed(opened: Session, settings: Settings, device: Device, now: floa
 
 
 def token_for(opened: Session, settings: Settings, device: Device, now: float) -> str | None:
-    if device.push_token_sealed is None or access_lapsed(opened, settings, device, now):
+    if access_lapsed(opened, settings, device, now):
+        return None
+    return unsealed(device, settings.secret_key)
+
+
+def unsealed(device: Device, secret: str) -> str | None:
+    if device.push_token_sealed is None:
         return None
     try:
-        token = secretbox.unseal(device.push_token_sealed, settings.secret_key)
+        token = secretbox.unseal(device.push_token_sealed, secret)
     except secretbox.Unreadable:
         return None
     return token if TOKEN.fullmatch(token) and digest_of(token) == device.push_token_digest else None

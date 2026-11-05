@@ -87,6 +87,33 @@ class PushTokenTests(DeviceCase):
         self.assertIsNone(self.device().push_token_digest)
         self.assertEqual(self.token(self.device(other_id)), PUSH_TOKEN)
 
+    def test_another_persons_signed_in_device_keeps_the_token_even_when_it_cannot_be_read(self):
+        _, other_id = self.enrol("sam", "sam@example.test", OTHER_TOKEN)
+        self.register()
+        for damage in ("enc:v1:damaged", None):
+            with self.subTest(damage=damage):
+                with db.session(self.engine) as opened:
+                    opened.get(Device, self.device_id).push_token_sealed = damage
+                self.assertEqual(self.register(device_token=OTHER_TOKEN)[0], 409)
+                self.assertEqual(self.device().push_token_digest, push_tokens.digest_of(PUSH_TOKEN))
+                self.assertIsNone(self.device(other_id).push_token_digest)
+
+    def test_the_same_token_is_sealed_again_when_the_stored_one_cannot_be_read(self):
+        self.register()
+        with db.session(self.engine) as opened:
+            opened.get(Device, self.device_id).push_token_sealed = secretbox.seal(PUSH_TOKEN, "the-old-secret-key")
+        self.assertIsNone(self.token())
+        self.assertEqual(self.register(), (200, {"ok": True}))
+        self.assertEqual(self.token(), PUSH_TOKEN)
+
+    def test_registering_the_same_token_after_the_key_was_cleared_is_refused(self):
+        self.register()
+        with db.session(self.engine) as opened:
+            with self.assertRaises(secretbox.Unreadable):
+                push_tokens.register(opened, replace(self.settings, secret_key=""), self.device_id, PUSH_TOKEN, 9.0)
+        with db.session(self.engine) as opened:
+            self.assertNotEqual(opened.get(Device, self.device_id).push_token_at, 9.0)
+
     def test_two_devices_registering_the_same_token_at_once_do_not_fail(self):
         _, other_id = self.enrol("jo", "jo@example.test", OTHER_TOKEN)
         self.register()
