@@ -17,7 +17,8 @@ from tests.test_browser_jobs import add_account
 
 TOKEN = "worker-token-canary-0123456789abcdef0123456789"
 WORKER_ROUTES = ("/internal/browser/jobs/claim", "/internal/browser/jobs/{id}/heartbeat", "/internal/browser/jobs/{id}/progress",
-                 "/internal/browser/jobs/{id}/waiting", "/internal/browser/jobs/{id}/done", "/internal/browser/jobs/{id}/failed")
+                 "/internal/browser/jobs/{id}/waiting", "/internal/browser/jobs/{id}/done", "/internal/browser/jobs/{id}/failed",
+                 "/internal/browser/jobs/{id}/download", "/internal/browser/jobs/{id}/parts/{number}")
 SESSION_ROUTES = ("/api/status", "/api/browser/jobs", "/api/browser/failures/{id}/screenshot.png", "/api/browser/failures/{id}/page.html")
 
 

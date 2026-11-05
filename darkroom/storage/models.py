@@ -101,6 +101,7 @@ class Export(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="announced", server_default="announced")
     stage: Mapped[str | None] = mapped_column(String)
     inbox_dir: Mapped[str | None] = mapped_column(String)
+    download_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ExportPart(Base):
@@ -117,6 +118,7 @@ class ExportPart(Base):
     downloads_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
+    bytes_done: Mapped[int | None] = mapped_column(Integer)
 
 
 class MediaItem(Base):
@@ -137,6 +139,7 @@ class MediaItem(Base):
     bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     mtime: Mapped[float | None] = mapped_column(Float)
     phash: Mapped[str | None] = mapped_column(String)
+    dhash: Mapped[str | None] = mapped_column(String)
     captured_utc: Mapped[float | None] = mapped_column(Float)
     captured_local: Mapped[str | None] = mapped_column(String)
     offset_minutes: Mapped[int | None] = mapped_column(Integer)

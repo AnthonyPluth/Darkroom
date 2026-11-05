@@ -18,7 +18,14 @@ CHUNK = 1024 * 1024
 DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$")
 OFFSET = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
 PHASH_SIZE = 8
+DHASH_SIZE = 8
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
+
+
+@dataclass(frozen=True)
+class PerceptualHashes:
+    phash: str | None
+    dhash: str | None
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,7 @@ class Fingerprint:
     sha1: str
     bytes: int
     phash: str | None
+    dhash: str | None
     width: int | None
     height: int | None
     duration_ms: int | None
@@ -143,14 +151,14 @@ def location(tags: dict[str, object]) -> tuple[float | None, float | None, str]:
     return lat, lon, "exif"
 
 
-def perceptual_hash(path: Path) -> str | None:
+def perceptual_hashes(path: Path) -> PerceptualHashes:
     if path.suffix.lower() in VIDEO_SUFFIXES:
-        return None
+        return PerceptualHashes(None, None)
     try:
         with Image.open(path) as image:
-            return str(imagehash.phash(image, hash_size=PHASH_SIZE))
+            return PerceptualHashes(str(imagehash.phash(image, hash_size=PHASH_SIZE)), str(imagehash.dhash(image, hash_size=DHASH_SIZE)))
     except (UnidentifiedImageError, OSError, ValueError):
-        return None
+        return PerceptualHashes(None, None)
 
 
 def dimension(tags: dict[str, object], *names: str) -> int | None:
@@ -162,9 +170,10 @@ def fingerprint(path: Path, tags: dict[str, object]) -> Fingerprint:
     digest, size = sha1_of(path)
     lat, lon, gps_source = location(tags)
     utc, local, offset, time_source = capture(tags, lat, lon)
+    hashes = perceptual_hashes(path)
     duration = number(tag(tags, "Duration", "MediaDuration"))
     return Fingerprint(
-        sha1=digest, bytes=size, phash=perceptual_hash(path),
+        sha1=digest, bytes=size, phash=hashes.phash, dhash=hashes.dhash,
         width=dimension(tags, "ImageWidth", "ExifImageWidth", "SourceImageWidth"),
         height=dimension(tags, "ImageHeight", "ExifImageHeight", "SourceImageHeight"),
         duration_ms=None if duration is None else round(duration * 1000),
