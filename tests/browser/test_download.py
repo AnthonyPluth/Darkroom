@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+import stat
 import tempfile
 import threading
 import traceback
@@ -11,7 +12,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from darkroom.domain import browser_jobs, downloads, exports
-from darkroom.storage import db
+from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
 from darkroom_browser import selectors
@@ -365,12 +366,51 @@ class SharedFolderTests(unittest.TestCase):
         previous = os.umask(0o077)
         self.addCleanup(os.umask, previous)
 
+    def test_the_workers_modes_give_others_nothing(self):
+        self.assertEqual((download.SHARED_FOLDER_MODE, download.PART_MODE), (0o2770, 0o660))
+        self.assertEqual((download.SHARED_FOLDER_MODE & 0o007, download.PART_MODE & 0o007), (0, 0))
+        self.assertEqual(download.SHARED_FOLDER_MODE, paths.SHARED_FOLDER_MODE)
+
     def test_the_workers_folders_are_shared_whatever_the_umask(self):
         downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
         folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
         partial = download.fresh_partial(folder)
         for each in (self.root / "_inbox", downloads.parent, downloads, self.root / "_inbox" / "jo", folder, partial):
             self.assertEqual(mode_of(each), download.SHARED_FOLDER_MODE, each)
+
+    def assert_a_group_member_can_read_and_remove(self, top, gid):
+        for path in [top, *top.rglob("*")]:
+            found = path.lstat()
+            self.assertEqual(found.st_gid, gid, path)
+            self.assertEqual(stat.S_IMODE(found.st_mode) & stat.S_IRWXO, 0, path)
+            if stat.S_ISDIR(found.st_mode):
+                self.assertTrue(found.st_mode & stat.S_ISGID, path)
+                self.assertEqual(found.st_mode & stat.S_IRWXG, stat.S_IRWXG, path)
+            else:
+                self.assertTrue(stat.S_ISREG(found.st_mode), path)
+                self.assertEqual(found.st_mode & (stat.S_IRGRP | stat.S_IWGRP), stat.S_IRGRP | stat.S_IWGRP, path)
+
+    def test_everything_the_worker_makes_can_be_read_and_removed_by_another_member_of_the_group(self):
+        photos = Photos(self.root)
+        photos.share_inbox()
+        photos.make_export_folder("jo", "export-1")
+        gid = (self.root / "_inbox").lstat().st_gid
+        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        (downloads / "0b7c-guid").write_bytes(b"half")
+        os.chmod(downloads / "0b7c-guid", download.PART_MODE)
+        folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        partial = download.fresh_partial(folder)
+        (partial / "takeout-001.zip").write_bytes(b"part")
+        os.replace(partial / "takeout-001.zip", folder / "takeout-001.zip")
+        os.chmod(folder / "takeout-001.zip", download.PART_MODE)
+        self.assert_a_group_member_can_read_and_remove(self.root / "_inbox", gid)
+
+    def test_the_worker_never_widens_a_folder_darkroom_made_to_others(self):
+        Photos(self.root).make_export_folder("jo", "export-1")
+        download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
+        download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        for each in (self.root / "_inbox", self.root / "_inbox" / ".downloads", self.root / "_inbox" / "jo", self.root / "_inbox" / "jo" / "export-1"):
+            self.assertEqual(mode_of(each) & stat.S_IRWXO, 0, each)
 
     def test_a_folder_darkroom_made_keeps_its_mode(self):
         Photos(self.root).make_export_folder("jo", "export-1")

@@ -38,7 +38,7 @@ def make_shared(path: Path) -> None:
         path.mkdir()
     except FileExistsError:
         return
-    os.chmod(path, SHARED_FOLDER_MODE)
+    os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the shared inbox group (gid 10010) needs rwx, others get nothing
 
 
 def downloads_folder(profile_dir: Path) -> Path:
@@ -204,7 +204,7 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
             continue
         size = path.stat().st_size
         os.replace(path, folder / path.name)
-        os.chmod(folder / path.name, PART_MODE)
+        os.chmod(folder / path.name, PART_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Darkroom reads parts through the shared group, others get nothing
         ctx.reporter.part(ctx.job_id, number, {"event": "done", "filename": path.name, "bytes": size})
         return path.name
 

@@ -330,6 +330,10 @@ class SharedInboxTests(unittest.TestCase):
         previous = os.umask(mask)
         self.addCleanup(os.umask, previous)
 
+    def test_the_shared_mode_is_setgid_and_group_rwx_with_nothing_for_others(self):
+        self.assertEqual(paths.SHARED_FOLDER_MODE, 0o2770)
+        self.assertEqual(paths.SHARED_FOLDER_MODE & 0o007, 0)
+
     def test_the_inbox_and_the_downloads_folder_are_shared_whatever_the_umask(self):
         for mask in (0o077, 0o022, 0o000):
             with self.subTest(umask=oct(mask)):
