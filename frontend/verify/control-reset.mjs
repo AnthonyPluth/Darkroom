@@ -16,14 +16,13 @@ export async function replaceServer({ launch, open, rollback, commit }) {
 }
 
 export async function setUpContext(browser, options, setUp) {
-  const fresh = await browser.newContext(options);
+  const context = await browser.newContext(options);
   try {
-    await setUp(fresh);
+    return { context, value: await setUp(context) };
   } catch (e) {
-    await fresh.close().catch(() => null);
+    await context.close().catch(() => null);
     throw e;
   }
-  return fresh;
 }
 
 export async function rollbackSwap({ prior, current, save }) {

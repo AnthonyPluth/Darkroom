@@ -114,14 +114,14 @@ async function main() {
 
   async function openPage(viewport, { retire = true } = {}) {
     const previous = ctx;
-    const fresh = await setUpContext(browser, contextOptions(viewport), async (made) => {
+    const { context: fresh, value: tab } = await setUpContext(browser, contextOptions(viewport), async (made) => {
       await prepareContext(made, opt.now);
       await made.route(offServer, abortOffServer);
       await blockWebSockets(made, base, (host) => blockedHosts.push(host));
       await signIn(made, base, cookie);
+      return made.newPage();
     });
     signedIn = true;
-    const tab = await fresh.newPage();
     tab.setDefaultTimeout(30000);
     tab.setDefaultNavigationTimeout(30000);
     tab.on("console", (m) => keep(consoleBuffer, { type: m.type(), text: scrubText(firstLine(m.text())).slice(0, 300), route: route() }));

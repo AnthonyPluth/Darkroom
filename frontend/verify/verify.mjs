@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
@@ -271,10 +271,25 @@ export function readFlows(flowsDir) {
   return { flows };
 }
 
-export function commitImages(staging, images, replaceAll) {
-  mkdirSync(images, { recursive: true });
-  if (replaceAll) for (const f of readdirSync(images).filter((x) => x.endsWith(".png"))) rmSync(join(images, f));
-  for (const f of readdirSync(staging).filter((x) => x.endsWith(".png"))) copyFileSync(join(staging, f), join(images, f));
+export function commitImages(staging, images, replaceAll, copy = copyFileSync) {
+  const next = `${images}.next`, old = `${images}.old`;
+  rmSync(next, { recursive: true, force: true });
+  rmSync(old, { recursive: true, force: true });
+  mkdirSync(next, { recursive: true });
+  try {
+    if (existsSync(images)) for (const f of readdirSync(images).filter((x) => !replaceAll || !x.endsWith(".png"))) copy(join(images, f), join(next, f));
+    for (const f of readdirSync(staging).filter((x) => x.endsWith(".png"))) copy(join(staging, f), join(next, f));
+  } catch (e) {
+    rmSync(next, { recursive: true, force: true });
+    throw e;
+  }
+  if (existsSync(images)) renameSync(images, old);
+  try { renameSync(next, images); } catch (e) {
+    if (existsSync(old)) renameSync(old, images);
+    rmSync(next, { recursive: true, force: true });
+    throw e;
+  }
+  rmSync(old, { recursive: true, force: true });
 }
 
 async function main() {

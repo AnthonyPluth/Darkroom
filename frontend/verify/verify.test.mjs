@@ -1,7 +1,7 @@
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -280,6 +280,19 @@ describe("the committed images", () => {
     expect(readFileSync(join(images, "status-phone.png"), "utf8")).toBe("after");
     commitImages(staging, images, true);
     expect(names(images)).toEqual(["status-phone.png"]);
+  });
+
+  it("are left byte for byte when copying the new set fails part way", () => {
+    const images = join(folder, "images-c"), staging = join(folder, "staging-c");
+    put(images, "a-phone.png", "old a"); put(images, "b-phone.png", "old b");
+    put(staging, "a-phone.png", "new a"); put(staging, "c-phone.png", "new c");
+    let calls = 0;
+    const flaky = (from, to) => { if (++calls === 2) throw new Error("disk full"); copyFileSync(from, to); };
+    expect(() => commitImages(staging, images, true, flaky)).toThrow("disk full");
+    expect(names(images)).toEqual(["a-phone.png", "b-phone.png"]);
+    expect(readFileSync(join(images, "a-phone.png"), "utf8")).toBe("old a");
+    expect(readFileSync(join(images, "b-phone.png"), "utf8")).toBe("old b");
+    expect(readdirSync(folder).filter((n) => n.startsWith("images-c."))).toEqual([]);
   });
 
   it("are left byte for byte when a run fails", () => {
