@@ -120,6 +120,13 @@ public actor SQLiteResourceStore: ResourceStore {
         return current.count
     }
 
+    @discardableResult
+    public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
+        guard let stored = try await record(for: old.key), stored.resource.hasSameContent(as: old) else { return false }
+        try await upsert([fresh])
+        return true
+    }
+
     public func recordAttempt(for keys: [ResourceKey]) async throws {
         try transaction {
             for key in keys { try increment("attempts", for: key) }

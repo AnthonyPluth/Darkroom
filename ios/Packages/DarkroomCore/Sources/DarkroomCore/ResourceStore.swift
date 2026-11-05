@@ -21,12 +21,21 @@ public protocol ResourceStore: Sendable {
     func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws
     @discardableResult
     func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int
+    @discardableResult
+    func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool
     func recordAttempt(for keys: [ResourceKey]) async throws
     func recordRehash(for key: ResourceKey) async throws
     func counts() async throws -> [ResourceState: Int]
 }
 
 extension ResourceStore {
+    @discardableResult
+    public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
+        guard let record = try await record(for: old.key), record.resource.hasSameContent(as: old) else { return false }
+        try await upsert([fresh])
+        return true
+    }
+
     @discardableResult
     public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
         var current: [ResourceKey] = []
@@ -89,6 +98,13 @@ public actor InMemoryResourceStore: ResourceStore {
         }.map(\.key)
         try await setState(state, for: current, failureReason: failureReason)
         return current.count
+    }
+
+    @discardableResult
+    public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
+        guard storage[old.key]?.resource.hasSameContent(as: old) == true else { return false }
+        try await upsert([fresh])
+        return true
     }
 
     public func recordAttempt(for keys: [ResourceKey]) async throws {
