@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from darkroom import monitoring
 from darkroom.config import Settings
 from darkroom.domain import accounts, alerts, events, push_tokens
 from darkroom.providers import apns
@@ -28,7 +29,21 @@ def due(opened: Session, now: float) -> list[int]:
 
 
 def deliver_due(opened: Session, settings: Settings, pusher: apns.Pusher | None, now: float) -> int:
-    return sum(deliver_one(opened, settings, pusher, alert_id, now) for alert_id in due(opened, now))
+    pushed = 0
+    for alert_id in due(opened, now):
+        try:
+            pushed += deliver_one(opened, settings, pusher, alert_id, now)
+        except Exception as error:
+            opened.rollback()
+            monitoring.log("alert push failed", error=type(error).__name__)
+            give_up(opened, alert_id, now)
+    return pushed
+
+
+def give_up(opened: Session, alert_id: int, now: float) -> None:
+    alert = opened.get(Alert, alert_id)
+    if alert is not None and alert.push_due is not None:
+        settle(opened, alert, alert.push_due, "alert_failed", now)
 
 
 def settle(opened: Session, alert: Alert, due_at: float, outcome: str, now: float) -> None:

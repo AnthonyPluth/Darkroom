@@ -6,8 +6,9 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import alerts, dedupe
+from darkroom.domain import alerts, dedupe, push, push_tokens
 from darkroom.domain.ingest import cleanup, metadata, place, run
+from darkroom.providers import apns
 from darkroom.storage import locks
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
@@ -157,6 +158,62 @@ class CrashTests(unittest.TestCase):
         alert = world.opened.execute(select(Alert).where(Alert.kind == "originals_unmatched")).scalar_one()
         self.assertEqual((alert.closed, alert.sent_count), (None, 1))
         self.assertEqual(world.sent(SUMMARY), 1)
+
+    def queued_pushes_after(self, world, export_id):
+        sent = []
+
+        class Pusher:
+            def send(self, tokens, push_):
+                sent.append(push_.kind)
+                return [apns.Result("sent", "") for _ in tokens]
+
+        targets = [push_tokens.Target(0, "digest", "token")]
+        with mock.patch.object(push_tokens, "targets", return_value=targets):
+            push.deliver_due(world.opened, world.settings, Pusher(), NOW + 120)
+            push.deliver_due(world.opened, world.settings, Pusher(), NOW + 240)
+        queued = [e.subject for e in world.opened.execute(select(Event).where(Event.type == "alert_queued")).scalars()]
+        return sorted(sent), sorted(queued)
+
+    def test_a_queued_summary_survives_a_failed_save_and_is_pushed_once(self):
+        world = World(self)
+        export_id = world.hand_dropped().id
+        world.tools = run.Tools(notifier=alerts.queued)
+        real = run.mark
+        calls = {"reported": 0}
+
+        def failing(opened, export, run_row, stage):
+            if stage == "reported" and not calls["reported"]:
+                calls["reported"] += 1
+                raise OperationalError("COMMIT", {}, Exception("disk I/O error"))
+            return real(opened, export, run_row, stage)
+
+        with mock.patch.object(run, "mark", failing):
+            world.run_import(export_id)
+        run.run_waiting(world.opened, world.settings, NOW, world.tools)
+        self.assertEqual(world.opened.get(Export, export_id).status, "imported")
+        sent, queued = self.queued_pushes_after(world, export_id)
+        self.assertEqual(sent.count("export_imported"), 1)
+        self.assertEqual(queued.count(f"export {export_id}"), 1)
+
+    def test_queued_alerts_survive_a_kill_after_their_commit_and_are_pushed_once(self):
+        for stage in ("counted", "reported"):
+            with self.subTest(stage=stage):
+                world = World(self)
+                export_id = world.hand_dropped().id
+                world.tools = run.Tools(notifier=alerts.queued)
+                def killing(opened, export, run_row, at_stage, stage=stage, real=run.mark):
+                    if at_stage == stage:
+                        raise KeyboardInterrupt
+                    return real(opened, export, run_row, at_stage)
+
+                with mock.patch.object(run, "mark", killing), self.assertRaises(KeyboardInterrupt):
+                    world.run_import(export_id)
+                world.reopen()
+                self.assertEqual(world.run_import(export_id).status, "done")
+                sent, queued = self.queued_pushes_after(world, export_id)
+                self.assertEqual(sent.count("originals_unmatched"), 1)
+                self.assertEqual(sent.count("export_imported"), 1)
+                self.assertEqual(len(sent), len(queued))
 
     def test_a_failed_save_after_the_summary_is_sent_leaves_the_run_to_resume_not_failed(self):
         world = World(self)

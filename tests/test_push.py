@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import time
@@ -224,6 +226,27 @@ class RetryTests(PushWorld):
 
         self.deliver(RequeuingPusher())
         self.assertEqual(self.alert(alert_id).push_due, self.now + 30)
+
+
+class BrokenPusherTests(PushWorld):
+    def test_a_push_that_raises_is_recorded_as_failed_and_later_alerts_still_go_out(self):
+        first = self.open(alerts.person(self.person_id), key="k1")
+        second = self.open(alerts.person(self.sam_id), key="k2")
+
+        class BreaksOnFirst(FakePusher):
+            def send(self, tokens, push_):
+                if push_.alert_id == first:
+                    raise ValueError("unexpected")
+                return super().send(tokens, push_)
+
+        pusher = BreaksOnFirst()
+        with contextlib.redirect_stderr(io.StringIO()) as logged:
+            self.assertEqual(self.deliver(pusher), 1)
+        self.assertEqual([sent.alert_id for _, sent in pusher.sent], [second])
+        self.assertIsNone(self.alert(first).push_due)
+        self.assertIn(("alert_failed", "a@example.test"), self.events())
+        self.assertIn("ValueError", logged.getvalue())
+        self.assertNotIn("unexpected", logged.getvalue())
 
 
 class NotifierTests(unittest.TestCase):
