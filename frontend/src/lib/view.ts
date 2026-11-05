@@ -57,7 +57,7 @@ export function failureReason(job: BrowserJobView): string {
 }
 
 export function failedCaptures(jobs: readonly BrowserJobView[], accountId: number): BrowserJobView[] {
-  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status"), latestJob(jobs, accountId, "download")];
+  const latest = [latestJob(jobs, accountId, "connect"), latestJob(jobs, accountId, "schedule"), latestJob(jobs, accountId, "status"), latestJob(jobs, accountId, "download"), latestJob(jobs, accountId, "renew")];
   return latest.flatMap((job) => (job !== undefined && job.status === "failed" && job.capture_files.length > 0 ? [job] : []));
 }
 
@@ -82,7 +82,7 @@ export function workerChip(lastSeen: number | null, now: number): { tone: Tone; 
   return now - lastSeen <= 120 ? { tone: "ok", label: "Connected" } : { tone: "bad", label: "Worker not responding" };
 }
 
-export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports", download: "Download" };
+export const JOB_NAMES: Record<string, string> = { connect: "Connect", schedule: "Create schedule", status: "Check exports", download: "Download", renew: "Renew schedule" };
 
 const ACTIVE = ["announced", "downloading", "downloaded", "unpacking", "importing"];
 

@@ -329,6 +329,25 @@ describe("the Exports page", () => {
     expect(within(family).getByRole("link", { name: "screenshot" })).toHaveAttribute("href", "/api/browser/failures/13/screenshot.png");
   });
 
+  it("shows a renewal in progress, one waiting for a sign-in and a failed one with its capture", async () => {
+    const running = { ...waitingConnect, id: 9, account_id: 10, kind: "renew", status: "running", message: "creating the schedule" };
+    const waiting = { ...waitingConnect, id: 10, account_id: 11, kind: "renew", message: "sign_in" };
+    show({ "GET /api/accounts": { accounts: [joAccount, familyAccount] }, "GET /api/browser/jobs": { jobs: [running, waiting] } });
+    const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
+    expect(within(jo).getByText("Renew schedule: running, creating the schedule.")).toBeInTheDocument();
+    const family = screen.getByRole("region", { name: "family.photos@example.com" });
+    expect(within(family).getByText("Renew schedule: waiting for you to sign in.")).toBeInTheDocument();
+    expect(within(family).getByRole("link", { name: "Open remote browser" })).toBeInTheDocument();
+  });
+
+  it("shows why a renewal failed, with its capture", async () => {
+    const failed = { ...failedSchedule, id: 14, kind: "renew", message: "ScheduleNotConfirmed: Takeout did not confirm a recurring export" };
+    show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });
+    expect(await screen.findByText("Renew schedule: failed, Takeout did not confirm a recurring export.")).toBeInTheDocument();
+    expect(screen.getByText(/Capture of the failed Renew schedule/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "screenshot" })).toHaveAttribute("href", "/api/browser/failures/14/screenshot.png");
+  });
+
   it("shows why a check failed, with its capture", async () => {
     const failed = { ...failedSchedule, id: 12, kind: "status", message: "ExportsUnreadable: Takeout's list of exports did not load" };
     show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [failed] } });

@@ -151,7 +151,7 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
     if email is not None:
         require_free_email(opened, email, account.id)
         if email != account.email and browser_jobs.has_open_onboarding_job(opened, account.id):
-            raise JobOpen("a connect or schedule job is still open for this account; change the email once it has finished")
+            raise JobOpen("a connect, schedule or renewal job is still open for this account; change the email once it has finished")
         if email != account.email and exports.download_underway(opened, account.id):
             raise JobOpen("a Takeout export is still being downloaded for this account; change the email once it has finished")
     if default_person_id is not None:
