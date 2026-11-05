@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
+import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
 import { LOADING, SESSION_FILE, SIGNED_OUT_CONSOLE, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn } from "./verify.mjs";
 
@@ -207,7 +207,7 @@ async function main() {
   async function capture(path, { top = false, name = "the page" } = {}) {
     mkdirSync(dirname(path), { recursive: true });
     const notes = [];
-    await settlePage(page, name, `${route()} @ ${state.viewport}`, notes);
+    await settlePage(page, name, `${route()} @ ${state.viewport}`, notes, scrollsToTop({ viewport: top }));
     await page.screenshot({ path, fullPage: !top, animations: "disabled" });
     return { path: rel(path), fullPage: !top, ...(notes.length ? { notes } : {}) };
   }

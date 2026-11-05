@@ -380,6 +380,8 @@ export function jsExpression(code) {
   return /^\s*(async\s+)?(\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|^\s*(async\s+)?function\b/.test(code) ? `(${code})()` : code;
 }
 
+export const scrollsToTop = (options) => !options.viewport;
+
 export const shotName = (route) => route.replace(/^\/?#?/, "").replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "status";
 
 export const lastShotNumber = (names) => names.reduce((max, n) => Math.max(max, /^(\d{3,})-/.exec(n)?.[1] ?? 0), 0);
@@ -467,7 +469,12 @@ export function cleanupPlan({ dir = CONTROL_DIR, state = null, live = null, proc
     if (shots && ["shots", "flows"].includes(n)) remove.push(p);
   }
   if (!live && state?.socket && !state.socket.startsWith(dir) && !remove.includes(state.socket)) remove.push(state.socket);
-  const kill = processes.filter((p) => !live || (p.pid !== live && p.parent !== live));
+  const parents = new Map(processes.map((p) => [p.pid, p.parent]));
+  const belongsToLive = (pid) => {
+    for (let at = pid, hops = 0; at && hops < 64; at = parents.get(at), hops++) if (at === live) return true;
+    return false;
+  };
+  const kill = processes.filter((p) => !live || !belongsToLive(p.pid));
   return { remove, kill };
 }
 

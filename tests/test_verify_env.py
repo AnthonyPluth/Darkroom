@@ -356,5 +356,42 @@ def contextlib_redirect():
     return Both()
 
 
+class SessionStartHookTests(unittest.TestCase):
+    HOOK = ROOT / ".claude" / "hooks" / "session-start.local.sh"
+
+    def installs(self, browsers_path: str, cache_has_chromium: bool, preinstalled: bool) -> bool:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            work = Path(tmp) / "work"
+            (work / "frontend").mkdir(parents=True)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            marker = Path(tmp) / "installed"
+            npx = bin_dir / "npx"
+            npx.write_text(f"#!/bin/sh\ntouch {marker}\n")
+            npx.chmod(0o755)
+            if cache_has_chromium:
+                (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64").mkdir(parents=True)
+                (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64" / "chrome").write_text("")
+            home.mkdir(exist_ok=True)
+            pre = Path(browsers_path)
+            if preinstalled:
+                (pre / "chromium-2" / "chrome-linux").mkdir(parents=True)
+                (pre / "chromium-2" / "chrome-linux" / "chrome").write_text("")
+            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home), "PLAYWRIGHT_BROWSERS_PATH": str(pre)}
+            subprocess.run(["bash", "-c", f". {self.HOOK}"], cwd=work, env=env, check=True, capture_output=True)
+            return marker.exists()
+
+    def test_chromium_in_either_place_is_enough_and_in_neither_is_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "a"), cache_has_chromium=True, preinstalled=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "b"), cache_has_chromium=False, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "c"), cache_has_chromium=True, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.installs(str(Path(tmp) / "d"), cache_has_chromium=False, preinstalled=False))
+
+
 if __name__ == "__main__":
     unittest.main()
