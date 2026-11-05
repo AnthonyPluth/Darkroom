@@ -126,6 +126,35 @@ class ImportTakeoutTests(unittest.TestCase):
             self.assertEqual(opened.query(Export).one().status, "imported")
             self.assertEqual(opened.query(ImportRun).count(), 1)
 
+    def test_running_the_command_again_retries_the_items_that_failed(self):
+        from darkroom.domain.ingest import place
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        real = place.copy_into
+        refused = {"left": 1}
+
+        def failing(folder, source, sha1):
+            if refused["left"]:
+                refused["left"] -= 1
+                raise place.PlaceFailed("taken")
+            return real(folder, source, sha1)
+
+        with mock.patch.object(place, "copy_into", failing):
+            code, out, _ = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("15 added", out)
+        self.assertIn("1 could not be imported", out)
+        code, out, _ = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("16 added", out)
+        self.assertNotIn("could not be imported", out)
+        self.assertNotIn("already imported", out)
+        code, out, _ = self.call("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("already imported", out)
+        with db.session(self.engine) as opened:
+            self.assertEqual([(r.status, r.failed) for r in opened.query(ImportRun).order_by(ImportRun.id)], [("done", 1), ("done", 0)])
+
     def test_a_failed_run_still_reports_the_failure(self):
         from darkroom.domain.ingest import run as ingest_run
 

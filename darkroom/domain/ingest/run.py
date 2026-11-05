@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
+from darkroom.dates import utc_now
 from darkroom.domain import accounts, alerts, dedupe, events, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
@@ -426,22 +427,45 @@ def import_export(opened: Session, settings: config.Settings, export: Export, no
         return run_stages(opened, settings, export, now, tools or Tools())
 
 
-def request_import(opened: Session, export_id: int) -> Export:
+def failed_items_run(opened: Session, export: Export) -> ImportRun | None:
+    last = latest_run(opened, export.id)
+    return last if last is not None and last.status == "done" and last.failed > 0 else None
+
+
+def staging_present(opened: Session, photos: Photos, export: Export) -> bool:
+    try:
+        return unpack.staging_dir(photos, default_person(opened, export), export).is_dir()
+    except StageFailed:
+        return False
+
+
+def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
+    if failed_items_run(opened, export) is None:
+        raise AlreadyImported("this export is already imported")
+    if photos is None or not staging_present(opened, photos, export):
+        raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
+    export.status, export.stage = "importing", "unpacked"
+    opened.add(ImportRun(export_id=export.id, started=now, status="queued", stage="unpacked"))
+    opened.flush()
+    return export
+
+
+def request_import(opened: Session, export_id: int, photos: Photos | None = None, now: float | None = None) -> Export:
     export = opened.get(Export, export_id)
     if export is None:
         raise LookupError("no such export")
     if export.status == "imported":
-        raise AlreadyImported("this export is already imported")
+        return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if export.status not in IMPORTABLE:
         raise NotReady("this export has not been downloaded yet")
-    if export.stage in EARLY_STAGES:
+    last = latest_run(opened, export.id)
+    waiting = last is not None and last.status in WAITING
+    if export.stage in EARLY_STAGES and not waiting:
         export.stage = "queued"
         if export.status == "failed":
             export.status = "downloaded"
-    else:
-        run = latest_run(opened, export.id)
-        if run is not None and run.status != "running":
-            run.status = "queued"
+    elif last is not None and last.status != "running":
+        last.status = "queued"
     opened.flush()
     return export
 

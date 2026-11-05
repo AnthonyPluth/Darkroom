@@ -91,6 +91,9 @@ def unpack_only_export(opened: Session, photos: Photos, person: Person, export: 
 
 def import_one(opened: Session, settings: config.Settings, export: Export, now: float) -> int:
     try:
+        if export.status == "imported":
+            ingest_run.request_import(opened, export.id, Photos(settings.photos_root), now)
+            opened.commit()
         done = ingest_run.import_export(opened, settings, export, now)
     except ingest_run.AlreadyImported:
         print(f"Export {export.id} is already imported.")
