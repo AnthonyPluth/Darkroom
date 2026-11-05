@@ -3,6 +3,7 @@ import unittest
 
 from sqlalchemy import select
 
+from darkroom.domain import browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from tests.api_world import ApiCase
@@ -104,6 +105,17 @@ class AccountJobsApiTests(ApiCase):
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 409)
         self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage"})
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+
+    def test_the_email_cannot_change_while_a_renew_job_is_open_and_can_afterwards(self):
+        with db.session(self.engine) as opened:
+            job_id = browser_jobs.queue(opened, self.account_id, browser_jobs.RENEW_KIND, {"email": "jo.photos@example.test"}, 1.0).id
+        status, reply = self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})
+        self.assertEqual(status, 409)
+        self.assertIn("renewal", reply["error"])
+        self.assertEqual(self.worker("/internal/browser/jobs/claim")[1]["job"]["id"], job_id)
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 409)
+        self.worker(f"/internal/browser/jobs/{job_id}/failed", {"message": "UnexpectedPage"})
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
 
     def test_an_unresolved_schedule_attempt_stays_in_the_job_list_beyond_the_history_cap(self):

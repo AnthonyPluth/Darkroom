@@ -151,6 +151,7 @@ def failed(request: Annotated[Request, contract.FailedBody]) -> Annotated[Respon
             raise validate.Invalid("files must be a list of at most two file names")
         job = browser_jobs.failed(opened, request.settings, job_id_of(request), message, folder or None, files, moment)
         downloads.job_failed(opened, job, moment)
+        renewal.job_failed(opened, request.settings, job, moment)
         monitoring.log("browser job failed", kind=job.kind, captured=job.failure_dir is not None)
         return job
 

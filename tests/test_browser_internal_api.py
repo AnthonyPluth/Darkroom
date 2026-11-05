@@ -94,6 +94,18 @@ class WorkerRoundTripTests(WorkerApiServer):
             kinds = {alert.kind: alert.closed is not None for alert in opened.execute(select(Alert)).scalars()}
         self.assertEqual(kinds, {"schedule_ending": True, "schedule_renewed": True})
 
+    def test_a_renewal_failed_over_the_worker_api_replaces_the_ending_alert_with_the_failed_one(self):
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).schedule_end = 1_000_000.0
+            job_id = browser_jobs.queue(opened, self.account, browser_jobs.RENEW_KIND, {"ending": 1_000_000.0}, 1.0).id
+            alerts.open_alert(opened, self.settings, renewal.ending_key(self.account), "schedule_ending", "jo", alerts.schedule_ending("jo", "x"), None, 1.0)
+        self.assertEqual(self.claim()["kind"], "renew")
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/failed", {"message": "UnexpectedPage"})[0], 200)
+        with db.session(self.engine) as opened:
+            kinds = {alert.kind: alert.closed is not None for alert in opened.execute(select(Alert)).scalars()}
+            self.assertEqual(opened.get(GoogleAccount, self.account).schedule_end, 1_000_000.0)
+        self.assertEqual(kinds, {"schedule_ending": True, "schedule_renewal_failed": False, "failure": True})
+
     def test_waiting_opens_the_sign_in_alert(self):
         job_id = self.enqueue()
         self.claim()

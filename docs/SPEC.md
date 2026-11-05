@@ -218,6 +218,7 @@ The web UI is dark mode only: one theme, with no light theme and no theme switch
 | Export imported | Summary: added, skipped, in review, missing GPS |
 | Originals unmatched after a full export cycle | Per person and Pixel: check that their folder is backed up in Google Photos |
 | Schedule ending | About 3 weeks before, then a confirmation once renewed |
+| Schedule renewal failed | When the renewal fails: it did not happen, is not retried and the end date stands; replaces the ending alert, repeated at 24 hours and 4 days. Renewing on request is a later addition |
 | Failure (download, unpack, page change) | Immediately, with a link to the screenshot |
 
 ## Data model

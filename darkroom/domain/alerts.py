@@ -25,6 +25,7 @@ TITLES = {
     "originals_unmatched": "Some originals are not in Google Photos",
     "schedule_ending": "Takeout schedule ending",
     "schedule_renewed": "Takeout schedule renewed",
+    "schedule_renewal_failed": "Takeout schedule not renewed",
     "export_expiring": "A Takeout export is about to expire",
     "failure": "Darkroom needs a look",
 }
@@ -61,6 +62,13 @@ def schedule_ending(account: str, end: str) -> Wording:
 
 def schedule_renewed(account: str, end: str) -> Wording:
     return Wording("Takeout schedule renewed", f"The export schedule for {account} now runs until {end}.")
+
+
+def schedule_renewal_failed(account: str, end: str) -> Wording:
+    return Wording(
+        "Takeout schedule not renewed",
+        f"Renewing the export schedule for {account} failed, and the schedule ends on {end}. Darkroom does not retry a failed renewal, and renewing on request is not available yet. Open Exports to see what failed, and ask whoever looks after Darkroom to act before {end}.",
+    )
 
 
 def export_expiring(export: str, expires: str) -> Wording:

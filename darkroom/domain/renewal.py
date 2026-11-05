@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -13,10 +14,15 @@ from darkroom.storage.models import BrowserJob, GoogleAccount
 NOTICE = 21 * alerts.DAY
 ENDING = "schedule_ending"
 RENEWED = "schedule_renewed"
+RENEWAL_FAILED = "schedule_renewal_failed"
 
 
 def ending_key(account_id: int) -> str:
     return f"schedule:ending:{account_id}"
+
+
+def failed_key(account_id: int) -> str:
+    return f"schedule:renewal-failed:{account_id}"
 
 
 def renewed_key(account_id: int, end: float) -> str:
@@ -28,15 +34,20 @@ def on_date(moment: float, zone: str) -> str:
     return f"{local.day} {local:%b %Y}"
 
 
-def renewal_asked(opened: Session, account: GoogleAccount, since: float) -> bool:
-    found = opened.execute(
-        select(BrowserJob.id).where(BrowserJob.account_id == account.id, BrowserJob.kind == browser_jobs.RENEW_KIND, BrowserJob.created >= since).limit(1)
-    ).first()
-    return found is not None
+def latest_renewal(opened: Session, account: GoogleAccount, since: float) -> BrowserJob | None:
+    return opened.execute(
+        select(BrowserJob).where(BrowserJob.account_id == account.id, BrowserJob.kind == browser_jobs.RENEW_KIND, BrowserJob.created >= since).order_by(BrowserJob.id.desc()).limit(1)
+    ).scalar_one_or_none()
 
 
 def ending_link(settings: Settings) -> str | None:
     return f"{settings.public_url}/exports" if settings.public_url else None
+
+
+def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end: float, now: float) -> None:
+    alerts.close(opened, ending_key(account.id), now)
+    wording = alerts.schedule_renewal_failed(account.email, on_date(end, settings.timezone))
+    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, wording, ending_link(settings), now)
 
 
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
@@ -47,9 +58,13 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
         assert end is not None
         if now < end - NOTICE:
             continue
+        asked = latest_renewal(opened, account, end - NOTICE)
+        if asked is not None and asked.status == "failed":
+            open_failed(opened, settings, account, end, now)
+            continue
         wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone))
         alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now)
-        if renewal_asked(opened, account, end - NOTICE):
+        if asked is not None:
             continue
         browser_jobs.queue(opened, account.id, browser_jobs.RENEW_KIND, {"email": account.email, "ending": end}, now)
         events.record(opened, now, "schedule_renewal_queued", f"account {account.id}", f"the schedule ends {on_date(end, settings.timezone)}")
@@ -57,11 +72,27 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
     return queued
 
 
+def job_failed(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
+    if job.kind != browser_jobs.RENEW_KIND:
+        return
+    account = browser_jobs.account_of(opened, job.account_id)
+    if account.schedule_end is None:
+        return
+    open_failed(opened, settings, account, account.schedule_end, now)
+    events.record(opened, now, "schedule_renewal_failed", f"account {account.id}", f"the schedule still ends {on_date(account.schedule_end, settings.timezone)}")
+
+
+def jobs_failed(opened: Session, settings: Settings, jobs: Sequence[BrowserJob], now: float) -> None:
+    for job in jobs:
+        job_failed(opened, settings, job, now)
+
+
 def renewed(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
     account = browser_jobs.account_of(opened, job.account_id)
     end = account.schedule_end
     assert end is not None
     alerts.close(opened, ending_key(account.id), now)
+    alerts.close(opened, failed_key(account.id), now)
     wording = alerts.schedule_renewed(account.email, on_date(end, settings.timezone))
     alerts.open_alert(opened, settings, renewed_key(account.id, end), RENEWED, account.email, wording, None, now)
     events.record(opened, now, "schedule_renewed", f"account {account.id}", f"the schedule now runs until {on_date(end, settings.timezone)}")

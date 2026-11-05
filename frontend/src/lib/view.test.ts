@@ -118,4 +118,9 @@ describe("failedCaptures", () => {
     const job = { ...queuedConnect, id: 9, kind: "status", status: "failed", has_capture: true, capture_files: ["page.html"] };
     expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([9]);
   });
+
+  it("includes a failed renewal with a capture", () => {
+    const job = { ...queuedConnect, id: 11, kind: "renew", status: "failed", has_capture: true, capture_files: ["screenshot.png"] };
+    expect(failedCaptures([job], 10).map((each) => each.id)).toEqual([11]);
+  });
 });
