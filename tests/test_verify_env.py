@@ -402,6 +402,25 @@ class SessionStartHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertTrue(self.installs(str(Path(tmp) / "c"), cache_has_chromium=False, preinstalled=False))
 
+    def test_chromium_only_under_opt_pw_browsers_is_not_trusted_when_the_variable_is_unset(self):
+        chrome = Path("/opt/pw-browsers/chromium-darkroom-test/chrome-linux/chrome")
+        made = []
+        try:
+            for sub in (chrome.parents[2], chrome.parents[1], chrome.parent):
+                if not sub.exists():
+                    sub.mkdir()
+                    made.append(sub)
+            chrome.write_text("")
+        except OSError:
+            self.assertNotIn("/opt/pw-browsers", self.HOOK.read_text())
+            return
+        try:
+            self.assertTrue(self.installs(None, cache_has_chromium=False, preinstalled=False))
+        finally:
+            chrome.unlink()
+            for sub in reversed(made):
+                sub.rmdir()
+
 
 if __name__ == "__main__":
     unittest.main()

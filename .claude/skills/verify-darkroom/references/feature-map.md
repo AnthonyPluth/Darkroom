@@ -49,7 +49,6 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Widths:** phone, desktop.
 - **Expects to see:** `People`, `Sign in`.
 - **Signs the demo member out** (`sign_out`): what follows is the sign-in page.
-- **Console errors it expects:** `the server responded with a status of 401`.
 - **Drive it:** `tools/control flow sign-out`; or `poetry run python tools/verify.py run --flow sign-out`.
 - **What usually breaks:**
   - Starts signed in on People, clears the session cookie and reloads, so the last screenshot is the sign-in page.
