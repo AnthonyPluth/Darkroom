@@ -3,9 +3,9 @@ import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHROMIUM_ARGS, allowedRequest, checksAfter, commitImages, runStep, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, signedInNow, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
+import { CHROMIUM_ARGS, SIGNED_OUT_CONSOLE, allowedRequest, browsersRoot, checksAfter, commitImages, runStep, contextOptions, DEFAULT_VIEWPORTS, findChromium, flowProblems, FROZEN_NOW, IMAGE_VIEWPORTS, launchOptions, loadedWhen, PAGES, readFlows, recheck, ROUTES, routeOf, screenshotFile, sessionCookie, SIGNED_OUT_PAGES, signedInNow, signedOutConsoleAllowed, unknownPages, VIEWPORTS, visit, writesImage } from "./verify.mjs";
 
 describe("flowProblems", () => {
   const ok = { name: "open-people", page: "status", steps: [{ goto: "/people" }, { click: "text=People", timeout: 500 }] };
@@ -113,16 +113,51 @@ describe("findChromium", () => {
   const tree = (files) => ({ exists: (p) => files.some((f) => f === p || f.startsWith(`${p}/`)), list: () => ["ffmpeg-1011", "chromium-1194", "chromium-1200"] });
 
   it("uses the newest preinstalled Chromium, wherever its folder is", () => {
+    const home = { HOME: "/home/dev" };
+    expect(browsersRoot(home)).toBe("/home/dev/.cache/ms-playwright");
+    const { exists, list } = tree(["/home/dev/.cache/ms-playwright/chromium-1194/chrome-linux/chrome"]);
+    expect(findChromium(home, exists, list)).toBe("/home/dev/.cache/ms-playwright/chromium-1194/chrome-linux/chrome");
+    const both = tree(["/home/dev/.cache/ms-playwright/chromium-1194/chrome-linux/chrome", "/home/dev/.cache/ms-playwright/chromium-1200/chrome-linux64/chrome"]);
+    expect(findChromium(home, both.exists, both.list)).toBe("/home/dev/.cache/ms-playwright/chromium-1200/chrome-linux64/chrome");
+  });
+
+  it("does not take a Chromium under /opt/pw-browsers unless the variable names it", () => {
     const { exists, list } = tree(["/opt/pw-browsers/chromium-1194/chrome-linux/chrome"]);
-    expect(findChromium({}, exists, list)).toBe("/opt/pw-browsers/chromium-1194/chrome-linux/chrome");
-    const both = tree(["/opt/pw-browsers/chromium-1194/chrome-linux/chrome", "/opt/pw-browsers/chromium-1200/chrome-linux64/chrome"]);
-    expect(findChromium({}, both.exists, both.list)).toBe("/opt/pw-browsers/chromium-1200/chrome-linux64/chrome");
+    expect(findChromium({ HOME: "/home/dev" }, exists, list)).toBeUndefined();
+    expect(findChromium({ HOME: "/home/dev", PLAYWRIGHT_BROWSERS_PATH: "/opt/pw-browsers" }, exists, list)).toBe("/opt/pw-browsers/chromium-1194/chrome-linux/chrome");
   });
 
   it("follows PLAYWRIGHT_BROWSERS_PATH, and leaves it to Playwright when there is no Chromium", () => {
     const { exists, list } = tree(["/x/chromium-1194/chrome-linux/chrome"]);
     expect(findChromium({ PLAYWRIGHT_BROWSERS_PATH: "/x" }, exists, list)).toBe("/x/chromium-1194/chrome-linux/chrome");
     expect(findChromium({ PLAYWRIGHT_BROWSERS_PATH: "/nowhere" }, exists, list)).toBeUndefined();
+  });
+});
+
+describe("the session-start hook", () => {
+  const HOOK = join(import.meta.dirname, "..", "..", ".claude", "hooks", "session-start.local.sh");
+
+  const hookInstalls = (home, env) => {
+    const work = mkdtempSync(join(tmpdir(), "darkroom-hook-"));
+    try {
+      mkdirSync(join(work, "frontend"));
+      mkdirSync(join(work, "bin"));
+      writeFileSync(join(work, "bin", "npx"), `#!/bin/sh\ntouch ${join(work, "installed")}\n`, { mode: 0o755 });
+      spawnSync("bash", ["-c", `. ${HOOK}`], { cwd: work, env: { PATH: `${join(work, "bin")}:/usr/bin:/bin`, HOME: home, ...env }, encoding: "utf8" });
+      return readdirSync(work).includes("installed");
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  };
+
+  it("and findChromium resolve the same default location when PLAYWRIGHT_BROWSERS_PATH is unset", () => {
+    for (const present of [false, true]) {
+      const home = mkdtempSync(join(tmpdir(), "darkroom-home-"));
+      try {
+        const chrome = join(home, ".cache", "ms-playwright", "chromium-1", "chrome-linux64", "chrome");
+        if (present) { mkdirSync(dirname(chrome), { recursive: true }); writeFileSync(chrome, ""); }
+        expect(hookInstalls(home, {})).toBe(!present);
+        expect(findChromium({ HOME: home })).toBe(present ? chrome : undefined);
+      } finally { rmSync(home, { recursive: true, force: true }); }
+    }
   });
 });
 
@@ -294,14 +329,61 @@ describe("a flow that signs out", () => {
   };
 
   it("expects the 401 of the signed-out reload without the flow listing it", async () => {
-    const result = await run(true, async (page) => {
+    const result = await run(true, async (page, shot, download, markSignedOut) => {
       await page.goto(`${base}/`, { waitUntil: "load" });
-      await runStep(page, { sign_out: true }, null, null);
+      await runStep(page, { sign_out: true }, null, null, markSignedOut);
       await runStep(page, { reload: true }, null, null);
       await page.waitForTimeout(300);
     });
     expect(result.consoleErrors.some((c) => c.includes("401"))).toBe(true);
     expect(result.problems).toEqual([]);
+  });
+
+  it("fails a 401 from before the sign_out step even when the flow ends signed out", async () => {
+    const result = await run(true, async (page, shot, download, markSignedOut) => {
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      await page.context().clearCookies();
+      await page.evaluate(() => fetch("/api/me"));
+      await page.waitForTimeout(100);
+      await runStep(page, { sign_out: true }, null, null, markSignedOut);
+      await page.waitForTimeout(300);
+    });
+    const seen = result.consoleErrors.filter((c) => c.includes("401")).length;
+    const failed = result.problems.filter((p) => p.includes("console error") && p.includes("401")).length;
+    expect(failed).toBeGreaterThanOrEqual(1);
+    expect(failed).toBeLessThan(seen);
+  });
+
+  it("fails a lost session in a flow that ends signed out without a sign_out step", async () => {
+    const result = await run(true, async (page) => {
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      await page.context().clearCookies();
+      await page.reload({ waitUntil: "load" });
+      await page.waitForTimeout(300);
+    });
+    expect(result.problems.some((p) => p.includes("console error") && p.includes("401"))).toBe(true);
+  });
+
+  it("allows the 401 of a visit that starts signed out", async () => {
+    const result = await run(false, async (page) => {
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      await page.waitForTimeout(300);
+    });
+    expect(result.consoleErrors.some((c) => c.includes("401"))).toBe(true);
+    expect(result.problems).toEqual([]);
+  });
+
+  it("tells the runner the moment of the sign out before the reload", async () => {
+    const seen = [];
+    const page = { context: () => ({ clearCookies: async () => seen.push("cleared") }), reload: async () => seen.push("reloaded") };
+    await runStep(page, { sign_out: true }, null, null, () => seen.push("marked"));
+    expect(seen).toEqual(["cleared", "marked", "reloaded"]);
+  });
+
+  it("allows the signed-out message only after the sign out", () => {
+    expect(signedOutConsoleAllowed(SIGNED_OUT_CONSOLE, true)).toBe(true);
+    expect(signedOutConsoleAllowed(SIGNED_OUT_CONSOLE, false)).toBe(false);
+    expect(signedOutConsoleAllowed("boom", true)).toBe(false);
   });
 
   it("still fails a 401 on a visit that stays signed in", async () => {
