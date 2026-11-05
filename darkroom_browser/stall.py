@@ -28,10 +28,14 @@ def folder_state(folder: Path) -> FolderState:
     files = 0
     in_progress = False
     for each in folder.iterdir():
-        if each.is_symlink() or not each.is_file():
+        try:
+            if each.is_symlink() or not each.is_file():
+                continue
+            found = each.stat().st_size
+        except FileNotFoundError:
             continue
         files += 1
-        size += each.stat().st_size
+        size += found
         in_progress = in_progress or each.name.endswith(IN_PROGRESS_SUFFIX)
     return FolderState(size, files, in_progress)
 

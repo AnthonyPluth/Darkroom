@@ -82,6 +82,21 @@ class FolderStateTests(unittest.TestCase):
         self.assertEqual(stall.folder_state(inside), FolderState(0, 0, False))
 
 
+    def test_a_file_renamed_between_listing_and_reading_is_skipped_not_an_error(self):
+        from unittest import mock
+
+        (self.folder / "guid.crdownload").write_bytes(b"x" * 30)
+        real = Path.stat
+
+        def vanishing(path, *args, **kwargs):
+            if path.name == "guid.crdownload":
+                raise FileNotFoundError(path)
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", vanishing):
+            self.assertEqual(stall.folder_state(self.folder), FolderState(0, 0, False))
+
+
 class FakeDownload:
     suggested_filename = "../takeout-001.zip"
 
@@ -212,6 +227,20 @@ class LiveDownloadTests(unittest.TestCase):
         path = browser.download_to("a", self.target)
         self.assertEqual(path.name, "takeout-001.zip")
         self.assertTrue(page.download.cancelled)
+
+    def test_a_download_chromium_already_failed_keeps_its_own_reason_when_the_wait_ends(self):
+        class Failed(FakeDownload):
+            def failure(self):
+                return "net::ERR_CONNECTION_RESET" + "!" * 400
+
+        browser, page = self.browser([])
+        page.download = Failed(self.downloads, {})
+        self.write("guid.crdownload", 5)
+        with self.assertRaises(DownloadInterrupted) as raised:
+            browser.download_to("a", self.target)
+        self.assertEqual(len(str(raised.exception)), 200)
+        self.assertTrue(str(raised.exception).startswith("net::ERR_CONNECTION_RESET"))
+        self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_a_failure_chromium_reports_is_interrupted_with_its_text(self):
         self.write("guid", 5)

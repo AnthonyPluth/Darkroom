@@ -14,6 +14,7 @@ from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, 
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
+CANCELLED = "canceled"
 VIEWPORT = {"width": 1280, "height": 900}
 
 
@@ -86,11 +87,14 @@ class Live:
     def cancel_stalled(self, download: Any) -> None:
         with contextlib.suppress(Exception):
             download.cancel()
-        if download.failure() is None:
+        failure = download.failure()
+        if failure is None:
             return
         if self.downloads is not None:
             sweep_downloads(self.downloads)
-        raise DownloadInterrupted(f"no data arrived for {int(STALL_SECONDS)} seconds")
+        if str(failure) == CANCELLED:
+            raise DownloadInterrupted(f"no data arrived for {int(STALL_SECONDS)} seconds")
+        raise DownloadInterrupted(str(failure)[:200])
 
     def raise_if_failed(self, download: Any) -> None:
         failure = download.failure()

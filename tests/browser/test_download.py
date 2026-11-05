@@ -498,14 +498,15 @@ class SharedFolderTests(unittest.TestCase):
         os.chmod(profile / "chrome-helper", 0o700)
         (profile / "SingletonLock").symlink_to("host-1234")
 
-    def test_sharing_a_profile_adds_the_groups_read_write_and_search_bits_and_nothing_for_others(self):
+    def test_sharing_a_profile_opens_its_folders_to_the_group_and_leaves_every_file_alone(self):
         profile = self.root / "_browser" / "7" / "profile"
         self.make_chromium_profile(profile)
         self.assertEqual(download.share_tree(profile.parent), 0)
         self.assertEqual(mode_of(profile), 0o770)
         self.assertEqual(mode_of(profile / "Default" / "Cache"), 0o770)
-        self.assertEqual(mode_of(profile / "Default" / "Cookies"), 0o660)
-        self.assertEqual(mode_of(profile / "chrome-helper"), 0o770)
+        self.assertEqual(mode_of(profile / "Default" / "Cookies"), 0o600)
+        self.assertEqual(mode_of(profile / "Default" / "Cache" / "index"), 0o600)
+        self.assertEqual(mode_of(profile / "chrome-helper"), 0o700)
         for each in [profile.parent, *profile.parent.rglob("*")]:
             if not each.is_symlink():
                 self.assertEqual(mode_of(each) & stat.S_IRWXO, 0, each)
