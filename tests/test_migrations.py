@@ -274,6 +274,24 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0015_alert_pushed_devices_leaves_old_alerts_without_a_record_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0014")
+            connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count, push_due) VALUES ('k', 'failure', 's', 'm', 1.0, 1, 2.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, push_due, pushed_devices FROM alerts").all(), [("k", 2.0, None)])
+            connection.exec_driver_sql("UPDATE alerts SET pushed_devices = '{}'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0014")
+        self.assertNotIn("pushed_devices", {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, push_due FROM alerts").all(), [("k", 2.0)])
+
     def test_0014_alert_recipients_finds_whom_old_alerts_concern_and_can_be_undone_without_losing_alerts(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

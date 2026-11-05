@@ -225,7 +225,7 @@ class BuildTests(unittest.TestCase):
         export_id = world.hand_dropped().id
         scheduler = jobs.build(world.settings, world.engine)
         self.assertEqual((scheduler.jobs["imports"].interval, scheduler.jobs["imports"].own_thread), (60.0, True))
-        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name != "imports"))
+        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name not in ("imports", "alerts.push")))
         scheduler.run_one("imports", NOW)
         self.assertEqual(world.reopen().get(Export, export_id).status, "downloaded")
         run.request_import(world.opened, export_id)
