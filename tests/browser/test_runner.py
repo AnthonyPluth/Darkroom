@@ -8,9 +8,11 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from darkroom.domain import browser_jobs
+from sqlalchemy import select, update
+
+from darkroom.domain import browser_jobs, renewal
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob
+from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom_browser import config, context, runner
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from tests.browser.fake_darkroom import TOKEN, FakeDarkroom
@@ -475,6 +477,48 @@ class UnrecordedScheduleTests(unittest.TestCase):
             self.assertTrue(opened.get(BrowserJob, job_id).message.startswith("ScheduleNotConfirmed: the work finished"))
             with self.assertRaises(browser_jobs.AlreadyOpen):
                 browser_jobs.enqueue_once(opened, account, "schedule", 9.0)
+
+    def renewal_reported(self, work):
+        engine = own_database(self)
+        settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example", TZ="UTC")
+        with db.session(engine) as opened:
+            account = add_account(opened)
+            opened.execute(update(GoogleAccount).where(GoogleAccount.id == account).values(schedule_created=1.0, schedule_end=1_900_000_000.0))
+            job_id = browser_jobs.queue(opened, account, browser_jobs.RENEW_KIND, {"email": "jo.takeout@example.test"}, 1.0).id
+            browser_jobs.claim(opened, 2.0)
+
+        class Stub:
+            def heartbeat(self, job):
+                return None
+
+            def progress(self, job, message):
+                return None
+
+            def done(self, job, result):
+                raise Refused(500, "database is locked")
+
+            def failed(self, job, message, folder, files=None):
+                with db.session(engine) as opened:
+                    failed = browser_jobs.failed(opened, settings, job, message, folder, files or [], 5.0)
+                    renewal.job_failed(opened, settings, failed, 5.0)
+
+        worker = runner.Runner(settings_for("http://unused", Path("/photos-unused")), Stub(), lambda profile: FakeBrowser(), {"renew": work})
+        self.assertEqual(worker.run_job({"id": job_id, "kind": "renew", "account": str(account), "payload": {}}), "failed")
+        with db.session(engine) as opened:
+            return opened.get(BrowserJob, job_id).message, sorted(alert.kind for alert in opened.execute(select(Alert)).scalars() if alert.kind.startswith("schedule"))
+
+    def test_a_renewal_whose_done_report_is_refused_is_left_unconfirmed_not_failed(self):
+        message, kinds = self.renewal_reported(lambda ctx: {"schedule_created": 1_890_000_000.0, "schedule_end": 1_920_000_000.0})
+        self.assertTrue(message.startswith("ScheduleNotConfirmed: the work finished"), message)
+        self.assertEqual(kinds, ["schedule_renewal_unconfirmed"])
+
+    def test_a_renewal_that_failed_inside_the_work_is_reported_as_failed(self):
+        def broken(ctx):
+            raise RuntimeError("page crashed")
+
+        message, kinds = self.renewal_reported(broken)
+        self.assertEqual(message, "RuntimeError")
+        self.assertEqual(kinds, ["schedule_renewal_failed"])
 
     def test_other_kinds_and_failures_inside_the_work_keep_their_own_message(self):
         sent = []

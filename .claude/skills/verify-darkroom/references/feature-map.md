@@ -69,6 +69,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Expects to see:** `Exports`, `Downloading`, `40%`, `2 of 5`.
 - **Drive it:** `tools/control flow exports-download`; or `poetry run python tools/verify.py run --flow exports-download`.
 
+#### `exports-renewal`
+
+- **Starts at:** `exports`.
+- **Widths:** phone.
+- **Touches:** `section[aria-label='avery.photos@example.com'] button:has-text('Takeout has no new schedule')`.
+- **Expects to see:** `Darkroom could not confirm the renewal`, `Ended`, `you found none there`.
+- **Drive it:** `tools/control flow exports-renewal`; or `poetry run python tools/verify.py run --flow exports-renewal`.
+
 #### `exports`
 
 - **Starts at:** `exports`.

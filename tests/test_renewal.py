@@ -535,6 +535,38 @@ class RenewalEmailGuardTests(RenewalCase):
             accounts.update(opened, self.account, "other.takeout@example.test", None, NOTICE_AT + 200)
             self.assertEqual(opened.get(GoogleAccount, self.account).email, "other.takeout@example.test")
 
+    def change_email(self, now):
+        with db.session(self.engine) as opened:
+            accounts.update(opened, self.account, "other.takeout@example.test", None, now)
+
+    def test_an_unconfirmed_renewal_keeps_the_email_until_the_takeout_check_is_answered(self):
+        for found in (True, False):
+            with self.subTest(found=found):
+                self.setUp()
+                self.watch(NOTICE_AT)
+                self.claim_renewal(NOTICE_AT + 60)
+                with db.session(self.engine) as opened:
+                    job = opened.execute(select(BrowserJob).where(BrowserJob.kind == "renew")).scalar_one()
+                    browser_jobs.failed(opened, self.settings, job.id, "ScheduleNotConfirmed: unsure", None, [], NOTICE_AT + 120)
+                self.assertFalse(self.open_job())
+                with self.assertRaises(accounts.JobOpen) as caught:
+                    self.change_email(NOTICE_AT + 200)
+                self.assertIn("Takeout check", str(caught.exception))
+                with db.session(self.engine) as opened:
+                    self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.takeout@example.test")
+                    renewal.checked(opened, self.settings, self.account, found, NOTICE_AT + 300)
+                self.change_email(NOTICE_AT + 400)
+                with db.session(self.engine) as opened:
+                    self.assertEqual(opened.get(GoogleAccount, self.account).email, "other.takeout@example.test")
+
+    def test_a_lost_renewal_keeps_the_email_too(self):
+        self.watch(NOTICE_AT)
+        self.claim_renewal(NOTICE_AT + 60)
+        with db.session(self.engine) as opened:
+            browser_jobs.expire_leases(opened, self.settings, NOTICE_AT + 60 + browser_jobs.LEASE_SECONDS + 1)
+        with self.assertRaises(accounts.JobOpen):
+            self.change_email(NOTICE_AT + 400)
+
     def test_a_renew_job_still_cannot_be_enqueued_by_hand(self):
         with db.session(self.engine) as opened:
             with self.assertRaises(browser_jobs.UnknownKind):

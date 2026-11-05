@@ -125,6 +125,59 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(self.account_view()["schedule_end"], 9_000_000_000.0)
         self.assertTrue(next(entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"] if entry["id"] == job_id)["needs_check"])
 
+    def unconfirmed_schedule(self, message="ScheduleNotConfirmed: check Takeout before trying again"):
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": message})
+        with db.session(self.engine) as opened:
+            return job["id"], opened.get(BrowserJob, job["id"]).started
+
+    def test_a_first_schedule_takeout_has_is_recorded_through_the_check_and_then_renewed_in_its_window(self):
+        job_id, started = self.unconfirmed_schedule()
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
+        self.assertEqual((status, reply["job"]["id"], reply["job"]["needs_check"], reply["job"]["checked"]), (200, job_id, False, "found"))
+        view = self.account_view()
+        self.assertEqual((view["schedule_created"], view["schedule_end"]), (started, dates.one_year_after(started)))
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule")
+        self.assertEqual(status, 409, reply)
+        self.assertIn("already has an export schedule", reply["error"])
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})[0], 409)
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": False})[0], 409)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(Alert).where(Alert.kind.like("schedule%"))).scalars().all(), [])
+            self.assertEqual(renewal.watch_schedules(opened, self.settings, view["schedule_end"] - 22 * 86400), 0)
+            self.assertEqual(renewal.watch_schedules(opened, self.settings, view["schedule_end"] - 21 * 86400), 1)
+            queued = opened.execute(select(BrowserJob).where(BrowserJob.kind == "renew")).scalar_one()
+        self.assertEqual((queued.status, json.loads(queued.payload)["ending"]), ("queued", view["schedule_end"]))
+
+    def test_a_first_schedule_found_after_a_later_end_is_refused_and_nothing_changes(self):
+        job_id, _ = self.unconfirmed_schedule()
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            account.schedule_created, account.schedule_end = 1.0, 9_000_000_000.0
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
+        self.assertEqual(status, 409)
+        self.assertIn("must end after", reply["error"])
+        view = self.account_view()
+        self.assertEqual((view["schedule_created"], view["schedule_end"]), (1.0, 9_000_000_000.0))
+        self.assertTrue(next(entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"] if entry["id"] == job_id)["needs_check"])
+
+    def test_a_plainly_failed_first_schedule_has_nothing_to_record(self):
+        self.unconfirmed_schedule("UnexpectedPage: the page changed")
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
+        self.assertEqual(status, 409, reply)
+        view = self.account_view()
+        self.assertEqual((view["schedule_created"], view["schedule_end"]), (None, None))
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 201)
+
+    def test_an_unconfirmed_first_schedule_keeps_the_email_until_it_is_answered(self):
+        self.unconfirmed_schedule()
+        status, reply = self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})
+        self.assertEqual(status, 409)
+        self.assertIn("Takeout check", reply["error"])
+        self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": False})
+        self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
+
     def test_checking_an_unknown_account_is_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/schedule/checked", "/api/accounts/abc/schedule/checked"):
             self.assertEqual(self.call("POST", path)[0], 404)
