@@ -17,6 +17,7 @@ private actor FakeExporter: ResourceExporter {
 
     func set(contents: Data, for key: ResourceKey) { self.contents[key] = contents }
     func setCloudOnly(_ key: ResourceKey) { cloudOnly.insert(key) }
+    func setLocal(_ key: ResourceKey) { cloudOnly.remove(key) }
     func setBroken(_ key: ResourceKey) { broken.insert(key) }
     func setFixed(_ key: ResourceKey) { broken.remove(key) }
 
@@ -84,6 +85,88 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(record?.resource.bytes, 4)
     }
 
+    func testNotLocalResourceIsIngestedOnceItBecomesLocalWithTheSameVersion() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let versions = InMemoryIngestVersions()
+        let a = photo("IMG_1")
+        await exporter.setCloudOnly(a.key)
+        let first = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(first, IngestSummary(notLocal: 1))
+        let stillCloud = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(stillCloud, IngestSummary(notLocal: 1))
+
+        await exporter.setLocal(a.key)
+        await exporter.set(contents: Data("abc".utf8), for: a.key)
+        let downloaded = try await make([a], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(downloaded, IngestSummary(hashed: 1))
+        let record = try await store.record(for: a.key)
+        XCTAssertEqual(record?.resource.state, .hashed)
+        XCTAssertEqual(record?.resource.sha1, "a9993e364706816aba3e25717850c26c9cd0d89d")
+    }
+
+    func testRetryingANotLocalResourceDoesNotTouchTheVersions() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let versions = CountingVersions()
+        let a = photo("IMG_1")
+        await exporter.setCloudOnly(a.key)
+        for _ in 0..<3 {
+            let summary = try await ResourceIngester(
+                library: FakeLibrary(resources: [a]), exporter: exporter, store: store, versions: versions
+            ).run()
+            XCTAssertEqual(summary, IngestSummary(notLocal: 1))
+        }
+        let writes = await versions.writes
+        XCTAssertEqual(writes, 1)
+    }
+
+    func testUnacceptableUploadNamesFailBeforeAnythingIsExportedOrSaved() async throws {
+        for name in [".hidden.HEIC", "a/b.HEIC", "a\\b.HEIC", "IMG_1.XMP", "", String(repeating: "a", count: 201), "a\u{0}b.HEIC"] {
+            XCTAssertFalse(UploadFilename.isAcceptable(name), name)
+        }
+        XCTAssertTrue(UploadFilename.isAcceptable("IMG 0001 \u{00E9}.HEIC"))
+        XCTAssertTrue(UploadFilename.isAcceptable(String(repeating: "a", count: 200)))
+
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let versions = CountingVersions()
+        let bad = PhotoResource(assetID: "x", kind: .photo, originalFilename: ".hidden.HEIC", version: "v1")
+        let summary = try await ResourceIngester(
+            library: FakeLibrary(resources: [bad]), exporter: exporter, store: store, versions: versions
+        ).run()
+        XCTAssertEqual(summary, IngestSummary(failed: 1))
+        let exports = await exporter.exports
+        let writes = await versions.writes
+        let record = try await store.record(for: bad.key)
+        XCTAssertEqual(exports, 0)
+        XCTAssertEqual(writes, 0)
+        XCTAssertNil(record)
+    }
+
+    func testCancellationAfterTheStoreWriteLeavesTheVersionAbsentForARetry() async throws {
+        let exporter = FakeExporter()
+        let inner = InMemoryResourceStore()
+        let old = LocalResource(key: photo("IMG_1").key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await inner.upsert([old])
+        await exporter.set(contents: Data("new".utf8), for: old.key)
+        let versions = InMemoryIngestVersions()
+        try await versions.setVersion("v1", for: old.key)
+        let library = FakeLibrary(resources: [photo("IMG_1", "v2")])
+        let ingester = ResourceIngester(library: library, exporter: exporter, store: CancellingStore(inner: inner), versions: versions)
+        let task = Task { try await ingester.run() }
+        do {
+            _ = try await task.value
+            XCTFail("the run should have been cancelled")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let version = await versions.version(for: old.key)
+        XCTAssertNil(version)
+        let retry = try await ResourceIngester(library: library, exporter: exporter, store: inner, versions: versions).run()
+        XCTAssertEqual(retry, IngestSummary(hashed: 1))
+    }
+
     func testFailedExportIsCountedNotRecordedAndRetried() async throws {
         let exporter = FakeExporter()
         let store = InMemoryResourceStore()
@@ -127,8 +210,201 @@ final class ResourceIngesterTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let key = ResourceKey(assetID: "a/b|c", kind: .liveVideo)
-        await FileIngestVersions(url: url).setVersion("v9", for: key)
+        try await FileIngestVersions(url: url).setVersion("v9", for: key)
         let reopened = await FileIngestVersions(url: url).version(for: key)
         XCTAssertEqual(reopened, "v9")
+    }
+
+    func testSavingAVersionAppendsInsteadOfRewritingTheFile() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let versions = FileIngestVersions(url: url)
+        var previous = Data()
+        for index in 0..<20 {
+            try await versions.setVersion("v\(index)", for: ResourceKey(assetID: "asset-\(index)", kind: .photo))
+            let current = try Data(contentsOf: url)
+            XCTAssertTrue(current.starts(with: previous))
+            XCTAssertGreaterThan(current.count, previous.count)
+            previous = current
+        }
+        let reopened = FileIngestVersions(url: url)
+        let first = await reopened.version(for: ResourceKey(assetID: "asset-0", kind: .photo))
+        let last = await reopened.version(for: ResourceKey(assetID: "asset-19", kind: .photo))
+        XCTAssertEqual(first, "v0")
+        XCTAssertEqual(last, "v19")
+    }
+
+    func testForgottenAndTornJournalEntriesAreHandledOnReopen() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("versions-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let key = ResourceKey(assetID: "a", kind: .photo)
+        let other = ResourceKey(assetID: "b", kind: .photo)
+        let versions = FileIngestVersions(url: url)
+        try await versions.setVersion("v1", for: key)
+        try await versions.setVersion(nil, for: key)
+        try await versions.setVersion("v2", for: other)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n{\"key\":\"photo|c\",\"ver".utf8))
+        try handle.close()
+        try await FileIngestVersions(url: url).setVersion("v3", for: ResourceKey(assetID: "d", kind: .photo))
+        let reopened = FileIngestVersions(url: url)
+        let forgotten = await reopened.version(for: key)
+        let kept = await reopened.version(for: other)
+        let afterTear = await reopened.version(for: ResourceKey(assetID: "d", kind: .photo))
+        XCTAssertNil(forgotten)
+        XCTAssertEqual(kept, "v2")
+        XCTAssertEqual(afterTear, "v3")
+    }
+
+    func testVersionIsNotAcceptedWhenTheFileCannotBeWritten() async throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-such-\(UUID().uuidString)").appendingPathComponent("versions.json")
+        let versions = FileIngestVersions(url: missing)
+        let key = ResourceKey(assetID: "a", kind: .photo)
+        do {
+            try await versions.setVersion("v1", for: key)
+            XCTFail("the write should have failed")
+        } catch {}
+        let stored = await versions.version(for: key)
+        XCTAssertNil(stored)
+    }
+
+    func testFailedVersionSaveLeavesTheStoreUntouchedAndCountsFailed() async throws {
+        struct Unwritable: IngestVersions {
+            struct Full: Error {}
+            func version(for key: ResourceKey) async -> String? { "v1" }
+            func setVersion(_ version: String?, for key: ResourceKey) async throws { throw Full() }
+        }
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let old = LocalResource(key: photo("IMG_1").key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await store.upsert([old])
+        await exporter.set(contents: Data("new".utf8), for: old.key)
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: [photo("IMG_1", "v2")]), exporter: exporter, store: store, versions: Unwritable()
+        )
+        let summary = try await ingester.run()
+        XCTAssertEqual(summary, IngestSummary(failed: 1))
+        let record = try await store.record(for: old.key)
+        XCTAssertEqual(record?.resource, old)
+    }
+
+    func testInterruptionBetweenTheVersionAndStoreWritesIsRetriedNotSkipped() async throws {
+        let exporter = FakeExporter()
+        let inner = InMemoryResourceStore()
+        let old = LocalResource(key: photo("IMG_1").key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await inner.upsert([old])
+        await exporter.set(contents: Data("new".utf8), for: old.key)
+        let versions = DyingVersions(initial: "v1")
+        let library = FakeLibrary(resources: [photo("IMG_1", "v2")])
+
+        let crashing = ResourceIngester(library: library, exporter: exporter, store: CrashingStore(inner: inner), versions: versions)
+        let interrupted = try await crashing.run()
+        XCTAssertEqual(interrupted, IngestSummary(failed: 1))
+        let afterCrash = try await inner.record(for: old.key)
+        XCTAssertEqual(afterCrash?.resource, old)
+        let versionAfterCrash = await versions.version(for: old.key)
+        XCTAssertNotEqual(versionAfterCrash, "v2")
+
+        await versions.revive()
+        let relaunch = ResourceIngester(library: library, exporter: exporter, store: inner, versions: versions)
+        let summary = try await relaunch.run()
+        XCTAssertEqual(summary, IngestSummary(hashed: 1))
+        let record = try await inner.record(for: old.key)
+        XCTAssertEqual(record?.resource.sha1, "c2a6b03f190dfb2b4aa91f8af8d477a9bc3401dc")
+    }
+
+    func testCancellationDuringHashingLeavesTheStoreAndVersionsUntouched() async throws {
+        let exporter = CancellingExporter()
+        let store = InMemoryResourceStore()
+        let versions = InMemoryIngestVersions()
+        let a = photo("IMG_1")
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: [a]), exporter: exporter, store: store, versions: versions
+        )
+        let task = Task { try await ingester.run() }
+        do {
+            _ = try await task.value
+            XCTFail("the run should have been cancelled")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let record = try await store.record(for: a.key)
+        XCTAssertNil(record)
+        let version = await versions.version(for: a.key)
+        XCTAssertNil(version)
+        let destinations = await exporter.destinations
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destinations[0].path))
+    }
+}
+
+/// Writes a multi-chunk file, then cancels the task that is exporting, so the cancellation lands before hashing starts.
+private actor CancellingExporter: ResourceExporter {
+    private(set) var destinations: [URL] = []
+
+    func export(_ resource: PhotoResource, to destination: URL) async throws -> ExportOutcome {
+        destinations.append(destination)
+        try Data(count: 3 * SHA1Hasher.chunkSize).write(to: destination)
+        withUnsafeCurrentTask { $0?.cancel() }
+        return .exported
+    }
+}
+
+private struct CrashingStore: ResourceStore {
+    struct Crash: Error {}
+    let inner: InMemoryResourceStore
+    func upsert(_ resources: [LocalResource]) async throws { throw Crash() }
+    func record(for key: ResourceKey) async throws -> ResourceRecord? { try await inner.record(for: key) }
+    func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] { try await inner.records(in: states) }
+    func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
+        try await inner.setState(state, for: keys, failureReason: failureReason)
+    }
+    func recordAttempt(for keys: [ResourceKey]) async throws { try await inner.recordAttempt(for: keys) }
+    func recordRehash(for key: ResourceKey) async throws { try await inner.recordRehash(for: key) }
+    func counts() async throws -> [ResourceState: Int] { try await inner.counts() }
+}
+
+private actor DyingVersions: IngestVersions {
+    struct Dead: Error {}
+    private var stored: String?
+    private var writes = 0
+    private var alive = false
+
+    init(initial: String) { stored = initial }
+
+    func revive() { alive = true }
+    func version(for key: ResourceKey) -> String? { stored }
+    func setVersion(_ version: String?, for key: ResourceKey) throws {
+        writes += 1
+        if !alive && writes > 1 { throw Dead() }
+        stored = version
+    }
+}
+
+private struct CancellingStore: ResourceStore {
+    let inner: InMemoryResourceStore
+    func upsert(_ resources: [LocalResource]) async throws {
+        try await inner.upsert(resources)
+        withUnsafeCurrentTask { $0?.cancel() }
+    }
+    func record(for key: ResourceKey) async throws -> ResourceRecord? { try await inner.record(for: key) }
+    func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] { try await inner.records(in: states) }
+    func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
+        try await inner.setState(state, for: keys, failureReason: failureReason)
+    }
+    func recordAttempt(for keys: [ResourceKey]) async throws { try await inner.recordAttempt(for: keys) }
+    func recordRehash(for key: ResourceKey) async throws { try await inner.recordRehash(for: key) }
+    func counts() async throws -> [ResourceState: Int] { try await inner.counts() }
+}
+
+private actor CountingVersions: IngestVersions {
+    private var storage: [ResourceKey: String] = [:]
+    private(set) var writes = 0
+
+    func version(for key: ResourceKey) -> String? { storage[key] }
+    func setVersion(_ version: String?, for key: ResourceKey) {
+        writes += 1
+        storage[key] = version
     }
 }

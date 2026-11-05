@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import events, media
 from darkroom.providers import exiftool
 from darkroom.storage.models import MediaItem, Person
-from darkroom.storage.paths import Photos
+from darkroom.storage.paths import OutsideRoot, Photos
 
 MEDIA_TYPES = ("image/", "video/")
 SKIPPED_FOLDERS = {".stfolder", ".stversions", ".uploads_tmp", "uploads_tmp"}
@@ -48,7 +48,7 @@ def relative(photos: Photos, path: Path) -> str:
 
 
 def apply(item: MediaItem, print_: media.Fingerprint, mtime: float, now: float) -> None:
-    item.sha1, item.bytes, item.mtime, item.phash = print_.sha1, print_.bytes, mtime, print_.phash
+    item.sha1, item.bytes, item.mtime, item.phash, item.dhash = print_.sha1, print_.bytes, mtime, print_.phash, print_.dhash
     item.width, item.height, item.duration_ms = print_.width, print_.height, print_.duration_ms
     item.make, item.model = print_.make, print_.model
     item.captured_utc, item.captured_local, item.offset_minutes, item.time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
@@ -100,10 +100,26 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
         apply(item, print_, mtime, now)
 
 
+def backfill_dhash(opened: Session, photos: Photos, person: Person) -> int:
+    missing = opened.execute(
+        select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", MediaItem.phash.is_not(None), MediaItem.dhash.is_(None))
+    ).scalars().all()
+    filled = 0
+    for item in missing:
+        try:
+            path = photos.inside(*Path(item.path).parts)
+        except OutsideRoot:
+            continue
+        item.dhash = media.perceptual_hashes(path).dhash
+        filled += item.dhash is not None
+    return filled
+
+
 def index_person(opened: Session, photos: Photos, person: Person, now: float, read: Reader = exiftool.read) -> IndexReport:
     report = IndexReport()
     files = walk(photos.originals(person.slug))
     index_files(opened, photos, person, files, now, report, read)
+    backfill_dhash(opened, photos, person)
     opened.flush()
     return report
 
