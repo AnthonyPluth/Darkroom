@@ -178,6 +178,13 @@ def download_open(opened: Session, export: Export) -> bool:
     return any(json.loads(job.payload or "{}").get("export_id") == export.id for job in jobs)
 
 
+def download_underway(opened: Session, account_id: int) -> bool:
+    started = opened.execute(select(Export.id).where(Export.account_id == account_id, Export.status == "downloading").limit(1)).first()
+    queued = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind == DOWNLOAD_KIND,
+                                                        BrowserJob.status.in_(browser_jobs.QUEUED_STATUSES)).limit(1)).first()
+    return started is not None or queued is not None
+
+
 def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     export.status = "failed"
     events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")

@@ -72,10 +72,15 @@ def person_of(opened: Session, export: Export) -> Person:
 
 
 def export_folder(settings: Settings, person: Person, export: Export) -> Path:
+    photos = Photos(settings.photos_root)
     try:
-        return Photos(settings.photos_root).export_tree(person.slug, folder_name(export))
+        inbox, folder = photos.inbox(person.slug), photos.export_tree(person.slug, folder_name(export))
     except OutsideRoot as error:
         raise Refused("the export's inbox folder is not inside the photo folder") from error
+    written = photos.root / "_inbox" / person.slug / folder_name(export)
+    if any(path.is_symlink() for path in (written, written.parent, written.parent.parent)) or folder.parent != inbox:
+        raise Refused("the export's inbox folder is not inside the person's inbox")
+    return folder
 
 
 def part_plan(part: ExportPart) -> dict[str, object]:
@@ -83,9 +88,10 @@ def part_plan(part: ExportPart) -> dict[str, object]:
             "downloads_used": part.downloads_used, "attempts": part.attempts}
 
 
-def plan(opened: Session, job_id: int) -> dict[str, object]:
+def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     person = person_of(opened, export)
+    export_folder(settings, person, export)
     return {"export_id": export.id, "google_id": export.google_id or "", "person": person.slug, "folder": folder_name(export),
             "part_count": export.part_count or 0, "parts": [part_plan(part) for part in exports.parts_of(opened, export.id)]}
 

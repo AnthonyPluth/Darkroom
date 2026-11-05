@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -6,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from darkroom.domain import browser_jobs, downloads, exports
+from darkroom.domain import accounts, browser_jobs, downloads, exports
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, ExportPart, GoogleAccount
@@ -289,6 +290,99 @@ class RetryTests(DownloadCase):
             self.assertIsNone(downloads.job_failed(opened, job, NOW))
             gone = browser_jobs.queue(opened, self.account, "download", {"export_id": 999}, NOW)
             self.assertIsNone(downloads.job_failed(opened, gone, NOW))
+
+
+class LinkedFolderTests(DownloadCase):
+    def tree(self, folder):
+        return {str(path.relative_to(folder)): path.read_bytes() for path in sorted(folder.rglob("*")) if path.is_file()}
+
+    def lay_out(self, link, target):
+        for child in self.root.iterdir():
+            child.unlink() if child.is_symlink() else shutil.rmtree(child)
+        target.mkdir(parents=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target, target_is_directory=True)
+        inside = self.root / "_inbox" / "jo" / f"export-{self.export}"
+        inside.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(inside / "takeout-001.zip", "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("Takeout/Google Photos/a.bin", b"x" * 4 * MB)
+        return (inside / "takeout-001.zip").stat().st_size
+
+    def test_a_linked_export_or_inbox_folder_is_refused_for_the_plan_and_the_part(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        originals = self.root / "jo" / "originals"
+        inbox = self.root / "_inbox"
+        layouts = {"export folder to originals": (inbox / "jo" / f"export-{self.export}", originals),
+                   "export folder elsewhere": (inbox / "jo" / f"export-{self.export}", self.root / "elsewhere"),
+                   "person's inbox to originals": (inbox / "jo", originals),
+                   "inbox to originals": (inbox, originals)}
+        for name, (link, target) in layouts.items():
+            with self.subTest(name):
+                size = self.lay_out(link, target)
+                before = self.tree(originals) if originals.exists() else {}
+                with self.assertRaises(downloads.Refused):
+                    self.call(downloads.plan, self.settings, job)
+                with self.assertRaises(downloads.Refused):
+                    self.call(lambda opened, size=size: downloads.part_done(opened, self.settings, job, 1, "takeout-001.zip", size, NOW))
+                self.assertEqual(self.part(1)[0], "downloading")
+                self.assertEqual(self.tree(originals) if originals.exists() else {}, before)
+
+    def test_a_plain_folder_is_planned(self):
+        job = self.claim()
+        self.write_zip("takeout-001.zip", MB)
+        plan = self.call(downloads.plan, self.settings, job)
+        self.assertEqual((plan["person"], plan["folder"]), ("jo", f"export-{self.export}"))
+
+    def test_finishing_into_a_folder_that_became_a_link_is_refused(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        originals = self.root / "jo" / "originals"
+        originals.parent.mkdir(parents=True)
+        self.folder().rename(originals)
+        self.folder().symlink_to(originals, target_is_directory=True)
+        with self.assertRaises(downloads.Refused):
+            self.call(lambda opened: downloads.finish(opened, self.settings, job, NOW))
+        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
+
+
+class DefaultPersonTests(DownloadCase):
+    def move_to(self, slug):
+        with db.session(self.engine) as opened:
+            other = add_person(opened, slug)
+            accounts.update(opened, self.account, None, other, NOW)
+            return other
+
+    def test_the_default_person_stays_while_a_download_is_queued_running_or_between_tries(self):
+        job = self.claim()
+        with self.assertRaises(accounts.JobOpen):
+            self.move_to("ann")
+        self.attempt(job, 1)
+        self.part_done(job, 1, "takeout-001.zip")
+        self.fail_job(job)
+        with self.assertRaises(accounts.JobOpen):
+            self.move_to("ann")
+        self.reconcile(NOW + DAY)
+        with self.assertRaises(accounts.JobOpen):
+            self.move_to("ann")
+        with db.session(self.engine) as opened:
+            self.assertEqual(downloads.person_of(opened, opened.get(Export, self.export)).slug, "jo")
+            accounts.update(opened, self.account, None, opened.get(GoogleAccount, self.account).default_person_id, NOW)
+
+    def test_the_default_person_can_change_once_the_export_is_downloaded(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, job, NOW)
+            browser_jobs.done(opened, job, {}, NOW)
+        other = self.move_to("ann")
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).default_person_id, other)
+            self.assertEqual(Path(opened.get(Export, self.export).inbox_dir), self.folder())
 
 
 if __name__ == "__main__":
