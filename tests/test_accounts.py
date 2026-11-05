@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
-from darkroom.storage.paths import Photos
+from darkroom.storage.paths import Photos, ProfileNotRemoved
 from tests.shared import add_person, own_database
 
 
@@ -193,6 +193,46 @@ class DeleteTests(unittest.TestCase):
         for status in ("done", "failed", "queued"):
             with self.subTest(status=status):
                 self.deleted(self.account_with_job(status, finished=1000.0, message="TimeoutError"))
+
+    def downloads_of(self, account):
+        return self.photos.root / "_inbox" / ".downloads" / str(account)
+
+    def test_the_delete_removes_the_accounts_download_folder_and_no_other(self):
+        account = self.account_with_job("done", finished=1000.0)
+        other = self.downloads_of(account + 1000)
+        for folder in (self.downloads_of(account), other):
+            folder.mkdir(parents=True)
+            (folder / "leftover.crdownload").write_bytes(b"x")
+        self.deleted(account)
+        self.assertFalse(self.downloads_of(account).exists())
+        self.assertTrue((other / "leftover.crdownload").is_file())
+
+    def test_an_account_without_a_download_folder_is_deleted(self):
+        self.deleted(self.account_with_job("done", finished=1000.0))
+
+    def test_a_download_folder_that_is_a_link_is_not_followed_and_fails_the_delete(self):
+        account = self.account_with_job("done", finished=1000.0)
+        held = self.photos.root / "_inbox" / "jo" / "review" / "export-1"
+        held.mkdir(parents=True)
+        (held / "IMG_1.JPG").write_bytes(b"held")
+        staging = self.photos.root / "_inbox" / ".downloads"
+        (held.parent / str(account)).mkdir()
+        (held.parent / str(account) / "IMG_2.JPG").write_bytes(b"held")
+        for link, target in ((self.downloads_of(account), held), (staging, held.parent)):
+            with self.subTest(link=link.name):
+                if link != staging:
+                    staging.mkdir(parents=True)
+                link.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(ProfileNotRemoved, "downloads folder is a link"):
+                    with db.session(self.engine) as opened:
+                        accounts.delete(opened, self.photos, account, 2.0)
+                with db.session(self.engine) as opened:
+                    self.assertIsNotNone(opened.get(GoogleAccount, account))
+                self.assertEqual((held / "IMG_1.JPG").read_bytes(), b"held")
+                self.assertEqual((held.parent / str(account) / "IMG_2.JPG").read_bytes(), b"held")
+                link.unlink()
+                if link != staging:
+                    staging.rmdir()
 
 
 if __name__ == "__main__":

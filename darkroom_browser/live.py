@@ -8,10 +8,10 @@ from typing import Any
 
 from darkroom_browser import selectors
 from darkroom_browser.context import DownloadInterrupted
+from darkroom_browser.jobs.download import downloads_folder, sweep_downloads
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
-DOWNLOADS_FOLDER = ".downloads"
 VIEWPORT = {"width": 1280, "height": 900}
 
 
@@ -94,21 +94,13 @@ class Live:
             raise failure
 
 
-def downloads_dir_for(profile_dir: Path) -> Path:
-    account = profile_dir.parent
-    return account.parent.parent / "_inbox" / DOWNLOADS_FOLDER / account.name
-
-
 def open_context(profile_dir: Path) -> Live:
     from playwright.sync_api import sync_playwright
 
+    downloads = downloads_folder(profile_dir)
+    sweep_downloads(downloads)
     profile_dir.mkdir(parents=True, exist_ok=True)
     playwright = sync_playwright().start()
-    downloads = downloads_dir_for(profile_dir)
-    downloads.mkdir(parents=True, exist_ok=True)
-    for leftover in downloads.iterdir():
-        if leftover.is_file() or leftover.is_symlink():
-            leftover.unlink()
     context = playwright.chromium.launch_persistent_context(user_data_dir=str(profile_dir), headless=False, viewport=VIEWPORT, accept_downloads=True,
                                                             downloads_path=str(downloads))
     page = context.pages[0] if context.pages else context.new_page()
