@@ -44,6 +44,15 @@ def whole_number(body: dict[str, object], name: str, *, minimum: int = 0, maximu
     return value
 
 
+def boolean(body: dict[str, object], name: str, *, required: bool = True) -> bool:
+    value = body.get(name)
+    if value is None and not required:
+        return False
+    if not isinstance(value, bool):
+        raise Invalid(f"{name} must be true or false")
+    return value
+
+
 def present(body: dict[str, object], name: str) -> bool:
     return name in body
 

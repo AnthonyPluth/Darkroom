@@ -202,7 +202,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["frozen_now"], verify.FROZEN_NOW)
         usage = subprocess.run([sys.executable, script], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(usage.returncode, 1)
-        self.assertIn("usage: python tools/verify.py seed", usage.stderr)
+        self.assertIn("usage: python tools/verify.py run", usage.stderr)
 
 
 class FrozenDemoServerTests(unittest.TestCase):
@@ -293,6 +293,114 @@ class FrozenDemoServerTests(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(os.path.exists(self.live))
         self.assertTrue(os.path.isdir(self.seed))
+
+
+class RunTests(unittest.TestCase):
+    def test_jobs_come_from_the_flag_then_the_environment_then_the_cpu_count_capped_at_four(self):
+        self.assertEqual(verify.resolve_jobs(None, {}, cpus=8), 4)
+        self.assertEqual(verify.resolve_jobs(None, {}, cpus=2), 2)
+        self.assertEqual(verify.resolve_jobs(None, {"VERIFY_JOBS": " 3 "}, cpus=8), 3)
+        self.assertEqual(verify.resolve_jobs(1, {"VERIFY_JOBS": "3"}, cpus=8), 1)
+        for bad in ("0", "many", "-1"):
+            with self.assertRaises(ValueError):
+                verify.resolve_jobs(None, {"VERIFY_JOBS": bad})
+        with self.assertRaises(ValueError):
+            verify.resolve_jobs(0)
+
+    def test_the_browser_run_gets_every_server_the_session_file_the_frozen_moment_and_the_pages(self):
+        command = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1", "http://127.0.0.1:2"], "/d/demo-session.json", ["status"], ["open-people"])
+        self.assertEqual(command[:2], ["node", "/r/frontend/verify/verify.mjs"])
+        self.assertEqual([command[i + 1] for i, a in enumerate(command) if a == "--url"], ["http://127.0.0.1:1", "http://127.0.0.1:2"])
+        self.assertEqual(command[command.index("--session") + 1], "/d/demo-session.json")
+        self.assertEqual(command[command.index("--images") + 1], os.path.join(verify.ROOT, "docs", "screenshots"))
+        self.assertEqual(command[command.index("--out") + 1], os.path.join(verify.ROOT, "artifacts", "verify"))
+        self.assertEqual(command[command.index("--now") + 1], verify.FROZEN_NOW_ISO)
+        self.assertEqual((command[command.index("--flow") + 1], command[-1]), ("open-people", "status"))
+
+    def test_a_running_verify_is_recognised_by_its_command_line(self):
+        self.assertTrue(verify.is_verify(["node", "/r/frontend/verify/verify.mjs", "--url", "x"]))
+        self.assertTrue(verify.is_verify(["python", "tools/verify.py", "run", "status"]))
+        self.assertFalse(verify.is_verify(["python", "tools/verify.py", "serve"]))
+        self.assertFalse(verify.is_verify(["python", "run.py", "serve"]))
+
+    def test_status_names_what_control_checks(self):
+        found = verify.status()
+        self.assertTrue({"libfaketime", "frozen_now_iso", "busy", "verify_running", "cpus"} <= set(found))
+
+    def test_run_refuses_without_the_packages_the_build_or_a_job_count(self):
+        with mock.patch.object(verify.os.path, "isdir", return_value=False), contextlib_redirect() as err:
+            self.assertEqual(verify.run([]), 2)
+        self.assertIn("npm ci", err.getvalue())
+
+    def test_main_says_what_it_takes(self):
+        with contextlib_redirect() as err:
+            self.assertEqual(verify.main(["nope"]), 1)
+        self.assertIn("usage:", err.getvalue())
+
+
+def contextlib_redirect():
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    manager = contextlib.redirect_stderr(buffer)
+
+    class Both:
+        def __enter__(self):
+            manager.__enter__()
+            return buffer
+
+        def __exit__(self, *args):
+            return manager.__exit__(*args)
+
+    return Both()
+
+
+class SessionStartHookTests(unittest.TestCase):
+    HOOK = ROOT / ".claude" / "hooks" / "session-start.local.sh"
+
+    def installs(self, browsers_path: str | None, cache_has_chromium: bool, preinstalled: bool) -> bool:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            work = Path(tmp) / "work"
+            (work / "frontend").mkdir(parents=True)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            marker = Path(tmp) / "installed"
+            npx = bin_dir / "npx"
+            npx.write_text(f"#!/bin/sh\ntouch {marker}\n")
+            npx.chmod(0o755)
+            if cache_has_chromium:
+                (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64").mkdir(parents=True)
+                (home / ".cache" / "ms-playwright" / "chromium-1" / "chrome-linux64" / "chrome").write_text("")
+            home.mkdir(exist_ok=True)
+            pre = Path(browsers_path or tmp) / "browsers"
+            if preinstalled:
+                (pre / "chromium-2" / "chrome-linux").mkdir(parents=True)
+                (pre / "chromium-2" / "chrome-linux" / "chrome").write_text("")
+            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home)}
+            if browsers_path is not None:
+                env["PLAYWRIGHT_BROWSERS_PATH"] = str(pre)
+            subprocess.run(["bash", "-c", f". {self.HOOK}"], cwd=work, env=env, check=True, capture_output=True)
+            return marker.exists()
+
+    def test_a_configured_browsers_path_is_the_only_place_looked_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.installs(str(Path(tmp) / "x"), cache_has_chromium=True, preinstalled=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "y"), cache_has_chromium=False, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(None, cache_has_chromium=True, preinstalled=False))
+
+    def test_chromium_in_the_configured_path_or_the_user_cache_is_enough_and_in_neither_is_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "a"), cache_has_chromium=False, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(None, cache_has_chromium=True, preinstalled=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(self.installs(str(Path(tmp) / "b"), cache_has_chromium=True, preinstalled=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.installs(str(Path(tmp) / "c"), cache_has_chromium=False, preinstalled=False))
 
 
 if __name__ == "__main__":

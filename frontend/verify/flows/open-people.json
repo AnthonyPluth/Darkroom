@@ -1,0 +1,10 @@
+{
+  "name": "open-people",
+  "page": "status",
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "Status" } },
+    { "click": "a[href='/people'] >> visible=true" },
+    { "expect_text": { "selector": "h1", "text": "People" } },
+    { "screenshot": "people" }
+  ]
+}

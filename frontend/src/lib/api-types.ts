@@ -77,6 +77,11 @@ export interface ClaimBody {
   worker?: string;
 }
 
+export interface ConfirmReply {
+  confirmed: string[];
+  rejected: Refusal[];
+}
+
 export interface DecisionReply {
   decision: DecisionView;
 }
@@ -105,6 +110,15 @@ export interface Decisions {
   page_size: number;
 }
 
+export interface DeletedBody {
+  asset_ids: string[];
+}
+
+export interface DeletedReply {
+  recorded: string[];
+  rejected: Refusal[];
+}
+
 export interface DeviceAssetDecl {
   id: string;
   resources: DeviceResourceDecl[];
@@ -123,6 +137,11 @@ export interface DeviceCheckinBody {
   app_version?: string | null;
 }
 
+export interface DevicePatchBody {
+  cleanup_enabled: boolean;
+  icloud_photos_off?: boolean;
+}
+
 export interface DeviceReply {
   device: DeviceView;
 }
@@ -139,7 +158,10 @@ export interface DeviceState {
   name: string;
   last_checkin: number | null;
   pending_uploads: number;
+  cleanup_enabled: boolean;
   eligible: number | null;
+  eligible_bytes: number | null;
+  eligible_checked: number | null;
 }
 
 export interface DeviceView {
@@ -160,6 +182,22 @@ export interface Devices {
 
 export interface DoneBody {
   result?: Record<string, unknown>;
+}
+
+export interface EligibleAsset {
+  asset_id: string;
+  bytes: number;
+  resources: string[];
+}
+
+export interface EligibleBody {
+  assets: DeviceAssetDecl[];
+}
+
+export interface EligibleReply {
+  cleanup_enabled: boolean;
+  eligible: EligibleAsset[];
+  rejected: Refusal[];
 }
 
 export interface EnqueueBody {
@@ -419,6 +457,12 @@ export interface ReassignBody {
   person_id: number;
 }
 
+export interface Refusal {
+  asset_id: string;
+  reason: string;
+  message: string;
+}
+
 export interface ResolveBody {
   action: "keep_both";
 }
@@ -502,6 +546,7 @@ export interface Endpoints {
   "DELETE /api/people/{id}": { body: never; reply: Ok };
   "GET /api/people/{id}/devices": { body: never; reply: Devices };
   "DELETE /api/devices/{id}": { body: never; reply: DeviceReply };
+  "PATCH /api/devices/{id}": { body: DevicePatchBody; reply: DeviceReply };
   "GET /api/accounts": { body: never; reply: Accounts };
   "POST /api/accounts": { body: AccountCreateBody; reply: AccountReply };
   "PATCH /api/accounts/{id}": { body: AccountPatchBody; reply: AccountReply };
@@ -530,6 +575,9 @@ export interface Endpoints {
   "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
   "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
+  "POST /api/device/eligible": { body: EligibleBody; reply: EligibleReply };
+  "POST /api/device/eligible/confirm": { body: EligibleBody; reply: ConfirmReply };
+  "POST /api/device/deleted": { body: DeletedBody; reply: DeletedReply };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };
