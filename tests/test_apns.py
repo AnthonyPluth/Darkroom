@@ -50,12 +50,11 @@ class ApnsWorld(unittest.TestCase):
         self.key = new_key()
         self.key_file = write_key(self.folder, self.key)
         self.fake = FakeApns(self.folder, self.key.public_key())
+        self.addCleanup(self.fake.listener.close)
         self.clock = Clock()
 
     def start(self) -> FakeApns:
-        self.fake.__enter__()
-        self.addCleanup(self.fake.__exit__)
-        return self.fake
+        return self.fake.__enter__()
 
     def client(self, port: int | None = None) -> apns.Apns:
         credentials = apns.Credentials(KEY_ID, TEAM_ID, BUNDLE_ID, self.key_file)

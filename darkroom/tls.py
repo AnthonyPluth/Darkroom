@@ -63,6 +63,7 @@ class Http2:
 
     def __enter__(self) -> Http2:
         context = ssl.create_default_context(cafile=self.cafile)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.set_alpn_protocols(["h2"])
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
         try:
