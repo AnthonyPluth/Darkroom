@@ -1,0 +1,12 @@
+{
+  "name": "exports-download",
+  "page": "exports",
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "Exports" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for casey.photos@example.com']", "text": "Downloading" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for casey.photos@example.com']", "text": "40%" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for casey.photos@example.com']", "text": "2 of 5" } },
+    { "scroll_to": "section[aria-label='Current export parts for casey.photos@example.com']" },
+    { "screenshot": "download-progress" }
+  ]
+}

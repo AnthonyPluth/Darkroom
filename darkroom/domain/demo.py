@@ -276,6 +276,19 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
                           hold_sha1=media.sha1_of(hold)[0]))
 
 
+def seed_download(opened: Session, now: float) -> None:
+    owner = opened.execute(select(Person).where(Person.slug == "casey")).scalar_one()
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
+    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-2", created_at=now - DAY, ready_at=now - 2 * HOUR,
+                    expires_at=now + 7 * DAY - 2 * HOUR, part_count=3, status="downloading", download_tries=0)
+    opened.add(export)
+    opened.flush()
+    opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-2-001.zip", bytes=3_200_000, bytes_done=3_200_000, downloads_used=1, attempts=1,
+                          status="done"))
+    opened.add(ExportPart(export_id=export.id, number=2, bytes=3_100_000, bytes_done=1_240_000, downloads_used=2, attempts=2, status="downloading"))
+    opened.add(ExportPart(export_id=export.id, number=3, bytes=1_800_000, status="pending"))
+
+
 def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Summary:
     now = noon(today)
     people: dict[str, Person] = {}
@@ -287,6 +300,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     opened_alerts = sum(seed_account(opened, settings, people, spec, now) for spec in ACCOUNTS)
     opened.flush()
     seed_import(opened, photos, people, today, now)
+    seed_download(opened, now)
     opened.flush()
     return Summary(len(PEOPLE), len(ACCOUNTS), len(ACCOUNTS), len(PEOPLE), originals, indexed, failed, opened_alerts)
 
