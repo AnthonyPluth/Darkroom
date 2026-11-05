@@ -99,6 +99,9 @@ jobs:
       - name: Install the web app's dependencies
         working-directory: frontend
         run: npm ci --no-audit --no-fund
+      - name: Install the browser (frontend/verify's tests drive Chromium; the version is the locked @playwright/test's)
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
       - name: Type-check (svelte-check, tsc)
         working-directory: frontend
         run: npm run typecheck
