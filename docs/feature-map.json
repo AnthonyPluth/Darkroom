@@ -449,6 +449,7 @@
         "frontend/src/pages/Review.svelte"
       ],
       "tests": [
+        "tests/test_demo.py",
         "tests/test_every_route.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py",
