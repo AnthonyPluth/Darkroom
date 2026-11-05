@@ -63,6 +63,10 @@ final class SQLiteResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.attemptsAndRehashesCountUpAndResetOnUpsert(make())
     }
 
+    func testConditionalAttemptCountsOnlyAnUnchangedRow() async throws {
+        try await ResourceStoreContract.conditionalAttemptCountsOnlyAnUnchangedRow(make())
+    }
+
     func testCountsAndFilteringByState() async throws {
         try await ResourceStoreContract.countsAndFilteringByState(make())
     }
