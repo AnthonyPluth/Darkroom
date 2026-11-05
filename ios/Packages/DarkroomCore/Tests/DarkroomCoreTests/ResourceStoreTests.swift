@@ -36,6 +36,10 @@ final class ResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.sameStateMoveIsAllowedAndUpdatesTheReason(make())
     }
 
+    func testConditionalSetStateOnlyTouchesRowsWithTheSameContent() async throws {
+        try await ResourceStoreContract.conditionalSetStateOnlyTouchesRowsWithTheSameContent(make())
+    }
+
     func testSetStateIgnoresUnknownKeys() async throws {
         try await ResourceStoreContract.setStateIgnoresKeysThatAreGone(make())
     }
