@@ -47,6 +47,56 @@ class IndexTests(unittest.TestCase):
         self.assertEqual((photo.source, photo.make, photo.time_source, photo.gps_source), ("phone", "Apple", "exif_offset", "exif"))
         self.assertFalse(photo.confirmed_in_google)
 
+    def test_a_photo_is_indexed_with_both_perceptual_hashes_and_a_video_with_neither(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        fixtures.make_video(self.originals / "b.mov")
+        self.run_index()
+        photo, video = self.items()["jo/originals/a.jpg"], self.items()["jo/originals/b.mov"]
+        self.assertEqual((len(photo.phash), len(photo.dhash)), (16, 16))
+        self.assertEqual((video.phash, video.dhash), (None, None))
+
+    def test_an_item_indexed_before_dhash_existed_gets_one_without_being_read_again(self):
+        path = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            item = opened.query(MediaItem).one()
+            expected, item.dhash = item.dhash, None
+            kept = (item.sha1, item.phash, item.indexed_at)
+        report = self.run_index(now=200.0, read=lambda paths: self.fail("exiftool was run for a file that did not change"))
+        self.assertEqual((report.new, report.unchanged, report.changed, report.failed), (0, 1, 0, 0))
+        found = self.items()["jo/originals/a.jpg"]
+        self.assertEqual((found.dhash, (found.sha1, found.phash, found.indexed_at)), (expected, kept))
+        self.assertTrue(path.exists())
+
+    def test_the_backfill_skips_what_cannot_be_hashed_and_still_fills_the_rest(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        fixtures.save_jpeg(fixtures.scene(2), self.originals / "b.jpg")
+        fixtures.save_jpeg(fixtures.scene(3), self.originals / "c.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            for item in opened.query(MediaItem):
+                item.dhash = None
+            opened.add(MediaItem(person_id=1, source="phone", path="../outside.jpg", sha1="x", bytes=1, phash="0" * 16, indexed_at=1.0))
+            opened.add(MediaItem(person_id=1, source="phone", path="jo/originals/gone.jpg", sha1="y", bytes=1, phash="0" * 16, indexed_at=1.0))
+        (self.originals / "b.jpg").write_bytes(b"no longer a picture")
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            self.assertEqual(index.backfill_dhash(opened, self.photos, person), 2)
+        found = self.items()
+        self.assertEqual({path: item.dhash is not None for path, item in found.items()},
+                         {"jo/originals/a.jpg": True, "jo/originals/b.jpg": False, "jo/originals/c.jpg": True, "../outside.jpg": False, "jo/originals/gone.jpg": False})
+
+    def test_the_backfill_leaves_other_people_and_takeout_items_alone(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            add_person(opened, "sam")
+            opened.query(MediaItem).one().dhash = None
+            opened.add(MediaItem(person_id=1, source="takeout", path="jo/originals/a.jpg-copy", sha1="z", bytes=1, phash="0" * 16, indexed_at=1.0))
+            sam = opened.query(Person).filter_by(slug="sam").one()
+            self.assertEqual(index.backfill_dhash(opened, self.photos, sam), 0)
+            self.assertEqual(sorted((i.source, i.dhash is None) for i in opened.query(MediaItem)), [("phone", True), ("takeout", True)])
+
     def test_a_second_run_indexes_nothing_new(self):
         fixtures.make_jpeg(self.originals / "a.jpg", taken="2019:07:04 12:30:15")
         self.run_index()

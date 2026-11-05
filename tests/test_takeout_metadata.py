@@ -4,6 +4,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from darkroom.domain import media
 from darkroom.domain.ingest import metadata, pairing, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -28,6 +29,13 @@ class CandidateTests(unittest.TestCase):
         item = TakeoutItem(path=path, sha1="", copies=(path,), sidecar=None)
         tags = exiftool.read([path])[path]
         return metadata.candidate(item, tags, side, 1, "x/y.jpg", 50.0, **kwargs)
+
+    def test_a_takeout_photo_gets_both_perceptual_hashes(self):
+        path = fixtures.save_jpeg(fixtures.scene(1), self.root / "a.jpg")
+        found = self.build(path, parsed())
+        hashes = media.perceptual_hashes(path)
+        self.assertEqual((found.phash, found.dhash), (hashes.phash, hashes.dhash))
+        self.assertIsNotNone(found.dhash)
 
     def test_exif_gps_beats_a_different_sidecar_gps(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00", gps=(40.7, -74.0))
