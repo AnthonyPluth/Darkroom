@@ -63,6 +63,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 
 ### Flows on Exports
 
+#### `exports-download`
+
+- **Starts at:** `exports`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Exports`, `Downloading`, `40%`, `2 of 5`.
+- **Drive it:** `tools/control flow exports-download`; or `poetry run python tools/verify.py run --flow exports-download`.
+
 #### `exports`
 
 - **Starts at:** `exports`.
