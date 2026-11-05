@@ -5,7 +5,7 @@
   import { apiCall } from "$lib/contract";
   import { nowSeconds, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
-  import { showPending } from "$lib/pending.svelte";
+  import { reservePending, showPending } from "$lib/pending.svelte";
   import { viewport } from "$lib/viewport.svelte";
   import { camera, canUndo, compared, decidedBy, decisionChip, decisionDetail, frame, pairLabel, personName, savedSentence, size, undoUnavailable, wallClock } from "$lib/review";
   import Chip from "../components/Chip.svelte";
@@ -27,6 +27,7 @@
   }
 
   const loader = new Loader(async () => {
+    const generation = reservePending();
     const [firstPage, resolved, people] = await Promise.all([
       pendingPage(after),
       apiCall<"GET /api/review">("/api/review?status=kept_both", { failed: "Couldn't load the past decisions" }),
@@ -50,7 +51,7 @@
     const position = first ? pending.before + pending.reviews.indexOf(first) + 1 : 0;
     const detail = first ? await apiCall<"GET /api/review/{id}">(`/api/review/${first.id}`, { failed: "Couldn't load the pair" }) : null;
     reassignTo = String(detail?.default_person_id ?? detail?.served_people[0]?.id ?? "");
-    showPending(pending.pending);
+    showPending(generation, pending.pending);
     const past = [...resolved.reviews].sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0));
     return { pending: pending.reviews, pendingCount: pending.pending, position, detail, past, people: people.people, now: nowSeconds() };
   });

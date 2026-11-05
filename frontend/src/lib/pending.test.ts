@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiCall } from "./contract";
-import { pending, refreshPending, showPending } from "./pending.svelte";
+import { pending, refreshPending, reservePending, showPending } from "./pending.svelte";
 
 vi.mock("./contract", () => ({ apiCall: vi.fn() }));
 
@@ -20,7 +20,7 @@ function deferredCalls(): Settle[] {
 describe("refreshPending", () => {
   beforeEach(() => {
     vi.mocked(apiCall).mockReset();
-    showPending(0);
+    showPending(reservePending(), 0);
   });
 
   it("shows the count the server answers", async () => {
@@ -56,14 +56,32 @@ describe("refreshPending", () => {
   it("keeps the count the Review page shows over a refresh started before it", async () => {
     const calls = deferredCalls();
     const earlier = refreshPending();
-    showPending(5);
+    showPending(reservePending(), 5);
     calls[0].resolve(8);
     await earlier;
     expect(pending.count).toBe(5);
   });
 
+  it("drops a Review count whose load started before a newer refresh", async () => {
+    const review = reservePending();
+    const calls = deferredCalls();
+    const later = refreshPending();
+    calls[0].resolve(2);
+    await later;
+    showPending(review, 7);
+    expect(pending.count).toBe(2);
+  });
+
+  it("drops a Review count whose load started before a newer Review load", () => {
+    const earlier = reservePending();
+    const later = reservePending();
+    showPending(later, 4);
+    showPending(earlier, 9);
+    expect(pending.count).toBe(4);
+  });
+
   it("shows no count when the latest refresh fails", async () => {
-    showPending(6);
+    showPending(reservePending(), 6);
     const calls = deferredCalls();
     const done = refreshPending();
     calls[0].reject(new Error("offline"));

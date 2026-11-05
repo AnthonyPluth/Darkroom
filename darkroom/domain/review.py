@@ -384,7 +384,8 @@ def adopted_lineage(opened: Session, item: MediaItem) -> set[str]:
         select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
         .where(DedupeDecision.takeout_item_id == item.id, ReviewItem.status == "kept_both").order_by(ReviewItem.id.desc()).limit(1)
     ).scalar_one_or_none()
-    return set() if kept is None else adopted_by(opened, kept, item) & {"photo", "sidecar"}
+    adopted = set() if kept is None else adopted_by(opened, kept, item)
+    return (adopted & {"photo", "sidecar"}) | ({"photo"} if "row" in adopted else set())
 
 
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
