@@ -72,7 +72,7 @@ Sending the same resource again after it was saved answers 200 with `"already": 
 
 ## Cleanup
 
-Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` in `DarkroomCore/Models.swift`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
+Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` and their replies in `DarkroomCore/Models.swift`, driven by `CleanupFlow`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
 
 Darkroom answers from scratch on every call and never from an earlier list. An asset is eligible only when every resource it has (photo, Live Photo video, adjusted version) is uploaded and on Unraid with its SHA-1 and size, matched in a Takeout export by an unreversed automatic tier 1 or 2 decision from a Google account that serves the person, the resources the app sends equal what Darkroom has, and the iPhone has cleanup on, is not revoked and its sign-in has not lapsed. Every refusal is one of these reason codes, with a fixed `message`:
 
