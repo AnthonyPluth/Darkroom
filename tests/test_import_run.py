@@ -1,4 +1,5 @@
 import json
+import shutil
 import unittest
 from unittest import mock
 
@@ -6,10 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import alerts, dedupe
-from darkroom.domain.ingest import metadata, place, run
+from darkroom.domain.ingest import cleanup, metadata, place, run
 from darkroom.storage import locks
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
-from tests.import_world import NOW, World, sha1_of, tree
+from tests.import_world import DAY, NOW, World, sha1_of, tree
 from tests.privacy import no_leaks
 
 SUMMARY = "Takeout import finished"
@@ -277,6 +278,145 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(world.scanned(), [])
         skipped = world.opened.execute(select(Event).where(Event.type == "immich_not_configured")).scalar_one()
         self.assertEqual(skipped.detail, "2 libraries not rescanned")
+
+
+class RetryTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        self.export = self.world.hand_dropped()
+        self.export_id = self.export.id
+
+    def one_item_failing(self):
+        real = place.copy_into
+
+        def failing(folder, source, sha1):
+            if source.name == "IMG_2001.JPG":
+                raise place.PlaceFailed("both names are taken by other files")
+            return real(folder, source, sha1)
+
+        return mock.patch.object(place, "copy_into", failing)
+
+    def import_with_one_item_failing(self):
+        with self.one_item_failing():
+            done = self.world.run_import(self.export_id)
+        self.assertEqual((done.status, done.added, done.failed), ("done", 1, 1))
+        return done
+
+    def originals(self):
+        return {key: value for key, value in tree(self.world.root).items() if "/originals/" in key and not key.endswith(".xmp")}
+
+    def staging(self):
+        return self.world.root / "_inbox/jo" / f"export-{self.export_id}"
+
+    def clean(self, at):
+        return cleanup.clean(self.world.opened, self.world.photos, at)
+
+    def retry(self, at=NOW + DAY):
+        run.request_import(self.world.opened, self.export_id, self.world.photos, at)
+        self.world.opened.commit()
+        return run.run_waiting(self.world.opened, self.world.settings, at, self.world.tools)
+
+    def test_a_run_with_failed_items_holds_the_staging_and_a_retry_places_them_and_releases_it(self):
+        self.import_with_one_item_failing()
+        before = self.originals()
+        self.clean(NOW + 15 * DAY)
+        self.assertTrue(self.staging().is_dir())
+        self.assertEqual(self.retry(NOW + 15 * DAY), [self.export_id])
+        runs = list(self.world.opened.execute(select(ImportRun).order_by(ImportRun.id)).scalars())
+        self.assertEqual([(r.status, r.stage, r.failed, r.added) for r in runs], [("done", "done", 1, 1), ("done", "done", 0, 2)])
+        self.assertEqual(self.world.opened.get(Export, self.export_id).status, "imported")
+        self.assertTrue((self.world.root / "jo/google-only/2017/07/IMG_2001.JPG").is_file())
+        self.assertEqual(self.originals(), before)
+        self.assertEqual(self.world.sent(SUMMARY), 1)
+        self.clean(NOW + 30 * DAY)
+        self.assertFalse(self.staging().exists())
+
+    def test_a_retry_that_fails_again_keeps_the_staging(self):
+        self.import_with_one_item_failing()
+        with mock.patch.object(place, "copy_into", side_effect=place.PlaceFailed("taken")):
+            self.assertEqual(self.retry(), [self.export_id])
+        last = run.latest_run(self.world.opened, self.export_id)
+        self.assertEqual(last.status, "done")
+        self.assertGreater(last.failed, 0)
+        self.clean(NOW + 40 * DAY)
+        self.assertTrue(self.staging().is_dir())
+        self.assertEqual(self.world.opened.get(Export, self.export_id).status, "imported")
+
+    def test_an_export_without_failed_items_still_cannot_be_requested_again(self):
+        self.world.run_import(self.export_id)
+        with self.assertRaises(run.AlreadyImported):
+            run.request_import(self.world.opened, self.export_id, self.world.photos, NOW)
+        self.assertEqual(self.world.opened.get(Export, self.export_id).status, "imported")
+        self.assertEqual(run.waiting_exports(self.world.opened), [])
+
+    def test_a_retry_is_refused_and_changes_nothing_when_the_staging_is_gone(self):
+        self.import_with_one_item_failing()
+        shutil.rmtree(self.staging())
+        for photos in (self.world.photos, None):
+            with self.assertRaises(run.NotReady):
+                run.request_import(self.world.opened, self.export_id, photos, NOW)
+        export = self.world.opened.get(Export, self.export_id)
+        self.assertEqual((export.status, export.stage), ("imported", "done"))
+        self.assertEqual(self.world.count(ImportRun), 1)
+        self.assertEqual(run.waiting_exports(self.world.opened), [])
+
+    def test_a_retry_finds_the_staging_after_the_accounts_default_person_changed(self):
+        from darkroom.storage.models import GoogleAccount
+
+        self.import_with_one_item_failing()
+        placed = self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path.endswith("IMG_2002.JPG"))).scalar_one()
+        kept = (placed.takeout_item_id, placed.person_id)
+        self.assertIsNotNone(kept[0])
+        in_jo = sorted(p.name for p in (self.world.root / "jo/google-only").rglob("*.JPG"))
+        self.assertEqual(in_jo, ["IMG_2002.JPG"])
+        self.world.opened.get(GoogleAccount, self.world.account).default_person_id = self.world.ids["sam"]
+        self.world.opened.commit()
+        self.assertTrue(self.staging().is_dir())
+        before = self.originals()
+        self.assertEqual(self.retry(), [self.export_id])
+        self.world.opened.refresh(placed)
+        self.assertEqual((placed.takeout_item_id, placed.person_id), kept)
+        self.assertEqual(sorted(p.name for p in (self.world.root / "jo/google-only").rglob("*.JPG")), ["IMG_2001.JPG", "IMG_2002.JPG"])
+        self.assertEqual(sorted(p.name for p in (self.world.root / "sam/google-only").rglob("*.JPG")), [])
+        last = run.latest_run(self.world.opened, self.export_id)
+        self.assertEqual((last.status, last.failed), ("done", 0))
+        self.assertEqual(self.originals(), before)
+        self.clean(NOW + 30 * DAY)
+        self.assertFalse(self.staging().exists())
+
+    def test_requesting_twice_queues_one_retry_and_keeps_its_stage(self):
+        self.import_with_one_item_failing()
+        for _ in range(2):
+            run.request_import(self.world.opened, self.export_id, self.world.photos, NOW + DAY)
+            export = self.world.opened.get(Export, self.export_id)
+            self.assertEqual((export.status, export.stage), ("importing", "unpacked"))
+        self.assertEqual(self.world.count(ImportRun), 2)
+        self.assertEqual(run.waiting_exports(self.world.opened), [self.export_id])
+
+    def test_killing_a_retry_and_restarting_ends_the_same_as_an_uninterrupted_retry(self):
+        self.import_with_one_item_failing()
+        self.retry()
+        clean = self.world.state()
+        for number in (1, 4):
+            with self.subTest(call=number):
+                world = World(self)
+                export_id = world.hand_dropped().id
+                with self.one_item_failing():
+                    world.run_import(export_id)
+                run.request_import(world.opened, export_id, world.photos, NOW + DAY)
+                world.opened.commit()
+                with mock.patch.object(place, "place", kill_on_call(place.place, number)), self.assertRaises(KeyboardInterrupt):
+                    run.run_waiting(world.opened, world.settings, NOW + DAY, world.tools)
+                world.reopen()
+                stopped = world.opened.get(Export, export_id)
+                self.assertEqual(stopped.status, "importing")
+                self.clean_never_touches_staging(world)
+                self.assertEqual(run.run_waiting(world.opened, world.settings, NOW + DAY, world.tools), [export_id])
+                self.assertEqual(world.state(), clean)
+
+    def clean_never_touches_staging(self, world):
+        cleanup.clean(world.opened, world.photos, NOW + 60 * DAY)
+        self.assertTrue((world.root / "_inbox/jo" / "export-1").is_dir())
 
 
 class OneAtATimeTests(unittest.TestCase):

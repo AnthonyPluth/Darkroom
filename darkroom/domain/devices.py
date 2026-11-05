@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import oidc
 from darkroom.config import Settings
-from darkroom.domain import events
+from darkroom.domain import events, push_tokens
 from darkroom.storage.models import Device, Person
 
 MAX_TOKEN = 200
@@ -103,6 +103,7 @@ def revoke(opened: Session, device_id: int, now: float) -> Device:
     if device.revoked_at is None:
         device.revoked_at = now
         device.cleanup_enabled = False
+        push_tokens.forget(opened, device, now)
         slug = opened.get(Person, device.person_id)
         events.record(opened, now, "device_revoked", slug.slug if slug else str(device.person_id), device.name)
     return device

@@ -208,6 +208,39 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/config.py", "/darkroom/providers/apns.py"]
 
+  - id: darkroom-push-token-one-module
+    message: >-
+      A device's APNs push token is stored sealed with secretbox, and only darkroom/domain/push_tokens.py seals,
+      unseals, matches or clears it (so a token is read only while its device is not revoked and its owner can still
+      sign in, and the plain token never reaches a reply, a log or another column). Go through push_tokens.register,
+      forget or token_for instead of touching Device.push_token_sealed, push_token_digest or push_token_at here.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $X.push_token_sealed
+      - pattern: $X.push_token_digest
+      - pattern: $X.push_token_at
+      - patterns:
+          - pattern-either:
+              - pattern: getattr($X, $NAME, ...)
+              - pattern: setattr($X, $NAME, ...)
+              - pattern: delattr($X, $NAME)
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^["']push_token_(sealed|digest|at)["']$
+      - patterns:
+          - pattern-either:
+              - pattern: $CALL(..., $F=$V, ...)
+              - pattern: |
+                  {..., "$F": $V, ...}
+              - pattern: $D["$F"]
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^push_token_(sealed|digest|at)$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/push_tokens.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+
   - id: darkroom-eligibility-single-path
     message: >-
       Whether a photo may be deleted from an iPhone is decided only in darkroom/domain/eligibility.py, from scratch at
@@ -251,3 +284,42 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/eligibility.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+
+  - id: darkroom-no-sweep-outside-guarded-helpers
+    message: >-
+      Removing what a folder listing finds deletes whatever that folder is linked to, such as the held copies under
+      _inbox/<person>/review/. Only darkroom/storage/paths.py and darkroom_browser/jobs/download.py's sweep_downloads,
+      which first refuses a link anywhere on the way (downloads_folder), remove the entries of a listed folder. Go
+      through them instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              for $X in $D.iterdir():
+                  ...
+          - pattern-inside: |
+              for $X in $D.glob(...):
+                  ...
+          - pattern-inside: |
+              for $X in $D.rglob(...):
+                  ...
+          - pattern-inside: |
+              for $X in os.listdir(...):
+                  ...
+          - pattern-inside: |
+              for $X in os.scandir(...):
+                  ...
+      - pattern-either:
+          - pattern: $X.unlink(...)
+          - pattern: $X.rmdir(...)
+          - pattern: os.unlink(...)
+          - pattern: os.remove(...)
+          - pattern: os.rmdir(...)
+          - pattern: shutil.rmtree(...)
+      - pattern-not-inside: |
+          def sweep_downloads(...):
+              ...
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]

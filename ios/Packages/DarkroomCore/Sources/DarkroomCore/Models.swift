@@ -117,10 +117,20 @@ public struct EligibleAsset: Codable, Equatable, Sendable {
 }
 
 public struct EligibleReply: Codable, Equatable, Sendable {
+    public let cleanupEnabled: Bool
     public let eligible: [EligibleAsset]
+    public let rejected: [RejectedAsset]
 
-    public init(eligible: [EligibleAsset]) {
+    public init(cleanupEnabled: Bool, eligible: [EligibleAsset], rejected: [RejectedAsset] = []) {
+        self.cleanupEnabled = cleanupEnabled
         self.eligible = eligible
+        self.rejected = rejected
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case cleanupEnabled = "cleanup_enabled"
+        case eligible
+        case rejected
     }
 }
 
@@ -135,15 +145,18 @@ public struct ConfirmRequest: Codable, Equatable, Sendable {
 public struct RejectedAsset: Codable, Equatable, Sendable {
     public let assetID: String
     public let reason: String
+    public let message: String
 
-    public init(assetID: String, reason: String) {
+    public init(assetID: String, reason: String, message: String) {
         self.assetID = assetID
         self.reason = reason
+        self.message = message
     }
 
     enum CodingKeys: String, CodingKey {
         case assetID = "asset_id"
         case reason
+        case message
     }
 }
 
@@ -166,5 +179,15 @@ public struct DeletedRequest: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case assetIDs = "asset_ids"
+    }
+}
+
+public struct DeletedReply: Codable, Equatable, Sendable {
+    public let recorded: [String]
+    public let rejected: [RejectedAsset]
+
+    public init(recorded: [String], rejected: [RejectedAsset]) {
+        self.recorded = recorded
+        self.rejected = rejected
     }
 }

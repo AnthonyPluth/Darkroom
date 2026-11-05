@@ -19,7 +19,7 @@ class Browser(Protocol):
 
     def wait_for(self, selector: str, timeout_ms: int = 30_000) -> None: ...
 
-    def download_to(self, selector: str, folder: Path) -> Path: ...
+    def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path: ...
 
     def screenshot(self, path: Path) -> None: ...
 
@@ -31,8 +31,16 @@ class Reporter(Protocol):
 
     def waiting(self, job_id: int, reason: str) -> None: ...
 
+    def download_plan(self, job_id: int) -> dict[str, Any]: ...
+
+    def part(self, job_id: int, number: int, body: dict[str, object]) -> dict[str, Any]: ...
+
 
 class Cancelled(Exception):
+    pass
+
+
+class DownloadInterrupted(Exception):
     pass
 
 

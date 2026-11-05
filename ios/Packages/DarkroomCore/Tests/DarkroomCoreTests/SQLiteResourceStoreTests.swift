@@ -51,12 +51,24 @@ final class SQLiteResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.sameStateMoveIsAllowedAndUpdatesTheReason(make())
     }
 
+    func testConditionalSetStateOnlyTouchesRowsWithTheSameContent() async throws {
+        try await ResourceStoreContract.conditionalSetStateOnlyTouchesRowsWithTheSameContent(make())
+    }
+
     func testSetStateIgnoresKeysThatAreGone() async throws {
         try await ResourceStoreContract.setStateIgnoresKeysThatAreGone(make())
     }
 
+    func testRemoveDeletesOnlyTheGivenKeys() async throws {
+        try await ResourceStoreContract.removeDeletesOnlyTheGivenKeysAndLaterInsertsGoLast(make())
+    }
+
     func testAttemptsAndRehashesCountUpAndResetOnUpsert() async throws {
         try await ResourceStoreContract.attemptsAndRehashesCountUpAndResetOnUpsert(make())
+    }
+
+    func testConditionalAttemptCountsOnlyAnUnchangedRow() async throws {
+        try await ResourceStoreContract.conditionalAttemptCountsOnlyAnUnchangedRow(make())
     }
 
     func testCountsAndFilteringByState() async throws {

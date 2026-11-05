@@ -26,6 +26,19 @@ enum ResourceStoreContract {
         XCTAssertEqual(record, ResourceRecord(resource: original))
     }
 
+    static func conditionalSetStateOnlyTouchesRowsWithTheSameContent(_ store: ResourceStore) async throws {
+        let old = resource("a", state: .checked, sha1: "old")
+        try await store.upsert([old, resource("b", state: .uploading)])
+        try await store.upsert([resource("a", sha1: "new")])
+        let applied = try await store.setState(.uploaded, ifUnchanged: [old, resource("b", state: .uploading), resource("gone")], failureReason: nil)
+        XCTAssertEqual(applied, 1)
+        let a = try await store.record(for: key("a"))
+        let b = try await store.record(for: key("b"))
+        XCTAssertEqual(a?.resource.state, .hashed)
+        XCTAssertEqual(a?.resource.sha1, "new")
+        XCTAssertEqual(b?.resource.state, .uploaded)
+    }
+
     static func unknownKeyHasNoRecord(_ store: ResourceStore) async throws {
         let record = try await store.record(for: key("nope"))
         XCTAssertNil(record)
@@ -87,6 +100,23 @@ enum ResourceStoreContract {
         XCTAssertTrue(counts.isEmpty)
     }
 
+    static func removeDeletesOnlyTheGivenKeysAndLaterInsertsGoLast(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b"), resource("a", .liveVideo), resource("c", state: .uploaded)])
+        try await store.remove([key("b"), key("a", .liveVideo), key("never-stored")])
+        var all = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(all.map(\.key), [key("a"), key("c")])
+        let gone = try await store.record(for: key("b"))
+        XCTAssertNil(gone)
+        let counts = try await store.counts()
+        XCTAssertEqual(counts, [.hashed: 1, .uploaded: 1])
+        try await store.upsert([resource("b")])
+        all = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(all.map(\.key), [key("a"), key("c"), key("b")])
+        try await store.remove([])
+        let unchanged = try await store.resources(in: Set(ResourceState.allCases))
+        XCTAssertEqual(unchanged.count, 3)
+    }
+
     static func attemptsAndRehashesCountUpAndResetOnUpsert(_ store: ResourceStore) async throws {
         try await store.upsert([resource("a"), resource("b")])
         try await store.recordAttempt(for: [key("a"), key("b")])
@@ -102,6 +132,22 @@ enum ResourceStoreContract {
         record = try await store.record(for: key("a"))
         XCTAssertEqual(record?.attempts, 0)
         XCTAssertEqual(record?.rehashes, 0)
+    }
+
+    static func conditionalAttemptCountsOnlyAnUnchangedRow(_ store: ResourceStore) async throws {
+        let old = resource("a", state: .uploading, sha1: "old")
+        try await store.upsert([old])
+        let first = try await store.recordAttempt(ifUnchanged: old)
+        let second = try await store.recordAttempt(ifUnchanged: old)
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(second, 2)
+        try await store.upsert([resource("a", sha1: "new")])
+        let stale = try await store.recordAttempt(ifUnchanged: old)
+        let gone = try await store.recordAttempt(ifUnchanged: resource("gone"))
+        XCTAssertNil(stale)
+        XCTAssertNil(gone)
+        let record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.attempts, 0)
     }
 
     static func countsAndFilteringByState(_ store: ResourceStore) async throws {

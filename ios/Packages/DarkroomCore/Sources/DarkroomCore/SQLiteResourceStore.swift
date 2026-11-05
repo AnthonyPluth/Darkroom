@@ -57,12 +57,7 @@ public actor SQLiteResourceStore: ResourceStore {
     }
 
     public func record(for key: ResourceKey) async throws -> ResourceRecord? {
-        let sql = "SELECT \(Self.columns) FROM resources WHERE asset_id = ? AND kind = ?"
-        return try withStatement(sql) { statement in
-            bind(key.assetID, at: 1, in: statement)
-            bind(key.kind.rawValue, at: 2, in: statement)
-            return try step(statement) ? Self.record(from: statement) : nil
-        }
+        try storedRecord(for: key)
     }
 
     public func records(in states: Set<ResourceState>) async throws -> [ResourceRecord] {
@@ -102,9 +97,50 @@ public actor SQLiteResourceStore: ResourceStore {
         }
     }
 
+    @discardableResult
+    public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
+        var current: [ResourceKey] = []
+        for resource in resources {
+            if let stored = try storedRecord(for: resource.key), stored.resource.hasSameContent(as: resource), stored.resource.state.canMove(to: state) {
+                current.append(resource.key)
+            }
+        }
+        try await setState(state, for: current, failureReason: failureReason)
+        return current.count
+    }
+
+    @discardableResult
+    public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
+        guard let stored = try await record(for: old.key), stored.resource.hasSameContent(as: old) else { return false }
+        try await upsert([fresh])
+        return true
+    }
+
+    public func remove(_ keys: [ResourceKey]) async throws {
+        try transaction {
+            try withStatement("DELETE FROM resources WHERE asset_id = ? AND kind = ?") { statement in
+                for key in keys {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    bind(key.assetID, at: 1, in: statement)
+                    bind(key.kind.rawValue, at: 2, in: statement)
+                    _ = try step(statement)
+                }
+            }
+        }
+    }
+
     public func recordAttempt(for keys: [ResourceKey]) async throws {
         try transaction {
             for key in keys { try increment("attempts", for: key) }
+        }
+    }
+
+    public func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int? {
+        try transaction { () throws -> Int? in
+            guard let stored = try storedRecord(for: resource.key), stored.resource.hasSameContent(as: resource) else { return nil }
+            try increment("attempts", for: resource.key)
+            return stored.attempts + 1
         }
     }
 
@@ -121,6 +157,15 @@ public actor SQLiteResourceStore: ResourceStore {
                 }
             }
             return found
+        }
+    }
+
+    private func storedRecord(for key: ResourceKey) throws -> ResourceRecord? {
+        let sql = "SELECT \(Self.columns) FROM resources WHERE asset_id = ? AND kind = ?"
+        return try withStatement(sql) { statement in
+            bind(key.assetID, at: 1, in: statement)
+            bind(key.kind.rawValue, at: 2, in: statement)
+            return try step(statement) ? Self.record(from: statement) : nil
         }
     }
 

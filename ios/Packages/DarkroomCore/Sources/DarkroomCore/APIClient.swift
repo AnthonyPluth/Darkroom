@@ -39,8 +39,8 @@ public struct APIClient: Sendable {
         try await post("/api/device/eligible/confirm", request)
     }
 
-    public func deleted(_ request: DeletedRequest) async throws {
-        _ = try await send(path: "/api/device/deleted", method: "POST", body: encode(request))
+    public func deleted(_ request: DeletedRequest) async throws -> DeletedReply {
+        try await post("/api/device/deleted", request)
     }
 
     public func uploadRequest(assetID: String, kind: ResourceKind, sha1: String, filename: String) async throws -> URLRequest {
@@ -89,6 +89,7 @@ public struct APIClient: Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw APIError.transport(String(describing: (error as? URLError)?.code.rawValue ?? -1))
         }
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }

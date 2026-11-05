@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import select
 
@@ -326,6 +327,28 @@ class RetryTests(DownloadCase):
         with db.session(self.engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job).status, "failed")
         self.assertEqual(self.part(1), ("pending", 1, 1, None))
+        self.assertEqual(self.export_row()[:2], ("downloading", 1))
+
+    def test_a_complete_export_whose_finish_is_refused_every_time_ends_up_failed_and_frees_the_account(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        self.fail_job(job)
+        late = NOW + 8 * DAY
+        with mock.patch.object(downloads, "export_folder", side_effect=downloads.Refused("the folder became a link")):
+            for round_ in range(exports.MAX_DOWNLOAD_JOBS):
+                self.assertEqual(self.export_row()[:2], ("downloading", round_))
+                self.assertEqual(self.reconcile(late + round_ * DAY).requeued, 1)
+                retried = self.claim(late + round_ * DAY)
+                with db.session(self.engine) as opened, self.assertRaises(downloads.Refused):
+                    downloads.finish(opened, self.settings, retried, late + round_ * DAY)
+                self.fail_job(retried, late + round_ * DAY)
+            self.assertEqual(self.reconcile(late + 9 * DAY).requeued, 0)
+        self.assertEqual(self.export_row()[:2], ("failed", exports.MAX_DOWNLOAD_JOBS))
+        self.assertEqual(len(self.download_jobs()), 1 + exports.MAX_DOWNLOAD_JOBS)
+        with db.session(self.engine) as opened:
+            self.assertFalse(exports.download_underway(opened, self.account))
 
     def test_a_failed_job_that_is_not_a_download_changes_no_export(self):
         with db.session(self.engine) as opened:
