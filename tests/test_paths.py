@@ -187,7 +187,7 @@ class PlacingRecordTests(unittest.TestCase):
         for name in ("a.jpg", "L" * 251 + ".jpg"):
             with self.subTest(length=len(name)):
                 destination = self.folder / name
-                placing = paths.Placing(name, "1" * 40, True, True)
+                placing = paths.Placing(name, "1" * 40, True, True, "2" * 40)
                 paths.mark_placing(destination, self.token, placing)
                 self.assertEqual([path.name for path in self.folder.iterdir()], [".placing-0123456789abcdef.json"])
                 self.assertEqual(paths.read_placing(paths.placing_record(destination, self.token)), placing)
@@ -195,9 +195,9 @@ class PlacingRecordTests(unittest.TestCase):
 
     def test_a_record_that_is_not_one_is_not_read(self):
         record = paths.placing_record(self.destination, self.token)
-        good = {"name": "a.jpg", "sha1": "1" * 40, "made": True, "sidecar": False}
+        good = {"name": "a.jpg", "sha1": "1" * 40, "made": True, "sidecar": True, "sidecar_sha1": None}
         for data in ({**good, "name": "../a.jpg"}, {**good, "name": ".placing-x"}, {**good, "name": ""}, {**good, "sha1": "x"},
-                     {**good, "made": 1}, {key: value for key, value in good.items() if key != "sidecar"}, [good]):
+                     {**good, "made": 1}, {**good, "sidecar_sha1": "x"}, {**good, "sidecar": False, "sidecar_sha1": "2" * 40}, {key: value for key, value in good.items() if key != "sidecar"}, [good]):
             with self.subTest(data=data):
                 record.write_text(json.dumps(data))
                 self.assertIsNone(paths.read_placing(record))

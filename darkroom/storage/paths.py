@@ -240,11 +240,12 @@ class Placing:
     sha1: str
     made: bool
     new_sidecar: bool
+    sidecar_sha1: str | None = None
 
 
 def mark_placing(destination: Path, token: str, placing: Placing) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    data = {"name": placing.name, "sha1": placing.sha1, "made": placing.made, "sidecar": placing.new_sidecar}
+    data = {"name": placing.name, "sha1": placing.sha1, "made": placing.made, "sidecar": placing.new_sidecar, "sidecar_sha1": placing.sidecar_sha1}
     handle, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=".write-once-")
     try:
         with os.fdopen(handle, "wb") as out:
@@ -262,13 +263,14 @@ def read_placing(record: Path) -> Placing | None:
         data = json.loads(record.read_bytes())
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or set(data) != {"name", "sha1", "made", "sidecar"}:
+    if not isinstance(data, dict) or set(data) != {"name", "sha1", "made", "sidecar", "sidecar_sha1"}:
         return None
-    name, sha1, made, new_sidecar = data["name"], data["sha1"], data["made"], data["sidecar"]
+    name, sha1, made, new_sidecar, sidecar_sha1 = data["name"], data["sha1"], data["made"], data["sidecar"], data["sidecar_sha1"]
     if not (isinstance(name, str) and name and not name.startswith(".") and "/" not in name and "\0" not in name
-            and isinstance(sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sha1) and type(made) is bool and type(new_sidecar) is bool):
+            and isinstance(sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sha1) and type(made) is bool and type(new_sidecar) is bool
+            and (sidecar_sha1 is None or (new_sidecar and isinstance(sidecar_sha1, str) and re.fullmatch(r"[0-9a-f]{40}", sidecar_sha1)))):
         return None
-    return Placing(name, sha1, made, new_sidecar)
+    return Placing(name, sha1, made, new_sidecar, sidecar_sha1)
 
 
 def present(path: Path) -> bool:
@@ -630,15 +632,19 @@ def regular(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
+def regular_sha1(path: Path) -> str | None:
+    return file_sha1(path) if regular(path) else None
+
+
 def take_back(record: Path, placing: Placing, copy_kept: Callable[[Path, str], bool], recorded: Callable[[Path, str], bool]) -> bool:
     made = record.with_name(placing.name)
     sidecar = sidecar_of(made)
-    sha1 = file_sha1(made) if regular(made) else None
+    sha1 = regular_sha1(made)
     kept_by_a_row = sha1 is not None and recorded(made, sha1)
     ours = placing.made and sha1 == placing.sha1 and not kept_by_a_row
     if ours and not copy_kept(made, placing.sha1):
         return False
-    if placing.new_sidecar and regular(sidecar) and not kept_by_a_row:
+    if placing.sidecar_sha1 is not None and regular_sha1(sidecar) == placing.sidecar_sha1 and not kept_by_a_row:
         sidecar.unlink()
     if ours:
         made.unlink()

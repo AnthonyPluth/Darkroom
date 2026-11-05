@@ -438,6 +438,27 @@ class InterruptedReassignTests(ReviewCase):
         self.assertEqual(list(target.parent.glob(f"{paths.PLACING}*")), [])
         self.assertTrue((self.world.root / path).is_file())
 
+    def test_a_sidecar_changed_after_an_interrupted_reassign_is_kept(self):
+        item_id, path = self.kept()
+        for change, crash in (("edited", None), ("replaced", None), ("created", "carry_sidecar")):
+            with self.subTest(change=change):
+                self.dies_while_reassigning(item_id, crash)
+                sidecar = paths.sidecar_of(self.target(path))
+                if change == "edited":
+                    sidecar.write_bytes(sidecar.read_bytes() + b"<!-- edited by hand -->")
+                elif change == "replaced":
+                    sidecar.unlink()
+                    sidecar.write_bytes(b"<x:xmpmeta>replaced by hand</x:xmpmeta>")
+                else:
+                    self.assertFalse(sidecar.exists())
+                    sidecar.write_bytes(b"<x:xmpmeta>made by hand</x:xmpmeta>")
+                data = sidecar.read_bytes()
+                self.assertEqual(self.clean().taken_back, 1)
+                self.assertFalse(self.target(path).exists())
+                self.assertEqual(sidecar.read_bytes(), data)
+                self.assertTrue((self.world.root / path).is_file())
+                sidecar.unlink()
+
     def test_a_copy_that_could_not_be_hard_linked_is_still_taken_back(self):
         item_id, path = self.kept()
         before = self.tree()
