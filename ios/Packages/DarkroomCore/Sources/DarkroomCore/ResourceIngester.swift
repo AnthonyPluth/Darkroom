@@ -43,15 +43,35 @@ public struct ResourceIngester: Sendable {
         for resource in all {
             try Task.checkCancellation()
             let known = try await store.record(for: resource.key)
-            if known != nil, await versions.version(for: resource.key) == resource.version {
+            let previous = await versions.version(for: resource.key)
+            if let known, known.resource.state != .notLocal, previous == resource.version {
                 summary.skipped += 1
                 continue
             }
             let filename = UploadFilename.make(for: resource, assetResources: byAsset[resource.assetID] ?? [resource])
+            guard UploadFilename.isAcceptable(filename) else {
+                summary.failed += 1
+                continue
+            }
             do {
                 let local = try await ingest(resource, filename: filename)
-                try await store.upsert([local])
-                await versions.setVersion(resource.version, for: resource.key)
+                if local.state == .notLocal, let known, known.resource.state == .notLocal, previous == resource.version {
+                    summary.notLocal += 1
+                    continue
+                }
+                try Task.checkCancellation()
+                if previous != nil {
+                    try await versions.setVersion(nil, for: resource.key)
+                    try Task.checkCancellation()
+                }
+                do {
+                    try await store.upsert([local])
+                } catch {
+                    _ = try? await versions.setVersion(previous, for: resource.key)
+                    throw error
+                }
+                try Task.checkCancellation()
+                try await versions.setVersion(resource.version, for: resource.key)
                 if local.state == .notLocal { summary.notLocal += 1 } else { summary.hashed += 1 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -70,7 +90,7 @@ public struct ResourceIngester: Sendable {
         case .notLocal:
             return LocalResource(key: resource.key, sha1: "", bytes: 0, filename: filename, state: .notLocal)
         case .exported:
-            let sha1 = try SHA1Hasher.hash(ofFileAt: temp)
+            let sha1 = try SHA1Hasher.hash(ofFileAt: temp, checkingCancellation: true)
             let size = (try FileManager.default.attributesOfItem(atPath: temp.path)[.size] as? NSNumber)?.int64Value ?? 0
             return LocalResource(key: resource.key, sha1: sha1, bytes: size, filename: filename, state: .hashed)
         }
