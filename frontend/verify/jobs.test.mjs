@@ -27,6 +27,12 @@ describe("planVisits", () => {
     expect(names(visits)).toEqual(["trips @ phone", "flow a @ phone"]);
   });
 
+  it("takes a flow with no page to start on the Status page", () => {
+    const visits = planVisits({ pages: ["status"], flows: [flow("a")], viewports: ["phone"], ownPages: [], filtered: true });
+    expect(names(visits)).toEqual(["status @ phone", "flow a @ phone"]);
+    expect(names(planVisits({ pages: ["people"], flows: [flow("a")], viewports: ["phone"], ownPages: [], filtered: true }))).toEqual(["people @ phone"]);
+  });
+
   it("runs only the named flows when asked for flows alone", () => {
     const visits = planVisits({ pages: ["upcoming"], flows: [flow("a", 3, { page: "trips" })], viewports: ["phone", "desktop"], ownPages: [], filtered: true, flowsOnly: true });
     expect(names(visits)).toEqual(["flow a @ phone", "flow a @ desktop"]);

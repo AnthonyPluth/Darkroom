@@ -4,7 +4,7 @@ export function planVisits({ pages, flows, viewports, ownPages, filtered, flowsO
   const visits = [];
   if (!flowsOnly) for (const name of pages) for (const viewport of viewports) visits.push({ kind: "page", name, viewport });
   for (const flow of flows) {
-    if (filtered && !flowsOnly && !pages.includes(flow.page ?? "upcoming")) continue;
+    if (filtered && !flowsOnly && !pages.includes(flow.page ?? "status")) continue;
     for (const viewport of flow.viewports ?? viewports) visits.push({ kind: "flow", flow, viewport });
   }
   if (!filtered) for (const name of pages.filter((n) => !ownPages.includes(n))) visits.push({ kind: "reduced", name, viewport: "phone" });
