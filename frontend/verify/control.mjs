@@ -68,12 +68,14 @@ export const COMMANDS = {
       viewport: { type: "string", values: VIEWPORT_NAMES, default: "phone", help: "the browser's size to start at" },
       "idle-minutes": { type: "number", default: DEFAULT_IDLE_MINUTES, help: "stop by itself after this long with no command" },
       anyway: { type: "boolean", help: "start even though the machine is busy (pages may load slowly)" },
+      "with-import": { type: "boolean", help: "also import a made-up Takeout export against a fake Immich, so Imports and the review queue hold a real run" },
     },
-    details: ["The demo data is what make verify seeds (`run.py demo`), so pages look as in docs/screenshots/. The browser is signed in as the demo member.",
+    details: ["The demo data is `run.py demo`'s. The browser is signed in as the demo member.",
+      "--with-import adds what make verify seeds on top: a second export built from the demo originals, imported through `run.py import-takeout` against a fake Immich on 127.0.0.1 (`fake-immich scans` lists the rescans it recorded). Only with it do pages look as in docs/screenshots/.",
       "The server and the seed run under libfaketime at make verify's frozen moment, and the browser's clock is fixed at the same moment (UTC).",
       "One session per checkout, on a port and data of its own: a running make verify is left alone.",
       "Refuses when the machine is busy (more than 1.5 runnable processes per CPU) unless --anyway. A stale session (its process gone) is cleaned up first."],
-    examples: ["start", "start --viewport desktop"],
+    examples: ["start", "start --viewport desktop", "start --with-import"],
   },
   stop: {
     group: "session", summary: "Stop the session: its browser, its demo server and its copy of the data.",
@@ -180,6 +182,13 @@ export const COMMANDS = {
     args: [], options: {}, details: ["Paths only: no query strings, bodies or ids (numbers become :id). make verify fails a page on a 5xx."],
     examples: ["network --text"],
   },
+  "fake-immich": {
+    group: "observe", summary: "What the fake Immich recorded while a --with-import session was seeded.",
+    args: [{ name: "what", required: true, values: ["scans"] }], options: {},
+    details: ["`scans` lists the library rescans the import asked the fake for: one per library whose files changed, with the person it belongs to.",
+      "Only a session started with `start --with-import` has them; the fake itself stops once the import is done, and nothing leaves 127.0.0.1."],
+    examples: ["fake-immich scans --text"],
+  },
   flows: {
     group: "flows", summary: "List make verify's flows (frontend/verify/flows/), with the page and widths each starts on.",
     args: [], options: {}, details: [], examples: ["flows --text"],
@@ -203,7 +212,7 @@ export const COMMANDS = {
 const GROUPS = [
   ["session", "Session"], ["navigate", "Navigate"], ["inspect", "Inspect"], ["interact", "Interact"], ["observe", "Observe"], ["flows", "Flows"], ["help", "Help"],
 ];
-export const SESSION_COMMANDS = ["goto", "viewport", "info", "snapshot", "screenshot", "wait-settle", "click", "type", "press", "scroll", "eval", "console", "network", "flow", "reset"];
+export const SESSION_COMMANDS = ["goto", "viewport", "info", "snapshot", "screenshot", "wait-settle", "click", "type", "press", "scroll", "eval", "console", "network", "fake-immich", "flow", "reset"];
 
 const argUsage = (a) => {
   const name = a.values ? a.values.join("|") : a.name;
@@ -639,7 +648,7 @@ async function startLocked(options) {
   if (status.verify_running) notes.push(`make verify is running (${status.verify_running}); this session doesn't touch it`);
   const log = openSync(join(CONTROL_DIR, "daemon.log"), "w", 0o600);
   const child = spawn(process.execPath, [DAEMON, "--dir", CONTROL_DIR, "--python", python, "--now", status.frozen_now_iso, "--viewport", options.viewport,
-    "--idle-minutes", String(options["idle-minutes"])],
+    "--idle-minutes", String(options["idle-minutes"]), ...(options["with-import"] ? ["--with-import"] : [])],
   { cwd: ROOT, detached: true, stdio: ["ignore", log, log] });
   closeSync(log);
   child.unref();

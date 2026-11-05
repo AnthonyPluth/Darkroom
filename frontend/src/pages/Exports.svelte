@@ -29,7 +29,7 @@
 
   onMount(() => {
     void loader.load();
-    const timer = setInterval(() => void loader.load(true), REFRESH_MS);
+    const timer = setInterval(() => void loader.poll(), REFRESH_MS);
     return () => clearInterval(timer);
   });
 
