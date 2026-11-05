@@ -47,3 +47,5 @@ The renewal did not happen and the current schedule still ends on the date the a
 1. Fix what made the job fail: the failure alert and the Exports page link the capture (see "Google changed a page" when that is the cause).
 2. Once the schedule has ended, press Create schedule on the Exports page. It is enabled only then, and only with no schedule or renew job open. When that job is done, the "not renewed" alert closes and next year's renewal follows as usual.
 3. Exports between the end and the new schedule are not made. If that gap matters, a "renew now" action is the later addition to ask for.
+
+The account's Google email cannot be changed while a renew job is open, or while an unconfirmed attempt is waiting for your answer.

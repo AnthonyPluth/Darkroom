@@ -1,0 +1,13 @@
+{
+  "name": "exports-renewal",
+  "page": "exports",
+  "viewports": ["phone"],
+  "steps": [
+    { "expect_text": { "selector": "section[aria-label='avery.photos@example.com']", "text": "Darkroom could not confirm the renewal" } },
+    { "expect_text": { "selector": "section[aria-label='blair.photos@example.com']", "text": "Ended" } },
+    { "screenshot": "unconfirmed" },
+    { "click": "section[aria-label='avery.photos@example.com'] button:has-text('Takeout has no new schedule')" },
+    { "expect_text": { "selector": "section[aria-label='avery.photos@example.com']", "text": "you found none there" } },
+    { "screenshot": "not-renewed" }
+  ]
+}
