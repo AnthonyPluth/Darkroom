@@ -46,7 +46,7 @@ class DomainReporter:
 
     def download_plan(self, job_id):
         with self.session() as opened:
-            return downloads.plan(opened, job_id)
+            return downloads.plan(opened, self.settings, job_id)
 
     def part(self, job_id, number, body):
         self.events.append((body["event"], number))
