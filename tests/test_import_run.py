@@ -364,11 +364,20 @@ class RetryTests(unittest.TestCase):
         from darkroom.storage.models import GoogleAccount
 
         self.import_with_one_item_failing()
+        placed = self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path.endswith("IMG_2002.JPG"))).scalar_one()
+        kept = (placed.takeout_item_id, placed.person_id)
+        self.assertIsNotNone(kept[0])
+        in_jo = sorted(p.name for p in (self.world.root / "jo/google-only").rglob("*.JPG"))
+        self.assertEqual(in_jo, ["IMG_2002.JPG"])
         self.world.opened.get(GoogleAccount, self.world.account).default_person_id = self.world.ids["sam"]
         self.world.opened.commit()
         self.assertTrue(self.staging().is_dir())
         before = self.originals()
         self.assertEqual(self.retry(), [self.export_id])
+        self.world.opened.refresh(placed)
+        self.assertEqual((placed.takeout_item_id, placed.person_id), kept)
+        self.assertEqual(sorted(p.name for p in (self.world.root / "jo/google-only").rglob("*.JPG")), in_jo)
+        self.assertEqual(sorted(p.name for p in (self.world.root / "sam/google-only").rglob("*.JPG")), ["IMG_2001.JPG"])
         last = run.latest_run(self.world.opened, self.export_id)
         self.assertEqual((last.status, last.failed), ("done", 0))
         self.assertEqual(self.originals(), before)

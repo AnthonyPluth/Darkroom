@@ -193,6 +193,8 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
         if fields is None or row is None:
             failed += 1
             continue
+        if row.tier == 5 and row.takeout_item_id is not None:
+            continue
         new_row = row.tier == 5 and row.takeout_item_id is None
         try:
             done = place.place(opened, photos, export, [place.Entry(item, fields, row)], tools.read, tools.write)
