@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from darkroom.domain import accounts, browser_jobs, downloads, exports
+from darkroom.domain.ingest import run
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, ExportPart, GoogleAccount
@@ -121,6 +122,9 @@ class AttemptTests(DownloadCase):
         self.assertEqual(self.export_row()[0], "failed")
         with self.assertRaises(downloads.Refused):
             self.attempt(job, 2)
+        with db.session(self.engine) as opened, self.assertRaises(run.NotReady):
+            run.request_import(opened, self.export)
+        self.assertEqual(self.export_row(), ("failed", 0, None, None))
 
     def test_never_a_sixth_download_even_when_earlier_ones_were_used_outside_this_job(self):
         with db.session(self.engine) as opened:
@@ -268,6 +272,24 @@ class RetryTests(DownloadCase):
             browser_jobs.done(opened, last, {}, NOW + 3 * DAY)
         self.assertEqual(self.export_row()[:3], ("downloaded", 2, "queued"))
 
+    def test_a_complete_export_whose_job_failed_is_finished_even_after_it_expires(self):
+        late = {"past its expiry": listed(), "listed as expired": exports.Listed("g-1", NOW - 600, "expired", None, ())}
+        for name, item in late.items():
+            with self.subTest(name):
+                self.setUp()
+                job = self.claim()
+                for number in (1, 2):
+                    self.attempt(job, number)
+                    self.part_done(job, number, f"takeout-00{number}.zip")
+                self.fail_job(job)
+                with db.session(self.engine) as opened:
+                    self.assertEqual(exports.reconcile(opened, opened.get(GoogleAccount, self.account), [item], NOW + 8 * DAY).requeued, 1)
+                self.assertEqual(self.export_row()[0], "downloading")
+                last = self.claim(NOW + 8 * DAY)
+                with db.session(self.engine) as opened:
+                    downloads.finish(opened, self.settings, last, NOW + 8 * DAY)
+                self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+
     def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
         for day in range(4):
             self.fail_job(self.claim(NOW + day * DAY), NOW + day * DAY)
@@ -393,6 +415,18 @@ class DefaultPersonTests(DownloadCase):
             self.assertEqual(downloads.person_of(opened, opened.get(Export, self.export)).slug, "jo")
             accounts.update(opened, self.account, None, opened.get(GoogleAccount, self.account).default_person_id, NOW)
 
+    def test_the_email_stays_while_a_download_is_queued_running_or_between_tries(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        self.fail_job(job)
+        for now in (NOW, NOW + DAY):
+            with db.session(self.engine) as opened, self.assertRaises(accounts.JobOpen):
+                accounts.update(opened, self.account, "jo.other@example.test", None, now)
+            self.reconcile(NOW + DAY)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.takeout@example.test")
+            accounts.update(opened, self.account, "jo.takeout@example.test", None, NOW)
+
     def test_the_default_person_can_change_once_the_export_is_downloaded(self):
         job = self.claim()
         for number in (1, 2):
@@ -403,6 +437,8 @@ class DefaultPersonTests(DownloadCase):
             browser_jobs.done(opened, job, {}, NOW)
         other = self.move_to("ann")
         with db.session(self.engine) as opened:
+            accounts.update(opened, self.account, "jo.other@example.test", None, NOW)
+            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.other@example.test")
             self.assertEqual(opened.get(GoogleAccount, self.account).default_person_id, other)
             self.assertEqual(Path(opened.get(Export, self.export).inbox_dir), self.folder())
 

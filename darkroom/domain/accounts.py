@@ -152,6 +152,8 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
         require_free_email(opened, email, account.id)
         if email != account.email and browser_jobs.has_open_onboarding_job(opened, account.id):
             raise JobOpen("a connect or schedule job is still open for this account; change the email once it has finished")
+        if email != account.email and exports.download_underway(opened, account.id):
+            raise JobOpen("a Takeout export is still being downloaded for this account; change the email once it has finished")
     if default_person_id is not None:
         require_person(opened, default_person_id)
         require_confirmations_kept(opened, account.id, {default_person_id} | served_by_pixels(opened, account.id))

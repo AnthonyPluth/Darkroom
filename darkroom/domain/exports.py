@@ -187,9 +187,18 @@ def give_up_downloading(opened: Session, export: Export, now: float) -> None:
     events.record(opened, now, "export_download_failed", str(export.id), f"{export.download_tries} download jobs failed after starting a part")
 
 
+def all_done(opened: Session, export: Export) -> bool:
+    parts = parts_of(opened, export.id)
+    return bool(parts) and export.part_count == len(parts) and all(part.status == "done" for part in parts)
+
+
 def retry_download(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
     if download_open(opened, export):
         return None
+    if all_done(opened, export):
+        queue_download(opened, account, export, now)
+        events.record(opened, now, "export_download_requeued", str(export.id), "every part is downloaded")
+        return "requeued"
     if is_late(item, now):
         expire(opened, export, now)
         return "expired"
@@ -223,6 +232,8 @@ def record_new(opened: Session, account: GoogleAccount, item: Listed, now: float
 def update_known(opened: Session, account: GoogleAccount, export: Export, item: Listed, now: float) -> str | None:
     if export.status == "expired":
         return None
+    if export.status in STILL_WAITING and export.ready_at is not None and all_done(opened, export):
+        return retry_download(opened, account, export, item, now)
     if item.state == "expired":
         if export.status in STILL_WAITING:
             expire(opened, export, now)
