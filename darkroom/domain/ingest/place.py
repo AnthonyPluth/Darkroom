@@ -94,22 +94,28 @@ def holds(destination: Path, sha1: str) -> bool:
     return destination.is_file() and not destination.is_symlink() and media.sha1_of(destination)[0] == sha1
 
 
-def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path], None] | None = None) -> Placed:
+def adopted(destination: Path, marking: Callable[[Path, bool], None] | None) -> Placed:
+    if marking is not None:
+        marking(destination, False)
+    return Placed(destination, False)
+
+
+def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None) -> Placed:
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
         if destination.exists() or destination.is_symlink():
             if holds(destination, sha1):
-                return Placed(destination, False)
+                return adopted(destination, marking)
             continue
         if marking is not None:
-            marking(destination)
+            marking(destination, True)
         try:
             written = paths.write_once(destination, chunks(source))
         except paths.AlreadyExists:
             if holds(destination, sha1):
-                return Placed(destination, False)
+                return adopted(destination, marking)
             continue
         if written != sha1:
             destination.unlink(missing_ok=True)
