@@ -17,7 +17,7 @@ What usually goes wrong when driving Darkroom with `tools/control`, and what to 
 
 ## Flows
 
-- Each make verify page and flow runs on its own server and fresh copy of the demo data, so a flow starts from the seed. `tools/control flow <name>` runs on your session's data: if you changed something, run `reset` first. A flow that changes data doesn't pass twice on the same data.
+- make verify runs up to `VERIFY_JOBS` servers (at most 4, one copy of the seed each). Pages and flows share them: a flow sees its own earlier changes and those of the flows queued before it on the same server (all of them, with `VERIFY_JOBS=1`), never another server's. So a flow starts from the seed only when nothing before it changed data; `frontend/verify/flows/README.md` says how to write one that doesn't depend on that. `tools/control flow <name>` runs on your session's data: if you changed something, run `reset` first. A flow that changes data doesn't pass twice on the same data.
 - There is no Google, Immich, Pocket ID or iPhone behind the demo server: it can't reach the internet, so a page that needs one fails or shows its error state.
 - A flow with `viewports` only runs there. Run it at the other width and it may fail at its first step; the `notes` in the answer say so.
 - After every screenshot the flow checks again the `expect_text` steps since its last action. A screenshot that scrolls or closes something fails the flow with `check_lost`.

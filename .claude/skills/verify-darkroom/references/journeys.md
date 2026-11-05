@@ -62,7 +62,7 @@ make verify                                        # or: make verify PAGES="peop
 git status docs/screenshots                        # the images that changed with your change
 ```
 
-`make verify` writes `docs/screenshots/<page>-phone.png` and `-desktop.png` and its report to `artifacts/verify/`. A change meant to alter a page shows as a changed image; one that isn't must show none. Commit them with the change.
+`make verify` writes `docs/screenshots/<page>-phone.png` and `-desktop.png` only when the run reports OK (a failed run leaves them untouched and keeps what it took in `artifacts/verify/images/`), and its report to `artifacts/verify/`. A change meant to alter a page shows as a changed image; one that isn't must show none. Commit them with the change.
 
 ## 6. Run one of make verify's flows step by step
 
