@@ -33,14 +33,16 @@ public actor PushRegistrar {
     }
 
     private let api: @Sendable () async throws -> PushTokenAPI?
+    private let signInEnded: @Sendable () async -> Void
     private var token: String?
     private var registered: String?
     private var generation = 0
     private var pending: Task<Outcome, Never>?
     private var paused = false
 
-    public init(api: @escaping @Sendable () async throws -> PushTokenAPI?) {
+    public init(api: @escaping @Sendable () async throws -> PushTokenAPI?, signInEnded: @escaping @Sendable () async -> Void = {}) {
         self.api = api
+        self.signInEnded = signInEnded
     }
 
     public var currentToken: String? {
@@ -97,7 +99,9 @@ public actor PushRegistrar {
         do {
             try await client.registerPushToken(current)
         } catch let error as APIError {
-            return Self.outcome(of: error)
+            let outcome = Self.outcome(of: error)
+            if outcome == .needsSignIn { await signInEnded() }
+            return outcome
         } catch {
             return .retryLater
         }
