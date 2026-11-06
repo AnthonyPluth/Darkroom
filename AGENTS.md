@@ -141,4 +141,4 @@ The owner runs them by hand with the claude-security plugin, on `claude-fable-5-
 
 ## Model routing
 
-See [CLAUDE.md](CLAUDE.md): Opus by default, Fable for security-related issues, Sonnet only for mechanical work.
+See [CLAUDE.md](CLAUDE.md): Opus by default (security-related issues included), Sonnet only for mechanical work.
