@@ -61,7 +61,7 @@ Approved departures (#40), approved by the owner on #16 via the session owner on
 
 ## Proposal: Renew now on Exports (#164, needs owner sign-off)
 
-Status: **proposal, not signed off.** Nothing here is built. The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below; everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+Status: **proposal, not signed off.** Nothing here is built. The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
 ### The button
 
@@ -82,14 +82,15 @@ Status: **proposal, not signed off.** Nothing here is built. The server route is
 | Renewal not confirmed, unanswered | disabled | Answer the Takeout question above first. |
 | Account needs to sign in | disabled | This account needs to sign in to Google again before its schedule can be renewed. Press Connect first. |
 | Schedule ended | enabled, with Create schedule enabled too | This schedule ended on 24 Nov 2026, so scheduled exports have stopped. Renew now or Create schedule sets up a new yearly schedule in Takeout; both run the same steps. |
-| Create schedule attempt unanswered | disabled | Answer the Takeout question above first. |
-| No schedule | not drawn | none |
+| No schedule yet, including a first Create schedule attempt still unanswered | not drawn | none; the card is as today, and its existing box asks the Takeout question |
+
+Only an unanswered attempt on a schedule that exists (a renewal) draws the button disabled, in the "Renewal not confirmed" row; an unanswered first Create schedule has no schedule recorded, so the button is not drawn (board states 9 and 10).
 
 The date in the first row is the end minus three weeks, written like every date on the page.
 
 ### When Darkroom refuses (409)
 
-The route's own message is shown in the account card, under the sentence, as a danger-toned `role="alert"` line "Couldn't renew {email}: {message}." The message is Darkroom's, unchanged: "this schedule is not due for renewal until 27 Nov 2026, three weeks before it ends", "this account needs to sign in to Google again before its schedule can be renewed", "a schedule or renew job for this account is already waiting or running", "the last schedule attempt may have created an export; check Takeout and say so before renewing", "this account has no export schedule to renew", and "Darkroom is busy with another change; try again in a moment". They appear only when the page is out of date, so after one the page reloads and the button matches. The line goes at the next press or reload. Any other failure (no network, a 5xx) shows the same line with the error's text.
+The route's own message is shown in the account card, under the sentence, as a danger-toned `role="alert"` line "Couldn't renew {email}: {message}." The message is Darkroom's, unchanged: "this schedule is not due for renewal until 27 Nov 2026, three weeks before it ends", "this account needs to sign in to Google again before its schedule can be renewed", "a schedule or renew job for this account is already waiting or running", "the last schedule attempt may have created an export; check Takeout and say so before renewing", "this account has no export schedule to renew", and "Darkroom is busy with another change; try again in a moment". They appear only when the page is out of date, so after one the page reloads in the background and the button and sentence update to match, while the refusal line stays on screen. It goes at the next press of any button in the card, or when the page is left or reloaded by the person. The line sits last in the card, below the explanatory sentence, as in board state 8. Any other failure (no network, a 5xx) shows the same line with the error's text.
 
 ### Alert wording
 
