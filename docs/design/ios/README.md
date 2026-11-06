@@ -2,7 +2,7 @@
 
 Status: **proposal**. The owner's note on #34 (2026-11-06) says the iPhone screen designs are approved, but it links no boards and none are in the repository, so promise 6 (AGENTS.md) still blocks the screens of #35 and #38. This page writes the design down so it can be read, corrected and signed off in #34, in the same way `docs/design/web/` records what #16 approved. Nothing here is built yet. Where the owner's boards exist and differ from this page, the boards win and this page is corrected in the pull request that exports them.
 
-How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Nine decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
+How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Eleven decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
 
 Scope: the app shell, the sign-in screen, the upload status screen and Settings (#35). The cleanup notification and batch screens (#38) get their own design pull request after these, and Settings only reserves their line.
 
@@ -177,7 +177,7 @@ Rules that apply across rows:
 
 ### Refreshing
 
-The screen reads `UploadStatusTracker.status()` when it appears, when the app becomes active, after `syncNow()` returns, and every 2 seconds while the phase is `.uploading`. It never polls otherwise, and a failed read shows the Stopped state (the tracker already maps a store failure to `.error(queueUnreadable)`). Sync now calls `UploadStatusTracker.syncNow()`. Note for #35: `UploadCoordinator.networkReady()` returns false without probing while the reachability backoff (30 s up to 15 min) runs, so a Sync now tapped in the waiting state would change nothing. A manual sync should skip the backoff; that is a core change for the PR that builds this screen.
+The screen reads `UploadStatusTracker.status()` when it appears, when the app becomes active, after `syncNow()` returns, and every 2 seconds while the phase is `.uploading`. It never polls otherwise, and a failed read shows the Stopped state (the tracker already maps a store failure to `.error(queueUnreadable)`). Sync now calls `UploadStatusTracker.syncNow()`. Note for #35: `UploadCoordinator.networkReady()` returns false without probing while the reachability backoff (30 s up to 15 min) runs, so a Sync now tapped in the waiting state would change nothing. A manual sync should skip the backoff; that is a core change for the PR that builds this screen. A manual sync must also run the library scan (`ResourceIngester.run()`) before the upload coordinator, because the coordinator only works on files already in the store and would never find a new photo.
 
 ### Last synced (point 4)
 
@@ -218,7 +218,7 @@ The screen reads `UploadStatusTracker.status()` when it appears, when the app be
 2. **Account** (`Card`, label "ACCOUNT"): `KeyValueRow` "Signed in as" with the person's name (point 2; the row is left out when unknown), `KeyValueRow` "This iPhone" with the device label (point 9).
 3. **Server** (`Card`, label "SERVER"): `KeyValueRow` "Address" with the host in `.footnote.monospaced()`. Under it a `.footnote` `inkMuted` line: "To use a different Darkroom, sign out first." The address is read-only while signed in, because `DeviceSession.begin` refuses to start while signed in.
 4. **Cleanup** (`Card`, label "CLEANUP"): the text "Removing photos from this iPhone is turned on or off on the People page." in `.subheadline`. Nothing else until #38, which adds the on/off value (from `EligibleReply.cleanupEnabled`) and a link to the cleanup screens.
-5. `SecondaryButton` "Sign out" with `danger` text. It opens a `.confirmationDialog`: title "Sign out of Darkroom?", message "Uploads stop on this iPhone. Files already on Darkroom stay there. To stop this iPhone for good, revoke it on the People page.", buttons "Sign out" (destructive) and "Cancel".
+5. `SecondaryButton` "Sign out" with `danger` text. It opens a `.confirmationDialog`: title "Sign out of Darkroom?", message "Uploads stop on this iPhone, including any already started. Files already on Darkroom stay there. To stop this iPhone for good, revoke it on the People page.", buttons "Sign out" (destructive) and "Cancel".
 6. Footer, centred: "Build 0.1.0 (1)" in `.footnote.monospaced()`, `inkMuted`, with `.accessibilityIdentifier("build-version")` as the placeholder `RootView` has today (`BuildVersion.current.label`).
 
 ### States
@@ -292,13 +292,25 @@ Recommended default: the Uploads tab shows the "Photos access needed" state in t
 
 **Needs owner sign-off.** The first draft ended "Getting ready" when any count became non-zero, so a genuinely empty library would stay on it forever. The core has no signal for "the first scan finished" (the store holds only files already read).
 
-Recommended default: the core records a persisted **first scan finished** value (the time of the first pass that ended `.finished`, kept with `lastSync`, point 4) and the card shows "Getting ready" until it exists. An empty library then reads "Up to date" with 0 files. It is a small core change in the PR that builds the Uploads screen.
+Recommended default: the core records a persisted **first scan finished** value (recorded right after a successful `ResourceIngester.run()`, kept beside `lastSync`, point 4; not derived from an upload pass, which ends `.waitingForNetwork` when the first launch is offline and can finish over an empty store) and the card shows "Getting ready" until it exists. An empty library then reads "Up to date" with 0 files. It is a small core change in the PR that builds the Uploads screen.
 
 ### 9. Naming the iPhone
 
 **Needs owner sign-off.** The sign-in sends a device name that the People page shows. From iOS 16 `UIDevice.current.name` returns the generic "iPhone" unless the app holds Apple's user-assigned-device-name entitlement, and `project.yml` declares none, so a household's phones could all appear as "iPhone" and be hard to tell apart or revoke.
 
 Recommended default: ask the person. The sign-in screen gets a second field "Name of this iPhone" under the address (label above, `.footnote` helper "Shown on the People page, for example Sam's iPhone."), prefilled with `UIDevice.current.name` unless that is the generic "iPhone", kept in `UserDefaults`, required (non-empty after `DeviceSignIn.cleanedDeviceName`), and shown in Settings as "This iPhone". Settings lets the name be read but not changed while signed in, since the name is fixed at sign-in. The alternative, requesting the entitlement, needs an Apple approval and a rebuilt provisioning profile and is not recommended.
+
+### 10. What sign out stops
+
+**Needs owner sign-off.** Sign out clears only the Keychain token (`DeviceSession.signOut()`). Background `URLSession` upload tasks that are queued or running keep the bearer header already in their requests, and the server's device token stays valid, so uploads could go on after the dialog says they stop.
+
+Recommended default: sign out first cancels every outstanding background upload task and sets the store's `uploading` files back to `checked`, then clears the token; the dialog says "Uploads stop on this iPhone, including any already started." The device is still not revoked on the server (that stays a People page action), and the dialog keeps saying so. The alternative is to leave tasks running and write "Uploads already started finish." in the dialog; it is honest but leaves a signed-out phone uploading.
+
+### 11. Where the first-scan marker is written
+
+**Needs owner sign-off.** See point 8. The marker must come from the scanner, not from the upload pass.
+
+Recommended default: persist it immediately after a successful `ResourceIngester.run()`, so an offline first launch (upload pass `.waitingForNetwork`) still leaves "Getting ready", and an upload pass over an empty store never writes it by itself.
 
 ## Not in this proposal
 
