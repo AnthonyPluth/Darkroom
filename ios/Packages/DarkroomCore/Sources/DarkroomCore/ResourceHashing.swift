@@ -41,7 +41,17 @@ public struct LibraryRehasher: ResourceRehasher {
     }
 }
 
+public enum ExportError: Error, Equatable, Sendable {
+    case resourceGone
+}
+
 extension APIError {
+    public static func forLocalExport(_ error: Error) -> Error {
+        if error is CancellationError || error is APIError { return error }
+        if error as? ExportError == .resourceGone { return APIError.rejected(status: 409) }
+        return APIError.rejected(status: 422)
+    }
+
     public static func forUpload(status: Int) -> APIError? {
         switch status {
         case 200..<300: return nil
