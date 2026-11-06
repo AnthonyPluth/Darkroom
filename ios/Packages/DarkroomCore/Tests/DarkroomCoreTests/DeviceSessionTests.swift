@@ -302,4 +302,38 @@ final class DeviceSessionTests: XCTestCase {
         await assertRefused(session, callback.absoluteString, as: .expired)
         XCTAssertNil(storage.value(.deviceToken))
     }
+
+    func testARefusalWithTheAttemptsStateNamesTheReasonAndInstallsNothing() async throws {
+        let cases: [(String, SignInError)] = [
+            ("darkroom://signed-in#error=no_person&state=state-1", .noPerson),
+            ("darkroom://signed-in#error=not_allowed&state=state-1", .notAllowed),
+        ]
+        for (text, expected) in cases {
+            let storage = FakeStorage()
+            let session = makeSession(storage)
+            _ = try await session.begin(serverText: host, deviceName: "Phone")
+            await assertRefused(session, text, as: expected)
+            let phase = await session.phase
+            let token = await session.currentToken
+            XCTAssertEqual(phase, .signedOut, text)
+            XCTAssertNil(token, text)
+            XCTAssertNil(storage.value(.deviceToken), text)
+            await assertRefused(session, text, as: .notSigningIn)
+        }
+    }
+
+    func testARefusalWithAnotherStateIsIgnoredAsAMismatch() async throws {
+        let session = makeSession(FakeStorage())
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        await assertRefused(session, "darkroom://signed-in#error=no_person&state=state-2", as: .stateMismatch)
+        let phase = await session.phase
+        XCTAssertEqual(phase, .signedOut)
+    }
+
+    func testARefusalAfterTheAttemptTimedOutIsExpired() async throws {
+        let session = makeSession(FakeStorage())
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        clock.advance(DeviceSession.attemptLifetime + 1)
+        await assertRefused(session, "darkroom://signed-in#error=not_allowed&state=state-1", as: .expired)
+    }
 }

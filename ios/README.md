@@ -1,10 +1,11 @@
 # Darkroom iPhone app
 
-The app replaces Möbius Sync: it uploads each photo's original resources to Darkroom and, later, clears photos off the phone once Darkroom has confirmed them (`docs/SPEC.md#iphone-app`). This directory holds the project setup only. The real screens come with #35 against the design signed off in #34.
+The app replaces Möbius Sync: it uploads each photo's original resources to Darkroom and, later, clears photos off the phone once Darkroom has confirmed them (`docs/SPEC.md#iphone-app`). The design is `docs/design/ios/README.md`. The sign-in screen is built; the Uploads and Settings tabs are placeholders until the rest of #35.
 
 - `project.yml`: the XcodeGen spec. The Xcode project is generated from it and never committed.
-- `Darkroom/`: the app target (SwiftUI lifecycle, iOS 17+): `DarkroomApp`, `AppDelegate` (background `URLSession` completion handler plumbing), a placeholder `RootView` that shows only the build version, `Keychain` and `KeychainSessionStorage` (the device token and server address behind `DeviceSession`).
+- `Darkroom/`: the app target (SwiftUI lifecycle, iOS 17+): `DarkroomApp`, `AppDelegate` (background `URLSession` completion handler plumbing), `RootView` (the app shell: dark only, the sign-in screen while signed out, two placeholder tabs while signed in), `AppModel` (the `DeviceSession` and what the sign-in screen shows), `Theme` and `Views/` (the design's colours and shared pieces, the sign-in screen, the signed-in placeholder), `Keychain` and `KeychainSessionStorage` (the device token and server address behind `DeviceSession`).
 - `Packages/DarkroomCore/`: a SwiftPM package with the logic, no UIKit or PhotoKit (Foundation and swift-crypto only): `APIClient`, `SHA1Hasher`, the request and reply models, `UploadPlanner`, `ResourceStore` with its state machine, an in-memory implementation and `SQLiteResourceStore` (the one the app persists in), `ReachabilityPolicy`, and `CleanupFlow`, the pure state machine of a cleanup round (list, confirm, delete, report) with the `CleanupAPI` calls it drives, `DeviceSession` (the sign-in state, the token and the server address behind a `SessionStorage`, with `ServerAddress` and `DeviceSignIn` for the address and the `darkroom://signed-in#token=` callback), `UploadStatusTracker` (what the upload status screen shows, over the store and an `UploadRunner`), and `CleanupRunner`, which runs a round against the API, the store and a `PhotoDeleter` (the PhotoKit adapter, the background refresh and the notification come with the app's screens).
+- `Darkroom/Background/`: push registration (#59). `PushCenter` registers for remote notifications and keeps Darkroom's copy of the token current while a device is signed in; `AppDelegate+Push` receives the token. The `aps-environment` entitlement is in `Config/Darkroom-Debug.entitlements` (`development`) and `Config/Darkroom-Release.entitlements` (`production`), set per configuration in `project.yml`. In `DarkroomCore`: `PushClient` (the push-token routes), `PushRegistrar` (what to send and when) and `SignOutFlow` (forget the token, stop uploads, clear the session; not wired until Settings has its Sign out).
 - `Config/Base.xcconfig`, `Local.xcconfig.example`: build settings. Your own `Local.xcconfig` is gitignored.
 
 ## First build on a Mac
@@ -13,7 +14,7 @@ The app replaces Möbius Sync: it uploads each photo's original resources to Dar
 2. `cp ios/Local.xcconfig.example ios/Local.xcconfig`, then set `DARKROOM_BUNDLE_ID` (a reverse-DNS id you own) and `DARKROOM_TEAM_ID` (your Apple Developer team id). Nothing in the repository holds either.
 3. `cd ios && xcodegen generate`, then open `Darkroom.xcodeproj`.
 4. Signing: the target uses automatic signing with your team. Select your iPhone as the run destination and press Run (turn on Developer Mode on the phone when asked, and trust the developer profile under Settings, General, VPN & Device Management).
-5. The placeholder app launches and shows `Build <version> (<build>)`.
+5. The app launches on the sign-in screen. Once signed in, the Settings tab shows `Build <version> (<build>)`.
 
 The background task identifiers are `<bundle id>.refresh` and `<bundle id>.hash`; both are listed in the generated Info.plist.
 
