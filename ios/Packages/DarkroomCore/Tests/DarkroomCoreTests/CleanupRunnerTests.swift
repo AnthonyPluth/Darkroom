@@ -579,3 +579,4 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertEqual(report.removed, ["a"])
     }
 
+}
