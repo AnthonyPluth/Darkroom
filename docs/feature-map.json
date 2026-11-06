@@ -95,6 +95,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.status.status",
       "frontend": [
+        "frontend/src/pages/People.svelte",
         "frontend/src/pages/Status.svelte"
       ],
       "tests": [
@@ -208,7 +209,9 @@
       "route": "PATCH /api/devices/{id}",
       "auth": "session",
       "handler": "darkroom.server.api.devices.update_device",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/People.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py"
       ]
