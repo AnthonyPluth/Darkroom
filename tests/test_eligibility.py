@@ -6,12 +6,10 @@ import sqlite3
 import unittest
 from unittest import mock
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
 
 from darkroom.domain import dedupe, eligibility, status, uploads
-from darkroom.storage import db
 from darkroom.storage.models import Event, PhoneAsset, User
 from tests.eligibility_world import Household
 
@@ -38,7 +36,7 @@ class EligibleListTests(unittest.TestCase):
         self.assertIsNone(photo.asset.eligible_confirmed_at)
 
     def test_each_reason_is_fixed_text(self):
-        self.assertEqual(len(eligibility.REASONS), 14)
+        self.assertEqual(len(eligibility.REASONS), 13)
         for code, text in eligibility.REASONS.items():
             self.assertTrue(text.endswith("."), code)
             self.assertNotIn("{", text)
@@ -154,76 +152,6 @@ class EligibleListTests(unittest.TestCase):
             self.home.eligible(self.phone)
 
 
-class ConfirmAndDeletedTests(unittest.TestCase):
-    def setUp(self):
-        self.home = Household(self)
-        self.jo = self.home.person("jo")
-        self.phone = self.home.device(self.jo)
-        self.google = self.home.account(self.jo)
-
-    def test_confirm_marks_only_what_passes_and_records_an_event(self):
-        good = self.home.photo(self.phone, through=self.google)
-        bad = self.home.photo(self.phone)
-        confirmed, rejected = self.home.confirm(self.phone, good, bad)
-        self.assertEqual([entry.asset_id for entry in confirmed], [good.id])
-        self.assertEqual(reasons(rejected), {bad.id: eligibility.NOT_CONFIRMED})
-        self.assertEqual((good.asset.eligible_at, good.asset.eligible_confirmed_at), (self.home.now, self.home.now))
-        self.assertEqual((bad.asset.eligible_at, bad.asset.eligible_confirmed_at), (None, None))
-        event = self.home.opened.execute(select(Event).where(Event.type == "cleanup_confirmed")).scalar_one()
-        self.assertEqual((event.subject, event.detail), ("jo", "1 of 2 confirmed"))
-
-    def test_a_failed_recheck_clears_an_earlier_confirmation(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.confirm(self.phone, photo)
-        os.remove(self.home.photos.root / photo.items["photo"].path)
-        self.home.eligible(self.phone, photo)
-        self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at), (None, None))
-        recorded, rejected = eligibility.record_deleted(self.home.opened, self.phone.id, [photo.id], self.home.now)
-        self.assertEqual((recorded, reasons(rejected)), ([], {photo.id: eligibility.NOT_CONFIRMED_FOR_DELETION}))
-
-    def test_deleted_is_recorded_only_for_confirmed_assets_of_this_iphone(self):
-        confirmed = self.home.photo(self.phone, through=self.google)
-        listed_only = self.home.photo(self.phone, through=self.google)
-        other = self.home.photo(self.home.device(self.jo), through=self.google)
-        self.home.confirm(self.phone, confirmed)
-        self.home.eligible(self.phone, listed_only)
-        recorded, rejected = eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id, listed_only.id, other.id, "NEVER-SEEN"], self.home.now)
-        self.assertEqual(recorded, [confirmed.id])
-        self.assertEqual(reasons(rejected), {listed_only.id: eligibility.NOT_CONFIRMED_FOR_DELETION, other.id: eligibility.UNKNOWN_ASSET,
-                                             "NEVER-SEEN": eligibility.UNKNOWN_ASSET})
-        self.assertEqual(confirmed.asset.deleted_at, self.home.now)
-        self.assertIsNone(confirmed.asset.eligible_at)
-        self.assertEqual((listed_only.asset.deleted_at, other.asset.deleted_at), (None, None))
-        event = self.home.opened.execute(select(Event).where(Event.type == "cleanup_deleted").order_by(Event.id)).scalars().first()
-        self.assertEqual(event.detail, "1 recorded, 3 refused")
-        with self.assertRaises(ValueError):
-            eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id, confirmed.id], self.home.now)
-
-    def test_a_repeated_report_of_a_recorded_deletion_is_recorded_again_and_changes_nothing(self):
-        confirmed = self.home.photo(self.phone, through=self.google)
-        listed_only = self.home.photo(self.phone, through=self.google)
-        other = self.home.photo(self.home.device(self.jo), through=self.google)
-        self.home.confirm(self.phone, confirmed)
-        self.home.eligible(self.phone, listed_only)
-        eligibility.record_deleted(self.home.opened, self.phone.id, [confirmed.id], self.home.now)
-        ids = [confirmed.id, listed_only.id, other.id, "NEVER-SEEN"]
-        again, refused = eligibility.record_deleted(self.home.opened, self.phone.id, ids, self.home.now + 5)
-        self.assertEqual(again, [confirmed.id])
-        self.assertEqual(reasons(refused), {listed_only.id: eligibility.NOT_CONFIRMED_FOR_DELETION, other.id: eligibility.UNKNOWN_ASSET,
-                                            "NEVER-SEEN": eligibility.UNKNOWN_ASSET})
-        self.assertEqual(confirmed.asset.deleted_at, self.home.now)
-        self.assertEqual((listed_only.asset.deleted_at, other.asset.deleted_at), (None, None))
-        details = [event.detail for event in self.home.opened.execute(select(Event).where(Event.type == "cleanup_deleted").order_by(Event.id)).scalars()]
-        self.assertEqual(details, ["1 recorded, 0 refused", "0 recorded, 3 refused"])
-
-    def test_a_deleted_asset_is_never_offered_again(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.confirm(self.phone, photo)
-        eligibility.record_deleted(self.home.opened, self.phone.id, [photo.id], self.home.now)
-        self.assertEqual(reasons(self.home.eligible(self.phone, photo).rejected), {photo.id: eligibility.ALREADY_DELETED})
-        self.assertEqual(reasons(self.home.confirm(self.phone, photo)[1]), {photo.id: eligibility.ALREADY_DELETED})
-
-
 class SwitchTests(unittest.TestCase):
     def setUp(self):
         self.home = Household(self)
@@ -249,14 +177,12 @@ class SwitchTests(unittest.TestCase):
     def test_turning_cleanup_off_forgets_every_earlier_evaluation(self):
         eligibility.set_cleanup(self.home.opened, self.phone.id, True, True, self.home.now)
         photo = self.home.photo(self.phone, through=self.google)
-        self.home.confirm(self.phone, photo)
+        self.home.eligible(self.phone, photo)
         self.assertIsNotNone(self.phone.eligibility_checked_at)
         eligibility.set_cleanup(self.home.opened, self.phone.id, False, False, self.home.now)
         self.home.opened.refresh(photo.asset)
         self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at), (None, None))
         self.assertIsNone(self.phone.eligibility_checked_at)
-        recorded, _ = eligibility.record_deleted(self.home.opened, self.phone.id, [photo.id], self.home.now)
-        self.assertEqual(recorded, [])
 
     def test_setting_the_same_value_changes_nothing(self):
         eligibility.set_cleanup(self.home.opened, self.phone.id, False, False, self.home.now)
@@ -312,7 +238,7 @@ class CountTests(unittest.TestCase):
         shown = self.device_on_status()
         self.assertEqual((shown["eligible"], shown["eligible_bytes"], shown["eligible_checked"]), (None, None, None))
 
-    def test_status_counts_what_the_last_evaluation_found_and_not_what_was_deleted(self):
+    def test_status_counts_what_the_last_evaluation_found(self):
         first = self.home.photo(self.phone, ("photo", "live_video"), through=self.google)
         second = self.home.photo(self.phone, through=self.google)
         third = self.home.photo(self.phone)
@@ -320,9 +246,6 @@ class CountTests(unittest.TestCase):
         size = sum(item.bytes for photo in (first, second) for item in photo.items.values())
         shown = self.device_on_status()
         self.assertEqual((shown["eligible"], shown["eligible_bytes"], shown["eligible_checked"]), (2, size, self.home.now))
-        self.home.confirm(self.phone, second)
-        eligibility.record_deleted(self.home.opened, self.phone.id, [second.id], self.home.now)
-        self.assertEqual(self.device_on_status()["eligible"], 1)
 
     def test_a_disabled_iphone_counts_zero(self):
         self.home.photo(self.phone, through=self.google)
@@ -368,65 +291,13 @@ class StatusAtScaleTests(unittest.TestCase):
         self.assertEqual(shown()[0], 0)
 
 
-class WriteLockTests(unittest.TestCase):
-    def setUp(self):
-        self.home = Household(self)
-        self.jo = self.home.person("jo")
-        self.phone = self.home.device(self.jo)
-        self.photo = self.home.photo(self.phone, through=self.home.account(self.jo))
-        self.home.opened.commit()
-        self.database = self.home.engine.url.database
-        impatient = create_engine(str(self.home.engine.url), connect_args={"timeout": 0.05})
-        event.listen(impatient, "connect", db.set_sqlite_pragmas)
-        self.addCleanup(impatient.dispose)
-        self.impatient = impatient
-
-    def test_confirm_holds_the_write_lock_so_a_reversal_waits_for_it(self):
-        with Session(self.impatient, expire_on_commit=False) as opened:
-            confirmed, _ = eligibility.confirm(opened, self.home.settings, self.home.photos, self.phone.id, [self.home.reported(self.photo)], self.home.now)
-            self.assertEqual([entry.asset_id for entry in confirmed], [self.photo.id])
-            other = sqlite3.connect(self.database, timeout=0)
-            try:
-                with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
-                    other.execute("UPDATE dedupe_decisions SET reversed_at = 9.0")
-            finally:
-                other.close()
-            opened.commit()
-        other = sqlite3.connect(self.database, timeout=0)
-        try:
-            other.execute("UPDATE dedupe_decisions SET reversed_at = 9.0")
-            other.commit()
-        finally:
-            other.close()
-
-    def test_a_confirm_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
-        holder = sqlite3.connect(self.database, timeout=0)
-        holder.execute("BEGIN IMMEDIATE")
-        try:
-            for call in (lambda opened: eligibility.confirm(opened, self.home.settings, self.home.photos, self.phone.id, [self.home.reported(self.photo)],
-                                                            self.home.now),
-                         lambda opened: eligibility.record_deleted(opened, self.phone.id, [self.photo.id], self.home.now),
-                         lambda opened: eligibility.set_cleanup(opened, self.phone.id, False, False, self.home.now)):
-                with Session(self.impatient) as opened, self.assertRaises(eligibility.Busy):
-                    call(opened)
-        finally:
-            holder.rollback()
-            holder.close()
-        check = sqlite3.connect(self.database)
-        try:
-            self.assertEqual(check.execute("SELECT eligible_at, eligible_confirmed_at, deleted_at FROM phone_assets").fetchall(), [(None, None, None)])
-            self.assertEqual(check.execute("SELECT cleanup_enabled FROM devices").fetchall(), [(1,)])
-        finally:
-            check.close()
-
-
 class CheckForgetsTests(unittest.TestCase):
     def test_a_new_check_that_changes_the_asset_forgets_its_evaluation(self):
         home = Household(self)
         jo = home.person("jo")
         phone = home.device(jo)
         photo = home.photo(phone, through=home.account(jo))
-        home.confirm(phone, photo)
+        home.eligible(phone, photo)
         row = photo.rows["photo"]
         declared = uploads.Asset(photo.id, (uploads.Resource("photo", row.sha1, row.bytes, row.filename), uploads.Resource("adjusted", "a" * 40, 5, "IMG_A.HEIC")))
         uploads.check(home.opened, phone.id, jo.id, [declared], home.now)
