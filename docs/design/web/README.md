@@ -13,6 +13,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `02-status-desktop.dc.html`, `02-status-phone.dc.html` | Status (home) |
 | `03-people-desktop.dc.html`, `03-people-phone.dc.html` | People |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` | Exports |
+| `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (proposal, #164, not signed off) |
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
@@ -58,3 +59,53 @@ Approved departures (#40), approved by the owner on #16 via the session owner on
 2. Exports: the warning box for an unconfirmed first schedule (departure 4 of #29) gains a "Takeout has the schedule" button next to "I checked Takeout, there is no schedule".
 3. Exports: Create schedule is enabled again once an account's schedule has ended unrenewed (with no schedule or renew job open and no attempt left unanswered), and the line under it then describes a new schedule.
 
+## Proposal: Renew now on Exports (#164, needs owner sign-off)
+
+Status: **proposal, not signed off.** Nothing here is built. The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below; everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+
+### The button
+
+- **Label and place.** "Renew now", a secondary button (`btn`, never primary) last in the account card's button row, after Create schedule: Connect, Create schedule, Renew now. On a phone the row stacks, full width, 44 px high, in that order; from `md` up it is one wrapping row.
+- **Shown** only when the account has both a schedule created and an end date. With no schedule it is not drawn (there is nothing to renew; Create schedule is the action) and the card is exactly as today.
+- **Under the buttons**, in `text-ink-muted`, one sentence says why the button is as it is. The disabled button is `disabled` like the others on the page, so the sentence is ordinary text in reading order, and the button names it with `aria-describedby`. It sits above the existing Create schedule sentence, which is unchanged.
+- **Enabled** when all hold: now is on or after three weeks before the schedule end (including after the end); the account does not need to sign in; no schedule or renew job is queued, running or waiting for you; no schedule or renew attempt is waiting for the Takeout answer; and no request from this page is in flight (the page's `busy`). These are the cases the route accepts, read from fields the page already loads.
+- **Pressing it** posts to the route, then reloads the page data as Create schedule does. The job line "Renew schedule: waiting for the browser worker to pick it up." appears and the button turns disabled. A page-level status line says "Renewal queued for family@example.com." (`role="status"`). No confirmation dialog, as for Create schedule.
+
+### States and copy
+
+| State | Renew now | Sentence under the buttons |
+| --- | --- | --- |
+| Before the window | disabled | Darkroom asks for the renewal itself from 22 Dec 2026, three weeks before the schedule ends. Renew now is available from then. |
+| Window open, nothing wrong | enabled | Renew now creates next year's schedule in Takeout without waiting for the daily check. Darkroom does not retry a renewal on its own. |
+| Renew or schedule job open | disabled | A schedule or renew job is already open for this account. |
+| Last renewal failed, inside the window | enabled | The last renewal failed. Darkroom does not retry a renewal on its own: press Renew now to try again. |
+| Renewal not confirmed, unanswered | disabled | Answer the Takeout question above first. |
+| Account needs to sign in | disabled | This account needs to sign in to Google again before its schedule can be renewed. Press Connect first. |
+| Schedule ended | enabled, with Create schedule enabled too | This schedule ended on 24 Nov 2026, so scheduled exports have stopped. Renew now or Create schedule sets up a new yearly schedule in Takeout; both run the same steps. |
+| Create schedule attempt unanswered | disabled | Answer the Takeout question above first. |
+| No schedule | not drawn | none |
+
+The date in the first row is the end minus three weeks, written like every date on the page.
+
+### When Darkroom refuses (409)
+
+The route's own message is shown in the account card, under the sentence, as a danger-toned `role="alert"` line "Couldn't renew {email}: {message}." The message is Darkroom's, unchanged: "this schedule is not due for renewal until 27 Nov 2026, three weeks before it ends", "this account needs to sign in to Google again before its schedule can be renewed", "a schedule or renew job for this account is already waiting or running", "the last schedule attempt may have created an export; check Takeout and say so before renewing", "this account has no export schedule to renew", and "Darkroom is busy with another change; try again in a moment". They appear only when the page is out of date, so after one the page reloads and the button matches. The line goes at the next press or reload. Any other failure (no network, a 5xx) shows the same line with the error's text.
+
+### Alert wording
+
+The two alerts that name the button say where it is. "Takeout schedule not renewed", before the end: "The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to ask for another." After the end: "The export schedule for {account} was not renewed, and it ended on {end}, so scheduled exports have stopped. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to create a new schedule." They no longer mention Create schedule, so the alert gives one way out. "Takeout schedule ending" and "renewal not confirmed" keep their text. The change is in `darkroom/domain/alerts.py` and its tests, in the build pull request.
+
+### Open points (all need owner sign-off)
+
+1. **Where the button sits.** Recommended: last in the button row, secondary, as drawn. Alternative: primary while the renewal has failed, which draws the eye but gives the card two primary actions at times.
+2. **Disabled with a reason, or hidden.** Recommended: disabled with the sentence above (the owner sees that it exists and when it opens); hidden only when there is no schedule. Alternative: hide it outside the window.
+3. **After the end.** Recommended: both Create schedule and Renew now enabled, with the sentence above, because the worker runs the same steps for both (`renew` calls `create_schedule`). Alternative: Renew now only inside the window and Create schedule after it, as the runbook says today.
+4. **Where a refusal shows.** Recommended: in the account card, naming the account, because the page can hold several. The page's existing banner at the top (used by Create schedule) would not say which account.
+5. **No confirmation dialog.** Recommended, as for Create schedule: the server refuses a second attempt, and an unconfirmed outcome has its own question. Alternative: a dialog "Create next year's schedule in Takeout for {email}?".
+6. **Where the window date comes from.** Recommended: the account reply gains `renew_from` (the end minus three weeks), so the page and the server share one rule and the date matches the server's message. Alternative: a constant of 21 days in the page, which can drift from `renewal.NOTICE`.
+7. **Alert wording.** Recommended: the two texts above, naming only Renew now. Alternative: keep the mention of Create schedule after the end.
+8. **Status line on success.** Recommended: "Renewal queued for {email}." as a page-level status. Alternative: none; the new job line is the only sign.
+
+### Checks the build pull request carries
+
+`frontend/src/pages/Exports.svelte.test.ts` for each row of the state table, the 409 line and the status line; `frontend/src/lib/view.test.ts` for the state function; `tests/test_alerts` text for the two alerts; `make verify` images at phone and desktop width beside these boards.
