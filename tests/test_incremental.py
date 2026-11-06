@@ -33,13 +33,13 @@ class IncrementalCase(unittest.TestCase):
     def take_bytes(self, seed):
         return TakeoutBuilder(self.world.base / f"scratch-{seed}", seed=seed).image_bytes(".JPG")
 
-    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW, owner=None):
+    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW, owner=None, form="json"):
         self.count += 1
         google_id = f"google-{self.count}"
         inbox = self.world.photos.inbox("jo") / google_id
         builder = TakeoutBuilder(inbox, seed=40 + self.count, parts=1)
         builder.photo("IMG_1.JPG", data=self.phone, gps=None)
-        builder.photo("IMG_2.JPG", data=self.canal, gps=place, description=description)
+        builder.photo("IMG_2.JPG", data=self.canal, gps=place, description=description, form=form)
         if "sam" in self.people:
             builder.photo("IMG_3.JPG", data=self.sam, gps=None)
         for name in new:
@@ -305,6 +305,20 @@ class IncrementalTests(IncrementalCase):
         stored = self.canal_item()
         self.assertIn(DAWN, stored.sidecar_json)
         self.assertEqual((stored.lat, stored.lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_an_export_without_the_photos_json_keeps_the_stored_record_for_the_next_re_add(self):
+        self.imported()
+        stored = self.canal_item().sidecar_json
+        again = self.imported(form=None, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(self.canal_item().sidecar_json, stored)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
         self.assertEqual(len(self.refreshed()), 1)
 
     def test_a_sidecar_write_that_fails_after_the_check_is_a_failed_item_not_a_skip(self):

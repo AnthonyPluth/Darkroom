@@ -141,6 +141,28 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(xmp.baseline(None, changed), changed)
         self.assertEqual(xmp.baseline("not json", changed), changed)
 
+    def test_every_shape_of_a_later_record_keeps_a_removed_value_for_the_next_re_add(self):
+        old = json.dumps({"title": "a", "description": "Old words", "geoData": {"latitude": 45.4, "longitude": 12.3}, "photoTakenTime": {"timestamp": "1"}})
+        readded = xmp.GoogleMetadata(lat=45.5, lon=12.4, taken_utc=None, description="New words")
+        own, wrote = {}, {"XMP-dc:Description": "Old words", "XMP-exif:GPSLatitude": 45.4, "XMP-exif:GPSLongitude": 12.3}
+        shapes = {
+            "missing": None,
+            "unparsable": "{not json",
+            "not an object": "[1, 2]",
+            "without the fields": json.dumps({"title": "a"}),
+            "with the fields emptied": json.dumps({"title": "a", "description": "", "geoData": {"latitude": 0.0, "longitude": 0.0}}),
+        }
+        for name, later in shapes.items():
+            with self.subTest(later=name):
+                kept = xmp.GoogleMetadata.of(xmp.baseline(old, later))
+                self.assertEqual((kept.description, kept.lat, kept.lon), ("Old words", 45.4, 12.3))
+                self.assertEqual(set(xmp.changes(own, wrote, kept, readded)), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+        self.assertIsNone(xmp.baseline(None, None))
+        self.assertEqual(xmp.baseline(None, old), old)
+        self.assertEqual(xmp.baseline("{not json", old), old)
+        fields = json.dumps({"title": "a", "description": "New words", "geoData": {"latitude": 45.5, "longitude": 12.4}})
+        self.assertEqual(xmp.baseline(old, fields), fields)
+
     def test_a_sidecar_already_holding_googles_new_values_counts_them_as_applied(self):
         refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
         self.assertEqual(xmp.changes({}, refreshed, self.OLD, self.NEW), {})

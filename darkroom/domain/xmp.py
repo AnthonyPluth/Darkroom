@@ -128,15 +128,24 @@ def removes(old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
     return frozenset(removed)
 
 
-def baseline(old_raw: str | None, new_raw: str | None) -> str | None:
-    removed = removes(GoogleMetadata.of(old_raw), GoogleMetadata.of(new_raw))
-    if not removed or old_raw is None or new_raw is None:
-        return new_raw
+def json_object(raw: str | None) -> dict[str, object] | None:
+    if raw is None:
+        return None
     try:
-        old_data, new_data = json.loads(old_raw), json.loads(new_raw)
+        data = json.loads(raw)
     except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def baseline(old_raw: str | None, new_raw: str | None) -> str | None:
+    old_data, new_data = json_object(old_raw), json_object(new_raw)
+    if old_data is None:
         return new_raw
-    if not isinstance(old_data, dict) or not isinstance(new_data, dict):
+    if new_data is None:
+        return old_raw
+    removed = removes(GoogleMetadata.of(old_raw), GoogleMetadata.of(new_raw))
+    if not removed:
         return new_raw
     kept = (["description"] if DESCRIPTION in removed else []) + (list(LOCATION_KEYS) if LATITUDE in removed else [])
     for key in kept:
