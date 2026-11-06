@@ -1,6 +1,8 @@
-# The files that decide how Darkroom is checked, reviewed and secured need the owner's review (the ruleset on main
-# requires a Code Owner review): the workflows and the agent review's instructions, Claude Code's settings, the agent
-# guides, the security policy, the paved-path Semgrep rules and the signed-off designs.
+# GitHub asks the owner to review changes to the files that decide how Darkroom is checked, reviewed and secured: the
+# workflows and the agent review's instructions, Claude Code's settings, the agent guides, the security policy, the
+# paved-path Semgrep rules and the signed-off designs. The ruleset on main does not require that review before a merge
+# (no approving review is required and Code Owner review is off); a pull request merges on the "Merge gate" status and
+# CodeQL alone.
 /.github/ @AnthonyPluth
 /.claude/ @AnthonyPluth
 /AGENTS.md @AnthonyPluth
