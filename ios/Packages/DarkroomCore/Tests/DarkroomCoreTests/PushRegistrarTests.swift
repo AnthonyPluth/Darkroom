@@ -83,6 +83,23 @@ private func waitUntil(_ condition: () -> Bool) async {
     }
 }
 
+private final class EndedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func hit() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+}
+
 private let tokenA = String(repeating: "ab", count: 32)
 private let tokenB = String(repeating: "cd", count: 32)
 
@@ -169,6 +186,40 @@ final class PushRegistrarTests: XCTestCase {
             XCTAssertEqual(retried, .registered)
             XCTAssertEqual(api.registered.count, 2)
         }
+    }
+
+    func testOnlyAnEndedSignInIsReportedToTheSession() async {
+        let cases: [(APIError, Int)] = [
+            (.unauthorized, 1),
+            (.revoked, 1),
+            (.notSignedIn, 1),
+            (.rejected(status: 409), 0),
+            (.rejected(status: 400), 0),
+            (.server(status: 503), 0),
+            (.transport("-1009"), 0),
+        ]
+        for (error, expected) in cases {
+            let api = FakePushAPI()
+            api.failRegister(with: error)
+            let ended = EndedCounter()
+            let registrar = PushRegistrar(api: { api }, signInEnded: { ended.hit() })
+            await registrar.tokenReceived(tokenA)
+            await registrar.sync()
+            XCTAssertEqual(ended.value, expected, "\(error)")
+        }
+    }
+
+    func testASyncThatSucceedsOrWaitsReportsNothing() async {
+        let api = FakePushAPI()
+        let ended = EndedCounter()
+        let signedOut = PushRegistrar(api: { nil }, signInEnded: { ended.hit() })
+        await signedOut.tokenReceived(tokenA)
+        await signedOut.sync()
+        let registrar = PushRegistrar(api: { api }, signInEnded: { ended.hit() })
+        await registrar.sync()
+        await registrar.tokenReceived(tokenA)
+        await registrar.sync()
+        XCTAssertEqual(ended.value, 0)
     }
 
     func testAnUnknownErrorIsRetriedLater() async {
