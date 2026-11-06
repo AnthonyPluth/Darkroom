@@ -1,24 +1,25 @@
 # Darkroom — Spec
 
-Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31). This file is the repo copy for agents.
+Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31). This file is the repo copy for agents, revised for the Immich-first design (#199).
 
 ## Overview
 
-Darkroom (working name) keeps one complete, deduplicated photo library per family member in Immich. It draws from two sources: originals uploaded by a small iPhone app that replaces Möbius Sync, and Google Takeout exports. A browser worker automates Takeout, so the only manual work is an occasional Google sign-in. The same app clears photos off the iPhones once each one exists on Unraid and in Google.
+Darkroom (working name) keeps one complete, deduplicated photo library per family member in Immich. Each person's iPhone backs up to Immich with Immich's own iOS app and clears its backed-up photos with Immich's own "clear backed-up photos" feature; Darkroom ships no iPhone app. Darkroom reads each new asset from Immich and writes a copy once into the person's `originals/` on Unraid. Google Takeout exports fill the gaps, and a browser worker automates Takeout, so the only manual work is an occasional Google sign-in. A transient per-Pixel folder, synced by Syncthing, carries new photos to each person's Pixel, which uploads them to Google Photos; Darkroom deletes a photo's copy from that folder once a Takeout match proves Google has it, and Syncthing carries the deletion to the Pixel.
 
 **Goals**
 
 - One Immich library per person, organized by person and Google account.
-- A one-time full Takeout per account for history, then incremental exports for anything that never passes through the iPhone app.
-- Dedupe across sources, preferring the phone original while keeping Google-only metadata such as added locations.
+- A one-time full Takeout per account for history, then incremental exports for anything that never passes through Immich's app.
+- Dedupe across sources, preferring the original from Immich while keeping Google-only metadata such as added locations.
 - Complete GPS and capture times, so Waypoint can match photos to any trip.
-- Bare minimum on the iPhones: one app replaces Möbius Sync, uploads each photo once, and deletes it once it is on Unraid and in Google. Google Photos via the Pixels stays the off-site backup.
+- Bare minimum on the iPhones: Immich's own app backs up each photo and clears it afterwards, with no Darkroom code on the phone. Google Photos via the Pixels stays the off-site backup.
 
 **Non-goals**
 
 - Replacing Google Photos or the Pixel backup flow.
 - Daily scraping of the Google Photos web app.
 - Editing, albums or face tagging. Immich already handles those.
+- An iPhone app, or gating what Immich's app clears from a phone. Darkroom no longer decides when a photo may leave an iPhone.
 - Waypoint's trip matching. That is a separate spec, and Waypoint reads Immich directly.
 
 ## Current setup
@@ -27,14 +28,14 @@ New photos already pass through the home network on their way to Google, so the 
 
 | Piece | Role |
 | --- | --- |
-| iPhones → Möbius Sync → Pixel 1s | Each iPhone syncs photos through Möbius Sync (a Syncthing client) to an original Pixel, which uploads to Google Photos at original quality for free |
+| iPhones → Möbius Sync → Pixel 1s | Today each iPhone syncs photos through Möbius Sync (a Syncthing client) to an original Pixel, which uploads to Google Photos at original quality for free. Möbius Sync comes off the iPhones when Immich's app takes over |
 | Google Photos | Off-site backup. Only copy of anything that never passed through Syncthing: older photos, shared albums, other devices |
 | Unraid | Docker host and storage. Becomes the Pixels' Syncthing peer in this design |
 | Traefik + Pocket ID | Reverse proxy and OIDC login. Groups: `parents`, `family` |
 | Tailscale | Remote access to internal-only services |
-| Immich | New. Runs on Unraid, one user per person |
+| Immich | New. Runs on Unraid, one user per person. Its own iOS app is the only thing on the iPhones |
 
-Darkroom changes one link in that chain: its iPhone app replaces Möbius Sync and uploads to Unraid, and Unraid syncs to the Pixels with Syncthing. The Pixels and Google Photos stay as they are.
+Darkroom changes the chain this way: Immich's iOS app replaces Möbius Sync as what takes photos off the iPhone, Darkroom copies them from Immich into the person's `originals/` and into a transient folder per Pixel, and Unraid syncs that folder to the Pixel with Syncthing. The Pixels and Google Photos stay as they are. Darkroom isn't deployed yet, so everyone switches at once, with no pilot phase.
 
 ## Architecture
 
@@ -42,19 +43,21 @@ Two sources feed one deduplicated library per person, and Waypoint reads it thro
 
 ```mermaid
 flowchart TD
-  iphone["iPhones<br/>Darkroom app"] -->|upload| orig["Originals<br/>on Unraid"]
-  orig -->|Syncthing, Send Only| pixel["Pixel 1s<br/>free original upload"]
+  iphone["iPhones<br/>Immich iOS app"] -->|backup, and clearing backed-up photos| immich["Immich<br/>1 user and library per person"]
+  immich -->|reconcile: new assets| darkroom["Darkroom: reconcile, ingest, dedupe"]
+  darkroom -->|copy once| orig["Originals<br/>on Unraid"]
+  darkroom -->|transient copy| outbox["Per-Pixel folder<br/>on Unraid"]
+  outbox -->|Syncthing, Send Only| pixel["Pixel 1s<br/>free original upload"]
   pixel -->|upload| gphotos["Google Photos<br/>off-site backup"]
+  darkroom -.->|prune after a Takeout match| outbox
   gphotos -->|Takeout export| worker["Browser worker<br/>scheduled Takeout"]
   worker -->|download| inbox["Takeout inbox<br/>zip parts on Unraid"]
-  orig -->|index| darkroom["Darkroom: ingest, dedupe, cleanup"]
   inbox -->|import| darkroom
-  darkroom -->|safe to delete| iphone
-  darkroom -->|folders + rescan| immich["Immich<br/>1 library per person"]
+  darkroom -->|google-only items, XMP sidecars, rescan| immich
   immich -->|trip photos| waypoint["Waypoint<br/>photos on any trip"]
 ```
 
-Immich reads each person's folders directly. Darkroom writes the originals the app uploads, Google-only items and XMP sidecars, then triggers a rescan. It also tells each iPhone which photos are safe to delete.
+Immich's iOS app uploads into Immich's own storage. Darkroom reads each new asset from Immich and writes a copy once into the person's `originals/` (the permanent copy, never touched again) and into the transient folder of each Pixel that serves the person. It also writes Google-only items and XMP sidecars, then triggers a rescan. Darkroom does not tell the iPhones anything: Immich's app decides what it clears.
 
 ## Takeout browser worker
 
@@ -80,7 +83,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 **Limits it must respect**
 
 - Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that started a download and failed before every part was downloaded, or a job that had nothing left to download and only had to finish a complete export; a job that fails right after downloading the last part is not counted) is marked failed, which frees the account.
-- Google often asks you to verify it's you before a download. The job pauses, sends a push alert to the person's iPhone app linking to the noVNC view, and resumes after you sign in.
+- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (the delivery channel is not decided, #199), and resumes after you sign in.
 - Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
@@ -92,10 +95,11 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 Every photo, from either source, ends up in one per-person index with a hash, a fingerprint, a capture time and a location. Nothing is deleted until a whole export has been processed.
 
-**Phone uploads (continuous)**
+**Immich assets (continuous)**
 
-- Receives each original from the iPhone app with its asset ID and SHA-1, verifies the hash, saves it to the person's originals folder and indexes it: fingerprint, EXIF time and GPS.
-- Never modifies or moves an original once it is saved.
+- A reconcile job polls Immich for each person's new or changed assets. Assumed (to confirm in the spike, [#202](https://github.com/AnthonyPluth/Darkroom/issues/202)): the API lists a user's assets with a stored SHA-1 checksum and tells uploads from the Immich app (device assets) apart from assets of an external library.
+- For each new asset it reads the original from Immich, checks the bytes against the stored SHA-1 (assumed to be the original's SHA-1, #202), writes the original once to the person's `originals/` and indexes it: fingerprint, EXIF time and GPS. It also writes a transient copy for each Pixel that serves the person.
+- Never modifies or moves an original once it is saved. Immich moving or deleting its own file, or the iPhone clearing the photo, does not touch the copy.
 
 **Takeout side (per export)**
 
@@ -115,7 +119,7 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 
 ## Dedupe rules
 
-The phone original always wins. A Takeout copy only adds a file when nothing matches, plus any metadata the original lacks. Immich won't do this for us: external libraries deliberately allow identical files in different locations.
+The original from Immich always wins. A Takeout copy only adds a file when nothing matches, plus any metadata the original lacks. Immich won't do this for us: external libraries deliberately allow identical files in different locations.
 
 Matching runs against everyone the export's Google account serves, in this order, and stops at the first hit:
 
@@ -129,73 +133,59 @@ Matching runs against everyone the export's Google account serves, in this order
 
 **Rules**
 
-- Nothing is auto-deleted. Every decision is stored with its tier and reason, and can be reversed from the review queue.
-- A matched item belongs to whoever's iPhone uploaded the original. A Google-only item goes to the person who owned the export when it was created (the account's default person at that moment; old exports without an owner use the current default) and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
-- A tier 1 or 2 match also proves Google has the original. That proof is what makes the photo eligible for deletion on the iPhone.
-- Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same phone item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
+- Dedupe auto-deletes nothing. Every decision is stored with its tier and reason, and can be reversed from the review queue.
+- A matched item belongs to the person whose Immich user holds the original (assumed to be the asset's owner, #202). A Google-only item goes to the person who owned the export when it was created (the account's default person at that moment; old exports without an owner use the current default) and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
+- A tier 1 or 2 match also records that Google has the original (`confirmed_in_google`). No iPhone deletion rests on it any more, since Immich's own app clears photos. The flag is the signal for pruning a Pixel's transient folder (decided on [#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 6): only an unreversed automatic tier 1 or 2 decision counts, and waiting up to about two months for a Takeout export is acceptable because the Pixel has the space.
+- Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same Immich item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
 
 ## Storage, Syncthing and Immich
 
-Each person gets one folder tree on Unraid and one Immich library over it, so every photo is stored once. The service is the only thing that writes to these folders.
+Each person gets one folder tree on Unraid, and the originals in it are written once. Darkroom is the only thing that writes to these folders. Immich's own upload storage is separate from them (assumed, #202).
 
 ```text
 /mnt/user/photos/
   <person>/
-    originals/          Uploaded by the iPhone app, synced to the Pixel
+    originals/          Copied once from Immich by Darkroom, never changed
     google-only/YYYY/MM Items found only in Takeout
+  <transient folder per Pixel>   Copies on their way to a Pixel (name and layout not decided)
   _inbox/<person>/      Downloaded Takeout parts and staging
   _browser/<account>/   Saved browser profiles
 ```
 
 **Syncthing**
 
-- Unraid shares each person's `originals/` folder with their Pixel as Send Only, so nothing on the Pixel can change Unraid's copy. The Pixel keeps its Syncthing app and settings.
-- Deleting a photo on an iPhone never reaches Unraid. The app only uploads.
+- Unraid shares each Pixel's transient folder with that Pixel as Send Only, so nothing on the Pixel can change Unraid's copy. The Pixel keeps its Syncthing app and settings. Pixels have limited space (about 128 GB), so the folder is not a permanent store: photos wait there until Google Photos has backed them up, then leave the synced folder.
+- Pruning is Darkroom deleting the transient per-Pixel copy: removing a photo from a synced folder removes it from the Pixel on the next sync, so Syncthing carries the deletion. This is a deletion path on Unraid that may touch only the per-Pixel folder, never `originals/` (promises 1 and 2 in AGENTS.md are restated for it), and it will need its own check (a Semgrep rule and a test) in a later issue before it ships.
+- The signal for when Darkroom may delete is the Takeout match: the item's `confirmed_in_google` (an unreversed automatic tier 1 or 2 decision), not a fixed delay, a report from the Pixel or a manual check ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 6). Up to about two months of waiting is acceptable. Removing a photo from a device doesn't remove the Google Photos copy once it has been backed up (confirmed by the owner). The deletion never touches `originals/`, which keeps the permanent copy. Confirmation has to be per destination Pixel and Google account, not a single per-item flag, so that a match in one account doesn't empty the folder of a Pixel that backs up to another; how to track it is not decided.
+- The permanent copies are copies, not hardlinks: the transient folder and `originals/` are separate files.
+- Deleting or clearing a photo on an iPhone never reaches `originals/`: Darkroom only reads from Immich and writes copies.
 - Add `*.xmp` to Unraid's `.stignore`, so the service's sidecars never sync to the Pixels.
-- During the switch, Unraid can join the existing Möbius Sync folders, so Immich works before the app ships. Möbius Sync comes off the iPhones once the app is uploading.
+- Möbius Sync comes off the iPhones when Immich's app is backing them up, so no phone is left uploading through both.
 
 **Shared Pixels (optional)**
 
-- By default each Pixel serves one person and backs up to that person's own Google account. Optionally, a Pixel can serve several people, set per Pixel in the web UI. Each person's `originals/` is its own Send Only folder on that Pixel, and each folder must be turned on for backup in Google Photos there.
+- By default each Pixel serves one person and backs up to that person's own Google account. Optionally, a Pixel can serve several people, set per Pixel in the web UI. The Pixel's transient folder must be turned on for backup in Google Photos there; how it is laid out for several people is left to the implementation issue.
 - Google Photos on a Pixel backs up to one Google account, so everything that Pixel uploads lands in that account.
-- No tags are written into files. Darkroom knows each original's owner from the iPhone that uploaded it, and Takeout copies match back by hash.
+- No tags are written into files. Darkroom knows each original's owner from the Immich user that holds it, and Takeout copies match back by hash.
 
 **Immich**
 
-- One Immich user per person, and one external library per person owned by that user. The owner can't be changed after creation.
-- Import paths: that person's `originals/` and `google-only/` folders. One library can hold several paths.
+- One Immich user per person, and one external library per person owned by that user. The owner can't be changed after creation. Each person's iPhone backs up to that user with Immich's own iOS app, into Immich's own storage.
+- Import paths: the person's `google-only/` folder. Whether `originals/` is imported too is for the spike to settle ([#202](https://github.com/AnthonyPluth/Darkroom/issues/202)): the app's own uploads already show in Immich, and importing the copy would show each photo twice. One library can hold several paths.
 - Exclusion patterns: `**/.stfolder/**` and `**/.stversions/**`.
-- Mount the photo share read-only in Immich. That keeps the service as the single writer and blocks deletes from the Immich UI.
-- The service triggers a library rescan after each ingest. A nightly scheduled rescan is the backstop.
-- No Immich phone app. The Darkroom app is the only thing running on the iPhones.
+- Mount the photo share read-only in Immich. That keeps Darkroom as the single writer to it and blocks deletes from the Immich UI.
+- Darkroom triggers a library rescan after each ingest. A nightly scheduled rescan is the backstop.
+- Immich's iOS app does the backup and the clearing. Darkroom doesn't see or gate what it clears from a phone, and ships no app. iCloud Photos must be off on these iPhones: with it on, clearing a photo on the phone also removes it from iCloud and every other device.
+- Clearing a photo from an iPhone with Immich's own function can happen at any time, with no Takeout wait, and Darkroom plays no part in it: Immich's app decides. The owner accepted the gap this leaves between Immich and Google Photos (via the Pixel), expected to be an hour or two at most (#199). Until Google has the photo, Immich's copy plus the copy in `originals/` are the only copies, so Immich's library and the Unraid share need to be durable (redundant storage and a backup).
 
-## iPhone app
+**Assumptions about Immich to confirm in the spike ([#202](https://github.com/AnthonyPluth/Darkroom/issues/202))**
 
-The app replaces Möbius Sync. It uploads each new photo once, then deletes it from the iPhone after Darkroom confirms it is on Unraid and in Google. iOS always asks before an app deletes photos, so cleanup is one tap per batch, never silent.
+None of these has been checked on the running server; the design relies on them and the spike either confirms or changes each.
 
-**Upload**
-
-- Watches the Photos library and uploads each photo's original resources: the photo, a Live Photo's video, and any edited version.
-- Sends each with its asset ID and SHA-1. Darkroom skips anything it already has, so the first run doesn't re-send what Möbius Sync delivered.
-- Uses background uploads, so transfers finish after the app closes. New photos are picked up when iOS gives the app background time, or whenever it's opened.
-
-**Cleanup**
-
-- A photo is eligible once every one of its resources is on Unraid and matched in a Takeout export. There are no retention settings.
-- A background check fetches the eligible list and sends a local notification with the count and the space it frees.
-- Tapping it shows the batch, and one system confirmation deletes it. Deleted photos stay in Recently Deleted for 30 days.
-- The app re-checks with Darkroom right before deleting, so it never acts on a stale list.
-
-**Connection and sign-in**
-
-- Talks to Darkroom's API on home Wi-Fi or over Tailscale. Uploads wait until one is available.
-- Signs in with Pocket ID. Darkroom ties each device to a person.
-
-**Build and install**
-
-- Swift and SwiftUI, with PhotoKit, background URLSession uploads and BGTaskScheduler.
-- Needs a paid Apple Developer account. Installed on the family's iPhones through TestFlight or ad hoc.
-- Cleanup assumes iCloud Photos is off on these iPhones. With it on, a delete on the phone also removes the photo from iCloud and every other device.
+- The API lists a user's new or changed assets, and can tell the Immich app's uploads from external-library assets.
+- The stored checksum is the SHA-1 of the original's bytes, and the original downloads byte-identical.
+- Which photos "clear backed-up photos" removes, for example RAW+JPEG pairs and Live Photos, and how reliable the iOS background backup is.
+- Whether importing `originals/` as well as Immich's own uploads shows duplicates.
 
 ## Web UI and notifications
 
@@ -203,7 +193,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 **Web UI** (internal only, Traefik + Pocket ID, `parents` group, reachable remotely over Tailscale)
 
-- **People:** each person's Google accounts, iPhones, Immich user and session status. Per iPhone: last check-in, uploads pending, photos eligible to delete.
+- **People:** each person's Google accounts, Pixels, Immich user and session status. The per-iPhone check-in, uploads pending and photos eligible to delete go away with the iPhone app; a changed People page needs the owner's sign-off first (AGENTS.md, promise 6).
 - **Exports:** schedule end date, last and next export, download progress per part.
 - **Imports:** counts added, skipped as duplicates, sent to review, and missing GPS; the summary line also names the items already imported by an earlier export.
 - **Review queue:** side-by-side thumbnails for likely re-encodes. Keep both, skip, or undo any past decision.
@@ -211,13 +201,13 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 The web UI is dark mode only: one theme, with no light theme and no theme switch.
 
-**Push alerts** — sent to the Darkroom iPhone app through Apple's push service (APNs, production, TestFlight builds), to the devices of the person an alert concerns; an alert about a Google account goes to the people that account serves. The push carries only the alert kind and an id, never an email address, name or file name; the app fetches the details from Darkroom when it can reach it. Delivery does not depend on being on home Wi-Fi; acting on an alert (for example the sign-in view) needs Darkroom reachable over home Wi-Fi or Tailscale. Darkroom sends the push within about a minute of the alert opening or repeating, retries for an hour while Apple can't be reached, records each outcome as an event and forgets a push token Apple reports invalid (unless the device registered it again since). Without the APNs settings, alerts are recorded as events and not delivered.
+**Alerts** — the channel is not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3). They were push alerts to the iPhone app, which no longer exists, and nothing has replaced them. Until the owner picks a channel, an alert is recorded as an event and shown on the status page, and nothing is delivered. The events below keep their timing; where each one is delivered is the open part. An alert carries only its kind and an id, never an email address, name or file name.
 
 | Event | Alert |
 | --- | --- |
 | Sign-in or verification needed | Immediately, repeated at 24 hours and 4 days |
 | Export imported | Summary: added, skipped, in review, missing GPS |
-| Originals unmatched after a full export cycle | Per person and Pixel: check that their folder is backed up in Google Photos |
+| Originals unmatched after a full export cycle | Per person and Pixel: check that the Pixel's transient folder is backed up in Google Photos |
 | Schedule ending | About 3 weeks before, then a confirmation once renewed |
 | Schedule renewal failed | When the renewal fails, or the owner finds no new schedule in Takeout after an unconfirmed one: it did not happen, is not retried and the end date stands; once the schedule has ended, Create schedule makes a new one. It replaces the ending alert (a deliberate departure from #40's "leave the ending alert open", whose text promises a renewal that will not come), repeated at 24 hours and 4 days. Renew now on the account's schedule route queues a new attempt on request (the Renew now row of the Takeout jobs table) |
 | Schedule renewal not confirmed | When Darkroom cannot tell whether the renewal worked (Takeout did not confirm it, or the worker was lost): look in Takeout and answer on the Exports page. "Takeout has the new schedule" records it (ending a year after the renew job started, which must be after the current end) and confirms it like a renewal; "Takeout has no new schedule" turns it into "Schedule renewal failed". Darkroom does not retry, so it creates no second schedule. Same repeats |
@@ -230,34 +220,33 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | Entity | Key fields |
 | --- | --- |
 | Person | name, Immich user ID, Immich API key (secret), originals path, google-only path |
-| Device | person, iPhone name, sign-in token (secret), last check-in |
-| Pixel | name, Syncthing device ID, Google account, people served (one by default, several optional) |
-| PhoneAsset | device, PhotoKit asset ID, resources (photo / Live Photo video / edit) with SHA-1 each, uploaded at, eligible at, deleted at |
+| Pixel | name, Syncthing device ID, Google account, people served (one by default, several optional), transient folder |
+| ImmichAsset (replaces PhoneAsset) | person, Immich asset ID, stored checksum, SHA-1 of the copy, copied to `originals/` at, copied to each Pixel's folder at |
 | GoogleAccount | email, default person (owns Google-only items of exports created while they were the default), browser profile path, session state (ok / needs sign-in), schedule end date |
 | Export | account, kind (initial full / incremental), ready at, expires at, part count, status |
 | ExportPart | export, part number, size, downloads used (of 5), status |
-| MediaItem | person, source (phone / Takeout), path, SHA-1, pHash, dHash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no), raw sidecar JSON |
+| MediaItem | person, source (Immich / Takeout), path, SHA-1, pHash, dHash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no; the signal for pruning a Pixel's folder, #199), raw sidecar JSON |
 | DedupeDecision | Takeout item, matched item, tier, reason, decided by (auto / you), decided at |
 | Event | time, type, subject, detail. Feeds alerts and the status page |
 
+The `Device` records (iPhone name, sign-in token, last check-in) and the push tokens go away with the iPhone app.
+
 ## Deployment and stack
 
-Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, AnthonyPluth/Runway), so the same tooling, CI and Claude setup carry over. Two containers on Unraid and one iPhone app, all from one repo.
+Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, AnthonyPluth/Runway), so the same tooling, CI and Claude setup carry over. Two containers on Unraid, from one repo.
 
 | Component | Runs | Access |
 | --- | --- | --- |
-| `darkroom` | Web UI, API (including uploads and cleanup), ingest worker, scheduler | `photos/` read-write |
+| `darkroom` | Web UI, API, reconcile and ingest worker, scheduler | `photos/` read-write; Immich's API |
 | `darkroom-browser` | Playwright job runner, Chromium on Xvfb, noVNC | `_inbox/` and `_browser/` read-write |
-| Syncthing on Unraid | Sends each person's `originals/` to their Pixel, Send Only | `originals/` read-only |
-| Immich (existing stack) | Library, search, map | `photos/` read-only |
-| Darkroom iPhone app | Upload and cleanup | Darkroom API over home Wi-Fi or Tailscale |
+| Syncthing on Unraid | Sends each Pixel's transient folder to that Pixel, Send Only | The transient folders, read-only |
+| Immich (existing stack) | Library, search, map, and the backend for the iPhones' Immich app | `photos/` read-only; its own upload storage |
 
 **Stack**
 
 - Backend: Python 3.14, Poetry, SQLAlchemy + Alembic on SQLite, in-app OIDC sign-in with Pocket ID (as Waypoint does). A web session lasts until sign-out, an admin revoke (`run.py revoke-sessions`) or loss of access, which a daily background check against the provider's refresh token detects; a session the provider gave no refresh token for ends after 30 days.
 - Frontend: Svelte 5, Vite, Tailwind 4, bits-ui.
 - Browser: Playwright for Python.
-- iPhone: Swift and SwiftUI, PhotoKit, background URLSession, BGTaskScheduler.
 - Media: exiftool for EXIF and XMP sidecars, Pillow + imagehash for perceptual hashes, a GPS-to-time-zone lookup library.
 - Quality: ruff, mypy, import-linter, Semgrep, pre-commit, coverage, plus `CLAUDE.md` / `AGENTS.md`.
 
@@ -265,45 +254,53 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 - Chromium starts only for a job and exits afterwards, so the browser container sits idle almost all the time.
 - Internal-only Traefik route, reached remotely over Tailscale. The noVNC view sits behind the same sign-in.
-- Immich keys: an admin key for library rescans, and a per-person key for reads. The upload route needs no body-size cap or short timeout, since videos can run to several GB.
+- Immich keys: an admin key for library rescans, and a per-person key for reads, including the reconcile job's reads of originals, which can be several GB for a video.
+- The iPhones talk to Immich, not to Darkroom, so Darkroom's own route carries no upload traffic.
 
 ## Risks and mitigations
 
-Deleting from the iPhones is the only step that can lose a photo, so it gets the strictest checks. The browser automation is the most fragile part, so everything downstream of the inbox works without it: a hand-downloaded export runs through the same pipeline.
+Darkroom no longer deletes anything from the iPhones, so the one step that can lose a photo is Immich's own clearing, which Darkroom can't gate. The browser automation is the most fragile part, so everything downstream of the inbox works without it: a hand-downloaded export runs through the same pipeline.
 
 | Risk | Mitigation |
 | --- | --- |
-| A photo is deleted from an iPhone before both copies exist | Eligible only when every resource matches by hash on Unraid and in a Takeout export. The app re-checks right before deleting, and Recently Deleted keeps 30 days |
-| iCloud Photos is on, so a phone delete removes the photo everywhere | Confirm it is off before cleanup is turned on |
-| A person's folder isn't turned on for backup on a shared Pixel | Their photos never match in Takeout, so nothing is deleted from their iPhone. Darkroom alerts after a full export cycle with no match |
+| A photo is cleared from an iPhone before Google has it | Accepted by the owner (#199): clearing happens in Immich's app at any time, Darkroom plays no part, and the gap to Google (via the Pixel) should be an hour or two at most. Immich's copy and the copy in `originals/` are the only ones until Google has it, so Immich's library and the Unraid share need redundant storage and a backup |
+| Immich's storage is lost, or its upload is incomplete | The copy in `originals/` is checked against Immich's stored checksum (assumed to be the original's SHA-1, #202) when written, and Immich's library is backed up |
+| iCloud Photos is on, so clearing a photo on the phone removes it everywhere | Confirm it is off on every iPhone before Immich's app is allowed to clear photos |
+| Large uploads from a phone fail through a proxy | A Cloudflare-proxied hostname caps request bodies at 100 MB on its Free and Pro plans, so big videos would fail. Point the Immich app at the LAN or Tailscale address, an unproxied hostname, or a plan without the cap |
+| A Pixel's transient folder is never pruned, or is pruned too early | Pruning acts on the Takeout match, which can take up to about two months (accepted, the Pixel has the space). Pruning deletes only the per-Pixel copy, only after an unreversed automatic tier 1 or 2 decision, `originals/` is never part of that folder, and the deletion gets its own Semgrep rule and test before it ships |
+| The Pixel's transient folder isn't turned on for backup in Google Photos | Its photos never reach Google. Darkroom alerts after a full export cycle with no match |
 | Google changes the Takeout pages and the worker breaks | Selectors in one module, screenshot on failure, alert. Fallback: download the parts by hand into the inbox |
 | Google flags the automation | Headed browser, saved profile, home IP, a few visits a week, no password automation |
 | An export expires before it's downloaded (about 7 days, 5 downloads per part) | Daily status check, alerts at 24 hours and 4 days, retries capped at 2 per part |
-| iOS limits background time, so uploads lag | Background uploads finish after the app closes, opening the app catches up, and the status page shows each iPhone's last check-in |
+| Immich's iOS background backup lags | Assumed to be a delay, not a loss (#202 checks how reliable it is). Darkroom copies each asset once Immich has it |
 | Renewing the schedule triggers another full export | Dedupe makes it safe. Plan disk headroom of about twice the largest library during an import |
 | A wrong dedupe match hides a photo | Nothing is deleted on Unraid, decisions are reversible, and Google still holds every original |
+| No alert channel exists, so a sign-in prompt goes unseen | Not decided (#199, question 3). Until then alerts show on the status page only |
 
 ## Phases
 
-Build ingest before the browser worker: a hand-downloaded export gives real data to build against, and the backfill lands sooner. Cleanup on the iPhones comes last, because it depends on Takeout matches.
+Build ingest before the browser worker: a hand-downloaded export gives real data to build against, and the backfill lands sooner. Everyone switches to Immich's app at once, since Darkroom isn't deployed yet.
 
-1. **Infrastructure (no code).** Immich on Unraid, Unraid joined to the Möbius Sync folders as each person's `originals/`, one external library per person, `.stignore` set. Done when each person's photos show in Immich with GPS.
-2. **Service skeleton.** New repo on the Waypoint conventions: people, accounts and devices, Pocket ID sign-in, status page, alert policy, originals indexer.
+1. **Infrastructure (no code).** Immich on Unraid with one user per person and Immich's iOS app on each iPhone, redundant storage and a backup for Immich's library, iCloud Photos confirmed off, large uploads working, one external library per person for `google-only/`, `.stignore` set. Done when each person's photos show in Immich with GPS.
+2. **Service skeleton.** New repo on the Waypoint conventions: people, accounts, Pocket ID sign-in, status page, alert policy, originals indexer.
 3. **Ingest and dedupe.** Run on one hand-downloaded export: pairing, metadata, dedupe tiers, `google-only/` placement, XMP sidecars, review queue. Done when one account's history is fully imported.
 4. **Browser worker.** Connect account via noVNC, create the schedule, daily status check, downloads within Google's limits, re-auth alerts.
-5. **iPhone app: upload.** Upload API and the app's upload side. Unraid becomes the Pixels' Syncthing peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.
-6. **iPhone app: cleanup.** Eligibility API, notification and batch delete. Turned on only after iCloud Photos is confirmed off.
+5. **Immich reconcile.** The spike (#202) first, then the job that reads new Immich assets, writes `originals/` once and the Pixels' transient folders, and Syncthing as the Pixels' peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.
+6. **Pruning and alerts.** Pruning a Pixel's transient folder on a Takeout match, with its own Semgrep rule and test first; and an alert channel, which is not decided (#199).
 7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
+
+Order of the first imports: the initial Immich reconciliation must run before the Takeout backfill, or reconciliation must dedupe and safely resolve Takeout copies already placed in `google-only/`, so that photos Immich already holds are not placed twice. Which of the two is not decided.
 
 ## Open questions
 
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
-- [ ] Is iCloud Photos off on every iPhone? Cleanup depends on it.
-- [ ] Does Möbius Sync deliver byte-identical originals? This decides whether the app's first run re-uploads them.
+- [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
+- [ ] Which alert channel replaces the app's push? Not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3).
+- [ ] What can the reconcile job rely on in Immich (asset listing and ownership, stored checksum, original download, what "clear backed-up photos" removes, duplicates when `originals/` is imported)? The spike, [#202](https://github.com/AnthonyPluth/Darkroom/issues/202).
 - [ ] Does renewing a scheduled export start again with a full export, or carry on incrementally?
 - [ ] Are Takeout copies byte-identical to the originals on Unraid (tier 1), or does Google change their metadata (tier 2)?
-- [ ] Live Photos: does Takeout export both the photo and its video? A Live Photo stays on the phone until both halves match.
+- [ ] Live Photos: does Takeout export both the photo and its video, so both halves can be matched?
 - [ ] Does Takeout include photos others shared into albums? If so, should they go only to the owner's library?
 - [ ] Confirm Immich reads XMP sidecars from a read-only external library, and that sidecar values override embedded EXIF.
 - [ ] Keep Google's edited copies as their own assets, or skip them?
@@ -315,6 +312,7 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 - [Takeout limits: scheduled exports, 7-day expiry, 5 downloads per archive](https://www.cloudspress.com/?p=413545)
 - [Android Authority: Incremental Takeout for Google Photos](https://androidauthority.com/google-photos-incremental-takeout-3673297/)
 - [9to5Google: Google Photos scheduled export](https://9to5google.com/2026/06/01/google-photos-schedule-export/)
+- [Design: ingest from Immich's own app (#199)](https://github.com/AnthonyPluth/Darkroom/issues/199)
 - [Immich docs: external libraries](https://immich.app/docs/features/libraries)
 - [Immich docs (v1.119): library owner and external asset metadata](https://v1.119.1.archive.immich.app/docs/features/libraries)
 - [Immich docs (v1.120): multiple import paths and exclusion patterns](https://v1.120.0.archive.immich.app/docs/features/libraries)

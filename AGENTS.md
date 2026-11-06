@@ -1,6 +1,6 @@
 # Agent guide
 
-Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's iPhone originals, the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/`, a Svelte web app in `frontend/` and an iPhone app in `ios/`. The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
+Instructions for AI coding agents working in Darkroom, a self-hosted service that brings a household's photos together on Unraid: each person's originals (backed up from their iPhone to Immich by Immich's own app, then copied once onto Unraid), the extras that exist only in Google Photos (from Takeout), and one Immich library per person. Python backend in `darkroom/`, the Takeout browser worker in `darkroom_browser/` and a Svelte web app in `frontend/`. There is no Darkroom iPhone app (#199). The design is [docs/SPEC.md](docs/SPEC.md); decisions the owner has made are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
@@ -13,7 +13,6 @@ Instructions for AI coding agents working in Darkroom, a self-hosted service tha
   - `static/app/`: the built web app (`make frontend-build`, not committed), served at `/` by `server/static.py` with the CSP in `server/common.py`.
 - `darkroom_browser/`: the browser worker's own package. It never imports `darkroom`, and `darkroom` never imports it; they talk over an internal API. `pages/` holds pure parsers over saved HTML, `jobs/` the jobs (`kind -> fn(ctx)`), `selectors.py` every page selector as a named constant, `capture.py` the failure capture, and only `live.py` imports Playwright (import-linter). Its deployment is described in `docs/deploy/browser.md`.
 - `frontend/`: the web app (Svelte 5 with runes, Vite, Tailwind 4, bits-ui, TypeScript). `src/lib/api.ts` is the only `fetch`; calls go through `apiCall<"METHOD /path">` in `src/lib/contract.ts`, typed by the generated `src/lib/api-types.ts`; `src/lib/act.ts` has `errMsg` and `ignoreFailure`. The theme tokens in `src/app.css` are the dark set from the design signed off in #16 (`docs/design/web/00-tokens.dc.html`); the app is dark only, and a new colour or token goes back to #16 first.
-- `ios/` (XcodeGen, SwiftUI): `project.yml` generates the Xcode project (`xcodegen generate`, see `ios/README.md`); `Darkroom/` is the app, `Packages/DarkroomCore/` the SwiftPM package with the logic and its `swift test` tests. The `iOS` workflow builds it unsigned on macOS and is a required check; read its annotations.
 - `tests/`: backend tests, run with `unittest`.
 - `tools/`: scripts for the repo itself: `fleet` (the shim that runs fleet's tools at the version in `.fleet/version`), `app_checks.py` (Darkroom's own checks, run by `fleet checks`), `feature_map.py`, `api_contract.py`, `scrub_snapshot.py`.
 - `docs/`: `SPEC.md`, `DECISIONS.md`, the generated `feature-map.json` and `openapi.json`, and the signed-off designs in `design/` (`design/web/` for the web UI, with its README).
@@ -48,7 +47,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 - **Parallel work stays apart.** Agents working at once take separate areas. Two pull requests that change the same files, or both add a migration, land one at a time: the second merges `main` in and re-runs its checks.
 <!-- fleet:end starting-work -->
 - **Issues come from the "Agent task" template** (`.github/ISSUE_TEMPLATE/agent-task.md`). Start only when everything under "Depends on" is merged.
-- **No design ships without sign-off.** Any web page or iPhone screen is built only against a design the owner has signed off in `docs/design/`.
+- **No design ships without sign-off.** Any web page is built only against a design the owner has signed off in `docs/design/`.
 
 ## Working in a container
 
@@ -79,12 +78,12 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 
 These are what the service is for; a change that breaks one is a blocking bug, whatever else it does. Each is held by a check that is in place before the code it guards (the issue that adds it is named).
 
-1. **An original is written once.** Nothing under a person's `originals/` is modified, moved or deleted by the service. Checked by Semgrep's `darkroom-originals-read-only` (examples in `.semgrep/examples/darkroom/domain/originals.py`) and the whole-tree SHA-1 before/after test, `tests/test_place.py`'s `FixtureExportRun` (#25).
-2. **Dedupe deletes nothing on Unraid.** It decides and records. Cleanup removes only staging, archives and resolved review holds, 14 days after the fact. Checked by `tests/test_cleanup.py` and the dedupe invariants (#24, #26).
-3. **A photo is eligible for deletion from an iPhone only when** every resource of it (photo, Live Photo video, adjusted version) is on Unraid with a verified SHA-1 and matched in a Takeout export by an unreversed automatic tier 1 or 2 decision, from a Google account that serves its owner, re-checked right before deleting. Checked by Semgrep's `darkroom-eligibility-single-path` and `tests/test_eligibility_invariants.py` (#37).
+1. **An original is written once.** Nothing under a person's `originals/` is modified, moved or deleted by the service. Pruning a Pixel's transient folder (below) deletes only that folder's separate copies, never anything under `originals/`. Checked by Semgrep's `darkroom-originals-read-only` (examples in `.semgrep/examples/darkroom/domain/originals.py`) and the whole-tree SHA-1 before/after test, `tests/test_place.py`'s `FixtureExportRun` (#25).
+2. **Dedupe deletes nothing on Unraid.** It decides and records. Cleanup removes only staging, archives and resolved review holds, 14 days after the fact. The one other deletion on Unraid is pruning a Pixel's transient folder (#199): Darkroom deletes the per-Pixel copy and Syncthing carries the deletion to the Pixel. It may touch only the per-Pixel folder, never `originals/`, and it is not built yet. The signal for when it may delete is the Takeout match, `confirmed_in_google` (an unreversed automatic tier 1 or 2 decision; waiting up to about two months is accepted). It gets its own check (a Semgrep rule and a test) in a later issue, before the code ships. Checked by `tests/test_cleanup.py` and the dedupe invariants (#24, #26).
+3. **Retired (#199, #203).** Eligibility for deletion from an iPhone is no longer Darkroom's: Immich's own app clears backed-up photos, and Darkroom gates nothing on a phone. The number stays so that the references to promise 3 in `SECURITY.md`, `.semgrep/darkroom.yml` and `.github/agent-review/invariants.md` still resolve. Its checks, Semgrep's `darkroom-eligibility-single-path` and `tests/test_eligibility_invariants.py` (#37), stay in place only until the backend removal (#201) deletes the code they guard.
 4. **The browser worker never types a Google password or 2FA code.** A person signs in. Checked by `tests/browser/test_no_credentials.py` (#28).
 5. **Metadata gaps are filled with XMP sidecars, never by rewriting media.** Checked by Semgrep's `darkroom-xmp-only-sidecars` (examples in `.semgrep/examples/darkroom/providers/exiftool.py`) and `tests/test_xmp.py`, which holds `providers/exiftool.write_xmp` to refusing any target not ending in `.xmp` (#25).
-6. **No design changes without the owner's sign-off.** No web UI or iPhone screen merges unless it matches the design the owner signed off in `docs/design/` (#16, #34); a UI pull request carries screenshots. Held by review.
+6. **No design changes without the owner's sign-off.** No web UI screen merges unless it matches the design the owner signed off in `docs/design/` (#16); a UI pull request carries screenshots. Held by review.
 
 ## Mistakes that keep coming back
 
@@ -106,7 +105,7 @@ Darkroom's own, after fleet's:
 - **Private data in logs** (partly checked: Semgrep sends log lines through `monitoring.log`, which scrubs credentials). Log counts and fixed texts, never a file name, a path beyond the person's folder, a location, an API key or a token. Test with canary values (`tests/privacy.py`'s `no_leaks`, from #14).
 - **Personal data in the repo** (human-judged). Fixtures are generated and made up. Never put a real photo, file name, location, email or Google export in a test, a fixture, an issue or a pull request.
 - **Time zones** (partly checked: lint rejects a bare `date.today()` in the domain, providers and jobs, and `datetime.utcnow()`). A photo's time is a UTC instant plus the offset where it was taken; never compare a wall-clock time to an instant, and never invent an offset.
-- **Deleting is the one thing that can lose a photo** (checked for eligibility; human-judged elsewhere). Anything that touches a file on Unraid or a flag that feeds eligibility gets a negative test for each way it must not act.
+- **Deleting is the one thing that can lose a photo** (checked for eligibility; human-judged elsewhere). Anything that touches a file on Unraid, a flag that feeds eligibility or the pruning of a Pixel's folder gets a negative test for each way it must not act.
 
 ## Before you push
 
@@ -136,9 +135,9 @@ Darkroom's own, after fleet's:
 
 The owner runs them by hand with the claude-security plugin, on `claude-fable-5-1`, following fleet's [docs/deep-scan.md](https://github.com/AnthonyPluth/fleet/blob/main/docs/deep-scan.md) (the procedure and the reminder are fleet's; what follows is Darkroom's own).
 
-- **When:** before the first deploy to Unraid (#54; an open HIGH or CRITICAL finding blocks the deploy), and before iPhone cleanup is turned on on any device (#55; also a scoped scan of the deletion path, where any finding of MEDIUM or above blocks enabling cleanup). Darkroom has no quarterly scan: it doesn't call fleet's `deep-scan-due` reminder workflow.
+- **When:** before the first deploy to Unraid (#54; an open HIGH or CRITICAL finding blocks the deploy), and, only while the cleanup code exists, #55 (a scoped scan of the deletion path). The deletion path is no longer Darkroom's (#199), so #55 stays open until #201 removes the cleanup code and is then closed without a scan. Darkroom has no quarterly scan: it doesn't call fleet's `deep-scan-due` reminder workflow.
 - **Where findings go:** Darkroom is public, so one draft security advisory per confirmed finding (Security, Advisories, New draft advisory), never a public issue, and no pull request text that describes the exploit. A fix goes through the advisory's private fork, or a pull request with a neutral title labelled `security` once the owner decides disclosure doesn't matter for that finding. The report directory (`CLAUDE-SECURITY-*/`) is never committed.
-- **The record:** each milestone issue is the tracker for its scan. Each scan records the revision stamp's file name (`CLAUDE-SECURITY-REVISION-<sha12>.json`), the effort, the counts by severity and the stamp's `verification.status`, and nothing else from the report. The issue closes only when its own conditions are met as well: for #55 both scans (the whole repository and the scoped scan of the deletion path) are recorded, no MEDIUM or higher finding on the deletion path is open, and the four deletion-safety pull requests' Second review threads (#24, #27, #37, #38) are checked; for #54 no HIGH or CRITICAL finding is open. Turning cleanup on, or deploying, happens after the issue closes.
+- **The record:** each milestone issue is the tracker for its scan. Each scan records the revision stamp's file name (`CLAUDE-SECURITY-REVISION-<sha12>.json`), the effort, the counts by severity and the stamp's `verification.status`, and nothing else from the report. The issue closes only when its own conditions are met as well: for #54 no HIGH or CRITICAL finding is open, and deploying happens after the issue closes. #55's conditions (both scans recorded, no MEDIUM or higher finding on the deletion path open, the Second review threads of #24, #27, #37 and #38 checked) apply only if the cleanup code is still there when it would be turned on, which #201 removes.
 
 ## Model routing
 

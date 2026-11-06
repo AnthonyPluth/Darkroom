@@ -1,6 +1,6 @@
 # Darkroom
 
-Self-hosted family photo coordinator. An iPhone app uploads originals to Unraid, a browser worker pulls Google Takeout exports, and Darkroom dedupes both into one Immich library per person. Photos are cleared off the iPhones only once they exist on Unraid and in Google.
+Self-hosted family photo coordinator. Each iPhone backs up to Immich with Immich's own app, Darkroom copies the originals from Immich onto Unraid once, a browser worker pulls Google Takeout exports, and Darkroom dedupes both into one Immich library per person. A transient folder per Pixel, synced with Syncthing, carries new photos to Google Photos. Darkroom ships no iPhone app.
 
 See [docs/SPEC.md](docs/SPEC.md) for the full design. Work is tracked as GitHub issues, grouped by phase under epic issues.
 
