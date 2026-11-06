@@ -2,7 +2,7 @@
 
 Status: **proposal**. The owner's note on #34 (2026-11-06) says the iPhone screen designs are approved, but it links no boards and none are in the repository, so promise 6 (AGENTS.md) still blocks the screens of #35 and #38. This page writes the design down so it can be read, corrected and signed off in #34, in the same way `docs/design/web/` records what #16 approved. Nothing here is built yet. Where the owner's boards exist and differ from this page, the boards win and this page is corrected in the pull request that exports them.
 
-How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Eleven decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
+How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Twelve decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
 
 Scope: the app shell, the sign-in screen, the upload status screen and Settings (#35). The cleanup notification and batch screens (#38) get their own design pull request after these, and Settings only reserves their line.
 
@@ -148,7 +148,7 @@ The home tab. It answers three questions without a tap: is it working, is anythi
 | On Darkroom | Darkroom has the file: uploaded, or already there so nothing was sent. | `uploaded` |
 | Waiting to upload | Hashed, being checked, queued or sending. The same number the check-in reports, so it matches "Uploads pending" on the People page. | `hashed` + `checked` + `uploading` |
 | Only in iCloud | The file is not on the iPhone, so the app does not upload it and never fetches it. | `notLocal` |
-| Needs attention | Darkroom or the app gave up on the file; each is listed with its reason. | `failed` |
+| Needs attention | Darkroom or the app gave up on the file, or the app could not read or hash it; each is listed with its reason. | `failed` (point 12 puts ingestion failures here too) |
 
 The tiles add up to every file the app knows about, with none counted twice. When `uploading` is above 0 the Waiting tile's label gains a second line "N sending now" (`.footnote`).
 
@@ -165,7 +165,7 @@ The state card is chosen by `UploadStatus.Phase`, then by the counts when the ph
 | Waiting for home network: `.waitingForHomeNetwork` | Waiting for your home network. 12 files are waiting. | warn "Waiting for home network" | Waiting for home network | Darkroom can't be reached right now. Uploads start again by themselves on home Wi-Fi or over Tailscale. Nothing is wrong. | none |
 | Needs sign-in: `.needsSignIn` | Sign in again to keep uploading. | danger "Sign-in needed" | Sign-in needed | Darkroom no longer accepts this iPhone. Sign in again to keep uploading. Files already on Darkroom stay there. | "Sign in again" (primary) |
 | Stopped: `.error(message)` | Uploads stopped. | danger "Stopped" | Uploads stopped | the phase's message (`UploadStatusTracker.queueUnreadable` or `.syncStopped`), then "Try again." | "Try again" (primary; runs Sync now) |
-| Needs attention: idle, attention above 0, waiting 0 | 3 files need attention. | warn "Needs attention" | 3 files need attention | Darkroom couldn't take these files. The list below says why. | none |
+| Needs attention: idle, attention above 0, waiting 0 | 3 files need attention. | warn "Needs attention" | 3 files need attention | Darkroom or this iPhone couldn't handle these files, including ones the app couldn't read. The list below says why. | none |
 | Photos access needed | Darkroom can't see your photos. | danger "Photos access needed" | Photos access needed | Allow access to all photos so Darkroom can upload them. | "Open Settings" (point 7) |
 
 Rules that apply across rows:
@@ -177,7 +177,7 @@ Rules that apply across rows:
 
 ### Refreshing
 
-The screen reads `UploadStatusTracker.status()` when it appears, when the app becomes active, after `syncNow()` returns, and every 2 seconds while the phase is `.uploading`. It never polls otherwise, and a failed read shows the Stopped state (the tracker already maps a store failure to `.error(queueUnreadable)`). Sync now calls `UploadStatusTracker.syncNow()`. Note for #35: `UploadCoordinator.networkReady()` returns false without probing while the reachability backoff (30 s up to 15 min) runs, so a Sync now tapped in the waiting state would change nothing. A manual sync should skip the backoff; that is a core change for the PR that builds this screen. A manual sync must also run the library scan (`ResourceIngester.run()`) before the upload coordinator, because the coordinator only works on files already in the store and would never find a new photo.
+The screen reads `UploadStatusTracker.status()` when it appears, when the app becomes active, after `syncNow()` returns, and every 2 seconds while the phase is `.uploading`. It never polls otherwise, and a failed read shows the Stopped state (the tracker already maps a store failure to `.error(queueUnreadable)`). Sync now calls `UploadStatusTracker.syncNow()`. Note for #35: `UploadCoordinator.networkReady()` returns false without probing while the reachability backoff (30 s up to 15 min) runs, so a Sync now tapped in the waiting state would change nothing. A manual sync should skip the backoff; that is a core change for the PR that builds this screen. The server row shows the URL authority including a non-default port, never only `url.host`. A manual sync must also run the library scan (`ResourceIngester.run()`) before the upload coordinator, because the coordinator only works on files already in the store and would never find a new photo.
 
 ### Last synced (point 4)
 
@@ -203,10 +203,10 @@ The screen reads `UploadStatusTracker.status()` when it appears, when the app be
 | Tiles | `UploadStatus.counts` (`ResourceState` to `Int`, from `ResourceStore.counts()`) |
 | "N sending now" | `UploadStatus.count(.uploading)` |
 | Last synced | `UploadStatus.lastSync` (#166), persisted (point 4) |
-| Needs attention rows | `UploadStatus.failures`: `FailedResource.filename` and `.reason` (#166), from `ResourceRecord.failureReason` |
+| Needs attention rows | `UploadStatus.failures`: `FailedResource.filename` and `.reason` (#166), from `ResourceRecord.failureReason`, which holds ingestion failures too (point 12) |
 | Sync now, Try again | `UploadStatusTracker.syncNow()` (#166), which runs `UploadCoordinator.run()` |
 | Sign in again | `DeviceSession.begin` and `.complete`, `UploadStatusTracker.signInChanged()` (#166) |
-| Server row | `DeviceSession.Phase.signedIn(ServerAddress)`, `ServerAddress.url.host` |
+| Server row | `DeviceSession.Phase.signedIn(ServerAddress)`, `ServerAddress.url`'s authority, host and port |
 | Uploading as | `GET /api/device/me` (point 2, not built) |
 | Photos access state | `PhotoLibrary` authorization (arrives with the PhotoKit adapters; no type yet) |
 
@@ -216,7 +216,7 @@ The screen reads `UploadStatusTracker.status()` when it appears, when the app be
 
 1. Title "Settings".
 2. **Account** (`Card`, label "ACCOUNT"): `KeyValueRow` "Signed in as" with the person's name (point 2; the row is left out when unknown), `KeyValueRow` "This iPhone" with the device label (point 9).
-3. **Server** (`Card`, label "SERVER"): `KeyValueRow` "Address" with the host in `.footnote.monospaced()`. Under it a `.footnote` `inkMuted` line: "To use a different Darkroom, sign out first." The address is read-only while signed in, because `DeviceSession.begin` refuses to start while signed in.
+3. **Server** (`Card`, label "SERVER"): `KeyValueRow` "Address" with the host and any non-default port (the URL authority, for example `darkroom.example.com:8443`) in `.footnote.monospaced()`. Under it a `.footnote` `inkMuted` line: "To use a different Darkroom, sign out first." The address is read-only while signed in, because `DeviceSession.begin` refuses to start while signed in.
 4. **Cleanup** (`Card`, label "CLEANUP"): the text "Removing photos from this iPhone is turned on or off on the People page." in `.subheadline`. Nothing else until #38, which adds the on/off value (from `EligibleReply.cleanupEnabled`) and a link to the cleanup screens.
 5. `SecondaryButton` "Sign out" with `danger` text. It opens a `.confirmationDialog`: title "Sign out of Darkroom?", message "Uploads stop on this iPhone, including any already started. Files already on Darkroom stay there. To stop this iPhone for good, revoke it on the People page.", buttons "Sign out" (destructive) and "Cancel".
 6. Footer, centred: "Build 0.1.0 (1)" in `.footnote.monospaced()`, `inkMuted`, with `.accessibilityIdentifier("build-version")` as the placeholder `RootView` has today (`BuildVersion.current.label`).
@@ -311,6 +311,12 @@ Recommended default: sign out first cancels every outstanding background upload 
 **Needs owner sign-off.** See point 8. The marker must come from the scanner, not from the upload pass.
 
 Recommended default: persist it immediately after a successful `ResourceIngester.run()`, so an offline first launch (upload pass `.waitingForNetwork`) still leaves "Getting ready", and an upload pass over an empty store never writes it by itself.
+
+### 12. Where ingestion failures are recorded
+
+**Needs owner sign-off.** `ResourceIngester.run()` only counts a resource it cannot name, export or hash in `IngestSummary.failed`; it creates no `ResourceRecord`. The screens read every count and the Needs attention list from the store, so such a file would be in no tile, and once the first scan has finished the screen could say "Up to date" for a photo that was never uploaded.
+
+Recommended default: the ingester records each of those files as a `failed` `ResourceRecord` with its reason (for example "the file could not be read"), the way `notLocal` rows are stored without a hash. Then the four tiles, the Needs attention list and "Up to date" all come from the one store, with no second source to keep in step, and "Up to date" is impossible while any such file exists. A file whose version changes is scanned again and leaves `failed` when it succeeds. The alternative is to carry `IngestSummary.failed` into `UploadStatus` as a separate count that is added to Needs attention and blocks "Up to date"; it keeps the store unchanged but loses the file names and reasons after a relaunch, and is not recommended.
 
 ## Not in this proposal
 
