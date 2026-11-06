@@ -77,4 +77,39 @@ final class DeviceSignInTests: XCTestCase {
             XCTAssertNil(DeviceSignIn.callback(from: url), text)
         }
     }
+
+    func testARefusalCarriesTheReasonAndTheState() throws {
+        let noPerson = try XCTUnwrap(URL(string: "darkroom://signed-in#error=no_person&state=st-1"))
+        XCTAssertEqual(DeviceSignIn.refusal(from: noPerson), DeviceSignIn.Refusal(reason: .noPerson, state: "st-1"))
+        let notAllowed = try XCTUnwrap(URL(string: "darkroom://signed-in#state=st-1&error=not_allowed"))
+        XCTAssertEqual(DeviceSignIn.refusal(from: notAllowed), DeviceSignIn.Refusal(reason: .notAllowed, state: "st-1"))
+        XCTAssertNil(DeviceSignIn.callback(from: noPerson))
+    }
+
+    func testOtherRefusalsYieldNothing() throws {
+        let rejected = [
+            "darkroom://signed-in#error=no_person",
+            "darkroom://signed-in#error=other&state=st-1",
+            "darkroom://signed-in#error=&state=st-1",
+            "darkroom://signed-in#error=no_person&state=",
+            "darkroom://signed-in#error=no_person&state=a%20b",
+            "darkroom://signed-in#error=no_person&token=abc&state=st-1",
+            "darkroom://signed-in#token=abc&state=st-1",
+            "darkroom://signed-in?error=no_person&state=st-1",
+            "darkroom://other#error=no_person&state=st-1",
+            "https://signed-in#error=no_person&state=st-1",
+        ]
+        for text in rejected {
+            let url = try XCTUnwrap(URL(string: text), text)
+            XCTAssertNil(DeviceSignIn.refusal(from: url), text)
+        }
+    }
+
+    func testANameIsRequiredBeforeTheFallbackApplies() {
+        XCTAssertTrue(DeviceSignIn.hasName("Sam's iPhone"))
+        XCTAssertTrue(DeviceSignIn.hasName("iPhone"))
+        XCTAssertFalse(DeviceSignIn.hasName(""))
+        XCTAssertFalse(DeviceSignIn.hasName("   "))
+        XCTAssertFalse(DeviceSignIn.hasName("\n\u{200B}"))
+    }
 }

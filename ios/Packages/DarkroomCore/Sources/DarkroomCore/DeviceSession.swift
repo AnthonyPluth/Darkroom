@@ -18,6 +18,8 @@ public enum SignInError: Error, Equatable, Sendable {
     case noToken
     case stateMismatch
     case expired
+    case noPerson
+    case notAllowed
     case storage
 }
 
@@ -100,19 +102,15 @@ public actor DeviceSession {
     public func complete(callback: URL) throws {
         guard case .signingIn(let server) = phase, let current = attempt else { throw SignInError.notSigningIn }
         attempt = nil
-        guard let received = DeviceSignIn.callback(from: callback) else {
-            phase = .signedOut
-            throw SignInError.noToken
+        let refusal = DeviceSignIn.refusal(from: callback)
+        let received = DeviceSignIn.callback(from: callback)
+        guard let state = refusal?.state ?? received?.state else { throw failed(.noToken) }
+        guard Self.sameState(state, current.state) else { throw failed(.stateMismatch) }
+        guard clock().timeIntervalSince(current.startedAt) <= Self.attemptLifetime else { throw failed(.expired) }
+        if let refusal {
+            throw failed(refusal.reason == .noPerson ? .noPerson : .notAllowed)
         }
-        guard Self.sameState(received.state, current.state) else {
-            phase = .signedOut
-            throw SignInError.stateMismatch
-        }
-        guard clock().timeIntervalSince(current.startedAt) <= Self.attemptLifetime else {
-            phase = .signedOut
-            throw SignInError.expired
-        }
-        let issued = received.token
+        guard let issued = received?.token else { throw failed(.noToken) }
         do {
             try storage.save(server.text, as: .serverURL)
             try storage.save(issued, as: .deviceToken)
@@ -123,6 +121,11 @@ public actor DeviceSession {
         }
         token = issued
         phase = .signedIn(server)
+    }
+
+    private func failed(_ error: SignInError) -> SignInError {
+        phase = .signedOut
+        return error
     }
 
     public func cancel() {

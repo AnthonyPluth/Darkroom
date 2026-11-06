@@ -1,21 +1,21 @@
 import SwiftUI
 
 struct RootView: View {
-    private let version = BuildVersion.current
+    @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 8) {
-            Text("Darkroom")
-                .font(.title2.weight(.semibold))
-            Text("Build \(version.label)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("build-version")
+        Group {
+            if !model.restored {
+                ProgressView().tint(Color.inkMuted)
+            } else if case .signedIn(let server) = model.phase {
+                SignedInView(server: server)
+            } else {
+                SignInView(model: model)
+            }
         }
-        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.canvas.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .task { await model.restore() }
     }
-}
-
-#Preview {
-    RootView()
 }

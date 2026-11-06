@@ -12,6 +12,16 @@ public enum DeviceSignIn {
         public let state: String
     }
 
+    public struct Refusal: Equatable, Sendable {
+        public enum Reason: String, Sendable {
+            case noPerson = "no_person"
+            case notAllowed = "not_allowed"
+        }
+
+        public let reason: Reason
+        public let state: String
+    }
+
     public static func newState() -> String {
         var generator = SystemRandomNumberGenerator()
         let bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
@@ -29,28 +39,46 @@ public enum DeviceSignIn {
     }
 
     public static func cleanedDeviceName(_ raw: String) -> String {
-        let printable = String.UnicodeScalarView(raw.unicodeScalars.compactMap(printableForm))
-        let trimmed = String(printable).trimmingCharacters(in: .whitespaces)
-        let capped = String.UnicodeScalarView(trimmed.unicodeScalars.prefix(maxDeviceNameLength))
-        let result = String(capped).trimmingCharacters(in: .whitespaces)
+        let result = cleaned(raw)
         return result.isEmpty ? fallbackDeviceName : result
     }
 
+    public static func hasName(_ raw: String) -> Bool {
+        !cleaned(raw).isEmpty
+    }
+
+    private static func cleaned(_ raw: String) -> String {
+        let printable = String.UnicodeScalarView(raw.unicodeScalars.compactMap(printableForm))
+        let trimmed = String(printable).trimmingCharacters(in: .whitespaces)
+        let capped = String.UnicodeScalarView(trimmed.unicodeScalars.prefix(maxDeviceNameLength))
+        return String(capped).trimmingCharacters(in: .whitespaces)
+    }
+
     public static func callback(from url: URL) -> Callback? {
+        guard let values = fragmentValues(of: url) else { return nil }
+        guard let token = values["token"], let state = values["state"], isUsableToken(token), isUsableToken(state) else { return nil }
+        return Callback(token: token, state: state)
+    }
+
+    public static func refusal(from url: URL) -> Refusal? {
+        guard let values = fragmentValues(of: url), values["token"] == nil else { return nil }
+        guard let code = values["error"], let reason = Refusal.Reason(rawValue: code) else { return nil }
+        guard let state = values["state"], isUsableToken(state) else { return nil }
+        return Refusal(reason: reason, state: state)
+    }
+
+    private static func fragmentValues(of url: URL) -> [String: String]? {
         guard url.scheme?.lowercased() == callbackScheme, url.host?.lowercased() == callbackHost else { return nil }
         guard url.path.isEmpty || url.path == "/" else { return nil }
         guard let fragment = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedFragment else { return nil }
-        var foundToken: String?
-        var foundState: String?
+        var values: [String: String] = [:]
         for pair in fragment.split(separator: "&") {
             let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { continue }
-            let value = String(parts[1]).removingPercentEncoding ?? ""
-            if parts[0] == "token", foundToken == nil { foundToken = value }
-            if parts[0] == "state", foundState == nil { foundState = value }
+            let key = String(parts[0])
+            if values[key] == nil { values[key] = String(parts[1]).removingPercentEncoding ?? "" }
         }
-        guard let token = foundToken, let state = foundState, isUsableToken(token), isUsableToken(state) else { return nil }
-        return Callback(token: token, state: state)
+        return values
     }
 
     private static func isUsableToken(_ value: String) -> Bool {
