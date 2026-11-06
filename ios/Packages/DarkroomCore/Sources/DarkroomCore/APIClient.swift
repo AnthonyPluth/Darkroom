@@ -40,18 +40,6 @@ public struct APIClient: Sendable {
         _ = try await send(path: "/api/device/checkin", method: "POST", body: encode(request))
     }
 
-    public func eligible(_ request: EligibleRequest) async throws -> EligibleReply {
-        try await post("/api/device/eligible", request)
-    }
-
-    public func confirm(_ request: ConfirmRequest) async throws -> ConfirmReply {
-        try await post("/api/device/eligible/confirm", request)
-    }
-
-    public func deleted(_ request: DeletedRequest) async throws -> DeletedReply {
-        try await post("/api/device/deleted", request)
-    }
-
     public func uploadRequest(assetID: String, kind: ResourceKind, sha1: String, filename: String) async throws -> URLRequest {
         guard let token = await tokenProvider() else { throw APIError.notSignedIn }
         let path = "/api/device/assets/\(Self.escape(assetID))/resources/\(kind.rawValue)"

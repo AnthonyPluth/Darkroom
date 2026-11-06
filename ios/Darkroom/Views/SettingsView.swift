@@ -15,7 +15,6 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
             account
             serverSection
-            cleanup
             signOut
             Text("Build \(version.label)")
                 .font(.footnote.monospaced())
@@ -58,15 +57,6 @@ struct SettingsView: View {
             Card {
                 KeyValueRow(label: "Address", value: server.authority, monospaced: true)
                 Text(SettingsMessages.differentServer).font(.footnote).foregroundStyle(Color.inkMuted)
-            }
-        }
-    }
-
-    private var cleanup: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionLabel("Cleanup")
-            Card {
-                Text(SettingsMessages.cleanup).font(.subheadline).foregroundStyle(Color.ink)
             }
         }
     }
