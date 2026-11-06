@@ -109,7 +109,9 @@ struct UploadsView: View {
 
     private func details(_ status: UploadStatus) -> some View {
         Card {
-            KeyValueRow(label: "Last synced", value: UploadsPresentation.lastSynced(status.lastSync, now: Date()))
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                KeyValueRow(label: "Last synced", value: UploadsPresentation.lastSynced(status.lastSync, now: context.date))
+            }
             Divider().overlay(Color.raised)
             KeyValueRow(label: "Server", value: server.authority, monospaced: true)
         }
