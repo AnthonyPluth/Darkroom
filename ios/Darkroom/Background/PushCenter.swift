@@ -62,8 +62,8 @@ final class PushCenter {
     private func activate() async {
         UIApplication.shared.registerForRemoteNotifications()
         BackgroundWork.nightly.schedule()
-        await notifications.ensureAsked()
         await registrar.sync()
+        await notifications.ensureAsked()
     }
 }
 
