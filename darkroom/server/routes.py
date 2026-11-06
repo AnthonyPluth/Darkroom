@@ -69,6 +69,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/media/{id}/reassign", review.reassign, "session"),
     Route("POST", "/api/device/assets/check", device.check_assets, "device"),
     Route("PUT", "/api/device/assets/{id}/resources/{kind}", device.upload_resource, "device", streams=True),
+    Route("GET", "/api/device/me", device.me, "device"),
     Route("POST", "/api/device/checkin", device.checkin, "device"),
     Route("PUT", "/api/device/push-token", device.register_push_token, "device"),
     Route("DELETE", "/api/device/push-token", device.forget_push_token, "device"),

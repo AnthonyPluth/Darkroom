@@ -613,6 +613,16 @@
       ]
     },
     {
+      "route": "GET /api/device/me",
+      "auth": "device",
+      "handler": "darkroom.server.api.device.me",
+      "frontend": [],
+      "tests": [
+        "tests/test_device_me.py",
+        "tests/test_every_route.py"
+      ]
+    },
+    {
       "route": "POST /api/device/checkin",
       "auth": "device",
       "handler": "darkroom.server.api.device.checkin",

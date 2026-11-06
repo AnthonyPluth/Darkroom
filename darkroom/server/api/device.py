@@ -130,6 +130,17 @@ def upload_resource(request: Request) -> Annotated[Response, contract.UploadRepl
     return upload_reply(photokit_id, kind, sha1, already, indexed)
 
 
+def me(request: Request) -> Annotated[Response, contract.DeviceMeReply]:
+    who = device_of(request)
+    if who is None or who.person_id is None or who.name is None:
+        return error_response(SIGN_IN, 401)
+    with db.session(engine_of(request)) as opened:
+        person = opened.get(Person, who.person_id)
+        if person is None:
+            return error_response(SIGN_IN, 401)
+        return json_response({"person": person.name, "device": who.name})
+
+
 def checkin(request: Annotated[Request, contract.DeviceCheckinBody]) -> Annotated[Response, contract.Ok]:
     who = device_of(request)
     if who is None or who.device_id is None:

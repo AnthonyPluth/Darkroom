@@ -190,18 +190,31 @@ def device_start(request: Request) -> Response:
     return redirect(target, (cookie(settings, LOGIN_COOKIE, state, int(oidc.LOGIN_TTL), "/auth"),))
 
 
+def device_refusal(reason: str, client_state: str | None, clear_login: str) -> Response | None:
+    if client_state is None or not CLIENT_STATE.fullmatch(client_state):
+        return None
+    return redirect(f"{DEVICE_SIGNED_IN}#error={reason}&state={client_state}", (clear_login,))
+
+
 def device_callback(request: Request, clear_login: str, moment: float) -> Response:
     settings = request.settings
+    client_state: str | None = None
     try:
         with db.session(engine_of(request)) as opened:
             who, name, client_state = oidc.finish_device_login(opened, settings, request.query, cookies_of(request).get(LOGIN_COOKIE), moment)
             _, token = devices.enrol(opened, who.sub, who.email, who.email_verified, name, moment)
     except oidc.NotAllowed as error:
         monitoring.log("device sign-in refused", reason="not_allowed")
+        returned = device_refusal("not_allowed", error.client_state, clear_login)
+        if returned is not None:
+            return returned
         return page(403, "Not allowed", f"You signed in as {error.who}, which is not allowed to use the Darkroom app.", None, (clear_login,),
                     "If this is your account, ask whoever runs Darkroom to add it to the family group in Pocket ID, then try again.")
     except devices.NoPerson as error:
         monitoring.log("device sign-in refused", reason="no_person")
+        returned = device_refusal("no_person", client_state, clear_login)
+        if returned is not None:
+            return returned
         return page(403, "No person with this email", f"{error}. Ask whoever runs Darkroom to add your email to your person on the People page, then sign in again.",
                     None, (clear_login,))
     except oidc.ProviderUnreachable as error:

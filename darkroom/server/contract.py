@@ -596,6 +596,11 @@ class DevicePatchBody(TypedDict):
     icloud_photos_off: NotRequired[bool]
 
 
+class DeviceMeReply(TypedDict):
+    person: str
+    device: str
+
+
 class DeviceCheckinBody(TypedDict):
     pending_uploads: int
     app_version: NotRequired[str | None]

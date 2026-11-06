@@ -61,6 +61,12 @@ class DeviceSignInCase(unittest.TestCase):
         cookies = {auth.LOGIN_COOKIE: query["state"]} if same_browser else {}
         return self.call("GET", f"/auth/callback?code={CODE}&state={query['state']}", cookies)
 
+    def sign_in_with_an_unusable_state(self, **grant):
+        query = self.start()
+        with db.session(self.engine) as opened:
+            opened.query(AuthPending).update({"client_state": "not a usable state!"})
+        return self.finish(query, **grant)
+
     def token_from(self, headers):
         location = headers["Location"]
         self.assertTrue(location.startswith("darkroom://signed-in#token="), location)
@@ -104,7 +110,7 @@ class DeviceSignInTests(DeviceSignInCase):
         self.token_from(headers)
 
     def test_an_unknown_email_gets_a_clear_page_and_no_device(self):
-        status, headers, body = self.sign_in(email="nobody@example.test")
+        status, headers, body = self.sign_in_with_an_unusable_state(email="nobody@example.test")
         self.assertEqual(status, 403)
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn("No person with this email", body.decode())
@@ -112,16 +118,16 @@ class DeviceSignInTests(DeviceSignInCase):
         self.assertEqual(self.device_count(), 0)
 
     def test_an_unverified_email_or_two_people_with_it_create_no_device(self):
-        self.assertEqual(self.sign_in(email_verified=False)[0], 403)
+        self.assertEqual(self.sign_in_with_an_unusable_state(email_verified=False)[0], 403)
         with db.session(self.engine) as opened:
             opened.add(Person(name="Jo Two", slug="jo-two", email="jo@example.test", originals_path="x", google_only_path="y", created=1.0))
-        status, _, body = self.sign_in()
+        status, _, body = self.sign_in_with_an_unusable_state()
         self.assertEqual(status, 403)
         self.assertIn("more than one person has this email", body.decode())
         self.assertEqual(self.device_count(), 0)
 
     def test_someone_outside_the_device_groups_is_not_allowed(self):
-        status, _, body = self.sign_in(groups=["guests"])
+        status, _, body = self.sign_in_with_an_unusable_state(groups=["guests"])
         self.assertEqual(status, 403)
         self.assertIn("not allowed to use the Darkroom app", body.decode())
         self.assertEqual(self.device_count(), 0)
@@ -174,7 +180,7 @@ class DeviceSignInTests(DeviceSignInCase):
         self.assertEqual(self.call("GET", path, cookies)[0], 403)
         self.assertEqual(self.device_count(), 1)
 
-    def test_a_pending_sign_in_without_the_apps_state_never_finishes(self):
+    def test_a_pending_sign_in_with_an_unusable_state_never_finishes(self):
         query = self.start()
         with db.session(self.engine) as opened:
             opened.query(AuthPending).update({"client_state": None})
@@ -209,6 +215,93 @@ class DeviceSignInTests(DeviceSignInCase):
             with self.subTest(headers=headers):
                 self.assertEqual(self.call("GET", "/api/me", headers=headers)[0], 401)
                 self.assertEqual(self.call("GET", "/api/people", headers=headers)[0], 401)
+
+
+class DeviceSignInErrorRedirectTests(DeviceSignInCase):
+    EMAIL = "canary.nobody@example.test"
+
+    def refused_fragment(self, headers):
+        location = headers["Location"]
+        self.assertTrue(location.startswith("darkroom://signed-in#error="), location)
+        return dict(part.split("=", 1) for part in location.split("#", 1)[1].split("&"))
+
+    def test_an_unknown_email_returns_to_the_app_with_no_person_and_its_state(self):
+        with no_leaks(self, CODE, self.EMAIL, database=self.engine, replies=self.replies):
+            status, headers, body = self.sign_in(email=self.EMAIL)
+        self.assertEqual((status, body), (303, b""))
+        self.assertEqual(self.refused_fragment(headers), {"error": "no_person", "state": APP_STATE})
+        self.assertEqual(headers.get_all("Set-Cookie"), [f"{auth.LOGIN_COOKIE}=; Path=/auth; Max-Age=0; HttpOnly; SameSite=Lax"])
+        self.assertNotIn("token", headers["Location"])
+        self.assertEqual(self.device_count(), 0)
+
+    def test_an_unverified_email_or_two_people_with_it_return_no_person(self):
+        status, headers, _ = self.sign_in(email_verified=False)
+        self.assertEqual((status, self.refused_fragment(headers)["error"]), (303, "no_person"))
+        with db.session(self.engine) as opened:
+            opened.add(Person(name="Jo Two", slug="jo-two", email="jo@example.test", originals_path="x", google_only_path="y", created=1.0))
+        status, headers, _ = self.sign_in()
+        self.assertEqual((status, self.refused_fragment(headers)["error"]), (303, "no_person"))
+        self.assertEqual(self.device_count(), 0)
+
+    def test_someone_outside_the_device_groups_returns_not_allowed_without_their_email(self):
+        with no_leaks(self, CODE, self.EMAIL, database=self.engine, replies=self.replies):
+            status, headers, body = self.sign_in(groups=["guests"], email=self.EMAIL)
+        self.assertEqual((status, body), (303, b""))
+        self.assertEqual(self.refused_fragment(headers), {"error": "not_allowed", "state": APP_STATE})
+        self.assertNotIn("example.test", headers["Location"])
+        self.assertEqual(self.device_count(), 0)
+
+    def test_the_fragment_carries_the_state_of_its_own_attempt_only(self):
+        self.start(app_state="first-attempt-state-0000000")
+        second = self.start(app_state="second-attempt-state-000000")
+        status, headers, _ = self.finish(second, email=self.EMAIL)
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "darkroom://signed-in#error=no_person&state=second-attempt-state-000000")
+
+    def test_a_refusal_without_the_apps_state_keeps_the_page(self):
+        for refusal in ({"email": self.EMAIL}, {"groups": ["guests"]}):
+            with self.subTest(refusal=refusal):
+                query = self.start()
+                with db.session(self.engine) as opened:
+                    opened.query(AuthPending).update({"client_state": None})
+                status, headers, body = self.finish(query, **refusal)
+                self.assertEqual(status, 403)
+                self.assertIn("text/html", headers["Content-Type"])
+                self.assertNotIn("darkroom://", headers.get("Location") or "")
+                self.assertTrue(body)
+
+    def test_a_refusal_with_an_unusable_stored_state_keeps_the_page(self):
+        query = self.start()
+        with db.session(self.engine) as opened:
+            opened.query(AuthPending).update({"client_state": "bad state&error=x#"})
+        status, headers, _ = self.finish(query, email=self.EMAIL)
+        self.assertEqual(status, 403)
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
+
+    def test_a_replayed_refused_attempt_gets_the_page_not_the_redirect(self):
+        query = self.start()
+        self.assertEqual(self.finish(query, email=self.EMAIL)[0], 303)
+        status, headers, body = self.finish(query, email=self.EMAIL)
+        self.assertEqual(status, 403)
+        self.assertIn("text/html", headers["Content-Type"])
+        self.assertIn("this sign-in has expired or was already used", body.decode())
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
+
+    def test_an_unknown_state_or_another_browser_gets_the_page(self):
+        status, headers, _ = self.call("GET", f"/auth/callback?code={CODE}&state=never-started", {auth.LOGIN_COOKIE: "never-started"})
+        self.assertEqual(status, 403)
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
+        query = self.start()
+        status, headers, _ = self.finish(query, same_browser=False, email=self.EMAIL)
+        self.assertEqual(status, 403)
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
+
+    def test_failures_that_are_not_those_two_keep_their_pages(self):
+        query = self.start()
+        self.provider.outage = True
+        status, headers, _ = self.call("GET", f"/auth/callback?code={CODE}&state={query['state']}", {auth.LOGIN_COOKIE: query["state"]})
+        self.assertEqual(status, 502)
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
 
 
 class RevokedAndLapsedTests(DeviceSignInCase):

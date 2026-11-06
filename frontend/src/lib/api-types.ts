@@ -143,6 +143,11 @@ export interface DeviceCheckinBody {
   app_version?: string | null;
 }
 
+export interface DeviceMeReply {
+  person: string;
+  device: string;
+}
+
 export interface DevicePatchBody {
   cleanup_enabled: boolean;
   icloud_photos_off?: boolean;
@@ -662,6 +667,7 @@ export interface Endpoints {
   "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
   "POST /api/device/assets/check": { body: DeviceCheckBody; reply: DeviceCheckReply };
   "PUT /api/device/assets/{id}/resources/{kind}": { body: never; reply: UploadReply };
+  "GET /api/device/me": { body: never; reply: DeviceMeReply };
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
   "PUT /api/device/push-token": { body: DevicePushTokenBody; reply: Ok };
   "DELETE /api/device/push-token": { body: never; reply: Ok };
