@@ -197,7 +197,7 @@ Replaces the README's Cleanup card ("Nothing else until #38"). `Card`, label "CL
 3. Only when cleanup is on and `UIApplication.shared.backgroundRefreshStatus` is not `.available`: a `.footnote` line "Background App Refresh is off, so Darkroom only checks when you open it." with "Open Settings" (point 10).
 4. A "Open Cleanup" row that switches to the Cleanup tab, only when cleanup is on.
 
-The sign-out dialog gains one sentence when a removal has not been reported (point 9): "Darkroom hasn't been told about N removed photos yet, and after you sign out it can't be." The button stays "Sign out"; it is not blocked.
+The sign-out dialog gains one sentence when a removal record is waiting (point 9; whether iOS removed those photos is unknown until the library is read, so the sentence does not say they were removed): "Darkroom may not have been told about N photos this iPhone was removing, and after you sign out it can't be." The button stays "Sign out"; it is not blocked.
 
 ## Open points (all need owner sign-off)
 
