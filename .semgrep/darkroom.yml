@@ -246,7 +246,7 @@ rules:
       Whether a photo may be deleted from an iPhone is decided only in darkroom/domain/eligibility.py, from scratch at
       request time (AGENTS.md, promise 3). Only that module writes PhoneAsset.eligible_at, eligible_confirmed_at and
       deleted_at or Device.eligibility_checked_at, and only it turns a device's cleanup on. Go through
-      eligibility.eligible_assets, confirm, record_deleted, forget or set_cleanup instead.
+      eligibility.eligible_assets, forget or set_cleanup instead.
     severity: ERROR
     languages: [python]
     pattern-either:

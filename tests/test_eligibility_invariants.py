@@ -23,8 +23,6 @@ class InvariantCase(unittest.TestCase):
         device = device or self.phone
         found = self.home.eligible(device, photo)
         self.assertEqual([entry.asset_id for entry in found.eligible], [photo.id], found.rejected)
-        confirmed, rejected = self.home.confirm(device, photo)
-        self.assertEqual(([entry.asset_id for entry in confirmed], rejected), ([photo.id], []))
 
     def assert_refused(self, photo: Photo, reason: str, device: Device | None = None,
                        reported: eligibility.Reported | None = None) -> None:
@@ -34,11 +32,6 @@ class InvariantCase(unittest.TestCase):
         found = eligibility.eligible_assets(self.home.opened, self.home.settings, self.home.photos, device.id, sent, self.home.now)
         self.assertEqual(found.eligible, [])
         self.assertEqual(found.rejected, [eligibility.Rejected(photo.id, reason)])
-        confirmed, rejected = eligibility.confirm(self.home.opened, self.home.settings, self.home.photos, device.id, sent, self.home.now)
-        self.assertEqual(confirmed, [])
-        self.assertEqual(rejected, [eligibility.Rejected(photo.id, reason)])
-        recorded, _ = eligibility.record_deleted(self.home.opened, device.id, [photo.id], self.home.now)
-        self.assertEqual(recorded, [])
         self.assertEqual(self.home.state(), state)
         self.assertEqual(self.home.files(), files)
 
@@ -170,7 +163,7 @@ class TheDeviceMayClean(InvariantCase):
     def test_an_enabled_signed_in_iphone_is_offered_photos(self):
         self.assert_offered(self.home.photo(self.phone, through=self.google))
 
-    def test_cleanup_off_lists_nothing_and_confirms_nothing(self):
+    def test_cleanup_off_lists_nothing(self):
         photos = [self.home.photo(self.phone, through=self.google) for _ in range(3)]
         self.phone.cleanup_enabled = False
         sent = [self.home.reported(photo) for photo in photos]
@@ -179,8 +172,6 @@ class TheDeviceMayClean(InvariantCase):
         self.assertFalse(found.cleanup_enabled)
         self.assertEqual(found.eligible, [])
         self.assertEqual({entry.reason for entry in found.rejected}, {eligibility.CLEANUP_DISABLED})
-        confirmed, rejected = eligibility.confirm(self.home.opened, self.home.settings, self.home.photos, self.phone.id, sent, self.home.now)
-        self.assertEqual((confirmed, len(rejected)), ([], 3))
         self.assertEqual(self.home.state(), state)
 
     def test_a_revoked_iphone_is_refused(self):
@@ -207,42 +198,11 @@ class TheDeviceMayClean(InvariantCase):
 
 
 class EveryAnswerIsComputedAfresh(InvariantCase):
-    def test_reversing_the_match_between_eligible_and_confirm_is_refused(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.assertEqual(len(self.home.eligible(self.phone, photo).eligible), 1)
-        dedupe.reverse(self.home.opened, photo.decisions[0].id, self.home.now, "owner")
-        confirmed, rejected = self.home.confirm(self.phone, photo)
-        self.assertEqual((confirmed, rejected), ([], [eligibility.Rejected(photo.id, eligibility.NOT_CONFIRMED)]))
-        self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at, photo.asset.deleted_at), (None, None, None))
-
-    def test_removing_the_file_between_eligible_and_confirm_is_refused(self):
-        photo = self.home.photo(self.phone, ("photo", "live_video"), through=self.google)
-        self.assertEqual(len(self.home.eligible(self.phone, photo).eligible), 1)
-        os.remove(self.home.photos.root / photo.items["live_video"].path)
-        self.assertEqual(self.home.confirm(self.phone, photo), ([], [eligibility.Rejected(photo.id, eligibility.FILE_MISSING)]))
-
-    def test_turning_cleanup_off_between_eligible_and_confirm_is_refused(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, photo)
-        eligibility.set_cleanup(self.home.opened, self.phone.id, False, False, self.home.now)
-        self.assertEqual(self.home.confirm(self.phone, photo), ([], [eligibility.Rejected(photo.id, eligibility.CLEANUP_DISABLED)]))
-
     def test_a_stored_eligible_mark_is_never_trusted(self):
         photo = self.home.photo(self.phone)
         photo.asset.eligible_at, photo.asset.eligible_confirmed_at = 1.0, 1.0
-        self.assertEqual(self.home.confirm(self.phone, photo), ([], [eligibility.Rejected(photo.id, eligibility.NOT_CONFIRMED)]))
+        self.assertEqual(self.home.eligible(self.phone, photo).rejected, [eligibility.Rejected(photo.id, eligibility.NOT_CONFIRMED)])
         self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at), (None, None))
-
-    def test_confirm_needs_no_earlier_list(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.assertEqual([entry.asset_id for entry in self.home.confirm(self.phone, photo)[0]], [photo.id])
-
-    def test_deleted_is_recorded_only_for_the_ids_reported(self):
-        first, second = (self.home.photo(self.phone, through=self.google) for _ in range(2))
-        self.home.confirm(self.phone, first, second)
-        recorded, rejected = eligibility.record_deleted(self.home.opened, self.phone.id, [second.id], self.home.now)
-        self.assertEqual((recorded, rejected), ([second.id], []))
-        self.assertEqual((first.asset.deleted_at, second.asset.deleted_at), (None, self.home.now))
 
 
 class NothingButAnAutomaticTierOneOrTwoMakesAnythingEligible(InvariantCase):
@@ -310,7 +270,8 @@ class EveryConfirmedIdKeepsTheRules(unittest.TestCase):
             if rng.random() < 0.08:
                 home.opened.get(User, f"sub-{person.slug}").last_seen = home.now - 400 * 86_400
             sent = [self.random_photo(home, rng, device, people, accounts, exports) for _ in range(10)]
-            confirmed, rejected = eligibility.confirm(home.opened, home.settings, home.photos, device.id, sent, home.now)
+            found = eligibility.eligible_assets(home.opened, home.settings, home.photos, device.id, sent, home.now)
+            confirmed, rejected = found.eligible, found.rejected
             self.tally["confirmed"] += len(confirmed)
             self.tally["rejected"] += len(rejected)
             by_id = {entry.photokit_id: entry for entry in sent}

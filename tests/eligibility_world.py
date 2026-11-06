@@ -141,9 +141,6 @@ class Household:
     def eligible(self, device: Device, *photos: Photo) -> eligibility.Evaluation:
         return eligibility.eligible_assets(self.opened, self.settings, self.photos, device.id, [self.reported(photo) for photo in photos], self.now)
 
-    def confirm(self, device: Device, *photos: Photo) -> tuple[list[eligibility.Eligible], list[eligibility.Rejected]]:
-        return eligibility.confirm(self.opened, self.settings, self.photos, device.id, [self.reported(photo) for photo in photos], self.now)
-
     def state(self) -> dict[str, list[tuple[object, ...]]]:
         self.opened.flush()
         meta = MetaData()
