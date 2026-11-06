@@ -3,10 +3,10 @@ import Foundation
 import SQLite3
 
 public actor SQLiteResourceStore: ResourceStore {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    private static let columns = "asset_id, kind, sha1, bytes, filename, state, failure_reason, attempts, rehashes"
+    private static let columns = "asset_id, kind, sha1, bytes, filename, state, failure_reason, attempts, rehashes, recoverable"
 
     private let db: OpaquePointer
 
@@ -37,7 +37,7 @@ public actor SQLiteResourceStore: ResourceStore {
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(asset_id, kind) DO UPDATE SET
             sha1 = excluded.sha1, bytes = excluded.bytes, filename = excluded.filename, state = excluded.state,
-            failure_reason = NULL, attempts = 0, rehashes = 0
+            failure_reason = NULL, attempts = 0, rehashes = 0, recoverable = 0
         """
         try transaction {
             try withStatement(sql) { statement in
@@ -82,7 +82,7 @@ public actor SQLiteResourceStore: ResourceStore {
                 guard current.canMove(to: state) else {
                     throw ResourceStoreError.illegalTransition(key: key, from: current, to: state)
                 }
-                try withStatement("UPDATE resources SET state = ?, failure_reason = ? WHERE asset_id = ? AND kind = ?") { statement in
+                try withStatement("UPDATE resources SET state = ?, failure_reason = ?, recoverable = 0 WHERE asset_id = ? AND kind = ?") { statement in
                     bind(state.rawValue, at: 1, in: statement)
                     if state == .failed, let failureReason {
                         bind(failureReason, at: 2, in: statement)
@@ -146,6 +146,22 @@ public actor SQLiteResourceStore: ResourceStore {
 
     public func recordRehash(for key: ResourceKey) async throws {
         try increment("rehashes", for: key)
+    }
+
+    public func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws {
+        let sql = "UPDATE resources SET recoverable = ? WHERE asset_id = ? AND kind = ? AND state = 'failed'"
+        try transaction {
+            try withStatement(sql) { statement in
+                for key in keys {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    sqlite3_bind_int(statement, 1, recoverable ? 1 : 0)
+                    bind(key.assetID, at: 2, in: statement)
+                    bind(key.kind.rawValue, at: 3, in: statement)
+                    _ = try step(statement)
+                }
+            }
+        }
     }
 
     public func counts() async throws -> [ResourceState: Int] {
@@ -243,7 +259,8 @@ public actor SQLiteResourceStore: ResourceStore {
             resource: resource,
             failureReason: reason,
             attempts: Int(sqlite3_column_int64(statement, 7)),
-            rehashes: Int(sqlite3_column_int64(statement, 8))
+            rehashes: Int(sqlite3_column_int64(statement, 8)),
+            recoverable: sqlite3_column_int64(statement, 9) != 0
         )
     }
 
@@ -276,7 +293,20 @@ public actor SQLiteResourceStore: ResourceStore {
         guard version <= schemaVersion else {
             throw ResourceStoreError.database("the resource database was written by a newer version of the app")
         }
-        guard version < 1 else { return }
+        if version < 1 {
+            try createResourcesTable(db)
+        }
+        if version < 2 {
+            try exec(db, """
+            BEGIN;
+            ALTER TABLE resources ADD COLUMN recoverable INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 2;
+            COMMIT;
+            """)
+        }
+    }
+
+    private static func createResourcesTable(_ db: OpaquePointer) throws {
         try exec(db, """
         BEGIN;
         CREATE TABLE resources (

@@ -5,12 +5,26 @@ public struct ResourceRecord: Equatable, Sendable {
     public var failureReason: String?
     public var attempts: Int
     public var rehashes: Int
+    public var recoverable: Bool
 
-    public init(resource: LocalResource, failureReason: String? = nil, attempts: Int = 0, rehashes: Int = 0) {
+    public init(
+        resource: LocalResource,
+        failureReason: String? = nil,
+        attempts: Int = 0,
+        rehashes: Int = 0,
+        recoverable: Bool = false
+    ) {
         self.resource = resource
         self.failureReason = failureReason
         self.attempts = attempts
         self.rehashes = rehashes
+        self.recoverable = recoverable
+    }
+}
+
+extension LocalResource {
+    public var hasDescriptor: Bool {
+        !sha1.isEmpty
     }
 }
 
@@ -28,9 +42,12 @@ public protocol ResourceStore: Sendable {
     func recordAttempt(ifUnchanged resource: LocalResource) async throws -> Int?
     func recordRehash(for key: ResourceKey) async throws
     func counts() async throws -> [ResourceState: Int]
+    func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws
 }
 
 extension ResourceStore {
+    public func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws {}
+
     @discardableResult
     public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
         guard let record = try await record(for: old.key), record.resource.hasSameContent(as: old) else { return false }
@@ -94,6 +111,7 @@ public actor InMemoryResourceStore: ResourceStore {
             guard var record = storage[key] else { continue }
             record.resource.state = state
             record.failureReason = state == .failed ? failureReason : nil
+            record.recoverable = false
             storage[key] = record
         }
     }
@@ -134,6 +152,14 @@ public actor InMemoryResourceStore: ResourceStore {
 
     public func recordRehash(for key: ResourceKey) async throws {
         storage[key]?.rehashes += 1
+    }
+
+    public func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws {
+        for key in keys {
+            guard var record = storage[key], record.resource.state == .failed else { continue }
+            record.recoverable = recoverable
+            storage[key] = record
+        }
     }
 
     public func counts() async throws -> [ResourceState: Int] {

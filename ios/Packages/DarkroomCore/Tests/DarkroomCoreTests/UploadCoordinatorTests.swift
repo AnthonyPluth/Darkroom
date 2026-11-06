@@ -275,6 +275,39 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.failureReason?.contains("503"), true)
     }
 
+    func testAFileThatGaveUpAfterServerErrorsCanBeRetriedButARefusedOneCannot() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.server(status: 503))
+        await rig.transport.fail(b, with: APIError.rejected(status: 400))
+        let coordinator = coordinator(rig)
+        for _ in 0..<3 { _ = try await coordinator.run() }
+        let gaveUp = try await rig.store.record(for: a)
+        let refused = try await rig.store.record(for: b)
+        XCTAssertEqual(gaveUp?.resource.state, .failed)
+        XCTAssertEqual(gaveUp?.recoverable, true)
+        XCTAssertEqual(refused?.resource.state, .failed)
+        XCTAssertEqual(refused?.recoverable, false)
+    }
+
+    func testAFailedSiblingWithoutADescriptorIsLeftOutOfTheCheckAndTheValidOneUploads() async throws {
+        let rig = Rig()
+        let video = ResourceKey(assetID: "a", kind: .liveVideo)
+        let unreadable = LocalResource(key: video, sha1: "", bytes: 0, filename: "a.MOV", state: .failed)
+        try await rig.store.upsert([hashed(a), unreadable])
+        await rig.api.setNeeded([a])
+        let result = try await coordinator(rig).run()
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.flatMap(\.assets).flatMap(\.resources).map(\.kind), [.photo])
+        XCTAssertEqual(result.uploaded, 1)
+        XCTAssertEqual(result.failed, 0)
+        let photo = try await rig.store.record(for: a)
+        let sibling = try await rig.store.record(for: video)
+        XCTAssertEqual(photo?.resource.state, .uploaded)
+        XCTAssertEqual(sibling?.resource, unreadable)
+    }
+
     func testTransportErrorStopsTheRunAsOffline() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a), hashed(b)])
