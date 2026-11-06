@@ -336,6 +336,16 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.resource.state, .hashed)
     }
 
+    func testARevokedDeviceAsksForSignInBeforeUploading() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setCheckError(APIError.revoked)
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .needsSignIn)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .hashed)
+    }
+
     func testAJoinedCallerThatIsCancelledStopsWaitingWithoutCancellingThePass() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a)])

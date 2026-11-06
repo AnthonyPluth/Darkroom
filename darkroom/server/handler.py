@@ -37,7 +37,9 @@ def dispatch(request: Request) -> Response:
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":
         return route.handler(request)
-    principal = authenticate(route, request)
+    principal: Principal | Response | None = auth.device_check(request) if route.auth == "device" else authenticate(route, request)
+    if isinstance(principal, Response):
+        return principal
     if principal is None:
         return error_response("sign in required", 401)
     response = route.handler(replace(request, user=principal))

@@ -107,8 +107,8 @@ class CleanupApiTests(DeviceCase):
         self.phone.revoked_at = 5.0
         self.commit()
         for path in ("/api/device/eligible", "/api/device/eligible/confirm"):
-            self.assertEqual(self.call("POST", path, body_of(self.home, photo)), (401, {"error": "sign in required"}))
-        self.assertEqual(self.call("POST", "/api/device/deleted", {"asset_ids": [photo.id]})[0], 401)
+            self.assertEqual(self.call("POST", path, body_of(self.home, photo)), (401, {"error": "sign in required", "reason": "device_revoked"}))
+        self.assertEqual(self.call("POST", "/api/device/deleted", {"asset_ids": [photo.id]}), (401, {"error": "sign in required", "reason": "device_revoked"}))
 
     def test_bad_bodies_are_refused_and_change_nothing(self):
         photo = self.home.photo(self.phone, through=self.google)

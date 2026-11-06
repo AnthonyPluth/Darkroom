@@ -285,6 +285,75 @@ class RevokedAndLapsedTests(DeviceSignInCase):
             self.assertEqual(oidc.device_access_lapsed(opened, unset, "kid", "kid@example.test", now), "sign_in_unavailable")
 
 
+class RefusalReasonTests(DeviceSignInCase):
+    GENERIC = {"error": "sign in required"}
+
+    def signed_in(self, **grant):
+        return self.token_from(self.sign_in(**grant)[1])
+
+    def refused(self, token):
+        status, _, reply = self.checkin(token)
+        self.assertEqual(status, 401)
+        return json.loads(reply)
+
+    def test_a_revoked_device_is_told_it_was_revoked_on_every_device_route(self):
+        token = self.signed_in()
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, opened.query(Device).one().id, time.time())
+        self.assertEqual(self.refused(token), {"error": "sign in required", "reason": "device_revoked"})
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        status, _, reply = self.call("POST", "/api/device/deleted", headers=headers, body=b'{"asset_ids": ["a"]}')
+        self.assertEqual((status, json.loads(reply)), (401, {"error": "sign in required", "reason": "device_revoked"}))
+
+    def test_a_device_replaced_by_another_accounts_sign_in_is_told_it_was_revoked(self):
+        old = self.signed_in(sub="jo-account")
+        with db.session(self.engine) as opened:
+            opened.query(User).filter_by(sub="jo-account").update({"email": "jo.old@example.test"})
+        self.assertEqual(self.refused(old)["reason"], "sign_in_refused")
+        self.signed_in(sub="someone-else")
+        self.assertEqual(self.refused(old)["reason"], "device_revoked")
+
+    def test_a_lapsed_sign_in_says_so_never_revoked_and_recovers_on_the_same_token(self):
+        token = self.signed_in()
+        with db.session(self.engine) as opened:
+            opened.query(User).update({"last_seen": time.time() - (oidc.NO_RECHECK_DAYS + 1) * 86_400})
+        self.assertEqual(self.refused(token), {"error": "sign in required", "reason": "sign_in_lapsed"})
+        with db.session(self.engine) as opened:
+            opened.query(User).update({"last_seen": time.time()})
+        self.assertEqual(self.checkin(token)[0], 200)
+
+    def test_access_removed_from_the_account_says_sign_in_refused_never_revoked(self):
+        token = self.signed_in()
+        with db.session(self.engine) as opened:
+            opened.query(User).update({"groups": '["guests"]'})
+        self.assertEqual(self.refused(token), {"error": "sign in required", "reason": "sign_in_refused"})
+        with db.session(self.engine) as opened:
+            opened.query(User).update({"groups": '["family"]'})
+            opened.add(User(sub="jo-recreated", email="jo@example.test", email_verified=True, groups='["family"]', last_seen=time.time() + 60))
+        self.assertEqual(self.refused(token), {"error": "sign in required", "reason": "sign_in_refused"})
+
+    def test_an_unknown_missing_or_malformed_token_gets_no_reason(self):
+        self.signed_in()
+        self.assertEqual(self.refused("device-token-canary-unknown-000000"), self.GENERIC)
+        self.assertEqual(self.refused("x" * (devices.MAX_TOKEN + 1)), self.GENERIC)
+        for headers in ({}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer "}):
+            status, _, reply = self.call("POST", "/api/device/checkin", headers={**headers, "Content-Type": "application/json"}, body=b'{"pending_uploads": 0}')
+            self.assertEqual((status, json.loads(reply)), (401, self.GENERIC))
+
+    def test_a_deleted_persons_old_token_gets_no_reason(self):
+        token = self.signed_in()
+        with db.session(self.engine) as opened:
+            opened.query(Person).delete()
+        self.assertEqual(self.refused(token), self.GENERIC)
+
+    def test_a_reason_never_carries_the_token(self):
+        token = self.signed_in()
+        with db.session(self.engine) as opened:
+            devices.revoke(opened, opened.query(Device).one().id, time.time())
+        with no_leaks(self, token, replies=self.replies):
+            self.refused(token)
+
+
 class BoundToTheEnrollingAccountTests(DeviceSignInCase):
     def test_the_device_records_the_account_that_signed_it_in(self):
         self.token_from(self.sign_in(sub="jo-account")[1])
@@ -341,8 +410,8 @@ class NotConfiguredTests(unittest.TestCase):
             opened.flush()
             opened.add(User(sub="s", email="jo@example.test", email_verified=True, groups='["family"]', last_seen=time.time()))
             opened.add(Device(person_id=person.id, name="iPhone", token_hash=oidc.hash_token("device-token-canary-local-00000000"), created=1.0))
-        status, _, _ = fetch(base, "POST", "/api/device/checkin", {"Authorization": "Bearer device-token-canary-local-00000000"}, b'{"pending_uploads": 0}')
-        self.assertEqual(status, 401)
+        status, _, reply = fetch(base, "POST", "/api/device/checkin", {"Authorization": "Bearer device-token-canary-local-00000000"}, b'{"pending_uploads": 0}')
+        self.assertEqual((status, json.loads(reply)), (401, {"error": "sign in required", "reason": "sign_in_unavailable"}))
 
 
 if __name__ == "__main__":
