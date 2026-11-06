@@ -651,21 +651,6 @@
         ],
         "type": "object"
       },
-      "DevicePatchBody": {
-        "additionalProperties": false,
-        "properties": {
-          "cleanup_enabled": {
-            "type": "boolean"
-          },
-          "icloud_photos_off": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "cleanup_enabled"
-        ],
-        "type": "object"
-      },
       "DevicePushTokenBody": {
         "additionalProperties": false,
         "properties": {
@@ -720,36 +705,6 @@
           "cleanup_enabled": {
             "type": "boolean"
           },
-          "eligible": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "eligible_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "eligible_checked": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "id": {
             "type": "integer"
           },
@@ -772,9 +727,6 @@
         },
         "required": [
           "cleanup_enabled",
-          "eligible",
-          "eligible_bytes",
-          "eligible_checked",
           "id",
           "last_checkin",
           "name",
@@ -3435,35 +3387,6 @@
     "/api/devices/{id}": {
       "delete": {
         "operationId": "revoke_device",
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "session"
-      },
-      "patch": {
-        "operationId": "update_device",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DevicePatchBody"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "2XX": {
             "content": {

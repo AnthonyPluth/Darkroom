@@ -1,4 +1,4 @@
-import type { AccountState, AccountView, BrowserJobView, DeviceState, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
+import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
@@ -31,16 +31,6 @@ export function needsSentence(count: number): string {
 }
 
 export const NOT_CHECKED = "Not checked yet";
-
-export function safeToDelete(devices: readonly DeviceState[]): number | null {
-  if (devices.length === 0) return null;
-  let total = 0;
-  for (const device of devices) {
-    if (device.eligible === null) return null;
-    total += device.eligible;
-  }
-  return total;
-}
 
 const OPEN_JOB = ["queued", "running", "waiting_for_user"];
 

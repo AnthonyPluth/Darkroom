@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, safeToDelete, sessionChip } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, sessionChip } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -35,16 +35,6 @@ describe("needsAttention and needsSentence", () => {
     expect(needsSentence(0)).toBe("Nothing needs you right now.");
     expect(needsSentence(1)).toBe("One thing needs you.");
     expect(needsSentence(3)).toBe("3 things need you.");
-  });
-});
-
-describe("safeToDelete", () => {
-  const device = seededStatus.people[0].devices[0];
-  it("adds up the iPhones' counts, and is unknown while any of them is", () => {
-    expect(safeToDelete([])).toBeNull();
-    expect(safeToDelete([{ ...device, eligible: 2 }, { ...device, eligible: 3 }])).toBe(5);
-    expect(safeToDelete([{ ...device, eligible: 2 }, { ...device, eligible: null }])).toBeNull();
-    expect(safeToDelete([device])).toBeNull();
   });
 });
 

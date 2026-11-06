@@ -2,12 +2,10 @@
   import { onMount } from "svelte";
   import type { AccountView, DeviceView, PersonView, PixelView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
-  import { act } from "$lib/act";
-  import { ago, count, names, nowSeconds } from "$lib/format";
+  import { ago, names, nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { size } from "$lib/review";
-  import { NOT_CHECKED, sessionChip } from "$lib/view";
+  import { sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import Confirm from "../components/Confirm.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
@@ -15,9 +13,7 @@
   import Table from "../components/Table.svelte";
   import AccountForm from "../forms/AccountForm.svelte";
   import PersonForm from "../forms/PersonForm.svelte";
-  import FormError from "../forms/FormError.svelte";
   import PixelForm from "../forms/PixelForm.svelte";
-  import Switch from "../components/Switch.svelte";
 
   type Editing =
     | { kind: "person"; item: PersonView | null }
@@ -26,27 +22,22 @@
   type Asking = { title: string; message: string; confirm: string; run: () => Promise<unknown> };
 
   const loader = new Loader(async () => {
-    const [people, accounts, pixels, status] = await Promise.all([
+    const [people, accounts, pixels] = await Promise.all([
       apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
       apiCall<"GET /api/accounts">("/api/accounts", { failed: "Couldn't load the Google accounts" }),
       apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
-      apiCall<"GET /api/status">("/api/status", { failed: "Couldn't load the photos eligible to delete" }),
     ]);
     const lists = await Promise.all(
       people.people.map((p) => apiCall<"GET /api/people/{id}/devices">(`/api/people/${p.id}/devices`, { failed: `Couldn't load the iPhones of ${p.name}` })),
     );
     const devices: DeviceView[] = lists.flatMap((l) => l.devices);
-    const eligible = new Map(status.people.flatMap((p) => p.devices).map((d) => [d.id, d]));
-    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, devices, eligible, now: nowSeconds() };
+    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, devices, now: nowSeconds() };
   });
 
   let formOpen = $state(false);
   let editing = $state<Editing | null>(null);
   let confirmOpen = $state(false);
   let asking = $state<Asking | null>(null);
-  let switches = $state<Record<number, boolean>>({});
-  let switchErrors = $state<Record<number, string>>({});
-  let inFlight = $state<Record<number, boolean>>({});
 
   onMount(() => void loader.load());
 
@@ -69,12 +60,6 @@
   function removed(): void {
     confirmOpen = false;
     void loader.load(true);
-  }
-
-  function eligibleOf(data: { eligible: Map<number, { eligible: number | null; eligible_bytes: number | null }> }, device: DeviceView): { count: number; bytes: number } | null {
-    const found = data.eligible.get(device.id);
-    if (!found || found.eligible === null) return null;
-    return { count: found.eligible, bytes: found.eligible_bytes ?? 0 };
   }
 
   const personName = (people: PersonView[], id: number): string => people.find((p) => p.id === id)?.name ?? "Unknown";
@@ -102,48 +87,6 @@
       message: `${owner}'s iPhone will stop being able to sign in to Darkroom. Photos already uploaded stay where they are.`,
       confirm: "Revoke iPhone",
       run: () => apiCall<"DELETE /api/devices/{id}">(`/api/devices/${device.id}`, { method: "DELETE" }),
-    });
-  }
-
-  const cleanupOn = (device: DeviceView): boolean => switches[device.id] ?? device.cleanup_enabled;
-
-  const setCleanup = (device: DeviceView, enabled: boolean): Promise<unknown> =>
-    apiCall<"PATCH /api/devices/{id}">(`/api/devices/${device.id}`, {
-      method: "PATCH",
-      body: enabled ? { cleanup_enabled: true, icloud_photos_off: true } : { cleanup_enabled: false },
-    }).then((reply) => {
-      switches[device.id] = reply.device.cleanup_enabled;
-    });
-
-  async function changeCleanup(device: DeviceView, enabled: boolean): Promise<void> {
-    inFlight[device.id] = true;
-    try {
-      await setCleanup(device, enabled);
-      await loader.load(true);
-    } finally {
-      delete switches[device.id];
-      inFlight[device.id] = false;
-    }
-  }
-
-  async function turnOffCleanup(device: DeviceView): Promise<void> {
-    switchErrors[device.id] = "";
-    switches[device.id] = false;
-    await act(() => changeCleanup(device, false), { onError: (m) => (switchErrors[device.id] = m) });
-  }
-
-  function toggleCleanup(device: DeviceView, owner: string): void {
-    if (inFlight[device.id]) return;
-    if (cleanupOn(device)) {
-      void turnOffCleanup(device);
-      return;
-    }
-    switchErrors[device.id] = "";
-    ask({
-      title: `Turn on cleanup for ${device.name}, ${owner}?`,
-      message: "Confirm that iCloud Photos is off on this iPhone. With it on, deleting a photo from the phone also removes it from iCloud and every other device.",
-      confirm: "Turn on cleanup",
-      run: () => changeCleanup(device, true),
     });
   }
 
@@ -271,23 +214,7 @@
                 <dd>{device.pending_uploads}</dd>
                 <dt class="text-ink-muted">App version</dt>
                 <dd>{device.app_version ?? "Unknown"}</dd>
-                <dt class="text-ink-muted">Eligible to delete</dt>
-                {#if eligibleOf(data, device) === null}
-                  <dd class="text-ink-muted">{NOT_CHECKED}</dd>
-                {:else}
-                  <dd><b>{count(eligibleOf(data, device)?.count ?? 0, "photo")}</b> ({size(eligibleOf(data, device)?.bytes ?? 0)}), confirmed in Google Photos</dd>
-                {/if}
               </dl>
-              {#if device.revoked_at === null}
-                {@const on = cleanupOn(device)}
-                <div class="flex flex-col gap-0.5 border-t border-line pt-2">
-                  <Switch checked={on} label={on ? "Cleanup on" : "Cleanup off"} name="{on ? 'Cleanup on' : 'Cleanup off'} for {device.name}, {owner}" disabled={inFlight[device.id] === true} onclick={() => toggleCleanup(device, owner)} />
-                  <p class="text-sm text-ink-muted">
-                    {#if on}The iPhone app may delete originals that Google Photos has confirmed.<span class="hidden md:inline"> Turn off to keep everything on the phone.</span>{:else}Nothing is deleted from this phone while cleanup is off.{/if}
-                  </p>
-                  <FormError message={switchErrors[device.id] ?? ""} />
-                </div>
-              {/if}
               {#if device.revoked_at === null}
                 <button type="button" class="btn btn-danger self-start" aria-label="Revoke {device.name}, {owner}" onclick={() => revoke(device, owner)}>Revoke</button>
               {/if}

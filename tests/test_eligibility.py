@@ -6,11 +6,11 @@ import sqlite3
 import unittest
 from unittest import mock
 
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import dedupe, eligibility, status, uploads
-from darkroom.storage.models import Event, PhoneAsset, User
+from darkroom.domain import eligibility, uploads
+from darkroom.storage.models import PhoneAsset, User
 from tests.eligibility_world import Household
 
 
@@ -150,145 +150,6 @@ class EligibleListTests(unittest.TestCase):
         other = OperationalError("UPDATE", {}, sqlite3.OperationalError("disk I/O error"))
         with mock.patch.object(self.home.opened, "execute", side_effect=other), self.assertRaises(OperationalError):
             self.home.eligible(self.phone)
-
-
-class SwitchTests(unittest.TestCase):
-    def setUp(self):
-        self.home = Household(self)
-        self.jo = self.home.person("jo")
-        self.phone = self.home.device(self.jo, cleanup=False)
-        self.google = self.home.account(self.jo)
-
-    def test_turning_cleanup_on_needs_the_icloud_confirmation(self):
-        with self.assertRaises(eligibility.NotAllowed):
-            eligibility.set_cleanup(self.home.opened, self.phone.id, True, False, self.home.now)
-        self.assertFalse(self.phone.cleanup_enabled)
-        eligibility.set_cleanup(self.home.opened, self.phone.id, True, True, self.home.now)
-        self.assertTrue(self.phone.cleanup_enabled)
-        types = [event.type for event in self.home.opened.execute(select(Event).order_by(Event.id)).scalars()]
-        self.assertEqual(types, ["cleanup_enabled"])
-
-    def test_a_signed_out_iphone_cannot_be_turned_on(self):
-        self.phone.revoked_at = 5.0
-        with self.assertRaises(eligibility.NotAllowed):
-            eligibility.set_cleanup(self.home.opened, self.phone.id, True, True, self.home.now)
-        self.assertFalse(self.phone.cleanup_enabled)
-
-    def test_turning_cleanup_off_forgets_every_earlier_evaluation(self):
-        eligibility.set_cleanup(self.home.opened, self.phone.id, True, True, self.home.now)
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, photo)
-        self.assertIsNotNone(self.phone.eligibility_checked_at)
-        eligibility.set_cleanup(self.home.opened, self.phone.id, False, False, self.home.now)
-        self.home.opened.refresh(photo.asset)
-        self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at), (None, None))
-        self.assertIsNone(self.phone.eligibility_checked_at)
-
-    def test_setting_the_same_value_changes_nothing(self):
-        eligibility.set_cleanup(self.home.opened, self.phone.id, False, False, self.home.now)
-        self.assertEqual(self.home.opened.execute(select(Event)).scalars().all(), [])
-
-    def test_an_unknown_device_is_refused(self):
-        with self.assertRaises(eligibility.NoSuchDevice):
-            eligibility.set_cleanup(self.home.opened, 999, False, False, self.home.now)
-
-
-class CountTests(unittest.TestCase):
-    def setUp(self):
-        self.home = Household(self)
-        self.jo = self.home.person("jo")
-        self.phone = self.home.device(self.jo)
-        self.google = self.home.account(self.jo)
-
-    def device_on_status(self):
-        people = status.overview(self.home.opened, self.home.settings, self.home.photos, self.home.now)["people"]
-        return people[0]["devices"][0]
-
-    def test_a_reversal_followed_by_an_evaluation_of_a_different_asset_is_not_counted(self):
-        first = self.home.photo(self.phone, through=self.google)
-        second = self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, first, second)
-        self.assertEqual(self.device_on_status()["eligible"], 2)
-        dedupe.reverse(self.home.opened, first.decisions[0].id, self.home.now, "owner")
-        self.home.eligible(self.phone, second)
-        shown = self.device_on_status()
-        self.assertEqual((shown["eligible"], shown["eligible_bytes"]), (1, second.items["photo"].bytes))
-
-    def test_a_file_removed_after_the_evaluation_is_not_counted(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, photo)
-        os.remove(self.home.photos.root / photo.items["photo"].path)
-        self.assertEqual(self.device_on_status()["eligible"], 0)
-
-    def test_status_counting_writes_nothing(self):
-        photo = self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, photo)
-        dedupe.reverse(self.home.opened, photo.decisions[0].id, self.home.now, "owner")
-        before = self.home.state()
-        self.device_on_status()
-        self.assertEqual(self.home.state(), before)
-
-    def test_a_lapsed_sign_in_counts_zero(self):
-        self.home.eligible(self.phone, self.home.photo(self.phone, through=self.google))
-        self.home.opened.get(User, "sub-jo").last_seen = 1.0
-        self.assertEqual(self.device_on_status()["eligible"], 0)
-
-    def test_status_shows_no_count_until_the_iphone_has_asked(self):
-        self.home.photo(self.phone, through=self.google)
-        shown = self.device_on_status()
-        self.assertEqual((shown["eligible"], shown["eligible_bytes"], shown["eligible_checked"]), (None, None, None))
-
-    def test_status_counts_what_the_last_evaluation_found(self):
-        first = self.home.photo(self.phone, ("photo", "live_video"), through=self.google)
-        second = self.home.photo(self.phone, through=self.google)
-        third = self.home.photo(self.phone)
-        self.home.eligible(self.phone, first, second, third)
-        size = sum(item.bytes for photo in (first, second) for item in photo.items.values())
-        shown = self.device_on_status()
-        self.assertEqual((shown["eligible"], shown["eligible_bytes"], shown["eligible_checked"]), (2, size, self.home.now))
-
-    def test_a_disabled_iphone_counts_zero(self):
-        self.home.photo(self.phone, through=self.google)
-        self.home.eligible(self.phone, self.home.photo(self.phone, through=self.google))
-        self.phone.cleanup_enabled = False
-        self.assertEqual((self.device_on_status()["eligible"], self.device_on_status()["eligible_bytes"]), (0, 0))
-
-
-class StatusAtScaleTests(unittest.TestCase):
-    MARKED = 2000
-
-    def test_status_checks_thousands_of_marked_photos_in_a_fixed_number_of_queries(self):
-        home = Household(self)
-        jo = home.person("jo")
-        phone = home.device(jo)
-        google = home.account(jo)
-        photos = [home.photo(phone, ("photo", "live_video") if n % 4 == 0 else ("photo",), through=google) for n in range(self.MARKED)]
-        for start in range(0, self.MARKED, 500):
-            self.assertEqual(len(home.eligible(phone, *photos[start:start + 500]).eligible), len(photos[start:start + 500]))
-        home.opened.commit()
-        statements: list[str] = []
-
-        def counted(conn, cursor, statement, parameters, context, executemany):
-            statements.append(statement)
-
-        event.listen(home.engine, "before_cursor_execute", counted)
-        self.addCleanup(event.remove, home.engine, "before_cursor_execute", counted)
-
-        def shown():
-            statements.clear()
-            device = status.overview(home.opened, home.settings, home.photos, home.now)["people"][0]["devices"][0]
-            return device["eligible"], len(statements)
-
-        number, queries = shown()
-        self.assertEqual(number, self.MARKED)
-        self.assertLessEqual(queries, 30)
-        dedupe.reverse(home.opened, photos[10].decisions[0].id, home.now, "owner")
-        os.remove(home.photos.root / photos[20].items["photo"].path)
-        number, queries = shown()
-        self.assertEqual(number, self.MARKED - 2)
-        self.assertLessEqual(queries, 30)
-        home.opened.get(User, "sub-jo").last_seen = 1.0
-        self.assertEqual(shown()[0], 0)
 
 
 class CheckForgetsTests(unittest.TestCase):

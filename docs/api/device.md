@@ -1,6 +1,6 @@
 # Device API
 
-What the Darkroom iPhone app (#35, and cleanup in #38) talks to. The request and reply shapes are also in `darkroom/server/contract.py` and the generated `docs/openapi.json`; this page says how the pieces fit.
+What the Darkroom iPhone app (#35) talks to; it is being removed with the app (#199, #201). The request and reply shapes are also in `darkroom/server/contract.py` and the generated `docs/openapi.json`; this page says how the pieces fit.
 
 ## Signing in
 
@@ -29,7 +29,7 @@ When the token matches a device, the 401 also says why, in `reason` (nothing els
 - `sign_in_unavailable`: Darkroom has no sign-in provider configured.
 - `sign_in_refused`: the account's access lapsed otherwise (email no longer verified or matching, no longer in `OIDC_DEVICE_GROUPS`, or the email moved to a newer account). The same token works again if that is undone.
 
-On a 401 the app stops uploading and asks the person to sign in again. The cleanup report (`POST /api/device/deleted`) is the exception for `device_revoked`: the app drops the pending report and says the iPhone was disconnected, since a new device's report of these ids would be refused anyway (#108 item 44); on any other 401 it keeps the report for after the sign-in. Every accepted request records the device's last check-in.
+On a 401 the app stops uploading and asks the person to sign in again. Every accepted request records the device's last check-in.
 
 ## Routes
 
@@ -89,34 +89,6 @@ Who this iPhone uploads for. Reply: `{"person": "Sam", "device": "Sam's iPhone"}
 
 Forgets this device's push token (for example when notifications are turned off in the app). Revoking a device forgets its token too. Reply: `{"ok": true}`, also when there was none; 401 when the device isn't signed in, including when it is revoked at any point before the clear is written.
 
-## Cleanup
+## Cleanup (removed)
 
-Cleanup is off for every iPhone until someone turns it on with the People page's switch (`PATCH /api/devices/{id}` `{"cleanup_enabled": true, "icloud_photos_off": true}`, session auth), which needs the confirmation that iCloud Photos is off on that iPhone. The three routes below are what the app's `APIClient` calls (`EligibleRequest`, `ConfirmRequest`, `DeletedRequest` and their replies in `DarkroomCore/Models.swift`, driven by `CleanupFlow`); `tests/test_device_contract.py` reads those Swift models and fails if the keys or types here drift from them.
-
-Darkroom answers from scratch on every call and never from an earlier list. An asset is eligible only when every resource it has (photo, Live Photo video, adjusted version) is uploaded and on Unraid with its SHA-1 and size, matched in a Takeout export by an unreversed automatic tier 1 or 2 decision from a Google account that serves the person, the resources the app sends equal what Darkroom has, and the iPhone has cleanup on, is not revoked and its sign-in has not lapsed. Every refusal is one of these reason codes, with a fixed `message`:
-
-`cleanup_disabled`, `device_revoked`, `access_lapsed`, `unknown_asset`, `already_deleted`, `resources_changed`, `no_original`, `not_uploaded`, `not_on_unraid`, `not_confirmed`, `no_automatic_match`, `account_not_serving`, `file_missing`, `not_confirmed_for_deletion`.
-
-A database busy with another change answers `503`; nothing is confirmed or recorded, and the app tries again later.
-
-### `POST /api/device/eligible`
-
-The body is the same `{"assets": [...]}` as `/api/device/assets/check` (each asset's whole current resource set, up to 500 assets per call; page through the library).
-
-Reply:
-
-```json
-{"cleanup_enabled": true,
- "eligible": [{"asset_id": "<PhotoKit id>", "bytes": 5792256, "resources": ["photo", "live_video"]}],
- "rejected": [{"asset_id": "<PhotoKit id>", "reason": "not_confirmed", "message": "Part of this photo is not confirmed in Google Photos."}]}
-```
-
-`cleanup_enabled` is false when this iPhone may not clean at all (cleanup off, revoked or sign-in lapsed); `eligible` is then empty, and the app does nothing.
-
-### `POST /api/device/eligible/confirm`
-
-Sent right before deleting, with the same `{"assets": [...]}` shape for exactly the assets the person is about to remove. Reply: `{"confirmed": ["<PhotoKit id>"], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. Delete only the `confirmed` ids.
-
-### `POST /api/device/deleted`
-
-`{"asset_ids": ["<PhotoKit id>"]}`, up to 500, with what iOS actually removed. Darkroom records the deletion only for this iPhone's assets that a `confirm` passed and no later check refused. Reply: `{"recorded": ["..."], "rejected": [{"asset_id": "...", "reason": "...", "message": "..."}]}`. A recorded asset is never offered again. Reporting an asset that is already recorded as deleted answers it in `recorded` and changes nothing, so a report whose answer was lost can be sent again.
+The cleanup routes (`POST /api/device/eligible`, `POST /api/device/eligible/confirm` and `POST /api/device/deleted`), the People page's cleanup switch (`PATCH /api/devices/{id}`) and the eligible counts on `/api/status` were removed with the iPhone app (#199, #201). Darkroom no longer decides or records deletions from an iPhone; those routes answer 404.

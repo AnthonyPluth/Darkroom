@@ -95,12 +95,10 @@
       "auth": "session",
       "handler": "darkroom.server.api.status.status",
       "frontend": [
-        "frontend/src/pages/People.svelte",
         "frontend/src/pages/Status.svelte"
       ],
       "tests": [
         "tests/test_browser_internal_api.py",
-        "tests/test_cleanup_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
         "tests/test_device_checkin.py",
@@ -198,17 +196,6 @@
       "route": "DELETE /api/devices/{id}",
       "auth": "session",
       "handler": "darkroom.server.api.devices.revoke_device",
-      "frontend": [
-        "frontend/src/pages/People.svelte"
-      ],
-      "tests": [
-        "tests/test_every_route.py"
-      ]
-    },
-    {
-      "route": "PATCH /api/devices/{id}",
-      "auth": "session",
-      "handler": "darkroom.server.api.devices.update_device",
       "frontend": [
         "frontend/src/pages/People.svelte"
       ],

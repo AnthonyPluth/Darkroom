@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import oidc
 from darkroom.config import Settings
-from darkroom.domain import accounts, events
+from darkroom.domain import accounts
 from darkroom.storage.models import DedupeDecision, Device, Export, MediaItem, Person, PhoneAsset, PhoneResource
 from darkroom.storage.paths import OutsideRoot, Photos
 
@@ -55,10 +55,6 @@ class Busy(RuntimeError):
 
 
 class NoSuchDevice(LookupError):
-    pass
-
-
-class NotAllowed(ValueError):
     pass
 
 
@@ -281,41 +277,3 @@ def eligible_assets(opened: Session, settings: Settings, photos: Photos, device_
 def forget(asset: PhoneAsset) -> None:
     asset.eligible_at = None
     asset.eligible_confirmed_at = None
-
-
-def subject_of(opened: Session, device: Device) -> str:
-    person = opened.get(Person, device.person_id)
-    return person.slug if person is not None else str(device.person_id)
-
-
-def set_cleanup(opened: Session, device_id: int, enabled: bool, icloud_photos_off: bool, now: float) -> Device:
-    device = take_write_lock(opened, device_id)
-    if enabled and device.revoked_at is not None:
-        raise NotAllowed("a signed-out iPhone cannot have cleanup turned on")
-    if enabled and icloud_photos_off is not True:
-        raise NotAllowed("confirm that iCloud Photos is off on this iPhone before turning cleanup on")
-    if device.cleanup_enabled is enabled:
-        return device
-    opened.execute(sql_update(PhoneAsset).where(PhoneAsset.device_id == device.id).values(eligible_at=None, eligible_confirmed_at=None))
-    device.cleanup_enabled = enabled
-    device.eligibility_checked_at = None
-    opened.flush()
-    events.record(opened, now, "cleanup_enabled" if enabled else "cleanup_disabled", subject_of(opened, device), device.name)
-    return device
-
-
-def counts(opened: Session, settings: Settings, photos: Photos, device: Device, now: float) -> tuple[int | None, int | None]:
-    if device.eligibility_checked_at is None:
-        return None, None
-    person = opened.get(Person, device.person_id)
-    if device_refusal(opened, settings, device, now) is not None or person is None:
-        return 0, 0
-    marked = select(PhoneAsset.id).where(PhoneAsset.device_id == device.id, PhoneAsset.eligible_at.is_not(None), PhoneAsset.deleted_at.is_(None))
-    facts = load_facts(opened, marked)
-    number = size = 0
-    for asset in opened.execute(select(PhoneAsset).where(PhoneAsset.id.in_(marked)).order_by(PhoneAsset.id)).scalars():
-        stored = facts.stored(asset.id)
-        if asset_refusal(facts, photos, person, asset, as_known(asset, stored)) is None:
-            number += 1
-            size += sum(row.bytes for row in stored.values())
-    return number, size
