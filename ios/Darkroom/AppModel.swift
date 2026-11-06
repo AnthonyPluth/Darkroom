@@ -42,7 +42,7 @@ final class AppModel: ObservableObject {
         do {
             try await session.tokenRejected(rejected)
         } catch {
-            return
+            // The Keychain kept the token, but the session has ended in memory and will not restore it.
         }
         await refresh()
         if case .signedOut = phase {

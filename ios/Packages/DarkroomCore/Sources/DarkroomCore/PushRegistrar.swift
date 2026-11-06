@@ -37,6 +37,8 @@ public actor PushRegistrar {
     private var token: String?
     private var registered: String?
     private var generation = 0
+    private var inFlight: Task<Outcome, Never>?
+    private var forgetting = 0
 
     public init(api: @escaping @Sendable () async -> PushTokenAPI?, signInEnded: @escaping @Sendable () async -> Void = {}) {
         self.api = api
@@ -61,11 +63,30 @@ public actor PushRegistrar {
         registered = nil
     }
 
+    /// One registration runs at a time: a second call waits for the one in flight, and `forget()` waits for it too, so the
+    /// token is never sent after Darkroom was told to forget it.
     @discardableResult
     public func sync() async -> Outcome {
+        while let running = inFlight { _ = await running.value }
+        guard forgetting == 0 else { return .waiting }
+        let task = Task { () -> Outcome in
+            let outcome = await self.register()
+            self.registrationEnded()
+            return outcome
+        }
+        inFlight = task
+        return await task.value
+    }
+
+    private func registrationEnded() {
+        inFlight = nil
+    }
+
+    private func register() async -> Outcome {
+        let started = generation
         guard let current = token, let client = await api() else { return .waiting }
         if registered == current { return .registered }
-        let started = generation
+        guard generation == started, forgetting == 0 else { return .waiting }
         do {
             try await client.registerPushToken(current)
         } catch let error as APIError {
@@ -82,6 +103,9 @@ public actor PushRegistrar {
     public func forget() async -> ForgetOutcome {
         generation += 1
         registered = nil
+        forgetting += 1
+        defer { forgetting -= 1 }
+        while let running = inFlight { _ = await running.value }
         guard let client = await api() else { return .alreadyEnded }
         do {
             try await client.forgetPushToken()
