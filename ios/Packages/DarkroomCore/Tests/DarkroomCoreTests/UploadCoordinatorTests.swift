@@ -398,6 +398,34 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
     }
 
+    func testAFileThatCannotBeReadLocallyFailsAloneAndTheRestStillUpload() async throws {
+        struct WriteFailed: Error {}
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.uploaded, 1)
+        let first = try await rig.store.record(for: a)
+        let second = try await rig.store.record(for: b)
+        XCTAssertEqual(first?.resource.state, .failed)
+        XCTAssertEqual(second?.resource.state, .uploaded)
+    }
+
+    func testAResourceGoneFromTheLibraryGoesBackToHashedWithoutStoppingTheRun() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(ExportError.resourceGone))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.uploaded, 1)
+        let first = try await rig.store.record(for: a)
+        XCTAssertEqual(first?.resource.state, .hashed)
+    }
+
     func testHashMismatchWithTheSameHashFails() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a, sha1: "same")])

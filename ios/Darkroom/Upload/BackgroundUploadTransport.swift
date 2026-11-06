@@ -31,13 +31,16 @@ final class BackgroundUploadTransport: NSObject, UploadTransport, URLSessionTask
     }
 
     func upload(_ resource: LocalResource) async throws {
-        let resources = try await library.resources(ofAsset: resource.key.assetID)
-        guard let source = resources.first(where: { $0.key == resource.key }) else {
-            throw APIError.rejected(status: 409)
-        }
         let file = directory.appendingPathComponent(UUID().uuidString)
         do {
-            guard try await exporter.export(source, to: file) == .exported else {
+            let source = try await find(resource)
+            let outcome: ExportOutcome
+            do {
+                outcome = try await exporter.export(source, to: file)
+            } catch {
+                throw APIError.forLocalExport(error)
+            }
+            guard outcome == .exported else {
                 throw APIError.rejected(status: 422)
             }
             let request = try await client.uploadRequest(
@@ -48,6 +51,19 @@ final class BackgroundUploadTransport: NSObject, UploadTransport, URLSessionTask
             try? FileManager.default.removeItem(at: file)
             throw error
         }
+    }
+
+    private func find(_ resource: LocalResource) async throws -> PhotoResource {
+        let resources: [PhotoResource]
+        do {
+            resources = try await library.resources(ofAsset: resource.key.assetID)
+        } catch {
+            throw APIError.forLocalExport(error is PhotoLibraryError ? ExportError.resourceGone : error)
+        }
+        guard let source = resources.first(where: { $0.key == resource.key }) else {
+            throw APIError.rejected(status: 409)
+        }
+        return source
     }
 
     private func send(_ request: URLRequest, file: URL) async throws {
