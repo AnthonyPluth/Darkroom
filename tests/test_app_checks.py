@@ -22,7 +22,7 @@ class Checks(unittest.TestCase):
             self.assertEqual(check(context()), [], check.__name__)
 
     def test_the_checks_are_registered(self):
-        self.assertEqual([c.__name__ for c in ac.CHECKS], ["semgrep_targets"])
+        self.assertEqual([c.__name__ for c in ac.CHECKS], ["semgrep_targets", "ios_release_workflow"])
 
 
 class SemgrepTargets(unittest.TestCase):
@@ -55,3 +55,66 @@ class SemgrepTargets(unittest.TestCase):
     def test_a_missing_workflow_is_a_problem(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(ac.semgrep_targets(context(Path(d))), [f"{ac.SECURITY_WORKFLOW}: missing"])
+
+
+IOS = """env:
+  XCODEGEN_VERSION: "2.46.0"
+  XCODEGEN_SHA256: "aa"
+  XCBEAUTIFY_VERSION: "3.2.1"
+  XCBEAUTIFY_SHA256: "bb"
+"""
+
+RELEASE = """on:
+  push:
+    tags: ["ios-v*"]
+  workflow_dispatch:
+# a pull_request_target comment is not a trigger
+permissions: {}
+""" + IOS + """jobs:
+  release:
+    environment: ios-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@abc   # v1
+        with:
+          persist-credentials: false
+"""
+
+
+class IosRelease(unittest.TestCase):
+    def problems(self, release=RELEASE, ios=IOS):
+        return ac.check_ios_release(release, ios)
+
+    def test_a_workflow_that_follows_the_rules_passes(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_a_pull_request_trigger_is_named(self):
+        for trigger in ("pull_request:", "pull_request_target:", "[pull_request]"):
+            found = self.problems(RELEASE.replace("workflow_dispatch:", f"workflow_dispatch:\n  {trigger}"))
+            self.assertEqual(len(found), 1, trigger)
+            self.assertIn("pull_request", found[0])
+
+    def test_a_write_permission_is_named(self):
+        self.assertEqual(len(self.problems(RELEASE.replace("contents: read", "contents: write"))), 1)
+        self.assertEqual(len(self.problems(RELEASE.replace("permissions: {}", "permissions: write-all"))), 2)
+
+    def test_a_missing_environment_is_named(self):
+        found = self.problems(RELEASE.replace("environment: ios-release", "environment: other"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("environment: ios-release", found[0])
+
+    def test_a_missing_empty_top_level_permissions_is_named(self):
+        self.assertEqual(len(self.problems(RELEASE.replace("permissions: {}\n", ""))), 1)
+
+    def test_credentials_left_in_the_checkout_are_named(self):
+        self.assertEqual(len(self.problems(RELEASE.replace("persist-credentials: false", "persist-credentials: true"))), 1)
+
+    def test_toolchain_pins_that_differ_from_the_unsigned_build_are_named(self):
+        found = self.problems(ios=IOS.replace("2.46.0", "2.47.0"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("pins", found[0])
+
+    def test_a_missing_file_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(len(ac.ios_release_workflow(context(Path(d)))), 1)
