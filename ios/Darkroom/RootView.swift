@@ -17,6 +17,5 @@ struct RootView: View {
         .background(Color.canvas.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .task { await model.restore(foreground: true) }
-        .pushLifecycle(phase: model.restored ? model.phase : nil)
     }
 }
