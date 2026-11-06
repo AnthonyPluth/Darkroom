@@ -12,14 +12,9 @@ The unsigned build and tests that pull requests need are `ios.yml`'s (the `iOS` 
 
 A tag push always uploads. A manual dispatch uploads only when its `upload` input is `true`; the default `false` archives and exports (so signing is exercised) and uploads nothing.
 
-## Blocked until the app has an icon
+## App icon
 
-App Store Connect rejects an iOS build with no App Store icon, and the app has none yet: it needs the owner's design sign-off (`docs/design/`), so none is invented here. Until it is added, a run that would upload (a tag, or a dispatch with `upload` on) fails in its first step (`ios/release/check-icon.sh`, run by the configuration check) with a message naming what is missing, before anything is signed or the key is written. A dry run (`upload` off) only warns, because only the upload needs the icon and a dry run is how to test the key, bundle id and team before one exists. This is tracked on #160. What the check needs:
-
-- `ios/Darkroom/Assets.xcassets/AppIcon.appiconset/Contents.json` listing a `1024x1024` image with a `filename`, and that file in the set: a 1024 x 1024 **opaque** PNG (RGB, no alpha channel).
-- `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in the target's settings in `ios/project.yml`.
-
-The check does not judge the design, only that the file App Store Connect asks for is there; whether Apple accepts the finished build is still only known from a real upload.
+The app has its App Store icon: option 3, Negative (#175), as an `AppIcon` set in `ios/Darkroom/Assets.xcassets` with `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `ios/project.yml`. App Store Connect rejects an iOS build without one, so the first step of a release (`ios/release/check-icon.sh`, run by the configuration check) still checks that the set holds an opaque 1024 x 1024 PNG, and a run that would upload (a tag, or a dispatch with `upload` on) fails there with the missing pieces named, before the key is written or anything is signed. A dry run only warns. The check does not judge the design; whether Apple accepts the finished build is still only known from a real upload.
 
 ## Xcode version
 
