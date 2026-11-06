@@ -64,6 +64,10 @@ final class ResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.recoverableMarksFailedRowsOnlyAndIsClearedWhenTheRowMovesOnOrIsReplaced(make())
     }
 
+    func testSetFailedWritesTheStateTheReasonAndTheRecoverableFlagTogether() async throws {
+        try await ResourceStoreContract.setFailedWritesTheStateTheReasonAndTheRecoverableFlagTogether(make())
+    }
+
     func testFailureReasonAccessor() async throws {
         let store = InMemoryResourceStore()
         try await store.upsert([ResourceStoreContract.resource("a")])

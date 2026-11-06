@@ -100,6 +100,47 @@ private final class EndedCounter: @unchecked Sendable {
     }
 }
 
+private actor Gate {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let released = waiting
+        waiting = []
+        for continuation in released { continuation.resume() }
+    }
+}
+
+private actor Log {
+    private(set) var events: [String] = []
+    func add(_ event: String) { events.append(event) }
+
+    func waitFor(_ event: String) async {
+        while !events.contains(event) { await Task.yield() }
+    }
+}
+
+private struct SlowPushAPI: PushTokenAPI {
+    let log: Log
+    let gate: Gate
+
+    func registerPushToken(_ token: String) async throws {
+        await log.add("put started")
+        await gate.wait()
+        await log.add("put finished")
+    }
+
+    func forgetPushToken() async throws {
+        await log.add("delete")
+    }
+}
+
 private let tokenA = String(repeating: "ab", count: 32)
 private let tokenB = String(repeating: "cd", count: 32)
 
@@ -331,6 +372,67 @@ final class PushRegistrarTests: XCTestCase {
             let outcome = await registrar.forget()
             XCTAssertEqual(outcome, .failed)
         }
+    }
+
+    func testForgetWaitsForARegistrationThatIsAlreadyBeingSent() async {
+        let log = Log()
+        let gate = Gate()
+        let api = SlowPushAPI(log: log, gate: gate)
+        let registrar = PushRegistrar(api: { api })
+        await registrar.tokenReceived(tokenA)
+        let syncing = Task { await registrar.sync() }
+        await log.waitFor("put started")
+        let forgetting = Task { await registrar.forget() }
+        for _ in 0..<50 { await Task.yield() }
+        let beforeRelease = await log.events
+        XCTAssertEqual(beforeRelease, ["put started"])
+        await gate.open()
+        _ = await syncing.value
+        let outcome = await forgetting.value
+        XCTAssertEqual(outcome, .forgotten)
+        let events = await log.events
+        XCTAssertEqual(events, ["put started", "put finished", "delete"])
+    }
+
+    func testARegistrationNotYetSentWhenForgetStartsIsNeverSent() async {
+        let log = Log()
+        let gate = Gate()
+        let opened = Log()
+        let api = SlowPushAPI(log: log, gate: Gate())
+        let registrar = PushRegistrar(api: {
+            await opened.add("asked")
+            await gate.wait()
+            return api
+        })
+        await registrar.tokenReceived(tokenA)
+        let syncing = Task { await registrar.sync() }
+        await opened.waitFor("asked")
+        let forgetting = Task { await registrar.forget() }
+        for _ in 0..<50 { await Task.yield() }
+        await gate.open()
+        _ = await syncing.value
+        _ = await forgetting.value
+        let events = await log.events
+        XCTAssertEqual(events, ["delete"])
+    }
+
+    func testASyncAfterForgetStartsWaitsInsteadOfSendingTheToken() async {
+        let log = Log()
+        let gate = Gate()
+        let api = SlowPushAPI(log: log, gate: Gate())
+        let registrar = PushRegistrar(api: {
+            await gate.wait()
+            return api
+        })
+        await registrar.tokenReceived(tokenA)
+        let forgetting = Task { await registrar.forget() }
+        for _ in 0..<50 { await Task.yield() }
+        let outcome = await registrar.sync()
+        XCTAssertEqual(outcome, .waiting)
+        await gate.open()
+        _ = await forgetting.value
+        let events = await log.events
+        XCTAssertEqual(events, ["delete"])
     }
 }
 

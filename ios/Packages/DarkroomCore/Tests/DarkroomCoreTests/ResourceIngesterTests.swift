@@ -209,6 +209,28 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(retry, IngestSummary(hashed: 1))
     }
 
+    func testCancellationWhileRecordingAFailureIsNotASuccessfulRun() async throws {
+        let exporter = FakeExporter()
+        let inner = InMemoryResourceStore()
+        let broken = photo("IMG_1")
+        await exporter.setBroken(broken.key)
+        let ingester = ResourceIngester(
+            library: FakeLibrary(resources: [broken]), exporter: exporter,
+            store: CancellingStore(inner: inner), versions: InMemoryIngestVersions()
+        )
+        let task = Task { try await ingester.run() }
+        do {
+            let summary = try await task.value
+            XCTFail("the run should have been cancelled, not returned \(summary)")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let retry = try await make([broken], exporter: exporter, store: inner).run()
+        XCTAssertEqual(retry, IngestSummary(failed: 1))
+        let record = try await inner.record(for: broken.key)
+        XCTAssertEqual(record?.recoverable, true)
+    }
+
     func testFailedExportIsRecordedAsRecoverableAndRetriedOnEveryRun() async throws {
         let exporter = FakeExporter()
         let store = InMemoryResourceStore()

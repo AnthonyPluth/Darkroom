@@ -36,6 +36,7 @@ public actor DeviceSession {
     private let makeState: @Sendable () -> String
     private let clock: @Sendable () -> Date
     private var token: String?
+    private var refusedToken: String?
     private var attempt: (state: String, startedAt: Date)?
     public private(set) var phase = Phase.signedOut
     public private(set) var savedServer: ServerAddress?
@@ -72,7 +73,7 @@ public actor DeviceSession {
             throw SignInError.storage
         }
         savedServer = serverText.flatMap { try? ServerAddress(parsing: $0) }
-        if let server = savedServer, let storedToken, !storedToken.isEmpty {
+        if let server = savedServer, let storedToken, !storedToken.isEmpty, storedToken != refusedToken {
             token = storedToken
             phase = .signedIn(server)
         } else {
@@ -161,6 +162,14 @@ public actor DeviceSession {
 
     public func tokenRejected(_ rejected: String) throws {
         guard token == rejected else { return }
-        try signOut()
+        do {
+            try signOut()
+        } catch {
+            refusedToken = rejected
+            token = nil
+            attempt = nil
+            phase = .signedOut
+            throw error
+        }
     }
 }

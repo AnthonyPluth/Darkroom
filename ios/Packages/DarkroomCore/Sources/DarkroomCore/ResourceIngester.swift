@@ -61,7 +61,7 @@ public struct ResourceIngester: Sendable {
             }
             let filename = UploadFilename.make(for: resource, assetResources: byAsset[resource.assetID] ?? [resource])
             guard UploadFilename.isAcceptable(filename) else {
-                await recordFailure(resource.key, filename: filename, known: known, reason: Self.unusableName, recoverable: false)
+                try await recordFailure(resource.key, filename: filename, known: known, reason: Self.unusableName, recoverable: false)
                 summary.failed += 1
                 continue
             }
@@ -71,7 +71,7 @@ public struct ResourceIngester: Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                await recordFailure(resource.key, filename: filename, known: known, reason: Self.unreadable, recoverable: true)
+                try await recordFailure(resource.key, filename: filename, known: known, reason: Self.unreadable, recoverable: true)
                 summary.failed += 1
                 continue
             }
@@ -104,12 +104,15 @@ public struct ResourceIngester: Sendable {
         return summary
     }
 
-    private func recordFailure(_ key: ResourceKey, filename: String, known: ResourceRecord?, reason: String, recoverable: Bool) async {
+    private func recordFailure(_ key: ResourceKey, filename: String, known: ResourceRecord?, reason: String, recoverable: Bool) async throws {
         if let known, known.resource.hasDescriptor { return }
         do {
+            try Task.checkCancellation()
             try await store.upsert([LocalResource(key: key, sha1: "", bytes: 0, filename: filename, state: .failed)])
-            try await store.setState(.failed, for: [key], failureReason: reason)
-            try await store.setRecoverable(recoverable, for: [key])
+            try Task.checkCancellation()
+            try await store.setFailed(for: [key], reason: reason, recoverable: recoverable)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return
         }

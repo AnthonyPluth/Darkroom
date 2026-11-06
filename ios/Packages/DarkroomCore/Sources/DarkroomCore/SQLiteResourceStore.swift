@@ -76,35 +76,54 @@ public actor SQLiteResourceStore: ResourceStore {
     }
 
     public func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
-        try transaction {
-            for key in keys {
-                guard let current = try currentState(of: key) else { continue }
-                guard current.canMove(to: state) else {
-                    throw ResourceStoreError.illegalTransition(key: key, from: current, to: state)
-                }
-                try withStatement("UPDATE resources SET state = ?, failure_reason = ?, recoverable = 0 WHERE asset_id = ? AND kind = ?") { statement in
-                    bind(state.rawValue, at: 1, in: statement)
-                    if state == .failed, let failureReason {
-                        bind(failureReason, at: 2, in: statement)
-                    } else {
-                        sqlite3_bind_null(statement, 2)
-                    }
-                    bind(key.assetID, at: 3, in: statement)
-                    bind(key.kind.rawValue, at: 4, in: statement)
-                    _ = try step(statement)
-                }
-            }
-        }
+        try transaction { try move(state, for: keys, failureReason: failureReason, recoverable: false) }
+    }
+
+    public func setFailed(for keys: [ResourceKey], reason: String, recoverable: Bool) async throws {
+        try transaction { try move(.failed, for: keys, failureReason: reason, recoverable: recoverable) }
     }
 
     @discardableResult
-    public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
+    public func setFailed(ifUnchanged resources: [LocalResource], reason: String, recoverable: Bool) async throws -> Int {
+        let current = try unchangedKeys(resources, canMoveTo: .failed)
+        try await setFailed(for: current, reason: reason, recoverable: recoverable)
+        return current.count
+    }
+
+    private func unchangedKeys(_ resources: [LocalResource], canMoveTo state: ResourceState) throws -> [ResourceKey] {
         var current: [ResourceKey] = []
         for resource in resources {
             if let stored = try storedRecord(for: resource.key), stored.resource.hasSameContent(as: resource), stored.resource.state.canMove(to: state) {
                 current.append(resource.key)
             }
         }
+        return current
+    }
+
+    private func move(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?, recoverable: Bool) throws {
+        for key in keys {
+            guard let current = try currentState(of: key) else { continue }
+            guard current.canMove(to: state) else {
+                throw ResourceStoreError.illegalTransition(key: key, from: current, to: state)
+            }
+            try withStatement("UPDATE resources SET state = ?, failure_reason = ?, recoverable = ? WHERE asset_id = ? AND kind = ?") { statement in
+                bind(state.rawValue, at: 1, in: statement)
+                if state == .failed, let failureReason {
+                    bind(failureReason, at: 2, in: statement)
+                } else {
+                    sqlite3_bind_null(statement, 2)
+                }
+                sqlite3_bind_int(statement, 3, state == .failed && recoverable ? 1 : 0)
+                bind(key.assetID, at: 4, in: statement)
+                bind(key.kind.rawValue, at: 5, in: statement)
+                _ = try step(statement)
+            }
+        }
+    }
+
+    @discardableResult
+    public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
+        let current = try unchangedKeys(resources, canMoveTo: state)
         try await setState(state, for: current, failureReason: failureReason)
         return current.count
     }

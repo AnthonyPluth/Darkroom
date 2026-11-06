@@ -242,6 +242,41 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertNil(storage.value(.deviceToken))
     }
 
+    func testARejectedTokenThatCannotBeDeletedStillEndsTheSessionAndIsNotRestored() async throws {
+        let storage = FakeStorage()
+        let session = try await signedInSession(storage)
+        storage.fail("delete", on: .deviceToken)
+        do {
+            try await session.tokenRejected("abc123")
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertEqual(error as? SignInError, .storage)
+        }
+        let phase = await session.phase
+        let token = await session.currentToken
+        XCTAssertEqual(phase, .signedOut)
+        XCTAssertNil(token)
+        XCTAssertEqual(storage.value(.deviceToken), "abc123")
+        let restored = try await session.restore()
+        let afterRestore = await session.currentToken
+        XCTAssertEqual(restored, .signedOut)
+        XCTAssertNil(afterRestore)
+    }
+
+    func testANewSignInAfterARefusedTokenThatCouldNotBeDeletedIsRestored() async throws {
+        let storage = FakeStorage()
+        let session = try await signedInSession(storage)
+        storage.fail("delete", on: .deviceToken)
+        _ = try? await session.tokenRejected("abc123")
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        try await session.complete(callback: URL(string: "darkroom://signed-in#token=fresh&state=state-2")!)
+        let relaunched = makeSession(storage)
+        let phase = try await relaunched.restore()
+        let token = await relaunched.currentToken
+        XCTAssertEqual(phase, .signedIn(address))
+        XCTAssertEqual(token, "fresh")
+    }
+
     func testAnOldTokenBeingRejectedDoesNotSignOutANewSignIn() async throws {
         let storage = FakeStorage()
         let session = try await signedInSession(storage)
