@@ -2,7 +2,7 @@
 
 Status: **proposal, not signed off.** This is the design the first page of `docs/design/ios/README.md` promised for #38 (the cleanup notification and the batch screens). Nothing here is built. The logic behind it is on `main`: `CleanupFlow`, `CleanupRunner` and the three device routes (#37, #38's core). What is missing is every screen, which promise 6 (AGENTS.md) holds until the owner signs this off in #34. It reuses the README's tokens, shared pieces (`Card`, `StatusChip`, `PrimaryButton`, `SecondaryButton`, `KeyValueRow`), layout rules and copy style without change; it adds no colour.
 
-How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Fourteen decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the defaults, so a different answer changes the lines that name that point (for example "(point 2)").
+How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Fifteen decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the defaults, so a different answer changes the lines that name that point (for example "(point 2)").
 
 ## Safety rules the screens must not weaken
 
@@ -97,7 +97,7 @@ Top to bottom:
 
 1. **Summary `Card`.** Chip, title "24 photos (3.2 GB)" in `.title3.bold()`, detail "Darkroom has all of each of these on Unraid and has found it in a Google Takeout export. Checked 12 minutes ago." The age is a live relative time (`TimelineView`, one-minute period) from `EligibleList.generatedAt`. At 45 minutes or more, the detail adds "Darkroom checks again right before removing."
 2. **Grid.** Label "TO REMOVE" and `LazyVGrid` with adaptive columns (minimum 96 pt, 4 pt gaps, radius 8 tiles, aspect 1:1). A tile is the asset's thumbnail from `PHImageManager` with `isNetworkAccessAllowed = false` (never fetched from iCloud), `deliveryMode` `.opportunistic`, content mode fill. A Live Photo tile shows the `livephoto` symbol bottom-left and a video tile the duration bottom-right, in a `canvas` 70 percent capsule so they read on any image. A thumbnail that cannot load is a `raised` tile with the `photo` symbol. Tiles do nothing when tapped (point 2). Assets no longer in the library are dropped from the grid, and the summary count and size follow; at zero the screen goes to "Nothing to remove".
-3. **More than the batch holds.** When Darkroom has more than the 500 a list can carry (`EligibleList.maxAssets`), a `.footnote` `inkMuted` line: "Showing the first 500. The rest appear after these are removed."
+3. **No claim about more.** A batch holds at most 500 photos (`EligibleList.maxAssets`). `EligibleList` keeps only those entries, so the screen cannot tell exactly 500 from more than 500 and says nothing about more. After these are removed the next check shows any that remain. A "Showing the first 500" line needs the core to report a total (point 14).
 4. **Kept on the iPhone (point 7).** When the adapter excluded assets for an unbacked resource, a `Card` with a neutral chip "Kept": "N photos stay on this iPhone. They have files Darkroom doesn't back up yet, such as the RAW half of a RAW and JPEG pair." The photos are not named or shown.
 5. **iCloud reminder (point 6).** `.footnote` `inkMuted`: "Cleanup is for iPhones where iCloud Photos is off. With it on, removing a photo here also removes it from iCloud and your other devices."
 6. **Action area.** `PrimaryButton` "Remove from iPhone", and under it a `.footnote` `inkMuted` line: "iOS asks you to confirm. Removed photos stay in Recently Deleted for 30 days." While nothing else is happening a `SecondaryButton` "Check again" sits above the primary button's line, so the person can refresh.
@@ -120,7 +120,9 @@ A `Card` with a chip and a title, then up to four sections, each only when it ha
 | Outcome | Chip | Title | Detail |
 | --- | --- | --- | --- |
 | Removed, all recorded | ok "Removed" | 24 photos removed | They're in Recently Deleted for 30 days. Photos only free their space once they leave Recently Deleted, which you can do in Photos. Darkroom has recorded it. |
-| Cancelled in iOS (`removed` empty, nothing refused) | neutral "Cancelled" | Nothing was removed | You cancelled in iOS, so Darkroom wasn't told anything. The photos are still on this iPhone. |
+| iOS removed nothing and the adapter reports that the person cancelled (point 14) | neutral "Cancelled" | Nothing was removed | You cancelled in iOS, so Darkroom wasn't told anything. The photos are still on this iPhone. |
+| iOS removed nothing, `notRemoved` is not empty, and there is no cancel signal | neutral "Not removed" | Nothing was removed | iOS didn't remove these photos. If you tapped Cancel in iOS, that's why. They're still on this iPhone, and Darkroom wasn't told anything. |
+| Every shown photo changed after the tap or during the confirm (`removed`, `refused` and `notRemoved` empty, `changed` not empty; iOS was never asked) | neutral "Kept" | Nothing was removed | Every photo changed on this iPhone after Darkroom checked it, so all were kept and iOS wasn't asked. They'll be checked again. |
 | Some removed | ok "Removed" | 20 of 24 photos removed | The sections below say what happened to the other 4. |
 | Everything kept back | neutral "Kept" | Nothing was removed | Darkroom kept every photo on the list. The reasons are below. |
 | Cleanup switched off meanwhile (every `refused` has `cleanup_disabled`) | neutral "Off" | Cleanup was switched off | It was turned off on the People page while you were removing, so nothing was removed. |
@@ -155,8 +157,9 @@ When iOS removed photos and the report could not be sent, the removal is real an
 | --- | --- | --- | --- |
 | `.reportPending` | warn "Waiting for home network" | N photos were removed. Darkroom hasn't been told yet. It will be told by itself when this iPhone reaches Darkroom again. | "Tell Darkroom now" (`retryReport()`) |
 | `.reportUnsaved` | danger "Not saved" | N photos were removed, and this iPhone couldn't keep a note to tell Darkroom later. Keep the app open and tap Tell Darkroom now. | "Tell Darkroom now" |
-| `.recordNotCleared` | neutral "Done" | Darkroom has been told. This iPhone couldn't clear its note, so it may tell Darkroom again, which does no harm. | none |
-| `.reportUnreadable` | danger "Paused" | This iPhone has a note about an earlier removal that it can't read, so Cleanup is paused. The photos it names are in Recently Deleted. Tell whoever runs Darkroom. | "Try again" (point 9) |
+| `.recordNotCleared`, `report.removed` not empty | neutral "Done" | Darkroom has been told. This iPhone couldn't clear its note, so it may tell Darkroom again, which does no harm. | none |
+| `.recordNotCleared`, `report.removed` empty (a cancelled or empty round) | neutral "Done" | Nothing was removed and nothing was sent to Darkroom. This iPhone couldn't clear its own note about this round, which does no harm: the next check finds the photos still here and drops the note. | none |
+| `.reportUnreadable` | danger "Paused" | This iPhone has a note about an earlier removal that it can't read, so Cleanup is paused. It can't tell whether those photos were removed from this iPhone; check Recently Deleted in Photos. Tell whoever runs Darkroom. | "Try again" (point 9) |
 | `.disconnected` | warn | as the `device_disconnected` row above, with "Sign in again" | |
 
 While a report is waiting, `refresh()` sends it first (the runner does this) and the batch does not appear until it is sent or dropped, so no new batch is offered over an unreported removal. The notification is not posted in these states (Screen 4).
@@ -277,9 +280,15 @@ Recommended default: as drawn, a refetch shows the new list and a "Your list was
 
 Recommended default: the library is never asked to download anything (`isNetworkAccessAllowed = false`); a tile with no thumbnail is a neutral placeholder and its photo is still in the batch. Alternative: allow network access for thumbnails, which would pull full photos from iCloud on a phone that is meant to be offline.
 
-### 14. Dark only, and how big
+### 14. Telling a cancel from a failure
 
-**Needs owner sign-off.** Inherits README point 6 (dark only). The batch can hold 500 photos.
+**Needs owner sign-off.** `PhotoDeleter.delete` returns only the ids no longer in the library, so the runner cannot tell a person who tapped Cancel from a deletion iOS refused, and an empty `removed` list is also what a round with every photo changed leaves.
+
+Recommended default: the results card chooses its heading from the whole report (`removed`, `refused`, `changed`, `notRemoved`), as the table above does, and says "Cancelled" only when the adapter reports a user cancel (`PHPhotosError.userCancelled`), which is a new, small signal on `PhotoDeleter` to build with the adapter. Without it the screen says "iOS didn't remove these photos. If you tapped Cancel, that's why." Alternative: never say "Cancelled".
+
+### 15. Dark only, and how big
+
+**Needs owner sign-off.** Inherits README point 6 (dark only). The batch can hold 500 photos, and the screen does not say whether more exist unless the core reports a total (Batch, item 3). Recommended: leave the line out for now; alternative: the core's `EligibleList` gains a `total` and the screen shows "Showing the first 500".
 
 Recommended default: dark only, no new tokens; the grid is lazy and thumbnails are loaded at tile size (about 3 times 96 pt), so 500 tiles stay light. A person who wants a smaller batch has no control (point 2).
 
