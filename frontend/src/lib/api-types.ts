@@ -83,11 +83,6 @@ export interface ClaimBody {
   worker?: string;
 }
 
-export interface ConfirmReply {
-  confirmed: string[];
-  rejected: Refusal[];
-}
-
 export interface DecisionReply {
   decision: DecisionView;
 }
@@ -114,15 +109,6 @@ export interface Decisions {
   total: number;
   page: number;
   page_size: number;
-}
-
-export interface DeletedBody {
-  asset_ids: string[];
-}
-
-export interface DeletedReply {
-  recorded: string[];
-  rejected: Refusal[];
 }
 
 export interface DeviceAssetDecl {
@@ -218,22 +204,6 @@ export interface DownloadPlan {
 }
 
 export type DownloadPlanBody = Record<string, never>;
-
-export interface EligibleAsset {
-  asset_id: string;
-  bytes: number;
-  resources: string[];
-}
-
-export interface EligibleBody {
-  assets: DeviceAssetDecl[];
-}
-
-export interface EligibleReply {
-  cleanup_enabled: boolean;
-  eligible: EligibleAsset[];
-  rejected: Refusal[];
-}
 
 export interface EnqueueBody {
   account_id: number;
@@ -543,12 +513,6 @@ export interface ReassignBody {
   person_id: number;
 }
 
-export interface Refusal {
-  asset_id: string;
-  reason: string;
-  message: string;
-}
-
 export interface ResolveBody {
   action: "keep_both";
 }
@@ -672,9 +636,6 @@ export interface Endpoints {
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
   "PUT /api/device/push-token": { body: DevicePushTokenBody; reply: Ok };
   "DELETE /api/device/push-token": { body: never; reply: Ok };
-  "POST /api/device/eligible": { body: EligibleBody; reply: EligibleReply };
-  "POST /api/device/eligible/confirm": { body: EligibleBody; reply: ConfirmReply };
-  "POST /api/device/deleted": { body: DeletedBody; reply: DeletedReply };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

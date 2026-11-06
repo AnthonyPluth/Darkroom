@@ -32,7 +32,6 @@ NOT_CONFIRMED = "not_confirmed"
 NO_AUTOMATIC_MATCH = "no_automatic_match"
 ACCOUNT_NOT_SERVING = "account_not_serving"
 FILE_MISSING = "file_missing"
-NOT_CONFIRMED_FOR_DELETION = "not_confirmed_for_deletion"
 
 REASONS: dict[str, str] = {
     CLEANUP_DISABLED: "Cleanup is off for this iPhone.",
@@ -48,7 +47,6 @@ REASONS: dict[str, str] = {
     NO_AUTOMATIC_MATCH: "Part of this photo has no automatic match in a Takeout export.",
     ACCOUNT_NOT_SERVING: "The only Takeout match is from a Google account that does not serve this person.",
     FILE_MISSING: "A file of this photo is missing on Unraid or has changed size.",
-    NOT_CONFIRMED_FOR_DELETION: "Darkroom did not confirm this photo for removal.",
 }
 
 
@@ -157,11 +155,6 @@ def asset_query(device_id: int, photokit_ids: Sequence[str]) -> Select[int]:
     return select(PhoneAsset.id).where(PhoneAsset.device_id == device_id, PhoneAsset.photokit_id.in_(photokit_ids))
 
 
-def asset_of(opened: Session, device_id: int, photokit_id: str) -> PhoneAsset | None:
-    query = select(PhoneAsset).where(PhoneAsset.device_id == device_id, PhoneAsset.photokit_id == photokit_id)
-    return opened.execute(query).scalar_one_or_none()
-
-
 def same_resources(stored: dict[str, PhoneResource], reported: Reported) -> bool:
     declared = {resource.kind: (resource.sha1, resource.bytes, resource.filename) for resource in reported.resources}
     if len(declared) != len(reported.resources) or set(declared) != set(stored):
@@ -261,15 +254,13 @@ def eligible_of(facts: Facts, asset: PhoneAsset) -> Eligible:
     return Eligible(asset.photokit_id, sum(row.bytes for row in stored.values()), tuple(kind for kind in KINDS if kind in stored))
 
 
-def settle(opened: Session, device: Device, facts: Facts, results: list[tuple[Reported, PhoneAsset | None, str | None]], now: float,
-           confirming: bool) -> tuple[list[Eligible], list[Rejected]]:
+def settle(opened: Session, device: Device, facts: Facts, results: list[tuple[Reported, PhoneAsset | None, str | None]], now: float
+           ) -> tuple[list[Eligible], list[Rejected]]:
     passed: list[Eligible] = []
     rejected: list[Rejected] = []
     for entry, asset, reason in results:
         if reason is None and asset is not None:
             asset.eligible_at = now
-            if confirming:
-                asset.eligible_confirmed_at = now
             passed.append(eligible_of(facts, asset))
             continue
         if asset is not None:
@@ -283,42 +274,8 @@ def settle(opened: Session, device: Device, facts: Facts, results: list[tuple[Re
 def eligible_assets(opened: Session, settings: Settings, photos: Photos, device_id: int, reported: Sequence[Reported], now: float) -> Evaluation:
     device = take_write_lock(opened, device_id)
     enabled, facts, results = judged(opened, settings, photos, device, reported, now)
-    eligible, rejected = settle(opened, device, facts, results, now, confirming=False)
+    eligible, rejected = settle(opened, device, facts, results, now)
     return Evaluation(enabled, eligible, rejected)
-
-
-def confirm(opened: Session, settings: Settings, photos: Photos, device_id: int, reported: Sequence[Reported], now: float
-            ) -> tuple[list[Eligible], list[Rejected]]:
-    device = take_write_lock(opened, device_id)
-    _, facts, results = judged(opened, settings, photos, device, reported, now)
-    confirmed, rejected = settle(opened, device, facts, results, now, confirming=True)
-    events.record(opened, now, "cleanup_confirmed", subject_of(opened, device), f"{len(confirmed)} of {len(results)} confirmed")
-    return confirmed, rejected
-
-
-def record_deleted(opened: Session, device_id: int, asset_ids: Sequence[str], now: float) -> tuple[list[str], list[Rejected]]:
-    device = take_write_lock(opened, device_id)
-    if len(set(asset_ids)) != len(asset_ids):
-        raise ValueError("the same asset is listed twice")
-    recorded: list[str] = []
-    rejected: list[Rejected] = []
-    newly = 0
-    for photokit_id in asset_ids:
-        asset = asset_of(opened, device.id, photokit_id)
-        if asset is None:
-            rejected.append(Rejected(photokit_id, UNKNOWN_ASSET))
-        elif asset.deleted_at is not None:
-            recorded.append(photokit_id)
-        elif asset.eligible_confirmed_at is None:
-            rejected.append(Rejected(photokit_id, NOT_CONFIRMED_FOR_DELETION))
-        else:
-            asset.deleted_at = now
-            asset.eligible_at = None
-            recorded.append(photokit_id)
-            newly += 1
-    opened.flush()
-    events.record(opened, now, "cleanup_deleted", subject_of(opened, device), f"{newly} recorded, {len(rejected)} refused")
-    return recorded, rejected
 
 
 def forget(asset: PhoneAsset) -> None:

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Annotated, get_args, get_origin, get_type_hints, is_typeddict
 
+
 from darkroom.server import contract, routes
 from tests.device_world import DeviceCase
 
@@ -80,7 +81,7 @@ class SwiftModelsMatchTheServer(unittest.TestCase):
         cls.structs, cls.enums = swift_types()
 
     def test_the_parser_reads_the_models(self):
-        self.assertEqual(self.structs["DeviceMeReply"], {"person": "String", "device": "String"})
+        self.assertEqual(self.structs["NeededResource"], {"id": "String", "kind": "ResourceKind"})
         self.assertIn("ResourceKind", self.enums)
         for name in (*REQUESTS, *REPLIES):
             self.assertIn(name, self.structs)
