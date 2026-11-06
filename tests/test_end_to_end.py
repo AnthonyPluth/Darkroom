@@ -161,7 +161,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("imports", self.tick(notice + 3 * DAY + 2 * HOUR))
         run_two = self.query(lambda opened: opened.execute(select(ImportRun).where(ImportRun.export_id == second)).scalar_one())
         self.assertEqual((run_two.status, run_two.added, run_two.skipped_t1, run_two.failed, run_two.review), ("done", 1, 1, 0, 0))
-        self.assertIn("Export 2: 1 added, 1 skipped as duplicates, 0 in review, 1 missing GPS", [message for _, message in self.world.recorder.sent])
+        self.assertIn("Export 2: 1 added, 1 skipped as duplicates, 2 already imported earlier, 0 in review, 1 missing GPS", [message for _, message in self.world.recorder.sent])
         self.assertEqual(self.titles().count(SUMMARY), 2)
         self.assertGreater(len(self.world.scanned()), scans_before)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -115,7 +116,60 @@ def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     return fields
 
 
-def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp) -> bool:
+LOCATION_KEYS = ("geoDataExif", "geoData")
+
+
+def removes(old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
+    removed: set[str] = set()
+    if old.lat is not None and old.lon is not None and (new.lat is None or new.lon is None):
+        removed.add(LATITUDE)
+    if old.description is not None and new.description is None:
+        removed.add(DESCRIPTION)
+    return frozenset(removed)
+
+
+def json_object(raw: str | None) -> dict[str, object] | None:
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def baseline(old_raw: str | None, new_raw: str | None) -> str | None:
+    old_data, new_data = json_object(old_raw), json_object(new_raw)
+    if old_data is None:
+        return new_raw
+    if new_data is None:
+        return old_raw
+    removed = removes(GoogleMetadata.of(old_raw), GoogleMetadata.of(new_raw))
+    if not removed:
+        return new_raw
+    kept = (["description"] if DESCRIPTION in removed else []) + (list(LOCATION_KEYS) if LATITUDE in removed else [])
+    for key in kept:
+        if key in old_data:
+            new_data[key] = old_data[key]
+        else:
+            new_data.pop(key, None)
+    return json.dumps(new_data)
+
+
+def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
+    done: set[str] = set()
+    described = new.description is not None and new.description != old.description and not has_description(own)
+    if described and media.text(media.tag(existing, "Description")) == new.description:
+        done.add(DESCRIPTION)
+    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+        lat, lon, _ = media.location(existing)
+        if same_place(lat, lon, new.lat, new.lon):
+            done.update((LATITUDE, LONGITUDE))
+    return frozenset(done)
+
+
+def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read,
+            write: Writer = exiftool.write_xmp) -> frozenset[str] | None:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -124,5 +178,7 @@ def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Re
     own = tags.get(media_path)
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
-        return False
-    return write(sidecar, changes(own, existing, old, new))
+        return None
+    fields = changes(own, existing, old, new)
+    write(sidecar, fields)
+    return frozenset(fields) | applied(own, existing, old, new)
