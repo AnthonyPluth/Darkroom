@@ -54,6 +54,14 @@ final class LibraryRehasherTests: XCTestCase {
         XCTAssertEqual(found, [photo, clip])
     }
 
+    func testLocalExportFailuresAreFilesNotOutages() {
+        struct WriteFailed: Error {}
+        XCTAssertEqual(APIError.forLocalExport(ExportError.resourceGone) as? APIError, .rejected(status: 409))
+        XCTAssertEqual(APIError.forLocalExport(WriteFailed()) as? APIError, .rejected(status: 422))
+        XCTAssertTrue(APIError.forLocalExport(CancellationError()) is CancellationError)
+        XCTAssertEqual(APIError.forLocalExport(APIError.notSignedIn) as? APIError, .notSignedIn)
+    }
+
     func testUploadStatusesMapToTheErrorsTheCoordinatorUnderstands() {
         XCTAssertNil(APIError.forUpload(status: 200))
         XCTAssertEqual(APIError.forUpload(status: 401), .unauthorized)

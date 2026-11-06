@@ -79,7 +79,7 @@ extension PHAssetResourceType {
 
 struct PhotoKitExporter: ResourceExporter {
     func export(_ resource: PhotoResource, to destination: URL) async throws -> ExportOutcome {
-        guard let target = PhotoKitLibrary.assetResource(for: resource) else { throw PhotoKitError.resourceGone }
+        guard let target = PhotoKitLibrary.assetResource(for: resource) else { throw ExportError.resourceGone }
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = false
         do {
@@ -94,8 +94,4 @@ struct PhotoKitExporter: ResourceExporter {
             throw error
         }
     }
-}
-
-enum PhotoKitError: Error {
-    case resourceGone
 }
