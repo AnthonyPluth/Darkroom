@@ -781,6 +781,18 @@ class RenewNowTests(FailingCase):
             renewal.job_failed(opened, self.settings, job, NOTICE_AT + 3 * DAY)
         self.assertEqual(self.open_alert_kinds(), {"schedule_renewal_failed"})
 
+    def test_after_the_end_the_alerts_use_the_past_tense_and_name_renew_now(self):
+        self.watch(END + DAY)
+        self.fail(END + DAY + 100)
+        ((_, failed, _, _, _),) = self.alerts_of("schedule_renewal_failed")
+        self.assertIn("ended on", failed)
+        self.assertIn("Renew now", failed)
+        self.request(END + 2 * DAY)
+        self.watch(END + 3 * DAY)
+        ending = [alert[1] for alert in self.alerts_of("schedule_ending")]
+        self.assertTrue(all("ended on" in text and "ends on" not in text for text in ending))
+        self.assertEqual(self.open_alert_kinds(), {"schedule_ending"})
+
     def test_two_requests_at_once_queue_one_job(self):
         outcomes = []
         gate = threading.Barrier(2)
