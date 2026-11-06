@@ -33,13 +33,12 @@ Critical path: `P2-01 (#12) → P2-02 (#13) → P2-06 (#18) → P2-07 (#19) → 
 
 ## Model per issue
 
-Opus is the default. Fable takes anything security-related (sign-in, device tokens, the worker token, OAuth). Sonnet only does mechanical work. Each issue's "Agent task" template names its model; `CLAUDE.md` (from P2-01 (#12)) carries the same routing.
+Opus is the default, security-related issues (sign-in, device tokens, the worker token, OAuth) included. Sonnet only does mechanical work. Each issue's "Agent task" template names its model; `CLAUDE.md` (from P2-01 (#12)) carries the same routing.
 
 | Model | Issues |
 | --- | --- |
-| Fable | P2-03 (#14) (OIDC, sessions, every-route guard) · P4-01 (#28) (worker token, internal API, credential policy) · P5-01 (#32) (device sign-in and upload API) |
 | Sonnet | Creating and updating the GitHub issues from `issues.json` · P3-02 (#21) agent part (sample generator and method doc) |
-| Opus | Everything else, including P3-05 (#24) (dedupe), P6-01 (#37) (eligibility), P6-02 (#38) (iOS cleanup) |
+| Opus | Everything else, including the security issues P2-03 (#14) (OIDC, sessions, every-route guard), P4-01 (#28) (worker token, internal API, credential policy) and P5-01 (#32) (device sign-in and upload API), and P3-05 (#24) (dedupe), P6-01 (#37) (eligibility), P6-02 (#38) (iOS cleanup) |
 
 Owner-only issues (`P1-*`, P2-08 (#16), P5-05 (#34), P5-04 (#36), P7-01 (#39)) have no coding model; P2-08 (#16) and P5-05 (#34) are design sessions with Claude producing the mockups.
 
