@@ -180,4 +180,27 @@ enum ResourceStoreContract {
         XCTAssertEqual(record?.recoverable, false)
         try await store.setRecoverable(false, for: [])
     }
+
+    static func setFailedWritesTheStateTheReasonAndTheRecoverableFlagTogether(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b"), resource("c")])
+        try await store.setFailed(for: [key("a"), key("never-stored")], reason: "why", recoverable: true)
+        var record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.failureReason, "why")
+        XCTAssertEqual(record?.recoverable, true)
+        try await store.setFailed(for: [key("b")], reason: "permanent", recoverable: false)
+        record = try await store.record(for: key("b"))
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.recoverable, false)
+        let moved = try await store.setFailed(ifUnchanged: [resource("c"), resource("a", sha1: "other")], reason: "gave up", recoverable: true)
+        XCTAssertEqual(moved, 1)
+        record = try await store.record(for: key("c"))
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.recoverable, true)
+        record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.failureReason, "why")
+        try await store.setState(.hashed, for: [key("c")], failureReason: nil)
+        record = try await store.record(for: key("c"))
+        XCTAssertEqual(record?.recoverable, false)
+    }
 }

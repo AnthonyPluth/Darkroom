@@ -43,10 +43,27 @@ public protocol ResourceStore: Sendable {
     func recordRehash(for key: ResourceKey) async throws
     func counts() async throws -> [ResourceState: Int]
     func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws
+    /// Moves the rows to `failed` and sets their `recoverable` flag in one write, so a kill between the two cannot leave a
+    /// failed row that is not marked recoverable.
+    func setFailed(for keys: [ResourceKey], reason: String, recoverable: Bool) async throws
+    @discardableResult
+    func setFailed(ifUnchanged resources: [LocalResource], reason: String, recoverable: Bool) async throws -> Int
 }
 
 extension ResourceStore {
     public func setRecoverable(_ recoverable: Bool, for keys: [ResourceKey]) async throws {}
+
+    public func setFailed(for keys: [ResourceKey], reason: String, recoverable: Bool) async throws {
+        try await setState(.failed, for: keys, failureReason: reason)
+        try await setRecoverable(recoverable, for: keys)
+    }
+
+    @discardableResult
+    public func setFailed(ifUnchanged resources: [LocalResource], reason: String, recoverable: Bool) async throws -> Int {
+        let moved = try await setState(.failed, ifUnchanged: resources, failureReason: reason)
+        if moved > 0 { try await setRecoverable(recoverable, for: resources.map(\.key)) }
+        return moved
+    }
 
     @discardableResult
     public func replace(_ old: LocalResource, with fresh: LocalResource) async throws -> Bool {
@@ -101,6 +118,21 @@ public actor InMemoryResourceStore: ResourceStore {
     }
 
     public func setState(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?) async throws {
+        try move(state, for: keys, failureReason: failureReason, recoverable: false)
+    }
+
+    public func setFailed(for keys: [ResourceKey], reason: String, recoverable: Bool) async throws {
+        try move(.failed, for: keys, failureReason: reason, recoverable: recoverable)
+    }
+
+    @discardableResult
+    public func setFailed(ifUnchanged resources: [LocalResource], reason: String, recoverable: Bool) async throws -> Int {
+        let current = unchanged(resources, canMoveTo: .failed)
+        try move(.failed, for: current, failureReason: reason, recoverable: recoverable)
+        return current.count
+    }
+
+    private func move(_ state: ResourceState, for keys: [ResourceKey], failureReason: String?, recoverable: Bool) throws {
         for key in keys {
             guard let current = storage[key]?.resource.state else { continue }
             guard current.canMove(to: state) else {
@@ -111,17 +143,21 @@ public actor InMemoryResourceStore: ResourceStore {
             guard var record = storage[key] else { continue }
             record.resource.state = state
             record.failureReason = state == .failed ? failureReason : nil
-            record.recoverable = false
+            record.recoverable = state == .failed && recoverable
             storage[key] = record
         }
     }
 
-    @discardableResult
-    public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
-        let current = resources.filter {
+    private func unchanged(_ resources: [LocalResource], canMoveTo state: ResourceState) -> [ResourceKey] {
+        resources.filter {
             guard let stored = storage[$0.key]?.resource else { return false }
             return stored.hasSameContent(as: $0) && stored.state.canMove(to: state)
         }.map(\.key)
+    }
+
+    @discardableResult
+    public func setState(_ state: ResourceState, ifUnchanged resources: [LocalResource], failureReason: String?) async throws -> Int {
+        let current = unchanged(resources, canMoveTo: state)
         try await setState(state, for: current, failureReason: failureReason)
         return current.count
     }

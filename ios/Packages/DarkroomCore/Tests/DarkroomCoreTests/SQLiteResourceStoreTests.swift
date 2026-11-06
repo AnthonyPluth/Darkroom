@@ -79,6 +79,10 @@ final class SQLiteResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.recoverableMarksFailedRowsOnlyAndIsClearedWhenTheRowMovesOnOrIsReplaced(make())
     }
 
+    func testSetFailedWritesTheStateTheReasonAndTheRecoverableFlagTogether() async throws {
+        try await ResourceStoreContract.setFailedWritesTheStateTheReasonAndTheRecoverableFlagTogether(make())
+    }
+
     func testRecoverableSurvivesReopeningTheDatabase() async throws {
         let url = databaseURL()
         let key = ResourceStoreContract.key("a")

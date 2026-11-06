@@ -226,9 +226,9 @@ public actor UploadCoordinator {
                     // Only these failures count toward the limit; a sign-in or network stop leaves the count alone.
                     guard let attempts = try await store.recordAttempt(ifUnchanged: sent) else { continue }
                     if attempts >= maxAttempts {
-                        let gaveUp = try await store.setState(.failed, ifUnchanged: [sent], failureReason: "gave up after \(attempts) attempts: \(why)")
-                        result.failed += gaveUp
-                        if gaveUp > 0 { try await store.setRecoverable(true, for: [sent.key]) }
+                        result.failed += try await store.setFailed(
+                            ifUnchanged: [sent], reason: "gave up after \(attempts) attempts: \(why)", recoverable: true
+                        )
                     } else {
                         try await store.setState(.checked, ifUnchanged: [sent], failureReason: nil)
                     }
