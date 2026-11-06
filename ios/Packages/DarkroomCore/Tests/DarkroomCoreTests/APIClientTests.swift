@@ -224,6 +224,26 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testA401SaysRevokedOnlyWhenTheServerSaysTheDeviceWasRevoked() async {
+        let api: CleanupAPI = client()
+        let cases: [(String, APIError)] = [
+            (#"{"error":"sign in required","reason":"device_revoked"}"#, .revoked),
+            (#"{"error":"sign in required","reason":"sign_in_lapsed"}"#, .unauthorized),
+            (#"{"error":"sign in required","reason":"sign_in_unavailable"}"#, .unauthorized),
+            (#"{"error":"sign in required","reason":"sign_in_refused"}"#, .unauthorized),
+            (#"{"error":"sign in required","reason":"something_new"}"#, .unauthorized),
+            (#"{"error":"sign in required"}"#, .unauthorized),
+            ("not json", .unauthorized),
+        ]
+        for (body, expected) in cases {
+            StubProtocol.reset(status: 401, json: body)
+            await assertThrows(expected) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
+            await assertThrows(expected) { _ = try await api.eligible(EligibleRequest(assets: [self.photoOnly])) }
+        }
+        StubProtocol.reset(status: 403, json: #"{"error":"no","reason":"device_revoked"}"#)
+        await assertThrows(.rejected(status: 403)) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
+    }
+
     func testCleanupCallsWithoutATokenSendNothing() async {
         let api: CleanupAPI = client(token: nil)
         await assertThrows(.notSignedIn) { _ = try await api.eligible(EligibleRequest(assets: [self.photoOnly])) }

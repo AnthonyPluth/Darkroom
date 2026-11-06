@@ -87,10 +87,13 @@ public actor CleanupRunner {
         case recordNotCleared(CleanupReport)
         case reportUnreadable
         case needsSignIn
+        case disconnected(CleanupReport)
     }
 
     public static let reportRefusedReason = "report_refused"
     public static let reportRefusedMessage = "Darkroom refused the report of this removal."
+    public static let disconnectedReason = "device_disconnected"
+    public static let disconnectedMessage = "This iPhone was disconnected from Darkroom, so this removal was not recorded."
 
     private struct Current {
         var ready: [AssetDescriptor] = []
@@ -230,6 +233,11 @@ public actor CleanupRunner {
         do {
             reply = try await api.deleted(request)
         } catch {
+            if let dropped = Self.disconnection(error, for: request) {
+                _ = try flow.handle(.reported(dropped))
+                guard case let .finished(report) = flow.state else { return outcome() }
+                return await clear(showing: report) ?? .disconnected(report)
+            }
             guard let refused = Self.refusal(error, for: request) else {
                 _ = try flow.handle(.reportFailed)
                 guard case let .reporting(_, report) = flow.state else { return outcome() }
@@ -275,6 +283,10 @@ public actor CleanupRunner {
         do {
             reply = try await api.deleted(request)
         } catch {
+            if let dropped = Self.disconnection(error, for: request) {
+                report.unrecorded = dropped.rejected
+                return await clear(showing: report) ?? .disconnected(report)
+            }
             guard let refused = Self.refusal(error, for: request) else {
                 return Self.needsSignIn(error) ? .needsSignIn : .reportPending(report)
             }
@@ -392,8 +404,15 @@ public actor CleanupRunner {
         })
     }
 
+    private static func disconnection(_ error: Error, for request: DeletedRequest) -> DeletedReply? {
+        guard case .revoked? = error as? APIError else { return nil }
+        return DeletedReply(recorded: [], rejected: request.assetIDs.map {
+            RejectedAsset(assetID: $0, reason: disconnectedReason, message: disconnectedMessage)
+        })
+    }
+
     private static func needsSignIn(_ error: Error) -> Bool {
         guard let api = error as? APIError else { return false }
-        return api == .unauthorized || api == .notSignedIn
+        return api == .unauthorized || api == .revoked || api == .notSignedIn
     }
 }

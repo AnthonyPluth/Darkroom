@@ -22,7 +22,14 @@ Every device route takes `Authorization: Bearer <token>`. Darkroom answers `401 
 - another verified account with the person's email has signed in to Darkroom more recently than the device's account (the email moved, or the account was recreated);
 - Darkroom has no sign-in provider configured.
 
-On a 401 the app stops uploading and asks the person to sign in again. Every accepted request records the device's last check-in.
+When the token matches a device, the 401 also says why, in `reason` (nothing else is added, and an unknown, missing or malformed token gets the plain `{"error": "sign in required"}`):
+
+- `device_revoked`: the device was revoked (on the People page, or because another account signed in an iPhone for the person) The token never works again; a new sign-in is a new device.
+- `sign_in_lapsed`: no sign-in to Darkroom for 30 days. The same token works again after the person signs in.
+- `sign_in_unavailable`: Darkroom has no sign-in provider configured.
+- `sign_in_refused`: the account's access lapsed otherwise (email no longer verified or matching, no longer in `OIDC_DEVICE_GROUPS`, or the email moved to a newer account). The same token works again if that is undone.
+
+On a 401 the app stops uploading and asks the person to sign in again. The cleanup report (`POST /api/device/deleted`) is the exception for `device_revoked`: the app drops the pending report and says the iPhone was disconnected, since a new device's report of these ids would be refused anyway (#108 item 44); on any other 401 it keeps the report for after the sign-in. Every accepted request records the device's last check-in.
 
 ## Routes
 
