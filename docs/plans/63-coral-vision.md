@@ -60,7 +60,7 @@ Why a separate container rather than inside `darkroom`:
 
 ### The worker sees pixels, not files (recommended)
 
-The recommended shape (open point 4) gives `darkroom-vision` **no photo mount at all**. When it claims a job, `darkroom` hands it one JPEG, scaled to the model's input (at most 640 pixels on the long side, from the thumbnail `darkroom/domain/thumbs.py` already renders and caches, upright after EXIF orientation), and an opaque job id. The worker returns labels, scores and the embedding for that job id. It never learns a path, a file name, a person or a capture time.
+The recommended shape (open point 4) gives `darkroom-vision` **no photo mount at all**. When it claims a job, `darkroom` hands it one JPEG, scaled to the model's input (at most 640 pixels on the long side, upright after EXIF orientation, from a strict variant of `darkroom/domain/thumbs.py`'s rendering that raises on a file it can't decode instead of returning the Review page's placeholder JPEG, so such a photo is `skipped`, never classified as the placeholder), and an opaque job id. The worker returns labels, scores and the embedding for that job id. It never learns a path, a file name, a person or a capture time.
 
 This means the worker cannot modify, move or delete an original even if it is compromised (promise 1 holds by construction, not only by Semgrep), and the only files `darkroom` reads for it are read through the existing thumbnail path, which Semgrep's `darkroom-originals-read-only` already covers. The cost is one JPEG over the compose network per photo, which is small next to decoding a HEIC.
 
@@ -159,7 +159,7 @@ Three tables and one migration, numbered after main's newest at the time (0019 t
 | Table | Columns | Keys and rules |
 | --- | --- | --- |
 | `vision_jobs` | `id`, `media_item_id`, `model_set`, `status` (`queued`, `claimed`, `done`, `failed`, `skipped`), `attempts`, `lease_until`, `backend` (`edgetpu`, `cpu`), `error_code`, `created`, `finished` | Unique (`media_item_id`, `model_set`); cascade on media item delete; at most 3 attempts, then `failed` with a fixed code; `skipped` for a file that is no longer an image or no longer there |
-| `media_tags` | `media_item_id`, `model_set`, `model`, `label`, `family_label`, `score` | Primary key (`media_item_id`, `model_set`, `model`, `label`); a photo with nothing above the floor gets one row with `label = ''` so "classified, nothing found" differs from "not classified yet" |
+| `media_tags` | `media_item_id`, `model_set`, `model`, `label`, `score` | Primary key (`media_item_id`, `model_set`, `model`, `label`); the family label is not stored but mapped from `label` at read time; a photo with nothing above the floor gets one row with `label = ''` so "classified, nothing found" differs from "not classified yet" |
 | `media_embeddings` | `media_item_id`, `model_set`, `vector` (1,024-byte blob), `created` | Primary key (`media_item_id`, `model_set`); about 1 KB a photo, so 200,000 photos is about 200 MB in the database |
 
 - A new model set's results replace the old set's for an item in one transaction once they land; until then the old ones are served.
