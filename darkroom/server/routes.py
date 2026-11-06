@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth
-from darkroom.server.api import accounts, browser, browser_internal, cleanup, device, devices, exports, imports, people, pixels, review, status
+from darkroom.server.api import accounts, browser, browser_internal, device, devices, exports, imports, people, pixels, review, status
 from darkroom.server.common import Request, Response
 
 AUTH_KINDS = ("session", "device", "worker", "public")
@@ -74,9 +74,6 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/device/checkin", device.checkin, "device"),
     Route("PUT", "/api/device/push-token", device.register_push_token, "device"),
     Route("DELETE", "/api/device/push-token", device.forget_push_token, "device"),
-    Route("POST", "/api/device/eligible", cleanup.eligible, "device"),
-    Route("POST", "/api/device/eligible/confirm", cleanup.confirm, "device"),
-    Route("POST", "/api/device/deleted", cleanup.deleted, "device"),
     Route("POST", "/internal/browser/jobs/claim", browser_internal.claim, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/heartbeat", browser_internal.heartbeat, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/progress", browser_internal.progress, "worker"),

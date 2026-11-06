@@ -397,7 +397,7 @@ class RefusalReasonTests(DeviceSignInCase):
             devices.revoke(opened, opened.query(Device).one().id, time.time())
         self.assertEqual(self.refused(token), {"error": "sign in required", "reason": "device_revoked"})
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        status, _, reply = self.call("POST", "/api/device/deleted", headers=headers, body=b'{"asset_ids": ["a"]}')
+        status, _, reply = self.call("GET", "/api/device/me", headers=headers)
         self.assertEqual((status, json.loads(reply)), (401, {"error": "sign in required", "reason": "device_revoked"}))
 
     def test_a_device_replaced_by_another_accounts_sign_in_is_told_it_was_revoked(self):
