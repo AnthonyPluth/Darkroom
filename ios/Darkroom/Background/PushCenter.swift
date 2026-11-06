@@ -1,6 +1,24 @@
 import DarkroomCore
 import SwiftUI
 import UIKit
+import UserNotifications
+
+struct SystemNotificationAuthorizer: NotificationAuthorizer {
+    func current() async -> NotificationAuthorization {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .notDetermined: return .notAsked
+        case .authorized, .provisional, .ephemeral: return .allowed
+        case .denied: return .denied
+        @unknown default: return .denied
+        }
+    }
+
+    func request() async -> Bool {
+        let granted = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        return granted ?? false
+    }
+}
 
 /// Registers this iPhone for remote notifications and keeps Darkroom's copy of its token current while a device is signed in.
 @MainActor
@@ -8,14 +26,28 @@ final class PushCenter {
     static let shared = PushCenter()
 
     let registrar: PushRegistrar
+    let notifications = NotificationPermission(authorizer: SystemNotificationAuthorizer())
+
+    /// Called with the device token Darkroom refused as revoked or lapsed, so the displayed session can end.
+    var signInEnded: (@MainActor (String) async -> Void)?
 
     private init() {
         let reader = DeviceSession(storage: KeychainSessionStorage())
-        registrar = PushRegistrar(api: { () async -> PushTokenAPI? in
-            _ = try? await reader.restore()
-            guard case .signedIn(let server) = await reader.phase else { return nil }
-            return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
-        })
+        registrar = PushRegistrar(
+            api: { () async -> PushTokenAPI? in
+                do {
+                    try await reader.restore()
+                } catch {
+                    return nil
+                }
+                guard case .signedIn(let server) = await reader.phase else { return nil }
+                return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
+            },
+            signInEnded: {
+                guard let rejected = await reader.currentToken else { return }
+                await PushCenter.shared.signInEnded?(rejected)
+            }
+        )
     }
 
     func tokenReceived(_ data: Data) async {
@@ -44,6 +76,7 @@ final class PushCenter {
         UIApplication.shared.registerForRemoteNotifications()
         BackgroundWork.nightly.schedule()
         await registrar.sync()
+        await notifications.ensureAsked()
     }
 }
 

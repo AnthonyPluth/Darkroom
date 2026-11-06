@@ -3,6 +3,7 @@ import DarkroomCore
 enum SignInMessages {
     static let cancelled = "Sign-in was cancelled."
     static let unreadable = "Couldn't read the sign-in saved on this iPhone. Sign in again."
+    static let ended = "Your sign-in ended. Sign in again to keep uploading."
     static let sheetFailed = "Couldn't open the sign-in page. Try again."
     static let nameMissing = "Name this iPhone so you can find it on the People page."
     static let addressHelper = "The address you open Darkroom at on a computer. Away from home, turn Tailscale on first."

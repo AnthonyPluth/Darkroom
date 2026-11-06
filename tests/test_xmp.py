@@ -122,6 +122,60 @@ class ChangesTests(unittest.TestCase):
         dated = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=1.0, description="Old words")
         self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, dated), {})
 
+    def test_a_value_google_dropped_counts_as_removed_and_a_change_does_not(self):
+        self.assertEqual(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=None, lon=None, taken_utc=None, description="Old words")), {xmp.LATITUDE})
+        self.assertEqual(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)), {xmp.DESCRIPTION})
+        self.assertEqual(xmp.removes(self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.removes(xmp.GoogleMetadata(None, None, None, None), self.NEW), frozenset())
+
+    def test_the_baseline_takes_googles_new_values_and_keeps_the_old_one_only_for_a_removed_field(self):
+        old = json.dumps({"title": "a", "description": "Old words", "geoData": {"latitude": 45.4, "longitude": 12.3}, "photoTakenTime": {"timestamp": "1"}})
+        moved = json.dumps({"title": "a", "description": "", "geoData": {"latitude": 45.5, "longitude": 12.4}, "photoTakenTime": {"timestamp": "2"}})
+        merged = xmp.GoogleMetadata.of(xmp.baseline(old, moved))
+        self.assertEqual((merged.description, merged.lat, merged.lon, merged.taken_utc), ("Old words", 45.5, 12.4, 2.0))
+        gone = json.dumps({"title": "a", "description": "New words", "photoTakenTime": {"timestamp": "1"}})
+        merged = xmp.GoogleMetadata.of(xmp.baseline(old, gone))
+        self.assertEqual((merged.description, merged.lat, merged.lon), ("New words", 45.4, 12.3))
+        changed = json.dumps({"title": "a", "description": "New words", "geoData": {"latitude": 45.5, "longitude": 12.4}})
+        self.assertEqual(xmp.baseline(old, changed), changed)
+        self.assertEqual(xmp.baseline(None, changed), changed)
+        self.assertEqual(xmp.baseline("not json", changed), changed)
+
+    def test_every_shape_of_a_later_record_keeps_a_removed_value_for_the_next_re_add(self):
+        old = json.dumps({"title": "a", "description": "Old words", "geoData": {"latitude": 45.4, "longitude": 12.3}, "photoTakenTime": {"timestamp": "1"}})
+        readded = xmp.GoogleMetadata(lat=45.5, lon=12.4, taken_utc=None, description="New words")
+        own, wrote = {}, {"XMP-dc:Description": "Old words", "XMP-exif:GPSLatitude": 45.4, "XMP-exif:GPSLongitude": 12.3}
+        shapes = {
+            "missing": None,
+            "unparsable": "{not json",
+            "not an object": "[1, 2]",
+            "without the fields": json.dumps({"title": "a"}),
+            "with the fields emptied": json.dumps({"title": "a", "description": "", "geoData": {"latitude": 0.0, "longitude": 0.0}}),
+        }
+        for name, later in shapes.items():
+            with self.subTest(later=name):
+                kept = xmp.GoogleMetadata.of(xmp.baseline(old, later))
+                self.assertEqual((kept.description, kept.lat, kept.lon), ("Old words", 45.4, 12.3))
+                self.assertEqual(set(xmp.changes(own, wrote, kept, readded)), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+        self.assertIsNone(xmp.baseline(None, None))
+        self.assertEqual(xmp.baseline(None, old), old)
+        self.assertEqual(xmp.baseline("{not json", old), old)
+        fields = json.dumps({"title": "a", "description": "New words", "geoData": {"latitude": 45.5, "longitude": 12.4}})
+        self.assertEqual(xmp.baseline(old, fields), fields)
+
+    def test_a_sidecar_already_holding_googles_new_values_counts_them_as_applied(self):
+        refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
+        self.assertEqual(xmp.changes({}, refreshed, self.OLD, self.NEW), {})
+        self.assertEqual(xmp.applied({}, refreshed, self.OLD, self.NEW), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+
+    def test_nothing_counts_as_applied_unless_google_changed_it_and_the_sidecar_holds_the_new_value(self):
+        refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "IFD0:ImageDescription": "mine"}
+        self.assertEqual(xmp.applied({}, self.WROTE, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied({}, refreshed, self.NEW, self.NEW), frozenset())
+        self.assertEqual(xmp.applied(own, refreshed, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied({}, {}, self.OLD, self.NEW), frozenset())
+
 
 class FillTests(Folder):
     def test_a_sidecar_carries_the_missing_fields_and_reads_back(self):
