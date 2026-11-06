@@ -694,6 +694,22 @@
         ],
         "type": "object"
       },
+      "DeviceMeReply": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device",
+          "person"
+        ],
+        "type": "object"
+      },
       "DevicePatchBody": {
         "additionalProperties": false,
         "properties": {
@@ -3569,6 +3585,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConfirmReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "device"
+      }
+    },
+    "/api/device/me": {
+      "get": {
+        "operationId": "me",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceMeReply"
                 }
               }
             },

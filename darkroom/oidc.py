@@ -57,9 +57,10 @@ class ProviderRefused(SignInFailed):
 
 
 class NotAllowed(SignInFailed):
-    def __init__(self, who: str) -> None:
+    def __init__(self, who: str, client_state: str | None = None) -> None:
         super().__init__("not allowed")
         self.who = who
+        self.client_state = client_state
 
 
 @dataclass(frozen=True)
@@ -461,7 +462,10 @@ def finish_device_login(opened: Session, settings: Settings, query: Mapping[str,
     pending = take_pending(opened, state, now, "device")
     document = discovery(settings, now)
     tokens = exchange_code(settings, document, code, pending.verifier)
-    who = authorize_device(settings, claims_from(settings, document, tokens, pending.nonce, None))
+    try:
+        who = authorize_device(settings, claims_from(settings, document, tokens, pending.nonce, None))
+    except NotAllowed as error:
+        raise NotAllowed(error.who, pending.client_state) from None
     remember_user(opened, who, now)
     if not pending.client_state:
         raise SignInFailed("this sign-in did not carry the app's state")
