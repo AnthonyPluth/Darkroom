@@ -629,7 +629,7 @@ final class CleanupRunnerTests: XCTestCase {
 
     func testAReportRefusedBecauseThisIPhoneWasDisconnectedIsDroppedAndSaysSo() async throws {
         let rig = try await rig(["a"])
-        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        await rig.api.set(deletedErrors: [APIError.revoked])
         let runner = rig.runner()
         _ = try await runner.refresh()
         let outcome = try await runner.remove(shown: ["a"])
@@ -649,7 +649,7 @@ final class CleanupRunnerTests: XCTestCase {
     func testAnEarlierReportRefusedBecauseThisIPhoneWasDisconnectedIsDroppedAndSaysSo() async throws {
         let rig = try await rig(["b"])
         try await rig.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
-        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        await rig.api.set(deletedErrors: [APIError.revoked])
         let first = try await rig.runner().refresh()
         guard case let .disconnected(report) = first else { return XCTFail("not disconnected: \(first)") }
         XCTAssertEqual(report.removed, ["a"])
@@ -668,7 +668,7 @@ final class CleanupRunnerTests: XCTestCase {
     func testADisconnectedReportWhoseRecordCannotBeClearedSaysSoAndIsNotSentAgain() async throws {
         let unclearable = UnclearablePendingReport()
         let rig = try await rig(["a"], pending: unclearable)
-        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        await rig.api.set(deletedErrors: [APIError.revoked])
         let runner = rig.runner()
         _ = try await runner.refresh()
         let outcome = try await runner.remove(shown: ["a"])
@@ -680,6 +680,49 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
         let saved = await unclearable.load()
         XCTAssertNil(saved)
+    }
+
+    func testAReportRefusedForALapsedSignInAsksForSignInAndIsKept() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        XCTAssertEqual(outcome, .needsSignIn)
+        let saved = try await rig.pending.load()
+        XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])))
+        let retried = try await runner.retryReport()
+        guard case let .finished(finished) = retried else { return XCTFail("not finished: \(retried)") }
+        XCTAssertEqual(finished.recorded, ["a"])
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"]), DeletedRequest(assetIDs: ["a"])])
+        let cleared = try await rig.pending.load()
+        XCTAssertNil(cleared)
+    }
+
+    func testAnEarlierReportRefusedForALapsedSignInAsksForSignInAndIsKept() async throws {
+        let rig = try await rig(["b"])
+        try await rig.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
+        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        let first = try await rig.runner().refresh()
+        XCTAssertEqual(first, .needsSignIn)
+        let saved = try await rig.pending.load()
+        XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])))
+    }
+
+    func testARevokedListOrConfirmAsksForSignInAsBefore() async throws {
+        let listing = try await rig(["a"])
+        await listing.api.set(eligibleError: APIError.revoked)
+        let listed = try await listing.runner().refresh()
+        XCTAssertEqual(listed, .needsSignIn)
+        let confirming = try await rig(["a"])
+        await confirming.api.set(confirmError: APIError.revoked)
+        let runner = confirming.runner()
+        _ = try await runner.refresh()
+        let confirmed = try await runner.remove(shown: ["a"])
+        XCTAssertEqual(confirmed, .needsSignIn)
+        let deletes = await confirming.library.deleteCalls
+        XCTAssertEqual(deletes, [])
     }
 
     func testAReportWithNoTokenOnThisIPhoneAsksForSignInAndIsKept() async throws {

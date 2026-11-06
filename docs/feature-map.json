@@ -674,6 +674,7 @@
       "frontend": [],
       "tests": [
         "tests/test_cleanup_api.py",
+        "tests/test_device_auth.py",
         "tests/test_device_contract.py",
         "tests/test_every_route.py"
       ]

@@ -405,7 +405,7 @@ public actor CleanupRunner {
     }
 
     private static func disconnection(_ error: Error, for request: DeletedRequest) -> DeletedReply? {
-        guard case .unauthorized? = error as? APIError else { return nil }
+        guard case .revoked? = error as? APIError else { return nil }
         return DeletedReply(recorded: [], rejected: request.assetIDs.map {
             RejectedAsset(assetID: $0, reason: disconnectedReason, message: disconnectedMessage)
         })
@@ -413,6 +413,6 @@ public actor CleanupRunner {
 
     private static func needsSignIn(_ error: Error) -> Bool {
         guard let api = error as? APIError else { return false }
-        return api == .unauthorized || api == .notSignedIn
+        return api == .unauthorized || api == .revoked || api == .notSignedIn
     }
 }

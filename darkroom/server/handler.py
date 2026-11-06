@@ -39,7 +39,7 @@ def dispatch(request: Request) -> Response:
         return route.handler(request)
     principal = authenticate(route, request)
     if principal is None:
-        return error_response("sign in required", 401)
+        return auth.device_refused(request) if route.auth == "device" else error_response("sign in required", 401)
     response = route.handler(replace(request, user=principal))
     if principal.renewed and not sets_session_cookie(response):
         token = auth.cookies_of(request).get(auth.SESSION_COOKIE, "")

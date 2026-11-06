@@ -95,10 +95,21 @@ public struct APIClient: Sendable {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         switch http.statusCode {
         case 200..<300: return data
-        case 401: throw APIError.unauthorized
+        case 401: throw Self.refusal(of: data)
         case 400..<500: throw APIError.rejected(status: http.statusCode)
         default: throw APIError.server(status: http.statusCode)
         }
+    }
+
+    static let revokedReason = "device_revoked"
+
+    private struct Refusal: Decodable {
+        let reason: String?
+    }
+
+    static func refusal(of body: Data) -> APIError {
+        let reason = (try? JSONDecoder().decode(Refusal.self, from: body))?.reason
+        return reason == revokedReason ? .revoked : .unauthorized
     }
 
     private func url(for path: String) throws -> URL {

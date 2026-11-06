@@ -12,6 +12,11 @@ from darkroom.domain import events, push_tokens
 from darkroom.storage.models import Device, Person
 
 MAX_TOKEN = 200
+DEVICE_REVOKED = "device_revoked"
+SIGN_IN_LAPSED = "sign_in_lapsed"
+SIGN_IN_UNAVAILABLE = "sign_in_unavailable"
+SIGN_IN_REFUSED = "sign_in_refused"
+REFUSALS = (DEVICE_REVOKED, SIGN_IN_LAPSED, SIGN_IN_UNAVAILABLE, SIGN_IN_REFUSED)
 
 
 class NoSuchDevice(LookupError):
@@ -52,10 +57,29 @@ def enrol(opened: Session, sub: str, email: str | None, verified: bool, name: st
     return device, token
 
 
-def authenticate(opened: Session, settings: Settings, token: str | None, now: float) -> SignedInDevice | None:
+def device_of_token(opened: Session, token: str | None) -> Device | None:
     if not token or len(token) > MAX_TOKEN:
         return None
-    device = opened.execute(select(Device).where(Device.token_hash == oidc.hash_token(token))).scalar_one_or_none()
+    return opened.execute(select(Device).where(Device.token_hash == oidc.hash_token(token))).scalar_one_or_none()
+
+
+def refusal(opened: Session, settings: Settings, token: str | None, now: float) -> str | None:
+    device = device_of_token(opened, token)
+    if device is None:
+        return None
+    person = opened.get(Person, device.person_id)
+    if device.revoked_at is not None or person is None:
+        return DEVICE_REVOKED
+    lapsed = oidc.device_access_lapsed(opened, settings, device.sub, person.email, now)
+    if lapsed is None:
+        return None
+    if lapsed in (SIGN_IN_LAPSED, SIGN_IN_UNAVAILABLE):
+        return lapsed
+    return SIGN_IN_REFUSED
+
+
+def authenticate(opened: Session, settings: Settings, token: str | None, now: float) -> SignedInDevice | None:
+    device = device_of_token(opened, token)
     if device is None or device.revoked_at is not None:
         return None
     person = opened.get(Person, device.person_id)

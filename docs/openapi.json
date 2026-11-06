@@ -8,6 +8,15 @@
               "properties": {
                 "error": {
                   "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "device_revoked",
+                    "sign_in_lapsed",
+                    "sign_in_unavailable",
+                    "sign_in_refused"
+                  ],
+                  "type": "string"
                 }
               },
               "required": [
@@ -17,7 +26,7 @@
             }
           }
         },
-        "description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is."
+        "description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is. A device route's 401 for a token that matches a device also says why, in `reason`."
       }
     },
     "schemas": {
