@@ -59,13 +59,13 @@ Alert "Darkroom needs a look" with a link to the capture of the failed job. The 
 
 ### Hand-dropping an export
 
-Put the Takeout `.zip` parts, all of one export, in `<photos>/_inbox/<person>/manual/` and run, on the Darkroom host:
+Put the Takeout `.zip` parts, all of one export, in `<photos>/_inbox/<person>/manual/` and run it inside the `darkroom` container, which holds the photo share (`/photos`), the data folder (`/data`) and the database:
 
 ```
-python run.py import-takeout --person <slug> [--account <google email>] [--dir <other folder>]
+docker compose exec darkroom python run.py import-takeout --person <slug> [--account <google email>] [--dir <other folder>]
 ```
 
-It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Importing the same export twice is refused.
+`--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Importing the same export twice is refused.
 
 ### The schedule renewal
 
