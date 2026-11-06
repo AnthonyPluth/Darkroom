@@ -180,7 +180,7 @@ class DeviceSignInTests(DeviceSignInCase):
         self.assertEqual(self.call("GET", path, cookies)[0], 403)
         self.assertEqual(self.device_count(), 1)
 
-    def test_a_pending_sign_in_with_an_unusable_state_never_finishes(self):
+    def test_a_pending_sign_in_without_the_apps_state_never_finishes(self):
         query = self.start()
         with db.session(self.engine) as opened:
             opened.query(AuthPending).update({"client_state": None})
