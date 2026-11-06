@@ -32,7 +32,7 @@ final class SystemProcessingTask: ProcessingTaskHandle, @unchecked Sendable {
     }
 }
 
-/// The wake-ups that run the upload check without the app being opened. The upload code sets `hook` to the check.
+/// The wake-ups that run the upload check without the app being opened. `AppModel` sets `hook` to the check once signed in.
 enum BackgroundWork {
     static let hook = BackgroundCheckHook()
     static let nightlyIdentifier = (Bundle.main.bundleIdentifier ?? "") + ".nightly"
@@ -50,7 +50,10 @@ enum BackgroundWork {
                 return
             }
             let handle = SystemProcessingTask(task)
-            Task { await BackgroundWork.nightly.run(handle) }
+            Task {
+                await AppModel.shared.restore()
+                await BackgroundWork.nightly.run(handle)
+            }
         }
     }
 }
