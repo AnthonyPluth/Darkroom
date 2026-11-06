@@ -16,6 +16,10 @@ public struct IngestSummary: Equatable, Sendable {
     }
 }
 
+public protocol LibraryScanner: Sendable {
+    func run() async throws -> IngestSummary
+}
+
 /// Walks the library, exports each new or changed resource to a temporary file, streams its SHA-1 and records it.
 public struct ResourceIngester: Sendable {
     public static let unusableName = "the file name can't be used"
@@ -129,15 +133,8 @@ public struct ResourceIngester: Sendable {
     }
 
     private func ingest(_ resource: PhotoResource, filename: String) async throws -> LocalResource {
-        let temp = temporaryDirectory.appendingPathComponent("darkroom-ingest-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: temp) }
-        switch try await exporter.export(resource, to: temp) {
-        case .notLocal:
-            return LocalResource(key: resource.key, sha1: "", bytes: 0, filename: filename, state: .notLocal)
-        case .exported:
-            let sha1 = try SHA1Hasher.hash(ofFileAt: temp, checkingCancellation: true)
-            let size = (try FileManager.default.attributesOfItem(atPath: temp.path)[.size] as? NSNumber)?.int64Value ?? 0
-            return LocalResource(key: resource.key, sha1: sha1, bytes: size, filename: filename, state: .hashed)
-        }
+        try await ResourceHashing(exporter: exporter, temporaryDirectory: temporaryDirectory).hash(resource, filename: filename)
     }
 }
+
+extension ResourceIngester: LibraryScanner {}

@@ -248,6 +248,54 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(sent, [])
     }
 
+    func testAManualRunProbesAgainDuringTheBackoffAndAnAutomaticOneDoesNot() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.probes.set(false)
+        let coordinator = coordinator(rig)
+        let first = try await coordinator.run()
+        let skipped = try await coordinator.run()
+        XCTAssertEqual(first.outcome, .waitingForNetwork)
+        XCTAssertEqual(skipped.outcome, .waitingForNetwork)
+        var probes = await rig.probes.count
+        XCTAssertEqual(probes, 1)
+        await rig.probes.set(true)
+        let stillWaiting = try await coordinator.run()
+        XCTAssertEqual(stillWaiting.outcome, .waitingForNetwork)
+        probes = await rig.probes.count
+        XCTAssertEqual(probes, 1)
+        let manual = try await coordinator.run(ignoringBackoff: true)
+        XCTAssertEqual(manual.outcome, .finished)
+        XCTAssertEqual(manual.uploaded, 1)
+        probes = await rig.probes.count
+        XCTAssertEqual(probes, 2)
+        let status = await coordinator.reachability
+        XCTAssertEqual(status, .reachable)
+    }
+
+    func testTheResultSaysWhetherDarkroomAcceptedTheCheckin() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        let accepted = try await coordinator(rig).run()
+        XCTAssertEqual(accepted.outcome, .finished)
+        XCTAssertTrue(accepted.checkinAccepted)
+        for failure in [APIError.rejected(status: 400), APIError.server(status: 500)] {
+            await rig.api.setCheckinError(failure)
+            let refused = try await coordinator(rig).run()
+            XCTAssertEqual(refused.outcome, .finished)
+            XCTAssertFalse(refused.checkinAccepted)
+        }
+        await rig.api.setCheckinError(APIError.unauthorized)
+        let signedOut = try await coordinator(rig).run()
+        XCTAssertEqual(signedOut.outcome, .needsSignIn)
+        XCTAssertFalse(signedOut.checkinAccepted)
+        let waiting = try await coordinator(rig, probe: ServerProbe { false }).run()
+        XCTAssertEqual(waiting.outcome, .waitingForNetwork)
+        XCTAssertFalse(waiting.checkinAccepted)
+    }
+
     func testUnauthorizedStopsAndKeepsTheResourceChecked() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a)])
@@ -332,6 +380,72 @@ final class UploadCoordinatorTests: XCTestCase {
         let record = try await rig.store.record(for: a)
         XCTAssertEqual(record?.resource.state, .hashed)
         XCTAssertEqual(record?.resource.sha1, "new")
+    }
+
+    func testAResourceThatLeftTheDeviceBeforeItUploadedIsStoredAsNotLocalNotRetriedForever() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.rejected(status: 422))
+        let cloud = LocalResource(key: a, sha1: "", bytes: 0, filename: "a.HEIC", state: .notLocal)
+        let result = try await coordinator(rig, rehash: cloud).run()
+        XCTAssertEqual(result.failed, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource, cloud)
+        let again = try await coordinator(rig).run()
+        XCTAssertEqual(again.uploaded, 0)
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testATransientExportFailureKeepsTheFileRetryableAndTheRestStillUpload() async throws {
+        struct WriteFailed: Error {}
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
+        let coordinator = coordinator(rig)
+        let first = try await coordinator.run()
+        XCTAssertEqual(first.outcome, .finished)
+        XCTAssertEqual(first.failed, 0)
+        XCTAssertEqual(first.uploaded, 1)
+        let waiting = try await rig.store.record(for: a)
+        XCTAssertEqual(waiting?.resource.state, .checked)
+        XCTAssertEqual(waiting?.attempts, 1)
+        let second = try await rig.store.record(for: b)
+        XCTAssertEqual(second?.resource.state, .uploaded)
+        await rig.transport.fail(a, with: nil)
+        let again = try await coordinator.run()
+        XCTAssertEqual(again.uploaded, 1)
+        let done = try await rig.store.record(for: a)
+        XCTAssertEqual(done?.resource.state, .uploaded)
+    }
+
+    func testAnExportThatKeepsFailingGivesUpAsARecoverableFailureNeverAHashMismatch() async throws {
+        struct WriteFailed: Error {}
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
+        let coordinator = coordinator(rig)
+        for _ in 0..<3 { _ = try await coordinator.run() }
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.recoverable, true)
+        XCTAssertEqual(record?.failureReason?.contains("could not be exported"), true)
+        XCTAssertEqual(record?.failureReason?.contains("different bytes"), false)
+    }
+
+    func testAResourceGoneFromTheLibraryGoesBackToHashedWithoutStoppingTheRun() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(ExportError.resourceGone))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.uploaded, 1)
+        let first = try await rig.store.record(for: a)
+        XCTAssertEqual(first?.resource.state, .hashed)
     }
 
     func testHashMismatchWithTheSameHashFails() async throws {
