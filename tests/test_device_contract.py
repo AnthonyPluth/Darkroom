@@ -6,31 +6,21 @@ import unittest
 from pathlib import Path
 from typing import Annotated, get_args, get_origin, get_type_hints, is_typeddict
 
-from sqlalchemy.orm import Session
-
 from darkroom.server import contract, routes
-from darkroom.storage.models import Device
 from tests.device_world import DeviceCase
-from tests.eligibility_world import Household
 
 MODELS = Path(__file__).resolve().parent.parent / "ios" / "Packages" / "DarkroomCore" / "Sources" / "DarkroomCore" / "Models.swift"
 SWIFT_SCALARS = {"String": str, "Int": int, "Int64": int, "Bool": bool, "Double": float}
 
 REQUESTS = {
     "CheckRequest": contract.DeviceCheckBody, "AssetDescriptor": contract.DeviceAssetDecl, "ResourceDescriptor": contract.DeviceResourceDecl,
-    "CheckinRequest": contract.DeviceCheckinBody, "EligibleRequest": contract.EligibleBody, "ConfirmRequest": contract.EligibleBody,
-    "DeletedRequest": contract.DeletedBody,
+    "CheckinRequest": contract.DeviceCheckinBody,
 }
 REPLIES = {
-    "CheckReply": contract.DeviceCheckReply, "NeededResource": contract.NeededResource, "EligibleReply": contract.EligibleReply,
-    "EligibleAsset": contract.EligibleAsset, "ConfirmReply": contract.ConfirmReply, "RejectedAsset": contract.Refusal,
-    "DeletedReply": contract.DeletedReply, "DeviceMeReply": contract.DeviceMeReply,
+    "CheckReply": contract.DeviceCheckReply, "NeededResource": contract.NeededResource, "DeviceMeReply": contract.DeviceMeReply,
 }
 ROUTES = {
     ("POST", "/api/device/assets/check"): ("CheckRequest", "CheckReply"),
-    ("POST", "/api/device/eligible"): ("EligibleRequest", "EligibleReply"),
-    ("POST", "/api/device/eligible/confirm"): ("ConfirmRequest", "ConfirmReply"),
-    ("POST", "/api/device/deleted"): ("DeletedRequest", "DeletedReply"),
     ("POST", "/api/device/checkin"): ("CheckinRequest", None),
     ("GET", "/api/device/me"): (None, "DeviceMeReply"),
 }
@@ -90,11 +80,7 @@ class SwiftModelsMatchTheServer(unittest.TestCase):
         cls.structs, cls.enums = swift_types()
 
     def test_the_parser_reads_the_models(self):
-        self.assertEqual(self.structs["EligibleAsset"], {"asset_id": "String", "bytes": "Int64"})
-        self.assertEqual(self.structs["DeletedRequest"], {"asset_ids": "[String]"})
-        self.assertEqual(self.structs["EligibleReply"], {"cleanup_enabled": "Bool", "eligible": "[EligibleAsset]", "rejected": "[RejectedAsset]"})
-        self.assertEqual(self.structs["RejectedAsset"], {"asset_id": "String", "reason": "String", "message": "String"})
-        self.assertEqual(self.structs["DeletedReply"], {"recorded": "[String]", "rejected": "[RejectedAsset]"})
+        self.assertEqual(self.structs["DeviceMeReply"], {"person": "String", "device": "String"})
         self.assertIn("ResourceKind", self.enums)
         for name in (*REQUESTS, *REPLIES):
             self.assertIn(name, self.structs)
@@ -161,29 +147,3 @@ class LiveRepliesDecodeAsTheAppExpects(DeviceCase):
         self.assertEqual(status, 200)
         self.decodes("DeviceMeReply", reply)
         self.assertEqual(set(reply), set(swift_types()[0]["DeviceMeReply"]))
-
-    def test_the_cleanup_round_trip_uses_the_apps_keys(self):
-        opened = Session(self.engine, expire_on_commit=False)
-        self.addCleanup(opened.close)
-        home = Household(self, opened, self.root)
-        jo = home.person("jo")
-        phone = opened.get(Device, self.device_id)
-        phone.cleanup_enabled = True
-        google = home.account(jo)
-        good, unmatched = home.photo(phone, through=google), home.photo(phone)
-        opened.commit()
-        assets = [{"id": entry.photokit_id, "resources": [{"kind": r.kind, "sha1": r.sha1, "bytes": r.bytes, "filename": r.filename} for r in entry.resources]}
-                  for entry in (home.reported(good), home.reported(unmatched))]
-        status, listed = self.call("POST", "/api/device/eligible", {"assets": assets})
-        self.assertEqual(status, 200)
-        self.decodes("EligibleReply", listed)
-        self.assertEqual([entry["asset_id"] for entry in listed["eligible"]], [good.id])
-        for entry in listed["rejected"]:
-            self.decodes("RejectedAsset", entry)
-        status, confirmed = self.call("POST", "/api/device/eligible/confirm", {"assets": assets})
-        self.assertEqual(status, 200)
-        self.decodes("ConfirmReply", confirmed)
-        self.assertEqual((confirmed["confirmed"], [entry["asset_id"] for entry in confirmed["rejected"]]), ([good.id], [unmatched.id]))
-        status, deleted = self.call("POST", "/api/device/deleted", {"asset_ids": [good.id]})
-        self.assertEqual((status, deleted["recorded"]), (200, [good.id]))
-        self.decodes("DeletedReply", deleted)
