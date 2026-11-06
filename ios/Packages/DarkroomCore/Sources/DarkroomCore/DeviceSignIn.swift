@@ -7,10 +7,24 @@ public enum DeviceSignIn {
     public static let maxTokenLength = 1024
     public static let fallbackDeviceName = "iPhone"
 
-    public static func startURL(server: ServerAddress, deviceName: String) -> URL? {
+    public struct Callback: Equatable, Sendable {
+        public let token: String
+        public let state: String
+    }
+
+    public static func newState() -> String {
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    public static func startURL(server: ServerAddress, deviceName: String, state: String) -> URL? {
         guard var components = URLComponents(url: server.url, resolvingAgainstBaseURL: false) else { return nil }
         components.percentEncodedPath += "/auth/device/start"
-        components.percentEncodedQuery = "name=" + percentEncoded(cleanedDeviceName(deviceName))
+        components.percentEncodedQuery = "name=" + percentEncoded(cleanedDeviceName(deviceName)) + "&state=" + percentEncoded(state)
         return components.url
     }
 
@@ -22,17 +36,21 @@ public enum DeviceSignIn {
         return result.isEmpty ? fallbackDeviceName : result
     }
 
-    public static func token(fromCallback url: URL) -> String? {
+    public static func callback(from url: URL) -> Callback? {
         guard url.scheme?.lowercased() == callbackScheme, url.host?.lowercased() == callbackHost else { return nil }
         guard url.path.isEmpty || url.path == "/" else { return nil }
         guard let fragment = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedFragment else { return nil }
+        var foundToken: String?
+        var foundState: String?
         for pair in fragment.split(separator: "&") {
             let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2, parts[0] == "token" else { continue }
+            guard parts.count == 2 else { continue }
             let value = String(parts[1]).removingPercentEncoding ?? ""
-            return isUsableToken(value) ? value : nil
+            if parts[0] == "token", foundToken == nil { foundToken = value }
+            if parts[0] == "state", foundState == nil { foundState = value }
         }
-        return nil
+        guard let token = foundToken, let state = foundState, isUsableToken(token), isUsableToken(state) else { return nil }
+        return Callback(token: token, state: state)
     }
 
     private static func isUsableToken(_ value: String) -> Bool {

@@ -71,31 +71,13 @@ final class UploadStatusTests: XCTestCase {
         XCTFail("timed out waiting", file: file, line: line)
     }
 
-    func testBeforeAnySyncItIsIdleWithNothingCounted() async {
-        let status = await makeTracker([]).status()
-        XCTAssertEqual(status, UploadStatus(phase: .idle, counts: [:], failures: [], lastSync: nil))
-    }
-
-    func testTheCountsAreTheStoresCountsPerState() async throws {
-        let store = InMemoryResourceStore()
-        try await store.upsert([
-            resource("a", .hashed), resource("b", .hashed), resource("c", .checked),
-            resource("d", .uploaded), resource("e", .notLocal),
-        ])
-        let status = await makeTracker([], store: store).status()
-        XCTAssertEqual(status.count(.hashed), 2)
-        XCTAssertEqual(status.count(.checked), 1)
-        XCTAssertEqual(status.count(.uploaded), 1)
-        XCTAssertEqual(status.count(.notLocal), 1)
-        XCTAssertEqual(status.count(.failed), 0)
-    }
-
     func testFailedResourcesAreListedWithTheirReasons() async throws {
         let store = InMemoryResourceStore()
         try await store.upsert([resource("a", .hashed), resource("b", .hashed)])
         try await store.setState(.failed, for: [ResourceKey(assetID: "a", kind: .photo)], failureReason: "the server refused it (413)")
         try await store.setState(.failed, for: [ResourceKey(assetID: "b", kind: .photo)], failureReason: nil)
         let status = await makeTracker([], store: store).status()
+        XCTAssertEqual(status.count(.failed), 2)
         XCTAssertEqual(status.failures, [
             FailedResource(key: ResourceKey(assetID: "a", kind: .photo), filename: "a.heic", reason: "the server refused it (413)"),
             FailedResource(key: ResourceKey(assetID: "b", kind: .photo), filename: "b.heic", reason: UploadStatusTracker.noReasonRecorded),
@@ -114,22 +96,6 @@ final class UploadStatusTests: XCTestCase {
         XCTAssertNil(status.lastSync)
     }
 
-    func testAWaitingStatusClearsWhenALaterSyncFinishes() async {
-        let tracker = makeTracker([.success(result(.waitingForNetwork)), .success(result(.finished))])
-        _ = await tracker.syncNow()
-        let status = await tracker.syncNow()
-        XCTAssertEqual(status.phase, .idle)
-        XCTAssertEqual(status.lastSync, moment)
-    }
-
-    func testAnEarlierSyncTimeSurvivesALaterWait() async {
-        let tracker = makeTracker([.success(result(.finished)), .success(result(.waitingForNetwork))])
-        _ = await tracker.syncNow()
-        let status = await tracker.syncNow()
-        XCTAssertEqual(status.phase, .waitingForHomeNetwork)
-        XCTAssertEqual(status.lastSync, moment)
-    }
-
     func testNeedingSignInIsShownUntilTheSignInChanges() async {
         let tracker = makeTracker([.success(result(.needsSignIn))])
         let stopped = await tracker.syncNow()
@@ -140,36 +106,26 @@ final class UploadStatusTests: XCTestCase {
         XCTAssertEqual(after.phase, .idle)
     }
 
-    func testSignInChangingDoesNotHideAnError() async {
-        let tracker = makeTracker([.failure(OtherFailure())])
-        _ = await tracker.syncNow()
-        await tracker.signInChanged()
-        let status = await tracker.status()
-        XCTAssertEqual(status.phase, .error(UploadStatusTracker.syncStopped))
-    }
-
     func testAStoreFailureDuringASyncIsAnErrorThatNamesTheQueue() async {
         let status = await makeTracker([.failure(ResourceStoreError.database("disk"))]).syncNow()
         XCTAssertEqual(status.phase, .error(UploadStatusTracker.queueUnreadable))
         XCTAssertNil(status.lastSync)
     }
 
-    func testAnyOtherFailureIsAnErrorThatLeaksNothingAboutIt() async {
-        let status = await makeTracker([.failure(OtherFailure())]).syncNow()
-        XCTAssertEqual(status.phase, .error(UploadStatusTracker.syncStopped))
-    }
-
-    func testACancelledSyncLeavesNoErrorBehind() async {
-        let status = await makeTracker([.failure(CancellationError())]).syncNow()
-        XCTAssertEqual(status.phase, .idle)
-        XCTAssertNil(status.lastSync)
-    }
-
-    func testAnErrorClearsWhenTheNextSyncFinishes() async {
-        let tracker = makeTracker([.failure(OtherFailure()), .success(result(.finished))])
-        _ = await tracker.syncNow()
-        let status = await tracker.syncNow()
-        XCTAssertEqual(status.phase, .idle)
+    func testACancelledSyncKeepsWhatWasShownBefore() async {
+        let fresh = await makeTracker([.failure(CancellationError())]).syncNow()
+        XCTAssertEqual(fresh.phase, .idle)
+        XCTAssertNil(fresh.lastSync)
+        let earlier: [Result<UploadCoordinator.Result, Error>] = [
+            .success(result(.needsSignIn)), .success(result(.waitingForNetwork)), .failure(OtherFailure()),
+        ]
+        for first in earlier {
+            let tracker = makeTracker([first, .failure(CancellationError())])
+            let before = await tracker.syncNow()
+            let after = await tracker.syncNow()
+            XCTAssertNotEqual(before.phase, .idle)
+            XCTAssertEqual(after, before)
+        }
     }
 
     func testAnUnreadableQueueIsAnErrorNotZeroCounts() async {

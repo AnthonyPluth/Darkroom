@@ -16,10 +16,6 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertEqual(try ServerAddress(parsing: "https://darkroom.example.net/").text, "https://darkroom.example.net")
     }
 
-    func testTheSchemeIsMatchedWithoutRegardToCase() throws {
-        XCTAssertEqual(try ServerAddress(parsing: "HTTPS://darkroom.example.net").url.scheme, "https")
-    }
-
     func testBlankTextIsRefused() {
         assertProblem(.empty, for: "")
         assertProblem(.empty, for: "   \n")

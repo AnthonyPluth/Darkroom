@@ -16,6 +16,8 @@ public enum SignInError: Error, Equatable, Sendable {
     case alreadySignedIn
     case notSigningIn
     case noToken
+    case stateMismatch
+    case expired
     case storage
 }
 
@@ -26,13 +28,24 @@ public actor DeviceSession {
         case signedIn(ServerAddress)
     }
 
+    public static let attemptLifetime: TimeInterval = 600
+
     private let storage: SessionStorage
+    private let makeState: @Sendable () -> String
+    private let clock: @Sendable () -> Date
     private var token: String?
+    private var attempt: (state: String, startedAt: Date)?
     public private(set) var phase = Phase.signedOut
     public private(set) var savedServer: ServerAddress?
 
-    public init(storage: SessionStorage) {
+    public init(
+        storage: SessionStorage,
+        makeState: @escaping @Sendable () -> String = DeviceSignIn.newState,
+        clock: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.storage = storage
+        self.makeState = makeState
+        self.clock = clock
     }
 
     public var currentToken: String? {
@@ -74,20 +87,32 @@ public actor DeviceSession {
         } catch {
             throw SignInError.server(.invalid)
         }
-        guard let start = DeviceSignIn.startURL(server: server, deviceName: deviceName) else {
+        let state = makeState()
+        guard let start = DeviceSignIn.startURL(server: server, deviceName: deviceName, state: state) else {
             throw SignInError.server(.invalid)
         }
+        attempt = (state, clock())
         savedServer = server
         phase = .signingIn(server)
         return start
     }
 
     public func complete(callback: URL) throws {
-        guard case .signingIn(let server) = phase else { throw SignInError.notSigningIn }
-        guard let issued = DeviceSignIn.token(fromCallback: callback) else {
+        guard case .signingIn(let server) = phase, let current = attempt else { throw SignInError.notSigningIn }
+        attempt = nil
+        guard let received = DeviceSignIn.callback(from: callback) else {
             phase = .signedOut
             throw SignInError.noToken
         }
+        guard Self.sameState(received.state, current.state) else {
+            phase = .signedOut
+            throw SignInError.stateMismatch
+        }
+        guard clock().timeIntervalSince(current.startedAt) <= Self.attemptLifetime else {
+            phase = .signedOut
+            throw SignInError.expired
+        }
+        let issued = received.token
         do {
             try storage.save(server.text, as: .serverURL)
             try storage.save(issued, as: .deviceToken)
@@ -101,7 +126,10 @@ public actor DeviceSession {
     }
 
     public func cancel() {
-        if case .signingIn = phase { phase = .signedOut }
+        if case .signingIn = phase {
+            phase = .signedOut
+            attempt = nil
+        }
     }
 
     public func signOut() throws {
@@ -111,7 +139,18 @@ public actor DeviceSession {
             throw SignInError.storage
         }
         token = nil
+        attempt = nil
         phase = .signedOut
+    }
+
+    private static func sameState(_ left: String, _ right: String) -> Bool {
+        let a = Array(left.utf8)
+        let b = Array(right.utf8)
+        var difference = a.count ^ b.count
+        for index in 0..<max(a.count, b.count) {
+            difference |= Int(index < a.count ? a[index] : 0) ^ Int(index < b.count ? b[index] : 0)
+        }
+        return difference == 0
     }
 
     public func tokenRejected(_ rejected: String) throws {

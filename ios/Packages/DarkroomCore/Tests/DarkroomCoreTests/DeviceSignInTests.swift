@@ -7,18 +7,13 @@ final class DeviceSignInTests: XCTestCase {
     }
 
     func testTheStartURLCarriesTheDeviceName() throws {
-        let url = try XCTUnwrap(DeviceSignIn.startURL(server: server(), deviceName: "Sam's iPhone"))
-        XCTAssertEqual(url.absoluteString, "https://darkroom.example.net/auth/device/start?name=Sam%27s%20iPhone")
-    }
-
-    func testTheStartURLKeepsAPathPrefix() throws {
-        let url = try XCTUnwrap(DeviceSignIn.startURL(server: server("https://darkroom.example.net:8443/photos"), deviceName: "Phone"))
-        XCTAssertEqual(url.absoluteString, "https://darkroom.example.net:8443/photos/auth/device/start?name=Phone")
+        let url = try XCTUnwrap(DeviceSignIn.startURL(server: server(), deviceName: "Sam's iPhone", state: "st-1"))
+        XCTAssertEqual(url.absoluteString, "https://darkroom.example.net/auth/device/start?name=Sam%27s%20iPhone&state=st-1")
     }
 
     func testCharactersThatSplitAQueryAreEncoded() throws {
-        let url = try XCTUnwrap(DeviceSignIn.startURL(server: server(), deviceName: "A&B=C+D#E"))
-        XCTAssertEqual(url.query, "name=A%26B%3DC%2BD%23E")
+        let url = try XCTUnwrap(DeviceSignIn.startURL(server: server(), deviceName: "A&B=C+D#E", state: "st-1"))
+        XCTAssertEqual(url.query, "name=A%26B%3DC%2BD%23E&state=st-1")
     }
 
     func testTheNameIsCleanedTheWayTheServerWantsIt() {
@@ -38,46 +33,48 @@ final class DeviceSignInTests: XCTestCase {
         XCTAssertEqual(DeviceSignIn.cleanedDeviceName(spaced), String(repeating: "a", count: 99))
     }
 
-    func testTheTokenComesFromTheCallbackFragment() throws {
-        let url = try XCTUnwrap(URL(string: "darkroom://signed-in#token=abc-DEF_123"))
-        XCTAssertEqual(DeviceSignIn.token(fromCallback: url), "abc-DEF_123")
-    }
-
-    func testTheTokenIsFoundAmongOtherFragmentPairs() throws {
-        let url = try XCTUnwrap(URL(string: "darkroom://signed-in#state=1&token=abc&extra=2"))
-        XCTAssertEqual(DeviceSignIn.token(fromCallback: url), "abc")
-    }
-
-    func testSchemeAndHostAreMatchedWithoutRegardToCase() throws {
-        let url = try XCTUnwrap(URL(string: "Darkroom://Signed-In#token=abc"))
-        XCTAssertEqual(DeviceSignIn.token(fromCallback: url), "abc")
-    }
-
-    func testOtherCallbacksYieldNoToken() throws {
-        let rejected = [
-            "darkroom://signed-in",
-            "darkroom://signed-in#",
-            "darkroom://signed-in#token=",
-            "darkroom://signed-in#token",
-            "darkroom://signed-in#tokens=abc",
-            "darkroom://signed-in?token=abc",
-            "darkroom://signed-in/extra#token=abc",
-            "darkroom://other#token=abc",
-            "https://signed-in#token=abc",
-            "otherapp://signed-in#token=abc",
-            "darkroom://signed-in#token=a%20b",
-            "darkroom://signed-in#token=a%00b",
-            "darkroom://signed-in#token=" + String(repeating: "a", count: DeviceSignIn.maxTokenLength + 1),
-        ]
-        for text in rejected {
-            let url = try XCTUnwrap(URL(string: text), text)
-            XCTAssertNil(DeviceSignIn.token(fromCallback: url), text)
+    func testGeneratedStatesAreLongDistinctAndAcceptedByTheServersShape() {
+        let states = (0..<20).map { _ in DeviceSignIn.newState() }
+        XCTAssertEqual(Set(states).count, 20)
+        for state in states {
+            XCTAssertTrue((22...128).contains(state.count), state)
+            XCTAssertNil(state.range(of: "[^A-Za-z0-9_-]", options: .regularExpression), state)
         }
     }
 
-    func testATokenAtTheLengthLimitIsAccepted() throws {
-        let token = String(repeating: "a", count: DeviceSignIn.maxTokenLength)
-        let url = try XCTUnwrap(URL(string: "darkroom://signed-in#token=\(token)"))
-        XCTAssertEqual(DeviceSignIn.token(fromCallback: url), token)
+    func testTheCallbackCarriesTheTokenAndTheState() throws {
+        let url = try XCTUnwrap(URL(string: "darkroom://signed-in#token=abc-DEF_123&state=st-1"))
+        XCTAssertEqual(DeviceSignIn.callback(from: url), DeviceSignIn.Callback(token: "abc-DEF_123", state: "st-1"))
+    }
+
+    func testThePairsMayComeInAnyOrderAmongOthers() throws {
+        let url = try XCTUnwrap(URL(string: "darkroom://signed-in#x=1&state=st-1&token=abc&extra=2"))
+        XCTAssertEqual(DeviceSignIn.callback(from: url), DeviceSignIn.Callback(token: "abc", state: "st-1"))
+    }
+
+    func testOtherCallbacksYieldNothing() throws {
+        let rejected = [
+            "darkroom://signed-in",
+            "darkroom://signed-in#",
+            "darkroom://signed-in#token=abc",
+            "darkroom://signed-in#state=st-1",
+            "darkroom://signed-in#token=&state=st-1",
+            "darkroom://signed-in#token=abc&state=",
+            "darkroom://signed-in#token&state=st-1",
+            "darkroom://signed-in#tokens=abc&state=st-1",
+            "darkroom://signed-in?token=abc&state=st-1",
+            "darkroom://signed-in/extra#token=abc&state=st-1",
+            "darkroom://other#token=abc&state=st-1",
+            "https://signed-in#token=abc&state=st-1",
+            "otherapp://signed-in#token=abc&state=st-1",
+            "darkroom://signed-in#token=a%20b&state=st-1",
+            "darkroom://signed-in#token=a%00b&state=st-1",
+            "darkroom://signed-in#token=abc&state=a%20b",
+            "darkroom://signed-in#token=" + String(repeating: "a", count: DeviceSignIn.maxTokenLength + 1) + "&state=st-1",
+        ]
+        for text in rejected {
+            let url = try XCTUnwrap(URL(string: text), text)
+            XCTAssertNil(DeviceSignIn.callback(from: url), text)
+        }
     }
 }

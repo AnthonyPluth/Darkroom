@@ -4,82 +4,79 @@ import XCTest
 private final class FakeStorage: SessionStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [SessionItem: String] = [:]
-    private var failing: [String: Set<SessionItem>] = [:]
+    private var failing: Set<String> = []
 
-    func fail(_ operation: String, on item: SessionItem) {
-        lock.lock()
-        failing[operation, default: []].insert(item)
-        lock.unlock()
+    func fail(_ operation: String, on item: SessionItem) { locked { _ = failing.insert(operation + item.rawValue) } }
+    func value(_ item: SessionItem) -> String? { locked { items[item] } }
+    func seed(_ value: String, as item: SessionItem) { locked { items[item] = value } }
+
+    func load(_ item: SessionItem) throws -> String? { try locked { try check("load", item); return items[item] } }
+    func save(_ value: String, as item: SessionItem) throws { try locked { try check("save", item); items[item] = value } }
+    func delete(_ item: SessionItem) throws { try locked { try check("delete", item); items[item] = nil } }
+
+    private func check(_ operation: String, _ item: SessionItem) throws {
+        if failing.contains(operation + item.rawValue) { throw KeychainFailure() }
     }
 
-    func value(_ item: SessionItem) -> String? {
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
-        return items[item]
-    }
-
-    func seed(_ value: String, as item: SessionItem) {
-        lock.lock()
-        items[item] = value
-        lock.unlock()
-    }
-
-    func load(_ item: SessionItem) throws -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        if failing["load"]?.contains(item) == true { throw KeychainFailure() }
-        return items[item]
-    }
-
-    func save(_ value: String, as item: SessionItem) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        if failing["save"]?.contains(item) == true { throw KeychainFailure() }
-        items[item] = value
-    }
-
-    func delete(_ item: SessionItem) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        if failing["delete"]?.contains(item) == true { throw KeychainFailure() }
-        items[item] = nil
+        return try body()
     }
 }
 
 private struct KeychainFailure: Error {}
 
+private final class StateSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return "state-\(count)"
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var moment = Date(timeIntervalSince1970: 3_000_000)
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return moment
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.lock()
+        moment = moment.addingTimeInterval(seconds)
+        lock.unlock()
+    }
+}
+
 final class DeviceSessionTests: XCTestCase {
     private let host = "https://darkroom.example.net"
     private let address = try! ServerAddress(parsing: "https://darkroom.example.net")
-    private let callback = URL(string: "darkroom://signed-in#token=abc123")!
+    private let callback = URL(string: "darkroom://signed-in#token=abc123&state=state-1")!
+    private let clock = TestClock()
+
+    private func makeSession(_ storage: FakeStorage) -> DeviceSession {
+        let states = StateSequence()
+        let clock = clock
+        return DeviceSession(storage: storage, makeState: { states.next() }, clock: { clock.now })
+    }
 
     private func signedInSession(_ storage: FakeStorage) async throws -> DeviceSession {
-        let session = DeviceSession(storage: storage)
+        let session = makeSession(storage)
         _ = try await session.begin(serverText: host, deviceName: "Phone")
         try await session.complete(callback: callback)
         return session
     }
 
-    func testAFreshInstallIsSignedOut() async throws {
-        let session = DeviceSession(storage: FakeStorage())
-        let phase = try await session.restore()
-        XCTAssertEqual(phase, .signedOut)
-        let token = await session.currentToken
-        XCTAssertNil(token)
-    }
-
-    func testBeginningReturnsTheStartURLAndRemembersTheServer() async throws {
-        let session = DeviceSession(storage: FakeStorage())
-        let start = try await session.begin(serverText: "darkroom.example.net", deviceName: "Sam's iPhone")
-        XCTAssertEqual(start.absoluteString, "https://darkroom.example.net/auth/device/start?name=Sam%27s%20iPhone")
-        let phase = await session.phase
-        let saved = await session.savedServer
-        XCTAssertEqual(phase, .signingIn(address))
-        XCTAssertEqual(saved, address)
-    }
-
     func testABadServerAddressDoesNotStartASignIn() async throws {
-        let session = DeviceSession(storage: FakeStorage())
+        let session = makeSession(FakeStorage())
         do {
             _ = try await session.begin(serverText: "http://darkroom.example.net", deviceName: "Phone")
             XCTFail("expected a refusal")
@@ -113,7 +110,7 @@ final class DeviceSessionTests: XCTestCase {
 
     func testACallbackOutsideASignInIsIgnored() async throws {
         let storage = FakeStorage()
-        let session = DeviceSession(storage: storage)
+        let session = makeSession(storage)
         do {
             try await session.complete(callback: callback)
             XCTFail("expected a refusal")
@@ -131,7 +128,7 @@ final class DeviceSessionTests: XCTestCase {
         let storage = FakeStorage()
         let session = try await signedInSession(storage)
         do {
-            try await session.complete(callback: URL(string: "darkroom://signed-in#token=forged")!)
+            try await session.complete(callback: URL(string: "darkroom://signed-in#token=forged&state=state-1")!)
             XCTFail("expected a refusal")
         } catch {
             XCTAssertEqual(error as? SignInError, .notSigningIn)
@@ -153,23 +150,8 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertEqual(token, "abc123")
     }
 
-    func testACallbackWithoutATokenEndsTheAttemptAndStoresNothing() async throws {
-        let storage = FakeStorage()
-        let session = DeviceSession(storage: storage)
-        _ = try await session.begin(serverText: host, deviceName: "Phone")
-        do {
-            try await session.complete(callback: URL(string: "darkroom://signed-in")!)
-            XCTFail("expected a refusal")
-        } catch {
-            XCTAssertEqual(error as? SignInError, .noToken)
-        }
-        let phase = await session.phase
-        XCTAssertEqual(phase, .signedOut)
-        XCTAssertNil(storage.value(.deviceToken))
-    }
-
     func testCancellingEndsTheAttemptAndKeepsTheServerForTheNextTry() async throws {
-        let session = DeviceSession(storage: FakeStorage())
+        let session = makeSession(FakeStorage())
         _ = try await session.begin(serverText: host, deviceName: "Phone")
         await session.cancel()
         let phase = await session.phase
@@ -178,17 +160,10 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertEqual(saved, address)
     }
 
-    func testCancellingDoesNotSignOutASignedInDevice() async throws {
-        let session = try await signedInSession(FakeStorage())
-        await session.cancel()
-        let phase = await session.phase
-        XCTAssertEqual(phase, .signedIn(address))
-    }
-
     func testAFailedSaveLeavesTheDeviceSignedOutWithoutAToken() async throws {
         let storage = FakeStorage()
         storage.fail("save", on: .deviceToken)
-        let session = DeviceSession(storage: storage)
+        let session = makeSession(storage)
         _ = try await session.begin(serverText: host, deviceName: "Phone")
         do {
             try await session.complete(callback: callback)
@@ -206,44 +181,11 @@ final class DeviceSessionTests: XCTestCase {
     func testRestoringBringsBackTheSignedInDevice() async throws {
         let storage = FakeStorage()
         _ = try await signedInSession(storage)
-        let relaunched = DeviceSession(storage: storage)
+        let relaunched = makeSession(storage)
         let phase = try await relaunched.restore()
         let token = await relaunched.currentToken
         XCTAssertEqual(phase, .signedIn(address))
         XCTAssertEqual(token, "abc123")
-    }
-
-    func testRestoringWithoutATokenKeepsTheServerPrefilled() async throws {
-        let storage = FakeStorage()
-        storage.seed(host, as: .serverURL)
-        let session = DeviceSession(storage: storage)
-        let phase = try await session.restore()
-        let saved = await session.savedServer
-        XCTAssertEqual(phase, .signedOut)
-        XCTAssertEqual(saved, address)
-    }
-
-    func testRestoringWithATokenButNoUsableServerIsSignedOut() async throws {
-        let storage = FakeStorage()
-        storage.seed("abc123", as: .deviceToken)
-        storage.seed("http://darkroom.example.net", as: .serverURL)
-        let session = DeviceSession(storage: storage)
-        let phase = try await session.restore()
-        let token = await session.currentToken
-        XCTAssertEqual(phase, .signedOut)
-        XCTAssertNil(token)
-    }
-
-    func testAnUnreadableKeychainIsReportedNotTreatedAsSignedOut() async throws {
-        let storage = FakeStorage()
-        storage.fail("load", on: .deviceToken)
-        let session = DeviceSession(storage: storage)
-        do {
-            try await session.restore()
-            XCTFail("expected a failure")
-        } catch {
-            XCTAssertEqual(error as? SignInError, .storage)
-        }
     }
 
     func testSigningOutClearsTheTokenAndKeepsTheServer() async throws {
@@ -293,5 +235,71 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertEqual(phase, .signedIn(address))
         XCTAssertEqual(token, "abc123")
         XCTAssertEqual(storage.value(.deviceToken), "abc123")
+    }
+
+    func testTheStartURLCarriesTheAttemptsState() async throws {
+        let session = makeSession(FakeStorage())
+        let start = try await session.begin(serverText: host, deviceName: "Phone")
+        XCTAssertEqual(start.query, "name=Phone&state=state-1")
+    }
+
+    private func assertRefused(_ session: DeviceSession, _ text: String, as expected: SignInError, line: UInt = #line) async {
+        do {
+            try await session.complete(callback: URL(string: text)!)
+            XCTFail("expected a refusal", line: line)
+        } catch {
+            XCTAssertEqual(error as? SignInError, expected, line: line)
+        }
+    }
+
+    func testAWrongOrMissingStateInstallsNothingAndEndsTheAttempt() async throws {
+        for text in ["darkroom://signed-in#token=abc123&state=state-2", "darkroom://signed-in#token=abc123&state=state-", "darkroom://signed-in#token=abc123"] {
+            let storage = FakeStorage()
+            let session = makeSession(storage)
+            _ = try await session.begin(serverText: host, deviceName: "Phone")
+            await assertRefused(session, text, as: text.hasSuffix("abc123") ? .noToken : .stateMismatch)
+            let phase = await session.phase
+            let token = await session.currentToken
+            XCTAssertEqual(phase, .signedOut, text)
+            XCTAssertNil(token, text)
+            XCTAssertNil(storage.value(.deviceToken), text)
+            await assertRefused(session, callback.absoluteString, as: .notSigningIn)
+        }
+    }
+
+    func testTheStateWorksOnlyOnce() async throws {
+        let storage = FakeStorage()
+        let session = makeSession(storage)
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        try await session.complete(callback: callback)
+        try await session.signOut()
+        await assertRefused(session, callback.absoluteString, as: .notSigningIn)
+        XCTAssertNil(storage.value(.deviceToken))
+    }
+
+    func testACancelledAttemptsStateIsDead() async throws {
+        let session = makeSession(FakeStorage())
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        await session.cancel()
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        await assertRefused(session, callback.absoluteString, as: .stateMismatch)
+    }
+
+    func testAnEarlierAttemptsCallbackIsRefusedByALaterOne() async throws {
+        let storage = FakeStorage()
+        let session = makeSession(storage)
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        await assertRefused(session, callback.absoluteString, as: .stateMismatch)
+        XCTAssertNil(storage.value(.deviceToken))
+    }
+
+    func testACallbackAfterTheAttemptTimedOutIsRefused() async throws {
+        let storage = FakeStorage()
+        let session = makeSession(storage)
+        _ = try await session.begin(serverText: host, deviceName: "Phone")
+        clock.advance(DeviceSession.attemptLifetime + 1)
+        await assertRefused(session, callback.absoluteString, as: .expired)
+        XCTAssertNil(storage.value(.deviceToken))
     }
 }

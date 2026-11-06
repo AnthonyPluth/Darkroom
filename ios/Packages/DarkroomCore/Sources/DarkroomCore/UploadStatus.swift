@@ -86,13 +86,14 @@ public actor UploadStatusTracker {
 
     public func syncNow() async -> UploadStatus {
         guard run != .running else { return await status() }
+        let before = run
         run = .running
         do {
             let result = try await runner.run()
             run = .finished(result.outcome)
             if result.outcome == .finished { lastSync = clock() }
         } catch is CancellationError {
-            run = .idle
+            run = before
         } catch {
             run = .failed(error is ResourceStoreError ? Self.queueUnreadable : Self.syncStopped)
         }
