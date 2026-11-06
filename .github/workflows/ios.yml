@@ -2,14 +2,15 @@ name: iOS
 
 # The agents' compile feedback for ios/ (they cannot run Xcode) and a required check of the merge gate. A pull request
 # that does not touch ios/ or this file skips the build job, and a skipped job counts as passed, so backend pull
-# requests never wait on a macOS runner. The build is unsigned and needs no team id, certificate or secret. macOS
-# minutes would cost ten times as much as Linux minutes if the repository went private (see ios/README.md for this check's duration).
+# requests never wait on a macOS runner. It runs on a pull request whatever its base, so a stacked pull request (one
+# whose base is a feature branch) is compiled and tested before review, not only after its base merges. The build is
+# unsigned and needs no team id, certificate or secret. macOS minutes would cost ten times as much as Linux minutes if
+# the repository went private (see ios/README.md for this check's duration).
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
