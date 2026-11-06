@@ -193,13 +193,14 @@ def library_owner(opened: Session, row: DedupeDecision) -> int | None:
 
 def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun, prepared: Prepared, now: float, tools: Tools) -> None:
     changed: set[int] = set(json.loads(run.changed_people or "[]"))
-    failed = 0
+    failed = repeated = 0
     known = stored_decisions(opened, export)
     repeats = repeated_items(opened, export, prepared, known)
     for item in prepared.items:
         fields = prepared.fields.get(item.path)
         row = known.get(prepared.source_of(item)) if fields is not None else None
         if fields is not None and row is None and prepared.source_of(item) in repeats:
+            repeated += 1
             continue
         if fields is None or row is None:
             failed += 1
@@ -222,7 +223,7 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
             changed.add(owner)
         run.changed_people = json.dumps(sorted(changed))
         opened.commit()
-    run.failed = failed
+    run.failed, run.repeated = failed, repeated
     run.changed_people = json.dumps(sorted(changed))
     mark(opened, export, run, "placed")
 
@@ -356,7 +357,8 @@ def stage_rescan(opened: Session, settings: config.Settings, export: Export, run
 
 def summary_of(export: Export, run: ImportRun) -> str:
     skipped = run.skipped_t1 + run.skipped_t2 + run.skipped_t3
-    text = f"Export {export.id}: {run.added} added, {skipped} skipped as duplicates, {run.review} in review, {run.missing_gps} missing GPS"
+    earlier = f", {run.repeated} already imported earlier" if run.repeated else ""
+    text = f"Export {export.id}: {run.added} added, {skipped} skipped as duplicates{earlier}, {run.review} in review, {run.missing_gps} missing GPS"
     return f"{text}, {run.failed} could not be imported" if run.failed else text
 
 

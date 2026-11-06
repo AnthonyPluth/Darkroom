@@ -3,7 +3,8 @@ import unittest
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe, exports
+from darkroom.domain import dedupe, exports, media, review
+from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelPerson
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
@@ -32,13 +33,13 @@ class IncrementalCase(unittest.TestCase):
     def take_bytes(self, seed):
         return TakeoutBuilder(self.world.base / f"scratch-{seed}", seed=seed).image_bytes(".JPG")
 
-    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW, owner=None):
+    def export(self, place=OLD_PLACE, description=CANAL, new=(), at=NOW, owner=None, form="json"):
         self.count += 1
         google_id = f"google-{self.count}"
         inbox = self.world.photos.inbox("jo") / google_id
         builder = TakeoutBuilder(inbox, seed=40 + self.count, parts=1)
         builder.photo("IMG_1.JPG", data=self.phone, gps=None)
-        builder.photo("IMG_2.JPG", data=self.canal, gps=place, description=description)
+        builder.photo("IMG_2.JPG", data=self.canal, gps=place, description=description, form=form)
         if "sam" in self.people:
             builder.photo("IMG_3.JPG", data=self.sam, gps=None)
         for name in new:
@@ -84,6 +85,30 @@ class IncrementalTests(IncrementalCase):
         after = self.phone_matches()
         self.assertEqual(after, before)
         self.assertEqual({export_id for export_id, _ in after}, {1})
+
+    def summaries(self):
+        return [message for title, message in self.world.recorder.sent if title == "Takeout import finished"]
+
+    def test_repeated_phone_matches_are_counted_and_named_in_the_summary(self):
+        first = self.imported()
+        self.assertEqual(first.repeated, 0)
+        self.assertNotIn("already imported earlier", self.summaries()[-1])
+        repeats = len(self.phone_matches())
+        self.assertEqual(repeats, len(self.people))
+        again = self.imported(at=NOW + DAY)
+        self.assertEqual((again.repeated, again.skipped_t1, again.skipped_t2), (repeats, 1, 0))
+        self.assertIn(f"1 skipped as duplicates, {repeats} already imported earlier,", self.summaries()[-1])
+        done = self.world.opened.execute(select(Event).where(Event.type == "import_done").order_by(Event.id.desc())).scalars().first()
+        self.assertIn(f"{repeats} already imported earlier", done.detail)
+
+    def test_a_reversed_earlier_match_is_decided_again_and_not_counted_as_a_repeat(self):
+        self.imported()
+        for confirming in [d for d in self.decisions() if d.matched_item_id is not None and d.tier == 1]:
+            dedupe.reverse(self.world.opened, confirming.id, NOW + 1, "owner")
+        self.world.opened.commit()
+        again = self.imported(at=NOW + DAY)
+        self.assertEqual(again.repeated, 0)
+        self.assertNotIn("already imported earlier", self.summaries()[-1])
 
     def test_the_second_export_adds_only_the_new_item_and_keeps_the_files(self):
         self.imported()
@@ -194,6 +219,187 @@ class IncrementalTests(IncrementalCase):
         self.assertEqual(self.refreshed(), [])
         stored = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
         self.assertIn(CANAL, stored.sidecar_json)
+
+    def canal_item(self):
+        return self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%IMG_2.JPG"))).scalar_one()
+
+    def test_a_link_at_the_sidecar_is_skipped_and_never_written_through(self):
+        self.imported()
+        outside = self.world.base / "elsewhere-sidecar"
+        outside.mkdir()
+        sidecar = self.canal_sidecar()
+        sidecar.rename(outside / "IMG_2.JPG.xmp")
+        sidecar.symlink_to(outside / "IMG_2.JPG.xmp")
+        self.assert_refresh_refused(outside)
+        self.assertTrue(sidecar.is_symlink())
+
+    def test_a_folder_at_the_sidecar_is_skipped_and_left_alone(self):
+        self.imported()
+        sidecar = self.canal_sidecar()
+        sidecar.unlink()
+        sidecar.mkdir()
+        self.assert_refresh_refused(sidecar)
+        self.assertTrue(sidecar.is_dir())
+
+    def test_a_refresh_with_nothing_to_write_advances_the_stored_google_record_and_leaves_the_sidecar(self):
+        self.imported()
+        sidecar = self.canal_sidecar()
+        sidecar.write_text(sidecar.read_text().replace(CANAL, "Our holiday"))
+        edited = sidecar.read_bytes()
+        again = self.imported(place=OLD_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(sidecar.read_bytes(), edited)
+        self.assertEqual(self.refreshed(), [])
+        self.assertIn(DAWN, self.canal_item().sidecar_json)
+        self.assertNotIn(CANAL, self.canal_item().sidecar_json)
+
+    def test_a_value_google_removed_and_later_set_again_still_reaches_the_sidecar(self):
+        self.imported()
+        self.imported(place=None, description="", at=NOW + DAY)
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.assertEqual(self.refreshed(), [])
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_description_google_removed_while_moving_the_photo_is_refreshed_when_google_sets_it_again(self):
+        self.imported()
+        self.imported(place=NEW_PLACE, description="", at=NOW + DAY)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.assertEqual(len(self.refreshed()), 1)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual(len(self.refreshed()), 2)
+
+    def test_a_location_google_removed_while_changing_the_description_is_refreshed_when_google_adds_a_new_one(self):
+        self.imported()
+        self.imported(place=None, description=DAWN, at=NOW + DAY)
+        self.assertIn(DAWN, self.canal_sidecar().read_text())
+        self.assertEqual(len(self.refreshed()), 1)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), OLD_PLACE)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        self.assertEqual(len(self.refreshed()), 2)
+        stored = self.canal_item()
+        self.assertEqual((stored.lat, stored.lon, stored.gps_source), (*NEW_PLACE, "google"))
+        lat, lon, _ = media.location(self.world.tools.read([self.canal_sidecar()])[self.canal_sidecar()])
+        self.assertAlmostEqual(lat, NEW_PLACE[0], places=5)
+        self.assertAlmostEqual(lon, NEW_PLACE[1], places=5)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 3 * DAY)
+        self.assertEqual(len(self.refreshed()), 2)
+
+    def test_an_owner_edited_description_beside_a_refreshed_location_keeps_the_edit_and_advances_both_fields(self):
+        self.imported()
+        sidecar = self.canal_sidecar()
+        sidecar.write_text(sidecar.read_text().replace(CANAL, "Our holiday"))
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertIn("Our holiday", sidecar.read_text())
+        self.assertNotIn(DAWN, sidecar.read_text())
+        stored = self.canal_item()
+        self.assertIn(DAWN, stored.sidecar_json)
+        self.assertEqual((stored.lat, stored.lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_an_export_without_the_photos_json_keeps_the_stored_record_for_the_next_re_add(self):
+        self.imported()
+        stored = self.canal_item().sidecar_json
+        again = self.imported(form=None, at=NOW + DAY)
+        self.assertEqual(again.failed, 0)
+        self.assertEqual(self.canal_item().sidecar_json, stored)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_sidecar_write_that_fails_after_the_check_is_a_failed_item_not_a_skip(self):
+        self.imported()
+        tools = self.world.tools
+
+        def vanishing(path, fields):
+            raise paths.NotASidecar("no sidecar was written")
+
+        self.world.tools = dataclasses.replace(tools, write=vanishing)
+        before = self.canal_sidecar().read_bytes()
+        again = self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 1)
+        self.assertEqual(self.canal_sidecar().read_bytes(), before)
+        self.assertEqual(self.refreshed(), [])
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+
+    def test_a_refresh_killed_after_the_sidecar_was_written_is_finished_by_the_retry(self):
+        self.imported()
+        tools = self.world.tools
+        sidecar = self.canal_sidecar()
+
+        def killed_after_writing(path, fields):
+            written = tools.write(path, fields)
+            if path == sidecar:
+                raise KeyboardInterrupt
+            return written
+
+        self.world.tools = dataclasses.replace(tools, write=killed_after_writing)
+        export_id = self.export(place=NEW_PLACE, description=DAWN, at=NOW + DAY).id
+        with self.assertRaises(KeyboardInterrupt):
+            self.world.run_import(export_id, NOW + DAY)
+        self.world.reopen()
+        self.world.tools = tools
+        self.assertIn(DAWN, sidecar.read_text())
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+        scans = len(self.world.scanned())
+        written = sidecar.read_bytes()
+        done = self.world.run_import(export_id, NOW + DAY)
+        self.assertEqual((done.status, done.failed), ("done", 0))
+        self.assertEqual(sidecar.read_bytes(), written)
+        self.assertIn(DAWN, self.canal_item().sidecar_json)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+        self.assertIn("lib-jo", self.world.scanned()[scans:])
+
+    def test_a_sidecar_the_owner_set_to_another_value_is_still_not_refreshed_on_a_retry(self):
+        self.imported()
+        sidecar = self.canal_sidecar()
+        sidecar.write_text(sidecar.read_text().replace(CANAL, "Our holiday"))
+        self.imported(place=OLD_PLACE, description=DAWN, at=NOW + DAY)
+        self.imported(place=OLD_PLACE, description="Dusk on the canal", at=NOW + 2 * DAY)
+        self.assertIn("Our holiday", sidecar.read_text())
+        self.assertEqual(self.refreshed(), [])
+
+    def missing_gps_ids(self):
+        rows, _ = review.missing_gps(self.world.opened, self.world.ids["jo"], None, None, 0)
+        return [row["id"] for row in rows]
+
+    def test_a_location_google_adds_later_is_stored_on_the_item_and_leaves_missing_gps(self):
+        self.imported(place=None)
+        item = self.canal_item()
+        self.assertEqual((item.lat, item.lon, item.gps_source), (None, None, "none"))
+        self.assertIn(item.id, self.missing_gps_ids())
+        self.imported(place=NEW_PLACE, at=NOW + DAY)
+        item = self.canal_item()
+        self.assertEqual((item.lat, item.lon, item.gps_source), (*NEW_PLACE, "google"))
+        self.assertNotIn(item.id, self.missing_gps_ids())
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_location_the_owner_already_set_keeps_the_item_missing_gps_when_google_adds_one(self):
+        self.imported(place=None)
+        sidecar = self.canal_sidecar()
+        text = sidecar.read_text()
+        self.world.tools.write(sidecar, {"XMP-exif:GPSLatitude": "10.0000000", "XMP-exif:GPSLongitude": "20.0000000"})
+        self.assertNotEqual(sidecar.read_text(), text)
+        self.imported(place=NEW_PLACE, at=NOW + DAY)
+        item = self.canal_item()
+        self.assertEqual((item.lat, item.lon, item.gps_source), (None, None, "none"))
+        self.assertIn(item.id, self.missing_gps_ids())
+        self.assertEqual(self.refreshed(), [])
 
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):
         self.imported()

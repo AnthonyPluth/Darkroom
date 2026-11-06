@@ -28,13 +28,21 @@ final class PushCenter {
     let registrar: PushRegistrar
     let notifications = NotificationPermission(authorizer: SystemNotificationAuthorizer())
 
+    var signInEnded: (@MainActor (String) async -> Void)?
+
     private init() {
         let reader = DeviceSession(storage: KeychainSessionStorage())
-        registrar = PushRegistrar(api: { () async throws -> PushTokenAPI? in
-            try await reader.restore()
-            guard case .signedIn(let server) = await reader.phase else { return nil }
-            return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
-        })
+        registrar = PushRegistrar(
+            api: { () async throws -> PushTokenAPI? in
+                try await reader.restore()
+                guard case .signedIn(let server) = await reader.phase else { return nil }
+                return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
+            },
+            signInEnded: {
+                guard let rejected = await reader.currentToken else { return }
+                await PushCenter.shared.signInEnded?(rejected)
+            }
+        )
     }
 
     func tokenReceived(_ data: Data) async {
