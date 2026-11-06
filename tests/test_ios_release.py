@@ -209,10 +209,9 @@ class CheckIcon(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("::warning", result.stdout)
 
-    def test_the_repository_is_blocked_until_the_icon_is_added(self):
+    def test_the_repository_has_an_app_store_icon(self):
         result = run("check-icon.sh", {}, str(ROOT))
-        icon = ROOT / "ios" / "Darkroom" / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json"
-        self.assertEqual(result.returncode, 0 if icon.exists() else 1)
+        self.assertEqual(result.returncode, 0, result.stdout)
 
 
 class WriteKey(unittest.TestCase):
