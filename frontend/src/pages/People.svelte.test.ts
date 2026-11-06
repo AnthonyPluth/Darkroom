@@ -367,12 +367,51 @@ describe("the Cleanup switch", () => {
   });
 
   it("turns off at once, with no question", async () => {
-    const server = show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": { device: joPhone } });
+    let off = false;
+    const server = show({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [off ? joPhone : ON] }),
+      "PATCH /api/devices/30": () => {
+        off = true;
+        return { device: joPhone };
+      },
+    });
     await userEvent.click(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
     await waitFor(() => expect(server.sent("PATCH /api/devices/30")).toHaveLength(1));
     expect(server.sent("PATCH /api/devices/30")[0]?.body).toEqual({ cleanup_enabled: false });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("reloads the eligible photos after turning off, so no stale count stays", async () => {
+    let off = false;
+    const status = (cleared: boolean): Status => ({
+      ...emptyStatus,
+      people: [{ ...eligibleStatus.people[0]!, devices: [{ ...eligibleStatus.people[0]!.devices[0]!, cleanup_enabled: !cleared, eligible: cleared ? null : 212, eligible_bytes: cleared ? null : 1_610_612_736, eligible_checked: cleared ? null : 990 }] }],
+    });
+    show({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [{ ...ON, cleanup_enabled: !off }] }),
+      "GET /api/status": () => status(off),
+      "PATCH /api/devices/30": () => {
+        off = true;
+        return { device: joPhone };
+      },
+    });
+    const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
+    await waitFor(() => expect(joCard).toHaveTextContent("212 photos (1.5 GB), confirmed in Google Photos"));
+    await userEvent.click(within(joCard).getByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
+    const after = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
+    await waitFor(() => expect(after).toHaveTextContent("Not checked yet"));
+    expect(after).not.toHaveTextContent("212 photos");
+  });
+
+  it("keeps the old count when turning off fails", async () => {
+    show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": reply(503, { error: "busy" }) });
+    const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
+    await userEvent.click(within(joCard).getByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
+    expect(await within(joCard).findByRole("alert")).toHaveTextContent("busy");
+    expect(joCard).toHaveTextContent("212 photos (1.5 GB), confirmed in Google Photos");
   });
 
   it("puts the switch back on and shows the error when turning off fails", async () => {

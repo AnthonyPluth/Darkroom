@@ -119,7 +119,8 @@
     switchErrors[device.id] = "";
     switches[device.id] = false;
     const ok = await act(() => setCleanup(device, false), { onError: (m) => (switchErrors[device.id] = m) });
-    if (!ok) delete switches[device.id];
+    if (ok) await loader.load(true);
+    else delete switches[device.id];
   }
 
   function toggleCleanup(device: DeviceView, owner: string): void {
