@@ -45,11 +45,15 @@ public enum ExportError: Error, Equatable, Sendable {
     case resourceGone
 }
 
+public struct LocalExportFailure: Error, Equatable, Sendable {
+    public init() {}
+}
+
 extension APIError {
     public static func forLocalExport(_ error: Error) -> Error {
         if error is CancellationError || error is APIError { return error }
         if error as? ExportError == .resourceGone { return APIError.rejected(status: 409) }
-        return APIError.rejected(status: 422)
+        return LocalExportFailure()
     }
 
     public static func forUpload(status: Int) -> APIError? {

@@ -150,6 +150,7 @@ public actor UploadCoordinator {
     }
 
     private func disposition(of error: Error) -> Disposition {
+        if error is LocalExportFailure { return .retry("the file could not be exported") }
         guard let api = error as? APIError else { return .network }
         switch api {
         case .unauthorized, .revoked, .notSignedIn: return .signIn
