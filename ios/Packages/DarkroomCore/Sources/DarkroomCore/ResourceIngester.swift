@@ -18,6 +18,9 @@ public struct IngestSummary: Equatable, Sendable {
 
 /// Walks the library, exports each new or changed resource to a temporary file, streams its SHA-1 and records it.
 public struct ResourceIngester: Sendable {
+    public static let unusableName = "the file name can't be used"
+    public static let unreadable = "the file could not be read"
+
     private let library: PhotoLibrary
     private let exporter: ResourceExporter
     private let store: ResourceStore
@@ -47,18 +50,28 @@ public struct ResourceIngester: Sendable {
             try Task.checkCancellation()
             let known = try await store.record(for: resource.key)
             let previous = await versions.version(for: resource.key)
-            if let known, known.resource.state != .notLocal, previous == resource.version {
+            if let known, known.resource.state != .notLocal, known.resource.hasDescriptor, previous == resource.version {
                 try Task.checkCancellation()
                 summary.skipped += 1
                 continue
             }
             let filename = UploadFilename.make(for: resource, assetResources: byAsset[resource.assetID] ?? [resource])
             guard UploadFilename.isAcceptable(filename) else {
+                await recordFailure(resource.key, filename: filename, known: known, reason: Self.unusableName, recoverable: false)
+                summary.failed += 1
+                continue
+            }
+            let local: LocalResource
+            do {
+                local = try await ingest(resource, filename: filename)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                await recordFailure(resource.key, filename: filename, known: known, reason: Self.unreadable, recoverable: true)
                 summary.failed += 1
                 continue
             }
             do {
-                let local = try await ingest(resource, filename: filename)
                 if local.state == .notLocal, let known, known.resource.state == .notLocal, previous == resource.version {
                     try Task.checkCancellation()
                     summary.notLocal += 1
@@ -81,11 +94,21 @@ public struct ResourceIngester: Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // Not recorded, so the next run tries this resource again.
                 summary.failed += 1
             }
         }
         return summary
+    }
+
+    private func recordFailure(_ key: ResourceKey, filename: String, known: ResourceRecord?, reason: String, recoverable: Bool) async {
+        if let known, known.resource.hasDescriptor { return }
+        do {
+            try await store.upsert([LocalResource(key: key, sha1: "", bytes: 0, filename: filename, state: .failed)])
+            try await store.setState(.failed, for: [key], failureReason: reason)
+            try await store.setRecoverable(recoverable, for: [key])
+        } catch {
+            return
+        }
     }
 
     private func forgetResourcesGone(from present: Set<ResourceKey>) async throws -> Int {

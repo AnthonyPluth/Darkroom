@@ -53,8 +53,8 @@ public enum UploadPlanner {
         precondition(batchSize > 0)
         var assetOrder: [String] = []
         var byAsset: [String: [LocalResource]] = [:]
-        let pending = Set(resources.filter { $0.state == .hashed }.map(\.key.assetID))
-        for resource in resources where pending.contains(resource.key.assetID) && resource.state != .notLocal {
+        let pending = Set(resources.filter { $0.state == .hashed && $0.hasDescriptor }.map(\.key.assetID))
+        for resource in resources where pending.contains(resource.key.assetID) && resource.state != .notLocal && resource.hasDescriptor {
             if byAsset[resource.key.assetID] == nil { assetOrder.append(resource.key.assetID) }
             byAsset[resource.key.assetID, default: []].append(resource)
         }

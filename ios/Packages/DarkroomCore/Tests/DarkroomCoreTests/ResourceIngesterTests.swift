@@ -160,7 +160,7 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(writes, 1)
     }
 
-    func testUnacceptableUploadNamesFailBeforeAnythingIsExportedOrSaved() async throws {
+    func testUnacceptableUploadNamesFailBeforeAnythingIsExportedAndAreRecordedAsFailed() async throws {
         for name in [".hidden.HEIC", "a/b.HEIC", "a\\b.HEIC", "IMG_1.XMP", "", String(repeating: "a", count: 201), "a\u{0}b.HEIC"] {
             XCTAssertFalse(UploadFilename.isAcceptable(name), name)
         }
@@ -180,7 +180,10 @@ final class ResourceIngesterTests: XCTestCase {
         let record = try await store.record(for: bad.key)
         XCTAssertEqual(exports, 0)
         XCTAssertEqual(writes, 0)
-        XCTAssertNil(record)
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.failureReason, ResourceIngester.unusableName)
+        XCTAssertEqual(record?.recoverable, false)
+        XCTAssertEqual(record?.resource.hasDescriptor, false)
     }
 
     func testCancellationAfterTheStoreWriteLeavesTheVersionAbsentForARetry() async throws {
@@ -206,7 +209,7 @@ final class ResourceIngesterTests: XCTestCase {
         XCTAssertEqual(retry, IngestSummary(hashed: 1))
     }
 
-    func testFailedExportIsCountedNotRecordedAndRetried() async throws {
+    func testFailedExportIsRecordedAsRecoverableAndRetriedOnEveryRun() async throws {
         let exporter = FakeExporter()
         let store = InMemoryResourceStore()
         let versions = InMemoryIngestVersions()
@@ -215,11 +218,48 @@ final class ResourceIngesterTests: XCTestCase {
         await exporter.setBroken(a.key)
         let first = try await make([a, b], exporter: exporter, store: store, versions: versions).run()
         XCTAssertEqual(first, IngestSummary(hashed: 1, failed: 1))
-        let missing = try await store.record(for: a.key)
-        XCTAssertNil(missing)
+        let failed = try await store.record(for: a.key)
+        XCTAssertEqual(failed?.resource.state, .failed)
+        XCTAssertEqual(failed?.failureReason, ResourceIngester.unreadable)
+        XCTAssertEqual(failed?.recoverable, true)
+        XCTAssertEqual(failed?.resource.hasDescriptor, false)
+        let again = try await make([a, b], exporter: exporter, store: store, versions: versions).run()
+        XCTAssertEqual(again, IngestSummary(hashed: 0, skipped: 1, failed: 1))
+        await exporter.set(contents: Data("abc".utf8), for: a.key)
         await exporter.setFixed(a.key)
         let second = try await make([a, b], exporter: exporter, store: store, versions: versions).run()
         XCTAssertEqual(second, IngestSummary(hashed: 1, skipped: 1))
+        let fixed = try await store.record(for: a.key)
+        XCTAssertEqual(fixed?.resource.state, .hashed)
+        XCTAssertNil(fixed?.failureReason)
+        XCTAssertEqual(fixed?.recoverable, false)
+    }
+
+    func testAFailureNeverReplacesARecordThatStillHasItsDescriptor() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let a = photo("IMG_1")
+        let old = LocalResource(key: a.key, sha1: "old", bytes: 1, filename: "IMG_1.HEIC", state: .uploaded)
+        try await store.upsert([old])
+        await exporter.setBroken(a.key)
+        let summary = try await make([photo("IMG_1", "v2")], exporter: exporter, store: store).run()
+        XCTAssertEqual(summary, IngestSummary(failed: 1))
+        let record = try await store.record(for: a.key)
+        XCTAssertEqual(record, ResourceRecord(resource: old))
+    }
+
+    func testAFailedExportBesideAGoodSiblingLeavesTheSiblingAloneInTheStore() async throws {
+        let exporter = FakeExporter()
+        let store = InMemoryResourceStore()
+        let still = PhotoResource(assetID: "IMG_1", kind: .photo, originalFilename: "IMG_1.HEIC", version: "v1")
+        let clip = PhotoResource(assetID: "IMG_1", kind: .liveVideo, originalFilename: "IMG_1.MOV", version: "v1")
+        await exporter.set(contents: Data("abc".utf8), for: still.key)
+        await exporter.setBroken(clip.key)
+        let summary = try await make([still, clip], exporter: exporter, store: store).run()
+        XCTAssertEqual(summary, IngestSummary(hashed: 1, failed: 1))
+        let stored = try await store.resources(in: Set(ResourceState.allCases))
+        let batches = UploadPlanner.checkBatches(from: stored)
+        XCTAssertEqual(batches.flatMap(\.assets).flatMap(\.resources).map(\.kind), [.photo])
     }
 
     func testResourcesGoneFromALaterEnumerationAreForgottenAndOthersKept() async throws {
