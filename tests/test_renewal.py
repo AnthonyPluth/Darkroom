@@ -1,7 +1,9 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from sqlalchemy import select
@@ -792,6 +794,38 @@ class RenewNowTests(FailingCase):
         ending = [alert[1] for alert in self.alerts_of("schedule_ending")]
         self.assertTrue(all("ended on" in text and "ends on" not in text for text in ending))
         self.assertEqual(self.open_alert_kinds(), {"schedule_ending"})
+
+    def test_a_request_that_arrives_while_the_watch_is_deciding_queues_no_second_job(self):
+        outcomes = []
+
+        def press():
+            try:
+                with db.session(self.engine) as opened:
+                    outcomes.append(renewal.renew_now(opened, self.settings, self.account, NOTICE_AT).id)
+            except browser_jobs.AlreadyOpen as error:
+                outcomes.append(error)
+
+        presser = threading.Thread(target=press)
+        started = []
+        original = renewal.latest_renewal
+
+        def latest_renewal_with_a_request_arriving(opened, account, since):
+            if not started:
+                started.append(True)
+                presser.start()
+                time.sleep(0.5)
+            return original(opened, account, since)
+
+        with mock.patch.object(renewal, "latest_renewal", latest_renewal_with_a_request_arriving):
+            queued = self.watch(NOTICE_AT)
+        presser.join()
+        self.assertEqual((queued, len(self.renew_jobs())), (1, 1))
+        self.assertEqual([isinstance(outcome, browser_jobs.AlreadyOpen) for outcome in outcomes], [True])
+
+    def test_a_request_just_before_the_watch_leaves_the_watch_nothing_to_queue(self):
+        self.request(NOTICE_AT)
+        self.assertEqual(self.watch(NOTICE_AT + 5), 0)
+        self.assertEqual(len(self.renew_jobs()), 1)
 
     def test_two_requests_at_once_queue_one_job(self):
         outcomes = []

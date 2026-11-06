@@ -103,6 +103,7 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
         assert end is not None
         if now < end - NOTICE:
             continue
+        browser_jobs.lock_account(opened, account.id)
         asked = latest_renewal(opened, account, end - NOTICE)
         if asked is not None and asked.status == "failed":
             open_failed(opened, settings, account, end, asked, now)
