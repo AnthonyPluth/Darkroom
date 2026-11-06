@@ -288,6 +288,7 @@ class AuthPending(Base):
     next: Mapped[str | None] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String, nullable=False, default="web", server_default="web")
     device_name: Mapped[str | None] = mapped_column(String)
+    client_state: Mapped[str | None] = mapped_column(String)
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 

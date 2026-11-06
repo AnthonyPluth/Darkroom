@@ -274,6 +274,24 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0017_auth_pending_client_state_leaves_old_sign_ins_without_one_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0016")
+            connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, device_name, created) VALUES ('s', 'n', 'v', 'device', 'iPhone', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, client_state FROM auth_pending").all(), [("s", None)])
+            connection.exec_driver_sql("UPDATE auth_pending SET client_state = 'abc'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0016")
+        self.assertNotIn("client_state", {column["name"] for column in inspect(self.engine).get_columns("auth_pending")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, device_name FROM auth_pending").all(), [("s", "iPhone")])
+
     def test_0016_device_wake_pushed_leaves_old_devices_unwoken_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
