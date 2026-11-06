@@ -55,6 +55,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - $(PRODUCT_BUNDLE_IDENTIFIER).refresh
           - $(PRODUCT_BUNDLE_IDENTIFIER).hash
+          - $(PRODUCT_BUNDLE_IDENTIFIER).nightly
         NSPhotoLibraryUsageDescription: Darkroom reads your photos and videos so it can upload the originals to your own server.
         CFBundleURLTypes:
           - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
