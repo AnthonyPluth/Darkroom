@@ -668,6 +668,124 @@ class RenewalEmailGuardTests(RenewalCase):
                 browser_jobs.enqueue(opened, self.account, browser_jobs.RENEW_KIND, None, NOTICE_AT)
 
 
+class RenewNowTests(FailingCase):
+    def request(self, now, account=None):
+        with db.session(self.engine) as opened:
+            return renewal.renew_now(opened, self.settings, self.account if account is None else account, now).id
+
+    def test_it_queues_one_renew_job_with_the_watchs_payload_and_records_the_request(self):
+        job_id = self.request(NOTICE_AT - 30 * DAY)
+        self.assertEqual(self.renew_jobs(), [(self.account, "queued", {"email": "jo.takeout@example.test", "ending": END})])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(BrowserJob, job_id).kind, "renew")
+        self.assertEqual(self.event_types().count("schedule_renewal_requested"), 1)
+        self.assertEqual(self.event_types().count("schedule_renewal_queued"), 0)
+
+    def test_a_second_request_while_the_job_is_queued_or_running_is_refused(self):
+        self.request(NOTICE_AT)
+        with self.assertRaises(browser_jobs.AlreadyOpen):
+            self.request(NOTICE_AT + 5)
+        self.claim_renewal(NOTICE_AT + 10)
+        with self.assertRaises(browser_jobs.AlreadyOpen):
+            self.request(NOTICE_AT + 30)
+        self.assertEqual(len(self.renew_jobs()), 1)
+
+    def test_a_second_request_while_the_job_waits_for_a_sign_in_is_refused(self):
+        self.request(NOTICE_AT)
+        job_id = self.claim_renewal(NOTICE_AT + 10)
+        with db.session(self.engine) as opened:
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", NOTICE_AT + 20)
+        with self.assertRaises(renewal.NeedsSignIn):
+            self.request(NOTICE_AT + 30)
+        self.assertEqual(len(self.renew_jobs()), 1)
+
+    def test_it_is_refused_while_a_create_schedule_job_is_open(self):
+        with db.session(self.engine) as opened:
+            browser_jobs.queue(opened, self.account, "schedule", {"email": "jo.takeout@example.test"}, NOTICE_AT)
+        with self.assertRaises(browser_jobs.AlreadyOpen):
+            self.request(NOTICE_AT + 1)
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_it_is_refused_while_an_attempt_is_unanswered_and_allowed_once_answered(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120, message="ScheduleNotConfirmed: unsure")
+        with self.assertRaises(browser_jobs.AlreadyOpen) as caught:
+            self.request(NOTICE_AT + 200)
+        self.assertIn("check Takeout", str(caught.exception))
+        with db.session(self.engine) as opened:
+            renewal.checked(opened, self.settings, self.account, False, NOTICE_AT + 300)
+        self.request(NOTICE_AT + 400)
+        self.assertEqual([job[1] for job in self.renew_jobs()], ["failed", "queued"])
+
+    def test_it_is_allowed_after_a_failed_renewal_inside_the_window_and_the_watch_queues_nothing_more(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120)
+        self.assertEqual(self.watch(NOTICE_AT + DAY), 0)
+        self.request(NOTICE_AT + 2 * DAY)
+        self.assertEqual([job[1] for job in self.renew_jobs()], ["failed", "queued"])
+        self.assertEqual(self.watch(NOTICE_AT + 3 * DAY), 0)
+        self.assertEqual(len(self.renew_jobs()), 2)
+
+    def test_a_requested_renewal_that_succeeds_renews_and_closes_the_failed_alert(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120)
+        self.assertIsNone(self.alerts_of("schedule_renewal_failed")[0][4])
+        self.request(NOTICE_AT + DAY)
+        job_id = self.claim_renewal(NOTICE_AT + DAY + 10)
+        self.finish(job_id, NOTICE_AT + DAY + 100)
+        self.assertIsNotNone(self.alerts_of("schedule_renewal_failed")[0][4])
+        self.assertEqual(len(self.alerts_of("schedule_renewed")), 1)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).schedule_end, NOTICE_AT + DAY + 100 + 365 * DAY)
+
+    def test_a_requested_renewal_that_fails_reports_it_like_the_watchs(self):
+        self.request(NOTICE_AT + DAY)
+        self.fail(NOTICE_AT + DAY + 100)
+        self.assertEqual(len(self.alerts_of("schedule_renewal_failed")), 1)
+        self.assertEqual(self.event_types().count("schedule_renewal_failed"), 1)
+
+    def test_it_is_allowed_after_the_schedule_has_ended_and_before_the_window(self):
+        self.request(END + DAY)
+        self.assertEqual(len(self.renew_jobs()), 1)
+        with db.session(self.engine) as opened:
+            second = self.add_account(opened, "al", "al.takeout@example.test", CREATED, END)
+        self.request(CREATED + DAY, second)
+        self.assertEqual(len(self.renew_jobs()), 2)
+
+    def test_it_is_refused_for_an_account_that_needs_sign_in(self):
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account).session_state = "needs_sign_in"
+        with self.assertRaises(renewal.NeedsSignIn):
+            self.request(NOTICE_AT)
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_it_is_refused_for_an_account_with_no_schedule(self):
+        with db.session(self.engine) as opened:
+            bare = self.add_account(opened, "al", "al.takeout@example.test")
+            half = self.add_account(opened, "bo", "bo.takeout@example.test", CREATED, None)
+        for account in (bare, half):
+            with self.subTest(account=account), self.assertRaises(renewal.NoSchedule):
+                self.request(NOTICE_AT, account)
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_it_is_refused_for_an_unknown_account(self):
+        with self.assertRaises(browser_jobs.UnknownAccount):
+            self.request(NOTICE_AT, self.account + 50)
+
+    def test_the_email_stays_pinned_while_the_requested_job_is_open(self):
+        self.request(NOTICE_AT)
+        with db.session(self.engine) as opened:
+            with self.assertRaises(accounts.JobOpen):
+                accounts.update(opened, self.account, "other.takeout@example.test", None, NOTICE_AT + 5)
+            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo.takeout@example.test")
+
+    def test_create_schedule_is_refused_while_the_requested_job_is_open(self):
+        self.request(END + DAY)
+        with db.session(self.engine) as opened:
+            with self.assertRaises(browser_jobs.AlreadyOpen):
+                browser_jobs.enqueue_once(opened, self.account, "schedule", END + DAY + 5)
+
+
 class RenewalSchedulerTests(RenewalCase):
     def test_the_scheduler_runs_the_watch_once_a_day_at_five(self):
         scheduler = jobs.build(self.settings, self.engine, CREATED)

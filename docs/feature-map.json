@@ -301,6 +301,15 @@
       ]
     },
     {
+      "route": "POST /api/accounts/{id}/schedule/renew",
+      "auth": "session",
+      "handler": "darkroom.server.api.accounts.renew_schedule",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py"
+      ]
+    },
+    {
       "route": "GET /api/pixels",
       "auth": "session",
       "handler": "darkroom.server.api.pixels.list_pixels",

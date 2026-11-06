@@ -79,7 +79,7 @@ docker compose exec darkroom python run.py import-takeout --person <slug> [--acc
 
 ### The schedule renewal
 
-About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal (#40); renewing on request is a later addition. The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
+About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal on its own (#40); you can ask for one with Renew now (below). The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
 
 #### "Takeout schedule renewal not confirmed"
 
@@ -95,7 +95,11 @@ The renewal did not happen and the current schedule still ends on the date the a
 
 1. Fix what made the job fail: the failure alert and the Exports page link the capture (see "Google changed a page" when that is the cause).
 2. Once the schedule has ended, press Create schedule on the Exports page. It is enabled only then, and only with no schedule or renew job open. When that job is done, the "not renewed" alert closes and next year's renewal follows as usual.
-3. Exports between the end and the new schedule are not made. If that gap matters, a "renew now" action is the later addition to ask for.
+3. Exports between the end and the new schedule are not made. If that gap matters, ask for a renewal now instead of waiting for the end (see "Renew now").
+
+#### Renew now
+
+`POST /api/accounts/{id}/schedule/renew` queues one renew job on request, through the same path as the daily watch: the same job, the same email pin and the same failure alerts. It works for an account with a schedule that is live, ending soon or already ended, including after a "not renewed" failure inside the window. It answers 409 and queues nothing while a schedule or renew job is queued, running or waiting for a sign-in, while an earlier attempt is waiting for your Takeout check answer, when the account has no schedule, and when the account needs to sign in. The Exports page has no button for it yet; until it does, call the route.
 
 The account's Google email cannot be changed while a renew job is open (queued, running or waiting for a sign-in), or while an unconfirmed attempt is waiting for your answer.
 

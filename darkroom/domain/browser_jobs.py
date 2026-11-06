@@ -155,7 +155,7 @@ def mark_schedule_checked(opened: Session, account_id: int, now: float, found: b
     return job
 
 
-def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
+def lock_account(opened: Session, account_id: int) -> GoogleAccount:
     try:
         locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
     except OperationalError as error:
@@ -164,7 +164,11 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
         raise Busy("Darkroom is busy with another change; try again in a moment") from None
     if locked is None:
         raise UnknownAccount(f"no Google account {account_id}")
-    account = account_of(opened, account_id)
+    return account_of(opened, account_id)
+
+
+def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
+    account = lock_account(opened, account_id)
     if kind == "schedule" and schedule_live(account, now):
         raise AlreadyOpen("this account already has an export schedule")
     if kind == "schedule" and unchecked_schedule(opened, account_id) is not None:
