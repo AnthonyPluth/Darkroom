@@ -55,8 +55,9 @@ def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end
         alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_UNCONFIRMED, account.email, alerts.schedule_renewal_unconfirmed(account.email, day), link, now, about=alerts.account(account.id))
         return
     alerts.close_other_kinds(opened, failed_key(account.id), RENEWAL_FAILED, now)
-    alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, alerts.schedule_renewal_failed(account.email, day, now >= end), ending_link(settings), now,
-                      about=alerts.account(account.id))
+    wording = alerts.schedule_renewal_failed(account.email, day, now >= end)
+    alert = alerts.open_alert(opened, settings, failed_key(account.id), RENEWAL_FAILED, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
+    alert.message = wording.message
 
 
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
