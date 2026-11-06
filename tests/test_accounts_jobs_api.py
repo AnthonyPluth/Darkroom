@@ -195,7 +195,7 @@ class AccountJobsApiTests(ApiCase):
             return [(job.status, json.loads(job.payload)) for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "renew").order_by(BrowserJob.id)).scalars()]
 
     def test_renew_now_queues_one_renew_job_and_a_second_press_is_refused(self):
-        end = self.schedule_ending_in(60)
+        end = self.schedule_ending_in(15)
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
         self.assertEqual((status, reply["job"]["kind"], reply["job"]["status"], reply["job"]["account_id"]), (201, "renew", "queued", self.account_id))
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
@@ -224,12 +224,19 @@ class AccountJobsApiTests(ApiCase):
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
         self.assertEqual(status, 409)
         self.assertIn("no export schedule", reply["error"])
-        self.schedule_ending_in(60)
+        self.schedule_ending_in(15)
         with db.session(self.engine) as opened:
             opened.get(GoogleAccount, self.account_id).session_state = "needs_sign_in"
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
         self.assertEqual(status, 409)
         self.assertIn("sign in", reply["error"])
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_renew_now_is_refused_before_the_window_and_on_a_schedule_just_renewed(self):
+        self.schedule_ending_in(60)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("not due for renewal", reply["error"])
         self.assertEqual(self.renew_jobs(), [])
 
     def test_renew_now_for_an_unknown_account_is_404(self):

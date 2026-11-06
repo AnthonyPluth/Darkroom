@@ -68,6 +68,10 @@ class NeedsSignIn(ValueError):
     pass
 
 
+class NotDue(ValueError):
+    pass
+
+
 def queue_renewal(opened: Session, account: GoogleAccount, end: float, now: float) -> BrowserJob:
     return browser_jobs.queue(opened, account.id, browser_jobs.RENEW_KIND, {"email": account.email, "ending": end}, now)
 
@@ -77,6 +81,8 @@ def renew_now(opened: Session, settings: Settings, account_id: int, now: float) 
     end = account.schedule_end
     if account.schedule_created is None or end is None:
         raise NoSchedule("this account has no export schedule to renew")
+    if now < end - NOTICE:
+        raise NotDue(f"this schedule is not due for renewal until {on_date(end - NOTICE, settings.timezone)}, three weeks before it ends")
     if account.session_state == "needs_sign_in":
         raise NeedsSignIn("this account needs to sign in to Google again before its schedule can be renewed")
     if browser_jobs.unchecked_schedule(opened, account_id) is not None:
@@ -84,6 +90,7 @@ def renew_now(opened: Session, settings: Settings, account_id: int, now: float) 
     if browser_jobs.schedule_attempt_pending(opened, account_id):
         raise browser_jobs.AlreadyOpen("a schedule or renew job for this account is already waiting or running")
     job = queue_renewal(opened, account, end, now)
+    alerts.close(opened, failed_key(account.id), now)
     events.record(opened, now, "schedule_renewal_requested", f"account {account.id}", f"the schedule ends {on_date(end, settings.timezone)}")
     return job
 

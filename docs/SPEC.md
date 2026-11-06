@@ -75,7 +75,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 | Check status | Daily | Reads the Takeout downloads page for new exports. No Gmail access needed |
 | Download | When an export is ready | Downloads every part to the person's inbox on Unraid, one at a time. Verifies the part count and runs a zip integrity test |
 | Renew | About 3 weeks before the schedule ends, or on request (`POST /api/accounts/{id}/schedule/renew`) | Creates the next year's schedule and records the new end date |
-| Renew now | When the owner asks, for an account with a schedule that is live, ending or ended | Queues one renew job through the same path as the daily watch; refused while a schedule or renew job is open or awaiting the Takeout check answer, and when the account needs sign-in |
+| Renew now | When the owner asks, from 3 weeks before the schedule ends (so also after a failed renewal, and after the end) | Queues one renew job through the same path as the daily watch and closes the "not renewed" alert until that job's outcome. Refused before the window (which also covers a schedule just renewed), while a schedule or renew job is open or awaiting the Takeout check answer, with no schedule, and when the account needs sign-in |
 
 **Limits it must respect**
 

@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -43,6 +44,10 @@ class RenewalCase(unittest.TestCase):
     def tick(self, now):
         with db.session(self.engine) as opened:
             return alerts.tick(opened, self.settings, now)
+
+    def open_alert_kinds(self):
+        with db.session(self.engine) as opened:
+            return {alert.kind for alert in opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars() if alert.kind.startswith("schedule")}
 
     def renew_jobs(self):
         with db.session(self.engine) as opened:
@@ -190,7 +195,8 @@ class RenewalFailureTests(FailingCase):
         self.assertIn("15 Jan 2028", message)
         self.assertIn("was not renewed", message)
         self.assertIn("does not retry", message)
-        self.assertIn("later addition", message)
+        self.assertIn("Renew now", message)
+        self.assertNotIn("later addition", message)
         self.assertIn("Once it has ended, press Create schedule", message)
         self.assertNotIn("shortly", message)
         ((failure_key, _, failure_link, _, _),) = self.alerts_of("failure")
@@ -674,7 +680,7 @@ class RenewNowTests(FailingCase):
             return renewal.renew_now(opened, self.settings, self.account if account is None else account, now).id
 
     def test_it_queues_one_renew_job_with_the_watchs_payload_and_records_the_request(self):
-        job_id = self.request(NOTICE_AT - 30 * DAY)
+        job_id = self.request(NOTICE_AT)
         self.assertEqual(self.renew_jobs(), [(self.account, "queued", {"email": "jo.takeout@example.test", "ending": END})])
         with db.session(self.engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job_id).kind, "renew")
@@ -744,13 +750,57 @@ class RenewNowTests(FailingCase):
         self.assertEqual(len(self.alerts_of("schedule_renewal_failed")), 1)
         self.assertEqual(self.event_types().count("schedule_renewal_failed"), 1)
 
-    def test_it_is_allowed_after_the_schedule_has_ended_and_before_the_window(self):
+    def test_it_is_allowed_after_the_schedule_has_ended(self):
         self.request(END + DAY)
         self.assertEqual(len(self.renew_jobs()), 1)
+
+    def test_it_is_refused_before_the_window_opens_and_on_a_schedule_just_renewed(self):
+        with self.assertRaises(renewal.NotDue) as caught:
+            self.request(NOTICE_AT - 1)
+        self.assertIn("not due for renewal", str(caught.exception))
+        self.watch(NOTICE_AT)
+        job_id = self.claim_renewal(NOTICE_AT + 10)
+        self.finish(job_id, NOTICE_AT + 100)
+        for now in (NOTICE_AT + 200, NOTICE_AT + 100 + 300 * DAY):
+            with self.subTest(now=now), self.assertRaises(renewal.NotDue):
+                self.request(now)
+        self.assertEqual(len(self.renew_jobs()), 1)
+
+    def test_a_requested_renewal_leaves_one_open_alert_while_queued_and_after_the_next_watch(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120)
+        self.assertEqual(self.open_alert_kinds(), {"schedule_renewal_failed"})
+        self.request(NOTICE_AT + DAY)
+        self.assertEqual(self.open_alert_kinds(), set())
+        self.watch(NOTICE_AT + 2 * DAY)
+        self.assertEqual(self.open_alert_kinds(), {"schedule_ending"})
+        self.claim_renewal(NOTICE_AT + 2 * DAY + 10)
         with db.session(self.engine) as opened:
-            second = self.add_account(opened, "al", "al.takeout@example.test", CREATED, END)
-        self.request(CREATED + DAY, second)
-        self.assertEqual(len(self.renew_jobs()), 2)
+            job = opened.execute(select(BrowserJob).where(BrowserJob.status == "running")).scalar_one()
+            browser_jobs.failed(opened, self.settings, job.id, "UnexpectedPage", None, [], NOTICE_AT + 3 * DAY)
+            renewal.job_failed(opened, self.settings, job, NOTICE_AT + 3 * DAY)
+        self.assertEqual(self.open_alert_kinds(), {"schedule_renewal_failed"})
+
+    def test_two_requests_at_once_queue_one_job(self):
+        outcomes = []
+        gate = threading.Barrier(2)
+
+        def press():
+            gate.wait()
+            try:
+                with db.session(self.engine) as opened:
+                    outcomes.append(renewal.renew_now(opened, self.settings, self.account, NOTICE_AT).id)
+            except browser_jobs.AlreadyOpen as error:
+                outcomes.append(error)
+
+        threads = [threading.Thread(target=press) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(self.renew_jobs()), 1)
+        self.assertEqual(sum(isinstance(outcome, int) for outcome in outcomes), 1)
+        self.assertEqual(sum(isinstance(outcome, browser_jobs.AlreadyOpen) for outcome in outcomes), 1)
 
     def test_it_is_refused_for_an_account_that_needs_sign_in(self):
         with db.session(self.engine) as opened:

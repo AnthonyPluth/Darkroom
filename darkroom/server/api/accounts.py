@@ -120,7 +120,7 @@ def renew_schedule(request: Request) -> Annotated[Response, contract.BrowserJobR
             reply = browser_jobs.as_dict(renewal.renew_now(opened, request.settings, account_id, now()), request.settings)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)
-    except (browser_jobs.AlreadyOpen, renewal.NoSchedule, renewal.NeedsSignIn) as error:
+    except (browser_jobs.AlreadyOpen, renewal.NoSchedule, renewal.NeedsSignIn, renewal.NotDue) as error:
         return error_response(str(error), 409)
     return json_response({"job": reply}, 201)
 
