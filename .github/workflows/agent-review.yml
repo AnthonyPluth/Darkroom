@@ -63,8 +63,6 @@ jobs:
         darkroom/server/mcp_*.py
         darkroom_browser/live.py
         darkroom_browser/runner.py
-        ios/Packages/DarkroomCore/Sources/**/Cleanup*
-        ios/Darkroom/**/Cleanup*
         ios/Darkroom/Keychain.swift
         .semgrep/**
         SECURITY.md

@@ -146,30 +146,6 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    private let photoOnly = AssetDescriptor(
-        id: "A/1", resources: [ResourceDescriptor(kind: .photo, sha1: "abc", bytes: 5, filename: "IMG_1.HEIC")]
-    )
-
-    func testEligibleSendsTheDescriptorsAndDecodesTheWholeReply() async throws {
-        StubProtocol.reset(json: """
-        {"cleanup_enabled":true,"eligible":[{"asset_id":"A/1","bytes":42,"resources":["photo"]}],
-         "rejected":[{"asset_id":"B/2","reason":"not_confirmed","message":"Part of this photo is not confirmed in Google Photos."}]}
-        """)
-        let reply = try await client().eligible(EligibleRequest(assets: [photoOnly]))
-        XCTAssertEqual(reply.cleanupEnabled, true)
-        XCTAssertEqual(reply.eligible, [EligibleAsset(assetID: "A/1", bytes: 42)])
-        XCTAssertEqual(reply.rejected, [
-            RejectedAsset(assetID: "B/2", reason: "not_confirmed", message: "Part of this photo is not confirmed in Google Photos."),
-        ])
-        let sent = try XCTUnwrap(StubProtocol.requests.first)
-        XCTAssertEqual(sent.httpMethod, "POST")
-        XCTAssertEqual(sent.url?.path, "/api/device/eligible")
-        XCTAssertEqual(sent.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: StubProtocol.bodies[0]) as? [String: Any])
-        let assets = try XCTUnwrap(json["assets"] as? [[String: Any]])
-        XCTAssertEqual(assets.map { $0["id"] as? String }, ["A/1"])
-    }
-
     func testMeIsAnAuthenticatedGetAndDecodesTheTwoNames() async throws {
         StubProtocol.reset(json: #"{"person":"Sam","device":"Sam's iPhone"}"#)
         let reply = try await client().me()
@@ -205,62 +181,18 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    func testEligibleWithCleanupOffDecodes() async throws {
-        StubProtocol.reset(json: #"{"cleanup_enabled":false,"eligible":[],"rejected":[]}"#)
-        let reply = try await client().eligible(EligibleRequest(assets: [photoOnly]))
-        XCTAssertEqual(reply, EligibleReply(cleanupEnabled: false, eligible: []))
-    }
-
-    func testEligibleReplyWithoutTheCleanupFlagIsADecodingError() async {
-        StubProtocol.reset(json: #"{"eligible":[{"asset_id":"A/1","bytes":42}],"rejected":[]}"#)
+    private func assertThrows(
+        _ expected: APIError, file: StaticString = #filePath, line: UInt = #line, _ call: () async throws -> Void
+    ) async {
         do {
-            _ = try await client().eligible(EligibleRequest(assets: [photoOnly]))
-            XCTFail("expected decoding error")
+            try await call()
+            XCTFail("expected \(expected)", file: file, line: line)
         } catch {
-            XCTAssertEqual(error as? APIError, .decoding)
-        }
-    }
-
-    func testConfirmSendsTheDescriptorsAndDecodesConfirmedAndRejected() async throws {
-        StubProtocol.reset(json: """
-        {"confirmed":["A/1"],"rejected":[{"asset_id":"a2","reason":"file_missing","message":"A file of this photo is missing."}]}
-        """)
-        let confirm = try await client().confirm(ConfirmRequest(assets: [photoOnly]))
-        XCTAssertEqual(confirm.confirmed, ["A/1"])
-        XCTAssertEqual(confirm.rejected, [RejectedAsset(assetID: "a2", reason: "file_missing", message: "A file of this photo is missing.")])
-        XCTAssertEqual(StubProtocol.requests[0].url?.path, "/api/device/eligible/confirm")
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: StubProtocol.bodies[0]) as? [String: Any])
-        let assets = try XCTUnwrap(json["assets"] as? [[String: Any]])
-        let resources = try XCTUnwrap(assets[0]["resources"] as? [[String: Any]])
-        XCTAssertEqual(resources[0]["sha1"] as? String, "abc")
-    }
-
-    func testDeletedSendsTheIdsAndDecodesRecordedAndRejected() async throws {
-        StubProtocol.reset(json: """
-        {"recorded":["a1"],"rejected":[{"asset_id":"a2","reason":"not_confirmed_for_deletion","message":"Not confirmed."}]}
-        """)
-        let reply = try await client().deleted(DeletedRequest(assetIDs: ["a1", "a2"]))
-        XCTAssertEqual(reply.recorded, ["a1"])
-        XCTAssertEqual(reply.rejected, [RejectedAsset(assetID: "a2", reason: "not_confirmed_for_deletion", message: "Not confirmed.")])
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: StubProtocol.bodies[0]) as? [String: Any])
-        XCTAssertEqual(json["asset_ids"] as? [String], ["a1", "a2"])
-        XCTAssertEqual(StubProtocol.requests[0].httpMethod, "POST")
-        XCTAssertEqual(StubProtocol.requests[0].url?.path, "/api/device/deleted")
-    }
-
-    func testCleanupCallsMapFailuresToTypedErrors() async {
-        let api: CleanupAPI = client()
-        let cases: [(Int, APIError)] = [(401, .unauthorized), (409, .rejected(status: 409)), (503, .server(status: 503))]
-        for (status, expected) in cases {
-            StubProtocol.reset(status: status)
-            await assertThrows(expected) { _ = try await api.eligible(EligibleRequest(assets: [self.photoOnly])) }
-            await assertThrows(expected) { _ = try await api.confirm(ConfirmRequest(assets: [self.photoOnly])) }
-            await assertThrows(expected) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
+            XCTAssertEqual(error as? APIError, expected, file: file, line: line)
         }
     }
 
     func testA401SaysRevokedOnlyWhenTheServerSaysTheDeviceWasRevoked() async {
-        let api: CleanupAPI = client()
         let cases: [(String, APIError)] = [
             (#"{"error":"sign in required","reason":"device_revoked"}"#, .revoked),
             (#"{"error":"sign in required","reason":"sign_in_lapsed"}"#, .unauthorized),
@@ -272,30 +204,10 @@ final class APIClientTests: XCTestCase {
         ]
         for (body, expected) in cases {
             StubProtocol.reset(status: 401, json: body)
-            await assertThrows(expected) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
-            await assertThrows(expected) { _ = try await api.eligible(EligibleRequest(assets: [self.photoOnly])) }
+            await assertThrows(expected) { _ = try await self.client().me() }
         }
         StubProtocol.reset(status: 403, json: #"{"error":"no","reason":"device_revoked"}"#)
-        await assertThrows(.rejected(status: 403)) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
-    }
-
-    func testCleanupCallsWithoutATokenSendNothing() async {
-        let api: CleanupAPI = client(token: nil)
-        await assertThrows(.notSignedIn) { _ = try await api.eligible(EligibleRequest(assets: [self.photoOnly])) }
-        await assertThrows(.notSignedIn) { _ = try await api.confirm(ConfirmRequest(assets: [self.photoOnly])) }
-        await assertThrows(.notSignedIn) { _ = try await api.deleted(DeletedRequest(assetIDs: ["A/1"])) }
-        XCTAssertTrue(StubProtocol.requests.isEmpty)
-    }
-
-    private func assertThrows(
-        _ expected: APIError, file: StaticString = #filePath, line: UInt = #line, _ call: () async throws -> Void
-    ) async {
-        do {
-            try await call()
-            XCTFail("expected \(expected)", file: file, line: line)
-        } catch {
-            XCTAssertEqual(error as? APIError, expected, file: file, line: line)
-        }
+        await assertThrows(.rejected(status: 403)) { _ = try await self.client().me() }
     }
 
     func testNoTokenFailsBeforeAnyRequest() async {
