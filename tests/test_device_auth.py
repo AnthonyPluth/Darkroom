@@ -13,6 +13,7 @@ from tests.privacy import no_leaks
 from tests.shared import fetch, own_database, settings_from, start_server
 
 CODE = "device-code-canary-1a2b3c4d"
+APP_STATE = "app-attempt-state-0123456789"
 
 
 class DeviceSignInCase(unittest.TestCase):
@@ -44,8 +45,8 @@ class DeviceSignInCase(unittest.TestCase):
         self.replies.append(reply)
         return status, reply_headers, reply
 
-    def start(self, name="Jo's iPhone"):
-        status, headers, _ = self.call("GET", "/auth/device/start?name=" + quote(name, safe=""))
+    def start(self, name="Jo's iPhone", app_state=APP_STATE):
+        status, headers, _ = self.call("GET", "/auth/device/start?name=" + quote(name, safe="") + "&state=" + app_state)
         self.assertEqual(status, 303)
         location = headers["Location"]
         self.assertTrue(location.startswith(self.provider.base + "/authorize?"), location)
@@ -53,6 +54,9 @@ class DeviceSignInCase(unittest.TestCase):
 
     def sign_in(self, name="Jo's iPhone", same_browser=True, **grant):
         query = self.start(name)
+        return self.finish(query, same_browser, **grant)
+
+    def finish(self, query, same_browser=True, **grant):
         self.provider.issue(CODE, nonce=query["nonce"], challenge=query["code_challenge"], **{"groups": ["family"], **grant})
         cookies = {auth.LOGIN_COOKIE: query["state"]} if same_browser else {}
         return self.call("GET", f"/auth/callback?code={CODE}&state={query['state']}", cookies)
@@ -60,7 +64,9 @@ class DeviceSignInCase(unittest.TestCase):
     def token_from(self, headers):
         location = headers["Location"]
         self.assertTrue(location.startswith("darkroom://signed-in#token="), location)
-        return location.split("#token=", 1)[1]
+        token, state = location.split("#token=", 1)[1].split("&state=")
+        self.assertEqual(state, APP_STATE)
+        return token
 
     def checkin(self, token, body=None):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -137,15 +143,57 @@ class DeviceSignInTests(DeviceSignInCase):
         self.assertIn("could not reach the sign-in provider", body.decode())
         self.assertEqual(self.device_count(), 0)
 
+    def test_start_needs_the_apps_state(self):
+        for state in ("", "short", "x" * 129, "a" * 21 + "!", "a" * 21 + "%0A"):
+            with self.subTest(state=state):
+                status, _, body = self.call("GET", f"/auth/device/start?name=Jo&state={state}")
+                self.assertEqual(status, 400)
+                self.assertIn("did not send a valid sign-in code", body.decode())
+        self.assertEqual(self.call("GET", "/auth/device/start?name=Jo")[0], 400)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(AuthPending).count(), 0)
+
+    def test_the_callback_echoes_the_state_of_its_own_attempt_only(self):
+        first = self.start(app_state="first-attempt-state-0000000")
+        second = self.start(app_state="second-attempt-state-000000")
+        self.provider.issue(CODE, nonce=second["nonce"], challenge=second["code_challenge"], groups=["family"])
+        status, headers, _ = self.call("GET", f"/auth/callback?code={CODE}&state={second['state']}", {auth.LOGIN_COOKIE: second["state"]})
+        self.assertEqual(status, 303)
+        self.assertTrue(headers["Location"].endswith("&state=second-attempt-state-000000"), headers["Location"])
+        self.assertNotIn("first-attempt-state", headers["Location"])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(AuthPending).one().client_state, "first-attempt-state-0000000")
+        self.assertNotEqual(first["state"], second["state"])
+
+    def test_a_replayed_callback_is_refused_and_creates_no_second_device(self):
+        query = self.start()
+        self.provider.issue(CODE, nonce=query["nonce"], challenge=query["code_challenge"], groups=["family"])
+        path = f"/auth/callback?code={CODE}&state={query['state']}"
+        cookies = {auth.LOGIN_COOKIE: query["state"]}
+        self.assertEqual(self.call("GET", path, cookies)[0], 303)
+        self.assertEqual(self.call("GET", path, cookies)[0], 403)
+        self.assertEqual(self.device_count(), 1)
+
+    def test_a_pending_sign_in_without_the_apps_state_never_finishes(self):
+        query = self.start()
+        with db.session(self.engine) as opened:
+            opened.query(AuthPending).update({"client_state": None})
+        self.provider.issue(CODE, nonce=query["nonce"], challenge=query["code_challenge"], groups=["family"])
+        status, headers, _ = self.call("GET", f"/auth/callback?code={CODE}&state={query['state']}", {auth.LOGIN_COOKIE: query["state"]})
+        self.assertEqual(status, 403)
+        self.assertNotIn("darkroom://", headers.get("Location") or "")
+        self.assertEqual(self.device_count(), 0)
+
     def test_start_needs_a_name_and_a_reachable_provider(self):
         for path in ("/auth/device/start", "/auth/device/start?name=", "/auth/device/start?name=" + "x" * 101, "/auth/device/start?name=a%0Ab"):
+            path += "&state=" + APP_STATE if "?" in path else "?state=" + APP_STATE
             with self.subTest(path=path):
                 status, _, body = self.call("GET", path)
                 self.assertEqual(status, 400)
                 self.assertIn("did not say which iPhone", body.decode())
         self.provider.outage = True
         oidc.forget_caches()
-        self.assertEqual(self.call("GET", "/auth/device/start?name=Jo")[0], 502)
+        self.assertEqual(self.call("GET", f"/auth/device/start?name=Jo&state={APP_STATE}")[0], 502)
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(AuthPending).count(), 0)
 
@@ -284,7 +332,7 @@ class NotConfiguredTests(unittest.TestCase):
     def test_without_a_provider_device_sign_in_and_device_routes_are_closed(self):
         engine = own_database(self)
         base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1"), engine)
-        status, _, body = fetch(base, "GET", "/auth/device/start?name=Jo")
+        status, _, body = fetch(base, "GET", f"/auth/device/start?name=Jo&state={APP_STATE}")
         self.assertEqual(status, 503)
         self.assertIn("no sign-in provider", body.decode())
         with db.session(engine) as opened:
