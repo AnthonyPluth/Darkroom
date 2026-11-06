@@ -2,7 +2,7 @@
 
 Status: **proposal**. The owner's note on #34 (2026-11-06) says the iPhone screen designs are approved, but it links no boards and none are in the repository, so promise 6 (AGENTS.md) still blocks the screens of #35 and #38. This page writes the design down so it can be read, corrected and signed off in #34, in the same way `docs/design/web/` records what #16 approved. Nothing here is built yet. Where the owner's boards exist and differ from this page, the boards win and this page is corrected in the pull request that exports them.
 
-How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Twelve decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
+How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Thirteen decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
 
 Scope: the app shell, the sign-in screen, the upload status screen and Settings (#35). The cleanup notification and batch screens (#38) get their own design pull request after these, and Settings only reserves their line.
 
@@ -84,7 +84,8 @@ Shown when signed out and while a sign-in is in progress. A single screen; the P
 2. Title "Sign in" (`.title.bold()`), then the sub-line "Darkroom uploads this iPhone's photos to your own server at home." in `.subheadline`, `inkMuted`.
 3. A banner, only when there is a notice or an error (below). `Card` with a 1 pt `accent` border for an error and the plain `line` border for a notice; a `StatusChip` first (danger, "Couldn't sign in"; neutral, "Signed out"), then the message in `.subheadline`.
 4. Label "Darkroom address" (`.caption.weight(.semibold)`, uppercase) and a `TextField` on `surface` with a `lineStrong` stroke, radius 8, height 48, 12 horizontal padding, `.font(.body.monospaced())`. Placeholder "darkroom.example.com". `.keyboardType(.URL)`, `.textContentType(.URL)`, `.textInputAutocapitalization(.never)`, `.autocorrectionDisabled()`, `.submitLabel(.go)`; return key runs the same action as the button. Below it a `.footnote` helper in `inkMuted`: "The address you open Darkroom at on a computer. Away from home, turn Tailscale on first." When the text is invalid, the helper is replaced by the error text in `danger` with the field stroke in `danger`, and the field is described to VoiceOver by that text.
-5. `PrimaryButton` "Continue with Pocket ID".
+5. Label "Name of this iPhone" and a second `TextField`, same style as the address field but in the body font, placeholder "Sam's iPhone", `.textContentType(.name)`, `.textInputAutocapitalization(.words)`, `.submitLabel(.go)`, with the `.footnote` helper "Shown on the People page so you can tell the family's iPhones apart." (point 9). It is prefilled from the last label used on this iPhone (`UserDefaults`), otherwise from `UIDevice.current.name` unless that is the generic "iPhone", otherwise empty. It is required: if it is empty after `DeviceSignIn.cleanedDeviceName` (which would fall back to "iPhone"), the helper is replaced by "Name this iPhone so you can find it on the People page." in `danger` with the field stroke in `danger`, and no attempt starts.
+6. `PrimaryButton` "Continue with Pocket ID".
 
 The server field is prefilled from `DeviceSession.savedServer` (a re-sign-in keeps the address) and is empty on first launch. Content is vertically top-aligned, not centred, so the keyboard does not push it; the `ScrollView` uses `.scrollDismissesKeyboard(.interactively)`.
 
@@ -92,7 +93,7 @@ The server field is prefilled from `DeviceSession.savedServer` (a re-sign-in kee
 
 | State | What shows | Source |
 | --- | --- | --- |
-| Signed out, first launch | Items 1, 2, 4, 5. Empty field, button enabled. | `DeviceSession.Phase.signedOut`, `savedServer == nil` |
+| Signed out, first launch | Items 1, 2, 4, 5, 6. Empty address field, name field prefilled by the rule above, button enabled. | `DeviceSession.Phase.signedOut`, `savedServer == nil` |
 | Signed out, returning | Same with the saved address filled in. | `DeviceSession.savedServer` |
 | Signing in | The sheet is up. Behind it the button reads "Waiting for sign-in" with a `ProgressView`, disabled; the field is disabled. | `DeviceSession.Phase.signingIn(ServerAddress)` |
 | Cancelled | The sheet closed with no callback. The screen returns to signed out and shows a notice "Sign-in was cancelled." in the banner (a notice, not an error). | `ASWebAuthenticationSessionError.canceledLogin`, then `DeviceSession.cancel()` |
@@ -107,6 +108,7 @@ The title of the banner chip is "Couldn't sign in" for all of these.
 
 | Cause | Message | Source |
 | --- | --- | --- |
+| Empty iPhone name | Name this iPhone so you can find it on the People page. | the label is empty after `DeviceSignIn.cleanedDeviceName` (under the name field) |
 | Empty address | Enter your Darkroom's address. | `ServerAddress.Problem.empty` (shown under the field) |
 | Not https | Darkroom needs an address that starts with https. | `.notHTTPS` (under the field) |
 | Unreadable address | That doesn't look like an address. Try something like darkroom.example.com. | `.invalid` (under the field) |
@@ -123,7 +125,7 @@ The title of the banner chip is "Couldn't sign in" for all of these.
 
 ### Accessibility
 
-- The field's label is "Darkroom address"; the hint is the helper text. Errors under the field are announced when they appear (`AccessibilityNotification.Announcement`), and the banner is `.accessibilityElement(children: .combine)` with `.accessibilityAddTraits(.isStaticText)` and focus moved to it when it appears (`@AccessibilityFocusState`).
+- The fields' labels are "Darkroom address" and "Name of this iPhone"; each hint is its helper text, and the focus order is address, name, button. Errors under the field are announced when they appear (`AccessibilityNotification.Announcement`), and the banner is `.accessibilityElement(children: .combine)` with `.accessibilityAddTraits(.isStaticText)` and focus moved to it when it appears (`@AccessibilityFocusState`).
 - "Waiting for sign-in" is the button's label while signing in; the disabled trait is set.
 - Title is `.accessibilityAddTraits(.isHeader)`.
 - Dynamic Type: all text scales; the banner and field grow in height (`minHeight`, never a fixed height); nothing is truncated, and the helper wraps. At the largest accessibility size the screen scrolls.
@@ -139,7 +141,7 @@ The home tab. It answers three questions without a tap: is it working, is anythi
 3. **Sync now**: `PrimaryButton` "Sync now", directly under the state card, except when the state card carries its own button (needs sign-in, stopped), when this one becomes a `SecondaryButton`. While syncing it reads "Syncing" with a small `ProgressView`, disabled. Pulling the screen down does the same thing (`.refreshable`).
 4. **Files**: section label "FILES" and a two-column grid (`LazyVGrid`, two flexible columns, 16 gap) of four count tiles. A tile is a `Card` with the number (`.title.bold()`, `.monospacedDigit()`) over the label (`.subheadline`, `inkMuted`). Under the grid a `.footnote` `inkMuted` line: "Counts are files. A Live Photo is two files and an edited photo is three."
 5. **Details** (`Card` of `KeyValueRow`s separated by `raised` 1 pt dividers): "Last synced", "Server" (host, monospaced).
-6. **Needs attention**, only when files failed: section label "NEEDS ATTENTION, 3" and a `Card` of up to 5 rows, then a "Show all 12" row when there are more, which pushes a list of every failed file (same row, same card). A row: file name (`.footnote.monospaced()`, `ink`, wraps, never truncated) over the reason (`.footnote`, `inkMuted`), `raised` divider between rows.
+6. **Needs attention**, only when files failed: section label "NEEDS ATTENTION, 3" and a `Card` of up to 5 rows, then a "Show all 12" row when there are more, which pushes a list of every failed file (same row, same card). A row: file name (`.footnote.monospaced()`, `ink`, wraps, never truncated) over the reason (`.footnote`, `inkMuted`), `raised` divider between rows. A recoverable failure (point 13) adds the caption "Will try again" and a `SecondaryButton` "Try again" (44 pt); the section header gains a "Try all again" button when any row is recoverable.
 
 ### The four counts (point 1)
 
@@ -165,7 +167,7 @@ The state card is chosen by `UploadStatus.Phase`, then by the counts when the ph
 | Waiting for home network: `.waitingForHomeNetwork` | Waiting for your home network. 12 files are waiting. | warn "Waiting for home network" | Waiting for home network | Darkroom can't be reached right now. Uploads start again by themselves on home Wi-Fi or over Tailscale. Nothing is wrong. | none |
 | Needs sign-in: `.needsSignIn` | Sign in again to keep uploading. | danger "Sign-in needed" | Sign-in needed | Darkroom no longer accepts this iPhone. Sign in again to keep uploading. Files already on Darkroom stay there. | "Sign in again" (primary) |
 | Stopped: `.error(message)` | Uploads stopped. | danger "Stopped" | Uploads stopped | the phase's message (`UploadStatusTracker.queueUnreadable` or `.syncStopped`), then "Try again." | "Try again" (primary; runs Sync now) |
-| Needs attention: idle, attention above 0, waiting 0 | 3 files need attention. | warn "Needs attention" | 3 files need attention | Darkroom or this iPhone couldn't handle these files, including ones the app couldn't read. The list below says why. | none |
+| Needs attention: idle, attention above 0, waiting 0 | 3 files need attention. | warn "Needs attention" | 3 files need attention | Darkroom or this iPhone couldn't handle these files, including ones the app couldn't read. The list below says why. | "Try all again" when any file is recoverable (point 13), else none |
 | Photos access needed | Darkroom can't see your photos. | danger "Photos access needed" | Photos access needed | Allow access to all photos so Darkroom can upload them. | "Open Settings" (point 7) |
 
 Rules that apply across rows:
@@ -268,7 +270,9 @@ Fallback if the owner does not want a server change: the app cannot tell the cas
 
 **Needs owner sign-off.** Nothing records a last check-in on the phone. `UploadStatusTracker.lastSync` is set when a pass ends `.finished`, but `UploadCoordinator.checkin()` also returns `.finished` when the check-in was refused or failed, so `.finished` does not mean Darkroom heard from the phone. And `lastSync` lives in memory only, so it is empty after iOS ends the app (#108 item 74).
 
-Recommended default: **Last synced is the last time a pass finished and Darkroom accepted its check-in**, so the number on the phone is the same moment the People page shows as "Last check-in". It is the device's clock, shown as a relative time. To make it true: `UploadCoordinator.Result` gains a flag for "the check-in was accepted" and the tracker sets `lastSync` only when it is true; the tracker persists `lastSync` (one value beside the ingest versions file or the store, loaded when it starts, an unreadable value read as "Not yet") which is #108 item 74; and the screen does not draw a separate "last check-in" row, since it would be the same time. A pass that uploaded files but could not check in leaves the old time, which is honest: the server has not heard from the phone.
+Recommended default: **Last synced is the last time a pass finished and Darkroom accepted its check-in**, so the phone and the People page agree, once the server field is clarified (below). It is the device's clock, shown as a relative time. To make it true: `UploadCoordinator.Result` gains a flag for "the check-in was accepted" and the tracker sets `lastSync` only when it is true; the tracker persists `lastSync` (one value beside the ingest versions file or the store, loaded when it starts, an unreadable value read as "Not yet") which is #108 item 74; and the screen does not draw a separate "last check-in" row, since it would be the same time. A pass that uploaded files but could not check in leaves the old time, which is honest: the server has not heard from the phone.
+
+**Server side.** `devices.authenticate` advances `Device.last_checkin` on every accepted device request (an upload, a check, a push-token write), not only on `POST /api/device/checkin`. So the People page's "Last check-in" currently means "last accepted request", and the phone's value would differ from it. Options: (a) expose the server's timestamp to the app (for example in the `GET /api/device/me` reply, point 2) and show that; (b) change the server field to move only on the explicit check-in route; (c) define the local value around any accepted request and drop the claim that it equals the People page. Recommended default: (b), because "Last check-in" then means what its name says and the phone's local value can match it; it is a small change in `devices.authenticate` and its tests, and the People and Status pages need no copy change. Until it is decided the screens show only the local value and say nothing about the People page (#108 item 83).
 
 ### 5. Paused and charging states
 
@@ -317,6 +321,12 @@ Recommended default: persist it immediately after a successful `ResourceIngester
 **Needs owner sign-off.** `ResourceIngester.run()` only counts a resource it cannot name, export or hash in `IngestSummary.failed`; it creates no `ResourceRecord`. The screens read every count and the Needs attention list from the store, so such a file would be in no tile, and once the first scan has finished the screen could say "Up to date" for a photo that was never uploaded.
 
 Recommended default: the ingester records each of those files as a `failed` `ResourceRecord` with its reason (for example "the file could not be read"), the way `notLocal` rows are stored without a hash. Then the four tiles, the Needs attention list and "Up to date" all come from the one store, with no second source to keep in step, and "Up to date" is impossible while any such file exists. A file whose version changes is scanned again and leaves `failed` when it succeeds. The alternative is to carry `IngestSummary.failed` into `UploadStatus` as a separate count that is added to Needs attention and blocks "Up to date"; it keeps the store unchanged but loses the file names and reasons after a relaunch, and is not recommended.
+
+### 13. Retrying a file that gave up
+
+**Needs owner sign-off.** After the retry limit (a transient server error or a timeout three times) `UploadCoordinator` moves a resource to `failed`. `UploadPlanner.checkBatches` selects only `hashed` files and `ResourceIngester.run()` skips an unchanged `failed` record, so neither Sync now nor a later pass ever tries it again, even after the server recovers, and no screen offers a retry.
+
+Recommended default: separate **recoverable** failures (the retry limit reached: "gave up after N attempts: ..." and the server refusing a check or upload with a 5xx or 408) from **permanent** ones (a file that could not be read or hashed, a 4xx refusal, "different bytes than the hash promised"). Needs attention rows for recoverable failures carry the caption "Will try again" and a "Try again" button per row and one "Try all again" button on the section header; Sync now also retries recoverable failures once per tap. Retrying moves the file from `failed` to `hashed` (an allowed transition) and resets its attempt count, so the next pass checks it again. Permanent failures stay listed with their reason and no button; they leave the list only when the file changes. This needs a recoverable flag (or a reason code) on `ResourceRecord`, a store call to reset a failure, and a `FailedResource.canRetry` field. The alternative is one blanket retry of every failure, which repeats refusals that cannot work and is not recommended.
 
 ## Not in this proposal
 
