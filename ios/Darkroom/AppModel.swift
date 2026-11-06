@@ -81,8 +81,14 @@ final class AppModel: ObservableObject {
         } catch {
             // The Keychain kept the token, but the session has ended in memory and will not restore it.
         }
-        identity = nil
         await refresh()
+        if case .signedIn = phase { return }
+        identity = nil
+        if let engine = uploadEngine {
+            await retire(engine)
+        } else {
+            BackgroundWork.hook.install(nil)
+        }
         if case .signedOut = phase {
             banner = .notice(SignInMessages.ended)
         }

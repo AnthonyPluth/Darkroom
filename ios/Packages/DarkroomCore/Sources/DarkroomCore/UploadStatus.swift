@@ -132,7 +132,7 @@ public actor UploadStatusTracker {
         run = .running
         do {
             if retrying?.isEmpty != true {
-                _ = try? await store.retryFailures(keys: retrying)
+                _ = try await store.retryFailures(keys: retrying)
             }
             try await scan()
             let result = try await runner.run(ignoringBackoff: manual)
