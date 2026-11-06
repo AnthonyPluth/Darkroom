@@ -134,11 +134,6 @@ export interface DeviceMeReply {
   device: string;
 }
 
-export interface DevicePatchBody {
-  cleanup_enabled: boolean;
-  icloud_photos_off?: boolean;
-}
-
 export interface DevicePushTokenBody {
   token: string;
 }
@@ -160,9 +155,6 @@ export interface DeviceState {
   last_checkin: number | null;
   pending_uploads: number;
   cleanup_enabled: boolean;
-  eligible: number | null;
-  eligible_bytes: number | null;
-  eligible_checked: number | null;
 }
 
 export interface DeviceView {
@@ -600,7 +592,6 @@ export interface Endpoints {
   "DELETE /api/people/{id}": { body: never; reply: Ok };
   "GET /api/people/{id}/devices": { body: never; reply: Devices };
   "DELETE /api/devices/{id}": { body: never; reply: DeviceReply };
-  "PATCH /api/devices/{id}": { body: DevicePatchBody; reply: DeviceReply };
   "GET /api/accounts": { body: never; reply: Accounts };
   "POST /api/accounts": { body: AccountCreateBody; reply: AccountReply };
   "PATCH /api/accounts/{id}": { body: AccountPatchBody; reply: AccountReply };

@@ -6,9 +6,8 @@ from darkroom import VERSION, validate
 from darkroom.domain import events
 from darkroom.domain import status as overview
 from darkroom.server import contract
-from darkroom.server.common import Request, Response, engine_of, error_response, first_query, json_response, now
+from darkroom.server.common import Request, Response, engine_of, error_response, first_query, json_response
 from darkroom.storage import db
-from darkroom.storage.paths import Photos
 
 DEFAULT_EVENTS = 50
 MAX_EVENTS = 200
@@ -20,7 +19,7 @@ def healthz(request: Request) -> Annotated[Response, contract.Health]:
 
 def status(request: Request) -> Annotated[Response, contract.Status]:
     with db.session(engine_of(request)) as opened:
-        reply = overview.overview(opened, request.settings, Photos(request.settings.photos_root), now())
+        reply = overview.overview(opened)
     return json_response(reply)
 
 

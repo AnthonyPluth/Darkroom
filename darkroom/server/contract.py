@@ -44,9 +44,6 @@ class DeviceState(TypedDict):
     last_checkin: float | None
     pending_uploads: int
     cleanup_enabled: bool
-    eligible: int | None
-    eligible_bytes: int | None
-    eligible_checked: float | None
 
 
 class PersonStatus(TypedDict):
@@ -553,11 +550,6 @@ class UploadReply(TypedDict):
     sha1: str
     already: bool
     indexed: bool
-
-
-class DevicePatchBody(TypedDict):
-    cleanup_enabled: bool
-    icloud_photos_off: NotRequired[bool]
 
 
 class DeviceMeReply(TypedDict):

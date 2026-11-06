@@ -18,7 +18,6 @@ DEVICE_ROUTES = {"GET /api/device/me", "POST /api/device/assets/check", "PUT /ap
                  "PUT /api/device/push-token", "DELETE /api/device/push-token"}
 PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
-    "PATCH /api/devices/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
     "POST /api/accounts/{id}/connect", "POST /api/accounts/{id}/schedule", "POST /api/accounts/{id}/schedule/checked", "POST /api/accounts/{id}/schedule/renew", "GET /api/browser/view",
     "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events",

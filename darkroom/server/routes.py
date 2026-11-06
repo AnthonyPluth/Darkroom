@@ -35,7 +35,6 @@ ROUTES: tuple[Route, ...] = (
     Route("DELETE", "/api/people/{id}", people.delete_person, "session"),
     Route("GET", "/api/people/{id}/devices", people.list_person_devices, "session"),
     Route("DELETE", "/api/devices/{id}", devices.revoke_device, "session"),
-    Route("PATCH", "/api/devices/{id}", devices.update_device, "session"),
     Route("GET", "/api/accounts", accounts.list_accounts, "session"),
     Route("POST", "/api/accounts", accounts.create_account, "session"),
     Route("PATCH", "/api/accounts/{id}", accounts.update_account, "session"),
