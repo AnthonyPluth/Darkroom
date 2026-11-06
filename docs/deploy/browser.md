@@ -10,7 +10,7 @@ The `darkroom-browser` container is a stateless executor: `darkroom` owns the jo
 
 | Variable | Service | Meaning |
 | --- | --- | --- |
-| `DARKROOM_BROWSER_TOKEN` | both | Shared secret, at least 32 printable ASCII characters (`openssl rand -hex 32`). The worker refuses to start without it; `darkroom` answers 401 to every worker request while it is unset or short. Rotate it by changing `.env` and restarting both containers. |
+| `DARKROOM_BROWSER_TOKEN` | both | Shared secret, at least 32 printable ASCII characters (`openssl rand -hex 32`). The worker refuses to start without it; `darkroom` answers 401 to every worker request while it is unset or short. Rotate it by changing `.env` and recreating both containers (`docker compose up -d --force-recreate darkroom darkroom-browser`; `docker compose restart` keeps the old environment). |
 | `DARKROOM_URL` | browser | Where the worker reaches `darkroom`: `http://darkroom:8000` on the compose network. |
 | `PHOTOS_ROOT` | browser | `/photos` inside the container: `_inbox/` and `_browser/` are mounted there read-write. |
 | `POLL_SECONDS` | browser | How often an idle worker asks for a job (15). |

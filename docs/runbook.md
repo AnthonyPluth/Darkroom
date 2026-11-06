@@ -63,7 +63,7 @@ Takeout keeps an export for about a week. The alert "A Takeout export is about t
 Alert "Darkroom needs a look" with a link to the capture of the failed job. The capture is a screenshot and a scrubbed copy of the page (the screenshot is the link, else the page), at `/api/browser/failures/<job>/screenshot.png` and `/api/browser/failures/<job>/page.html`, and on the photo share under `_browser/<account>/failures/<job>/`.
 
 1. Open the capture and compare it with what the worker expected (the job's message names the step, for example `UnexpectedPage` or a missing control).
-2. Every selector and label the worker looks for is in `darkroom_browser/selectors.py`. Change the one that moved, update the matching page fixture and test under `tests/browser/`, and deploy a new worker image.
+2. The controls the worker clicks and the elements it looks for are in `darkroom_browser/selectors.py`; the phrases and patterns it uses to recognise a page (signed in, sign-in needed, "verify it's you", export created, the export list) are in `darkroom_browser/pages/takeout.py`. Change the one that moved, update the matching page fixture and test under `tests/browser/`, and deploy a new worker image.
 3. Run the step again from the Exports page (Connect, Create schedule or Check exports now); a failed job is not started again by itself, and a download is queued again by the next check (see "A job is waiting for sign-in" for the limit). Until the fix is deployed, use the fallback: download the parts by hand (while Takeout still lists them) and hand-drop them.
 
 ### Hand-dropping an export
@@ -74,7 +74,7 @@ Put the Takeout `.zip` parts, all of one export, in `<photos>/_inbox/<person>/ma
 docker compose exec darkroom python run.py import-takeout --person <slug> [--account <google email>] [--dir <other folder>]
 ```
 
-`--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Running it again for an export that was already imported says so and changes nothing. The person needs a Google account in Darkroom to attach the export to; with several, say which with `--account`.
+`--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Running it again for an export that was imported with no failed items says "already imported" and changes nothing. If the summary said some items "could not be imported", running it again retries those items, as long as the export's staging folder still exists; once it is gone the command says so and the items stay failed. The person needs a Google account in Darkroom to attach the export to; with several, say which with `--account`.
 
 ### The schedule renewal
 
@@ -100,7 +100,7 @@ The account's Google email cannot be changed while a renew job is open (queued, 
 
 ### Reading an import summary
 
-"Export N: A added, S skipped as duplicates, R in review, G missing GPS" counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; that is why later exports show small numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a `metadata_refreshed` event on the status page), unless you edited that sidecar since.
+"Export N: A added, S skipped as duplicates, R in review, G missing GPS" (with ", F could not be imported" when some items failed) counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; that is why later exports show small numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a "Metadata refreshed" line among the latest events on the status page), unless you edited that sidecar since.
 
 ### "Some originals are not in Google Photos"
 
@@ -113,4 +113,4 @@ If the folder is on and the count stays, the items may differ from Google's copy
 
 ### Rotating the worker token
 
-`DARKROOM_BROWSER_TOKEN` is a shared secret of at least 32 printable ASCII characters. Make a new one with `openssl rand -hex 32`, put it in `.env`, and restart both the `darkroom` and `darkroom-browser` containers. Until both run with the new value the worker gets 401 and does no jobs; queued jobs wait.
+`DARKROOM_BROWSER_TOKEN` is a shared secret of at least 32 printable ASCII characters. Make a new one with `openssl rand -hex 32`, put it in `.env`, and recreate both containers with `docker compose up -d --force-recreate darkroom darkroom-browser` (`docker compose restart` keeps the old environment). Until both run with the new value the worker gets 401 and does no jobs; queued jobs wait.
