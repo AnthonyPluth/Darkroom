@@ -9,6 +9,7 @@ enum SignInBanner: Equatable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    static let shared = AppModel()
     static let deviceLabelKey = "deviceLabel"
     static let resetUploadsKey = "resetUploadsOnSignIn"
 
@@ -26,6 +27,7 @@ final class AppModel: ObservableObject {
 
     private let session: DeviceSession
     private let defaults: UserDefaults
+    private var restoring: Task<Void, Never>?
 
     var deviceSession: DeviceSession { session }
 
@@ -35,6 +37,16 @@ final class AppModel: ObservableObject {
     }
 
     func restore() async {
+        if let restoring {
+            await restoring.value
+            return
+        }
+        let task = Task { await performRestore() }
+        restoring = task
+        await task.value
+    }
+
+    private func performRestore() async {
         guard !restored else { return }
         do {
             try await session.restore()
@@ -124,7 +136,17 @@ final class AppModel: ObservableObject {
             }
         }
         guard uploadEngine == nil, case .signedIn(let server) = await session.phase else { return }
-        uploadEngine = UploadEngine(server: server, session: session, storage: storage)
+        install(UploadEngine(server: server, session: session, storage: storage))
+    }
+
+    private func install(_ engine: UploadEngine) {
+        uploadEngine = engine
+        BackgroundWork.hook.install(
+            UploadBackgroundCheck(
+                status: { await engine.status() },
+                refresh: { await engine.perform(.refresh) }
+            )
+        )
     }
 
     var deviceLabel: String? {
@@ -158,7 +180,10 @@ final class AppModel: ObservableObject {
         let session = self.session
         let flow = SignOutFlow(
             push: PushCenter.shared.registrar,
-            stopUploads: { if let engine { await engine.stop() } },
+            stopUploads: {
+                BackgroundWork.hook.install(nil)
+                if let engine { await engine.stop() }
+            },
             clearSession: { try await session.signOut() }
         )
         switch await flow.signOut() {

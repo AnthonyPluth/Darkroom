@@ -19,6 +19,7 @@ extension AppDelegate {
             return
         }
         Task {
+            await AppModel.shared.restore()
             switch await BackgroundWork.silentPush.handle() {
             case .newData: completionHandler(.newData)
             case .noData: completionHandler(.noData)

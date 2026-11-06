@@ -54,15 +54,19 @@ private final class FakeTask: ProcessingTaskHandle, @unchecked Sendable {
 private final class RecordingCheck: BackgroundCheck, @unchecked Sendable {
     private let lock = NSLock()
     private let duration: TimeInterval
+    private let outcome: BackgroundOutcome
     private var starts = 0
     private var cancelledAtEnd = false
 
-    init(duration: TimeInterval = 0) { self.duration = duration }
+    init(duration: TimeInterval = 0, outcome: BackgroundOutcome = .uploaded) {
+        self.duration = duration
+        self.outcome = outcome
+    }
 
     var runs: Int { lock.lock(); defer { lock.unlock() }; return starts }
     var sawCancellation: Bool { lock.lock(); defer { lock.unlock() }; return cancelledAtEnd }
 
-    func run() async {
+    func run() async -> BackgroundOutcome {
         lock.lock()
         starts += 1
         lock.unlock()
@@ -71,6 +75,7 @@ private final class RecordingCheck: BackgroundCheck, @unchecked Sendable {
         lock.lock()
         cancelledAtEnd = cancelled
         lock.unlock()
+        return outcome
     }
 }
 
@@ -140,6 +145,19 @@ final class NightlyProcessingTests: XCTestCase {
         XCTAssertEqual(task.completions, [true])
     }
 
+    func testTheRealOutcomeDecidesWhatIosIsTold() async {
+        let table: [(BackgroundOutcome, Bool)] = [
+            (.uploaded, true), (.nothingNew, true), (.needsSignIn, true), (.waitingForNetwork, false), (.failed, false),
+        ]
+        for (outcome, success) in table {
+            let hook = BackgroundCheckHook()
+            hook.install(RecordingCheck(outcome: outcome))
+            let task = FakeTask()
+            await nightly(FakeScheduler(), hook: hook).run(task)
+            XCTAssertEqual(task.completions, [success], "\(outcome)")
+        }
+    }
+
     func testExpirationStopsTheCheckAndReportsAnUnfinishedRun() async {
         let scheduler = FakeScheduler()
         let hook = BackgroundCheckHook()
@@ -192,6 +210,19 @@ final class SilentPushTests: XCTestCase {
         let fetch = await SilentPush(hook: hook).handle()
         XCTAssertEqual(fetch, .newData)
         XCTAssertEqual(check.runs, 1)
+    }
+
+    func testTheRealOutcomeDecidesTheFetchResult() async {
+        let table: [(BackgroundOutcome, SilentPush.Fetch)] = [
+            (.uploaded, .newData), (.nothingNew, .noData), (.needsSignIn, .noData),
+            (.waitingForNetwork, .failed), (.failed, .failed),
+        ]
+        for (outcome, expected) in table {
+            let hook = BackgroundCheckHook()
+            hook.install(RecordingCheck(outcome: outcome))
+            let fetch = await SilentPush(hook: hook).handle()
+            XCTAssertEqual(fetch, expected, "\(outcome)")
+        }
     }
 
     func testStopsACheckThatOutlastsTheTimeLimit() async {
