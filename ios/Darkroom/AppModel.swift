@@ -199,39 +199,35 @@ final class AppModel: ObservableObject {
         guard !signingOut else { return }
         signingOut = true
         signOutProblem = nil
-        if case .signedIn(let server) = await session.phase,
-           !(await forgotPushToken(PushClient(baseURL: server.url, tokenProvider: session.tokenProvider()))) {
+        var push: PushTokenAPI?
+        if case .signedIn(let server) = await session.phase {
+            push = PushClient(baseURL: server.url, tokenProvider: session.tokenProvider())
+        }
+        let flow = SignOutFlow(
+            push: push,
+            stopUploads: { [self] in
+                if let engine = uploadEngine { await engine.stop() }
+            },
+            clearSession: { [session] in try await session.signOut() },
+            restartUploads: { [self] in
+                uploadEngine = nil
+                await prepareUploads()
+            }
+        )
+        switch await flow.signOut() {
+        case .pushNotForgotten:
             signOutProblem = SettingsMessages.pushNotForgotten
             signingOut = false
             return
-        }
-        if let engine = uploadEngine { await engine.stop() }
-        do {
-            try await session.signOut()
+        case .signedOut:
             uploadEngine = nil
             identity = nil
             banner = nil
-        } catch {
+        case .storage:
             signOutProblem = SettingsMessages.storage
-            uploadEngine = nil
-            await prepareUploads()
         }
         signingOut = false
         await refresh()
-    }
-
-    private func forgotPushToken(_ push: PushClient) async -> Bool {
-        do {
-            try await push.forgetPushToken()
-            return true
-        } catch let error as APIError {
-            switch error {
-            case .notSignedIn, .unauthorized, .revoked: return true
-            default: return false
-            }
-        } catch {
-            return false
-        }
     }
 
     func signInAgain() async {
