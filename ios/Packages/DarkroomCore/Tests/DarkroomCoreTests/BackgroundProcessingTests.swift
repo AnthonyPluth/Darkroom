@@ -104,12 +104,12 @@ final class NightlyProcessingTests: XCTestCase {
         XCTAssertEqual(NightlyProcessing.nextBegin(after: date(6, 12), calendar: utc), date(7, 2))
     }
 
-    func testSchedulingAsksForNetworkAndExternalPower() {
+    func testSchedulingAsksForNetworkAndNotForPower() {
         let scheduler = FakeScheduler()
         XCTAssertTrue(nightly(scheduler).schedule())
         XCTAssertEqual(
             scheduler.submitted,
-            [ProcessingRequest(identifier: "app.nightly", earliestBegin: date(7, 2), requiresNetwork: true, requiresExternalPower: true)]
+            [ProcessingRequest(identifier: "app.nightly", earliestBegin: date(7, 2), requiresNetwork: true, requiresExternalPower: false)]
         )
     }
 
