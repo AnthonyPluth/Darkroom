@@ -105,16 +105,28 @@ The account's Google email cannot be changed while a renew job is open (queued, 
 
 ### Reading an import summary
 
-"Export N: A added, S skipped as duplicates, E already imported earlier, R in review, G missing GPS" (", E already imported earlier" only when there are some, and ", F could not be imported" when some items failed) counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; it is counted as already imported earlier instead, which is why later exports show small skipped numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a "Metadata refreshed" line among the latest events on the status page), unless you edited that sidecar since; a refreshed location also takes the photo off Missing GPS.
+"Export N: A added, S skipped as duplicates, E already imported earlier, R in review, G missing GPS" (", E already imported earlier" only when there are some, and ", F could not be imported" when some items failed) counts this export's decisions. An item that matches an original again, one an earlier export already matched, records no new decision and is not counted as skipped; it is counted as already imported earlier instead, which is why later exports show small skipped numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a "Metadata refreshed" line among the latest events on the status page), unless you edited that sidecar since; a refreshed location also takes the photo off Missing GPS.
 
 ### "Some originals are not in Google Photos"
 
-The alert says how many of a person's originals still have no match in Google a week after they were uploaded, for that person's Pixel. Photos only count once Google has them, so the usual cause is that the folder is not backed up:
+The alert says how many of a person's originals still have no match in Google a week after Darkroom copied them, for that person's Pixel. Photos only count once Google has them, so the usual cause is that the Pixel's folder is not backed up:
 
-1. On the Pixel that serves that person, open Google Photos, then Settings, Backup, Device folders (the exact menu names vary by version), and turn on backup for the folder the iPhone uploads land in.
+1. On the Pixel that serves that person, open Google Photos, then Settings, Backup, Device folders (the exact menu names vary by version), and turn on backup for the folder Syncthing delivers that Pixel's photos to.
 2. Wait for the backup to finish and for the next scheduled export; the alert closes by itself when the count reaches zero after an import.
 
-If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library and nothing is deleted from the iPhone until they match.
+If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library, and nothing is lost: the permanent copy is in the person's `originals/`.
+
+### Alerts have no delivery channel yet
+
+The alert channel is not decided (#199, question 3). Until it is, every alert in this runbook is recorded as an event and shown on the status page, and nothing is sent to a phone or an inbox. Look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end.
+
+### Pixel folders are pruned after a Takeout match
+
+A Pixel's transient folder is emptied by Darkroom deleting the per-Pixel copy, which Syncthing carries to the Pixel; it may do so only once a Takeout match proves Google has the photo (#199, question 6), which can take up to about two months after the photo was copied. That code is not built yet, so nothing prunes a Pixel's folder today; watch its free space. The permanent copies in `originals/` are never part of that folder.
+
+### The iPhones and Immich's app
+
+Each iPhone backs up and clears its photos with Immich's own iOS app; Darkroom does not gate it and has no app on the phone. Before a phone is allowed to clear backed-up photos, check that iCloud Photos is off on it (with it on, clearing removes the photo from iCloud and every other device) and that the phone reaches Immich over the LAN, Tailscale or an unproxied hostname: a Cloudflare-proxied hostname caps request bodies at 100 MB on its Free and Pro plans, so large videos fail. Clearing in Immich's app can happen at any time and Darkroom plays no part in it (#199); the gap before Google has the photo (via the Pixel) should be an hour or two at most, so Immich's library and the Unraid share need redundant storage and a backup. What Immich's clearing removes (RAW+JPEG pairs, Live Photos) is an assumption until the spike (#202) checks it.
 
 ### Rotating the worker token
 
