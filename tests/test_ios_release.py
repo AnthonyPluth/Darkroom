@@ -1,8 +1,10 @@
 import os
 import stat
 import subprocess
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +22,41 @@ SECRET_NAMES = ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_KEY_P8")
 VARIABLE_NAMES = ("DARKROOM_BUNDLE_ID", "DARKROOM_TEAM_ID")
 
 
+def png(width, height, color_type):
+    channels = {2: 3, 6: 4}[color_type]
+    rows = (b"\x00" + bytes([200]) * (width * channels)) * height
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def contents(filename, size="1024x1024"):
+    entry = f'"filename" : "{filename}", ' if filename else ""
+    return '{"images" : [{' + entry + f'"idiom" : "universal", "platform" : "ios", "size" : "{size}"' + '}], "info" : {"version" : 1}}'
+
+
+def make_ios_dir(root, *, setting=True, contents_json=None, image=None, image_name="icon.png"):
+    ios = Path(root) / "ios"
+    icon_set = ios / "Darkroom" / "Assets.xcassets" / "AppIcon.appiconset"
+    icon_set.mkdir(parents=True)
+    ios.joinpath("project.yml").write_text(
+        "settings:\n  base:\n    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n" if setting else "settings: {}\n"
+    )
+    if contents_json is not None:
+        (icon_set / "Contents.json").write_text(contents_json)
+    if image is not None:
+        (icon_set / image_name).write_bytes(image)
+    return ios
+
+
+def valid_ios_dir(root):
+    return make_ios_dir(root, contents_json=contents("icon.png"), image=png(1024, 1024, 2))
+
+
 def run(script, env, cwd):
     return subprocess.run(
         ["bash", str(RELEASE / script)],
@@ -35,7 +72,8 @@ class Preflight(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.summary = Path(self.temp.name) / "summary.md"
-        self.env = {"RUNNER_TEMP": self.temp.name, "GITHUB_STEP_SUMMARY": str(self.summary)}
+        ios = valid_ios_dir(Path(self.temp.name) / "fixture")
+        self.env = {"RUNNER_TEMP": self.temp.name, "GITHUB_STEP_SUMMARY": str(self.summary), "IOS_DIR": str(ios)}
 
     def preflight(self, **values):
         return run("preflight.sh", {**self.env, **values}, self.temp.name)
@@ -71,6 +109,14 @@ class Preflight(unittest.TestCase):
                 self.assertNotIn(other, result.stdout, name)
             self.assertFalse((Path(self.temp.name) / "asc").exists(), name)
 
+    def test_a_missing_icon_stops_the_preflight_before_the_key_or_the_configuration_matters(self):
+        with tempfile.TemporaryDirectory() as d:
+            ios = make_ios_dir(d)
+            result = self.preflight(**{**CONFIGURED, "IOS_DIR": str(ios)})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no App Store icon", result.stdout)
+        self.assertFalse((Path(self.temp.name) / "asc").exists())
+
     def test_an_empty_value_counts_as_missing(self):
         result = self.preflight(**{**CONFIGURED, "ASC_KEY_P8": ""})
         self.assertEqual(result.returncode, 1)
@@ -83,6 +129,61 @@ class Preflight(unittest.TestCase):
         self.assertIn("ASC_KEY_ID", result.stdout)
         self.assertNotIn("CANARYNOTAKEY", result.stdout + result.stderr)
         self.assertFalse((Path(self.temp.name) / "asc").exists())
+
+
+class CheckIcon(unittest.TestCase):
+    def check(self, build):
+        with tempfile.TemporaryDirectory() as d:
+            ios = build(d)
+            summary = Path(d) / "summary.md"
+            result = run("check-icon.sh", {"IOS_DIR": str(ios), "GITHUB_STEP_SUMMARY": str(summary)}, d)
+            return result
+
+    def test_a_1024_opaque_png_in_the_app_icon_set_passes(self):
+        self.assertEqual(self.check(valid_ios_dir).returncode, 0)
+
+    def test_no_icon_set_fails_with_the_reason(self):
+        def build(d):
+            ios = Path(d) / "ios"
+            ios.mkdir()
+            ios.joinpath("project.yml").write_text("settings: {}\n")
+            return ios
+
+        result = self.check(build)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no App Store icon", result.stdout)
+        self.assertIn("Contents.json is missing", result.stdout)
+        self.assertIn("ASSETCATALOG_COMPILER_APPICON_NAME", result.stdout)
+
+    def test_a_set_without_a_1024_image_fails(self):
+        result = self.check(lambda d: make_ios_dir(d, contents_json=contents("small.png", "60x60")))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no 1024x1024 image", result.stdout)
+
+    def test_a_named_file_that_is_missing_fails(self):
+        result = self.check(lambda d: make_ios_dir(d, contents_json=contents("gone.png")))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gone.png", result.stdout)
+
+    def test_a_wrong_size_fails(self):
+        result = self.check(lambda d: make_ios_dir(d, contents_json=contents("icon.png"), image=png(512, 512, 2)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("1024 x 1024 PNG", result.stdout)
+
+    def test_an_alpha_channel_fails(self):
+        result = self.check(lambda d: make_ios_dir(d, contents_json=contents("icon.png"), image=png(1024, 1024, 6)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("alpha", result.stdout)
+
+    def test_the_missing_setting_alone_fails(self):
+        result = self.check(lambda d: make_ios_dir(d, setting=False, contents_json=contents("icon.png"), image=png(1024, 1024, 2)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ASSETCATALOG_COMPILER_APPICON_NAME", result.stdout)
+
+    def test_the_repository_is_blocked_until_the_icon_is_added(self):
+        result = run("check-icon.sh", {}, str(ROOT))
+        icon = ROOT / "ios" / "Darkroom" / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json"
+        self.assertEqual(result.returncode, 0 if icon.exists() else 1)
 
 
 class WriteKey(unittest.TestCase):

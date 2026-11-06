@@ -76,6 +76,7 @@ permissions: {}
     permissions:
       contents: read
     steps:
+      - run: ios/release/preflight.sh
       - run: swift test
       - run: ios/release/write-key.sh
       - run: xcodebuild archive
@@ -88,8 +89,8 @@ permissions: {}
 
 
 class IosRelease(unittest.TestCase):
-    def problems(self, release=RELEASE, ios=IOS):
-        return ac.check_ios_release(release, ios)
+    def problems(self, release=RELEASE, ios=IOS, preflight="check-icon.sh"):
+        return ac.check_ios_release(release, ios, preflight)
 
     def test_a_workflow_that_follows_the_rules_passes(self):
         self.assertEqual(self.problems(), [])
@@ -160,6 +161,16 @@ class IosRelease(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("check-upload.sh", found[0])
         self.assertEqual(len(self.problems(RELEASE + "      - run: ios/release/check-upload.sh 0 log\n      - run: xcrun altool --upload-app\n")), 1)
+
+    def test_a_preflight_that_does_not_check_the_icon_is_named(self):
+        found = self.problems(preflight="#!/usr/bin/env bash\n")
+        self.assertEqual(len(found), 1)
+        self.assertIn("check-icon.sh", found[0])
+
+    def test_a_preflight_run_after_the_key_is_written_or_missing_is_named(self):
+        late = RELEASE.replace("      - run: ios/release/preflight.sh\n", "").replace("      - run: xcodebuild archive\n", "      - run: ios/release/preflight.sh\n      - run: xcodebuild archive\n")
+        self.assertEqual(len(self.problems(late)), 1)
+        self.assertEqual(len(self.problems(RELEASE.replace("ios/release/preflight.sh", "true"))), 1)
 
     def test_a_workflow_that_never_removes_the_key_is_named(self):
         self.assertEqual(len(self.problems(RELEASE.replace('rm -rf "$RUNNER_TEMP/asc"', "true"))), 1)

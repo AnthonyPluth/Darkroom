@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+"$(dirname "${BASH_SOURCE[0]}")/check-icon.sh"
+
 variables=(DARKROOM_BUNDLE_ID DARKROOM_TEAM_ID)
 secrets=(ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8)
 

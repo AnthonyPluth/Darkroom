@@ -7,10 +7,19 @@ The unsigned build and tests that pull requests need are `ios.yml`'s (the `iOS` 
 ## What the workflow does
 
 1. `plan` (Linux, no environment, no secret): accepts only an `ios-v<major>.<minor>.<patch>` tag push or a manual dispatch from `main`, takes the marketing version from the tag (or the dispatch's `version`), and checks the commit is on `main`. Any other trigger fails here with the reason.
-2. `release` (`macos-26`, `environment: ios-release`): waits for the owner's approval, then checks the configuration (below), selects Xcode from `ios/.xcode-version-release`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool` and checks the result with `ios/release/check-upload.sh`.
+2. `release` (`macos-26`, `environment: ios-release`): waits for the owner's approval, then checks the app has its icon and the configuration (below), selects Xcode from `ios/.xcode-version-release`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool` and checks the result with `ios/release/check-upload.sh`.
 3. An `always()` step removes the key file, the archive and the export.
 
 A tag push always uploads. A manual dispatch uploads only when its `upload` input is `true`; the default `false` archives and exports (so signing is exercised) and uploads nothing.
+
+## Blocked until the app has an icon
+
+App Store Connect rejects an iOS build with no App Store icon, and the app has none yet: it needs the owner's design sign-off (`docs/design/`), so none is invented here. Until it is added, a release run fails in its first step (`ios/release/check-icon.sh`, run by the configuration check) with a message naming what is missing, before anything is signed or the key is written. This is tracked on #160. What the check needs:
+
+- `ios/Darkroom/Assets.xcassets/AppIcon.appiconset/Contents.json` listing a `1024x1024` image with a `filename`, and that file in the set: a 1024 x 1024 **opaque** PNG (RGB, no alpha channel).
+- `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in the target's settings in `ios/project.yml`.
+
+The check does not judge the design, only that the file App Store Connect asks for is there; whether Apple accepts the finished build is still only known from a real upload.
 
 ## Xcode version
 

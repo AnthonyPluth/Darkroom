@@ -11,6 +11,7 @@ NOT_CODE = ("tools/run.py", "docs/SPEC.md")
 
 IOS_RELEASE_WORKFLOW = ".github/workflows/ios-release.yml"
 IOS_WORKFLOW = ".github/workflows/ios.yml"
+IOS_PREFLIGHT = "ios/release/preflight.sh"
 PINNED_TOOLS = re.compile(r"^\s*(XCODEGEN|XCBEAUTIFY)_(VERSION|SHA256):\s*(\S+)\s*$", re.MULTILINE)
 PULL_REQUEST_TRIGGER = re.compile(r"\bpull_request\w*\b")
 WRITE_PERMISSION = re.compile(r"(:\s*write\b|\bwrite-all\b)")
@@ -64,7 +65,7 @@ def _checkout_blocks(code: str) -> list[str]:
     return blocks
 
 
-def check_ios_release(release: str, ios: str) -> list[str]:
+def check_ios_release(release: str, ios: str, preflight: str = "check-icon.sh") -> list[str]:
     code = "\n".join(_code_lines(release))
     problems = []
     if PULL_REQUEST_TRIGGER.search(code):
@@ -77,12 +78,14 @@ def check_ios_release(release: str, ios: str) -> list[str]:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the release job must run in 'environment: ios-release', which is where its secrets live")
     if JOB_LEVEL_VARIABLE.search(code):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: DARKROOM_* variables belong in the env of the steps that use them, not the job's, where every step header would print them")
-    order = [code.find(step) for step in ("swift test", "write-key.sh", "xcodebuild archive")]
+    order = [code.find(step) for step in ("ios/release/preflight.sh", "swift test", "write-key.sh", "xcodebuild archive")]
     if min(order) < 0 or order != sorted(order):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the key is written by write-key.sh after the tools and tests have run and before the archive")
     key_lifetime = code[code.find("write-key.sh") :]
     if "xcbeautify" in key_lifetime or 'rm -rf "$RUNNER_TEMP/asc"' not in code:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: no third-party tool (xcbeautify) may run after write-key.sh, while the key file exists, and the always() step must remove it")
+    if "check-icon.sh" not in preflight:
+        problems.append("ios/release/preflight.sh must run check-icon.sh: App Store Connect rejects an app with no icon, so the release fails before it signs")
     if "altool" in code and code.find("check-upload.sh") < code.find("altool"):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: altool can print errors and exit 0, so the upload step must pass its status and output to ios/release/check-upload.sh")
     for block in _checkout_blocks(code):
@@ -103,7 +106,12 @@ def ios_release_workflow(context: Any) -> list[str]:
     ios = root / IOS_WORKFLOW
     if not release.is_file() or not ios.is_file():
         return [f"{IOS_RELEASE_WORKFLOW} or {IOS_WORKFLOW}: missing"]
-    return check_ios_release(release.read_text(encoding="utf-8"), ios.read_text(encoding="utf-8"))
+    script = root / IOS_PREFLIGHT
+    return check_ios_release(
+        release.read_text(encoding="utf-8"),
+        ios.read_text(encoding="utf-8"),
+        script.read_text(encoding="utf-8") if script.is_file() else "",
+    )
 
 
 CHECKS = [semgrep_targets, ios_release_workflow]
