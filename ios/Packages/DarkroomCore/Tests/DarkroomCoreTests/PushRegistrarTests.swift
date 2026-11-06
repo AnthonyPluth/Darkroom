@@ -262,6 +262,16 @@ final class PushRegistrarTests: XCTestCase {
         XCTAssertEqual(outcome, .alreadyEnded)
     }
 
+    func testForgetFailsWhenTheSignInCannotBeReadAndIsNotTakenForEnded() async {
+        struct Unreadable: Error {}
+        let registrar = PushRegistrar(api: { throw Unreadable() })
+        let outcome = await registrar.forget()
+        XCTAssertEqual(outcome, .failed)
+        await registrar.tokenReceived(tokenA)
+        let synced = await registrar.sync()
+        XCTAssertEqual(synced, .retryLater)
+    }
+
     func testForgetFailsWhenDarkroomCannotBeReached() async {
         for error in [APIError.transport("-1009"), .server(status: 500), .rejected(status: 400)] {
             let api = FakePushAPI()
@@ -305,6 +315,20 @@ final class SignOutFlowTests: XCTestCase {
         api.failForget(with: APIError.transport("-1009"))
         let steps = Steps()
         let outcome = await flow(api, steps: steps).signOut()
+        XCTAssertEqual(outcome, .pushNotForgotten)
+        let order = await steps.order
+        XCTAssertEqual(order, [])
+    }
+
+    func testAnUnreadableSignInKeepsThePersonSignedInAndSendsNoDelete() async {
+        struct Unreadable: Error {}
+        let steps = Steps()
+        let flow = SignOutFlow(
+            push: PushRegistrar(api: { throw Unreadable() }),
+            stopUploads: { await steps.add("stop") },
+            clearSession: { await steps.add("clear") }
+        )
+        let outcome = await flow.signOut()
         XCTAssertEqual(outcome, .pushNotForgotten)
         let order = await steps.order
         XCTAssertEqual(order, [])
