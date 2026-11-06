@@ -146,6 +146,12 @@ class IosRelease(unittest.TestCase):
         self.assertEqual(len(self.problems(late)), 1)
         self.assertEqual(len(self.problems(RELEASE.replace("ios/release/write-key.sh", "true"))), 1)
 
+    def test_a_workflow_missing_a_step_of_the_key_order_is_named(self):
+        for step in ("swift test", "xcodebuild archive"):
+            found = self.problems(RELEASE.replace(step, "true"))
+            self.assertEqual(len(found), 1, step)
+            self.assertIn("write-key.sh", found[0])
+
     def test_a_missing_file_is_a_problem(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(len(ac.ios_release_workflow(context(Path(d)))), 1)

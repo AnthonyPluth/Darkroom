@@ -77,8 +77,8 @@ def check_ios_release(release: str, ios: str) -> list[str]:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the release job must run in 'environment: ios-release', which is where its secrets live")
     if JOB_LEVEL_VARIABLE.search(code):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: DARKROOM_* variables belong in the env of the steps that use them, not the job's, where every step header would print them")
-    key_write = code.find("write-key.sh")
-    if key_write < 0 or not code.find("swift test") < key_write < code.find("xcodebuild archive"):
+    order = [code.find(step) for step in ("swift test", "write-key.sh", "xcodebuild archive")]
+    if min(order) < 0 or order != sorted(order):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the key is written by write-key.sh after the tools and tests have run and before the archive")
     for block in _checkout_blocks(code):
         if "persist-credentials: false" not in block:
