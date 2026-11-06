@@ -5,6 +5,7 @@ struct UploadsView: View {
     @ObservedObject var model: UploadsModel
     let server: ServerAddress
     let person: String?
+    let problem: String?
     let signInAgain: () -> Void
     let prepareStorage: () -> Void
     @Environment(\.scenePhase) private var scenePhase
@@ -45,6 +46,9 @@ struct UploadsView: View {
             }
         }
         stateCard(card)
+        if let problem {
+            Text(problem).font(.footnote).foregroundStyle(Color.danger)
+        }
         syncButton(secondary: card.action != .none)
         files(status)
         details(status)

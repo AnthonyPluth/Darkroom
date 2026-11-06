@@ -29,6 +29,16 @@ public enum BackgroundOutcome: Equatable, Sendable {
     }
 }
 
+/// Installed while a signed-in iPhone cannot open its upload storage, so a wake-up tells iOS it failed instead of finding
+/// nothing new. The next `prepareUploads()` that can open the storage replaces it.
+public struct UnavailableBackgroundCheck: BackgroundCheck {
+    public init() {}
+
+    public func run() async -> BackgroundOutcome {
+        .failed
+    }
+}
+
 public final class BackgroundCheckHook: @unchecked Sendable {
     private let lock = NSLock()
     private var check: BackgroundCheck?

@@ -24,10 +24,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var identity: DeviceMeReply?
     @Published private(set) var signingOut = false
     @Published private(set) var signOutProblem: String?
+    @Published private(set) var signInAgainProblem: String?
 
     private let session: DeviceSession
     private let defaults: UserDefaults
     private var restoring: Task<Void, Never>?
+    private var unreadable = false
 
     var deviceSession: DeviceSession { session }
 
@@ -36,27 +38,39 @@ final class AppModel: ObservableObject {
         self.defaults = defaults
     }
 
-    func restore() async {
-        if let restoring {
-            await restoring.value
-            return
-        }
-        let task = Task { await performRestore() }
+    /// Reads the saved sign-in. A wake-up in the background (`foreground` false) only tries; a failure is not shown and the next
+    /// call tries again, because the Keychain may not be readable yet on a cold launch before the first unlock. The screen's own
+    /// call (`foreground` true) shows the unreadable notice if it fails too, and a later call still tries again.
+    func restore(foreground: Bool = false) async {
+        while let running = restoring { await running.value }
+        guard !restored || unreadable else { return }
+        let task = Task { await performRestore(foreground: foreground) }
         restoring = task
         await task.value
     }
 
-    private func performRestore() async {
-        guard !restored else { return }
+    private func performRestore(foreground: Bool) async {
+        defer { restoring = nil }
         do {
             try await session.restore()
         } catch {
+            unreadable = true
+            guard foreground else { return }
             banner = .failure(SignInMessages.unreadable)
+            await refresh()
+            finishRestore()
+            return
         }
+        if unreadable, banner == .failure(SignInMessages.unreadable) { banner = nil }
+        unreadable = false
         if case .signedIn = await session.phase {
             await prepareUploads()
         }
         await refresh()
+        finishRestore()
+    }
+
+    private func finishRestore() {
         restored = true
         PushCenter.shared.signInEnded = { [weak self] token in await self?.signInEnded(rejected: token) }
     }
@@ -67,6 +81,7 @@ final class AppModel: ObservableObject {
         } catch {
             return
         }
+        identity = nil
         await refresh()
         if case .signedOut = phase {
             banner = .notice(SignInMessages.ended)
@@ -112,6 +127,8 @@ final class AppModel: ObservableObject {
     func finish(callback: URL) async {
         do {
             try await session.complete(callback: callback)
+            identity = nil
+            signInAgainProblem = nil
             await prepareUploads()
         } catch {
             defaults.set(false, forKey: Self.resetUploadsKey)
@@ -135,21 +152,37 @@ final class AppModel: ObservableObject {
     }
 
     func prepareUploads() async {
+        guard case .signedIn = await session.phase else { return }
         if uploadStorage == nil {
             uploadStorage = try? UploadStorage.open()
         }
-        guard let storage = uploadStorage else { return }
+        guard let storage = uploadStorage else {
+            BackgroundWork.hook.install(UnavailableBackgroundCheck())
+            return
+        }
         if defaults.bool(forKey: Self.resetUploadsKey) {
             do {
                 try await NewDeviceSession.reset(store: storage.store, syncState: storage.syncState)
                 defaults.set(false, forKey: Self.resetUploadsKey)
             } catch {
                 uploadStorage = nil
+                BackgroundWork.hook.install(UnavailableBackgroundCheck())
                 return
             }
         }
-        guard uploadEngine == nil, case .signedIn(let server) = await session.phase else { return }
+        guard case .signedIn(let server) = await session.phase else { return }
+        if let current = uploadEngine {
+            if current.server == server { return }
+            await retire(current)
+        }
         install(UploadEngine(server: server, session: session, storage: storage))
+    }
+
+    /// Drops the engine and its background check before anything awaits, so a wake-up cannot reach the old server.
+    private func retire(_ engine: UploadEngine) async {
+        BackgroundWork.hook.install(nil)
+        uploadEngine = nil
+        await engine.stop()
     }
 
     private func install(_ engine: UploadEngine) {
@@ -199,6 +232,7 @@ final class AppModel: ObservableObject {
             },
             clearSession: { try await session.signOut() }
         )
+        var keepsToken = false
         switch await flow.signOut() {
         case .signedOut:
             uploadEngine = nil
@@ -210,14 +244,30 @@ final class AppModel: ObservableObject {
             signOutProblem = SettingsMessages.storage
             uploadEngine = nil
             await prepareUploads()
+            keepsToken = true
         }
         signingOut = false
         await refresh()
+        if keepsToken { await PushCenter.shared.foregrounded(phase) }
     }
 
     func signInAgain() async {
+        signInAgainProblem = nil
+        if let engine = uploadEngine {
+            await retire(engine)
+        } else {
+            BackgroundWork.hook.install(nil)
+        }
+        identity = nil
         if let token = await session.currentToken {
-            try? await session.tokenRejected(token)
+            do {
+                try await session.tokenRejected(token)
+            } catch {
+                signInAgainProblem = SettingsMessages.storage
+                await prepareUploads()
+                await refresh()
+                return
+            }
         }
         banner = .notice(SignInMessages.ended)
         await refresh()
