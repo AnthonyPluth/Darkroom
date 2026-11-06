@@ -1,6 +1,24 @@
 import DarkroomCore
 import SwiftUI
 import UIKit
+import UserNotifications
+
+struct SystemNotificationAuthorizer: NotificationAuthorizer {
+    func current() async -> NotificationAuthorization {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .notDetermined: return .notAsked
+        case .authorized, .provisional, .ephemeral: return .allowed
+        case .denied: return .denied
+        @unknown default: return .denied
+        }
+    }
+
+    func request() async -> Bool {
+        let granted = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        return granted ?? false
+    }
+}
 
 /// Registers this iPhone for remote notifications and keeps Darkroom's copy of its token current while a device is signed in.
 @MainActor
@@ -8,6 +26,7 @@ final class PushCenter {
     static let shared = PushCenter()
 
     let registrar: PushRegistrar
+    let notifications = NotificationPermission(authorizer: SystemNotificationAuthorizer())
 
     private init() {
         let reader = DeviceSession(storage: KeychainSessionStorage())
@@ -44,6 +63,7 @@ final class PushCenter {
         UIApplication.shared.registerForRemoteNotifications()
         BackgroundWork.nightly.schedule()
         await registrar.sync()
+        await notifications.ensureAsked()
     }
 }
 
