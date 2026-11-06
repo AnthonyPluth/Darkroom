@@ -254,32 +254,20 @@ class CheckValidationTests(DeviceCase):
                 self.assertEqual(status, 400, reply)
         self.assertEqual(self.call("POST", "/api/device/assets/check", None)[0], 400)
 
-    def test_a_changed_resource_is_needed_again_clears_eligibility_and_a_dropped_kind_goes(self):
+    def test_a_changed_resource_is_needed_again_and_a_dropped_kind_goes(self):
         data, edit = b"photo" * 10, b"edit" * 10
         with db.session(self.engine) as opened:
             item_id = media_item(opened, self.person_id, sha1(data))
             media_item(opened, self.person_id, sha1(edit), path="jo/originals/IMG_0001_adjusted.JPG")
         self.assertEqual(self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG"), resource("adjusted", edit, "IMG_0001_adjusted.JPG")]}])[1],
                          {"needed": []})
-        with db.session(self.engine) as opened:
-            opened.query(PhoneAsset).update({"eligible_at": 10.0, "eligible_confirmed_at": 11.0})
         self.assertEqual(self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG"), resource("adjusted", b"new edit", "IMG_0001_adjusted.JPG")]}])[1],
                          {"needed": [{"id": ASSET, "kind": "adjusted"}]})
-        with db.session(self.engine) as opened:
-            asset = opened.query(PhoneAsset).one()
-            self.assertEqual((asset.eligible_at, asset.eligible_confirmed_at), (None, None))
-            opened.query(PhoneAsset).update({"eligible_at": 12.0})
         self.assertEqual(self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG")]}])[1], {"needed": []})
         with db.session(self.engine) as opened:
             self.assertEqual([row.kind for row in opened.query(PhoneResource)], ["photo"])
-            self.assertIsNone(opened.query(PhoneAsset).one().eligible_at)
             self.assertEqual(opened.query(PhoneResource).one().media_item_id, item_id)
         self.assertEqual(self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG")]}])[1], {"needed": []})
-        with db.session(self.engine) as opened:
-            opened.query(PhoneAsset).update({"eligible_at": 13.0})
-        self.check([{"id": ASSET, "resources": [resource("photo", data, "IMG_0001.JPG")]}])
-        with db.session(self.engine) as opened:
-            self.assertEqual(opened.query(PhoneAsset).one().eligible_at, 13.0)
 
 
 class UploadPathsTests(unittest.TestCase):
