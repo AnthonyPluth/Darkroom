@@ -1,4 +1,6 @@
 enum SettingsMessages {
+    static let pushNotForgotten =
+        "Couldn't reach Darkroom to stop alerts on this iPhone, so you're still signed in. Check your connection and try again."
     static let storage = "Couldn't remove the sign-in from this iPhone. Try again."
     static let differentServer = "To use a different Darkroom, sign out first."
     static let signOutTitle = "Sign out of Darkroom?"

@@ -199,6 +199,12 @@ final class AppModel: ObservableObject {
         guard !signingOut else { return }
         signingOut = true
         signOutProblem = nil
+        if case .signedIn(let server) = await session.phase,
+           !(await forgotPushToken(PushClient(baseURL: server.url, tokenProvider: session.tokenProvider()))) {
+            signOutProblem = SettingsMessages.pushNotForgotten
+            signingOut = false
+            return
+        }
         if let engine = uploadEngine { await engine.stop() }
         do {
             try await session.signOut()
@@ -212,6 +218,20 @@ final class AppModel: ObservableObject {
         }
         signingOut = false
         await refresh()
+    }
+
+    private func forgotPushToken(_ push: PushClient) async -> Bool {
+        do {
+            try await push.forgetPushToken()
+            return true
+        } catch let error as APIError {
+            switch error {
+            case .notSignedIn, .unauthorized, .revoked: return true
+            default: return false
+            }
+        } catch {
+            return false
+        }
     }
 
     func signInAgain() async {
