@@ -35,6 +35,19 @@ final class AppModel: ObservableObject {
         }
         await refresh()
         restored = true
+        PushCenter.shared.signInEnded = { [weak self] token in await self?.signInEnded(rejected: token) }
+    }
+
+    func signInEnded(rejected: String) async {
+        do {
+            try await session.tokenRejected(rejected)
+        } catch {
+            return
+        }
+        await refresh()
+        if case .signedOut = phase {
+            banner = .notice(SignInMessages.ended)
+        }
     }
 
     /// The name to put in the "Name of this iPhone" field: the last one used here, else the device's own name unless iOS
