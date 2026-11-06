@@ -4,6 +4,7 @@ import SwiftUI
 struct UploadsView: View {
     @ObservedObject var model: UploadsModel
     let server: ServerAddress
+    let person: String?
     let signInAgain: () -> Void
     let prepareStorage: () -> Void
     @Environment(\.scenePhase) private var scenePhase
@@ -39,6 +40,9 @@ struct UploadsView: View {
                 .foregroundStyle(Color.ink)
                 .accessibilityAddTraits(.isHeader)
             Text(card.sentence).font(.subheadline).foregroundStyle(Color.inkMuted)
+            if let person {
+                Text("Uploading as \(person)").font(.subheadline).foregroundStyle(Color.inkMuted)
+            }
         }
         stateCard(card)
         syncButton(secondary: card.action != .none)

@@ -170,6 +170,41 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(assets.map { $0["id"] as? String }, ["A/1"])
     }
 
+    func testMeIsAnAuthenticatedGetAndDecodesTheTwoNames() async throws {
+        StubProtocol.reset(json: #"{"person":"Sam","device":"Sam's iPhone"}"#)
+        let reply = try await client().me()
+        XCTAssertEqual(reply, DeviceMeReply(person: "Sam", device: "Sam's iPhone"))
+        let sent = try XCTUnwrap(StubProtocol.requests.first)
+        XCTAssertEqual(sent.httpMethod, "GET")
+        XCTAssertEqual(sent.url?.path, "/api/device/me")
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
+        XCTAssertTrue(StubProtocol.bodies[0].isEmpty)
+    }
+
+    func testMeMapsRefusalsAndBadRepliesToTypedErrors() async {
+        StubProtocol.reset(status: 401, json: #"{"error":"sign in required","reason":"device_revoked"}"#)
+        do {
+            _ = try await client().me()
+            XCTFail("expected revoked")
+        } catch {
+            XCTAssertEqual(error as? APIError, .revoked)
+        }
+        StubProtocol.reset(json: #"{"person":"Sam"}"#)
+        do {
+            _ = try await client().me()
+            XCTFail("expected decoding")
+        } catch {
+            XCTAssertEqual(error as? APIError, .decoding)
+        }
+        StubProtocol.reset()
+        do {
+            _ = try await client(token: nil).me()
+            XCTFail("expected notSignedIn")
+        } catch {
+            XCTAssertEqual(error as? APIError, .notSignedIn)
+        }
+    }
+
     func testEligibleWithCleanupOffDecodes() async throws {
         StubProtocol.reset(json: #"{"cleanup_enabled":false,"eligible":[],"rejected":[]}"#)
         let reply = try await client().eligible(EligibleRequest(assets: [photoOnly]))

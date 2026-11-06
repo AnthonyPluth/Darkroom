@@ -23,6 +23,15 @@ public struct APIClient: Sendable {
         _ = try await send(path: "/healthz", method: "GET", body: nil, authenticated: false)
     }
 
+    public func me() async throws -> DeviceMeReply {
+        let data = try await send(path: "/api/device/me", method: "GET", body: nil)
+        do {
+            return try JSONDecoder().decode(DeviceMeReply.self, from: data)
+        } catch {
+            throw APIError.decoding
+        }
+    }
+
     public func check(_ request: CheckRequest) async throws -> CheckReply {
         try await post("/api/device/assets/check", request)
     }

@@ -9,12 +9,13 @@ struct SignedInView: View {
     var body: some View {
         TabView {
             UploadsContainer(model: model, server: server)
-                .id(model.uploadStorage == nil)
+                .id(model.uploadEngine.map { ObjectIdentifier($0) })
                 .tabItem { Label("Uploads", systemImage: "arrow.up.circle") }
-            SettingsPlaceholder(server: server)
+            SettingsView(model: model, server: server)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .tint(Color.accent)
+        .task { await model.loadIdentity() }
     }
 }
 
@@ -25,7 +26,7 @@ private struct UploadsContainer: View {
     init(model: AppModel, server: ServerAddress) {
         self.model = model
         self.server = server
-        _uploads = StateObject(wrappedValue: UploadsModel(server: server, session: model.deviceSession, storage: model.uploadStorage))
+        _uploads = StateObject(wrappedValue: UploadsModel(engine: model.uploadEngine))
     }
 
     private let server: ServerAddress
@@ -34,34 +35,9 @@ private struct UploadsContainer: View {
         UploadsView(
             model: uploads,
             server: server,
+            person: model.identity?.person,
             signInAgain: { Task { await model.signInAgain() } },
             prepareStorage: { Task { await model.prepareUploads() } }
         )
-    }
-}
-
-private struct SettingsPlaceholder: View {
-    let server: ServerAddress
-    private let version = BuildVersion.current
-
-    var body: some View {
-        Screen {
-            Text("Settings")
-                .font(.title.bold())
-                .foregroundStyle(Color.ink)
-                .accessibilityAddTraits(.isHeader)
-            VStack(alignment: .leading, spacing: 8) {
-                SectionLabel("Server")
-                Card {
-                    KeyValueRow(label: "Address", value: server.authority, monospaced: true)
-                }
-            }
-            Text("Build \(version.label)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(Color.inkMuted)
-                .frame(maxWidth: .infinity)
-                .accessibilityLabel("Build \(version.marketing), \(version.build)")
-                .accessibilityIdentifier("build-version")
-        }
     }
 }

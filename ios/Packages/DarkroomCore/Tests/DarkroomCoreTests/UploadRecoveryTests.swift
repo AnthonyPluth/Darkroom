@@ -107,4 +107,21 @@ final class UploadRecoveryTests: XCTestCase {
         let batches = UploadPlanner.checkBatches(from: stored)
         XCTAssertEqual(batches.flatMap(\.assets).map(\.id), ["a", "b"])
     }
+
+    func testReleasingUploadsPutsOnlyTheUploadingOnesBackToChecked() async throws {
+        let store = InMemoryResourceStore()
+        try await store.upsert([
+            resource("a", state: .uploading), resource("b", state: .uploading), resource("c", state: .checked),
+            resource("d", state: .uploaded), resource("e", state: .hashed),
+        ])
+        let released = try await store.releaseUploading()
+        XCTAssertEqual(released, 2)
+        let counts = try await store.counts()
+        XCTAssertEqual(counts[.checked], 3)
+        XCTAssertEqual(counts[.uploading] ?? 0, 0)
+        XCTAssertEqual(counts[.uploaded], 1)
+        XCTAssertEqual(counts[.hashed], 1)
+        let again = try await store.releaseUploading()
+        XCTAssertEqual(again, 0)
+    }
 }

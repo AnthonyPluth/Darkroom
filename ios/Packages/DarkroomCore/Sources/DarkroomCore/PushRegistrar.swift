@@ -32,13 +32,15 @@ public actor PushRegistrar {
         case failed
     }
 
-    private let api: @Sendable () async -> PushTokenAPI?
+    private let api: @Sendable () async throws -> PushTokenAPI?
     private let signInEnded: @Sendable () async -> Void
     private var token: String?
     private var registered: String?
     private var generation = 0
+    private var pending: Task<Outcome, Never>?
+    private var paused = false
 
-    public init(api: @escaping @Sendable () async -> PushTokenAPI?, signInEnded: @escaping @Sendable () async -> Void = {}) {
+    public init(api: @escaping @Sendable () async throws -> PushTokenAPI?, signInEnded: @escaping @Sendable () async -> Void = {}) {
         self.api = api
         self.signInEnded = signInEnded
     }
@@ -59,13 +61,41 @@ public actor PushRegistrar {
     public func deviceSessionChanged() {
         generation += 1
         registered = nil
+        paused = false
     }
 
     @discardableResult
     public func sync() async -> Outcome {
-        guard let current = token, let client = await api() else { return .waiting }
-        if registered == current { return .registered }
+        while true {
+            if paused { return .waiting }
+            if let running = pending {
+                let seen = generation
+                let outcome = await running.value
+                if pending == running { pending = nil }
+                if generation != seen, !paused { continue }
+                if outcome != .registered || token == nil || registered == token { return outcome }
+                continue
+            }
+            let task = Task { await self.register() }
+            pending = task
+            let outcome = await task.value
+            if pending == task { pending = nil }
+            return outcome
+        }
+    }
+
+    private func register() async -> Outcome {
+        guard let current = token else { return .waiting }
         let started = generation
+        let client: PushTokenAPI
+        do {
+            guard let found = try await api() else { return .waiting }
+            client = found
+        } catch {
+            return .retryLater
+        }
+        if paused || generation != started { return .waiting }
+        if registered == current { return .registered }
         do {
             try await client.registerPushToken(current)
         } catch let error as APIError {
@@ -80,9 +110,23 @@ public actor PushRegistrar {
     }
 
     public func forget() async -> ForgetOutcome {
+        paused = true
         generation += 1
         registered = nil
-        guard let client = await api() else { return .alreadyEnded }
+        if let running = pending { _ = await running.value }
+        let outcome = await sendForget()
+        if outcome == .failed { paused = false }
+        return outcome
+    }
+
+    private func sendForget() async -> ForgetOutcome {
+        let client: PushTokenAPI
+        do {
+            guard let found = try await api() else { return .alreadyEnded }
+            client = found
+        } catch {
+            return .failed
+        }
         do {
             try await client.forgetPushToken()
             return .forgotten
@@ -135,6 +179,7 @@ public struct SignOutFlow: Sendable {
         do {
             try await clearSession()
         } catch {
+            await push.deviceSessionChanged()
             return .storage
         }
         return .signedOut(pushForgotten: forgot != .failed)

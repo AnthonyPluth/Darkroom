@@ -4,9 +4,11 @@ import UIKit
 @main
 struct DarkroomApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    @StateObject private var model = AppModel.shared
 
     init() {
+        BackgroundWork.register()
+        Task { await AppModel.shared.restore() }
         let bar = UITabBarAppearance()
         bar.configureWithOpaqueBackground()
         bar.backgroundColor = UIColor(Color.rail)

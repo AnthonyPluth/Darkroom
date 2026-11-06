@@ -28,18 +28,13 @@ final class PushCenter {
     let registrar: PushRegistrar
     let notifications = NotificationPermission(authorizer: SystemNotificationAuthorizer())
 
-    /// Called with the device token Darkroom refused as revoked or lapsed, so the displayed session can end.
     var signInEnded: (@MainActor (String) async -> Void)?
 
     private init() {
         let reader = DeviceSession(storage: KeychainSessionStorage())
         registrar = PushRegistrar(
-            api: { () async -> PushTokenAPI? in
-                do {
-                    try await reader.restore()
-                } catch {
-                    return nil
-                }
+            api: { () async throws -> PushTokenAPI? in
+                try await reader.restore()
                 guard case .signedIn(let server) = await reader.phase else { return nil }
                 return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
             },
@@ -60,7 +55,9 @@ final class PushCenter {
         case .signedIn:
             await registrar.deviceSessionChanged()
             await activate()
-        case .signedOut, .signingIn:
+        case .signedOut:
+            BackgroundWork.nightly.cancel()
+        case .signingIn:
             break
         }
     }
@@ -72,6 +69,7 @@ final class PushCenter {
 
     private func activate() async {
         UIApplication.shared.registerForRemoteNotifications()
+        BackgroundWork.nightly.schedule()
         await registrar.sync()
         await notifications.ensureAsked()
     }
