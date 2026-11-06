@@ -44,10 +44,17 @@ final class UploadsModel: ObservableObject {
 
     func load() async {
         guard let tracker else {
-            status = Self.unreadable
+            show(Self.unreadable)
             return
         }
-        status = await tracker.status()
+        show(await tracker.status())
+    }
+
+    private func show(_ new: UploadStatus) {
+        if let text = UploadsPresentation.announcement(from: status, to: new) {
+            AccessibilityNotification.Announcement(text).post()
+        }
+        status = new
     }
 
     func signInChanged() async {
@@ -57,16 +64,16 @@ final class UploadsModel: ObservableObject {
 
     func run(_ request: Request) async {
         guard let tracker else {
-            status = Self.unreadable
+            show(Self.unreadable)
             return
         }
         guard !syncing else { return }
         syncing = true
         let polling = Task { await poll(tracker) }
         switch request {
-        case .refresh: status = await tracker.refresh()
-        case .syncNow: status = await tracker.syncNow()
-        case .retry(let keys): status = await tracker.retry(keys)
+        case .refresh: show(await tracker.refresh())
+        case .syncNow: show(await tracker.syncNow())
+        case .retry(let keys): show(await tracker.retry(keys))
         }
         polling.cancel()
         syncing = false
@@ -78,7 +85,7 @@ final class UploadsModel: ObservableObject {
             if Task.isCancelled { return }
             let latest = await tracker.status()
             if Task.isCancelled { return }
-            status = latest
+            show(latest)
         }
     }
 }

@@ -110,4 +110,35 @@ final class UploadsPresentationTests: XCTestCase {
         XCTAssertEqual(try ServerAddress(parsing: "darkroom.example.com").authority, "darkroom.example.com")
         XCTAssertEqual(try ServerAddress(parsing: "https://darkroom.example.com:8443/").authority, "darkroom.example.com:8443")
     }
+
+    func testTheFirstScanShowsGettingReadyEvenWhileTheSyncRuns() {
+        let card = UploadsPresentation.card(for: status(.uploading, [:], firstScan: false))
+        XCTAssertEqual(card.title, "Getting ready")
+        XCTAssertTrue(card.showsProgress)
+        XCTAssertEqual(UploadsPresentation.card(for: status(.uploading, [.hashed: 3], firstScan: true)).title, "Syncing")
+        XCTAssertEqual(UploadsPresentation.card(for: status(.needsSignIn, [:], firstScan: false)).title, "Sign-in needed")
+        XCTAssertEqual(UploadsPresentation.card(for: status(.photosAccessNeeded, [:], firstScan: false)).title, "Photos access needed")
+    }
+
+    func testYesterdayFollowsTheCalendarDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_700_000_000 + 3 * 3600)
+        let yesterday = Date(timeIntervalSince1970: 1_700_000_000 - 20 * 3600)
+        XCTAssertEqual(UploadsPresentation.lastSynced(yesterday, now: now, calendar: calendar), "Yesterday 02:13")
+    }
+
+    func testOnlyAChangeOfStateIsAnnounced() {
+        let syncing = status(.uploading, [.hashed: 12])
+        let fewer = status(.uploading, [.hashed: 5])
+        let done = status(.idle, [.uploaded: 12])
+        XCTAssertNil(UploadsPresentation.announcement(from: nil, to: syncing))
+        XCTAssertNil(UploadsPresentation.announcement(from: syncing, to: fewer))
+        XCTAssertEqual(UploadsPresentation.announcement(from: fewer, to: done), "Up to date")
+        XCTAssertEqual(UploadsPresentation.announcement(from: done, to: status(.needsSignIn)), "Sign-in needed")
+        XCTAssertEqual(UploadsPresentation.announcement(from: done, to: status(.waitingForHomeNetwork, [.hashed: 2])), "Waiting for home network")
+        let one = status(.idle, [.failed: 1], failures: [failure("a")])
+        let two = status(.idle, [.failed: 2], failures: [failure("a"), failure("b")])
+        XCTAssertNil(UploadsPresentation.announcement(from: one, to: two))
+    }
 }

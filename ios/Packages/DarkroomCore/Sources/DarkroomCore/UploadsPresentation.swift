@@ -55,6 +55,18 @@ public enum UploadsPresentation {
         let waiting = waiting(status)
         let attention = status.count(.failed)
         let cloud = status.count(.notLocal)
+        if !status.firstScanFinished {
+            switch status.phase {
+            case .idle, .uploading, .waitingForHomeNetwork:
+                return UploadsCard(
+                    sentence: "Darkroom is reading this iPhone's photos.", tone: .neutral, chip: "Starting", title: "Getting ready",
+                    detail: "Darkroom is reading this iPhone's photos. This can take a while the first time.",
+                    showsProgress: status.phase == .uploading
+                )
+            default:
+                break
+            }
+        }
         switch status.phase {
         case .photosAccessNeeded:
             return UploadsCard(
@@ -85,12 +97,6 @@ public enum UploadsPresentation {
             )
         case .idle:
             break
-        }
-        if !status.firstScanFinished {
-            return UploadsCard(
-                sentence: "Darkroom is reading this iPhone's photos.", tone: .neutral, chip: "Starting", title: "Getting ready",
-                detail: "Darkroom is reading this iPhone's photos. This can take a while the first time."
-            )
         }
         if waiting > 0 {
             return UploadsCard(
@@ -146,12 +152,19 @@ public enum UploadsPresentation {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
-        if calendar.isDate(date, inSameDayAs: now.addingTimeInterval(-86400)) {
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
             formatter.dateFormat = "'Yesterday' HH:mm"
         } else {
             formatter.dateFormat = "d MMM HH:mm"
         }
         return formatter.string(from: date)
+    }
+
+    public static func announcement(from old: UploadStatus?, to new: UploadStatus) -> String? {
+        guard let old else { return nil }
+        let before = card(for: old)
+        let after = card(for: new)
+        return before.chip == after.chip ? nil : after.title
     }
 
     public static func rows(_ failures: [FailedResource], limit: Int?) -> [FailedResource] {
