@@ -78,7 +78,7 @@ jobs:
 
   release:
     needs: plan
-    runs-on: macos-15   # hosted: Xcode only runs on macOS
+    runs-on: macos-26   # hosted: Xcode only runs on macOS; Apple takes uploads built with Xcode 26 or later
     timeout-minutes: 60
     environment: ios-release
     permissions:
@@ -97,7 +97,7 @@ jobs:
         run: ios/release/preflight.sh
       - name: Select Xcode
         run: |
-          version="$(tr -d '[:space:]' < ios/.xcode-version)"
+          version="$(tr -d '[:space:]' < ios/.xcode-version-release)"
           sudo xcode-select -s "/Applications/Xcode_${version}.app/Contents/Developer"
           xcodebuild -version
       - name: Install XcodeGen and xcbeautify at pinned versions

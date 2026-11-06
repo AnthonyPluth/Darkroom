@@ -48,6 +48,22 @@ def _code_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
 
 
+def _checkout_blocks(code: str) -> list[str]:
+    lines = code.splitlines()
+    blocks = []
+    for start, line in enumerate(lines):
+        if "uses: actions/checkout@" not in line:
+            continue
+        column = len(line) - len(line.lstrip())
+        block = [line]
+        for following in lines[start + 1 :]:
+            if following.strip() and len(following) - len(following.lstrip()) <= column:
+                break
+            block.append(following)
+        blocks.append("\n".join(block))
+    return blocks
+
+
 def check_ios_release(release: str, ios: str) -> list[str]:
     code = "\n".join(_code_lines(release))
     problems = []
@@ -64,8 +80,11 @@ def check_ios_release(release: str, ios: str) -> list[str]:
     key_write = code.find("write-key.sh")
     if key_write < 0 or not code.find("swift test") < key_write < code.find("xcodebuild archive"):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the key is written by write-key.sh after the tools and tests have run and before the archive")
-    if "persist-credentials: false" not in code:
-        problems.append(f"{IOS_RELEASE_WORKFLOW}: checkouts need persist-credentials: false")
+    for block in _checkout_blocks(code):
+        if "persist-credentials: false" not in block:
+            problems.append(f"{IOS_RELEASE_WORKFLOW}: every actions/checkout needs persist-credentials: false")
+    if "ios/.xcode-version-release" not in code or "ios/.xcode-version)" in code or "ios/.xcode-version " in code:
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: the release selects Xcode from ios/.xcode-version-release (Apple requires Xcode 26 or later to upload), not the pin ios.yml's build uses")
     ours = {m.group(1, 2): m.group(3) for m in PINNED_TOOLS.finditer(code)}
     theirs = {m.group(1, 2): m.group(3) for m in PINNED_TOOLS.finditer("\n".join(_code_lines(ios)))}
     if not theirs or ours != theirs:

@@ -79,6 +79,7 @@ permissions: {}
       - run: swift test
       - run: ios/release/write-key.sh
       - run: xcodebuild archive
+      - run: tr -d x < ios/.xcode-version-release
       - uses: actions/checkout@abc   # v1
         with:
           persist-credentials: false
@@ -112,6 +113,18 @@ class IosRelease(unittest.TestCase):
 
     def test_credentials_left_in_the_checkout_are_named(self):
         self.assertEqual(len(self.problems(RELEASE.replace("persist-credentials: false", "persist-credentials: true"))), 1)
+
+    def test_a_second_checkout_without_the_setting_is_named(self):
+        second = "      - uses: actions/checkout@def   # v1\n"
+        found = self.problems(RELEASE + second)
+        self.assertEqual(len(found), 1)
+        self.assertIn("every actions/checkout", found[0])
+        self.assertEqual(self.problems(RELEASE + second + "        with:\n          persist-credentials: false\n"), [])
+
+    def test_selecting_xcode_from_the_pull_request_builds_pin_is_named(self):
+        found = self.problems(RELEASE.replace("xcode-version-release", "xcode-version"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("Xcode 26", found[0])
 
     def test_toolchain_pins_that_differ_from_the_unsigned_build_are_named(self):
         found = self.problems(ios=IOS.replace("2.46.0", "2.47.0"))

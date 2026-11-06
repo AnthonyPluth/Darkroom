@@ -1,16 +1,20 @@
 # iPhone release (TestFlight, from GitHub Actions)
 
-`.github/workflows/ios-release.yml` archives, signs and uploads the iPhone app to TestFlight from a GitHub-hosted `macos-15` runner, so no Mac is needed (#160). Signing is cloud-managed: `xcodebuild -allowProvisioningUpdates` with an App Store Connect API key asks Apple for the distribution certificate and profile, so none is stored anywhere.
+`.github/workflows/ios-release.yml` archives, signs and uploads the iPhone app to TestFlight from a GitHub-hosted `macos-26` runner, so no Mac is needed (#160). Signing is cloud-managed: `xcodebuild -allowProvisioningUpdates` with an App Store Connect API key asks Apple for the distribution certificate and profile, so none is stored anywhere.
 
 The unsigned build and tests that pull requests need are `ios.yml`'s (the `iOS` check). They use no secret and keep working whatever is or isn't set up here.
 
 ## What the workflow does
 
 1. `plan` (Linux, no environment, no secret): accepts only an `ios-v<major>.<minor>.<patch>` tag push or a manual dispatch from `main`, takes the marketing version from the tag (or the dispatch's `version`), and checks the commit is on `main`. Any other trigger fails here with the reason.
-2. `release` (`macos-15`, `environment: ios-release`): waits for the owner's approval, then checks the configuration (below), selects Xcode from `ios/.xcode-version`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool`.
+2. `release` (`macos-26`, `environment: ios-release`): waits for the owner's approval, then checks the configuration (below), selects Xcode from `ios/.xcode-version-release`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool`.
 3. An `always()` step removes the key file, the archive and the export.
 
 A tag push always uploads. A manual dispatch uploads only when its `upload` input is `true`; the default `false` archives and exports (so signing is exercised) and uploads nothing.
+
+## Xcode version
+
+Apple accepts iOS uploads only from apps built with Xcode 26 or later (App Store Connect's "Supported Xcode versions"). The `iOS` check still builds with the Xcode in `ios/.xcode-version` (16.4, on `macos-15`), so the release has its own pin, `ios/.xcode-version-release` (26.6, on `macos-26`, whose image carries it), and the two move independently. The DarkroomCore package declares swift-tools-version 5.9, so it builds on both; the first release run is the proof that the app and its tests compile on Xcode 26. When Apple raises the minimum, change the release pin and runner; moving the `iOS` check forward is a separate change.
 
 ## What the workflow keeps from the public
 
