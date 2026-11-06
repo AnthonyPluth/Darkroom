@@ -237,3 +237,57 @@ class DeleteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdateLockTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = own_database(self)
+        with db.session(self.engine) as opened:
+            self.person = add_person(opened, "jo")
+            self.account = add_account(opened, "jo@x.test", self.person)
+
+    def test_an_update_takes_the_write_lock_before_it_reads(self):
+        database = self.engine.url.database
+        seen = []
+
+        def write_meanwhile(conn, cursor, statement, parameters, context, executemany):
+            if seen:
+                return
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE google_accounts SET session_state = 'ok' WHERE id = ?", (self.account,))
+                other.commit()
+                seen.append("committed")
+            except sqlite3.OperationalError as error:
+                seen.append(str(error))
+            finally:
+                other.close()
+
+        event.listen(self.engine, "after_cursor_execute", write_meanwhile)
+        self.addCleanup(event.remove, self.engine, "after_cursor_execute", write_meanwhile)
+        with db.session(self.engine) as opened:
+            accounts.update(opened, self.account, "renamed@x.test", None, 2.0)
+        self.assertEqual(seen, ["database is locked"])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).email, "renamed@x.test")
+
+    def test_an_update_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
+        impatient = create_engine(str(self.engine.url), connect_args={"timeout": 0.05})
+        event.listen(impatient, "connect", db.set_sqlite_pragmas)
+        self.addCleanup(impatient.dispose)
+        holder = sqlite3.connect(self.engine.url.database, timeout=0)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            with db.session(impatient) as opened:
+                with self.assertRaisesRegex(browser_jobs.Busy, "busy with another change"):
+                    accounts.update(opened, self.account, "renamed@x.test", None, 2.0)
+        finally:
+            holder.rollback()
+            holder.close()
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(GoogleAccount, self.account).email, "jo@x.test")
+
+    def test_an_update_of_a_missing_account_is_not_found(self):
+        with db.session(self.engine) as opened:
+            with self.assertRaises(accounts.NoSuchAccount):
+                accounts.update(opened, 9999, "renamed@x.test", None, 2.0)

@@ -17,7 +17,7 @@ def list_exports(request: Request) -> Annotated[Response, contract.Exports]:
     return json_response({"exports": listed, "schedules": schedules})
 
 
-def one(request: Request) -> Annotated[Response, contract.ExportReply]:
+def export_one(request: Request) -> Annotated[Response, contract.ExportReply]:
     export_id = path_id(request)
     if export_id is None:
         return error_response(NO_EXPORT, 404)
