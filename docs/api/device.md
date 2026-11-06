@@ -4,9 +4,9 @@ What the Darkroom iPhone app (#35, and cleanup in #38) talks to. The request and
 
 ## Signing in
 
-1. The app opens `GET /auth/device/start?name=<iPhone name>` in an `ASWebAuthenticationSession` (callback scheme `darkroom`). The name is what the People page shows for this iPhone: 1 to 100 printable characters.
+1. The app makes a fresh random `state` for this attempt (22 to 128 characters of `A-Z a-z 0-9 - _`, from a cryptographic generator, used once) and opens `GET /auth/device/start?name=<iPhone name>&state=<state>` in an `ASWebAuthenticationSession` (callback scheme `darkroom`). The name is what the People page shows for this iPhone: 1 to 100 printable characters.
 2. Darkroom runs the same Pocket ID sign-in as the web app (authorization code with PKCE and a nonce) and comes back to `/auth/callback`.
-3. On success Darkroom answers `303` to `darkroom://signed-in#token=<token>`. The token is in the fragment, so it is never sent to a server. Keep it in the Keychain; Darkroom stores only its SHA-256 and never shows it again.
+3. On success Darkroom answers `303` to `darkroom://signed-in#token=<token>&state=<state>`, echoing the state of that attempt. The app installs the token only if the echoed state equals the one it made for the attempt in progress, and refuses a callback with a missing, different or already used state. A start without a valid `state` is a 400 page and no sign-in begins. The token is in the fragment, so it is never sent to a server. Keep it in the Keychain; Darkroom stores only its SHA-256 and never shows it again.
 
 Who may sign in an iPhone: someone in one of `OIDC_DEVICE_GROUPS` (default `family,parents`) whose verified email is the email of exactly one person on the People page. That person owns everything the iPhone uploads. Otherwise the sign-in view shows an error page (not allowed, or "No person with this email") and no device is created.
 

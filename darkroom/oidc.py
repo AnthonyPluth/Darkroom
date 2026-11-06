@@ -187,7 +187,8 @@ def with_query(endpoint: str, params: dict[str, str]) -> str:
     return endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
 
 
-def start_login(opened: Session, settings: Settings, next_path: str | None, now: float, device_name: str | None = None) -> tuple[str, str]:
+def start_login(opened: Session, settings: Settings, next_path: str | None, now: float, device_name: str | None = None,
+                client_state: str | None = None) -> tuple[str, str]:
     document = discovery(settings, now)
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
     opened.execute(delete(AuthPending).where(AuthPending.created < now - LOGIN_TTL))
@@ -196,7 +197,7 @@ def start_login(opened: Session, settings: Settings, next_path: str | None, now:
     opened.execute(delete(AuthPending).where(AuthPending.state.in_(surplus)))
     kind = "web" if device_name is None else "device"
     opened.add(AuthPending(state=state, nonce=nonce, verifier=verifier, next=safe_next(next_path) if device_name is None else None, kind=kind,
-                           device_name=device_name, created=now))
+                           device_name=device_name, client_state=client_state, created=now))
     opened.flush()
     params = {"response_type": "code", "client_id": settings.oidc_client_id, "redirect_uri": redirect_uri(settings),
               "scope": SCOPES, "state": state, "nonce": nonce,
@@ -455,14 +456,16 @@ def device_groups(settings: Settings) -> set[str]:
     return {group.lower() for group in settings.oidc_device_groups}
 
 
-def finish_device_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float) -> tuple[Identity, str]:
+def finish_device_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float) -> tuple[Identity, str, str]:
     state, code = callback_state(query, login_cookie)
     pending = take_pending(opened, state, now, "device")
     document = discovery(settings, now)
     tokens = exchange_code(settings, document, code, pending.verifier)
     who = authorize_device(settings, claims_from(settings, document, tokens, pending.nonce, None))
     remember_user(opened, who, now)
-    return who, pending.device_name or "iPhone"
+    if not pending.client_state:
+        raise SignInFailed("this sign-in did not carry the app's state")
+    return who, pending.device_name or "iPhone", pending.client_state
 
 
 def device_access_lapsed(opened: Session, settings: Settings, sub: str | None, email: str | None, now: float) -> str | None:
