@@ -4,7 +4,7 @@ import SwiftUI
 
 struct SignInView: View {
     @ObservedObject var model: AppModel
-    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+    @State private var web = WebSignIn()
     @State private var address = ""
     @State private var deviceName = ""
     @State private var starting = false
@@ -167,7 +167,7 @@ struct SignInView: View {
     private func signIn() async {
         guard let start = await model.begin(addressText: address, deviceName: deviceName) else { return }
         do {
-            let callback = try await webAuthenticationSession.authenticate(
+            let callback = try await web.authenticate(
                 using: start,
                 callbackURLScheme: DeviceSignIn.callbackScheme
             )
