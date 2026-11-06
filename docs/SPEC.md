@@ -290,6 +290,8 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
 
+Order of the first imports: the initial Immich reconciliation must run before the Takeout backfill, or reconciliation must dedupe and safely resolve Takeout copies already placed in `google-only/`, so that photos Immich already holds are not placed twice. Which of the two is not decided.
+
 ## Open questions
 
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
