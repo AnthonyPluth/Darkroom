@@ -477,6 +477,118 @@ describe("the Cleanup switch", () => {
   });
 });
 
+function hold(server: ReturnType<typeof serve>, rule: (key: string, nth: number) => Promise<void> | undefined) {
+  const seen = new Map<string, number>();
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    const key = `${init?.method ?? "GET"} ${url}`;
+    const nth = (seen.get(key) ?? 0) + 1;
+    seen.set(key, nth);
+    const held = rule(key, nth);
+    return held ? held.then(() => server.mock(url, init)) : server.mock(url, init);
+  });
+  render(People);
+}
+
+const later = () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  return { gate, release };
+};
+
+const switchOf = (name: string, on: boolean) => screen.findByRole("switch", { name: `Cleanup ${on ? "on" : "off"} for ${name}`, hidden: true });
+
+describe("the Cleanup switch, with other requests in flight", () => {
+  const SAM_ON = { ...samPhone, cleanup_enabled: true };
+  const JO_ON = { ...joPhone, cleanup_enabled: true };
+
+  it("stays busy when an unrelated reload finishes during a pending turn-off", async () => {
+    const patch = later();
+    let off = false;
+    const server = serve({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [off ? joPhone : JO_ON] }),
+      "PATCH /api/people/1": { person: jo },
+      "PATCH /api/devices/30": () => {
+        off = true;
+        return { device: joPhone };
+      },
+    });
+    hold(server, (key) => (key === "PATCH /api/devices/30" ? patch.gate : undefined));
+    await userEvent.click(await switchOf("Jo's iPhone, Jo Example", true));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Cleanup off for Jo's iPhone, Jo Example" })).toBeDisabled());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Jo Example" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit person" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(server.sent("GET /api/people")).toHaveLength(2));
+    const flip = await switchOf("Jo's iPhone, Jo Example", false);
+    expect(flip).toBeDisabled();
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(0);
+    patch.release();
+    await waitFor(() => expect(flip).toBeEnabled());
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(1);
+  });
+
+  it("stays busy through its own reload while another device's request settles and reloads", async () => {
+    const samPatch = later();
+    const joReload = later();
+    let samOff = false;
+    let joOn = false;
+    const server = serve({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [{ ...joPhone, cleanup_enabled: joOn }] }),
+      "GET /api/people/2/devices": () => ({ devices: [samOff ? samPhone : SAM_ON, oldPhone] }),
+      "PATCH /api/devices/30": () => {
+        joOn = true;
+        return { device: JO_ON };
+      },
+      "PATCH /api/devices/31": () => {
+        samOff = true;
+        return { device: samPhone };
+      },
+    });
+    hold(server, (key, nth) => (key === "PATCH /api/devices/31" ? samPatch.gate : key === "GET /api/people" && nth === 2 ? joReload.gate : undefined));
+    await userEvent.click(await switchOf("Sam's iPhone, Sam Example", true));
+    await userEvent.click(await switchOf("Jo's iPhone, Jo Example", false));
+    const ask = await screen.findByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Turn on cleanup" }));
+    await waitFor(() => expect(server.sent("PATCH /api/devices/30")).toHaveLength(1));
+    expect(await switchOf("Sam's iPhone, Sam Example", false)).toBeDisabled();
+    samPatch.release();
+    await waitFor(() => expect(server.sent("GET /api/people")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Cleanup off for Sam's iPhone, Sam Example", hidden: true })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example", hidden: true })).toBeDisabled();
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(1);
+    joReload.release();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await switchOf("Jo's iPhone, Jo Example", true)).toBeEnabled();
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(1);
+    expect(server.sent("PATCH /api/devices/31")).toHaveLength(1);
+  });
+
+  it("clears only its own device when a request fails", async () => {
+    const samPatch = later();
+    const server = serve({
+      ...seeded(),
+      "GET /api/people/1/devices": { devices: [JO_ON] },
+      "GET /api/people/2/devices": { devices: [SAM_ON, oldPhone] },
+      "PATCH /api/devices/30": reply(503, { error: "busy" }),
+      "PATCH /api/devices/31": { device: samPhone },
+    });
+    hold(server, (key) => (key === "PATCH /api/devices/31" ? samPatch.gate : undefined));
+    await userEvent.click(await switchOf("Sam's iPhone, Sam Example", true));
+    await userEvent.click(await switchOf("Jo's iPhone, Jo Example", true));
+    const joCard = screen.getByRole("article", { name: "Jo's iPhone, Jo Example" });
+    expect(await within(joCard).findByRole("alert")).toHaveTextContent("busy");
+    expect(await switchOf("Jo's iPhone, Jo Example", true)).toBeEnabled();
+    expect(await switchOf("Sam's iPhone, Sam Example", false)).toBeDisabled();
+    samPatch.release();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Cleanup on for Sam's iPhone, Sam Example" })).toBeEnabled());
+    expect(screen.getByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" })).toBeEnabled();
+  });
+});
+
 describe("when loading fails", () => {
   it("says why and tries again, with no stale list", async () => {
     let attempt = 0;

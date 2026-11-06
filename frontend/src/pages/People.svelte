@@ -37,8 +37,6 @@
     );
     const devices: DeviceView[] = lists.flatMap((l) => l.devices);
     const eligible = new Map(status.people.flatMap((p) => p.devices).map((d) => [d.id, d]));
-    switches = {};
-    saving = {};
     return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, devices, eligible, now: nowSeconds() };
   });
 
@@ -48,7 +46,7 @@
   let asking = $state<Asking | null>(null);
   let switches = $state<Record<number, boolean>>({});
   let switchErrors = $state<Record<number, string>>({});
-  let saving = $state<Record<number, boolean>>({});
+  let inFlight = $state<Record<number, boolean>>({});
 
   onMount(() => void loader.load());
 
@@ -117,28 +115,25 @@
       switches[device.id] = reply.device.cleanup_enabled;
     });
 
-  async function turnOffCleanup(device: DeviceView): Promise<void> {
-    saving[device.id] = true;
-    switchErrors[device.id] = "";
-    switches[device.id] = false;
-    const ok = await act(() => setCleanup(device, false), { onError: (m) => (switchErrors[device.id] = m) });
-    if (ok) await loader.load(true);
-    else delete switches[device.id];
-    saving[device.id] = false;
-  }
-
-  async function turnOnCleanup(device: DeviceView): Promise<void> {
-    saving[device.id] = true;
+  async function changeCleanup(device: DeviceView, enabled: boolean): Promise<void> {
+    inFlight[device.id] = true;
     try {
-      await setCleanup(device, true);
-    } catch (error) {
-      saving[device.id] = false;
-      throw error;
+      await setCleanup(device, enabled);
+      await loader.load(true);
+    } finally {
+      delete switches[device.id];
+      inFlight[device.id] = false;
     }
   }
 
+  async function turnOffCleanup(device: DeviceView): Promise<void> {
+    switchErrors[device.id] = "";
+    switches[device.id] = false;
+    await act(() => changeCleanup(device, false), { onError: (m) => (switchErrors[device.id] = m) });
+  }
+
   function toggleCleanup(device: DeviceView, owner: string): void {
-    if (saving[device.id]) return;
+    if (inFlight[device.id]) return;
     if (cleanupOn(device)) {
       void turnOffCleanup(device);
       return;
@@ -148,7 +143,7 @@
       title: `Turn on cleanup for ${device.name}, ${owner}?`,
       message: "Confirm that iCloud Photos is off on this iPhone. With it on, deleting a photo from the phone also removes it from iCloud and every other device.",
       confirm: "Turn on cleanup",
-      run: () => turnOnCleanup(device),
+      run: () => changeCleanup(device, true),
     });
   }
 
@@ -286,7 +281,7 @@
               {#if device.revoked_at === null}
                 {@const on = cleanupOn(device)}
                 <div class="flex flex-col gap-0.5 border-t border-line pt-2">
-                  <Switch checked={on} label={on ? "Cleanup on" : "Cleanup off"} name="{on ? 'Cleanup on' : 'Cleanup off'} for {device.name}, {owner}" disabled={saving[device.id] === true} onclick={() => toggleCleanup(device, owner)} />
+                  <Switch checked={on} label={on ? "Cleanup on" : "Cleanup off"} name="{on ? 'Cleanup on' : 'Cleanup off'} for {device.name}, {owner}" disabled={inFlight[device.id] === true} onclick={() => toggleCleanup(device, owner)} />
                   <p class="text-sm text-ink-muted">
                     {#if on}The iPhone app may delete originals that Google Photos has confirmed.<span class="hidden md:inline"> Turn off to keep everything on the phone.</span>{:else}Nothing is deleted from this phone while cleanup is off.{/if}
                   </p>
