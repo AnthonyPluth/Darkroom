@@ -1,0 +1,211 @@
+name: iOS release
+
+# Archives, signs and uploads the iPhone app to TestFlight from a GitHub-hosted macOS runner (#160). It runs on an
+# ios-v<major>.<minor>.<patch> tag or a manual dispatch from main, never on a pull request: there is no pull_request or
+# pull_request_target trigger, so a fork's pull request cannot start it or reach its secrets (tools/app_checks.py
+# fails a pull request that adds either trigger or a write permission).
+#
+# The App Store Connect key (ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8) is a secret of the ios-release environment, which
+# is limited to main and ios-v* tags and needs the owner's approval; the job's environment: line is what makes GitHub
+# read it from there. DARKROOM_BUNDLE_ID and DARKROOM_TEAM_ID are Actions variables. Signing is cloud-managed
+# (-allowProvisioningUpdates with the key), so no certificate or profile is stored. Each secret is passed only to the
+# steps that use it, the key file is written only after the third-party tools and the tests have run and no third-party binary runs while it exists (Archive and Export log xcodebuild's raw output), is mode 600 under RUNNER_TEMP and is removed in an always() step, and nothing echoes a
+# value. The unsigned build and tests that pull requests need are ios.yml's and use none of this. Setup, a release and
+# the key's rotation: docs/deploy/ios-release.md.
+on:
+  push:
+    tags: ["ios-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version, for example 0.1.0"
+        required: true
+        type: string
+      upload:
+        description: "Upload the build to TestFlight (false archives and exports only)"
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: ios-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  XCODEGEN_VERSION: "2.46.0"
+  XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+  XCBEAUTIFY_VERSION: "3.2.1"
+  XCBEAUTIFY_SHA256: "87fdbe786f71d7b2ee28c5c1ca97087587292f2c5c6f9e721cf02db8b2a3c241"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest   # hosted: tiny job, no environment and no secret
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      upload: ${{ steps.plan.outputs.upload }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the trigger and work out the version
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_UPLOAD: ${{ inputs.upload }}
+        run: ios/release/plan.sh
+      - name: Check the commit is on main
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error title=iOS release::Commit $SHA is not on main; a release is cut only from a commit that has merged."
+            exit 1
+          fi
+
+  release:
+    needs: plan
+    runs-on: macos-26   # hosted: Xcode only runs on macOS; Apple takes uploads built with Xcode 26 or later
+    timeout-minutes: 60
+    environment: ios-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the configuration
+        env:
+          UPLOAD: ${{ needs.plan.outputs.upload }}
+          DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: ios/release/preflight.sh
+      - name: Select Xcode
+        run: |
+          version="$(tr -d '[:space:]' < ios/.xcode-version-release)"
+          sudo xcode-select -s "/Applications/Xcode_${version}.app/Contents/Developer"
+          xcodebuild -version
+      - name: Install XcodeGen and xcbeautify at pinned versions
+        run: |
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/xcodegen-dl" "$tools/xcbeautify"
+          curl -fsSL -o "$tools/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $tools/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$tools/xcodegen.zip" -d "$tools/xcodegen-dl"
+          curl -fsSL -o "$tools/xcbeautify.zip" "https://github.com/cpisciotta/xcbeautify/releases/download/${XCBEAUTIFY_VERSION}/xcbeautify-${XCBEAUTIFY_VERSION}-universal-apple-macosx.zip"
+          echo "${XCBEAUTIFY_SHA256}  $tools/xcbeautify.zip" | shasum -a 256 -c -
+          unzip -q "$tools/xcbeautify.zip" -d "$tools/xcbeautify"
+          chmod +x "$tools/xcodegen-dl/xcodegen/bin/xcodegen" "$tools/xcbeautify/release/xcbeautify"
+          echo "$tools/xcodegen-dl/xcodegen/bin" >> "$GITHUB_PATH"
+          echo "$tools/xcbeautify/release" >> "$GITHUB_PATH"
+      - name: Write ios/Local.xcconfig
+        env:
+          DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
+        run: |
+          {
+            echo "DARKROOM_BUNDLE_ID = $DARKROOM_BUNDLE_ID"
+            echo "DARKROOM_TEAM_ID = $DARKROOM_TEAM_ID"
+          } > ios/Local.xcconfig
+      - name: Generate the Xcode project
+        run: xcodegen generate --spec ios/project.yml --project ios
+      - name: DarkroomCore tests
+        run: swift test --package-path ios/Packages/DarkroomCore 2>&1 | xcbeautify --renderer github-actions
+      - name: Put the App Store Connect key in place
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: ios/release/write-key.sh
+      - name: Archive
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          BUILD: ${{ github.run_number }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild archive -project ios/Darkroom.xcodeproj -scheme Darkroom -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Darkroom.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
+      - name: Check the archive carries the version and build number
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          BUILD: ${{ github.run_number }}
+        run: |
+          plist="$RUNNER_TEMP/Darkroom.xcarchive/Info.plist"
+          archived_version="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$plist")"
+          archived_build="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$plist")"
+          if [[ "$archived_version" != "$VERSION" || "$archived_build" != "$BUILD" ]]; then
+            echo "::error title=iOS release::The archive says ${archived_version} (${archived_build}), expected ${VERSION} (${BUILD})."
+            exit 1
+          fi
+          echo "Archived Build ${archived_version} (${archived_build})"
+      - name: Export the signed app
+        env:
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${DARKROOM_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Darkroom.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          test -f "$RUNNER_TEMP/export/Darkroom.ipa"
+      - name: Upload to TestFlight
+        if: needs.plan.outputs.upload == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          API_PRIVATE_KEYS_DIR: ${{ runner.temp }}/asc
+        run: |
+          status=0
+          xcrun altool --upload-app --type ios --file "$RUNNER_TEMP/export/Darkroom.ipa" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > "$RUNNER_TEMP/altool.log" 2>&1 || status=$?
+          ios/release/check-upload.sh "$status" "$RUNNER_TEMP/altool.log"
+      - name: Summary
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          BUILD: ${{ github.run_number }}
+          UPLOAD: ${{ needs.plan.outputs.upload }}
+        run: |
+          if [[ "$UPLOAD" == true ]]; then
+            echo "Uploaded Build ${VERSION} (${BUILD}) to TestFlight." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Dry run: archived and exported Build ${VERSION} (${BUILD}); nothing was uploaded." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Remove the key and the signed output
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/export" "$RUNNER_TEMP/Darkroom.xcarchive" "$RUNNER_TEMP/ExportOptions.plist" "$RUNNER_TEMP/altool.log" ios/Local.xcconfig
