@@ -412,28 +412,6 @@
         "required": [],
         "type": "object"
       },
-      "ConfirmReply": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "rejected": {
-            "items": {
-              "$ref": "#/components/schemas/Refusal"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "confirmed",
-          "rejected"
-        ],
-        "type": "object"
-      },
       "DecisionReply": {
         "additionalProperties": false,
         "properties": {
@@ -583,43 +561,6 @@
           "page",
           "page_size",
           "total"
-        ],
-        "type": "object"
-      },
-      "DeletedBody": {
-        "additionalProperties": false,
-        "properties": {
-          "asset_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "asset_ids"
-        ],
-        "type": "object"
-      },
-      "DeletedReply": {
-        "additionalProperties": false,
-        "properties": {
-          "recorded": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "rejected": {
-            "items": {
-              "$ref": "#/components/schemas/Refusal"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "recorded",
-          "rejected"
         ],
         "type": "object"
       },
@@ -1017,70 +958,6 @@
         "additionalProperties": false,
         "properties": {},
         "required": [],
-        "type": "object"
-      },
-      "EligibleAsset": {
-        "additionalProperties": false,
-        "properties": {
-          "asset_id": {
-            "type": "string"
-          },
-          "bytes": {
-            "type": "integer"
-          },
-          "resources": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "asset_id",
-          "bytes",
-          "resources"
-        ],
-        "type": "object"
-      },
-      "EligibleBody": {
-        "additionalProperties": false,
-        "properties": {
-          "assets": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceAssetDecl"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "assets"
-        ],
-        "type": "object"
-      },
-      "EligibleReply": {
-        "additionalProperties": false,
-        "properties": {
-          "cleanup_enabled": {
-            "type": "boolean"
-          },
-          "eligible": {
-            "items": {
-              "$ref": "#/components/schemas/EligibleAsset"
-            },
-            "type": "array"
-          },
-          "rejected": {
-            "items": {
-              "$ref": "#/components/schemas/Refusal"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "cleanup_enabled",
-          "eligible",
-          "rejected"
-        ],
         "type": "object"
       },
       "EnqueueBody": {
@@ -2695,26 +2572,6 @@
         ],
         "type": "object"
       },
-      "Refusal": {
-        "additionalProperties": false,
-        "properties": {
-          "asset_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "asset_id",
-          "message",
-          "reason"
-        ],
-        "type": "object"
-      },
       "ResolveBody": {
         "additionalProperties": false,
         "properties": {
@@ -3492,99 +3349,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ok"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "device"
-      }
-    },
-    "/api/device/deleted": {
-      "post": {
-        "operationId": "deleted",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeletedBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletedReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "device"
-      }
-    },
-    "/api/device/eligible": {
-      "post": {
-        "operationId": "eligible",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EligibleBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EligibleReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "device"
-      }
-    },
-    "/api/device/eligible/confirm": {
-      "post": {
-        "operationId": "confirm",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EligibleBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConfirmReply"
                 }
               }
             },
