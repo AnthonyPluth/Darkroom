@@ -38,7 +38,7 @@ final class BackgroundUploadTransport: NSObject, UploadTransport, URLSessionTask
         let file = directory.appendingPathComponent(UUID().uuidString)
         do {
             guard try await exporter.export(source, to: file) == .exported else {
-                throw APIError.rejected(status: 409)
+                throw APIError.rejected(status: 422)
             }
             let request = try await client.uploadRequest(
                 assetID: resource.key.assetID, kind: resource.key.kind, sha1: resource.sha1, filename: resource.filename

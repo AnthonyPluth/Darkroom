@@ -382,6 +382,22 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.resource.sha1, "new")
     }
 
+    func testAResourceThatLeftTheDeviceBeforeItUploadedIsStoredAsNotLocalNotRetriedForever() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.rejected(status: 422))
+        let cloud = LocalResource(key: a, sha1: "", bytes: 0, filename: "a.HEIC", state: .notLocal)
+        let result = try await coordinator(rig, rehash: cloud).run()
+        XCTAssertEqual(result.failed, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource, cloud)
+        let again = try await coordinator(rig).run()
+        XCTAssertEqual(again.uploaded, 0)
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
     func testHashMismatchWithTheSameHashFails() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a, sha1: "same")])
