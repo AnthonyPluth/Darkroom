@@ -189,6 +189,8 @@ class DeviceSignInTests(DeviceSignInCase):
         self.assertEqual(status, 403)
         self.assertNotIn("darkroom://", headers.get("Location") or "")
         self.assertEqual(self.device_count(), 0)
+        self.assertEqual(self.provider.token_requests, [])
+        self.assertEqual(self.provider.userinfo_requests, [])
 
     def test_start_needs_a_name_and_a_reachable_provider(self):
         for path in ("/auth/device/start", "/auth/device/start?name=", "/auth/device/start?name=" + "x" * 101, "/auth/device/start?name=a%0Ab"):
