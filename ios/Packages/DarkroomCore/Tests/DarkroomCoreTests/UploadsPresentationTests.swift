@@ -124,8 +124,8 @@ final class UploadsPresentationTests: XCTestCase {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let now = Date(timeIntervalSince1970: 1_700_000_000 + 3 * 3600)
-        let yesterday = Date(timeIntervalSince1970: 1_700_000_000 - 20 * 3600)
-        XCTAssertEqual(UploadsPresentation.lastSynced(yesterday, now: now, calendar: calendar), "Yesterday 02:13")
+        let yesterday = Date(timeIntervalSince1970: 1_700_000_000 - 22 * 3600)
+        XCTAssertEqual(UploadsPresentation.lastSynced(yesterday, now: now, calendar: calendar), "Yesterday 00:13")
     }
 
     func testOnlyAChangeOfStateIsAnnounced() {
