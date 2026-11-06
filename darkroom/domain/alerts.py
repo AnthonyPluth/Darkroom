@@ -75,7 +75,9 @@ def originals_unmatched(person: str, pixel: str | None, count: int) -> Wording:
     return Wording("Some originals are not in Google Photos", f"{count} of {person}'s originals have no match in Google yet. Check that their folder is turned on for backup {where}.")
 
 
-def schedule_ending(account: str, end: str) -> Wording:
+def schedule_ending(account: str, end: str, ended: bool = False) -> Wording:
+    if ended:
+        return Wording("Takeout schedule ending", f"The export schedule for {account} ended on {end}. It will be renewed shortly.")
     return Wording("Takeout schedule ending", f"The export schedule for {account} ends on {end}. It will be renewed shortly.")
 
 
@@ -87,11 +89,11 @@ def schedule_renewal_failed(account: str, end: str, ended: bool = False) -> Word
     if ended:
         return Wording(
             "Takeout schedule not renewed",
-            f"The export schedule for {account} was not renewed, and it ended on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Press Create schedule on the Exports page to make a new one.",
+            f"The export schedule for {account} was not renewed, and it ended on {end}. Darkroom does not retry a renewal on its own; you can ask for another with Renew now, or press Create schedule on the Exports page to make a new one.",
         )
     return Wording(
         "Takeout schedule not renewed",
-        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal, and renewing on request is a later addition. Once it has ended, press Create schedule on the Exports page to make a new one.",
+        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal on its own; you can ask for another with Renew now. Once it has ended, press Create schedule on the Exports page to make a new one.",
     )
 
 

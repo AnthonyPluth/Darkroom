@@ -43,6 +43,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/accounts/{id}/connect", accounts.connect, "session"),
     Route("POST", "/api/accounts/{id}/schedule", accounts.create_schedule, "session"),
     Route("POST", "/api/accounts/{id}/schedule/checked", accounts.schedule_checked, "session"),
+    Route("POST", "/api/accounts/{id}/schedule/renew", accounts.renew_schedule, "session"),
     Route("GET", "/api/pixels", pixels.list_pixels, "session"),
     Route("POST", "/api/pixels", pixels.create_pixel, "session"),
     Route("PATCH", "/api/pixels/{id}", pixels.update_pixel, "session"),

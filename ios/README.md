@@ -19,7 +19,7 @@ The background task identifiers are `<bundle id>.refresh` and `<bundle id>.hash`
 
 ## Installing on the family's iPhones
 
-- TestFlight: archive in Xcode (Product, Archive), upload to App Store Connect, add the family as internal testers. Builds last 90 days and push alerts need TestFlight or a production build (APNs production).
+- TestFlight: with no Mac, `.github/workflows/ios-release.yml` archives, signs and uploads from GitHub Actions; the one-time Apple setup, the release steps and the key's rotation are in [docs/deploy/ios-release.md](../docs/deploy/ios-release.md). With a Mac, archive in Xcode (Product, Archive) and upload to App Store Connect. Either way, add the family as internal testers. Builds last 90 days and push alerts need TestFlight or a production build (APNs production).
 - Ad hoc: add each iPhone's UDID to your developer account, archive with an ad hoc distribution profile and install through Xcode's Devices window or Apple Configurator. The profile lapses yearly.
 
 Which one to use is decided in #10 item 7.
@@ -44,5 +44,7 @@ Cost: Darkroom is public, so GitHub-hosted runner minutes are free. If the repos
 | --- | --- |
 | Cold cache | not yet measured |
 | Warm cache | not yet measured |
+
+`ios-release.yml` is not a check: it runs only on an `ios-v*` tag or a manual dispatch from `main`, in the `ios-release` environment, and is described in [docs/deploy/ios-release.md](../docs/deploy/ios-release.md).
 
 Signing, PhotoKit, background tasks and notifications cannot run in CI, so the owner's Mac and device checks stay.

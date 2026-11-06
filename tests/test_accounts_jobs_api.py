@@ -183,6 +183,66 @@ class AccountJobsApiTests(ApiCase):
         for path in (f"/api/accounts/{self.account_id + 50}/schedule/checked", "/api/accounts/abc/schedule/checked"):
             self.assertEqual(self.call("POST", path)[0], 404)
 
+    def schedule_ending_in(self, days):
+        end = dates.utc_now().timestamp() + days * 86400
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            account.schedule_created, account.schedule_end = end - 365 * 86400, end
+        return end
+
+    def renew_jobs(self):
+        with db.session(self.engine) as opened:
+            return [(job.status, json.loads(job.payload)) for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "renew").order_by(BrowserJob.id)).scalars()]
+
+    def test_renew_now_queues_one_renew_job_and_a_second_press_is_refused(self):
+        end = self.schedule_ending_in(15)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual((status, reply["job"]["kind"], reply["job"]["status"], reply["job"]["account_id"]), (201, "renew", "queued", self.account_id))
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("already waiting or running", reply["error"])
+        self.assertEqual(self.renew_jobs(), [("queued", {"email": self.account_view()["email"], "ending": end})])
+
+    def test_renew_now_is_allowed_after_a_failed_renewal_and_refused_beside_create_schedule(self):
+        self.schedule_ending_in(10)
+        with db.session(self.engine) as opened:
+            renewal.watch_schedules(opened, self.settings, dates.utc_now().timestamp())
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage: the page changed"})
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual((status, reply["job"]["status"]), (201, "queued"))
+        self.assertEqual(self.call("POST", f"/api/accounts/{self.account_id}/schedule")[0], 409)
+
+    def test_renew_now_is_refused_while_a_renewal_is_unanswered(self):
+        self.unconfirmed_renewal(dates.utc_now().timestamp() + 20 * 86400)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("check Takeout", reply["error"])
+        self.assertEqual([job[0] for job in self.renew_jobs()], ["failed"])
+
+    def test_renew_now_is_refused_without_a_schedule_or_when_sign_in_is_needed(self):
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("no export schedule", reply["error"])
+        self.schedule_ending_in(15)
+        with db.session(self.engine) as opened:
+            opened.get(GoogleAccount, self.account_id).session_state = "needs_sign_in"
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("sign in", reply["error"])
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_renew_now_is_refused_before_the_window_and_on_a_schedule_just_renewed(self):
+        self.schedule_ending_in(60)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn("not due for renewal", reply["error"])
+        self.assertEqual(self.renew_jobs(), [])
+
+    def test_renew_now_for_an_unknown_account_is_404(self):
+        for path in (f"/api/accounts/{self.account_id + 50}/schedule/renew", "/api/accounts/abc/schedule/renew"):
+            self.assertEqual(self.call("POST", path)[0], 404)
+
     def test_a_failed_schedule_job_may_be_retried(self):
         self.call("POST", f"/api/accounts/{self.account_id}/schedule")
         job = self.worker("/internal/browser/jobs/claim")[1]["job"]

@@ -111,6 +111,20 @@ def schedule_checked(request: Annotated[Request, contract.ScheduleCheckedBody]) 
     return json_response({"job": reply})
 
 
+def renew_schedule(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
+    account_id = path_id(request)
+    if account_id is None:
+        return error_response(NO_ACCOUNT, 404)
+    try:
+        with db.session(engine_of(request)) as opened:
+            reply = browser_jobs.as_dict(renewal.renew_now(opened, request.settings, account_id, now()), request.settings)
+    except browser_jobs.UnknownAccount:
+        return error_response(NO_ACCOUNT, 404)
+    except (browser_jobs.AlreadyOpen, renewal.NoSchedule, renewal.NeedsSignIn, renewal.NotDue) as error:
+        return error_response(str(error), 409)
+    return json_response({"job": reply}, 201)
+
+
 def connect(request: Request) -> Annotated[Response, contract.BrowserJobReply]:
     return start_job(request, "connect")
 
