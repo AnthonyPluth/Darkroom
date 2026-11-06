@@ -76,6 +76,7 @@ Test these with the first real key (a dry run covers the first four):
 - That `xcodebuild -exportArchive` with `method: app-store-connect`, `destination: export` and automatic signing yields `Darkroom.ipa` under Xcode 26.6.
 - That the app and DarkroomCore tests compile on Xcode 26.6 on `macos-26`.
 - That `xcrun altool --upload-app` with `API_PRIVATE_KEYS_DIR` accepts the key and the upload appears in TestFlight (Apple's upload page says altool is supported).
+- That `ios/release/check-upload.sh`'s error and success matching, including the mixed case of a transient `ERROR:` followed by `UPLOAD SUCCEEDED` and a Delivery UUID (reported with Xcode 26.5, fastlane #30033, which the check currently fails; deferred as #108 item 92), is untested against a real upload.
 - That `ios/release/check-upload.sh` reads altool's real output right. Xcode 26's `altool` can print `ERROR:` records and still exit 0 (fastlane #29740), so the step fails on a non-zero exit, on any error record or `product-errors`, and when none of altool's success texts (`No errors uploading`, `UPLOAD SUCCEEDED`, `Successfully uploaded`, `Delivery UUID`) appears, and the summary runs only after that. The error and success texts are matched from fastlane's report and altool's older output, not from a real run: a real upload that fails this check although TestFlight received the build means a success text needs adding, and a duplicate build number must make it fail.
 - That the `macos-26` image still carries Xcode 26.6 (checked against the runner-images readme today).
 
