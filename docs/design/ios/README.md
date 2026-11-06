@@ -2,7 +2,7 @@
 
 Status: **proposal**. The owner's note on #34 (2026-11-06) says the iPhone screen designs are approved, but it links no boards and none are in the repository, so promise 6 (AGENTS.md) still blocks the screens of #35 and #38. This page writes the design down so it can be read, corrected and signed off in #34, in the same way `docs/design/web/` records what #16 approved. Nothing here is built yet. Where the owner's boards exist and differ from this page, the boards win and this page is corrected in the pull request that exports them.
 
-How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Seven decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
+How to read it: every screen has its states, the exact copy, a layout precise enough to write in SwiftUI, accessibility behaviour, and the DarkroomCore type behind each element. Nine decisions the code cannot settle are under "Open points", each marked **needs owner sign-off** with a recommended default. The screens are drawn on the recommended defaults, so a different answer changes the lines that name that point (for example "(point 2)").
 
 Scope: the app shell, the sign-in screen, the upload status screen and Settings (#35). The cleanup notification and batch screens (#38) get their own design pull request after these, and Settings only reserves their line.
 
@@ -99,7 +99,7 @@ The server field is prefilled from `DeviceSession.savedServer` (a re-sign-in kee
 | Needs sign-in again | Reached from the Uploads tab (see Screen 2), not here as a state: the same screen with the notice "Your sign-in ended. Sign in again to keep uploading." | `UploadStatus.Phase.needsSignIn`, then `DeviceSession.tokenRejected(_:)` |
 | Error | The banner with the message for the failure, the field kept as typed. The next tap on the button starts a new attempt with a new state. | below |
 
-The attempt starts with `DeviceSession.begin(serverText:deviceName:)`, which returns the start URL; the `ASWebAuthenticationSession` opens it and its completion handler calls `DeviceSession.complete(callback:)` with the callback URL. The callback is read only from that completion, never from `.onOpenURL`, so a link from another app cannot finish a sign-in. The device name sent is `UIDevice.current.name`, cleaned by `DeviceSignIn.cleanedDeviceName`.
+The attempt starts with `DeviceSession.begin(serverText:deviceName:)`, which returns the start URL; the `ASWebAuthenticationSession` opens it and its completion handler calls `DeviceSession.complete(callback:)` with the callback URL. The callback is read only from that completion, never from `.onOpenURL`, so a link from another app cannot finish a sign-in. The device name sent is the person's device label (point 9), cleaned by `DeviceSignIn.cleanedDeviceName`.
 
 ### Errors and copy
 
@@ -172,7 +172,7 @@ Rules that apply across rows:
 
 - Failure with other work: the Needs attention list shows below whatever state is on top (a sync can be running while two files have failed). The state card shows the Needs attention state only when nothing else is waiting.
 - Pause and charging are not states (point 5).
-- First launch before the first pass: the counts are all 0 and the state is "Waiting to upload" with "0 files", which reads wrong; use the card title "Getting ready" with the detail "Darkroom is reading this iPhone's photos. This can take a while the first time." when `uploaded + waiting + notLocal + failed == 0` and the phase is idle or uploading. Chip neutral "Starting".
+- First launch before the first scan has finished: use the card title "Getting ready" with the detail "Darkroom is reading this iPhone's photos. This can take a while the first time." and the neutral chip "Starting". The state ends when the first scan finishes (point 8), not when a count becomes non-zero, so an empty photo library goes to "Up to date" with 0 files. Before that signal exists the card would otherwise read "Waiting to upload" with "0 files".
 - Tapping "Sign in again" opens the same `ASWebAuthenticationSession` for the saved server; on success the card returns to a normal state and a Sync now runs. If the person cancels, the card stays. (Implementation note for #35: `DeviceSession.begin` refuses while signed in, so it needs a re-sign-in path that keeps the old token until the new one is saved, or calls `tokenRejected(_:)` and shows the Sign-in screen with the notice above. The design allows either; the first keeps the counts on screen.)
 
 ### Refreshing
@@ -215,7 +215,7 @@ The screen reads `UploadStatusTracker.status()` when it appears, when the app be
 ### Layout (top to bottom)
 
 1. Title "Settings".
-2. **Account** (`Card`, label "ACCOUNT"): `KeyValueRow` "Signed in as" with the person's name (point 2; the row is left out when unknown), `KeyValueRow` "This iPhone" with `UIDevice.current.name`.
+2. **Account** (`Card`, label "ACCOUNT"): `KeyValueRow` "Signed in as" with the person's name (point 2; the row is left out when unknown), `KeyValueRow` "This iPhone" with the device label (point 9).
 3. **Server** (`Card`, label "SERVER"): `KeyValueRow` "Address" with the host in `.footnote.monospaced()`. Under it a `.footnote` `inkMuted` line: "To use a different Darkroom, sign out first." The address is read-only while signed in, because `DeviceSession.begin` refuses to start while signed in.
 4. **Cleanup** (`Card`, label "CLEANUP"): the text "Removing photos from this iPhone is turned on or off on the People page." in `.subheadline`. Nothing else until #38, which adds the on/off value (from `EligibleReply.cleanupEnabled`) and a link to the cleanup screens.
 5. `SecondaryButton` "Sign out" with `danger` text. It opens a `.confirmationDialog`: title "Sign out of Darkroom?", message "Uploads stop on this iPhone. Files already on Darkroom stay there. To stop this iPhone for good, revoke it on the People page.", buttons "Sign out" (destructive) and "Cancel".
@@ -287,6 +287,18 @@ Recommended default: the app is **dark only**, with the web's tokens exactly. It
 **Needs owner sign-off.** #34 does not list a screen for photo access, but the app cannot upload without full access to the library (#35 scope) and `UploadStatus.Phase` has no case for it.
 
 Recommended default: the Uploads tab shows the "Photos access needed" state in the table above, with "Open Settings" (`UIApplication.openSettingsURLString`), for denied, restricted and limited access alike; the first time, the system permission prompt runs on first launch after sign-in, with the usage text "Darkroom uploads your photos and videos to your own server at home." It needs a new `Phase` case (or a separate authorization value) when the PhotoKit adapters land.
+
+### 8. When "Getting ready" ends
+
+**Needs owner sign-off.** The first draft ended "Getting ready" when any count became non-zero, so a genuinely empty library would stay on it forever. The core has no signal for "the first scan finished" (the store holds only files already read).
+
+Recommended default: the core records a persisted **first scan finished** value (the time of the first pass that ended `.finished`, kept with `lastSync`, point 4) and the card shows "Getting ready" until it exists. An empty library then reads "Up to date" with 0 files. It is a small core change in the PR that builds the Uploads screen.
+
+### 9. Naming the iPhone
+
+**Needs owner sign-off.** The sign-in sends a device name that the People page shows. From iOS 16 `UIDevice.current.name` returns the generic "iPhone" unless the app holds Apple's user-assigned-device-name entitlement, and `project.yml` declares none, so a household's phones could all appear as "iPhone" and be hard to tell apart or revoke.
+
+Recommended default: ask the person. The sign-in screen gets a second field "Name of this iPhone" under the address (label above, `.footnote` helper "Shown on the People page, for example Sam's iPhone."), prefilled with `UIDevice.current.name` unless that is the generic "iPhone", kept in `UserDefaults`, required (non-empty after `DeviceSignIn.cleanedDeviceName`), and shown in Settings as "This iPhone". Settings lets the name be read but not changed while signed in, since the name is fixed at sign-in. The alternative, requesting the entitlement, needs an Apple approval and a rebuilt provisioning profile and is not recommended.
 
 ## Not in this proposal
 
