@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -115,9 +116,35 @@ def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     return fields
 
 
-def removes(old: GoogleMetadata, new: GoogleMetadata) -> bool:
-    lost_place = old.lat is not None and old.lon is not None and (new.lat is None or new.lon is None)
-    return lost_place or (old.description is not None and new.description is None)
+LOCATION_KEYS = ("geoDataExif", "geoData")
+
+
+def removes(old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
+    removed: set[str] = set()
+    if old.lat is not None and old.lon is not None and (new.lat is None or new.lon is None):
+        removed.add(LATITUDE)
+    if old.description is not None and new.description is None:
+        removed.add(DESCRIPTION)
+    return frozenset(removed)
+
+
+def baseline(old_raw: str | None, new_raw: str | None) -> str | None:
+    removed = removes(GoogleMetadata.of(old_raw), GoogleMetadata.of(new_raw))
+    if not removed or old_raw is None or new_raw is None:
+        return new_raw
+    try:
+        old_data, new_data = json.loads(old_raw), json.loads(new_raw)
+    except ValueError:
+        return new_raw
+    if not isinstance(old_data, dict) or not isinstance(new_data, dict):
+        return new_raw
+    kept = (["description"] if DESCRIPTION in removed else []) + (list(LOCATION_KEYS) if LATITUDE in removed else [])
+    for key in kept:
+        if key in old_data:
+            new_data[key] = old_data[key]
+        else:
+            new_data.pop(key, None)
+    return json.dumps(new_data)
 
 
 def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:

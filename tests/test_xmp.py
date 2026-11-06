@@ -123,10 +123,23 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, dated), {})
 
     def test_a_value_google_dropped_counts_as_removed_and_a_change_does_not(self):
-        self.assertTrue(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=None, lon=None, taken_utc=None, description="Old words")))
-        self.assertTrue(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)))
-        self.assertFalse(xmp.removes(self.OLD, self.NEW))
-        self.assertFalse(xmp.removes(xmp.GoogleMetadata(None, None, None, None), self.NEW))
+        self.assertEqual(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=None, lon=None, taken_utc=None, description="Old words")), {xmp.LATITUDE})
+        self.assertEqual(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)), {xmp.DESCRIPTION})
+        self.assertEqual(xmp.removes(self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.removes(xmp.GoogleMetadata(None, None, None, None), self.NEW), frozenset())
+
+    def test_the_baseline_takes_googles_new_values_and_keeps_the_old_one_only_for_a_removed_field(self):
+        old = json.dumps({"title": "a", "description": "Old words", "geoData": {"latitude": 45.4, "longitude": 12.3}, "photoTakenTime": {"timestamp": "1"}})
+        moved = json.dumps({"title": "a", "description": "", "geoData": {"latitude": 45.5, "longitude": 12.4}, "photoTakenTime": {"timestamp": "2"}})
+        merged = xmp.GoogleMetadata.of(xmp.baseline(old, moved))
+        self.assertEqual((merged.description, merged.lat, merged.lon, merged.taken_utc), ("Old words", 45.5, 12.4, 2.0))
+        gone = json.dumps({"title": "a", "description": "New words", "photoTakenTime": {"timestamp": "1"}})
+        merged = xmp.GoogleMetadata.of(xmp.baseline(old, gone))
+        self.assertEqual((merged.description, merged.lat, merged.lon), ("New words", 45.4, 12.3))
+        changed = json.dumps({"title": "a", "description": "New words", "geoData": {"latitude": 45.5, "longitude": 12.4}})
+        self.assertEqual(xmp.baseline(old, changed), changed)
+        self.assertEqual(xmp.baseline(None, changed), changed)
+        self.assertEqual(xmp.baseline("not json", changed), changed)
 
     def test_a_sidecar_already_holding_googles_new_values_counts_them_as_applied(self):
         refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}

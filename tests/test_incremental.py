@@ -3,7 +3,7 @@ import unittest
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe, exports, review
+from darkroom.domain import dedupe, exports, media, review
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelPerson
 from tests.import_world import DAY, NOW, World
@@ -264,6 +264,47 @@ class IncrementalTests(IncrementalCase):
         self.assertIn(DAWN, text)
         self.assertNotIn(CANAL, text)
         self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_description_google_removed_while_moving_the_photo_is_refreshed_when_google_sets_it_again(self):
+        self.imported()
+        self.imported(place=NEW_PLACE, description="", at=NOW + DAY)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.assertEqual(len(self.refreshed()), 1)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual(len(self.refreshed()), 2)
+
+    def test_a_location_google_removed_while_changing_the_description_is_refreshed_when_google_adds_a_new_one(self):
+        self.imported()
+        self.imported(place=None, description=DAWN, at=NOW + DAY)
+        self.assertIn(DAWN, self.canal_sidecar().read_text())
+        self.assertEqual(len(self.refreshed()), 1)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), OLD_PLACE)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        self.assertEqual(len(self.refreshed()), 2)
+        stored = self.canal_item()
+        self.assertEqual((stored.lat, stored.lon, stored.gps_source), (*NEW_PLACE, "google"))
+        lat, lon, _ = media.location(self.world.tools.read([self.canal_sidecar()])[self.canal_sidecar()])
+        self.assertAlmostEqual(lat, NEW_PLACE[0], places=5)
+        self.assertAlmostEqual(lon, NEW_PLACE[1], places=5)
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 3 * DAY)
+        self.assertEqual(len(self.refreshed()), 2)
+
+    def test_an_owner_edited_description_beside_a_refreshed_location_keeps_the_edit_and_advances_both_fields(self):
+        self.imported()
+        sidecar = self.canal_sidecar()
+        sidecar.write_text(sidecar.read_text().replace(CANAL, "Our holiday"))
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertIn("Our holiday", sidecar.read_text())
+        self.assertNotIn(DAWN, sidecar.read_text())
+        stored = self.canal_item()
+        self.assertIn(DAWN, stored.sidecar_json)
+        self.assertEqual((stored.lat, stored.lon), NEW_PLACE)
         self.assertEqual(len(self.refreshed()), 1)
 
     def test_a_sidecar_write_that_fails_after_the_check_is_a_failed_item_not_a_skip(self):

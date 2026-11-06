@@ -229,12 +229,10 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     if done is None:
         report.skipped += 1
         return
+    matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
     if not done:
-        if not xmp.removes(old, new):
-            matched.sidecar_json = entry.fields.sidecar_json
         report.skipped += 1
         return
-    matched.sidecar_json = entry.fields.sidecar_json
     if xmp.LATITUDE in done:
         matched.lat, matched.lon, matched.gps_source = new.lat, new.lon, "google"
     report.refreshed.append(matched.id)
