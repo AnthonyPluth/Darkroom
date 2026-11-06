@@ -1,6 +1,6 @@
 # Device API
 
-What the Darkroom iPhone app (#35) talks to; it is being removed with the app (#199, #201). The request and reply shapes are also in `darkroom/server/contract.py` and the generated `docs/openapi.json`; this page says how the pieces fit.
+What the Darkroom iPhone app (#35) talked to. The app is gone (#199) and its code was deleted from the repository; the backend that served it is being removed (#201), so this page describes routes that no client calls. The request and reply shapes are also in `darkroom/server/contract.py` and the generated `docs/openapi.json`; this page says how the pieces fit.
 
 ## Signing in
 

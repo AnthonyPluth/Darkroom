@@ -63,7 +63,6 @@ jobs:
         darkroom/server/mcp_*.py
         darkroom_browser/live.py
         darkroom_browser/runner.py
-        ios/Darkroom/Keychain.swift
         .semgrep/**
         SECURITY.md
         Dockerfile*

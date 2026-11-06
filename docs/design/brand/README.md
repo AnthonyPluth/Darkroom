@@ -7,6 +7,5 @@ The owner chose logo option 3, "Negative": a cream film frame with five sprocket
 
 Where the PNGs come from, all rendered from these SVGs with headless Chromium (Playwright) and converted to RGB so none has an alpha channel:
 
-- `ios/Darkroom/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`: `icon.svg` at 1024x1024.
 - `frontend/public/icon-192.png`, `icon-512.png` and `apple-touch-icon.png` (180x180): `icon.svg` at those sizes.
 - `frontend/public/favicon.svg` is the mark on a rounded tile of the same gradient; `favicon-32.png` is that file at 32x32.
