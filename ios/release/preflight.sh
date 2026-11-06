@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-"$(dirname "${BASH_SOURCE[0]}")/check-icon.sh"
+icon_flag=()
+if [[ "${UPLOAD:-true}" != true ]]; then icon_flag=(--warn); fi
+"$(dirname "${BASH_SOURCE[0]}")/check-icon.sh" ${icon_flag[@]+"${icon_flag[@]}"}
 
 variables=(DARKROOM_BUNDLE_ID DARKROOM_TEAM_ID)
 secrets=(ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8)

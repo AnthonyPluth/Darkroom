@@ -86,6 +86,8 @@ def check_ios_release(release: str, ios: str, preflight: str = "check-icon.sh") 
         problems.append(f"{IOS_RELEASE_WORKFLOW}: no third-party tool (xcbeautify) may run after write-key.sh, while the key file exists, and the always() step must remove it")
     if "check-icon.sh" not in preflight:
         problems.append("ios/release/preflight.sh must run check-icon.sh: App Store Connect rejects an app with no icon, so the release fails before it signs")
+    if "needs.plan.outputs.upload" not in code[: code.find("ios/release/preflight.sh")]:
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: the preflight step must be given UPLOAD from the plan, so a missing icon blocks an upload and only warns on a dry run")
     if "altool" in code and code.find("check-upload.sh") < code.find("altool"):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: altool can print errors and exit 0, so the upload step must pass its status and output to ios/release/check-upload.sh")
     for block in _checkout_blocks(code):

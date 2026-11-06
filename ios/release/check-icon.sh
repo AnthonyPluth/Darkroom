@@ -5,6 +5,9 @@ ios_dir="${IOS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 spec="$ios_dir/project.yml"
 set_dir="$ios_dir/Darkroom/Assets.xcassets/AppIcon.appiconset"
 
+level=error
+if [[ "${1:-}" == --warn ]]; then level=warning; fi
+
 problems=()
 
 if ! grep -qE '^[[:space:]]*ASSETCATALOG_COMPILER_APPICON_NAME:[[:space:]]*AppIcon[[:space:]]*$' "$spec"; then
@@ -33,7 +36,7 @@ if ((${#problems[@]} > 0)); then
   message="The app has no App Store icon, so App Store Connect would reject the upload:"
   for problem in "${problems[@]}"; do message+=" $problem;"; done
   message+=" add an opaque 1024x1024 PNG (no alpha) as AppIcon (see docs/deploy/ios-release.md)."
-  echo "::error title=iOS release is blocked::$message"
+  echo "::$level title=iOS app icon::$message"
   echo "$message" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-  exit 1
+  if [[ "$level" == error ]]; then exit 1; fi
 fi

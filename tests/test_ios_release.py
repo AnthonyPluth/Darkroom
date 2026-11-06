@@ -58,8 +58,12 @@ def valid_ios_dir(root):
 
 
 def run(script, env, cwd):
+    return run_with_args(script, [], env, cwd)
+
+
+def run_with_args(script, args, env, cwd):
     return subprocess.run(
-        ["bash", str(RELEASE / script)],
+        ["bash", str(RELEASE / script), *args],
         env={"PATH": os.environ["PATH"], **env},
         cwd=cwd,
         capture_output=True,
@@ -109,13 +113,31 @@ class Preflight(unittest.TestCase):
                 self.assertNotIn(other, result.stdout, name)
             self.assertFalse((Path(self.temp.name) / "asc").exists(), name)
 
-    def test_a_missing_icon_stops_the_preflight_before_the_key_or_the_configuration_matters(self):
+    def test_a_missing_icon_stops_an_upload_before_the_key_or_the_configuration_matters(self):
+        for upload in ({}, {"UPLOAD": "true"}):
+            with tempfile.TemporaryDirectory() as d:
+                ios = make_ios_dir(d)
+                result = self.preflight(**{**CONFIGURED, "IOS_DIR": str(ios), **upload})
+            self.assertEqual(result.returncode, 1, upload)
+            self.assertIn("::error", result.stdout)
+            self.assertIn("no App Store icon", result.stdout)
+            self.assertFalse((Path(self.temp.name) / "asc").exists())
+
+    def test_a_missing_icon_only_warns_on_a_dry_run(self):
         with tempfile.TemporaryDirectory() as d:
             ios = make_ios_dir(d)
-            result = self.preflight(**{**CONFIGURED, "IOS_DIR": str(ios)})
+            result = self.preflight(**{**CONFIGURED, "IOS_DIR": str(ios), "UPLOAD": "false"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("::warning", result.stdout)
+        self.assertNotIn("::error", result.stdout)
+        self.assertIn("no App Store icon", self.summary.read_text())
+
+    def test_a_dry_run_without_an_icon_still_needs_the_configuration(self):
+        with tempfile.TemporaryDirectory() as d:
+            ios = make_ios_dir(d)
+            result = self.preflight(IOS_DIR=str(ios), UPLOAD="false")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("no App Store icon", result.stdout)
-        self.assertFalse((Path(self.temp.name) / "asc").exists())
+        self.assertIn("ASC_KEY_P8", result.stdout)
 
     def test_an_empty_value_counts_as_missing(self):
         result = self.preflight(**{**CONFIGURED, "ASC_KEY_P8": ""})
@@ -179,6 +201,13 @@ class CheckIcon(unittest.TestCase):
         result = self.check(lambda d: make_ios_dir(d, setting=False, contents_json=contents("icon.png"), image=png(1024, 1024, 2)))
         self.assertEqual(result.returncode, 1)
         self.assertIn("ASSETCATALOG_COMPILER_APPICON_NAME", result.stdout)
+
+    def test_the_warn_flag_reports_but_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            ios = make_ios_dir(d)
+            result = run_with_args("check-icon.sh", ["--warn"], {"IOS_DIR": str(ios)}, d)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("::warning", result.stdout)
 
     def test_the_repository_is_blocked_until_the_icon_is_added(self):
         result = run("check-icon.sh", {}, str(ROOT))

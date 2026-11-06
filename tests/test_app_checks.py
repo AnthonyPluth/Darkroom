@@ -76,7 +76,9 @@ permissions: {}
     permissions:
       contents: read
     steps:
-      - run: ios/release/preflight.sh
+      - env:
+          UPLOAD: ${{ needs.plan.outputs.upload }}
+        run: ios/release/preflight.sh
       - run: swift test
       - run: ios/release/write-key.sh
       - run: xcodebuild archive
@@ -168,9 +170,14 @@ class IosRelease(unittest.TestCase):
         self.assertIn("check-icon.sh", found[0])
 
     def test_a_preflight_run_after_the_key_is_written_or_missing_is_named(self):
-        late = RELEASE.replace("      - run: ios/release/preflight.sh\n", "").replace("      - run: xcodebuild archive\n", "      - run: ios/release/preflight.sh\n      - run: xcodebuild archive\n")
+        late = RELEASE.replace("        run: ios/release/preflight.sh\n", "        run: true\n").replace("      - run: xcodebuild archive\n", "      - run: ios/release/preflight.sh\n      - run: xcodebuild archive\n")
         self.assertEqual(len(self.problems(late)), 1)
         self.assertEqual(len(self.problems(RELEASE.replace("ios/release/preflight.sh", "true"))), 1)
+
+    def test_a_preflight_not_given_the_upload_flag_is_named(self):
+        found = self.problems(RELEASE.replace("needs.plan.outputs.upload", "true"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("UPLOAD", found[0])
 
     def test_a_workflow_that_never_removes_the_key_is_named(self):
         self.assertEqual(len(self.problems(RELEASE.replace('rm -rf "$RUNNER_TEMP/asc"', "true"))), 1)

@@ -89,6 +89,7 @@ jobs:
           persist-credentials: false
       - name: Check the configuration
         env:
+          UPLOAD: ${{ needs.plan.outputs.upload }}
           DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
           DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
