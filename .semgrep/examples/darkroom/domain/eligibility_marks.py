@@ -1,6 +1,6 @@
 from sqlalchemy import select, update
 
-from darkroom.storage.models import Device, PhoneAsset
+from darkroom.storage.models import PhoneAsset
 
 
 def mark(asset, now):
@@ -56,41 +56,6 @@ def mark_in_row(row, now):
 def made_eligible(device_id, now):
     # ruleid: darkroom-eligibility-single-path
     return PhoneAsset(device_id=device_id, photokit_id="x", created=now, eligible_at=now)
-
-
-def turn_cleanup_on(device):
-    # ruleid: darkroom-eligibility-single-path
-    device.cleanup_enabled = True
-
-
-def turn_cleanup_on_from_a_body(device, body):
-    # ruleid: darkroom-eligibility-single-path
-    device.cleanup_enabled = body["cleanup_enabled"]
-
-
-def made_with_cleanup(person_id):
-    # ruleid: darkroom-eligibility-single-path
-    return Device(person_id=person_id, name="iPhone", token_hash="h", cleanup_enabled=True, created=1.0)
-
-
-def cleanup_on_in_bulk(opened):
-    # ruleid: darkroom-eligibility-single-path
-    opened.execute(update(Device).values(cleanup_enabled=True))
-
-
-def turn_cleanup_off(device):
-    # ok: darkroom-eligibility-single-path
-    device.cleanup_enabled = False
-
-
-def made_without_cleanup(person_id):
-    # ok: darkroom-eligibility-single-path
-    return Device(person_id=person_id, name="iPhone", token_hash="h", cleanup_enabled=False, created=1.0)
-
-
-def shown(device):
-    # ok: darkroom-eligibility-single-path
-    return {"id": device.id, "cleanup_enabled": device.cleanup_enabled}
 
 
 def waiting(opened, device_id):
