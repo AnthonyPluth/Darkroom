@@ -25,6 +25,9 @@ struct SettingsView: View {
                 .accessibilityIdentifier("build-version")
         }
         .task { await model.loadIdentity() }
+        .onChange(of: model.signOutProblem) { _, problem in
+            if let problem { AccessibilityNotification.Announcement(problem).post() }
+        }
     }
 
     @ViewBuilder
