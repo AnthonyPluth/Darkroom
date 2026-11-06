@@ -40,13 +40,10 @@ class Preflight(unittest.TestCase):
     def preflight(self, **values):
         return run("preflight.sh", {**self.env, **values}, self.temp.name)
 
-    def test_a_complete_configuration_writes_the_key_readable_only_by_its_owner(self):
+    def test_a_complete_configuration_passes_and_writes_no_key(self):
         result = self.preflight(**CONFIGURED)
         self.assertEqual(result.returncode, 0, result.stderr)
-        key = Path(self.temp.name) / "asc" / "AuthKey_KEYID12345.p8"
-        self.assertEqual(key.read_text(), CANARY_KEY + "\n")
-        self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(key.parent.stat().st_mode), 0o700)
+        self.assertFalse((Path(self.temp.name) / "asc").exists())
 
     def test_nothing_secret_is_printed(self):
         result = self.preflight(**CONFIGURED)
@@ -86,6 +83,27 @@ class Preflight(unittest.TestCase):
         self.assertIn("ASC_KEY_ID", result.stdout)
         self.assertNotIn("CANARYNOTAKEY", result.stdout + result.stderr)
         self.assertFalse((Path(self.temp.name) / "asc").exists())
+
+
+class WriteKey(unittest.TestCase):
+    def write(self, temp, **values):
+        return run("write-key.sh", {"RUNNER_TEMP": temp, **values}, temp)
+
+    def test_the_key_is_readable_only_by_its_owner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.write(temp, ASC_KEY_ID="KEYID12345", ASC_KEY_P8=CANARY_KEY)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            key = Path(temp) / "asc" / "AuthKey_KEYID12345.p8"
+            self.assertEqual(key.read_text(), CANARY_KEY + "\n")
+            self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(key.parent.stat().st_mode), 0o700)
+            self.assertNotIn("CANARYCANARYCANARY", result.stdout + result.stderr)
+
+    def test_without_a_key_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.write(temp, ASC_KEY_ID="KEYID12345")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((Path(temp) / "asc").exists())
 
 
 class Plan(unittest.TestCase):

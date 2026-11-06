@@ -9,7 +9,7 @@ name: iOS release
 # is limited to main and ios-v* tags and needs the owner's approval; the job's environment: line is what makes GitHub
 # read it from there. DARKROOM_BUNDLE_ID and DARKROOM_TEAM_ID are Actions variables. Signing is cloud-managed
 # (-allowProvisioningUpdates with the key), so no certificate or profile is stored. Each secret is passed only to the
-# steps that use it, the key file is mode 600 under RUNNER_TEMP and removed in an always() step, and nothing echoes a
+# steps that use it, the key file is written only after the third-party tools and the tests have run, is mode 600 under RUNNER_TEMP and is removed in an always() step, and nothing echoes a
 # value. The unsigned build and tests that pull requests need are ios.yml's and use none of this. Setup, a release and
 # the key's rotation: docs/deploy/ios-release.md.
 on:
@@ -83,15 +83,14 @@ jobs:
     environment: ios-release
     permissions:
       contents: read
-    env:
-      DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
-      DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      - name: Check the configuration and put the App Store Connect key in place
+      - name: Check the configuration
         env:
+          DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
@@ -115,6 +114,9 @@ jobs:
           echo "$tools/xcodegen-dl/xcodegen/bin" >> "$GITHUB_PATH"
           echo "$tools/xcbeautify/release" >> "$GITHUB_PATH"
       - name: Write ios/Local.xcconfig
+        env:
+          DARKROOM_BUNDLE_ID: ${{ vars.DARKROOM_BUNDLE_ID }}
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
         run: |
           {
             echo "DARKROOM_BUNDLE_ID = $DARKROOM_BUNDLE_ID"
@@ -124,6 +126,11 @@ jobs:
         run: xcodegen generate --spec ios/project.yml --project ios
       - name: DarkroomCore tests
         run: swift test --package-path ios/Packages/DarkroomCore 2>&1 | xcbeautify --renderer github-actions
+      - name: Put the App Store Connect key in place
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: ios/release/write-key.sh
       - name: Archive
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -152,6 +159,7 @@ jobs:
           echo "Archived Build ${archived_version} (${archived_build})"
       - name: Export the signed app
         env:
+          DARKROOM_TEAM_ID: ${{ vars.DARKROOM_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |

@@ -76,6 +76,9 @@ permissions: {}
     permissions:
       contents: read
     steps:
+      - run: swift test
+      - run: ios/release/write-key.sh
+      - run: xcodebuild archive
       - uses: actions/checkout@abc   # v1
         with:
           persist-credentials: false
@@ -114,6 +117,21 @@ class IosRelease(unittest.TestCase):
         found = self.problems(ios=IOS.replace("2.46.0", "2.47.0"))
         self.assertEqual(len(found), 1)
         self.assertIn("pins", found[0])
+
+    def test_a_variable_in_the_job_env_is_named(self):
+        found = self.problems(RELEASE.replace("    steps:\n", "    env:\n      DARKROOM_TEAM_ID: x\n    steps:\n"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("DARKROOM_", found[0])
+
+    def test_a_variable_in_a_step_env_passes(self):
+        self.assertEqual(self.problems(RELEASE + "        env:\n          DARKROOM_TEAM_ID: x\n"), [])
+
+    def test_the_key_written_before_the_tests_or_after_the_archive_is_named(self):
+        early = RELEASE.replace("      - run: swift test\n      - run: ios/release/write-key.sh\n", "      - run: ios/release/write-key.sh\n      - run: swift test\n")
+        late = RELEASE.replace("      - run: ios/release/write-key.sh\n      - run: xcodebuild archive\n", "      - run: xcodebuild archive\n      - run: ios/release/write-key.sh\n")
+        self.assertEqual(len(self.problems(early)), 1)
+        self.assertEqual(len(self.problems(late)), 1)
+        self.assertEqual(len(self.problems(RELEASE.replace("ios/release/write-key.sh", "true"))), 1)
 
     def test_a_missing_file_is_a_problem(self):
         with tempfile.TemporaryDirectory() as d:

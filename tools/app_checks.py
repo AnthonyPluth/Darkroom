@@ -15,6 +15,7 @@ PINNED_TOOLS = re.compile(r"^\s*(XCODEGEN|XCBEAUTIFY)_(VERSION|SHA256):\s*(\S+)\
 PULL_REQUEST_TRIGGER = re.compile(r"\bpull_request\w*\b")
 WRITE_PERMISSION = re.compile(r"(:\s*write\b|\bwrite-all\b)")
 TOP_LEVEL_NO_PERMISSIONS = re.compile(r"^permissions:\s*\{\}\s*$", re.MULTILINE)
+JOB_LEVEL_VARIABLE = re.compile(r"^ {6}DARKROOM_\w+:", re.MULTILINE)
 RELEASE_ENVIRONMENT = re.compile(r"^\s+environment:\s*ios-release\s*$", re.MULTILINE)
 
 
@@ -58,6 +59,11 @@ def check_ios_release(release: str, ios: str) -> list[str]:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the workflow needs a top-level 'permissions: {{}}'")
     if not RELEASE_ENVIRONMENT.search(code):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the release job must run in 'environment: ios-release', which is where its secrets live")
+    if JOB_LEVEL_VARIABLE.search(code):
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: DARKROOM_* variables belong in the env of the steps that use them, not the job's, where every step header would print them")
+    key_write = code.find("write-key.sh")
+    if key_write < 0 or not code.find("swift test") < key_write < code.find("xcodebuild archive"):
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: the key is written by write-key.sh after the tools and tests have run and before the archive")
     if "persist-credentials: false" not in code:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: checkouts need persist-credentials: false")
     ours = {m.group(1, 2): m.group(3) for m in PINNED_TOOLS.finditer(code)}
