@@ -158,6 +158,14 @@ final class NightlyProcessingTests: XCTestCase {
         }
     }
 
+    func testAnUnavailableCheckTellsIosTheNightlyRunFailed() async {
+        let hook = BackgroundCheckHook()
+        hook.install(UnavailableBackgroundCheck())
+        let task = FakeTask()
+        await nightly(FakeScheduler(), hook: hook).run(task)
+        XCTAssertEqual(task.completions, [false])
+    }
+
     func testExpirationStopsTheCheckAndReportsAnUnfinishedRun() async {
         let scheduler = FakeScheduler()
         let hook = BackgroundCheckHook()
@@ -201,6 +209,13 @@ final class SilentPushTests: XCTestCase {
     func testWithoutACheckThereIsNoData() async {
         let fetch = await SilentPush(hook: BackgroundCheckHook()).handle()
         XCTAssertEqual(fetch, .noData)
+    }
+
+    func testAnUnavailableCheckAnswersFailedNotNoData() async {
+        let hook = BackgroundCheckHook()
+        hook.install(UnavailableBackgroundCheck())
+        let fetch = await SilentPush(hook: hook).handle()
+        XCTAssertEqual(fetch, .failed)
     }
 
     func testRunsTheCheckOnce() async {

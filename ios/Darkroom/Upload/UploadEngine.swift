@@ -8,6 +8,7 @@ enum UploadRequest {
 }
 
 final class UploadEngine: @unchecked Sendable {
+    let server: ServerAddress
     private let tracker: UploadStatusTracker
     private let transport: BackgroundUploadTransport
     private let store: ResourceStore
@@ -30,6 +31,7 @@ final class UploadEngine: @unchecked Sendable {
             appVersion: BuildVersion.current.marketing
         )
         let ingester = ResourceIngester(library: library, exporter: exporter, store: storage.store, versions: storage.versions)
+        self.server = server
         self.transport = transport
         self.store = storage.store
         tracker = UploadStatusTracker(runner: coordinator, store: storage.store, scanner: ingester, syncState: storage.syncState)

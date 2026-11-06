@@ -14,22 +14,14 @@ public final class RunRegistry: @unchecked Sendable {
     }
 
     public func run<Value: Sendable>(_ work: @escaping @Sendable () async -> Value) async -> Value? {
-        if isStopped { return nil }
-        let id = UUID()
         let box = ResultBox<Value>()
-        let task = Task {
-            box.set(await work())
-        }
-        guard add(task, id: id) else {
-            task.cancel()
-            return nil
-        }
+        guard let started = start({ box.set(await work()) }) else { return nil }
         await withTaskCancellationHandler {
-            await task.value
+            await started.task.value
         } onCancel: {
-            task.cancel()
+            started.task.cancel()
         }
-        remove(id)
+        remove(started.id)
         return box.value
     }
 
@@ -39,12 +31,16 @@ public final class RunRegistry: @unchecked Sendable {
         for task in tasks { await task.value }
     }
 
-    private func add(_ task: Task<Void, Never>, id: UUID) -> Bool {
+    /// Creates the task and registers it under one lock, so `stop()` either sees it (and cancels and awaits it) or this
+    /// returns nil and nothing runs.
+    private func start(_ body: @escaping @Sendable () async -> Void) -> (id: UUID, task: Task<Void, Never>)? {
         lock.lock()
         defer { lock.unlock() }
-        if stopped { return false }
+        if stopped { return nil }
+        let id = UUID()
+        let task = Task { await body() }
         running[id] = task
-        return true
+        return (id, task)
     }
 
     private func remove(_ id: UUID) {

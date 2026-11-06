@@ -36,6 +36,7 @@ private struct UploadsContainer: View {
             model: uploads,
             server: server,
             person: model.identity?.person,
+            problem: model.signInAgainProblem,
             signInAgain: { Task { await model.signInAgain() } },
             prepareStorage: { Task { await model.prepareUploads() } }
         )

@@ -75,6 +75,29 @@ final class RunRegistryTests: XCTestCase {
         let cancelled = await gate.cancelled
         XCTAssertEqual(cancelled, 1)
     }
+
+    func testStopWaitsForEveryRunEvenWhenItRacesWithManyStarts() async {
+        for _ in 0..<40 {
+            let registry = RunRegistry()
+            let active = Counter()
+            let starts = (0..<20).map { _ in
+                Task {
+                    await registry.run { () async -> Int in
+                        active.bump()
+                        try? await Task.sleep(nanoseconds: 20_000_000)
+                        active.drop()
+                        return 1
+                    }
+                }
+            }
+            await registry.stop()
+            XCTAssertEqual(active.count, 0)
+            for start in starts { _ = await start.value }
+            XCTAssertEqual(active.count, 0)
+            let later = await registry.run { 1 }
+            XCTAssertNil(later)
+        }
+    }
 }
 
 private final class Counter: @unchecked Sendable {
@@ -90,6 +113,12 @@ private final class Counter: @unchecked Sendable {
     func bump() {
         lock.lock()
         value += 1
+        lock.unlock()
+    }
+
+    func drop() {
+        lock.lock()
+        value -= 1
         lock.unlock()
     }
 }
