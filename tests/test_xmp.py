@@ -122,6 +122,19 @@ class ChangesTests(unittest.TestCase):
         dated = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=1.0, description="Old words")
         self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, dated), {})
 
+    def test_a_sidecar_already_holding_googles_new_values_counts_them_as_applied(self):
+        refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
+        self.assertEqual(xmp.changes({}, refreshed, self.OLD, self.NEW), {})
+        self.assertEqual(xmp.applied({}, refreshed, self.OLD, self.NEW), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+
+    def test_nothing_counts_as_applied_unless_google_changed_it_and_the_sidecar_holds_the_new_value(self):
+        refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "IFD0:ImageDescription": "mine"}
+        self.assertEqual(xmp.applied({}, self.WROTE, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied({}, refreshed, self.NEW, self.NEW), frozenset())
+        self.assertEqual(xmp.applied(own, refreshed, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied({}, {}, self.OLD, self.NEW), frozenset())
+
 
 class FillTests(Folder):
     def test_a_sidecar_carries_the_missing_fields_and_reads_back(self):

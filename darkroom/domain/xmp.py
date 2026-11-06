@@ -115,7 +115,20 @@ def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     return fields
 
 
-def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp) -> bool:
+def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
+    done: set[str] = set()
+    described = new.description is not None and new.description != old.description and not has_description(own)
+    if described and media.text(media.tag(existing, "Description")) == new.description:
+        done.add(DESCRIPTION)
+    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+        lat, lon, _ = media.location(existing)
+        if same_place(lat, lon, new.lat, new.lon):
+            done.update((LATITUDE, LONGITUDE))
+    return frozenset(done)
+
+
+def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read,
+            write: Writer = exiftool.write_xmp) -> frozenset[str] | None:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -124,5 +137,7 @@ def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Re
     own = tags.get(media_path)
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
-        return False
-    return write(sidecar, changes(own, existing, old, new))
+        return None
+    fields = changes(own, existing, old, new)
+    write(sidecar, fields)
+    return frozenset(fields) | applied(own, existing, old, new)
