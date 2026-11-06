@@ -75,7 +75,7 @@ public protocol ProcessingTaskHandle: Sendable {
     func complete(success: Bool)
 }
 
-/// The nightly processing task of #60: scheduled for the small hours with network and external power required, rescheduled
+/// The nightly processing task of #60: scheduled for the small hours with network required and no power requirement (design point 5), rescheduled
 /// at the start of every run, cancelled when iOS says the time is up.
 public final class NightlyProcessing: Sendable {
     public static let hour = 2
@@ -112,7 +112,7 @@ public final class NightlyProcessing: Sendable {
             identifier: identifier,
             earliestBegin: Self.nextBegin(after: clock(), calendar: calendar),
             requiresNetwork: true,
-            requiresExternalPower: true
+            requiresExternalPower: false
         )
         do {
             try scheduler.submit(request)
