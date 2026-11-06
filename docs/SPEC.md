@@ -204,7 +204,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 - **People:** each person's Google accounts, iPhones, Immich user and session status. Per iPhone: last check-in, uploads pending, photos eligible to delete.
 - **Exports:** schedule end date, last and next export, download progress per part.
-- **Imports:** counts added, skipped as duplicates, sent to review, and missing GPS.
+- **Imports:** counts added, skipped as duplicates, sent to review, and missing GPS; the summary line also names the items already imported by an earlier export.
 - **Review queue:** side-by-side thumbnails for likely re-encodes. Keep both, skip, or undo any past decision.
 - **Remote browser:** the noVNC view, embedded, for sign-ins.
 

@@ -115,6 +115,11 @@ def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     return fields
 
 
+def removes(old: GoogleMetadata, new: GoogleMetadata) -> bool:
+    lost_place = old.lat is not None and old.lon is not None and (new.lat is None or new.lon is None)
+    return lost_place or (old.description is not None and new.description is None)
+
+
 def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
     done: set[str] = set()
     described = new.description is not None and new.description != old.description and not has_description(own)

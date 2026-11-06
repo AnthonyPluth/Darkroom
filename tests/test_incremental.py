@@ -4,6 +4,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.domain import dedupe, exports, review
+from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelPerson
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
@@ -251,6 +252,34 @@ class IncrementalTests(IncrementalCase):
         self.assertEqual(self.refreshed(), [])
         self.assertIn(DAWN, self.canal_item().sidecar_json)
         self.assertNotIn(CANAL, self.canal_item().sidecar_json)
+
+    def test_a_value_google_removed_and_later_set_again_still_reaches_the_sidecar(self):
+        self.imported()
+        self.imported(place=None, description="", at=NOW + DAY)
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
+        self.assertIn(CANAL, self.canal_sidecar().read_text())
+        self.assertEqual(self.refreshed(), [])
+        self.imported(place=NEW_PLACE, description=DAWN, at=NOW + 2 * DAY)
+        text = self.canal_sidecar().read_text()
+        self.assertIn(DAWN, text)
+        self.assertNotIn(CANAL, text)
+        self.assertEqual((self.canal_item().lat, self.canal_item().lon), NEW_PLACE)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_sidecar_write_that_fails_after_the_check_is_a_failed_item_not_a_skip(self):
+        self.imported()
+        tools = self.world.tools
+
+        def vanishing(path, fields):
+            raise paths.NotASidecar("no sidecar was written")
+
+        self.world.tools = dataclasses.replace(tools, write=vanishing)
+        before = self.canal_sidecar().read_bytes()
+        again = self.imported(place=NEW_PLACE, description=DAWN, at=NOW + DAY)
+        self.assertEqual(again.failed, 1)
+        self.assertEqual(self.canal_sidecar().read_bytes(), before)
+        self.assertEqual(self.refreshed(), [])
+        self.assertIn(CANAL, self.canal_item().sidecar_json)
 
     def test_a_refresh_killed_after_the_sidecar_was_written_is_finished_by_the_retry(self):
         self.imported()

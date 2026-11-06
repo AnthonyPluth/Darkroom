@@ -122,6 +122,12 @@ class ChangesTests(unittest.TestCase):
         dated = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=1.0, description="Old words")
         self.assertEqual(xmp.changes({}, self.WROTE, self.OLD, dated), {})
 
+    def test_a_value_google_dropped_counts_as_removed_and_a_change_does_not(self):
+        self.assertTrue(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=None, lon=None, taken_utc=None, description="Old words")))
+        self.assertTrue(xmp.removes(self.OLD, xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)))
+        self.assertFalse(xmp.removes(self.OLD, self.NEW))
+        self.assertFalse(xmp.removes(xmp.GoogleMetadata(None, None, None, None), self.NEW))
+
     def test_a_sidecar_already_holding_googles_new_values_counts_them_as_applied(self):
         refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
         self.assertEqual(xmp.changes({}, refreshed, self.OLD, self.NEW), {})

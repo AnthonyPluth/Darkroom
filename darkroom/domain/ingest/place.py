@@ -218,17 +218,23 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
         report.skipped += 1
         return
     try:
-        done = xmp.refresh(photos.google_only_file(matched.path), old, new, read, write)
+        path = photos.google_only_file(matched.path)
+        sidecar = paths.sidecar_of(path)
+        if sidecar.exists() or sidecar.is_symlink():
+            paths.checked_sidecar(sidecar)
     except (paths.NotALibraryCopy, paths.OutsideRoot, paths.NotASidecar):
         report.skipped += 1
         return
+    done = xmp.refresh(path, old, new, read, write)
     if done is None:
         report.skipped += 1
         return
-    matched.sidecar_json = entry.fields.sidecar_json
     if not done:
+        if not xmp.removes(old, new):
+            matched.sidecar_json = entry.fields.sidecar_json
         report.skipped += 1
         return
+    matched.sidecar_json = entry.fields.sidecar_json
     if xmp.LATITUDE in done:
         matched.lat, matched.lon, matched.gps_source = new.lat, new.lon, "google"
     report.refreshed.append(matched.id)

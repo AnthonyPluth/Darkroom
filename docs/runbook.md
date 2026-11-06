@@ -100,7 +100,7 @@ The account's Google email cannot be changed while a renew job is open (queued, 
 
 ### Reading an import summary
 
-"Export N: A added, S skipped as duplicates, R in review, G missing GPS" (with ", F could not be imported" when some items failed) counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; that is why later exports show small numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a "Metadata refreshed" line among the latest events on the status page), unless you edited that sidecar since.
+"Export N: A added, S skipped as duplicates, E already imported earlier, R in review, G missing GPS" (", E already imported earlier" only when there are some, and ", F could not be imported" when some items failed) counts this export's decisions. An item that matches a phone original again, one an earlier export already matched, records no new decision and is not counted as skipped; it is counted as already imported earlier instead, which is why later exports show small skipped numbers. An item whose bytes Darkroom already holds is skipped, and if its description or location changed in Google the sidecar is refreshed (a "Metadata refreshed" line among the latest events on the status page), unless you edited that sidecar since; a refreshed location also takes the photo off Missing GPS.
 
 ### "Some originals are not in Google Photos"
 
