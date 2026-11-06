@@ -77,7 +77,7 @@ def list_reviews(request: Request) -> Annotated[Response, contract.Reviews]:
     return json_response(reply)
 
 
-def one(request: Request) -> Annotated[Response, contract.ReviewDetail]:
+def review_one(request: Request) -> Annotated[Response, contract.ReviewDetail]:
     wanted = path_id(request)
     if wanted is None:
         return error_response(NO_REVIEW, 404)
