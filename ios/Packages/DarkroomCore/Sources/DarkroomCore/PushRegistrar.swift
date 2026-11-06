@@ -32,14 +32,14 @@ public actor PushRegistrar {
         case failed
     }
 
-    private let api: @Sendable () async -> PushTokenAPI?
+    private let api: @Sendable () async throws -> PushTokenAPI?
     private var token: String?
     private var registered: String?
     private var generation = 0
     private var pending: Task<Outcome, Never>?
     private var paused = false
 
-    public init(api: @escaping @Sendable () async -> PushTokenAPI?) {
+    public init(api: @escaping @Sendable () async throws -> PushTokenAPI?) {
         self.api = api
     }
 
@@ -85,7 +85,13 @@ public actor PushRegistrar {
     private func register() async -> Outcome {
         guard let current = token else { return .waiting }
         let started = generation
-        guard let client = await api() else { return .waiting }
+        let client: PushTokenAPI
+        do {
+            guard let found = try await api() else { return .waiting }
+            client = found
+        } catch {
+            return .retryLater
+        }
         if paused || generation != started { return .waiting }
         if registered == current { return .registered }
         do {
@@ -110,7 +116,13 @@ public actor PushRegistrar {
     }
 
     private func sendForget() async -> ForgetOutcome {
-        guard let client = await api() else { return .alreadyEnded }
+        let client: PushTokenAPI
+        do {
+            guard let found = try await api() else { return .alreadyEnded }
+            client = found
+        } catch {
+            return .failed
+        }
         do {
             try await client.forgetPushToken()
             return .forgotten

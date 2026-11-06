@@ -30,12 +30,8 @@ final class PushCenter {
 
     private init() {
         let reader = DeviceSession(storage: KeychainSessionStorage())
-        registrar = PushRegistrar(api: { () async -> PushTokenAPI? in
-            do {
-                try await reader.restore()
-            } catch {
-                return nil
-            }
+        registrar = PushRegistrar(api: { () async throws -> PushTokenAPI? in
+            try await reader.restore()
             guard case .signedIn(let server) = await reader.phase else { return nil }
             return PushClient(baseURL: server.url, tokenProvider: reader.tokenProvider())
         })
