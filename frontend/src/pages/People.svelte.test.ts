@@ -3,7 +3,8 @@ import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { familyAccount, joAccount, joPhone, jo, oldPhone, reply, sam, samPhone, serve, shared, solo } from "../test/server";
+import type { Status } from "$lib/api-types";
+import { emptyStatus, familyAccount, joAccount, joPhone, jo, oldPhone, reply, sam, samPhone, serve, shared, solo } from "../test/server";
 import People from "./People.svelte";
 
 beforeEach(() => {
@@ -17,7 +18,16 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const eligibleStatus: Status = {
+  ...emptyStatus,
+  people: [
+    { id: 1, slug: "jo-example", name: "Jo Example", indexed: 0, with_gps: 0, unknown_time: 0, accounts: [], pixels: [], last_import: null, unmatched: null, alerts: [],
+      devices: [{ id: 30, name: "Jo's iPhone", last_checkin: 990, pending_uploads: 0, cleanup_enabled: false, eligible: 212, eligible_bytes: 1_610_612_736, eligible_checked: 990 }] },
+  ],
+};
+
 const seeded = () => ({
+  "GET /api/status": eligibleStatus,
   "GET /api/people": { people: [jo, sam] },
   "GET /api/accounts": { accounts: [joAccount, familyAccount] },
   "GET /api/pixels": { pixels: [solo, shared] },
@@ -34,7 +44,7 @@ function show(routes: Parameters<typeof serve>[0]) {
 
 describe("the People page with no data", () => {
   it("asks for a person first, then an account, and disables what can't be added yet", async () => {
-    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] } });
+    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("Add a person first.")).toBeInTheDocument();
     expect(screen.getByText("Add a Google account first.")).toBeInTheDocument();
     expect(screen.getByText("No iPhone has signed in yet.")).toBeInTheDocument();
@@ -44,7 +54,7 @@ describe("the People page with no data", () => {
   });
 
   it("says no accounts or Pixels yet once there is a person", async () => {
-    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/people/1/devices": { devices: [] } });
+    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/people/1/devices": { devices: [] }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("No Google accounts yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
@@ -117,6 +127,16 @@ describe("the People page with data", () => {
     const oldCard = screen.getByRole("article", { name: "Old iPhone, Sam Example" });
     expect(within(oldCard).getByText("Revoked")).toBeInTheDocument();
     expect(within(oldCard).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows the photos eligible to delete with their space, or that they were not checked", async () => {
+    show(seeded());
+    const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
+    expect(within(joCard).getByText("Eligible to delete")).toBeInTheDocument();
+    expect(joCard).toHaveTextContent("212 photos (1.5 GB), confirmed in Google Photos");
+    const samCard = screen.getByRole("article", { name: "Sam's iPhone, Sam Example" });
+    expect(samCard).toHaveTextContent("Eligible to delete");
+    expect(samCard).toHaveTextContent("Not checked yet");
   });
 
   it("marks an iPhone with uploads waiting", async () => {
@@ -289,6 +309,78 @@ describe("forms in dialogs", () => {
     await userEvent.click(within(ask).getByRole("button", { name: "Revoke iPhone" }));
     await waitFor(() => expect(server.sent("DELETE /api/devices/30")).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+describe("the Cleanup switch", () => {
+  const ON = { ...joPhone, cleanup_enabled: true };
+  const turnOn = () => screen.findByRole("switch", { name: "Cleanup off for Jo's iPhone, Jo Example" });
+
+  it("is off with its sentence, and absent on a revoked iPhone", async () => {
+    show(seeded());
+    const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
+    expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+    expect(joCard).toHaveTextContent("Nothing is deleted from this phone while cleanup is off.");
+    const oldCard = screen.getByRole("article", { name: "Old iPhone, Sam Example" });
+    expect(within(oldCard).queryByRole("switch")).not.toBeInTheDocument();
+  });
+
+  it("asks about iCloud Photos before turning on, then sends the confirmation", async () => {
+    let enabled = false;
+    const server = show({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [{ ...joPhone, cleanup_enabled: enabled }] }),
+      "PATCH /api/devices/30": () => {
+        enabled = true;
+        return { device: ON };
+      },
+    });
+    await userEvent.click(await turnOn());
+    const ask = await screen.findByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" });
+    expect(ask).toHaveTextContent("Confirm that iCloud Photos is off on this iPhone. With it on, deleting a photo from the phone also removes it from iCloud and every other device.");
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(0);
+    await userEvent.click(within(ask).getByRole("button", { name: "Turn on cleanup" }));
+    await waitFor(() => expect(server.sent("PATCH /api/devices/30")).toHaveLength(1));
+    expect(server.sent("PATCH /api/devices/30")[0]?.body).toEqual({ cleanup_enabled: true, icloud_photos_off: true });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("leaves it off and sends nothing when the question is cancelled", async () => {
+    const server = show({ ...seeded(), "PATCH /api/devices/30": { device: ON } });
+    await userEvent.click(await turnOn());
+    const ask = await screen.findByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(0);
+    expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("stays off and says why when turning on fails", async () => {
+    show({ ...seeded(), "PATCH /api/devices/30": reply(409, { error: "confirm that iCloud Photos is off on this iPhone before turning cleanup on" }) });
+    await userEvent.click(await turnOn());
+    const ask = await screen.findByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Turn on cleanup" }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent("confirm that iCloud Photos is off");
+    await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("turns off at once, with no question", async () => {
+    const server = show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": { device: joPhone } });
+    await userEvent.click(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
+    await waitFor(() => expect(server.sent("PATCH /api/devices/30")).toHaveLength(1));
+    expect(server.sent("PATCH /api/devices/30")[0]?.body).toEqual({ cleanup_enabled: false });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("puts the switch back on and shows the error when turning off fails", async () => {
+    show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": reply(503, { error: "Darkroom is busy with another change; try again in a moment" }) });
+    await userEvent.click(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
+    const joCard = screen.getByRole("article", { name: "Jo's iPhone, Jo Example" });
+    expect(await within(joCard).findByRole("alert")).toHaveTextContent("Darkroom is busy");
+    expect(screen.getByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" })).toHaveAttribute("aria-checked", "true");
   });
 });
 
