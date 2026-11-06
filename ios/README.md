@@ -33,7 +33,7 @@ Which one to use is decided in #10 item 7.
 
 ## The `iOS` check
 
-`.github/workflows/ios.yml` (workflow `iOS`, a required workflow of the merge gate) runs on pull requests and pushes to `main`:
+`.github/workflows/ios.yml` (workflow `iOS`, a required workflow of the merge gate) runs on pushes to `main` and on every pull request, whatever its base branch (a stacked pull request, whose base is a feature branch, is built and tested before review; the `changes` job diffs it against its own base):
 
 1. A `changes` job on Linux decides whether `ios/` or the workflow file changed. If not, the `build` job is skipped, a skipped job counts as passed, and backend pull requests never wait on macOS.
 2. The `build` job runs on `macos-15` (pinned, so Xcode does not change under a pull request): select the Xcode version in `ios/.xcode-version`, install XcodeGen and xcbeautify at pinned versions (checksums verified), `xcodegen generate`, `swift test` for DarkroomCore, then an unsigned `xcodebuild` build for `generic/platform=iOS Simulator` with `CODE_SIGNING_ALLOWED=NO`. No team id, certificate or secret is involved.
