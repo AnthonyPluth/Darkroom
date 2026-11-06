@@ -382,6 +382,50 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.resource.sha1, "new")
     }
 
+    func testAResourceThatLeftTheDeviceBeforeItUploadedIsStoredAsNotLocalNotRetriedForever() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a, sha1: "old")])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.rejected(status: 422))
+        let cloud = LocalResource(key: a, sha1: "", bytes: 0, filename: "a.HEIC", state: .notLocal)
+        let result = try await coordinator(rig, rehash: cloud).run()
+        XCTAssertEqual(result.failed, 0)
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource, cloud)
+        let again = try await coordinator(rig).run()
+        XCTAssertEqual(again.uploaded, 0)
+        let requests = await rig.api.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testAFileThatCannotBeReadLocallyFailsAloneAndTheRestStillUpload() async throws {
+        struct WriteFailed: Error {}
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.uploaded, 1)
+        let first = try await rig.store.record(for: a)
+        let second = try await rig.store.record(for: b)
+        XCTAssertEqual(first?.resource.state, .failed)
+        XCTAssertEqual(second?.resource.state, .uploaded)
+    }
+
+    func testAResourceGoneFromTheLibraryGoesBackToHashedWithoutStoppingTheRun() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a), hashed(b)])
+        await rig.api.setNeeded([a, b])
+        await rig.transport.fail(a, with: APIError.forLocalExport(ExportError.resourceGone))
+        let result = try await coordinator(rig).run()
+        XCTAssertEqual(result.outcome, .finished)
+        XCTAssertEqual(result.uploaded, 1)
+        let first = try await rig.store.record(for: a)
+        XCTAssertEqual(first?.resource.state, .hashed)
+    }
+
     func testHashMismatchWithTheSameHashFails() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a, sha1: "same")])
