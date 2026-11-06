@@ -146,8 +146,15 @@ def follow_alerts(opened: Session, old: str, new: str) -> None:
         alert.message = alert.message.replace(old, new)
 
 
+def lock(opened: Session, account_id: int) -> GoogleAccount:
+    try:
+        return browser_jobs.lock_account(opened, account_id)
+    except browser_jobs.UnknownAccount:
+        raise NoSuchAccount(f"no Google account {account_id}") from None
+
+
 def update(opened: Session, account_id: int, email: str | None, default_person_id: int | None, now: float) -> GoogleAccount:
-    account = get(opened, account_id)
+    account = lock(opened, account_id)
     if email is not None:
         require_free_email(opened, email, account.id)
         if email != account.email and browser_jobs.has_open_onboarding_job(opened, account.id):

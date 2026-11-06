@@ -260,6 +260,38 @@ class RenewalFailureTests(FailingCase):
         self.assertEqual(self.alerts_of("schedule_renewal_failed"), [])
         self.assertEqual(len(self.alerts_of("schedule_renewal_unconfirmed")), 1)
 
+    def test_a_renewal_that_fails_under_a_day_before_the_end_repeats_in_the_past_tense_once_it_has_ended(self):
+        self.watch(NOTICE_AT)
+        self.fail(END - 3600)
+        ((_, before, _, _, _),) = self.alerts_of("schedule_renewal_failed")
+        self.assertIn("and it ends on", before)
+        sent = []
+
+        def notifier(settings, title, message, link):
+            sent.append(message)
+            return alerts.SENT
+
+        with db.session(self.engine) as opened:
+            self.assertEqual(renewal.reword_ended(opened, self.settings, END - 3600 + DAY), 1)
+            self.assertEqual(alerts.tick(opened, self.settings, END - 3600 + DAY, notifier), 1)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("and it ended on 15 Jan 2028", sent[0])
+        self.assertNotIn("and it ends on", sent[0])
+        self.assertIn("press Create schedule on the Exports page to make a new one", sent[0])
+
+    def test_rewording_leaves_a_schedule_that_has_not_ended_and_rewords_an_ended_one_once(self):
+        self.watch(NOTICE_AT)
+        self.fail(NOTICE_AT + 120)
+        with db.session(self.engine) as opened:
+            self.assertEqual(renewal.reword_ended(opened, self.settings, END - 1), 0)
+        ((_, message, _, _, _),) = self.alerts_of("schedule_renewal_failed")
+        self.assertIn("and it ends on", message)
+        with db.session(self.engine) as opened:
+            self.assertEqual(renewal.reword_ended(opened, self.settings, END + 1), 1)
+            self.assertEqual(renewal.reword_ended(opened, self.settings, END + 2), 0)
+        ((_, message, _, _, _),) = self.alerts_of("schedule_renewal_failed")
+        self.assertIn("and it ended on", message)
+
     def test_a_failed_renewal_is_not_queued_again_and_the_failed_alert_keeps_repeating_while_the_ending_alert_stays_closed(self):
         self.watch(NOTICE_AT)
         self.fail(NOTICE_AT + 120)
