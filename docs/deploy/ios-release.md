@@ -29,7 +29,7 @@ Darkroom is a public repository, so the workflow has no `pull_request` or `pull_
 Apple Developer account:
 
 1. Enroll in the Apple Developer Program.
-2. Certificates, Identifiers & Profiles, Identifiers: create the App ID for the bundle id you choose (a reverse-DNS id you own), with **Push Notifications** enabled.
+2. Certificates, Identifiers & Profiles, Identifiers: create the App ID for the bundle id you choose (a reverse-DNS id you own), with **Push Notifications** enabled. The app declares the `aps-environment` entitlement (`ios/Config/Darkroom-Release.entitlements`, `production`, for the Release archive TestFlight gets; `Darkroom-Debug.entitlements`, `development`, for builds run from Xcode), so the profile must carry the capability: enable it before the first signed build. With cloud-managed signing the archive step asks Apple for a profile that includes it; whether Apple adds the capability to the App ID itself or the step fails is not verified (see the list at the end). If you enabled it after an earlier profile was made, run again so the profile is regenerated.
 3. App Store Connect, Apps: create the app record for that bundle id.
 4. Users and Access, Integrations, App Store Connect API: create a team key with the **Admin** role. Cloud-managed distribution certificates and profiles are created and used on the key's behalf, which Apple limits to Account Holders and Admins (Apple's cloud-managed certificates page: "Required role: Account Holder or Admin", with extra permissions for other roles); an App Manager key can upload a build but the archive and export steps would likely fail on signing. The cost is that an Admin key can do more than upload (manage users, certificates, apps), so keep it only in the `ios-release` environment, and revoke and replace it if it may have leaked. If you prefer least privilege, you can try an App Manager key first in a dry run (optional); it works only if Apple's role permissions let it use cloud signing for your team, and you fall back to Admin if the archive step fails on signing. Note the **Issuer ID** (a UUID shown above the keys) and the **Key ID** (10 characters), and download `AuthKey_<key id>.p8`: Apple allows the download once.
 5. TestFlight: add the family as internal testers (they need an Apple ID invited under Users and Access).
@@ -71,6 +71,7 @@ If the key may have leaked (a log, a pull request, a laptop), revoke it first, t
 
 Test these with the first real key (a dry run covers the first four):
 
+- That the archive carries `aps-environment` `production` from `ios/Config/Darkroom-Release.entitlements` and that cloud-managed signing produces a profile with Push Notifications (or fails clearly when the App ID lacks it).
 - That an Admin key is what cloud-managed signing needs through `-allowProvisioningUpdates` (Apple's pages confirm the Account Holder or Admin requirement for cloud-managed certificates but do not name the API key case), and whether App Manager works.
 - That the archive step doesn't ask for a registered device.
 - That `xcodebuild -exportArchive` with `method: app-store-connect`, `destination: export` and automatic signing yields `Darkroom.ipa` under Xcode 26.6.
