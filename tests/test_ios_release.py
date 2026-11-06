@@ -106,6 +106,44 @@ class WriteKey(unittest.TestCase):
             self.assertFalse((Path(temp) / "asc").exists())
 
 
+class CheckUpload(unittest.TestCase):
+    SUCCESS = "Uploading package...\nNo errors uploading 'Darkroom.ipa'\nDelivery UUID: 1234\n"
+    DUPLICATE = (
+        "ERROR: [ContentDelivery.Uploader] Asset validation failed (-19232) The bundle version must be higher.\n"
+        "Successfully uploaded package\n"
+    )
+
+    def check(self, status, output):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "altool.log"
+            log.write_text(output)
+            return subprocess.run(["bash", str(RELEASE / "check-upload.sh"), str(status), str(log)], capture_output=True, text=True)
+
+    def test_a_delivered_build_passes(self):
+        result = self.check(0, self.SUCCESS)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Delivery verified", result.stdout)
+
+    def test_an_error_record_fails_even_when_altool_exits_zero(self):
+        result = self.check(0, self.DUPLICATE)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error while exiting 0", result.stdout)
+
+    def test_product_errors_in_structured_output_fail(self):
+        self.assertEqual(self.check(0, '{"product-errors": [{"code": -19232}]}\nSuccessfully uploaded package').returncode, 1)
+
+    def test_a_non_zero_exit_fails(self):
+        result = self.check(1, self.SUCCESS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status 1", result.stdout)
+
+    def test_output_with_no_sign_of_delivery_fails(self):
+        for output in ("", "Uploading package...\n"):
+            result = self.check(0, output)
+            self.assertEqual(result.returncode, 1, output)
+            self.assertIn("no sign", result.stdout)
+
+
 class Plan(unittest.TestCase):
     def plan(self, **env):
         with tempfile.TemporaryDirectory() as d:

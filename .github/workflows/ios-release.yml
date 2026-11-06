@@ -190,8 +190,10 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           API_PRIVATE_KEYS_DIR: ${{ runner.temp }}/asc
         run: |
+          status=0
           xcrun altool --upload-app --type ios --file "$RUNNER_TEMP/export/Darkroom.ipa" \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > "$RUNNER_TEMP/altool.log" 2>&1 || status=$?
+          ios/release/check-upload.sh "$status" "$RUNNER_TEMP/altool.log"
       - name: Summary
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -205,4 +207,4 @@ jobs:
           fi
       - name: Remove the key and the signed output
         if: always()
-        run: rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/export" "$RUNNER_TEMP/Darkroom.xcarchive" "$RUNNER_TEMP/ExportOptions.plist" ios/Local.xcconfig
+        run: rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/export" "$RUNNER_TEMP/Darkroom.xcarchive" "$RUNNER_TEMP/ExportOptions.plist" "$RUNNER_TEMP/altool.log" ios/Local.xcconfig

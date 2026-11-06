@@ -7,7 +7,7 @@ The unsigned build and tests that pull requests need are `ios.yml`'s (the `iOS` 
 ## What the workflow does
 
 1. `plan` (Linux, no environment, no secret): accepts only an `ios-v<major>.<minor>.<patch>` tag push or a manual dispatch from `main`, takes the marketing version from the tag (or the dispatch's `version`), and checks the commit is on `main`. Any other trigger fails here with the reason.
-2. `release` (`macos-26`, `environment: ios-release`): waits for the owner's approval, then checks the configuration (below), selects Xcode from `ios/.xcode-version-release`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool`.
+2. `release` (`macos-26`, `environment: ios-release`): waits for the owner's approval, then checks the configuration (below), selects Xcode from `ios/.xcode-version-release`, installs XcodeGen and xcbeautify at the pins and checksums `ios.yml` uses, writes `ios/Local.xcconfig` from the variables, generates the project, runs the DarkroomCore tests, writes the App Store Connect key, archives `Release` for `generic/platform=iOS` with `MARKETING_VERSION` from the tag and `CURRENT_PROJECT_VERSION` from the run number, checks the archive carries both, exports the signed `.ipa` and, unless this is a dry run, uploads it with `xcrun altool` and checks the result with `ios/release/check-upload.sh`.
 3. An `always()` step removes the key file, the archive and the export.
 
 A tag push always uploads. A manual dispatch uploads only when its `upload` input is `true`; the default `false` archives and exports (so signing is exercised) and uploads nothing.
@@ -72,6 +72,7 @@ Test these with the first real key (a dry run covers the first four):
 - That `xcodebuild -exportArchive` with `method: app-store-connect`, `destination: export` and automatic signing yields `Darkroom.ipa` under Xcode 26.6.
 - That the app and DarkroomCore tests compile on Xcode 26.6 on `macos-26`.
 - That `xcrun altool --upload-app` with `API_PRIVATE_KEYS_DIR` accepts the key and the upload appears in TestFlight (Apple's upload page says altool is supported).
+- That `ios/release/check-upload.sh` reads altool's real output right. Xcode 26's `altool` can print `ERROR:` records and still exit 0 (fastlane #29740), so the step fails on a non-zero exit, on any error record or `product-errors`, and when none of altool's success texts (`No errors uploading`, `UPLOAD SUCCEEDED`, `Successfully uploaded`, `Delivery UUID`) appears, and the summary runs only after that. The error and success texts are matched from fastlane's report and altool's older output, not from a real run: a real upload that fails this check although TestFlight received the build means a success text needs adding, and a duplicate build number must make it fail.
 - That the `macos-26` image still carries Xcode 26.6 (checked against the runner-images readme today).
 
 ## Not yet proven

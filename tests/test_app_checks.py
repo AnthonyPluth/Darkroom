@@ -153,6 +153,14 @@ class IosRelease(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("xcbeautify", found[0])
 
+    def test_an_upload_not_checked_by_its_output_is_named(self):
+        upload = "      - run: xcrun altool --upload-app\n      - run: ios/release/check-upload.sh 0 log\n"
+        self.assertEqual(self.problems(RELEASE + upload), [])
+        found = self.problems(RELEASE + "      - run: xcrun altool --upload-app\n")
+        self.assertEqual(len(found), 1)
+        self.assertIn("check-upload.sh", found[0])
+        self.assertEqual(len(self.problems(RELEASE + "      - run: ios/release/check-upload.sh 0 log\n      - run: xcrun altool --upload-app\n")), 1)
+
     def test_a_workflow_that_never_removes_the_key_is_named(self):
         self.assertEqual(len(self.problems(RELEASE.replace('rm -rf "$RUNNER_TEMP/asc"', "true"))), 1)
 

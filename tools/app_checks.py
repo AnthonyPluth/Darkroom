@@ -83,6 +83,8 @@ def check_ios_release(release: str, ios: str) -> list[str]:
     key_lifetime = code[code.find("write-key.sh") :]
     if "xcbeautify" in key_lifetime or 'rm -rf "$RUNNER_TEMP/asc"' not in code:
         problems.append(f"{IOS_RELEASE_WORKFLOW}: no third-party tool (xcbeautify) may run after write-key.sh, while the key file exists, and the always() step must remove it")
+    if "altool" in code and code.find("check-upload.sh") < code.find("altool"):
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: altool can print errors and exit 0, so the upload step must pass its status and output to ios/release/check-upload.sh")
     for block in _checkout_blocks(code):
         if "persist-credentials: false" not in block:
             problems.append(f"{IOS_RELEASE_WORKFLOW}: every actions/checkout needs persist-credentials: false")
