@@ -398,20 +398,42 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
     }
 
-    func testAFileThatCannotBeReadLocallyFailsAloneAndTheRestStillUpload() async throws {
+    func testATransientExportFailureKeepsTheFileRetryableAndTheRestStillUpload() async throws {
         struct WriteFailed: Error {}
         let rig = Rig()
         try await rig.store.upsert([hashed(a), hashed(b)])
         await rig.api.setNeeded([a, b])
         await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
-        let result = try await coordinator(rig).run()
-        XCTAssertEqual(result.outcome, .finished)
-        XCTAssertEqual(result.failed, 1)
-        XCTAssertEqual(result.uploaded, 1)
-        let first = try await rig.store.record(for: a)
+        let coordinator = coordinator(rig)
+        let first = try await coordinator.run()
+        XCTAssertEqual(first.outcome, .finished)
+        XCTAssertEqual(first.failed, 0)
+        XCTAssertEqual(first.uploaded, 1)
+        let waiting = try await rig.store.record(for: a)
+        XCTAssertEqual(waiting?.resource.state, .checked)
+        XCTAssertEqual(waiting?.attempts, 1)
         let second = try await rig.store.record(for: b)
-        XCTAssertEqual(first?.resource.state, .failed)
         XCTAssertEqual(second?.resource.state, .uploaded)
+        await rig.transport.fail(a, with: nil)
+        let again = try await coordinator.run()
+        XCTAssertEqual(again.uploaded, 1)
+        let done = try await rig.store.record(for: a)
+        XCTAssertEqual(done?.resource.state, .uploaded)
+    }
+
+    func testAnExportThatKeepsFailingGivesUpAsARecoverableFailureNeverAHashMismatch() async throws {
+        struct WriteFailed: Error {}
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.transport.fail(a, with: APIError.forLocalExport(WriteFailed()))
+        let coordinator = coordinator(rig)
+        for _ in 0..<3 { _ = try await coordinator.run() }
+        let record = try await rig.store.record(for: a)
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.recoverable, true)
+        XCTAssertEqual(record?.failureReason?.contains("could not be exported"), true)
+        XCTAssertEqual(record?.failureReason?.contains("different bytes"), false)
     }
 
     func testAResourceGoneFromTheLibraryGoesBackToHashedWithoutStoppingTheRun() async throws {
