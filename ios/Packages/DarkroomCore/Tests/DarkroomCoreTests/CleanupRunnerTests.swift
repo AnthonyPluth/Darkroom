@@ -627,6 +627,124 @@ final class CleanupRunnerTests: XCTestCase {
         XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])))
     }
 
+    func testAReportRefusedBecauseThisIPhoneWasDisconnectedIsDroppedAndSaysSo() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case let .disconnected(report) = outcome else { return XCTFail("not disconnected: \(outcome)") }
+        XCTAssertEqual(report.removed, ["a"])
+        XCTAssertEqual(report.recorded, [])
+        XCTAssertEqual(report.unrecorded.map(\.assetID), ["a"])
+        XCTAssertEqual(report.unrecorded.map(\.reason), [CleanupRunner.disconnectedReason])
+        let saved = try await rig.pending.load()
+        XCTAssertNil(saved)
+        let state = await runner.state
+        XCTAssertEqual(state.phase, .finished)
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
+    }
+
+    func testAnEarlierReportRefusedBecauseThisIPhoneWasDisconnectedIsDroppedAndSaysSo() async throws {
+        let rig = try await rig(["b"])
+        try await rig.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
+        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        let first = try await rig.runner().refresh()
+        guard case let .disconnected(report) = first else { return XCTFail("not disconnected: \(first)") }
+        XCTAssertEqual(report.removed, ["a"])
+        XCTAssertEqual(report.unrecorded.map(\.assetID), ["a"])
+        XCTAssertEqual(report.unrecorded.map(\.reason), [CleanupRunner.disconnectedReason])
+        let saved = try await rig.pending.load()
+        XCTAssertNil(saved)
+        let asked = await rig.api.eligibleCalls.count
+        XCTAssertEqual(asked, 0)
+        let second = try await rig.runner().refresh()
+        guard case .listed = second else { return XCTFail("not listed: \(second)") }
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
+    }
+
+    func testADisconnectedReportWhoseRecordCannotBeClearedSaysSoAndIsNotSentAgain() async throws {
+        let unclearable = UnclearablePendingReport()
+        let rig = try await rig(["a"], pending: unclearable)
+        await rig.api.set(deletedErrors: [APIError.unauthorized])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case let .recordNotCleared(report) = outcome else { return XCTFail("not recordNotCleared: \(outcome)") }
+        XCTAssertEqual(report.unrecorded.map(\.reason), [CleanupRunner.disconnectedReason])
+        await unclearable.set(clearsFail: false)
+        _ = try await runner.refresh()
+        let reports = await rig.api.deletedCalls
+        XCTAssertEqual(reports, [DeletedRequest(assetIDs: ["a"])])
+        let saved = await unclearable.load()
+        XCTAssertNil(saved)
+    }
+
+    func testAReportWithNoTokenOnThisIPhoneAsksForSignInAndIsKept() async throws {
+        let rig = try await rig(["a"])
+        await rig.api.set(deletedErrors: [APIError.notSignedIn])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        XCTAssertEqual(outcome, .needsSignIn)
+        let saved = try await rig.pending.load()
+        XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])))
+        let retried = try await runner.retryReport()
+        guard case let .finished(finished) = retried else { return XCTFail("not finished: \(retried)") }
+        XCTAssertEqual(finished.recorded, ["a"])
+        let cleared = try await rig.pending.load()
+        XCTAssertNil(cleared)
+    }
+
+    func testAnEarlierReportWithNoTokenOnThisIPhoneAsksForSignInAndIsKept() async throws {
+        let rig = try await rig(["b"])
+        try await rig.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
+        await rig.api.set(deletedErrors: [APIError.notSignedIn])
+        let first = try await rig.runner().refresh()
+        XCTAssertEqual(first, .needsSignIn)
+        let saved = try await rig.pending.load()
+        XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])))
+    }
+
+    func testATransientReportFailureIsKeptAndNeverSaysDisconnected() async throws {
+        let transient: [APIError] = [
+            .transport("-1009"), .server(status: 500), .server(status: 503), .rejected(status: 408), .rejected(status: 429),
+        ]
+        for error in transient {
+            let rig = try await self.rig(["a"])
+            await rig.api.set(deletedErrors: [error])
+            let runner = rig.runner()
+            _ = try await runner.refresh()
+            let outcome = try await runner.remove(shown: ["a"])
+            guard case let .reportPending(report) = outcome else { return XCTFail("\(error): not pending: \(outcome)") }
+            XCTAssertEqual(report.removed, ["a"], "\(error)")
+            let saved = try await rig.pending.load()
+            XCTAssertEqual(saved, .deleted(DeletedRequest(assetIDs: ["a"])), "\(error)")
+
+            let earlier = try await self.rig(["b"])
+            try await earlier.pending.save(.deleted(DeletedRequest(assetIDs: ["a"])))
+            await earlier.api.set(deletedErrors: [error])
+            let first = try await earlier.runner().refresh()
+            guard case .reportPending = first else { return XCTFail("\(error): earlier not pending: \(first)") }
+            let kept = try await earlier.pending.load()
+            XCTAssertEqual(kept, .deleted(DeletedRequest(assetIDs: ["a"])), "\(error)")
+        }
+    }
+
+    func testAReportTheServerRecordsIsClearedAndNeverSaysDisconnected() async throws {
+        let rig = try await rig(["a"])
+        let runner = rig.runner()
+        _ = try await runner.refresh()
+        let outcome = try await runner.remove(shown: ["a"])
+        guard case let .finished(report) = outcome else { return XCTFail("not finished: \(outcome)") }
+        XCTAssertEqual(report.recorded, ["a"])
+        XCTAssertEqual(report.unrecorded, [])
+        let saved = try await rig.pending.load()
+        XCTAssertNil(saved)
+    }
+
     func testTwoRetriesAtOnceSendTheReportOnce() async throws {
         let rig = try await rig(["a"])
         await rig.api.set(deletedErrors: [APIError.transport("-1001")])
