@@ -37,8 +37,17 @@ The browser worker is the fragile part; everything after the inbox works without
 Alert "Google sign-in needed" (or "Wrong Google account"). The worker never types a password or a 2FA code; it stops and waits.
 
 1. Open the link in the alert (the `VNC_URL` browser view, behind the same sign-in as Darkroom).
-2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page.
-3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes. If the job already timed out, press Connect on the Exports page.
+2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page (a page the worker does not recognise for more than 5 minutes fails the job).
+3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes.
+
+A job waits 48 hours for the sign-in and then fails ("Darkroom needs a look" names it). Signing in afterwards does not resume it, and Darkroom does not start it again: Connect only queues a separate connect job. The account also stays marked as needing sign-in, so "Check exports now" and the daily check skip it until a connect succeeds. To recover:
+
+1. Press Connect on the Exports page, sign in as above, and wait for the connect job to finish.
+2. Start again what failed:
+   - **A check of Takeout**: press "Check exports now".
+   - **Create schedule**: press Create schedule. If the failed attempt may have created one, the page first asks you to look in Takeout and answer ("Takeout has the schedule" or "I checked Takeout, there is no schedule").
+   - **A download**: nothing to press. The next check (the daily one, or "Check exports now") queues a new download job. An export gives up after 3 download jobs that failed once a part had started (a job that only timed out waiting for sign-in does not use one); it is then marked failed on the Exports page and has to be hand-dropped (below). An export with an "about to expire" alert is on a clock (the alert opens 4 days before), so sign in promptly.
+   - **A renewal**: it is not retried, whatever you press. If it failed before the worker clicked Create export, the alert is "Takeout schedule not renewed"; if the worker stopped reporting or Takeout did not confirm, it is "Takeout schedule renewal not confirmed". Follow the matching section below: answer the buttons for "not confirmed", or press Create schedule once the schedule has ended for "not renewed".
 
 "Wrong Google account" means the browser is signed in as someone else: sign out there and sign in as the named account.
 
@@ -46,8 +55,8 @@ Alert "Google sign-in needed" (or "Wrong Google account"). The worker never type
 
 Takeout keeps an export for about a week. The alert "A Takeout export is about to expire" means Darkroom has not finished downloading it; an export marked expired on the Exports page is gone.
 
-- If it is only about to expire, check that the worker is running and has not hit a failure alert (below). The daily check re-queues a download that failed, up to its limits.
-- If it expired, download it by hand while it is listed or ask Takeout for a new export, then hand-drop the parts (below). The scheduled exports continue every 2 months regardless.
+- If it is only about to expire, check that the worker is running and has not hit a failure alert (above and below). The daily check (or "Check exports now") re-queues a download that failed, up to 3 download jobs that failed after starting a part, per export; it only runs for an account that is signed in. If Darkroom will not get there in time, download the parts by hand from Takeout's export list while the alert is still open, then hand-drop them (below).
+- If it expired, Takeout no longer has the files, so nothing can be downloaded, by Darkroom or by hand. The only recovery is a new export: request one in Takeout (Darkroom itself only creates the schedule), download it, and hand-drop the parts. The scheduled exports keep coming every 2 months until the schedule ends.
 
 ### Google changed a page
 
@@ -55,7 +64,7 @@ Alert "Darkroom needs a look" with a link to the capture of the failed job. The 
 
 1. Open the capture and compare it with what the worker expected (the job's message names the step, for example `UnexpectedPage` or a missing control).
 2. Every selector and label the worker looks for is in `darkroom_browser/selectors.py`. Change the one that moved, update the matching page fixture and test under `tests/browser/`, and deploy a new worker image.
-3. Run the step again from the Exports page (Connect, Create schedule or Check exports now; downloads queue themselves). Until the fix is deployed, use the fallback: download the parts by hand and hand-drop them.
+3. Run the step again from the Exports page (Connect, Create schedule or Check exports now); a failed job is not started again by itself, and a download is queued again by the next check (see "A job is waiting for sign-in" for the limit). Until the fix is deployed, use the fallback: download the parts by hand (while Takeout still lists them) and hand-drop them.
 
 ### Hand-dropping an export
 
@@ -65,7 +74,7 @@ Put the Takeout `.zip` parts, all of one export, in `<photos>/_inbox/<person>/ma
 docker compose exec darkroom python run.py import-takeout --person <slug> [--account <google email>] [--dir <other folder>]
 ```
 
-`--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Importing the same export twice is refused.
+`--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Running it again for an export that was already imported says so and changes nothing. The person needs a Google account in Darkroom to attach the export to; with several, say which with `--account`.
 
 ### The schedule renewal
 
