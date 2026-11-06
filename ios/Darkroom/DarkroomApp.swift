@@ -7,6 +7,7 @@ struct DarkroomApp: App {
     @StateObject private var model = AppModel()
 
     init() {
+        BackgroundWork.register()
         let bar = UITabBarAppearance()
         bar.configureWithOpaqueBackground()
         bar.backgroundColor = UIColor(Color.rail)
