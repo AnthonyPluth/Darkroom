@@ -75,6 +75,11 @@ The phone app's feature is called "Free Up Space" (added in v2.5.0), not "clear 
 - For a gap of "an hour or two at most" (#199, answer 1): nothing documented guarantees it. The observed uploads above, a video then its still minutes apart and videos with no still 15 to 20 minutes later, are consistent with the phone app uploading in pieces.
 - Live Photos, edited versions, RAW files and background upload time limits are not covered by the page. **Not determined.**
 
+## Caveats found in review
+
+- With partner sharing and timeline access enabled, metadata search in v3.3.6 also covers the authenticated user's partner IDs, so a per-person reconcile can see another person's shared assets, or the same asset twice. Filter the returned `ownerId` (tracked as item 270 on #108).
+- `mobile-app` metadata added after upload (for example by the "Sync Cloud IDs" backfill) does not update the asset's `updatedAt`, so a scan by `updatedAt` will not revisit it and the asset stays classified as not a phone upload. Metadata changes need their own path, such as `AssetMetadataV1` in the sync stream (tracked as item 271 on #108).
+
 ## What to decide or test next
 
 - Whether the job pages by `cursor` over `filter.updatedAt` (observed, with an overlap), or reads the sync stream (spec only, and the only source of deletions).
