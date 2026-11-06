@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events
-from darkroom.storage.models import BrowserJob, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 
 NOTICE = 21 * alerts.DAY
 ENDING = "schedule_ending"
@@ -119,6 +119,23 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
         events.record(opened, now, "schedule_renewal_queued", f"account {account.id}", f"the schedule ends {on_date(end, settings.timezone)}")
         queued += 1
     return queued
+
+
+def reword_ended(opened: Session, settings: Settings, now: float) -> int:
+    reworded = 0
+    ended = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None), GoogleAccount.schedule_end <= now).order_by(GoogleAccount.id)
+    for account in opened.execute(ended).scalars().all():
+        assert account.schedule_end is not None
+        day = on_date(account.schedule_end, settings.timezone)
+        for key, kind, wording in (
+            (ending_key(account.id), ENDING, alerts.schedule_ending(account.email, day, True)),
+            (failed_key(account.id), RENEWAL_FAILED, alerts.schedule_renewal_failed(account.email, day, True)),
+        ):
+            for alert in opened.execute(select(Alert).where(Alert.key == key, Alert.kind == kind, Alert.closed.is_(None))).scalars():
+                if alert.message != wording.message:
+                    alert.message = wording.message
+                    reworded += 1
+    return reworded
 
 
 def job_failed(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
