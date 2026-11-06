@@ -160,7 +160,20 @@ final class UploadStatusTests: XCTestCase {
         let status = await makeTracker([.success(result(.finished))], store: UnreadableStore()).syncNow()
         XCTAssertEqual(status.phase, .error(UploadStatusTracker.queueUnreadable))
         XCTAssertEqual(status.counts, [:])
-        XCTAssertEqual(status.lastSync, moment)
+        XCTAssertNil(status.lastSync)
+    }
+
+    func testAFailedRetryStopsTheSyncBeforeTheScanAndTheUpload() async {
+        let scanner = ScriptedScanner([.success(IngestSummary())])
+        let runner = ScriptedRunner([.success(result(.finished))])
+        let tracker = UploadStatusTracker(runner: runner, store: UnreadableStore(), scanner: scanner, clock: { [moment] in moment })
+        let status = await tracker.syncNow()
+        let scans = await scanner.runs
+        let runs = await runner.runs
+        XCTAssertEqual(status.phase, .error(UploadStatusTracker.queueUnreadable))
+        XCTAssertNil(status.lastSync)
+        XCTAssertEqual(scans, 0)
+        XCTAssertEqual(runs, 0)
     }
 
     func testWhileASyncRunsItIsUploadingAndASecondTapStartsNothing() async {
