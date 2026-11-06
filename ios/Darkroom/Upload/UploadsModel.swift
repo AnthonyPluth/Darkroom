@@ -20,10 +20,17 @@ final class UploadsModel: ObservableObject {
 
     func load() async {
         guard let engine else {
-            status = Self.unreadable
+            show(Self.unreadable)
             return
         }
-        status = await engine.status()
+        show(await engine.status())
+    }
+
+    private func show(_ new: UploadStatus) {
+        if let text = UploadsPresentation.announcement(from: status, to: new) {
+            AccessibilityNotification.Announcement(text).post()
+        }
+        status = new
     }
 
     func signInChanged() async {
@@ -33,13 +40,13 @@ final class UploadsModel: ObservableObject {
 
     func run(_ request: Request) async {
         guard let engine else {
-            status = Self.unreadable
+            show(Self.unreadable)
             return
         }
         guard !syncing else { return }
         syncing = true
         let polling = Task { await poll(engine) }
-        status = await engine.perform(request)
+        show(await engine.perform(request))
         polling.cancel()
         syncing = false
     }
@@ -50,7 +57,7 @@ final class UploadsModel: ObservableObject {
             if Task.isCancelled { return }
             let latest = await engine.status()
             if Task.isCancelled { return }
-            status = latest
+            show(latest)
         }
     }
 }
