@@ -9,6 +9,8 @@ struct UploadsView: View {
     let prepareStorage: () -> Void
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var announcer = StateAnnouncer()
+    @State private var visible = false
 
     var body: some View {
         NavigationStack {
@@ -25,6 +27,13 @@ struct UploadsView: View {
         .task {
             await model.load()
             await model.run(.refresh)
+        }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .onChange(of: model.status) { _, status in
+            guard let status else { return }
+            let text = announcer.announcement(for: UploadsPresentation.card(for: status))
+            if visible, let text { AccessibilityNotification.Announcement(text).post() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.run(.refresh) } }
