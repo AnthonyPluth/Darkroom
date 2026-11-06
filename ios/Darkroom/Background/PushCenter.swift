@@ -60,7 +60,9 @@ final class PushCenter {
         case .signedIn:
             await registrar.deviceSessionChanged()
             await activate()
-        case .signedOut, .signingIn:
+        case .signedOut:
+            BackgroundWork.nightly.cancel()
+        case .signingIn:
             break
         }
     }
@@ -72,6 +74,7 @@ final class PushCenter {
 
     private func activate() async {
         UIApplication.shared.registerForRemoteNotifications()
+        BackgroundWork.nightly.schedule()
         await registrar.sync()
         await notifications.ensureAsked()
     }
