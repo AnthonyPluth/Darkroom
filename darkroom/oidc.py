@@ -460,6 +460,8 @@ def device_groups(settings: Settings) -> set[str]:
 def finish_device_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float) -> tuple[Identity, str, str]:
     state, code = callback_state(query, login_cookie)
     pending = take_pending(opened, state, now, "device")
+    if not pending.client_state:
+        raise SignInFailed("this sign-in did not carry the app's state")
     document = discovery(settings, now)
     tokens = exchange_code(settings, document, code, pending.verifier)
     try:
@@ -467,8 +469,6 @@ def finish_device_login(opened: Session, settings: Settings, query: Mapping[str,
     except NotAllowed as error:
         raise NotAllowed(error.who, pending.client_state) from None
     remember_user(opened, who, now)
-    if not pending.client_state:
-        raise SignInFailed("this sign-in did not carry the app's state")
     return who, pending.device_name or "iPhone", pending.client_state
 
 

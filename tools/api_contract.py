@@ -95,9 +95,15 @@ def handler_types(route: routes.Route) -> tuple[type | None, type | None]:
 def build() -> dict[str, object]:
     used: set[str] = set()
     paths: dict[str, dict[str, object]] = {}
+    operation_ids: dict[str, str] = {}
     for route in routes.ROUTES:
         body, reply = handler_types(route)
-        operation: dict[str, object] = {"operationId": route.handler.__name__, "x-auth": route.auth}
+        operation_id = route.handler.__name__
+        here = f"{route.method} {route.path}"
+        if operation_id in operation_ids:
+            raise ContractError(f"{here}: operationId {operation_id} is already used by {operation_ids[operation_id]}; rename the handler")
+        operation_ids[operation_id] = here
+        operation: dict[str, object] = {"operationId": operation_id, "x-auth": route.auth}
         if body is not None:
             operation["requestBody"] = {"required": True, "content": {"application/json": {"schema": type_schema(body, used)}}}
         success: dict[str, object] = {"description": "OK"}

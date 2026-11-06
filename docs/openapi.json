@@ -3599,7 +3599,7 @@
     },
     "/api/device/me": {
       "get": {
-        "operationId": "me",
+        "operationId": "device_me",
         "responses": {
           "2XX": {
             "content": {
@@ -3783,7 +3783,7 @@
     },
     "/api/exports/{id}": {
       "get": {
-        "operationId": "one",
+        "operationId": "export_one",
         "responses": {
           "2XX": {
             "content": {
@@ -3846,7 +3846,7 @@
     },
     "/api/imports/{id}": {
       "get": {
-        "operationId": "one",
+        "operationId": "import_one",
         "responses": {
           "2XX": {
             "content": {
@@ -4182,7 +4182,7 @@
     },
     "/api/review/{id}": {
       "get": {
-        "operationId": "one",
+        "operationId": "review_one",
         "responses": {
           "2XX": {
             "content": {

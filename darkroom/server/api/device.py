@@ -130,7 +130,7 @@ def upload_resource(request: Request) -> Annotated[Response, contract.UploadRepl
     return upload_reply(photokit_id, kind, sha1, already, indexed)
 
 
-def me(request: Request) -> Annotated[Response, contract.DeviceMeReply]:
+def device_me(request: Request) -> Annotated[Response, contract.DeviceMeReply]:
     who = device_of(request)
     if who is None or who.person_id is None or who.name is None:
         return error_response(SIGN_IN, 401)

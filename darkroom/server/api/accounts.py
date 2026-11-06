@@ -46,6 +46,7 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         email = validate.email(body, "email") if validate.present(body, "email") else None
         person_id = validate.whole_number(body, "default_person_id", minimum=1) if validate.present(body, "default_person_id") else None
         with db.session(engine_of(request)) as opened:
+            accounts.lock(opened, account_id)
             before = accounts.served_people(opened, account_id)
             account = accounts.update(opened, account_id, email, person_id, now())
             dedupe.confirm_newly_served(opened, account.id, before)
@@ -56,6 +57,8 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         return error_response(NO_ACCOUNT, 404)
     except accounts.NoSuchPerson:
         return error_response(NO_PERSON, 404)
+    except browser_jobs.Busy as error:
+        return error_response(str(error), 503)
     except (accounts.EmailTaken, accounts.StillConfirming, accounts.JobOpen) as error:
         return error_response(str(error), 409)
     return json_response({"account": reply})

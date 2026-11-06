@@ -75,6 +75,55 @@ final class SQLiteResourceStoreTests: XCTestCase {
         try await ResourceStoreContract.countsAndFilteringByState(make())
     }
 
+    func testRecoverableMarksFailedRowsOnly() async throws {
+        try await ResourceStoreContract.recoverableMarksFailedRowsOnlyAndIsClearedWhenTheRowMovesOnOrIsReplaced(make())
+    }
+
+    func testRecoverableSurvivesReopeningTheDatabase() async throws {
+        let url = databaseURL()
+        let key = ResourceStoreContract.key("a")
+        do {
+            let store = try SQLiteResourceStore(path: url.path)
+            try await store.upsert([ResourceStoreContract.resource("a")])
+            try await store.setState(.failed, for: [key], failureReason: "gave up")
+            try await store.setRecoverable(true, for: [key])
+        }
+        let reopened = try SQLiteResourceStore(path: url.path)
+        let record = try await reopened.record(for: key)
+        XCTAssertEqual(record?.resource.state, .failed)
+        XCTAssertEqual(record?.recoverable, true)
+    }
+
+    func testADatabaseFromTheFirstSchemaIsUpgradedAndKeepsItsRows() async throws {
+        let url = databaseURL()
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &handle), SQLITE_OK)
+        let created = """
+        CREATE TABLE resources (
+            asset_id TEXT NOT NULL, kind TEXT NOT NULL, sha1 TEXT NOT NULL, bytes INTEGER NOT NULL,
+            filename TEXT NOT NULL, state TEXT NOT NULL, failure_reason TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0, rehashes INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (asset_id, kind)
+        );
+        INSERT INTO resources (asset_id, kind, sha1, bytes, filename, state, failure_reason, attempts)
+        VALUES ('a', 'photo', 'abc', 7, 'a.HEIC', 'failed', 'gave up', 3);
+        PRAGMA user_version = 1;
+        """
+        XCTAssertEqual(sqlite3_exec(handle, created, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(handle)
+        let store = try SQLiteResourceStore(path: url.path)
+        let key = ResourceStoreContract.key("a")
+        let record = try await store.record(for: key)
+        XCTAssertEqual(record?.resource.sha1, "abc")
+        XCTAssertEqual(record?.failureReason, "gave up")
+        XCTAssertEqual(record?.attempts, 3)
+        XCTAssertEqual(record?.recoverable, false)
+        try await store.setRecoverable(true, for: [key])
+        let marked = try await store.record(for: key)
+        XCTAssertEqual(marked?.recoverable, true)
+        _ = try SQLiteResourceStore(path: url.path)
+    }
+
     func testStateSurvivesReopeningTheDatabase() async throws {
         let url = databaseURL()
         let key = ResourceStoreContract.key("a", .liveVideo)

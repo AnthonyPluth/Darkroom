@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from darkroom import config
 from darkroom.domain import alerts, events
 from darkroom.server import jobs
+from darkroom.domain import renewal
 from darkroom.storage import db
-from tests.shared import own_database
+from darkroom.storage.models import Alert, GoogleAccount
+from tests.shared import add_person, own_database
 
 
 def at(day, hour, minute=0):
@@ -136,6 +138,23 @@ class BuildTests(unittest.TestCase):
         scheduler.run_one("alerts.tick", 24 * 3600.0)
         with db.session(engine) as opened:
             self.assertEqual([e.type for e in events.recent(opened)], ["alert_disabled", "alert_sent"])
+
+    def test_the_alert_tick_rewords_a_renewal_alert_for_a_schedule_that_has_ended_before_it_repeats(self):
+        engine = own_database(self)
+        settings = config.load()
+        end = 1_900_000_000.0
+        with db.session(engine) as opened:
+            account = GoogleAccount(email="jo@example.test", default_person_id=add_person(opened, "jo"), created=1.0, schedule_created=end - 365 * 86400, schedule_end=end)
+            opened.add(account)
+            opened.flush()
+            key = renewal.failed_key(account.id)
+            wording = alerts.schedule_renewal_failed(account.email, "17 Mar 2030")
+            alerts.open_alert(opened, settings, key, renewal.RENEWAL_FAILED, account.email, wording, None, end - 3600, notifier=lambda *a: "sent", about=alerts.account(account.id))
+        jobs.build(settings, engine).run_one("alerts.tick", end - 3600 + 86400)
+        with db.session(engine) as opened:
+            alert = opened.query(Alert).one()
+            self.assertEqual(alert.sent_count, 2)
+            self.assertIn("and it ended on", alert.message)
 
     def test_the_session_recheck_runs_hourly_and_records_only_notable_outcomes(self):
         from unittest import mock

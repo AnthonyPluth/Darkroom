@@ -159,4 +159,25 @@ enum ResourceStoreContract {
         let none = try await store.resources(in: [])
         XCTAssertTrue(none.isEmpty)
     }
+
+    static func recoverableMarksFailedRowsOnlyAndIsClearedWhenTheRowMovesOnOrIsReplaced(_ store: ResourceStore) async throws {
+        try await store.upsert([resource("a"), resource("b"), resource("c")])
+        try await store.setRecoverable(true, for: [key("a")])
+        var record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.recoverable, false)
+        try await store.setState(.failed, for: [key("a"), key("b"), key("c")], failureReason: "why")
+        try await store.setRecoverable(true, for: [key("a"), key("b"), key("never-stored")])
+        record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.recoverable, true)
+        XCTAssertEqual(record?.failureReason, "why")
+        let untouched = try await store.record(for: key("c"))
+        XCTAssertEqual(untouched?.recoverable, false)
+        try await store.setState(.hashed, for: [key("a")], failureReason: nil)
+        record = try await store.record(for: key("a"))
+        XCTAssertEqual(record?.recoverable, false)
+        try await store.upsert([resource("b", sha1: "new")])
+        record = try await store.record(for: key("b"))
+        XCTAssertEqual(record?.recoverable, false)
+        try await store.setRecoverable(false, for: [])
+    }
 }

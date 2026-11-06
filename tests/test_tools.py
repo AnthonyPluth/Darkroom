@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -8,6 +9,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import api_contract
 import feature_map
+from darkroom.server import routes
 
 
 class ContractAndFeatureMapTests(unittest.TestCase):
@@ -17,6 +19,17 @@ class ContractAndFeatureMapTests(unittest.TestCase):
     def test_the_committed_feature_map_is_current_and_every_route_has_a_test(self):
         self.assertEqual((ROOT / "docs/feature-map.json").read_text(), feature_map.render())
         self.assertEqual(feature_map.untested(feature_map.build()), [])
+
+    def test_every_operation_id_in_the_contract_is_unique(self):
+        ids = [operation["operationId"] for methods in api_contract.build()["paths"].values() for operation in methods.values()]
+        self.assertEqual(len(ids), len(routes.ROUTES))
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_two_handlers_with_one_name_fail_the_build(self):
+        clash = routes.Route("GET", "/api/clash", routes.ROUTES[0].handler, "session")
+        with mock.patch.object(routes, "ROUTES", [*routes.ROUTES, clash]):
+            with self.assertRaisesRegex(api_contract.ContractError, "operationId .* is already used"):
+                api_contract.build()
 
     def test_healthz_is_in_the_contract(self):
         built = api_contract.build()

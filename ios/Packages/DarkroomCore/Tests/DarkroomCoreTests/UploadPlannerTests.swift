@@ -85,6 +85,21 @@ final class UploadPlannerTests: XCTestCase {
         XCTAssertTrue(plan.markUploaded.isEmpty)
     }
 
+    func testResourcesWithoutADescriptorAreNeverDeclared() {
+        let missing = LocalResource(key: ResourceKey(assetID: "a", kind: .liveVideo), sha1: "", bytes: 0, filename: "a.MOV", state: .failed)
+        let alone = LocalResource(key: ResourceKey(assetID: "b", kind: .photo), sha1: "", bytes: 0, filename: "b.HEIC", state: .failed)
+        let resources = [resource("a", .photo), missing, alone, resource("c", .photo, state: .uploaded), resource("c", .liveVideo)]
+        let batches = UploadPlanner.checkBatches(from: resources)
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(batches[0].assets.map(\.id), ["a", "c"])
+        XCTAssertEqual(batches[0].assets.map { $0.resources.map(\.kind) }, [[.photo], [.photo, .liveVideo]])
+    }
+
+    func testAHashedResourceWithoutADescriptorMakesNoBatch() {
+        let empty = LocalResource(key: ResourceKey(assetID: "a", kind: .photo), sha1: "", bytes: 0, filename: "a.HEIC", state: .hashed)
+        XCTAssertTrue(UploadPlanner.checkBatches(from: [empty]).isEmpty)
+    }
+
     func testNeededEntryForAnUnknownResourceIsIgnored() {
         let resources = [resource("a", .photo)]
         let reply = CheckReply(needed: [NeededResource(id: "zzz", kind: .photo)])
