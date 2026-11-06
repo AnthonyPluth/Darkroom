@@ -822,6 +822,32 @@ class RenewNowTests(FailingCase):
         self.assertEqual((queued, len(self.renew_jobs())), (1, 1))
         self.assertEqual([isinstance(outcome, browser_jobs.AlreadyOpen) for outcome in outcomes], [True])
 
+    def test_a_request_committed_just_before_the_watch_locks_leaves_it_nothing_to_queue_and_the_other_accounts_are_still_watched(self):
+        with db.session(self.engine) as opened:
+            other = self.add_account(opened, "al", "al.takeout@example.test", CREATED, END)
+        original = browser_jobs.lock_scheduled_accounts
+
+        def lock_after_a_request_commits(opened):
+            self.request(NOTICE_AT)
+            original(opened)
+
+        with mock.patch.object(browser_jobs, "lock_scheduled_accounts", lock_after_a_request_commits):
+            queued = self.watch(NOTICE_AT + 5)
+        self.assertEqual(queued, 1)
+        self.assertEqual([job[0] for job in self.renew_jobs()], [self.account, other])
+
+    def test_the_watch_queues_with_the_email_the_account_has_when_it_locks(self):
+        original = browser_jobs.lock_scheduled_accounts
+
+        def lock_after_an_email_change(opened):
+            with db.session(self.engine) as changing:
+                accounts.update(changing, self.account, "other.takeout@example.test", None, NOTICE_AT)
+            original(opened)
+
+        with mock.patch.object(browser_jobs, "lock_scheduled_accounts", lock_after_an_email_change):
+            self.assertEqual(self.watch(NOTICE_AT + 5), 1)
+        self.assertEqual(self.renew_jobs(), [(self.account, "queued", {"email": "other.takeout@example.test", "ending": END})])
+
     def test_a_request_just_before_the_watch_leaves_the_watch_nothing_to_queue(self):
         self.request(NOTICE_AT)
         self.assertEqual(self.watch(NOTICE_AT + 5), 0)

@@ -97,13 +97,13 @@ def renew_now(opened: Session, settings: Settings, account_id: int, now: float) 
 
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
     queued = 0
+    browser_jobs.lock_scheduled_accounts(opened)
     ending = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).order_by(GoogleAccount.id)
     for account in opened.execute(ending).scalars().all():
         end = account.schedule_end
         assert end is not None
         if now < end - NOTICE:
             continue
-        browser_jobs.lock_account(opened, account.id)
         asked = latest_renewal(opened, account, end - NOTICE)
         if asked is not None and asked.status == "failed":
             open_failed(opened, settings, account, end, asked, now)

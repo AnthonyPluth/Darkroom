@@ -167,6 +167,15 @@ def lock_account(opened: Session, account_id: int) -> GoogleAccount:
     return account_of(opened, account_id)
 
 
+def lock_scheduled_accounts(opened: Session) -> None:
+    try:
+        opened.execute(update(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).values(id=GoogleAccount.id))
+    except OperationalError as error:
+        if "database is locked" not in str(error.orig):
+            raise
+        raise Busy("Darkroom is busy with another change; try again in a moment") from None
+
+
 def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> BrowserJob:
     account = lock_account(opened, account_id)
     if kind == "schedule" and schedule_live(account, now):
