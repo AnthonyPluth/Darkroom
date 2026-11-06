@@ -133,6 +133,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
     def tick_alerts(at: float) -> None:
         with db.session(engine) as opened:
             downloads.watch_expiry(opened, settings, at)
+            renewal.reword_ended(opened, settings, at)
             alerts.tick(opened, settings, at)
 
     def tick_sessions(at: float) -> None:

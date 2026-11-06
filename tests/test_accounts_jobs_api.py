@@ -179,6 +179,13 @@ class AccountJobsApiTests(ApiCase):
         self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": False})
         self.assertEqual(self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})[0], 200)
 
+    def test_an_email_change_while_darkroom_is_busy_is_503_and_changes_nothing(self):
+        busy = browser_jobs.Busy("Darkroom is busy with another change; try again in a moment")
+        with mock.patch.object(browser_jobs, "lock_account", side_effect=busy):
+            status, reply = self.call("PATCH", f"/api/accounts/{self.account_id}", {"email": "renamed@example.test"})
+        self.assertEqual((status, reply["error"]), (503, str(busy)))
+        self.assertNotEqual(self.account_view()["email"], "renamed@example.test")
+
     def test_checking_an_unknown_account_is_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/schedule/checked", "/api/accounts/abc/schedule/checked"):
             self.assertEqual(self.call("POST", path)[0], 404)

@@ -336,7 +336,7 @@ Known design gaps in this point, tracked on #108 for the build pull request: ite
 
 ## Not in this proposal
 
-- The cleanup notification and the batch screens (#38). They get their own design pull request and will draw on `CleanupFlow`, `CleanupState`, `EligibleList.totalBytes`, `RejectedAsset.message` and `PhotoDeleter`.
+- The cleanup notification and the batch screens (#38). They are proposed in [cleanup.md](cleanup.md), which also replaces Settings' Cleanup card, and need their own sign-off.
 - The sign-in sheet's own page and the system deletion confirmation, which the system and Darkroom's server draw.
 - iPad, which `project.yml` does not target (`TARGETED_DEVICE_FAMILY: 1`).
 

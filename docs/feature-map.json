@@ -450,7 +450,7 @@
     {
       "route": "GET /api/exports/{id}",
       "auth": "session",
-      "handler": "darkroom.server.api.exports.one",
+      "handler": "darkroom.server.api.exports.export_one",
       "frontend": [],
       "tests": [
         "tests/test_every_route.py",
@@ -484,7 +484,7 @@
     {
       "route": "GET /api/imports/{id}",
       "auth": "session",
-      "handler": "darkroom.server.api.imports.one",
+      "handler": "darkroom.server.api.imports.import_one",
       "frontend": [],
       "tests": [
         "tests/test_every_route.py",
@@ -511,7 +511,7 @@
     {
       "route": "GET /api/review/{id}",
       "auth": "session",
-      "handler": "darkroom.server.api.review.one",
+      "handler": "darkroom.server.api.review.review_one",
       "frontend": [
         "frontend/src/pages/Review.svelte"
       ],
@@ -627,7 +627,7 @@
     {
       "route": "GET /api/device/me",
       "auth": "device",
-      "handler": "darkroom.server.api.device.me",
+      "handler": "darkroom.server.api.device.device_me",
       "frontend": [],
       "tests": [
         "tests/test_device_contract.py",
