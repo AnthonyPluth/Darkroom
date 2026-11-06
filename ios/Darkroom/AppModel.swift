@@ -72,26 +72,6 @@ final class AppModel: ObservableObject {
 
     private func finishRestore() {
         restored = true
-        PushCenter.shared.signInEnded = { [weak self] token in await self?.signInEnded(rejected: token) }
-    }
-
-    func signInEnded(rejected: String) async {
-        do {
-            try await session.tokenRejected(rejected)
-        } catch {
-            // The Keychain kept the token, but the session has ended in memory and will not restore it.
-        }
-        await refresh()
-        if case .signedIn = phase { return }
-        identity = nil
-        if let engine = uploadEngine {
-            await retire(engine)
-        } else {
-            BackgroundWork.hook.install(nil)
-        }
-        if case .signedOut = phase {
-            banner = .notice(SignInMessages.ended)
-        }
     }
 
     /// The name to put in the "Name of this iPhone" field: the last one used here, else the device's own name unless iOS
@@ -163,7 +143,6 @@ final class AppModel: ObservableObject {
             uploadStorage = try? UploadStorage.open()
         }
         guard let storage = uploadStorage else {
-            BackgroundWork.hook.install(UnavailableBackgroundCheck())
             return
         }
         if defaults.bool(forKey: Self.resetUploadsKey) {
@@ -172,7 +151,6 @@ final class AppModel: ObservableObject {
                 defaults.set(false, forKey: Self.resetUploadsKey)
             } catch {
                 uploadStorage = nil
-                BackgroundWork.hook.install(UnavailableBackgroundCheck())
                 return
             }
         }
@@ -186,19 +164,12 @@ final class AppModel: ObservableObject {
 
     /// Drops the engine and its background check before anything awaits, so a wake-up cannot reach the old server.
     private func retire(_ engine: UploadEngine) async {
-        BackgroundWork.hook.install(nil)
         uploadEngine = nil
         await engine.stop()
     }
 
     private func install(_ engine: UploadEngine) {
         uploadEngine = engine
-        BackgroundWork.hook.install(
-            UploadBackgroundCheck(
-                status: { await engine.status() },
-                refresh: { await engine.perform(.refresh) }
-            )
-        )
     }
 
     var deviceLabel: String? {
@@ -228,42 +199,24 @@ final class AppModel: ObservableObject {
         guard !signingOut else { return }
         signingOut = true
         signOutProblem = nil
-        let engine = uploadEngine
-        let session = self.session
-        let flow = SignOutFlow(
-            push: PushCenter.shared.registrar,
-            stopUploads: {
-                BackgroundWork.hook.install(nil)
-                if let engine { await engine.stop() }
-            },
-            clearSession: { try await session.signOut() }
-        )
-        var keepsToken = false
-        switch await flow.signOut() {
-        case .signedOut:
+        if let engine = uploadEngine { await engine.stop() }
+        do {
+            try await session.signOut()
             uploadEngine = nil
             identity = nil
             banner = nil
-        case .pushNotForgotten:
-            signOutProblem = SettingsMessages.pushNotForgotten
-        case .storage:
+        } catch {
             signOutProblem = SettingsMessages.storage
             uploadEngine = nil
             await prepareUploads()
-            keepsToken = true
         }
         signingOut = false
         await refresh()
-        if keepsToken { await PushCenter.shared.foregrounded(phase) }
     }
 
     func signInAgain() async {
         signInAgainProblem = nil
-        if let engine = uploadEngine {
-            await retire(engine)
-        } else {
-            BackgroundWork.hook.install(nil)
-        }
+        if let engine = uploadEngine { await retire(engine) }
         identity = nil
         if let token = await session.currentToken {
             do {

@@ -7,7 +7,6 @@ struct DarkroomApp: App {
     @StateObject private var model = AppModel.shared
 
     init() {
-        BackgroundWork.register()
         Task { await AppModel.shared.restore() }
         let bar = UITabBarAppearance()
         bar.configureWithOpaqueBackground()
