@@ -150,7 +150,7 @@ public actor UploadCoordinator {
     private func disposition(of error: Error) -> Disposition {
         guard let api = error as? APIError else { return .network }
         switch api {
-        case .unauthorized, .notSignedIn: return .signIn
+        case .unauthorized, .revoked, .notSignedIn: return .signIn
         case .transport: return .network
         case .server(let status): return .retry("server error \(status)")
         case .rejected(let status): return status == 408 ? .retry("the upload timed out") : .rejected(status)
