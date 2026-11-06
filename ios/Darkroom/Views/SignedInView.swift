@@ -1,19 +1,16 @@
 import DarkroomCore
 import SwiftUI
 
-/// The signed-in app shell: the two tabs of the design. Their contents come in the next pull requests.
+/// The signed-in app shell: the two tabs of the design.
 struct SignedInView: View {
+    @ObservedObject var model: AppModel
     let server: ServerAddress
 
     var body: some View {
         TabView {
-            Screen {
-                Text("Uploads")
-                    .font(.title.bold())
-                    .foregroundStyle(Color.ink)
-                    .accessibilityAddTraits(.isHeader)
-            }
-            .tabItem { Label("Uploads", systemImage: "arrow.up.circle") }
+            UploadsContainer(model: model, server: server)
+                .id(model.uploadStorage == nil)
+                .tabItem { Label("Uploads", systemImage: "arrow.up.circle") }
             SettingsPlaceholder(server: server)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
@@ -21,14 +18,31 @@ struct SignedInView: View {
     }
 }
 
+private struct UploadsContainer: View {
+    @ObservedObject var model: AppModel
+    @StateObject private var uploads: UploadsModel
+
+    init(model: AppModel, server: ServerAddress) {
+        self.model = model
+        self.server = server
+        _uploads = StateObject(wrappedValue: UploadsModel(server: server, session: model.deviceSession, storage: model.uploadStorage))
+    }
+
+    private let server: ServerAddress
+
+    var body: some View {
+        UploadsView(
+            model: uploads,
+            server: server,
+            signInAgain: { Task { await model.signInAgain() } },
+            prepareStorage: { Task { await model.prepareUploads() } }
+        )
+    }
+}
+
 private struct SettingsPlaceholder: View {
     let server: ServerAddress
     private let version = BuildVersion.current
-
-    private var authority: String {
-        let host = server.url.host ?? server.text
-        return server.url.port.map { "\(host):\($0)" } ?? host
-    }
 
     var body: some View {
         Screen {
@@ -39,7 +53,7 @@ private struct SettingsPlaceholder: View {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel("Server")
                 Card {
-                    KeyValueRow(label: "Address", value: authority, monospaced: true)
+                    KeyValueRow(label: "Address", value: server.authority, monospaced: true)
                 }
             }
             Text("Build \(version.label)")

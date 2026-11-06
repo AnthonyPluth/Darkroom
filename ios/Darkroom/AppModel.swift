@@ -10,6 +10,7 @@ enum SignInBanner: Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     static let deviceLabelKey = "deviceLabel"
+    static let resetUploadsKey = "resetUploadsOnSignIn"
 
     @Published private(set) var restored = false
     @Published private(set) var phase = DeviceSession.Phase.signedOut
@@ -17,9 +18,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var addressProblem: ServerAddress.Problem?
     @Published private(set) var nameMissing = false
     @Published private(set) var banner: SignInBanner?
+    @Published private(set) var uploadStorage: UploadStorage?
 
     private let session: DeviceSession
     private let defaults: UserDefaults
+
+    var deviceSession: DeviceSession { session }
 
     init(session: DeviceSession = DeviceSession(storage: KeychainSessionStorage()), defaults: UserDefaults = .standard) {
         self.session = session
@@ -32,6 +36,9 @@ final class AppModel: ObservableObject {
             try await session.restore()
         } catch {
             banner = .failure(SignInMessages.unreadable)
+        }
+        if case .signedIn = await session.phase {
+            await prepareUploads()
         }
         await refresh()
         restored = true
@@ -63,6 +70,7 @@ final class AppModel: ObservableObject {
         defaults.set(DeviceSignIn.cleanedDeviceName(deviceName), forKey: Self.deviceLabelKey)
         do {
             let start = try await session.begin(serverText: addressText, deviceName: deviceName)
+            defaults.set(true, forKey: Self.resetUploadsKey)
             await refresh()
             return start
         } catch {
@@ -75,21 +83,46 @@ final class AppModel: ObservableObject {
     func finish(callback: URL) async {
         do {
             try await session.complete(callback: callback)
+            await prepareUploads()
         } catch {
+            defaults.set(false, forKey: Self.resetUploadsKey)
             show(error)
         }
         await refresh()
     }
 
     func cancelled() async {
+        defaults.set(false, forKey: Self.resetUploadsKey)
         await session.cancel()
         banner = .notice(SignInMessages.cancelled)
         await refresh()
     }
 
     func sheetFailed() async {
+        defaults.set(false, forKey: Self.resetUploadsKey)
         await session.cancel()
         banner = .failure(SignInMessages.sheetFailed)
+        await refresh()
+    }
+
+    func prepareUploads() async {
+        if uploadStorage == nil {
+            uploadStorage = try? UploadStorage.open()
+        }
+        guard let storage = uploadStorage, defaults.bool(forKey: Self.resetUploadsKey) else { return }
+        do {
+            try await NewDeviceSession.reset(store: storage.store, syncState: storage.syncState)
+            defaults.set(false, forKey: Self.resetUploadsKey)
+        } catch {
+            uploadStorage = nil
+        }
+    }
+
+    func signInAgain() async {
+        if let token = await session.currentToken {
+            try? await session.tokenRejected(token)
+        }
+        banner = .notice(SignInMessages.signInEnded)
         await refresh()
     }
 

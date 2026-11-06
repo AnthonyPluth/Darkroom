@@ -8,7 +8,7 @@ struct RootView: View {
             if !model.restored {
                 ProgressView().tint(Color.inkMuted)
             } else if case .signedIn(let server) = model.phase {
-                SignedInView(server: server)
+                SignedInView(model: model, server: server)
             } else {
                 SignInView(model: model)
             }
