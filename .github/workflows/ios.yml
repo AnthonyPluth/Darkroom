@@ -63,7 +63,9 @@ jobs:
 
   build:
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # The iPhone app is being removed (issues #199 and #200): its files are deleted over a stack of pull requests that
+    # would not compile partway, so the build is skipped (a skipped job counts as passed) until ios/ and this workflow go.
+    if: false
     runs-on: macos-15   # hosted: Xcode only runs on macOS
     timeout-minutes: 45
     steps:
