@@ -188,6 +188,22 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertEqual(token, "abc123")
     }
 
+    func testAKeychainReadFailureOnRestoreLeavesNoTokenFromAnEarlierSignIn() async throws {
+        let storage = FakeStorage()
+        let session = try await signedInSession(storage)
+        storage.fail("load", on: .deviceToken)
+        do {
+            try await session.restore()
+            XCTFail("expected a storage error")
+        } catch {
+            XCTAssertEqual(error as? SignInError, .storage)
+        }
+        let token = await session.currentToken
+        let phase = await session.phase
+        XCTAssertNil(token)
+        XCTAssertEqual(phase, .signedOut)
+    }
+
     func testSigningOutClearsTheTokenAndKeepsTheServer() async throws {
         let storage = FakeStorage()
         let session = try await signedInSession(storage)

@@ -30,6 +30,10 @@ final class BackgroundUploadTransport: NSObject, UploadTransport, URLSessionTask
         }
     }
 
+    func cancelAll() {
+        session.invalidateAndCancel()
+    }
+
     func upload(_ resource: LocalResource) async throws {
         let file = directory.appendingPathComponent(UUID().uuidString)
         do {

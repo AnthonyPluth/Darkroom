@@ -23,3 +23,11 @@ extension ResourceStore {
         try await upsert(again)
     }
 }
+
+extension ResourceStore {
+    @discardableResult
+    public func releaseUploading() async throws -> Int {
+        let interrupted = try await resources(in: [.uploading])
+        return try await setState(.checked, ifUnchanged: interrupted, failureReason: nil)
+    }
+}

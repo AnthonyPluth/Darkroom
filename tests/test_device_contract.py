@@ -24,7 +24,7 @@ REQUESTS = {
 REPLIES = {
     "CheckReply": contract.DeviceCheckReply, "NeededResource": contract.NeededResource, "EligibleReply": contract.EligibleReply,
     "EligibleAsset": contract.EligibleAsset, "ConfirmReply": contract.ConfirmReply, "RejectedAsset": contract.Refusal,
-    "DeletedReply": contract.DeletedReply,
+    "DeletedReply": contract.DeletedReply, "DeviceMeReply": contract.DeviceMeReply,
 }
 ROUTES = {
     ("POST", "/api/device/assets/check"): ("CheckRequest", "CheckReply"),
@@ -32,6 +32,7 @@ ROUTES = {
     ("POST", "/api/device/eligible/confirm"): ("ConfirmRequest", "ConfirmReply"),
     ("POST", "/api/device/deleted"): ("DeletedRequest", "DeletedReply"),
     ("POST", "/api/device/checkin"): ("CheckinRequest", None),
+    ("GET", "/api/device/me"): (None, "DeviceMeReply"),
 }
 
 
@@ -123,10 +124,11 @@ class SwiftModelsMatchTheServer(unittest.TestCase):
         for (method, path), (request, reply) in ROUTES.items():
             with self.subTest(route=path):
                 hints = get_type_hints(handlers[(method, path)], include_extras=True)
-                self.assertIs(get_args(hints["request"])[1], REQUESTS[request])
+                if request is not None:
+                    self.assertIs(get_args(hints["request"])[1], REQUESTS[request])
+                    self.assertIs(get_origin(hints["request"]), Annotated)
                 if reply is not None:
                     self.assertIs(get_args(hints["return"])[1], REPLIES[reply])
-                self.assertIs(get_origin(hints["request"]), Annotated)
 
 
 class LiveRepliesDecodeAsTheAppExpects(DeviceCase):
@@ -153,6 +155,12 @@ class LiveRepliesDecodeAsTheAppExpects(DeviceCase):
             self.assertIsInstance(value, str, where)
         else:
             self.decodes(swift, value)
+
+    def test_the_who_am_i_reply_uses_the_apps_keys(self):
+        status, reply = self.call("GET", "/api/device/me")
+        self.assertEqual(status, 200)
+        self.decodes("DeviceMeReply", reply)
+        self.assertEqual(set(reply), set(swift_types()[0]["DeviceMeReply"]))
 
     def test_the_cleanup_round_trip_uses_the_apps_keys(self):
         opened = Session(self.engine, expire_on_commit=False)

@@ -630,6 +630,7 @@
       "handler": "darkroom.server.api.device.device_me",
       "frontend": [],
       "tests": [
+        "tests/test_device_contract.py",
         "tests/test_device_me.py",
         "tests/test_every_route.py"
       ]

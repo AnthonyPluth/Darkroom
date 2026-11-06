@@ -3,7 +3,40 @@ import Foundation
 /// What a background wake-up does: look for new photos and videos and start their uploads. The upload code installs it in
 /// `BackgroundCheckHook`; a wake-up before then does nothing. It stops when its task is cancelled.
 public protocol BackgroundCheck: Sendable {
-    func run() async
+    func run() async -> BackgroundOutcome
+}
+
+public enum BackgroundOutcome: Equatable, Sendable {
+    case uploaded
+    case nothingNew
+    case needsSignIn
+    case waitingForNetwork
+    case failed
+
+    public var completesTask: Bool {
+        switch self {
+        case .uploaded, .nothingNew, .needsSignIn: return true
+        case .waitingForNetwork, .failed: return false
+        }
+    }
+
+    public var fetchResult: SilentPush.Fetch {
+        switch self {
+        case .uploaded: return .newData
+        case .nothingNew, .needsSignIn: return .noData
+        case .waitingForNetwork, .failed: return .failed
+        }
+    }
+}
+
+/// Installed while a signed-in iPhone cannot open its upload storage, so a wake-up tells iOS it failed instead of finding
+/// nothing new. The next `prepareUploads()` that can open the storage replaces it.
+public struct UnavailableBackgroundCheck: BackgroundCheck {
+    public init() {}
+
+    public func run() async -> BackgroundOutcome {
+        .failed
+    }
 }
 
 public final class BackgroundCheckHook: @unchecked Sendable {
@@ -130,15 +163,16 @@ public final class NightlyProcessing: Sendable {
         schedule()
         let state = RunGuard()
         let check = hook.current
-        let work = Task {
-            await check?.run()
+        let work = Task { () -> BackgroundOutcome in
+            let outcome = await check?.run() ?? .nothingNew
             state.finish()
+            return outcome
         }
         task.onExpiration {
             if state.interrupt() { work.cancel() }
         }
-        await work.value
-        task.complete(success: !state.wasInterrupted)
+        let outcome = await work.value
+        task.complete(success: !state.wasInterrupted && outcome.completesTask)
     }
 }
 
@@ -170,17 +204,18 @@ public struct SilentPush: Sendable {
     public func handle() async -> Fetch {
         guard let check = hook.current else { return .noData }
         let state = RunGuard()
-        let work = Task {
-            await check.run()
+        let work = Task { () -> BackgroundOutcome in
+            let outcome = await check.run()
             state.finish()
+            return outcome
         }
         let nanoseconds = UInt64(max(limit, 0) * 1_000_000_000)
         let timer = Task {
             try? await Task.sleep(nanoseconds: nanoseconds)
             if !Task.isCancelled, state.interrupt() { work.cancel() }
         }
-        await work.value
+        let outcome = await work.value
         timer.cancel()
-        return state.wasInterrupted ? .failed : .newData
+        return state.wasInterrupted ? .failed : outcome.fetchResult
     }
 }

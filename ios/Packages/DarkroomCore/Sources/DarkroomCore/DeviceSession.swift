@@ -67,6 +67,9 @@ public actor DeviceSession {
             serverText = try storage.load(.serverURL)
             storedToken = try storage.load(.deviceToken)
         } catch {
+            token = nil
+            attempt = nil
+            phase = .signedOut
             throw SignInError.storage
         }
         savedServer = serverText.flatMap { try? ServerAddress(parsing: $0) }
