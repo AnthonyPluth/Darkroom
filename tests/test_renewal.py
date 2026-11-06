@@ -853,6 +853,21 @@ class RenewNowTests(FailingCase):
         self.assertEqual(self.watch(NOTICE_AT + 5), 0)
         self.assertEqual(len(self.renew_jobs()), 1)
 
+    def test_an_ending_alert_open_across_the_end_is_reworded_in_place_and_repeats_with_the_new_text(self):
+        self.watch(NOTICE_AT)
+        ((key, before, _, _, _),) = self.alerts_of("schedule_ending")
+        self.assertIn("ends on", before)
+        self.watch(END + HOUR)
+        ((same_key, message, _, sent, closed),) = self.alerts_of("schedule_ending")
+        self.assertEqual((same_key, sent, closed), (key, 1, None))
+        self.assertIn("ended on", message)
+        self.assertNotIn("ends on", message)
+        sent_texts = []
+        with db.session(self.engine) as opened:
+            alerts.tick(opened, self.settings, NOTICE_AT + DAY + 120, lambda settings, title, text, link: sent_texts.append(text) or alerts.SENT)
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("ended on", sent_texts[0])
+
     def test_two_requests_at_once_queue_one_job(self):
         outcomes = []
         gate = threading.Barrier(2)

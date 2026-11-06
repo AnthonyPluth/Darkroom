@@ -111,7 +111,8 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
         if asked is None and browser_jobs.schedule_attempt_pending(opened, account.id):
             continue
         wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone), now >= end)
-        alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
+        alert = alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
+        alert.message = wording.message
         if asked is not None:
             continue
         queue_renewal(opened, account, end, now)
