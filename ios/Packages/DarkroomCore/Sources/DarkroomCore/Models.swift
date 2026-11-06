@@ -191,3 +191,13 @@ public struct DeletedReply: Codable, Equatable, Sendable {
         self.rejected = rejected
     }
 }
+
+public struct DeviceMeReply: Codable, Equatable, Sendable {
+    public let person: String
+    public let device: String
+
+    public init(person: String, device: String) {
+        self.person = person
+        self.device = device
+    }
+}

@@ -34,6 +34,55 @@ private final class FakePushAPI: PushTokenAPI, @unchecked Sendable {
     }
 }
 
+private final class GatedPushAPI: PushTokenAPI, @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+    private var release: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    var log: [String] { locked { events } }
+
+    func open() {
+        let waiting: CheckedContinuation<Void, Never>? = locked {
+            released = true
+            let held = release
+            release = nil
+            return held
+        }
+        waiting?.resume()
+    }
+
+    func registerPushToken(_ token: String) async throws {
+        locked { events.append("register started") }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let proceed: Bool = locked {
+                if released { return true }
+                release = continuation
+                return false
+            }
+            if proceed { continuation.resume() }
+        }
+        locked { events.append("register finished") }
+    }
+
+    func forgetPushToken() async throws {
+        locked { events.append("forget") }
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
+private func waitUntil(_ condition: () -> Bool) async {
+    for _ in 0..<10_000 {
+        if condition() { return }
+        await Task.yield()
+    }
+}
+
 private let tokenA = String(repeating: "ab", count: 32)
 private let tokenB = String(repeating: "cd", count: 32)
 
@@ -140,8 +189,64 @@ final class PushRegistrarTests: XCTestCase {
         let outcome = await registrar.forget()
         XCTAssertEqual(outcome, .forgotten)
         XCTAssertEqual(api.forgetCount, 1)
+        await registrar.deviceSessionChanged()
         await registrar.sync()
         XCTAssertEqual(api.registered, [tokenA, tokenA])
+    }
+
+    func testForgetWaitsForARegistrationThatIsStillInFlight() async {
+        let api = GatedPushAPI()
+        let registrar = PushRegistrar(api: { api })
+        await registrar.tokenReceived(tokenA)
+        let syncing = Task { await registrar.sync() }
+        await waitUntil { api.log == ["register started"] }
+        let forgetting = Task { await registrar.forget() }
+        for _ in 0..<200 { await Task.yield() }
+        XCTAssertEqual(api.log, ["register started"])
+        api.open()
+        _ = await syncing.value
+        let outcome = await forgetting.value
+        XCTAssertEqual(outcome, .forgotten)
+        XCTAssertEqual(api.log, ["register started", "register finished", "forget"])
+    }
+
+    func testNothingIsRegisteredAfterForgetUntilANewDeviceSession() async {
+        let api = FakePushAPI()
+        let registrar = PushRegistrar(api: { api })
+        await registrar.tokenReceived(tokenA)
+        _ = await registrar.forget()
+        let waiting = await registrar.sync()
+        XCTAssertEqual(waiting, .waiting)
+        XCTAssertEqual(api.registered, [])
+        await registrar.deviceSessionChanged()
+        let registered = await registrar.sync()
+        XCTAssertEqual(registered, .registered)
+        XCTAssertEqual(api.registered, [tokenA])
+    }
+
+    func testAFailedForgetLeavesRegistrationRunning() async {
+        let api = FakePushAPI()
+        api.failForget(with: APIError.transport("-1009"))
+        let registrar = PushRegistrar(api: { api })
+        await registrar.tokenReceived(tokenA)
+        let outcome = await registrar.forget()
+        XCTAssertEqual(outcome, .failed)
+        await registrar.sync()
+        XCTAssertEqual(api.registered, [tokenA])
+    }
+
+    func testTwoSyncsAtOnceSendTheTokenOnce() async {
+        let api = GatedPushAPI()
+        let registrar = PushRegistrar(api: { api })
+        await registrar.tokenReceived(tokenA)
+        let first = Task { await registrar.sync() }
+        await waitUntil { api.log == ["register started"] }
+        let second = Task { await registrar.sync() }
+        for _ in 0..<200 { await Task.yield() }
+        api.open()
+        let outcomes = [await first.value, await second.value]
+        XCTAssertEqual(outcomes, [.registered, .registered])
+        XCTAssertEqual(api.log, ["register started", "register finished"])
     }
 
     func testForgetNeedsNothingWhenTheSignInHasAlreadyEnded() async {

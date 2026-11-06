@@ -3,11 +3,7 @@ import SwiftUI
 
 @MainActor
 final class UploadsModel: ObservableObject {
-    enum Request {
-        case refresh
-        case syncNow
-        case retry([ResourceKey])
-    }
+    typealias Request = UploadRequest
 
     static let unreadable = UploadStatus(
         phase: .error(UploadStatusTracker.queueUnreadable), counts: [:], failures: [], lastSync: nil, firstScanFinished: true
@@ -16,67 +12,43 @@ final class UploadsModel: ObservableObject {
     @Published private(set) var status: UploadStatus?
     @Published private(set) var syncing = false
 
-    private let tracker: UploadStatusTracker?
+    private let engine: UploadEngine?
 
-    init(server: ServerAddress, session: DeviceSession, storage: UploadStorage?) {
-        guard let storage else {
-            tracker = nil
-            return
-        }
-        let client = APIClient(baseURL: server.url, tokenProvider: session.tokenProvider())
-        let library = PhotoKitLibrary()
-        let exporter = PhotoKitExporter()
-        let identifier = (Bundle.main.bundleIdentifier ?? "darkroom") + ".upload"
-        let transport = BackgroundUploadTransport(
-            client: client, library: library, exporter: exporter, identifier: identifier, directory: storage.uploadsDirectory
-        )
-        let coordinator = UploadCoordinator(
-            api: client,
-            transport: transport,
-            rehasher: LibraryRehasher(library: library, exporter: exporter),
-            store: storage.store,
-            probe: ServerProbe(client: client),
-            appVersion: BuildVersion.current.marketing
-        )
-        let ingester = ResourceIngester(library: library, exporter: exporter, store: storage.store, versions: storage.versions)
-        tracker = UploadStatusTracker(runner: coordinator, store: storage.store, scanner: ingester, syncState: storage.syncState)
+    init(engine: UploadEngine?) {
+        self.engine = engine
     }
 
     func load() async {
-        guard let tracker else {
+        guard let engine else {
             status = Self.unreadable
             return
         }
-        status = await tracker.status()
+        status = await engine.status()
     }
 
     func signInChanged() async {
-        await tracker?.signInChanged()
+        await engine?.signInChanged()
         await load()
     }
 
     func run(_ request: Request) async {
-        guard let tracker else {
+        guard let engine else {
             status = Self.unreadable
             return
         }
         guard !syncing else { return }
         syncing = true
-        let polling = Task { await poll(tracker) }
-        switch request {
-        case .refresh: status = await tracker.refresh()
-        case .syncNow: status = await tracker.syncNow()
-        case .retry(let keys): status = await tracker.retry(keys)
-        }
+        let polling = Task { await poll(engine) }
+        status = await engine.perform(request)
         polling.cancel()
         syncing = false
     }
 
-    private func poll(_ tracker: UploadStatusTracker) async {
+    private func poll(_ engine: UploadEngine) async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if Task.isCancelled { return }
-            let latest = await tracker.status()
+            let latest = await engine.status()
             if Task.isCancelled { return }
             status = latest
         }

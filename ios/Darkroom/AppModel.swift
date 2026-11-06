@@ -19,6 +19,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var nameMissing = false
     @Published private(set) var banner: SignInBanner?
     @Published private(set) var uploadStorage: UploadStorage?
+    @Published private(set) var uploadEngine: UploadEngine?
+    @Published private(set) var identity: DeviceMeReply?
+    @Published private(set) var signingOut = false
+    @Published private(set) var signOutProblem: String?
 
     private let session: DeviceSession
     private let defaults: UserDefaults
@@ -109,13 +113,68 @@ final class AppModel: ObservableObject {
         if uploadStorage == nil {
             uploadStorage = try? UploadStorage.open()
         }
-        guard let storage = uploadStorage, defaults.bool(forKey: Self.resetUploadsKey) else { return }
-        do {
-            try await NewDeviceSession.reset(store: storage.store, syncState: storage.syncState)
-            defaults.set(false, forKey: Self.resetUploadsKey)
-        } catch {
-            uploadStorage = nil
+        guard let storage = uploadStorage else { return }
+        if defaults.bool(forKey: Self.resetUploadsKey) {
+            do {
+                try await NewDeviceSession.reset(store: storage.store, syncState: storage.syncState)
+                defaults.set(false, forKey: Self.resetUploadsKey)
+            } catch {
+                uploadStorage = nil
+                return
+            }
         }
+        guard uploadEngine == nil, case .signedIn(let server) = await session.phase else { return }
+        uploadEngine = UploadEngine(server: server, session: session, storage: storage)
+    }
+
+    var deviceLabel: String? {
+        guard let saved = defaults.string(forKey: Self.deviceLabelKey), DeviceSignIn.hasName(saved) else { return nil }
+        return saved
+    }
+
+    func loadIdentity() async {
+        guard case .signedIn(let server) = await session.phase, let token = await session.currentToken else {
+            identity = nil
+            return
+        }
+        let client = APIClient(baseURL: server.url, tokenProvider: session.tokenProvider())
+        let reply: DeviceMeReply?
+        do {
+            reply = try await client.me()
+        } catch is CancellationError {
+            return
+        } catch {
+            reply = nil
+        }
+        guard await session.currentToken == token else { return }
+        identity = reply
+    }
+
+    func signOut() async {
+        guard !signingOut else { return }
+        signingOut = true
+        signOutProblem = nil
+        let engine = uploadEngine
+        let session = self.session
+        let flow = SignOutFlow(
+            push: PushCenter.shared.registrar,
+            stopUploads: { if let engine { await engine.stop() } },
+            clearSession: { try await session.signOut() }
+        )
+        switch await flow.signOut() {
+        case .signedOut:
+            uploadEngine = nil
+            identity = nil
+            banner = nil
+        case .pushNotForgotten:
+            signOutProblem = SettingsMessages.pushNotForgotten
+        case .storage:
+            signOutProblem = SettingsMessages.storage
+            uploadEngine = nil
+            await prepareUploads()
+        }
+        signingOut = false
+        await refresh()
     }
 
     func signInAgain() async {

@@ -30,6 +30,10 @@ final class BackgroundUploadTransport: NSObject, UploadTransport, URLSessionTask
         }
     }
 
+    func cancelAll() {
+        session.invalidateAndCancel()
+    }
+
     func upload(_ resource: LocalResource) async throws {
         let resources = try await library.resources(ofAsset: resource.key.assetID)
         guard let source = resources.first(where: { $0.key == resource.key }) else {
