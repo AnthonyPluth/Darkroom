@@ -27,7 +27,7 @@ Apple Developer account:
 1. Enroll in the Apple Developer Program.
 2. Certificates, Identifiers & Profiles, Identifiers: create the App ID for the bundle id you choose (a reverse-DNS id you own), with **Push Notifications** enabled.
 3. App Store Connect, Apps: create the app record for that bundle id.
-4. Users and Access, Integrations, App Store Connect API: create a team key with the **App Manager** role (not Admin). Note the **Issuer ID** (a UUID shown above the keys) and the **Key ID** (10 characters), and download `AuthKey_<key id>.p8`: Apple allows the download once.
+4. Users and Access, Integrations, App Store Connect API: create a team key with the **Admin** role. Cloud-managed distribution certificates and profiles are created and used on the key's behalf, which Apple limits to Account Holders and Admins (Apple's cloud-managed certificates page: "Required role: Account Holder or Admin", with extra permissions for other roles); an App Manager key can upload a build but the archive and export steps would likely fail on signing. The cost is that an Admin key can do more than upload (manage users, certificates, apps), so keep it only in the `ios-release` environment, and revoke and replace it if it may have leaked. If you would rather use App Manager, that works only if Apple's role permissions let it use cloud signing for your team; try it with a dry run and fall back to Admin if the archive step fails on signing. Note the **Issuer ID** (a UUID shown above the keys) and the **Key ID** (10 characters), and download `AuthKey_<key id>.p8`: Apple allows the download once.
 5. TestFlight: add the family as internal testers (they need an Apple ID invited under Users and Access).
 6. Cloud-managed signing may need at least one device registered in the developer account (Devices); if the archive step fails asking for one, register an iPhone's UDID and run again.
 
@@ -56,12 +56,23 @@ A build number must be higher than any earlier build of the same marketing versi
 
 ## Rotating the key
 
-1. In App Store Connect, create a new App Manager key and download its `.p8`.
+1. In App Store Connect, create a new Admin key and download its `.p8`.
 2. Replace `ASC_KEY_ID`, `ASC_ISSUER_ID` (unchanged if the team is the same) and `ASC_KEY_P8` in the `ios-release` environment.
 3. Run a dry run from `main` to confirm the new key signs.
 4. Revoke the old key in App Store Connect.
 
 If the key may have leaked (a log, a pull request, a laptop), revoke it first, then rotate. A revoked key makes the next run fail at the archive step; nothing already in TestFlight changes.
+
+## Not verified against Apple's documentation
+
+Test these with the first real key (a dry run covers the first four):
+
+- That an Admin key is what cloud-managed signing needs through `-allowProvisioningUpdates` (Apple's pages confirm the Account Holder or Admin requirement for cloud-managed certificates but do not name the API key case), and whether App Manager works.
+- That the archive step doesn't ask for a registered device.
+- That `xcodebuild -exportArchive` with `method: app-store-connect`, `destination: export` and automatic signing yields `Darkroom.ipa` under Xcode 26.6.
+- That the app and DarkroomCore tests compile on Xcode 26.6 on `macos-26`.
+- That `xcrun altool --upload-app` with `API_PRIVATE_KEYS_DIR` accepts the key and the upload appears in TestFlight (Apple's upload page says altool is supported).
+- That the `macos-26` image still carries Xcode 26.6 (checked against the runner-images readme today).
 
 ## Not yet proven
 
