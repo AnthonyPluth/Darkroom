@@ -80,6 +80,9 @@ def check_ios_release(release: str, ios: str) -> list[str]:
     order = [code.find(step) for step in ("swift test", "write-key.sh", "xcodebuild archive")]
     if min(order) < 0 or order != sorted(order):
         problems.append(f"{IOS_RELEASE_WORKFLOW}: the key is written by write-key.sh after the tools and tests have run and before the archive")
+    key_lifetime = code[code.find("write-key.sh") :]
+    if "xcbeautify" in key_lifetime or 'rm -rf "$RUNNER_TEMP/asc"' not in code:
+        problems.append(f"{IOS_RELEASE_WORKFLOW}: no third-party tool (xcbeautify) may run after write-key.sh, while the key file exists, and the always() step must remove it")
     for block in _checkout_blocks(code):
         if "persist-credentials: false" not in block:
             problems.append(f"{IOS_RELEASE_WORKFLOW}: every actions/checkout needs persist-credentials: false")

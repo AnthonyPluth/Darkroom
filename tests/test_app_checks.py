@@ -79,6 +79,7 @@ permissions: {}
       - run: swift test
       - run: ios/release/write-key.sh
       - run: xcodebuild archive
+      - run: rm -rf "$RUNNER_TEMP/asc"
       - run: tr -d x < ios/.xcode-version-release
       - uses: actions/checkout@abc   # v1
         with:
@@ -145,6 +146,18 @@ class IosRelease(unittest.TestCase):
         self.assertEqual(len(self.problems(early)), 1)
         self.assertEqual(len(self.problems(late)), 1)
         self.assertEqual(len(self.problems(RELEASE.replace("ios/release/write-key.sh", "true"))), 1)
+
+    def test_a_third_party_tool_while_the_key_exists_is_named(self):
+        piped = RELEASE.replace("xcodebuild archive", "xcodebuild archive | xcbeautify")
+        found = self.problems(piped)
+        self.assertEqual(len(found), 1)
+        self.assertIn("xcbeautify", found[0])
+
+    def test_a_workflow_that_never_removes_the_key_is_named(self):
+        self.assertEqual(len(self.problems(RELEASE.replace('rm -rf "$RUNNER_TEMP/asc"', "true"))), 1)
+
+    def test_a_third_party_tool_before_the_key_is_written_passes(self):
+        self.assertEqual(self.problems(RELEASE.replace("      - run: swift test\n", "      - run: swift test | xcbeautify\n")), [])
 
     def test_a_workflow_missing_a_step_of_the_key_order_is_named(self):
         for step in ("swift test", "xcodebuild archive"):

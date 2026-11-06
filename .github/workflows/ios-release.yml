@@ -9,7 +9,7 @@ name: iOS release
 # is limited to main and ios-v* tags and needs the owner's approval; the job's environment: line is what makes GitHub
 # read it from there. DARKROOM_BUNDLE_ID and DARKROOM_TEAM_ID are Actions variables. Signing is cloud-managed
 # (-allowProvisioningUpdates with the key), so no certificate or profile is stored. Each secret is passed only to the
-# steps that use it, the key file is written only after the third-party tools and the tests have run, is mode 600 under RUNNER_TEMP and is removed in an always() step, and nothing echoes a
+# steps that use it, the key file is written only after the third-party tools and the tests have run and no third-party binary runs while it exists (Archive and Export log xcodebuild's raw output), is mode 600 under RUNNER_TEMP and is removed in an always() step, and nothing echoes a
 # value. The unsigned build and tests that pull requests need are ios.yml's and use none of this. Setup, a release and
 # the key's rotation: docs/deploy/ios-release.md.
 on:
@@ -143,7 +143,7 @@ jobs:
             -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" 2>&1 | xcbeautify --renderer github-actions
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
       - name: Check the archive carries the version and build number
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -181,7 +181,7 @@ jobs:
             -exportPath "$RUNNER_TEMP/export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | xcbeautify --renderer github-actions
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
           test -f "$RUNNER_TEMP/export/Darkroom.ipa"
       - name: Upload to TestFlight
         if: needs.plan.outputs.upload == 'true'
