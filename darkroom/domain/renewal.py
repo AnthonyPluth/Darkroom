@@ -60,8 +60,44 @@ def open_failed(opened: Session, settings: Settings, account: GoogleAccount, end
     alert.message = wording.message
 
 
+class NoSchedule(ValueError):
+    pass
+
+
+class NeedsSignIn(ValueError):
+    pass
+
+
+class NotDue(ValueError):
+    pass
+
+
+def queue_renewal(opened: Session, account: GoogleAccount, end: float, now: float) -> BrowserJob:
+    return browser_jobs.queue(opened, account.id, browser_jobs.RENEW_KIND, {"email": account.email, "ending": end}, now)
+
+
+def renew_now(opened: Session, settings: Settings, account_id: int, now: float) -> BrowserJob:
+    account = browser_jobs.lock_account(opened, account_id)
+    end = account.schedule_end
+    if account.schedule_created is None or end is None:
+        raise NoSchedule("this account has no export schedule to renew")
+    if now < end - NOTICE:
+        raise NotDue(f"this schedule is not due for renewal until {on_date(end - NOTICE, settings.timezone)}, three weeks before it ends")
+    if account.session_state == "needs_sign_in":
+        raise NeedsSignIn("this account needs to sign in to Google again before its schedule can be renewed")
+    if browser_jobs.unchecked_schedule(opened, account_id) is not None:
+        raise browser_jobs.AlreadyOpen("the last schedule attempt may have created an export; check Takeout and say so before renewing")
+    if browser_jobs.schedule_attempt_pending(opened, account_id):
+        raise browser_jobs.AlreadyOpen("a schedule or renew job for this account is already waiting or running")
+    job = queue_renewal(opened, account, end, now)
+    alerts.close(opened, failed_key(account.id), now)
+    events.record(opened, now, "schedule_renewal_requested", f"account {account.id}", f"the schedule ends {on_date(end, settings.timezone)}")
+    return job
+
+
 def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
     queued = 0
+    browser_jobs.lock_scheduled_accounts(opened)
     ending = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).order_by(GoogleAccount.id)
     for account in opened.execute(ending).scalars().all():
         end = account.schedule_end
@@ -74,11 +110,12 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
             continue
         if asked is None and browser_jobs.schedule_attempt_pending(opened, account.id):
             continue
-        wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone))
-        alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
+        wording = alerts.schedule_ending(account.email, on_date(end, settings.timezone), now >= end)
+        alert = alerts.open_alert(opened, settings, ending_key(account.id), ENDING, account.email, wording, ending_link(settings), now, about=alerts.account(account.id))
+        alert.message = wording.message
         if asked is not None:
             continue
-        browser_jobs.queue(opened, account.id, browser_jobs.RENEW_KIND, {"email": account.email, "ending": end}, now)
+        queue_renewal(opened, account, end, now)
         events.record(opened, now, "schedule_renewal_queued", f"account {account.id}", f"the schedule ends {on_date(end, settings.timezone)}")
         queued += 1
     return queued
