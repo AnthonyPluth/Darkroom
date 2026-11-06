@@ -516,6 +516,34 @@ class RenewalOverlapTests(CheckingCase):
         self.assertIn("it ended on 15 Jan 2028", message)
         self.assertNotIn("Once it has ended", message)
 
+    def test_a_not_renewed_alert_still_open_at_the_end_is_reworded_and_repeats_with_the_new_text(self):
+        failed_at = END - 2 * DAY
+        self.watch(NOTICE_AT)
+        self.fail(failed_at)
+        self.watch(END - 1)
+        ((_, before, _, _, _),) = self.alerts_of("schedule_renewal_failed")
+        self.assertIn("Once it has ended, press Create schedule", before)
+        self.watch(END + HOUR)
+        ((key, message, _, sent, closed),) = self.alerts_of("schedule_renewal_failed")
+        self.assertEqual((key, sent, closed), (renewal.failed_key(self.account), 1, None))
+        self.assertIn("it ended on 15 Jan 2028", message)
+        self.assertNotIn("Once it has ended", message)
+        sent_texts = []
+        with db.session(self.engine) as opened:
+            alerts.tick(opened, self.settings, failed_at + DAY, lambda settings, title, text, link: sent_texts.append(text) or alerts.SENT)
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("it ended on 15 Jan 2028", sent_texts[0])
+        self.assertNotIn("Once it has ended", sent_texts[0])
+
+    def test_an_unconfirmed_renewal_alert_keeps_its_text_after_the_end(self):
+        self.watch(NOTICE_AT)
+        self.fail(END - 2 * DAY, message="ScheduleNotConfirmed: unsure")
+        ((_, before, _, _, _),) = self.alerts_of("schedule_renewal_unconfirmed")
+        self.watch(END + HOUR)
+        ((_, after, _, sent, closed),) = self.alerts_of("schedule_renewal_unconfirmed")
+        self.assertEqual((after, sent, closed), (before, 1, None))
+        self.assertEqual(self.alerts_of("schedule_renewal_failed"), [])
+
 
 class RenewalLifecycleTests(RenewalCase):
     def claim_renewal(self, now):
