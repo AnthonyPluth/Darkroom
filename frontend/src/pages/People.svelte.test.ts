@@ -414,6 +414,32 @@ describe("the Cleanup switch", () => {
     expect(joCard).toHaveTextContent("212 photos (1.5 GB), confirmed in Google Photos");
   });
 
+  it("ignores a second activation while the first request is pending", async () => {
+    let off = false;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const server = serve({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [off ? joPhone : ON] }),
+      "PATCH /api/devices/30": () => {
+        off = true;
+        return { device: joPhone };
+      },
+    });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (init?.method === "PATCH" ? gate.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(People);
+    const flip = await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" });
+    await userEvent.click(flip);
+    await waitFor(() => expect(flip).toBeDisabled());
+    await userEvent.click(flip);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(0);
+    release();
+    await waitFor(() => expect(flip).toBeEnabled());
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(1);
+    expect(await turnOn()).toHaveAttribute("aria-checked", "false");
+  });
+
   it("puts the switch back on and shows the error when turning off fails", async () => {
     show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": reply(503, { error: "Darkroom is busy with another change; try again in a moment" }) });
     await userEvent.click(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
