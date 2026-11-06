@@ -26,11 +26,11 @@
   }
 </script>
 
-<Modal bind:open {title} description={message}>
+<Modal bind:open {title} description={message} dismissible={!busy}>
   <div class="flex flex-col gap-4">
     <FormError message={error} />
     <div class="flex justify-end gap-3">
-      <button type="button" class="btn" onclick={() => (open = false)}>Cancel</button>
+      <button type="button" class="btn" disabled={busy} onclick={() => (open = false)}>Cancel</button>
       <button type="button" class="btn btn-danger" disabled={busy} onclick={go}>{confirm}</button>
     </div>
   </div>

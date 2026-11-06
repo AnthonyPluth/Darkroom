@@ -440,6 +440,34 @@ describe("the Cleanup switch", () => {
     expect(await turnOn()).toHaveAttribute("aria-checked", "false");
   });
 
+  it("cannot be backed out of while turning on is pending", async () => {
+    let enabled = false;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const server = serve({
+      ...seeded(),
+      "GET /api/people/1/devices": () => ({ devices: [{ ...joPhone, cleanup_enabled: enabled }] }),
+      "PATCH /api/devices/30": () => {
+        enabled = true;
+        return { device: ON };
+      },
+    });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (init?.method === "PATCH" ? gate.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(People);
+    await userEvent.click(await turnOn());
+    const ask = await screen.findByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Turn on cleanup" }));
+    await waitFor(() => expect(within(ask).getByRole("button", { name: "Cancel" })).toBeDisabled());
+    await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Turn on cleanup for Jo's iPhone, Jo Example?" })).toBeInTheDocument();
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(0);
+    release();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.sent("PATCH /api/devices/30")).toHaveLength(1);
+    expect(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" })).toHaveAttribute("aria-checked", "true");
+  });
+
   it("puts the switch back on and shows the error when turning off fails", async () => {
     show({ ...seeded(), "GET /api/people/1/devices": { devices: [ON] }, "PATCH /api/devices/30": reply(503, { error: "Darkroom is busy with another change; try again in a moment" }) });
     await userEvent.click(await screen.findByRole("switch", { name: "Cleanup on for Jo's iPhone, Jo Example" }));
