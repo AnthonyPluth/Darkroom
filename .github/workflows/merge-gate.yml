@@ -6,8 +6,6 @@ name: Merge gate
 # bumps included (automerge-fleet-bumps, the owner's decision in #82), then starts fleet-sync.yml on main, whose
 # "chore: fleet content" pull request the owner still merges by hand.
 #
-# The iOS workflow is required too: its build job runs only when ios/ changed, and a skipped job counts as passed.
-#
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
 # finishing, CodeQL's default setup included (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
 # number (the agent review starts it this way once it has set its status, and merge-gate-threads.yml when a review,
@@ -16,7 +14,7 @@ name: Merge gate
 # statuses and review threads through the API.
 on:  # zizmor: ignore[dangerous-triggers]
   workflow_run:
-    workflows: [CI, Docker image, Security scans, CodeQL, iOS, Control smoke]
+    workflows: [CI, Docker image, Security scans, CodeQL, Control smoke]
     types: [completed]
   check_suite:
     types: [completed]
@@ -59,7 +57,6 @@ jobs:
         CI
         Docker image
         Security scans
-        iOS
         ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository) && 'Security scans' || 'CodeQL' }}
       # Owner decision of Nov 3 (issue #76): Codex reviews every pull request. The gate stays pending until Codex has
       # reviewed the head commit; fleet's defaults already require "Second review" alone and fail on an open Codex P1
