@@ -54,7 +54,7 @@ def list_imports(request: Request) -> Annotated[Response, contract.Imports]:
     return json_response({"imports": found})
 
 
-def one(request: Request) -> Annotated[Response, contract.ImportReply]:
+def import_one(request: Request) -> Annotated[Response, contract.ImportReply]:
     wanted = id_of(request)
     if wanted is None:
         return error_response("no such import", 404)
