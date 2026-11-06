@@ -16,6 +16,10 @@ public struct IngestSummary: Equatable, Sendable {
     }
 }
 
+public protocol LibraryScanner: Sendable {
+    func run() async throws -> IngestSummary
+}
+
 /// Walks the library, exports each new or changed resource to a temporary file, streams its SHA-1 and records it.
 public struct ResourceIngester: Sendable {
     public static let unusableName = "the file name can't be used"
@@ -138,3 +142,5 @@ public struct ResourceIngester: Sendable {
         }
     }
 }
+
+extension ResourceIngester: LibraryScanner {}

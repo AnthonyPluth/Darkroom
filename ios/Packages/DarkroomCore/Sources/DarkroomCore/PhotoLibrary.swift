@@ -21,6 +21,10 @@ public struct PhotoResource: Equatable, Sendable {
     }
 }
 
+public enum PhotoLibraryError: Error, Equatable, Sendable {
+    case accessDenied
+}
+
 public protocol PhotoLibrary: Sendable {
     /// Every resource of every asset, oldest first. The PhotoKit adapter implements this.
     func allResources() async throws -> [PhotoResource]

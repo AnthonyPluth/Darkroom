@@ -30,6 +30,7 @@ public actor UploadCoordinator {
         public var alreadyOnServer = 0
         public var failed = 0
         public var outcome = Outcome.finished
+        public var checkinAccepted = false
 
         public init() {}
     }
@@ -78,7 +79,7 @@ public actor UploadCoordinator {
 
     public var reachability: ReachabilityPolicy.Status { policy.status }
 
-    public func run() async throws -> Result {
+    public func run(ignoringBackoff: Bool = false) async throws -> Result {
         while true {
             if let running = inFlight {
                 do {
@@ -89,7 +90,7 @@ public actor UploadCoordinator {
                     continue
                 }
             }
-            let pass = Task { try await self.runPass() }
+            let pass = Task { try await self.runPass(ignoringBackoff: ignoringBackoff) }
             inFlight = pass
             defer { if inFlight == pass { inFlight = nil } }
             return try await withTaskCancellationHandler {
@@ -115,13 +116,13 @@ public actor UploadCoordinator {
         error is CancellationError || Task.isCancelled
     }
 
-    private func runPass() async throws -> Result {
+    private func runPass(ignoringBackoff: Bool) async throws -> Result {
         var result = Result()
         // An upload cut short by a kill is `uploading` on disk; the server was never told it finished.
         let interrupted = try await store.resources(in: [.uploading])
         try await store.setState(.checked, ifUnchanged: interrupted, failureReason: nil)
 
-        guard try await networkReady() else {
+        guard try await networkReady(ignoringBackoff: ignoringBackoff) else {
             result.outcome = .waitingForNetwork
             return result
         }
@@ -135,12 +136,13 @@ public actor UploadCoordinator {
             result.outcome = afterUpload
             return result
         }
-        result.outcome = try await checkin()
+        let afterCheckin = try await checkin(&result)
+        result.outcome = afterCheckin
         return result
     }
 
-    private func networkReady() async throws -> Bool {
-        guard policy.shouldProbe(at: clock()) else { return false }
+    private func networkReady(ignoringBackoff: Bool) async throws -> Bool {
+        guard ignoringBackoff || policy.shouldProbe(at: clock()) else { return false }
         let reachable = await probe()
         try Task.checkCancellation()
         policy.recordProbe(succeeded: reachable, at: clock())
@@ -269,7 +271,7 @@ public actor UploadCoordinator {
         result.failed += try await store.setState(.failed, ifUnchanged: [old], failureReason: reason)
     }
 
-    private func checkin() async throws -> Outcome {
+    private func checkin(_ result: inout Result) async throws -> Outcome {
         guard let counts = try? await store.counts() else { return .finished }
         let pending = [ResourceState.hashed, .checked, .uploading].reduce(0) { $0 + (counts[$1] ?? 0) }
         do {
@@ -282,6 +284,7 @@ public actor UploadCoordinator {
             case .retry, .rejected: return .finished
             }
         }
+        result.checkinAccepted = true
         return .finished
     }
 }

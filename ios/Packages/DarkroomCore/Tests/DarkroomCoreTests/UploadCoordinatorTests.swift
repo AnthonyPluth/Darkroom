@@ -248,6 +248,54 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(sent, [])
     }
 
+    func testAManualRunProbesAgainDuringTheBackoffAndAnAutomaticOneDoesNot() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        await rig.probes.set(false)
+        let coordinator = coordinator(rig)
+        let first = try await coordinator.run()
+        let skipped = try await coordinator.run()
+        XCTAssertEqual(first.outcome, .waitingForNetwork)
+        XCTAssertEqual(skipped.outcome, .waitingForNetwork)
+        var probes = await rig.probes.count
+        XCTAssertEqual(probes, 1)
+        await rig.probes.set(true)
+        let stillWaiting = try await coordinator.run()
+        XCTAssertEqual(stillWaiting.outcome, .waitingForNetwork)
+        probes = await rig.probes.count
+        XCTAssertEqual(probes, 1)
+        let manual = try await coordinator.run(ignoringBackoff: true)
+        XCTAssertEqual(manual.outcome, .finished)
+        XCTAssertEqual(manual.uploaded, 1)
+        probes = await rig.probes.count
+        XCTAssertEqual(probes, 2)
+        let status = await coordinator.reachability
+        XCTAssertEqual(status, .reachable)
+    }
+
+    func testTheResultSaysWhetherDarkroomAcceptedTheCheckin() async throws {
+        let rig = Rig()
+        try await rig.store.upsert([hashed(a)])
+        await rig.api.setNeeded([a])
+        let accepted = try await coordinator(rig).run()
+        XCTAssertEqual(accepted.outcome, .finished)
+        XCTAssertTrue(accepted.checkinAccepted)
+        for failure in [APIError.rejected(status: 400), APIError.server(status: 500)] {
+            await rig.api.setCheckinError(failure)
+            let refused = try await coordinator(rig).run()
+            XCTAssertEqual(refused.outcome, .finished)
+            XCTAssertFalse(refused.checkinAccepted)
+        }
+        await rig.api.setCheckinError(APIError.unauthorized)
+        let signedOut = try await coordinator(rig).run()
+        XCTAssertEqual(signedOut.outcome, .needsSignIn)
+        XCTAssertFalse(signedOut.checkinAccepted)
+        let waiting = try await coordinator(rig, probe: ServerProbe { false }).run()
+        XCTAssertEqual(waiting.outcome, .waitingForNetwork)
+        XCTAssertFalse(waiting.checkinAccepted)
+    }
+
     func testUnauthorizedStopsAndKeepsTheResourceChecked() async throws {
         let rig = Rig()
         try await rig.store.upsert([hashed(a)])
