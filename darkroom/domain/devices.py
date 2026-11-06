@@ -28,6 +28,11 @@ class NoPerson(LookupError):
 
 
 @dataclass(frozen=True)
+class Refused:
+    reason: str | None
+
+
+@dataclass(frozen=True)
 class SignedInDevice:
     device_id: int
     person_id: int
@@ -57,34 +62,20 @@ def enrol(opened: Session, sub: str, email: str | None, verified: bool, name: st
     return device, token
 
 
-def device_of_token(opened: Session, token: str | None) -> Device | None:
+def authenticate(opened: Session, settings: Settings, token: str | None, now: float) -> SignedInDevice | Refused:
     if not token or len(token) > MAX_TOKEN:
-        return None
-    return opened.execute(select(Device).where(Device.token_hash == oidc.hash_token(token))).scalar_one_or_none()
-
-
-def refusal(opened: Session, settings: Settings, token: str | None, now: float) -> str | None:
-    device = device_of_token(opened, token)
+        return Refused(None)
+    device = opened.execute(select(Device).where(Device.token_hash == oidc.hash_token(token))).scalar_one_or_none()
     if device is None:
-        return None
+        return Refused(None)
+    if device.revoked_at is not None:
+        return Refused(DEVICE_REVOKED)
     person = opened.get(Person, device.person_id)
-    if device.revoked_at is not None or person is None:
-        return DEVICE_REVOKED
+    if person is None:
+        return Refused(None)
     lapsed = oidc.device_access_lapsed(opened, settings, device.sub, person.email, now)
-    if lapsed is None:
-        return None
-    if lapsed in (SIGN_IN_LAPSED, SIGN_IN_UNAVAILABLE):
-        return lapsed
-    return SIGN_IN_REFUSED
-
-
-def authenticate(opened: Session, settings: Settings, token: str | None, now: float) -> SignedInDevice | None:
-    device = device_of_token(opened, token)
-    if device is None or device.revoked_at is not None:
-        return None
-    person = opened.get(Person, device.person_id)
-    if person is None or oidc.device_access_lapsed(opened, settings, device.sub, person.email, now) is not None:
-        return None
+    if lapsed is not None:
+        return Refused(lapsed if lapsed in (SIGN_IN_LAPSED, SIGN_IN_UNAVAILABLE) else SIGN_IN_REFUSED)
     device.last_checkin = now
     opened.flush()
     return SignedInDevice(device.id, person.id, device.name, person.email)

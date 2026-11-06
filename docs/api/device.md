@@ -24,7 +24,7 @@ Every device route takes `Authorization: Bearer <token>`. Darkroom answers `401 
 
 When the token matches a device, the 401 also says why, in `reason` (nothing else is added, and an unknown, missing or malformed token gets the plain `{"error": "sign in required"}`):
 
-- `device_revoked`: the device was revoked (on the People page, or because another account signed in an iPhone for the person) or its person was removed. The token never works again; a new sign-in is a new device.
+- `device_revoked`: the device was revoked (on the People page, or because another account signed in an iPhone for the person) The token never works again; a new sign-in is a new device.
 - `sign_in_lapsed`: no sign-in to Darkroom for 30 days. The same token works again after the person signs in.
 - `sign_in_unavailable`: Darkroom has no sign-in provider configured.
 - `sign_in_refused`: the account's access lapsed otherwise (email no longer verified or matching, no longer in `OIDC_DEVICE_GROUPS`, or the email moved to a newer account). The same token works again if that is undone.

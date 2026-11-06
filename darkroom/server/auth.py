@@ -120,25 +120,21 @@ def worker_principal(request: Request) -> Principal | None:
 
 
 def device_principal(request: Request) -> Principal | None:
+    found = device_check(request)
+    return found if isinstance(found, Principal) else None
+
+
+def device_check(request: Request) -> Principal | Response:
     presented = bearer_of(request)
     if presented is None:
-        return None
+        return error_response("sign in required", 401)
     with db.session(engine_of(request)) as opened:
         found = devices.authenticate(opened, request.settings, presented, now())
-    if found is None:
-        return None
+    if isinstance(found, devices.Refused):
+        if found.reason is None:
+            return error_response("sign in required", 401)
+        return json_response({"error": "sign in required", "reason": found.reason}, 401)
     return Principal("device", f"device:{found.device_id}", found.email, found.name, (), None, found.device_id, found.person_id)
-
-
-def device_refused(request: Request) -> Response:
-    presented = bearer_of(request)
-    reason = None
-    if presented is not None:
-        with db.session(engine_of(request)) as opened:
-            reason = devices.refusal(opened, request.settings, presented, now())
-    if reason is None:
-        return error_response("sign in required", 401)
-    return json_response({"error": "sign in required", "reason": reason}, 401)
 
 
 def session_cookie(settings: Settings, token: str, seconds: int) -> str:
