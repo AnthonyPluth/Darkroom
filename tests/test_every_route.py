@@ -1,20 +1,14 @@
 import dataclasses
 import json
-import time
 import unittest
 from unittest import mock
 
-from darkroom import oidc
 from darkroom.server import routes
-from darkroom.storage import db
-from darkroom.storage.models import Device, Person, User
 from tests.shared import fetch, own_database, settings_from, start_server
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out", "GET /auth/device/start"}
-BEARER_KINDS = {"device", "worker"}
+BEARER_KINDS = {"worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
-DEVICE_TOKEN = "every-route-device-token-canary-0123456789abcdef"
-DEVICE_ROUTES = {"GET /api/device/me", "POST /api/device/checkin"}
 PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
@@ -125,41 +119,7 @@ class EveryRouteTests(unittest.TestCase):
     def test_every_kind_but_public_has_its_own_authenticator(self):
         from darkroom.server import handler
 
-        self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker", "device"})
-
-    def test_the_device_routes_are_device_routes(self):
-        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
-        self.assertEqual({key for key, kind in found.items() if kind == "device"}, DEVICE_ROUTES)
-
-    def a_live_device(self):
-        with db.session(self.engine) as opened:
-            person = Person(name="Jo", slug="jo", email="jo@example.test", originals_path="jo/originals", google_only_path="jo/google-only", created=1.0)
-            opened.add(person)
-            opened.flush()
-            opened.add(User(sub="jo", email="jo@example.test", email_verified=True, groups='["parents"]', last_seen=time.time()))
-            opened.add(Device(person_id=person.id, name="iPhone", token_hash=oidc.hash_token(DEVICE_TOKEN), sub="jo", created=1.0))
-
-    def test_a_device_token_opens_only_device_routes(self):
-        self.a_live_device()
-        for route in (route for route in routes.ROUTES if route.auth in ("session", "worker")):
-            for headers in ({"Authorization": f"Bearer {DEVICE_TOKEN}"}, {"Cookie": f"darkroom_session={DEVICE_TOKEN}"}):
-                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
-                    sent = {**headers, "Origin": "https://darkroom.example"} if route.method != "GET" else headers
-                    status, _, body = fetch(self.base, route.method, route.path, sent, None if route.method == "GET" else b"{}")
-                    self.assertEqual(status, 401)
-                    self.assertEqual(json.loads(body), {"error": "sign in required"})
-
-    def test_session_cookies_and_the_worker_token_never_open_device_routes(self):
-        self.a_live_device()
-        found = [route for route in routes.ROUTES if route.auth == "device"]
-        self.assertTrue(found)
-        for route in found:
-            for headers in ({"Cookie": "darkroom_session=some-session-token"}, {"Authorization": f"Bearer {WORKER_TOKEN}"},
-                            {"Authorization": DEVICE_TOKEN}, {"Authorization": f"Bearer {DEVICE_TOKEN[:-1]}"}, {"X-Device-Token": DEVICE_TOKEN}):
-                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
-                    status, _, body = fetch(self.base, route.method, route.path, {"Content-Length": "2", **headers}, b"{}")
-                    self.assertEqual(status, 401)
-                    self.assertEqual(json.loads(body), {"error": "sign in required"})
+        self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker"})
 
     def test_a_new_unguarded_route_fails_this_test(self):
         extra = (*routes.ROUTES, routes.Route("GET", "/api/open", never_runs, "public"))
@@ -188,7 +148,7 @@ class NoAuthModeTests(unittest.TestCase):
         self.base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_BROWSER_TOKEN=WORKER_TOKEN))
 
     def test_the_local_owner_shortcut_never_opens_worker_or_device_routes(self):
-        for route in (route for route in routes.ROUTES if route.auth in ("worker", "device")):
+        for route in (route for route in routes.ROUTES if route.auth == "worker"):
             with self.subTest(route=f"{route.method} {route.path}"):
                 status, _, _ = fetch(self.base, route.method, route.path, {"Cookie": "darkroom_session=anything"}, b"{}")
                 self.assertEqual(status, 401)

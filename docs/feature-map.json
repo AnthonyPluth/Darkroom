@@ -101,7 +101,6 @@
         "tests/test_browser_internal_api.py",
         "tests/test_demo.py",
         "tests/test_demo_session.py",
-        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_imports_api.py",
         "tests/test_pixels_api.py",
@@ -135,7 +134,6 @@
       "tests": [
         "tests/api_world.py",
         "tests/test_device_auth.py",
-        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
@@ -152,7 +150,6 @@
       "tests": [
         "tests/api_world.py",
         "tests/test_device_auth.py",
-        "tests/test_device_checkin.py",
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
@@ -584,31 +581,6 @@
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
-      ]
-    },
-    {
-      "route": "GET /api/device/me",
-      "auth": "device",
-      "handler": "darkroom.server.api.device.device_me",
-      "frontend": [],
-      "tests": [
-        "tests/test_device_auth.py",
-        "tests/test_device_checkin.py",
-        "tests/test_device_contract.py",
-        "tests/test_device_me.py",
-        "tests/test_every_route.py"
-      ]
-    },
-    {
-      "route": "POST /api/device/checkin",
-      "auth": "device",
-      "handler": "darkroom.server.api.device.checkin",
-      "frontend": [],
-      "tests": [
-        "tests/test_device_auth.py",
-        "tests/test_device_checkin.py",
-        "tests/test_device_contract.py",
-        "tests/test_every_route.py"
       ]
     },
     {
