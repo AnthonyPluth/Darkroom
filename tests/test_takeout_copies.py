@@ -257,6 +257,13 @@ class ResolveTests(CopiesCase):
         self.assertEqual(self.resolve(at=3.0).refused, 1)
         self.assertTrue((self.root / takeout.path).exists())
 
+    def test_an_edited_variant_of_the_same_shot_is_not_a_rival_of_its_original(self):
+        takeout, _ = self.takeout(b"google original", name="IMG_0001.jpg")
+        self.takeout(b"google's edit", name="IMG_0001-edited~abcd1234.jpg", source="Takeout/Photos from 2021/IMG_0001-edited.jpg")
+        self.phone(b"the phone's own bigger original")
+        (pair,) = takeout_copies.pairs(self.opened, self.jo)
+        self.assertEqual((pair.takeout.id, pair.tier), (takeout.id, 2))
+
     def test_an_edited_copy_renamed_on_a_name_collision_never_pairs(self):
         self.takeout(b"google's edit", name="IMG_0001-edited~abcd1234.jpg", source="Takeout/Photos from 2021/IMG_0001-edited.jpg")
         self.phone(b"the phone's own bigger original")

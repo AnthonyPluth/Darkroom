@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tempfile
 from collections import Counter
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,11 +104,12 @@ def immich_originals(opened: Session, person: Person, item_id: int | None = None
     return {item.id: item for item in found}
 
 
-def candidate_of(item: MediaItem) -> dedupe.TakeoutCandidate:
+def candidate_of(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
     shot = dedupe.shot_of(item)
     return dedupe.TakeoutCandidate(
         source_path=item.path, sha1=item.sha1, phash=item.phash, captured_utc=item.captured_utc, captured_local=item.captured_local,
         width=item.width, height=item.height, duration_ms=item.duration_ms, make=item.make, model=item.model, is_video=shot.is_video,
+        is_edited=any(edited(decision) for decision in decisions_of(opened, item)),
     )
 
 
@@ -124,7 +126,7 @@ def pairs(opened: Session, person: Person) -> list[Pair]:
     phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone").order_by(MediaItem.id)).scalars()
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in phone))
     by_path = {item.path: (item, decision) for item, decision in takeouts}
-    decided = dedupe.decide_all(index, [candidate_of(item) for item in placed_takeouts(opened, person)], dedupe.DedupeSettings())
+    decided = dedupe.decide_all(index, [candidate_of(opened, item) for item in placed_takeouts(opened, person)], dedupe.DedupeSettings())
     matched = [d for d in decided if d.tier in dedupe.CONFIRMING_TIERS and d.matched_source == "phone" and d.matched_item_id in originals and d.source_path in by_path]
     shared = Counter(d.matched_item_id for d in matched)
     return [Pair(*by_path[d.source_path], originals[d.matched_item_id], d.tier) for d in matched
@@ -185,30 +187,32 @@ def still_matched(opened: Session, person: Person, takeout: MediaItem, phone: Me
     shots = {item.id: item for item in [*neighbours(opened, person, "phone", takeout), phone]}
     peers = [item for item in neighbours(opened, person, "takeout", takeout) if item.id != takeout.id and item.path.startswith(f"{person.slug}/google-only/")] + [takeout]
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in shots.values()))
-    decided = dedupe.decide_all(index, [candidate_of(item) for item in peers], dedupe.DedupeSettings())
+    decided = dedupe.decide_all(index, [candidate_of(opened, item) for item in peers], dedupe.DedupeSettings())
     mine = [d for d in decided if d.source_path == takeout.path]
     rivals = [d for d in decided if d.source_path != takeout.path and d.tier == 2 and d.matched_item_id == phone.id]
     return bool(mine) and mine[0].tier == row.tier and mine[0].matched_item_id == phone.id and (row.tier == 1 or not rivals)
 
 
-def carry_metadata(photos: Photos, person: Person, keeper: MediaItem, loser: MediaItem, tools: Tools) -> str | None:
+def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], None] | None:
     if loser.source != "takeout":
         return None
     google = xmp.GoogleMetadata.of(loser.sidecar_json)
-    try:
-        with paths.checked_keeper(photos, person.slug, keeper.path, keeper.sha1) as pinned, tempfile.TemporaryDirectory() as folder:
-            before, staged = pinned.sidecar(), Path(folder) / f"{pinned.name}{paths.SIDECAR_SUFFIX}"
-            if before is not None:
-                staged.write_bytes(before)
-            fields = gaps_left(pinned.path, staged, google, tools)
-            if fields:
-                tools.write(staged, fields)
+
+    def carry(pinned: paths.Keeper) -> None:
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                before, staged = pinned.sidecar(), Path(folder) / f"{pinned.name}{paths.SIDECAR_SUFFIX}"
+                if before is not None:
+                    staged.write_bytes(before)
                 if gaps_left(pinned.path, staged, google, tools):
-                    return "Google's metadata could not be carried to the kept copy"
-                pinned.write_sidecar(staged.read_bytes(), before)
-    except (exiftool.WriteFailed, exiftool.Unreadable, paths.NotASidecar, paths.NotALosingCopy, paths.OutsideRoot, OSError, ValueError):
-        return "the kept copy's sidecar could not be written"
-    return None
+                    tools.write(staged, gaps_left(pinned.path, staged, google, tools))
+                    if gaps_left(pinned.path, staged, google, tools):
+                        raise paths.NotALosingCopy("Google's metadata could not be carried to the kept copy")
+                    pinned.write_sidecar(staged.read_bytes(), before)
+        except (exiftool.WriteFailed, exiftool.Unreadable, paths.NotASidecar, OSError, ValueError) as error:
+            raise paths.NotALosingCopy("the kept copy's sidecar could not be written") from error
+
+    return carry
 
 
 def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools: Tools) -> dict[str, str]:
@@ -233,12 +237,8 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
     if not still_a_pair(opened, person, keeper, loser) or not still_matched(opened, person, takeout, phone, row):
         refuse(opened, photos, person, row, "the pair is no longer safe to resolve", now, resolved)
         return
-    unsaved = carry_metadata(photos, person, keeper, loser, tools)
-    if unsaved is not None:
-        refuse(opened, photos, person, row, unsaved, now, resolved)
-        return
     try:
-        paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1)
+        paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1, carrier(loser, tools))
     except (paths.NotALosingCopy, paths.OutsideRoot) as error:
         refuse(opened, photos, person, row, str(error), now, resolved)
         return

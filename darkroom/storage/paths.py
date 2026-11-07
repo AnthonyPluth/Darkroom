@@ -1256,13 +1256,17 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
         raise NotALosingCopy("the kept copy is missing") from error
 
 
-def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str) -> bool:
+def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str,
+                       carry: Callable[[Keeper], None] | None = None) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
     try:
         with checked_keeper(photos, person, keeping, keeping_sha1) as keeper, holding(keeper):
+            if carry is not None:
+                carry(keeper)
+            kept_sidecar = keeper.sidecar()
             try:
                 with pinned_folder(photos, parts[:-1]) as folder:
-                    return drop_losing_copy(folder, parts[-1], losing_sha1, keeper)
+                    return drop_losing_copy(folder, parts[-1], losing_sha1, keeper, kept_sidecar)
             except FileNotFoundError:
                 return False
     except KeeperBusy:
@@ -1380,7 +1384,7 @@ def put_claim_back(private: int, claim: str, folder: int, name: str) -> None:
         rename_no_replace(claim, name, private, folder)
 
 
-def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
+def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper, kept_sidecar: bytes | None) -> bool:
     with private_folder(folder, claim_name(sha1, name), create=True) as private:
         assert private is not None
         if entry_at(CLAIMED, private) is None:
@@ -1395,7 +1399,7 @@ def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
             raise
         if copy >= 0:
             try:
-                drop_claimed(folder, name, private, copy, sha1, keeper)
+                drop_claimed(folder, name, private, copy, sha1, keeper, kept_sidecar)
             finally:
                 os.close(copy)
         if entry_at(name, folder) is None and entry_at(CLAIMED, private) is None:
@@ -1403,12 +1407,14 @@ def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
     return copy >= 0
 
 
-def drop_claimed(folder: int, name: str, private: int, copy: int, sha1: str, keeper: Keeper) -> None:
+def drop_claimed(folder: int, name: str, private: int, copy: int, sha1: str, keeper: Keeper, kept_sidecar: bytes | None) -> None:
     found = os.fstat(copy)
     try:
         if not stat.S_ISREG(found.st_mode) or os.path.samestat(found, keeper.found) or fd_sha1(copy) != sha1:
             raise NotALosingCopy("the copy is not the file Darkroom recorded")
         keeper.still_there()
+        if keeper.sidecar() != kept_sidecar:
+            raise NotALosingCopy("the kept copy's sidecar changed before the loser went")
     except NotALosingCopy:
         put_claim_back(private, CLAIMED, folder, name)
         raise

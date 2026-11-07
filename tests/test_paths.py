@@ -822,6 +822,20 @@ class RemoveLosingCopyTests(unittest.TestCase):
             self.remove(losing_sha1=sha1)
         self.assertTrue((private / paths.CLAIMED).exists())
 
+    def test_a_keeper_sidecar_changed_after_the_carry_keeps_the_loser(self):
+        sidecar = self.keeper.with_name(f"{self.keeper.name}.xmp")
+        real = paths.Keeper.still_there
+
+        def changing(keeper):
+            if sidecar.exists():
+                sidecar.write_bytes(b"replaced by someone else")
+            return real(keeper)
+
+        with mock.patch.object(paths.Keeper, "still_there", changing), self.assertRaises(paths.NotALosingCopy):
+            paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", paths.file_sha1(self.loser), "jo/originals/immich/IMG_0001-aaaa.jpg",
+                                     paths.file_sha1(self.keeper), lambda keeper: keeper.write_sidecar(b"carried", None))
+        self.assertEqual(self.loser.read_bytes(), b"takeout")
+
     def test_a_250_byte_name_is_claimed_and_removed(self):
         long = "a" * 246 + ".jpg"
         self.loser.rename(self.loser.with_name(long))
