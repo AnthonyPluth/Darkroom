@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
 
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session
@@ -27,13 +26,6 @@ class HeldByAnotherPerson(ValueError):
 
 class DeviceGone(LookupError):
     pass
-
-
-@dataclass(frozen=True)
-class Target:
-    device_id: int
-    digest: str = field(repr=False)
-    token: str = field(repr=False)
 
 
 def normalized(raw: str) -> str:
@@ -123,32 +115,3 @@ def unsealed(device: Device, secret: str) -> str | None:
         return None
     return token if TOKEN.fullmatch(token) and digest_of(token) == device.push_token_digest else None
 
-
-def targets(opened: Session, settings: Settings, person_ids: set[int], now: float, only: set[int] | None = None) -> list[Target]:
-    if not person_ids or (only is not None and not only):
-        return []
-    query = select(Device).where(Device.person_id.in_(person_ids), Device.revoked_at.is_(None), Device.push_token_digest.is_not(None)).order_by(Device.id)
-    if only is not None:
-        query = query.where(Device.id.in_(only))
-    found = []
-    for device in opened.execute(query).scalars():
-        token = token_for(opened, settings, device, now)
-        if token is not None and device.push_token_digest is not None:
-            found.append(Target(device.id, device.push_token_digest, token))
-    return found
-
-
-def still_held(opened: Session, settings: Settings, target: Target, person_ids: set[int], now: float) -> bool:
-    device = opened.get(Device, target.device_id, populate_existing=True)
-    if device is None or device.revoked_at is not None or device.push_token_digest != target.digest or device.person_id not in person_ids:
-        return False
-    return not access_lapsed(opened, settings, device, now)
-
-
-def forget_reported(opened: Session, target: Target, unregistered_at: float | None, now: float) -> bool:
-    device = opened.get(Device, target.device_id, populate_existing=True)
-    if device is None or device.push_token_digest != target.digest:
-        return False
-    if unregistered_at is not None and device.push_token_at is not None and device.push_token_at > unregistered_at:
-        return False
-    return forget(opened, device, now)

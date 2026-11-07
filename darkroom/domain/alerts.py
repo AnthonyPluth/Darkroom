@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.config import Settings, apns_configured, apns_problems, demo_allowed
+from darkroom.config import Settings, demo_allowed
 from darkroom.domain import events
 from darkroom.storage.models import Alert
 
@@ -17,7 +17,6 @@ ONCE = (0.0,)
 SENT = "sent"
 DISABLED = "disabled"
 FAILED = "failed"
-QUEUED = "queued"
 ONE_SHOT_KINDS = frozenset({"export_imported", "schedule_renewed", "failure"})
 TITLES = {
     "sign_in_needed": "Google sign-in needed",
@@ -126,23 +125,16 @@ def recorded(settings: Settings, title: str, message: str, link: str | None = No
     return SENT
 
 
-def queued(settings: Settings, title: str, message: str, link: str | None = None) -> str:
-    return QUEUED
-
-
 def notifier_for(settings: Settings) -> Notifier:
     if demo_allowed(settings):
         return recorded
-    return queued if apns_configured(settings) and not apns_problems(settings) else undelivered
+    return undelivered
 
 
 def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording, now: float, notifier: Notifier | None) -> str:
     outcome = (notifier or notifier_for(settings))(settings, wording.title, wording.message, alert.link)
     alert.last_sent = now
     alert.sent_count += 1
-    if outcome == QUEUED:
-        alert.push_due = now
-        alert.pushed_devices = None
     events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
     return outcome
 
@@ -169,18 +161,12 @@ def open_alert_committed(opened: Session, settings: Settings, key: str, kind: st
     if existing is not None:
         return existing
     chosen = notifier or notifier_for(settings)
-    queue = chosen is queued
     alert = Alert(key=key, kind=kind, subject=subject, message=wording.message, link=link, opened=now, last_sent=now, sent_count=1,
-                  closed=now if kind in ONE_SHOT_KINDS else None, person_id=about.person_id, account_id=about.account_id,
-                  push_due=now if queue else None)
+                  closed=now if kind in ONE_SHOT_KINDS else None, person_id=about.person_id, account_id=about.account_id)
     opened.add(alert)
-    if queue:
-        opened.flush()
-        events.record(opened, now, f"alert_{QUEUED}", alert.subject, alert.kind)
     opened.commit()
-    if not queue:
-        outcome = chosen(settings, wording.title, wording.message, link)
-        events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
+    outcome = chosen(settings, wording.title, wording.message, link)
+    events.record(opened, now, "alert_sent" if outcome == SENT else f"alert_{outcome}", alert.subject, alert.kind)
     return alert
 
 
