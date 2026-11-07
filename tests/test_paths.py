@@ -471,6 +471,7 @@ class RemoveLosingCopyTests(unittest.TestCase):
         self.assertFalse(self.loser.exists())
         self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
         self.assertEqual(self.keeper.read_bytes(), b"phone")
+        self.assertFalse(self.remove(losing_sha1="b" * 40))
 
     def test_a_losing_immich_original_goes_when_the_takeout_copy_is_kept(self):
         self.assertTrue(self.remove(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper),
@@ -478,10 +479,6 @@ class RemoveLosingCopyTests(unittest.TestCase):
         self.assertFalse(self.keeper.exists())
         self.assertEqual(self.loser.read_bytes(), b"takeout")
 
-    def test_a_copy_already_gone_is_finished_without_error_once_the_keeper_checks_out(self):
-        self.loser.unlink()
-        self.assertFalse(self.remove(losing_sha1="b" * 40))
-        self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
 
     def assertRefused(self, **arguments):
         before = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}

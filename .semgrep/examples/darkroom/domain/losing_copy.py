@@ -10,8 +10,3 @@ def drop_a_google_only_copy(photos, person, row):
 def resolve_through_the_module(opened, photos, person, now):
     # ok: darkroom-losing-copy-one-caller
     return takeout_copies.resolve_person(opened, photos, person, now)
-
-
-def check_the_keeper_only(photos, slug, phone):
-    # ok: darkroom-losing-copy-one-caller
-    return paths.checked_keeper(photos, slug, phone.path, phone.sha1)

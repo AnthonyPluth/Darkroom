@@ -16,6 +16,7 @@ from darkroom.storage.paths import Photos
 
 IMMICH_FOLDER = "immich"
 OPEN_STATES = ("pending", "refused")
+TOMBSTONE = ("person_id", "kept_item_id", "removed_item_id", "kept_path", "kept_sha1", "removed_path", "removed_sha1", "removed_source", "rule", "tier", "created_at")
 
 
 @dataclass
@@ -67,28 +68,31 @@ def google_only(opened: Session, person: Person) -> list[tuple[MediaItem, Dedupe
     items = opened.execute(
         select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "takeout", MediaItem.path.startswith(f"{person.slug}/google-only/")).order_by(MediaItem.id)
     ).scalars().all()
-    return [(item, decisions[0]) for item in items if (decisions := decisions_of(opened, item)) and not doubted(opened, person, item, decisions)]
+    return [(item, decision) for item in items if (decision := removable_takeout(opened, person, item)) is not None]
 
 
-def doubted(opened: Session, person: Person, item: MediaItem, decisions: list[DedupeDecision]) -> bool:
+def removable_takeout(opened: Session, person: Person, item: MediaItem) -> DedupeDecision | None:
+    if item.person_id != person.id or item.source != "takeout" or not item.path.startswith(f"{person.slug}/google-only/"):
+        return None
+    decisions = decisions_of(opened, item)
     matched = opened.execute(select(DedupeDecision.id).where(DedupeDecision.matched_item_id == item.id).limit(1)).first()
-    return matched is not None or not all(
+    qualifying = decisions and matched is None and all(
         decision.person_id == person.id and decision.tier == 5 and decision.decided_by == "auto" and decision.reversed_at is None and not edited(decision)
         for decision in decisions
     )
+    return decisions[0] if qualifying else None
 
 
 def decisions_of(opened: Session, item: MediaItem) -> list[DedupeDecision]:
     return list(opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id).order_by(DedupeDecision.id)).scalars())
 
 
-def immich_originals(opened: Session, person: Person) -> dict[int, MediaItem]:
-    found = opened.execute(
-        select(MediaItem).join(ImmichAsset, ImmichAsset.original_item_id == MediaItem.id).where(
-            ImmichAsset.person_id == person.id, ImmichAsset.status == "stored", MediaItem.person_id == person.id, MediaItem.source == "phone",
-            MediaItem.path.startswith(f"{person.slug}/originals/{IMMICH_FOLDER}/"),
-        )
-    ).scalars().unique()
+def immich_originals(opened: Session, person: Person, item_id: int | None = None) -> dict[int, MediaItem]:
+    query = select(MediaItem).join(ImmichAsset, ImmichAsset.original_item_id == MediaItem.id).where(
+        ImmichAsset.person_id == person.id, ImmichAsset.status == "stored", MediaItem.person_id == person.id, MediaItem.source == "phone",
+        MediaItem.path.startswith(f"{person.slug}/originals/{IMMICH_FOLDER}/"),
+    )
+    found = opened.execute(query if item_id is None else query.where(MediaItem.id == item_id)).scalars().unique()
     return {item.id: item for item in found}
 
 
@@ -153,8 +157,7 @@ def refuse(opened: Session, person: Person, row: DuplicateRemoval, reason: str, 
 
 def still_a_pair(opened: Session, person: Person, keeper: MediaItem, loser: MediaItem) -> bool:
     takeout, phone = (keeper, loser) if loser.source == "phone" else (loser, keeper)
-    eligible = {item.id for item, _ in google_only(opened, person)}
-    if takeout.id not in eligible or phone.id not in immich_originals(opened, person):
+    if removable_takeout(opened, person, takeout) is None or not immich_originals(opened, person, phone.id):
         return False
     return loser is not phone or phone_may_go(opened, person, phone, takeout)
 
@@ -208,6 +211,9 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
         return
     for asset in opened.execute(select(ImmichAsset).where(ImmichAsset.original_item_id == loser.id)).scalars():
         asset.original_item_id = None
+    for other in decisions_of(opened, loser) if loser.source == "takeout" else []:
+        if other.id != row.decision_id:
+            opened.add(DuplicateRemoval(**{column: getattr(row, column) for column in TOMBSTONE}, decision_id=other.id, state="removed", removed_at=now))
     opened.delete(loser)
     row.state, row.removed_at = "removed", now
     resolved.removed += 1

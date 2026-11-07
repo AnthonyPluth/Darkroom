@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import takeout_copies
@@ -50,8 +50,8 @@ class CopiesCase(unittest.TestCase):
         self.opened = Session(own_database(self), expire_on_commit=False)
         self.addCleanup(self.opened.close)
         self.jo = self.opened.get(Person, add_person(self.opened, "jo"))
-        account = GoogleAccount(email="family@x.test", default_person_id=self.jo.id, created=1.0)
-        self.opened.add(account)
+        account, self.other = (GoogleAccount(email=f"{name}@x.test", default_person_id=self.jo.id, created=1.0) for name in ("family", "other"))
+        self.opened.add_all([account, self.other])
         self.opened.flush()
         self.account = account.id
         self.export = Export(account_id=account.id, kind="initial", google_id="g-1", created_at=1.0, status="imported", owner_person_id=self.jo.id)
@@ -132,6 +132,7 @@ class QualityRuleTests(CopiesCase):
 class ResolveTests(CopiesCase):
     def test_an_identical_takeout_copy_leaves_and_its_google_metadata_moves_to_the_originals_sidecar(self):
         takeout, decision = self.takeout(b"same bytes")
+        second = self.decide(takeout, "Takeout/Album/IMG_0001.jpg")
         phone = self.phone(b"same bytes")
         phone_id, takeout_id = phone.id, takeout.id
         resolved = self.resolve()
@@ -142,12 +143,13 @@ class ResolveTests(CopiesCase):
         self.assertEqual((carried["XMP-dc:Description"], carried["XMP-exif:GPSLatitude"]), ("A made-up canal", "45.4000000"))
         self.assertIsNone(self.opened.get(MediaItem, takeout_id))
         self.assertIsNotNone(self.opened.get(MediaItem, phone_id))
-        (row,) = self.removals()
+        row, tombstone = self.removals()
         self.assertEqual((row.state, row.rule, row.tier, row.removed_source, row.decision_id, row.kept_item_id), ("removed", "identical", 1, "takeout", decision.id, phone_id))
-        self.assertTrue(takeout_copies.resolved_away(self.opened, decision.id))
+        self.assertEqual((tombstone.state, tombstone.decision_id, tombstone.removed_path), ("removed", second.id, row.removed_path))
+        self.assertTrue(all(takeout_copies.resolved_away(self.opened, d) for d in (decision.id, second.id)))
         self.assertEqual(self.events("duplicate_removed"), ["takeout copy, identical, tier 1"])
         files, again = self.files(), self.resolve(at=3.0)
-        self.assertEqual(((again.removed, again.kept_both, again.refused, again.failed), self.files(), len(self.removals())), ((0, 0, 0, 0), files, 1))
+        self.assertEqual(((again.removed, again.kept_both, again.refused, again.failed), self.files(), len(self.removals())), ((0, 0, 0, 0), files, 2))
 
     def test_a_value_the_keeper_already_has_is_kept(self):
         self.takeout(b"same bytes")
@@ -181,19 +183,13 @@ class ResolveTests(CopiesCase):
         self.assertEqual(self.opened.execute(select(PixelCopy)).scalars().all(), [])
         self.assertEqual([(r.rule, r.removed_source, r.decision_id) for r in self.removals()], [("takeout_better", "phone", None)])
 
-    def other_account(self):
-        other = GoogleAccount(email="other@x.test", default_person_id=self.jo.id, created=1.0)
-        self.opened.add(other)
-        self.opened.flush()
-        return other.id
-
     def dependencies(self):
         return {
             "matched": lambda phone, takeout: self.opened.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path="Takeout/m.mp4",
                                                                              person_id=self.jo.id, matched_item_id=phone.id, tier=1, reason="same SHA-1", decided_by="auto", decided_at=1.0)),
             "placed": lambda phone, takeout: self.opened.add(PixelCopy(pixel_id=self.pixel.id, item_id=phone.id, person_id=self.jo.id, state="placed", bytes=1, sha1=phone.sha1,
                                                                        queued_at=1.0, placed_at=1.5)),
-            "other_account": lambda phone, takeout: setattr(self.pixel, "google_account_id", self.other_account()),
+            "other_account": lambda phone, takeout: setattr(self.pixel, "google_account_id", self.other.id),
             "confirmed": lambda phone, takeout: setattr(phone, "confirmed_in_google", True),
             "export_gone": lambda phone, takeout: setattr(takeout, "export_id", None),
         }
@@ -264,11 +260,8 @@ class ResolveTests(CopiesCase):
     def test_another_persons_copies_are_never_paired(self):
         sam = self.opened.get(Person, add_person(self.opened, "sam"))
         self.takeout(b"same bytes")
-        phone = self.phone(b"same bytes")
-        phone.person_id = sam.id
-        self.opened.commit()
-        self.assertEqual(self.resolve().removed, 0)
-        self.assertEqual(takeout_copies.resolve_person(self.opened, self.photos, sam, 2.0).removed, 0)
+        self.phone(b"same bytes").person_id = sam.id
+        self.assertEqual([takeout_copies.resolve_person(self.opened, self.photos, who, 2.0).removed for who in (self.jo, sam)], [0, 0])
 
 
 class CrashTests(CopiesCase):
@@ -326,3 +319,15 @@ class CrashTests(CopiesCase):
         self.assertEqual(self.events("duplicate_removal_failed"), ["takeout copy, identical: PermissionError"])
         self.assertEqual(self.resolve(at=4.0).removed, 1)
         self.assertFalse((self.root / takeout.path).exists())
+
+    def test_finishing_a_removal_queries_the_same_however_many_other_google_only_items_there_are(self):
+        counts = []
+        for others in (0, 20):
+            self.setUp()
+            [self.takeout(b"other %d" % n, name=f"o{n}.jpg", captured_utc=MOMENT + 1000 + n) for n in range(others)]
+            self.pending()
+            (row,), seen = self.removals(), []
+            event.listen(self.opened.get_bind(), "before_cursor_execute", lambda *_, seen=seen: seen.append(1))
+            takeout_copies.finish(self.opened, self.photos, self.jo, row, 3.0, takeout_copies.Resolved(), takeout_copies.Tools(self.exif.read, self.exif.write))
+            counts.append((row.state, len(seen)))
+        self.assertEqual(counts, [("removed", counts[0][1])] * 2)
