@@ -448,6 +448,61 @@ class PixelFolderTests(unittest.TestCase):
         pixel_folder.seen_again(self.opened, self.jo_account, item.id, self.jo, NOW + 10)
         self.assertEqual([c.seen_again_at for c in self.copies(self.jo_pixel)], [NOW + 10])
 
+    def pruned_on(self, item: MediaItem, account_id: int, at: float = NOW + 10) -> DedupeDecision:
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        decision = self.match(item, account_id, at=at)
+        self.assertEqual(self.tend(at=at + 10).pruned, 1)
+        return decision
+
+    def test_a_photo_pruned_on_the_old_accounts_match_is_sent_again_once_the_pixel_moves_account(self):
+        item = self.item(self.jo)
+        self.pruned_on(item, self.jo_account)
+        before = kept_tree(self.root)
+        pixels.update(self.opened, self.jo_pixel, {"google_account_id": self.sam_account}, NOW + 30)
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
+        self.assertEqual(self.opened.execute(select(Event.type).where(Event.type == "pixel_copy_requeued")).scalars().all(), ["pixel_copy_requeued"])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 1)
+        self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
+        self.assertEqual(self.tend(at=NOW + 50).pruned, 0)
+        self.assertEqual(kept_tree(self.root), before)
+
+    def test_a_photo_the_new_account_also_confirms_stays_pruned_when_the_pixel_moves_account(self):
+        item = self.item(self.jo)
+        self.match(item, self.sam_account, person_id=self.jo, at=NOW + 5)
+        self.pruned_on(item, self.jo_account)
+        pixels.update(self.opened, self.jo_pixel, {"google_account_id": self.sam_account}, NOW + 30)
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("pruned", 0)])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 0)
+        self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
+
+    def test_a_photo_whose_match_was_reversed_while_the_person_was_off_the_pixel_is_sent_once_they_are_back(self):
+        pixels.update(self.opened, self.jo_pixel, {"people_ids": [self.jo, self.sam]}, NOW)
+        item, kept = self.item(self.jo), self.item(self.jo)
+        self.pruned_on(kept, self.jo_account)
+        decision = self.pruned_on(item, self.jo_account, at=NOW + 12)
+        pixels.update(self.opened, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 30)
+        dedupe.reverse(self.opened, decision.id, NOW + 31, "owner")
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned", "pruned"])
+        pixels.update(self.opened, self.jo_pixel, {"name": "Renamed"}, NOW + 32)
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned", "pruned"])
+        pixels.update(self.opened, self.jo_pixel, {"people_ids": [self.jo, self.sam]}, NOW + 33)
+        self.assertEqual([(c.item_id, c.state, c.requeued) for c in self.copies(self.jo_pixel)], [(kept.id, "pruned", 0), (item.id, "queued", 1)])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 1)
+        self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
+        self.assertFalse(self.copy_path(self.jo_pixel, kept).exists())
+
+    def test_queueing_a_pruned_photo_whose_confirmation_no_longer_holds_sends_it_again(self):
+        item = self.item(self.jo)
+        self.pruned_on(item, self.jo_account)
+        self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 30), 0)
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned"])
+        self.opened.get(Pixel, self.jo_pixel).google_account_id = self.sam_account
+        self.opened.flush()
+        self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 31), 1)
+        self.assertEqual([(c.state, c.requeued, c.queued_at) for c in self.copies(self.jo_pixel)], [("queued", 1, NOW + 31)])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 1)
+
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)
         pixel_folder.queue(self.opened, item, NOW)
