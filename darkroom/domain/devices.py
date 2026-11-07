@@ -69,6 +69,7 @@ def revoke(opened: Session, device_id: int, now: float) -> Device:
     if device.revoked_at is None:
         device.revoked_at = now
         device.cleanup_enabled = False
+        device.push_token_sealed, device.push_token_digest, device.push_token_at = None, None, now
         slug = opened.get(Person, device.person_id)
         events.record(opened, now, "device_revoked", slug.slug if slug else str(device.person_id), device.name)
     return device
