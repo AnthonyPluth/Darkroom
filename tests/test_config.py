@@ -111,17 +111,6 @@ class AuthProblemTests(unittest.TestCase):
                 self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.refuses_to_start(bad)))
                 self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.problems(bad)))
 
-    def test_an_upload_timeout_below_one_second_or_not_a_number_refuses_to_start(self):
-        self.assertEqual(settings_from().upload_read_timeout, 3600)
-        self.assertEqual(settings_from(UPLOAD_READ_TIMEOUT="90").upload_read_timeout, 90)
-        self.assertEqual(config.refuses_to_start(settings_from(UPLOAD_READ_TIMEOUT="90")), [])
-        for value in ("0", "-5", "1h", "1.5", "9999999999", "\u00b2", "9\u00b2", "\u0661\u0662"):
-            with self.subTest(value=value):
-                bad = settings_from(UPLOAD_READ_TIMEOUT=value)
-                self.assertEqual(bad.upload_read_timeout, 0)
-                self.assertIn("UPLOAD_READ_TIMEOUT", " ".join(config.refuses_to_start(bad)))
-                self.assertIn("UPLOAD_READ_TIMEOUT", " ".join(config.problems(bad)))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,10 +20,6 @@ def whole_number(raw: str) -> int:
     return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 9 else 0
 
 
-def whole_seconds(raw: str) -> int:
-    return whole_number(raw)
-
-
 def env_flag(name: str) -> bool:
     return env(name) == "1"
 
@@ -50,7 +46,6 @@ class Settings:
     browser_token: str
     vnc_url: str
     timezone: str
-    upload_read_timeout: int
     apns_key_id: str = ""
     apns_team_id: str = ""
     apns_bundle_id: str = ""
@@ -80,7 +75,6 @@ def load() -> Settings:
         browser_token=env("DARKROOM_BROWSER_TOKEN"),
         vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
-        upload_read_timeout=whole_seconds(env("UPLOAD_READ_TIMEOUT", "3600")),
         apns_key_id=env("APNS_KEY_ID"),
         apns_team_id=env("APNS_TEAM_ID"),
         apns_bundle_id=env("APNS_BUNDLE_ID"),
@@ -197,7 +191,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + upload_timeout_problems(settings) + pixel_cap_problems(settings) + vnc_url_problems(settings) + apns_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + apns_problems(settings)
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
@@ -245,12 +239,6 @@ def apns_problems(settings: Settings) -> list[str]:
     return found
 
 
-def upload_timeout_problems(settings: Settings) -> list[str]:
-    if settings.upload_read_timeout >= 1:
-        return []
-    return ["UPLOAD_READ_TIMEOUT must be a whole number of seconds, at least 1 (the default is 3600)"]
-
-
 def pixel_cap_problems(settings: Settings) -> list[str]:
     if settings.pixel_folder_cap_gb >= 1:
         return []
@@ -258,4 +246,4 @@ def pixel_cap_problems(settings: Settings) -> list[str]:
 
 
 def refuses_to_start(settings: Settings) -> list[str]:
-    return misused(settings) + upload_timeout_problems(settings) + pixel_cap_problems(settings)
+    return misused(settings) + pixel_cap_problems(settings)

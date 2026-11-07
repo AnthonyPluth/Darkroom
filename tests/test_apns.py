@@ -64,6 +64,15 @@ class ApnsWorld(unittest.TestCase):
 
 
 class SendTests(ApnsWorld):
+    def test_pushes_go_only_to_apples_production_host(self):
+        self.assertEqual(apns.PRODUCTION_HOST, "api.push.apple.com")
+        source = Path(apns.__file__).read_text()
+        self.assertNotIn("sandbox", source)
+        self.assertNotIn("development.push", source)
+        credentials = apns.Credentials(KEY_ID, TEAM_ID, BUNDLE_ID, self.key_file)
+        client = apns.Apns(credentials, self.clock)
+        self.assertEqual((client.host, client.port), ("api.push.apple.com", 443))
+
     def test_a_push_reaches_apns_over_http2_with_a_signed_token_and_only_the_kind_and_id(self):
         fake = self.start()
         results = self.client().send([TOKEN_A, TOKEN_B], PUSH)
