@@ -3,6 +3,7 @@ import itertools
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -246,6 +247,26 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual(self.tend(at=NOW + 2).placed, 1)
         self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 3, always_send=True), 0)
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
+
+    def test_each_placed_copy_is_kept_when_a_later_one_fails_the_pass(self):
+        first, second = self.item(self.jo), self.item(self.jo)
+        pixel_folder.queue(self.opened, first, NOW)
+        pixel_folder.queue(self.opened, second, NOW)
+        self.opened.commit()
+        real = pixel_folder.paths.place_pixel_copy
+        calls = []
+
+        def stops_on_the_second(*args: object) -> str:
+            calls.append(args)
+            if len(calls) == 2:
+                raise RuntimeError("the process stopped")
+            return real(*args)
+
+        with mock.patch.object(pixel_folder.paths, "place_pixel_copy", stops_on_the_second), self.assertRaises(RuntimeError):
+            self.tend()
+        self.opened.rollback()
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed", "queued"])
+        self.assertEqual(self.tend(at=NOW + 1).placed, 1)
 
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)

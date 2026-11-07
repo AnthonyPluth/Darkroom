@@ -51,6 +51,7 @@ class Settings:
     apns_team_id: str = ""
     apns_bundle_id: str = ""
     apns_key_file: str = ""
+    pixel_folder_cap_gb: int = 50
 
 
 def load() -> Settings:
@@ -80,6 +81,7 @@ def load() -> Settings:
         apns_team_id=env("APNS_TEAM_ID"),
         apns_bundle_id=env("APNS_BUNDLE_ID"),
         apns_key_file=env("APNS_KEY_FILE"),
+        pixel_folder_cap_gb=whole_seconds(env("PIXEL_FOLDER_CAP_GB", "50")),
     )
 
 
@@ -191,7 +193,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + upload_timeout_problems(settings) + vnc_url_problems(settings) + apns_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + upload_timeout_problems(settings) + pixel_cap_problems(settings) + vnc_url_problems(settings) + apns_problems(settings)
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
@@ -245,5 +247,11 @@ def upload_timeout_problems(settings: Settings) -> list[str]:
     return ["UPLOAD_READ_TIMEOUT must be a whole number of seconds, at least 1 (the default is 3600)"]
 
 
+def pixel_cap_problems(settings: Settings) -> list[str]:
+    if settings.pixel_folder_cap_gb >= 1:
+        return []
+    return ["PIXEL_FOLDER_CAP_GB must be a whole number of gigabytes, at least 1 (the default is 50)"]
+
+
 def refuses_to_start(settings: Settings) -> list[str]:
-    return misused(settings) + upload_timeout_problems(settings)
+    return misused(settings) + upload_timeout_problems(settings) + pixel_cap_problems(settings)

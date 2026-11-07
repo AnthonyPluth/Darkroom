@@ -244,13 +244,48 @@ class BuildTests(unittest.TestCase):
         export_id = world.hand_dropped().id
         scheduler = jobs.build(world.settings, world.engine)
         self.assertEqual((scheduler.jobs["imports"].interval, scheduler.jobs["imports"].own_thread), (60.0, True))
-        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name not in ("imports", "alerts.push")))
+        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name not in ("imports", "alerts.push", "pixels.tend")))
         scheduler.run_one("imports", NOW)
         self.assertEqual(world.reopen().get(Export, export_id).status, "downloaded")
         run.request_import(world.opened, export_id)
         world.opened.commit()
         scheduler.run_one("imports", NOW)
         self.assertEqual(world.reopen().get(Export, export_id).status, "imported")
+
+    def test_the_pixel_job_runs_hourly_in_its_own_thread_and_fills_each_pixel_folder(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+
+        from darkroom.domain import pixel_folder
+        from darkroom.storage.models import MediaItem, Pixel, PixelCopy, PixelPerson
+
+        engine = own_database(self)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            settings = config.Settings(**{**config.load().__dict__, "photos_root": root, "pixel_folder_cap_gb": 1})
+            (root / "jo/originals").mkdir(parents=True)
+            (root / "jo/originals/a.jpg").write_bytes(b"photo")
+            with db.session(engine) as opened:
+                person = add_person(opened, "jo")
+                account = GoogleAccount(email="jo@x.test", default_person_id=person, created=1.0)
+                opened.add(account)
+                opened.flush()
+                pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+                opened.add(pixel)
+                opened.flush()
+                opened.add(PixelPerson(pixel_id=pixel.id, person_id=person))
+                item = MediaItem(person_id=person, source="phone", path="jo/originals/a.jpg", sha1=hashlib.sha1(b"photo", usedforsecurity=False).hexdigest(),
+                                 bytes=5, indexed_at=1.0)
+                opened.add(item)
+                opened.flush()
+                pixel_folder.queue(opened, item, 2.0)
+            scheduler = jobs.build(settings, engine)
+            self.assertEqual((scheduler.jobs["pixels.tend"].interval, scheduler.jobs["pixels.tend"].own_thread), (3600.0, True))
+            scheduler.run_one("pixels.tend", 5.0)
+            self.assertEqual((root / f"_pixels/{pixel.id}/jo/a.jpg").read_bytes(), b"photo")
+            with db.session(engine) as opened:
+                self.assertEqual([row.state for row in opened.query(PixelCopy)], ["placed"])
 
     def test_the_cleanup_job_runs_daily_and_removes_old_staging(self):
         from darkroom.storage.models import Export

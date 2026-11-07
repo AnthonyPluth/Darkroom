@@ -112,6 +112,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         row.state, row.placed_at, row.pruned_at = "placed", now, None
         used += row.bytes
         tended.placed += 1
+        opened.commit()
     opened.flush()
     return tended
 
@@ -139,6 +140,7 @@ def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
             continue
         row.state, row.pruned_at = "pruned", now
         tended.pruned += 1
+        opened.commit()
     opened.flush()
     return tended
 
