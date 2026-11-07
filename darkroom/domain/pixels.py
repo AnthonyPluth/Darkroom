@@ -6,7 +6,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, dedupe, events
+from darkroom.domain import accounts, dedupe, events, pixel_folder
 from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelCopy, PixelPerson
 
 
@@ -101,8 +101,10 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     assert isinstance(chosen, list)
     require_people(opened, chosen)
     require_still_served(opened, pixel, set(chosen) if account_id == pixel.google_account_id else set())
-    leaving = set(people_of(opened, pixel.id)) - set(chosen)
-    require_no_placed_copies(opened, pixel, None if account_id != pixel.google_account_id else leaving)
+    earlier = set(people_of(opened, pixel.id))
+    leaving = earlier - set(chosen)
+    moving = account_id != pixel.google_account_id
+    require_no_placed_copies(opened, pixel, None if moving else leaving)
     drop_queued_copies(opened, pixel, leaving, now)
     before = accounts.served_people(opened, account_id)
     pixel.google_account_id = account_id
@@ -115,6 +117,8 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
         pixel.syncthing_device_id = value if isinstance(value, str) else None
     opened.flush()
     dedupe.confirm_newly_served(opened, account_id, before)
+    if moving or set(chosen) - earlier:
+        pixel_folder.requeue_unconfirmed(opened, pixel, None if moving else set(chosen) - earlier, now)
     events.record(opened, now, "pixel_updated", str(pixel.id))
     return pixel
 
