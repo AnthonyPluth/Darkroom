@@ -11,7 +11,7 @@ from typing import Literal, Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, events, media
+from darkroom.domain import accounts, events, media, pixel_folder
 from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, ReviewItem, Setting
@@ -411,5 +411,7 @@ def reverse(opened: Session, decision_id: int, now: float, by: DecidedBy) -> Ded
     matched = None if row.matched_item_id is None else opened.get(MediaItem, row.matched_item_id)
     if matched is not None and matched.source == "phone":
         matched.confirmed_in_google = confirming(opened, matched.id, matched.person_id)
+    if matched is not None:
+        pixel_folder.requeue(opened, matched.id, now)
     opened.flush()
     return row
