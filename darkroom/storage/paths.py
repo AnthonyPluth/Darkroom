@@ -31,6 +31,7 @@ RENAME_EXCHANGE = 2
 PRIVATE_MODE = 0o700
 CLAIMED = "copy"
 CLAIMED_SIDECAR = "copy.xmp"
+HELD = re.compile(r"\.keeping-[0-9a-f]{16}")
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
@@ -1105,6 +1106,10 @@ class NotALosingCopy(ValueError):
     pass
 
 
+class KeeperBusy(NotALosingCopy):
+    pass
+
+
 LOSING_FOLDERS = (("google-only",), ("originals", "immich"))
 KEEPING_FOLDERS = (("google-only",), ("originals",))
 
@@ -1183,18 +1188,16 @@ class Keeper:
         try:
             if before is None:
                 os.link(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder, follow_symlinks=False)
-            elif exchange(temp, name, self.folder):
-                if read_entry(temp, self.folder) != before:
-                    if read_entry(name, self.folder) == data and exchange(temp, name, self.folder) and read_entry(temp, self.folder) != data:
-                        exchange(temp, name, self.folder)
-                    raise NotALosingCopy("the kept copy's sidecar changed")
-            else:
-                if self.sidecar() != before:
-                    raise NotALosingCopy("the kept copy's sidecar changed")
-                os.replace(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder)
+            elif not exchange(temp, name, self.folder):
+                raise NotALosingCopy("the sidecar can't be swapped atomically here")
+            elif read_entry(temp, self.folder) != before:
+                if read_entry(name, self.folder) == data:
+                    exchange(temp, name, self.folder)
+                raise NotALosingCopy("the kept copy's sidecar changed")
         finally:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(temp, dir_fd=self.folder)
+            with contextlib.suppress(FileNotFoundError, NotALosingCopy):
+                if read_entry(temp, self.folder) in (data, before):
+                    os.unlink(temp, dir_fd=self.folder)
 
 
 def read_entry(name: str, folder: int) -> bytes | None:
@@ -1224,7 +1227,7 @@ def exchange(first: str, second: str, folder: int) -> bool:
 
 def drop_held_links(folder: int, kept: os.stat_result) -> None:
     for name in os.listdir(folder):
-        found = entry_at(name, folder) if name.startswith(KEEPING) else None
+        found = entry_at(name, folder) if HELD.fullmatch(name) else None
         if found is not None and os.path.samestat(found, kept):
             os.unlink(name, dir_fd=folder)
 
@@ -1240,7 +1243,7 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
                 try:
                     fcntl.flock(kept, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as error:
-                    raise NotALosingCopy("another removal is using the kept copy") from error
+                    raise KeeperBusy("another removal is using the kept copy") from error
                 if stat.S_ISREG(found.st_mode) and found.st_nlink > 1:
                     drop_held_links(folder, found)
                     found = os.fstat(kept)
@@ -1262,6 +1265,8 @@ def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: st
                     return drop_losing_copy(folder, parts[-1], losing_sha1, keeper)
             except FileNotFoundError:
                 return False
+    except KeeperBusy:
+        raise
     except NotALosingCopy:
         restore_losing_copy(photos, person, losing, losing_sha1)
         raise
@@ -1271,12 +1276,24 @@ def restore_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: s
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
     try:
         with pinned_folder(photos, parts[:-1]) as folder, private_folder(folder, claim_name(losing_sha1, parts[-1]), create=False) as private:
-            if private is None or entry_at(CLAIMED, private) is None or entry_at(parts[-1], folder) is not None:
+            claimed = None if private is None else entry_at(CLAIMED, private)
+            if private is None or claimed is None or entry_at(parts[-1], folder) is not None or not recorded_copy(private, losing_sha1, claimed):
                 return False
             put_claim_back(private, CLAIMED, folder, parts[-1])
-            return entry_at(parts[-1], folder) is not None
-    except FileNotFoundError:
+            restored = entry_at(parts[-1], folder)
+            return restored is not None and os.path.samestat(restored, claimed)
+    except (FileNotFoundError, NotALosingCopy):
         return False
+
+
+def recorded_copy(private: int, sha1: str, claimed: os.stat_result) -> bool:
+    if not stat.S_ISREG(claimed.st_mode):
+        return False
+    copy = open_copy(CLAIMED, private)
+    try:
+        return os.path.samestat(os.fstat(copy), claimed) and fd_sha1(copy) == sha1
+    finally:
+        os.close(copy)
 
 
 @contextlib.contextmanager
@@ -1347,6 +1364,10 @@ def private_folder(folder: int, name: str, create: bool) -> Iterator[int | None]
         found = os.fstat(private)
         if found.st_uid != os.getuid() or found.st_mode & 0o077:
             raise NotALosingCopy("the claim folder is not Darkroom's")
+        try:
+            fcntl.flock(private, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise KeeperBusy("another removal is using this claim") from error
         yield private
     finally:
         os.close(private)
