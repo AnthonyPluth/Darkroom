@@ -6,7 +6,7 @@ from unittest import mock
 from darkroom.server import routes
 from tests.shared import fetch, own_database, settings_from, start_server
 
-PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out", "GET /auth/device/start"}
+PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 PEOPLE_AND_STATUS_ROUTES = {

@@ -3659,20 +3659,6 @@
         "x-auth": "public"
       }
     },
-    "/auth/device/start": {
-      "get": {
-        "operationId": "device_start",
-        "responses": {
-          "2XX": {
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "public"
-      }
-    },
     "/auth/login": {
       "get": {
         "operationId": "login",

@@ -23,7 +23,6 @@ class ConfigTests(unittest.TestCase):
             settings = config.load()
         self.assertEqual(settings.port, 8000)
         self.assertEqual(settings.oidc_allowed_groups, ("parents",))
-        self.assertEqual(settings.oidc_device_groups, ("family", "parents"))
         self.assertFalse(settings.allow_no_auth)
 
     def test_lists_are_split_and_trimmed(self):

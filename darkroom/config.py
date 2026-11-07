@@ -37,7 +37,6 @@ class Settings:
     oidc_client_secret: str
     oidc_allowed_groups: tuple[str, ...]
     oidc_allowed_emails: tuple[str, ...]
-    oidc_device_groups: tuple[str, ...]
     allow_no_auth: bool
     demo: bool
     immich_url: str
@@ -62,7 +61,6 @@ def load() -> Settings:
         oidc_client_secret=env("OIDC_CLIENT_SECRET"),
         oidc_allowed_groups=env_list("OIDC_ALLOWED_GROUPS", "parents"),
         oidc_allowed_emails=env_list("OIDC_ALLOWED_EMAILS"),
-        oidc_device_groups=env_list("OIDC_DEVICE_GROUPS", "family,parents"),
         allow_no_auth=env_flag("DARKROOM_ALLOW_NO_AUTH"),
         demo=env_flag("DARKROOM_DEMO"),
         immich_url=env("IMMICH_URL").rstrip("/"),
