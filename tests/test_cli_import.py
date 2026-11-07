@@ -230,7 +230,7 @@ class ImportLegacyCommandTests(CliCase):
         code, _, err = self.legacy("--person", "jo", "--dir", str(folder))
         self.assertEqual((code, "after this person's Takeout is imported" in err), (1, True))
         code, out, _ = self.legacy(command="legacy-report")
-        self.assertEqual((code, out.strip()), (0, "jo: 0 legacy files, 0 matched in Google, 0 not in Google (0 sent to the Pixel folder, 0 waiting for it)"))
+        self.assertEqual((code, out.strip()), (0, "jo: 0 legacy files, 0 matched in Google, 0 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 0 waiting for it)"))
 
     def test_imports_and_reports_after_the_takeout(self):
         standard_export(Photos(self.photos).manual_inbox("jo"))
@@ -246,4 +246,4 @@ class ImportLegacyCommandTests(CliCase):
         code, out, _ = self.legacy("--person", "jo")
         self.assertIn("0 new files", out)
         _, out, _ = self.legacy(command="legacy-report")
-        self.assertIn("jo: 1 legacy files, 0 matched in Google, 1 not in Google (0 sent to the Pixel folder, 1 waiting for it)", out)
+        self.assertIn("jo: 1 legacy files, 0 matched in Google, 1 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 1 waiting for it)", out)

@@ -130,13 +130,14 @@ class LegacyImportTests(unittest.TestCase):
         self.assertEqual((report.new, report.matched, report.unmatched, report.copied, report.failed, report.already_seen), (0, 0, 0, 0, 0, 6))
         self.assertEqual((self.world.state(), listing(self.world.root / "jo"), sorted((r.path, r.status, r.tier, r.seen_at) for r in self.home.rows().values())), state)
 
-    def test_a_new_file_is_handled_on_a_later_run_and_a_changed_one_only_reported(self):
+    def test_a_new_file_and_a_changed_one_are_handled_on_a_later_run_and_the_earlier_copy_stays(self):
         self.home.run()
         self.home.put("later.jpg", self.world.scratch_jpeg("later.jpg", taken="2014:02:02 10:00:00", offset="+00:00", colour=(9, 9, 9)))
         self.home.put("fresh.jpg", self.fresh + b"x")
         report = self.home.run(at=NOW + 5)
-        self.assertEqual((report.new, report.unmatched, report.copied, report.changed), (1, 1, 1, 1))
-        self.assertEqual(self.home.rows()["fresh.jpg"].sha1, legacy_sha(self.fresh))
+        self.assertEqual((report.new, report.unmatched, report.copied, report.changed), (2, 2, 2, 1))
+        self.assertEqual(self.home.rows()["fresh.jpg"].sha1, legacy_sha(self.fresh + b"x"))
+        self.assertEqual(sha1_of(self.world.root / "jo/originals/legacy" / legacy.copy_name(self.home.source / "fresh.jpg", legacy_sha(self.fresh))), legacy_sha(self.fresh))
 
     def test_a_crash_after_the_copy_is_picked_up_without_a_second_copy(self):
         original = legacy.bring_in
@@ -151,11 +152,18 @@ class LegacyImportTests(unittest.TestCase):
         self.addCleanup(setattr, legacy, "bring_in", original)
         report = self.home.run()
         self.assertEqual(report.failed, 3)
-        self.assertEqual(self.home.rows().keys(), {"google-only-copy.jpg", "2019/confirmed-copy.jpg", "reencoded.jpg"})
+        self.assertEqual({path: row.status for path, row in self.home.rows().items()}, {
+            "google-only-copy.jpg": "matched", "2019/confirmed-copy.jpg": "matched", "reencoded.jpg": "matched",
+            "not-backed-up.jpg": "failed", "fresh.jpg": "failed", "sams-photo.jpg": "failed",
+        })
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.files, found.matched, found.unmatched, found.failed), (6, 3, 0, 3))
+        self.assertEqual(legacy.describe(found), "jo: 6 legacy files, 3 matched in Google, 3 not backed up (3 could not be imported yet, 0 sent to the Pixel folder, 0 waiting for it)")
         legacy.bring_in = original
         copies = sorted((self.world.root / "jo/originals/legacy").iterdir())
         done = self.home.run(at=NOW + 5)
         self.assertEqual((done.new, done.failed), (3, 0))
+        self.assertEqual({row.status for row in self.home.rows().values()}, {"matched", "unmatched"})
         self.assertEqual(sorted((self.world.root / "jo/originals/legacy").iterdir()), copies)
 
     def test_unmatched_originals_are_offered_to_the_pixel_queue_and_retried_until_taken(self):
@@ -182,8 +190,57 @@ class LegacyImportTests(unittest.TestCase):
         found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}
         self.assertEqual((found["jo"].files, found["jo"].matched, found["jo"].unmatched, found["jo"].queued), (6, 3, 3, 0))
         self.assertEqual((found["sam"].configured, found["sam"].files), (False, 0))
-        self.assertEqual(legacy.describe(found["jo"]), "jo: 6 legacy files, 3 matched in Google, 3 not in Google (0 sent to the Pixel folder, 3 waiting for it)")
+        self.assertEqual(legacy.describe(found["jo"]), "jo: 6 legacy files, 3 matched in Google, 3 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 3 waiting for it)")
         self.assertEqual(legacy.describe(found["sam"]), "sam: no legacy folder")
+
+    def test_a_different_file_at_the_copys_name_is_never_overwritten_and_the_file_counts_as_not_backed_up(self):
+        target = self.world.root / "jo/originals/legacy" / legacy.copy_name(self.home.source / "fresh.jpg", legacy_sha(self.fresh))
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"someone else's bytes")
+        before = tree(self.world.root / "jo" / "originals")
+        report = self.home.run()
+        self.assertEqual(target.read_bytes(), b"someone else's bytes")
+        self.assertEqual(report.failed, 1)
+        self.assertEqual(self.home.rows()["fresh.jpg"].status, "failed")
+        self.assertEqual({path: sha for path, sha in tree(self.world.root / "jo" / "originals").items() if path in before}, before)
+        self.assertEqual(self.world.opened.execute(select(MediaItem).where(MediaItem.path == "jo/originals/legacy/" + target.name)).first(), None)
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.unmatched, found.failed), (2, 1))
+        self.assertIn("1 could not be imported yet", legacy.describe(found))
+
+    def test_a_failed_file_is_tried_again_on_the_next_run(self):
+        target = self.world.root / "jo/originals/legacy" / legacy.copy_name(self.home.source / "fresh.jpg", legacy_sha(self.fresh))
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"someone else's bytes")
+        self.home.run()
+        target.rename(target.with_name("moved-away"))
+        again = self.home.run(at=NOW + 5)
+        self.assertEqual((again.new, again.failed, self.home.rows()["fresh.jpg"].status), (1, 0, "unmatched"))
+
+    def test_a_reader_failure_is_recorded_without_the_file_name(self):
+        from darkroom.providers import exiftool
+        from tests.privacy import no_leaks
+
+        def failing(paths):
+            raise exiftool.Unreadable("exiftool said canary-private-name.jpg is bad")
+
+        with no_leaks(self, "canary-private-name", database=self.world.engine):
+            report = legacy.import_person(self.world.opened, self.world.settings, self.home.jo, NOW, read=failing)
+        self.assertEqual((report.failed, report.new), (6 + 1, 0))
+        self.assertEqual({row.status for row in self.home.rows().values()}, {"failed"})
+
+    def test_exports_the_person_owns_still_prove_after_their_account_stops_serving_them(self):
+        from darkroom.storage.models import Export, GoogleAccount, PixelPerson
+
+        self.world.opened.query(Export).update({Export.owner_person_id: self.home.jo.id})
+        self.world.opened.query(PixelPerson).filter(PixelPerson.person_id == self.home.jo.id).delete()
+        self.world.opened.get(GoogleAccount, self.world.account).default_person_id = self.home.sam.id
+        self.world.opened.commit()
+        self.home.run()
+        self.assertEqual({path: row.status for path, row in self.home.rows().items()}, {
+            "google-only-copy.jpg": "matched", "2019/confirmed-copy.jpg": "matched", "reencoded.jpg": "matched",
+            "not-backed-up.jpg": "unmatched", "fresh.jpg": "unmatched", "sams-photo.jpg": "unmatched",
+        })
 
     def test_a_reversed_takeout_match_is_not_proof(self):
         from darkroom.domain import dedupe

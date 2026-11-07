@@ -79,6 +79,7 @@ class Totals:
     files: int
     matched: int
     unmatched: int
+    failed: int
     queued: int
 
 
@@ -122,9 +123,13 @@ def source_root(opened: Session, photos: Photos, person: Person) -> Path:
     return root
 
 
+def proof_accounts(opened: Session, person: Person) -> set[int]:
+    owned = select(Export.account_id).where(Export.status == "imported", Export.owner_person_id == person.id)
+    return accounts.accounts_serving(opened, person.id) | set(opened.execute(owned).scalars())
+
+
 def require_takeout(opened: Session, person: Person) -> None:
-    served = accounts.accounts_serving(opened, person.id)
-    imported = select(Export.id).where(Export.status == "imported", (Export.account_id.in_(served)) | (Export.owner_person_id == person.id)).limit(1)
+    imported = select(Export.id).where(Export.status == "imported", Export.account_id.in_(proof_accounts(opened, person))).limit(1)
     if opened.execute(imported).first() is None:
         raise NotReady("the legacy library is merged only after this person's Takeout is imported")
 
@@ -143,7 +148,7 @@ def files_of(root: Path) -> list[Path]:
 
 
 def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
-    served = accounts.accounts_serving(opened, person.id)
+    served = proof_accounts(opened, person)
     if not served:
         return ()
     undone = exists().where(DedupeDecision.takeout_item_id == MediaItem.id, DedupeDecision.reversed_at.is_not(None))
@@ -160,14 +165,34 @@ def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
     return tuple(replace(dedupe.shot_of(found[item_id]), source="phone") for item_id in sorted(found))
 
 
-def fingerprint_all(opened: Session, person: Person, root: Path, pending: list[Path], now: float, report: LegacyReport, read: index.Reader) -> list[Seen]:
+def mark_failed(opened: Session, person: Person, root: Path, path: Path, known: dict[str, LegacyFile], now: float, reason: str, report: LegacyReport) -> None:
+    key = str(path.relative_to(root))
+    try:
+        stat = path.stat()
+        size, mtime = stat.st_size, stat.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    row = known.get(key)
+    if row is None:
+        row = LegacyFile(person_id=person.id, path=key, bytes=size, mtime=mtime, sha1="", status="failed", seen_at=now)
+        opened.add(row)
+        known[key] = row
+    row.bytes, row.mtime, row.sha1, row.status, row.tier = size, mtime, "", "failed", None
+    row.matched_item_id = row.original_item_id = row.queued_at = None
+    report.failed += 1
+    events.record(opened, now, "legacy_failed", person.slug, reason)
+    opened.commit()
+
+
+def fingerprint_all(opened: Session, person: Person, root: Path, pending: list[Path], known: dict[str, LegacyFile], now: float, report: LegacyReport,
+                    read: index.Reader) -> list[Seen]:
     if not pending:
         return []
     try:
         tags = read(pending)
     except exiftool.Unreadable as error:
-        report.failed += len(pending)
-        events.record(opened, now, "legacy_failed", person.slug, str(error)[:200])
+        for path in pending:
+            mark_failed(opened, person, root, path, known, now, type(error).__name__, report)
         return []
     found: list[Seen] = []
     for path in pending:
@@ -181,8 +206,7 @@ def fingerprint_all(opened: Session, person: Person, root: Path, pending: list[P
         except NotMedia:
             report.ignored += 1
         except (OSError, ValueError) as error:
-            report.failed += 1
-            events.record(opened, now, "legacy_failed", person.slug, type(error).__name__)
+            mark_failed(opened, person, root, path, known, now, type(error).__name__, report)
     return found
 
 
@@ -202,7 +226,8 @@ def decisions_for(opened: Session, person: Person, seen: list[Seen]) -> list[ded
 
 
 def copy_name(source: Path, sha1: str) -> str:
-    return f"{source.stem[:STEM_LIMIT]}-{sha1[:SHA_PREFIX]}{source.suffix.lower()}"
+    stem = source.stem.encode()[:STEM_LIMIT].decode(errors="ignore")
+    return f"{stem}-{sha1[:SHA_PREFIX]}{source.suffix.lower()}"
 
 
 def bring_in(opened: Session, photos: Photos, person: Person, seen: Seen, now: float, read: index.Reader) -> tuple[MediaItem, bool]:
@@ -214,6 +239,8 @@ def bring_in(opened: Session, photos: Photos, person: Person, seen: Seen, now: f
     destination = photos.originals(person.slug) / LEGACY_FOLDER / copy_name(seen.path, seen.print_.sha1)
     with suppress(paths.AlreadyExists):
         paths.write_once(destination, place.chunks(seen.path))
+    if media.sha1_of(destination)[0] != seen.print_.sha1:
+        raise CopyMismatch("a different file is already at the copy's name")
     report = index.index_file(opened, photos, person, destination, now, read)
     item = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.path == index.relative(photos, destination))).scalar_one_or_none()
     if item is None or report.failed or item.sha1 != seen.print_.sha1:
@@ -229,22 +256,27 @@ def offer(opened: Session, person: Person, row: LegacyFile, queue: PixelQueue, n
     return True
 
 
-def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision: dedupe.Decision, now: float, read: index.Reader,
-           queue: PixelQueue, report: LegacyReport) -> None:
+def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision: dedupe.Decision, known: dict[str, LegacyFile], now: float,
+           read: index.Reader, queue: PixelQueue, report: LegacyReport) -> None:
     matched = decision.tier in MATCHING_TIERS
-    row = LegacyFile(
-        person_id=person.id, path=seen.key, bytes=seen.stat.st_size, mtime=seen.stat.st_mtime, sha1=seen.print_.sha1,
-        status="matched" if matched else "unmatched", tier=decision.tier, matched_item_id=decision.matched_item_id if matched else None, seen_at=now,
-    )
+    original = None
     if matched:
         report.matched += 1
     else:
         original, copied = bring_in(opened, photos, person, seen, now, read)
-        row.original_item_id = original.id
         report.unmatched += 1
         report.copied += copied
         report.already_there += not copied
-    opened.add(row)
+    row = known.get(seen.key)
+    if row is None:
+        row = LegacyFile(person_id=person.id, path=seen.key, bytes=0, mtime=0.0, sha1="", status="failed", seen_at=now)
+        opened.add(row)
+        known[seen.key] = row
+    row.bytes, row.mtime, row.sha1, row.seen_at = seen.stat.st_size, seen.stat.st_mtime, seen.print_.sha1, now
+    row.status, row.tier = "matched" if matched else "unmatched", decision.tier
+    row.matched_item_id = decision.matched_item_id if matched else None
+    row.original_item_id = None if original is None else original.id
+    row.queued_at = None
     opened.flush()
     if not matched:
         report.queued += offer(opened, person, row, queue, now)
@@ -273,22 +305,25 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
         pending: list[Path] = []
         for path in files_of(root):
             row = known.get(str(path.relative_to(root)))
-            if row is None:
+            if row is None or row.status == "failed":
                 pending.append(path)
                 continue
             report.already_seen += 1
-            stat = path.stat()
-            report.changed += (stat.st_size, stat.st_mtime) != (row.bytes, row.mtime)
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if (stat.st_size, stat.st_mtime) != (row.bytes, row.mtime):
+                report.changed += 1
+                pending.append(path)
         retry_queue(opened, person, queue, now, report)
-        seen = fingerprint_all(opened, person, root, pending, now, report, read)
+        seen = fingerprint_all(opened, person, root, pending, known, now, report, read)
         for each, decision in zip(seen, decisions_for(opened, person, seen), strict=True):
             try:
-                settle(opened, photos, person, each, decision, now, read, queue, report)
+                settle(opened, photos, person, each, decision, known, now, read, queue, report)
             except (CopyMismatch, OSError) as error:
                 opened.rollback()
-                report.failed += 1
-                events.record(opened, now, "legacy_failed", person.slug, type(error).__name__)
-                opened.commit()
+                mark_failed(opened, person, root, each.path, known, now, type(error).__name__, report)
         events.record(opened, now, "legacy_imported", person.slug, f"{report.new} new, {report.matched} matched, {report.unmatched} unmatched, {report.failed} failed")
         opened.commit()
     monitoring.log("legacy imported", person=person.slug, new=report.new, matched=report.matched, unmatched=report.unmatched, failed=report.failed)
@@ -306,8 +341,8 @@ def totals(opened: Session) -> list[Totals]:
     }
     found = []
     for person in opened.execute(select(Person).order_by(Person.id)).scalars():
-        matched, unmatched = counts.get((person.id, "matched"), 0), counts.get((person.id, "unmatched"), 0)
-        found.append(Totals(person.slug, person.name, bool(person.legacy_path), matched + unmatched, matched, unmatched, queued.get(person.id, 0)))
+        matched, unmatched, failed = (counts.get((person.id, status), 0) for status in ("matched", "unmatched", "failed"))
+        found.append(Totals(person.slug, person.name, bool(person.legacy_path), matched + unmatched + failed, matched, unmatched, failed, queued.get(person.id, 0)))
     return found
 
 
@@ -315,5 +350,5 @@ def describe(entry: Totals) -> str:
     if not entry.configured and not entry.files:
         return f"{entry.slug}: no legacy folder"
     waiting = entry.unmatched - entry.queued
-    return (f"{entry.slug}: {entry.files} legacy files, {entry.matched} matched in Google, {entry.unmatched} not in Google "
-            f"({entry.queued} sent to the Pixel folder, {waiting} waiting for it)")
+    return (f"{entry.slug}: {entry.files} legacy files, {entry.matched} matched in Google, {entry.unmatched + entry.failed} not backed up "
+            f"({entry.failed} could not be imported yet, {entry.queued} sent to the Pixel folder, {waiting} waiting for it)")

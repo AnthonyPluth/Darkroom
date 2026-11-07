@@ -169,8 +169,8 @@ class LegacyFile(Base):
     __tablename__ = "legacy_files"
     __table_args__ = (
         UniqueConstraint("person_id", "path", name="uq_legacy_files_person_path"),
-        one_of("status", ("matched", "unmatched"), "ck_legacy_files_status"),
-        CheckConstraint("tier BETWEEN 1 AND 5", name="ck_legacy_files_tier"),
+        one_of("status", ("matched", "unmatched", "failed"), "ck_legacy_files_status"),
+        CheckConstraint("tier IS NULL OR tier BETWEEN 1 AND 5", name="ck_legacy_files_tier"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
@@ -179,7 +179,7 @@ class LegacyFile(Base):
     mtime: Mapped[float] = mapped_column(Float, nullable=False)
     sha1: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
-    tier: Mapped[int] = mapped_column(Integer, nullable=False)
+    tier: Mapped[int | None] = mapped_column(Integer)
     matched_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     original_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     seen_at: Mapped[float] = mapped_column(Float, nullable=False)
