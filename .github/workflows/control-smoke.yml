@@ -1,5 +1,10 @@
 name: Control smoke
 
+# tools/control (the session agents drive the app with) end to end on the real demo server under the frozen clock
+# (frontend/verify/control-smoke.mjs; `make control-smoke` runs it locally), run by fleet's reusable verify workflow
+# (AnthonyPluth/fleet, .github/workflows/verify.yml), which sets up Python with Poetry, Node with the web app's
+# packages, the Playwright browser and the system packages, then runs the target. It runs only for changes to what it
+# exercises. The job's name is the status the merge gate lists.
 on:
   push:
     branches: [main]
@@ -9,13 +14,14 @@ on:
     paths: [frontend/verify/**, tools/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: control-smoke-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-permissions:
-  contents: read
-
+# Every step runs in fleet's workflow; the default is here so the workflow conventions check reads the same shape in
+# every file.
 defaults:
   run:
     shell: bash
@@ -23,25 +29,12 @@ defaults:
 jobs:
   smoke:
     name: Control smoke
-    runs-on: ubuntu-latest   # hosted: small repository
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install exiftool and libfaketime (the demo seed reads photos with exiftool, and the clock is frozen with libfaketime)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
-      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
-        with:
-          node-version-file: frontend/.nvmrc
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install the web app's dependencies
-        working-directory: frontend
-        run: npm ci --no-audit --no-fund
-      - name: Install the browser
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
-      - name: Drive the app with tools/control
-        run: make control-smoke
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@b9f64fa5fd2859c87eabbbcda7b62e02b3dd0764   # v3.0.0
+    with:
+      make-target: control-smoke
+      timeout-minutes: 20
+      node-version-file: frontend/.nvmrc
+      # The demo seed reads photos with exiftool and libheif; fleet adds libfaketime (the frozen clock) itself.
+      apt-packages: libimage-exiftool-perl libheif1
