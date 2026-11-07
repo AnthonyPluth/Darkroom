@@ -160,6 +160,9 @@ def resolve(opened: Session, photos: Photos, person: Person, pair: Pair, now: fl
 def refuse(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:
     with suppress(paths.NotALosingCopy, paths.OutsideRoot, OSError):
         paths.restore_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1)
+    if not loser_present(photos, person, row):
+        fail(opened, person, row, "LoserAlreadyGone", now, resolved)
+        return
     row.state, row.reason = "refused", reason
     resolved.refused += 1
     events.record(opened, now, "duplicate_removal_refused", person.slug, f"{row.removed_source} copy, {row.rule}: {reason}")
@@ -230,6 +233,9 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
     opened.refresh(row)
     keeper = None if row.kept_item_id is None else opened.get(MediaItem, row.kept_item_id, populate_existing=True)
     loser = None if row.removed_item_id is None else opened.get(MediaItem, row.removed_item_id, populate_existing=True)
+    if loser is not None and (loser.path, loser.sha1) == (row.removed_path, row.removed_sha1) and not loser_present(photos, person, row):
+        finish_gone(opened, photos, person, row, loser, now, resolved, tools)
+        return
     if keeper is None or loser is None or (keeper.path, keeper.sha1) != (row.kept_path, row.kept_sha1) or (loser.path, loser.sha1) != (row.removed_path, row.removed_sha1):
         refuse(opened, photos, person, row, "the records changed", now, resolved)
         return
@@ -244,10 +250,35 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
         return
     except OSError as error:
         opened.rollback()
-        resolved.failed += 1
-        events.record(opened, now, "duplicate_removal_failed", person.slug, f"{row.removed_source} copy, {row.rule}: {type(error).__name__}")
-        opened.commit()
+        fail(opened, person, row, type(error).__name__, now, resolved)
         return
+    complete(opened, person, row, loser, now, resolved)
+
+
+def loser_present(photos: Photos, person: Person, row: DuplicateRemoval) -> bool:
+    try:
+        return paths.losing_copy_present(photos, person.slug, row.removed_path, row.removed_sha1)
+    except (paths.NotALosingCopy, paths.OutsideRoot, OSError):
+        return True
+
+
+def fail(opened: Session, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:
+    resolved.failed += 1
+    events.record(opened, now, "duplicate_removal_failed", person.slug, f"{row.removed_source} copy, {row.rule}: {reason}")
+    opened.commit()
+
+
+def finish_gone(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, loser: MediaItem, now: float, resolved: Resolved,
+                tools: Tools) -> None:
+    try:
+        paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1, carrier(loser, tools))
+    except (paths.NotALosingCopy, paths.OutsideRoot, OSError) as error:
+        fail(opened, person, row, type(error).__name__, now, resolved)
+        return
+    complete(opened, person, row, loser, now, resolved)
+
+
+def complete(opened: Session, person: Person, row: DuplicateRemoval, loser: MediaItem, now: float, resolved: Resolved) -> None:
     for asset in opened.execute(select(ImmichAsset).where(ImmichAsset.original_item_id == loser.id)).scalars():
         asset.original_item_id = None
     for other in decisions_of(opened, loser) if loser.source == "takeout" else []:

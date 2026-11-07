@@ -1228,6 +1228,26 @@ def restore_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: s
         return False
 
 
+def losing_copy_present(photos: Photos, person: str, losing: str, losing_sha1: str) -> bool:
+    parts = library_parts(photos, person, losing, LOSING_FOLDERS)
+    try:
+        with pinned_folder(photos, parts[:-1]) as folder:
+            if entry_at(parts[-1], folder) is not None:
+                return True
+            try:
+                private = os.open(claim_name(losing_sha1, parts[-1]), NO_FOLLOW_FOLDER, dir_fd=folder)
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return True
+            try:
+                return entry_at(CLAIMED, private) is not None
+            finally:
+                os.close(private)
+    except FileNotFoundError:
+        return False
+
+
 def recorded_copy(private: int, sha1: str, claimed: os.stat_result) -> bool:
     if not stat.S_ISREG(claimed.st_mode):
         return False

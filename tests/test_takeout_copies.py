@@ -316,6 +316,35 @@ class CrashTests(CopiesCase):
                 self.assertEqual(self.files(), [phone.path, f"{phone.path}.xmp"])
                 self.assertEqual([(r.state, r.removed_at) for r in self.removals()], [("removed", 3.0)])
 
+    def test_a_crash_after_the_unlink_is_recorded_as_removed_even_when_a_check_now_fails(self):
+        for keeper_there in (True, False):
+            with self.subTest(keeper_there=keeper_there):
+                self.setUp()
+                takeout, phone = self.pending()
+                takeout_id = takeout.id
+                (self.root / takeout.path).unlink()
+                self.opened.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path="Takeout/later.jpg", person_id=self.jo.id,
+                                               matched_item_id=takeout_id, tier=1, reason="same SHA-1", decided_by="owner", decided_at=2.5))
+                self.opened.commit()
+                if not keeper_there:
+                    (self.root / phone.path).unlink()
+                resolved = self.resolve(at=3.0)
+                (row,) = self.removals()
+                if keeper_there:
+                    self.assertEqual((resolved.removed, row.state, self.opened.get(MediaItem, takeout_id)), (1, "removed", None))
+                    self.assertEqual(self.events("duplicate_removed"), ["takeout copy, identical, tier 1"])
+                else:
+                    self.assertEqual((resolved.failed, resolved.refused, row.state), (1, 0, "pending"))
+                    self.assertEqual(len(self.events("duplicate_removal_failed")), 1)
+
+    def test_a_gone_loser_whose_records_changed_is_never_marked_refused(self):
+        takeout, _ = self.pending()
+        (self.root / takeout.path).unlink()
+        takeout.sha1 = "d" * 40
+        self.opened.commit()
+        resolved = self.resolve(at=3.0)
+        self.assertEqual((resolved.failed, resolved.refused, [r.state for r in self.removals()]), (1, 0, ["pending"]))
+
     def test_a_missing_or_changed_keeper_refuses_and_leaves_the_last_copy(self):
         for change in ("missing", "changed"):
             with self.subTest(change=change):

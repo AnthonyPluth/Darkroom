@@ -403,14 +403,11 @@ rules:
     languages: [python]
     patterns:
       - pattern-either:
-          - pattern: $M.remove_losing_copy(...)
-          - pattern: remove_losing_copy(...)
-          - pattern: $M.drop_losing_copy(...)
-          - pattern: $M.restore_losing_copy(...)
-          - pattern: $M.checked_keeper(...)
-          - pattern: drop_losing_copy(...)
-          - pattern: restore_losing_copy(...)
-          - pattern: checked_keeper(...)
+          - pattern: $M.$F(...)
+          - pattern: $F(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(remove_losing_copy|drop_losing_copy|restore_losing_copy|checked_keeper|holding|drop_claimed|drop_losing_sidecar|unlink_claimed|put_claim_back|drop_held_links|private_folder|recorded_copy)$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]
