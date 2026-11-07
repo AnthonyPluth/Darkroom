@@ -195,20 +195,6 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/devices.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
 
-  - id: darkroom-apns-key-one-reader
-    message: >-
-      The APNs auth key is read only by darkroom/providers/apns.py's load_key, which refuses a file others can read and
-      never puts the key in an error, a reply or a log. Send pushes through darkroom.providers.apns (apns.of) instead of
-      reading APNS_KEY_FILE here.
-    severity: ERROR
-    languages: [python]
-    pattern-either:
-      - pattern: $S.apns_key_file
-      - pattern: load_pem_private_key(...)
-    paths:
-      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/config.py", "/darkroom/providers/apns.py"]
-
   - id: darkroom-push-token-one-module
     message: >-
       Push registration was removed with the iPhone app (#199, #201) and darkroom/domain/push_tokens.py with it: no
