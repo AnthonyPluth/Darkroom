@@ -18,7 +18,7 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Reach it:** the navigation's Status, at `/`; control `tools/control goto status`.
 - **Drive it:** `tools/control goto status`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="status"`.
 - **What usually breaks:**
-  - The demo has one Google account that needs a sign-in, so Status lists it under "Needs you"; the iPhones show check-ins relative to the frozen day (2026-06-15).
+  - The demo has one Google account that needs a sign-in, so Status lists it under "Needs you"; dates show relative to the frozen day (2026-06-15).
   - "Open remote browser" and each person's link lead to other pages of the app; `goto` them by name.
 
 ### Flows on Status
@@ -38,7 +38,7 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Reach it:** the navigation's People, at `/people`; control `tools/control goto people`.
 - **Drive it:** `tools/control goto people`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="people"`.
 - **What usually breaks:**
-  - Every person, account, Pixel and iPhone has its own Edit or Revoke button: name it with the person (`click button "Edit Avery Example"`) or pass `--nth`.
+  - Every person, account and Pixel has its own Edit button: name it with the person (`click button "Edit Avery Example"`) or pass `--nth`.
   - Forms here change demo data only; `reset` puts it back. Put no real email, name or Immich key in one.
 
 ### Flows on People

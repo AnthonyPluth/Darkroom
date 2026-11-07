@@ -93,7 +93,7 @@ export const COMMANDS = {
   reset: {
     group: "session", summary: "Fresh demo data: a new copy of the seed on a new demo server and a new browser, and the page opened again.",
     args: [], options: { "dry-run": DRY_RUN },
-    details: ["What you changed (added a person, revoked an iPhone) is gone. The viewport and route stay; the port changes, and the browser is new and signed in again."],
+    details: ["What you changed (added a person, edited a Pixel) is gone. The viewport and route stay; the port changes, and the browser is new and signed in again."],
     examples: ["reset --dry-run", "reset"],
   },
   goto: {
