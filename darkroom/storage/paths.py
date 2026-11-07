@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Iterator
@@ -813,16 +814,18 @@ OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
 
 
 def mounts_under(folder: Path) -> list[Path]:
+    if not sys.platform.startswith("linux"):
+        return []
     try:
         lines = MOUNTINFO.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+    except OSError as error:
+        raise NotAPixelCopy("the mounts could not be read, so the Pixels' folder is not touched") from error
     found = []
     for line in lines:
         fields = line.split(" ")
         if len(fields) > 4:
             point = Path(OCTAL_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), fields[4]))
-            if point.is_relative_to(folder) and point != folder:
+            if point.is_relative_to(folder):
                 found.append(point)
     return found
 

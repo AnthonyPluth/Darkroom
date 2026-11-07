@@ -238,7 +238,7 @@ class PixelFolderPathTests(unittest.TestCase):
         mountinfo = self.root / "mountinfo"
         point = str(self.root / "_pixels/1/jo/2024").replace(" ", "\\040")
         mountinfo.write_text(f"36 35 98:0 /jo/originals/2024 {point} rw,noatime master:1 - ext4 /dev/root rw\n")
-        with mock.patch.object(paths, "MOUNTINFO", mountinfo):
+        with mock.patch.object(paths, "MOUNTINFO", mountinfo), mock.patch.object(paths.sys, "platform", "linux"):
             self.assertEqual(paths.mounts_under(self.root / "_pixels"), [self.root / "_pixels/1/jo/2024"])
             with self.assertRaises(paths.NotAPixelCopy):
                 paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
@@ -263,10 +263,30 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
         self.assert_kept_unchanged()
 
-    def test_unreadable_mount_information_leaves_the_other_checks(self):
-        with mock.patch.object(paths, "MOUNTINFO", self.root / "missing"):
+    def test_unreadable_mount_information_refuses_placing_and_pruning(self):
+        name = self.place()
+        with mock.patch.object(paths, "MOUNTINFO", self.root / "missing"), mock.patch.object(paths.sys, "platform", "linux"):
+            with self.assertRaises(paths.NotAPixelCopy):
+                paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+            with self.assertRaises(paths.NotAPixelCopy):
+                paths.place_pixel_copy(self.photos, 2, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assertFalse((self.root / "_pixels/2/jo/2024/IMG_0001.HEIC").exists())
+        self.assert_kept_unchanged()
+
+    def test_the_pixels_folder_itself_mounted_from_elsewhere_is_refused(self):
+        name = self.place()
+        mountinfo = self.root / "mountinfo"
+        mountinfo.write_text(f"36 35 98:0 /jo/originals {self.root / '_pixels'} rw,noatime master:1 - ext4 /dev/root rw\n")
+        with mock.patch.object(paths, "MOUNTINFO", mountinfo), mock.patch.object(paths.sys, "platform", "linux"):
+            with self.assertRaises(paths.NotAPixelCopy):
+                paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assert_kept_unchanged()
+
+    def test_mount_information_is_read_only_on_linux(self):
+        with mock.patch.object(paths, "MOUNTINFO", self.root / "missing"), mock.patch.object(paths.sys, "platform", "darwin"):
             self.assertEqual(paths.mounts_under(self.root / "_pixels"), [])
-            self.assertEqual(self.place(), "2024/IMG_0001.HEIC")
 
     def test_a_file_that_is_not_the_placed_copy_is_not_pruned(self):
         name = self.place()
