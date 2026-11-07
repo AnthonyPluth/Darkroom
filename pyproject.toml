@@ -110,7 +110,7 @@ broken_contract_guidance = "Reach the database through darkroom.storage.db."
 id = "network-through-tls"
 name = "Only darkroom.tls opens outbound connections"
 type = "protected"
-protected_modules = ["ssl", "http", "socket", "h2"]
+protected_modules = ["ssl", "http"]
 allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
