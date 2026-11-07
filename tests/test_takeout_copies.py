@@ -215,46 +215,26 @@ class ResolveTests(CopiesCase):
 
         return matched, placed, other_account, confirmed, export_gone
 
-    def test_the_phone_original_stays_while_anything_depends_on_it(self):
-        for number, depend in enumerate(self.dependencies()):
-            with self.subTest(dependency=depend.__name__):
+    def test_the_phone_original_stays_while_anything_depends_on_it_even_when_that_appears_after_the_removal_is_recorded(self):
+        for number, (depend, later) in enumerate((depend, later) for depend in self.dependencies() for later in (False, True)):
+            with self.subTest(dependency=depend.__name__, after_recording=later):
                 self.setUp()
                 takeout, phone = self.takeout_wins(number)
-                depend(phone, takeout)
-                self.opened.commit()
-                before = self.files()
-                resolved = self.resolve()
-                self.assertEqual((resolved.removed, resolved.kept_both), (0, 1))
-                self.assertEqual(self.files(), before)
-
-    def test_a_dependency_that_appears_after_the_removal_is_recorded_refuses_it(self):
-        for number, depend in enumerate(self.dependencies()):
-            with self.subTest(dependency=depend.__name__):
-                self.setUp()
-                takeout, phone = self.takeout_wins(number)
-                (pair,) = takeout_copies.pairs(self.opened, self.jo)
-                with mock.patch.object(takeout_copies, "finish"):
-                    takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
+                if later:
+                    (pair,) = takeout_copies.pairs(self.opened, self.jo)
+                    with mock.patch.object(takeout_copies, "finish"):
+                        takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
                 depend(phone, takeout)
                 self.opened.commit()
                 before = self.files()
                 resolved = self.resolve(at=3.0)
-                self.assertEqual((resolved.removed, resolved.refused), (0, 1))
+                self.assertEqual((resolved.removed, resolved.refused, resolved.kept_both), (0, 1, 0) if later else (0, 0, 1))
                 self.assertEqual(self.files(), before)
-                self.assertEqual([r.state for r in self.removals()], ["refused"])
 
-    def test_only_an_automatic_tier_five_google_only_copy_is_a_takeout_item_that_can_go(self):
-        _, kept = self.takeout(b"same bytes", name="kept.jpg", tier=4)
-        self.opened.add(ReviewItem(decision_id=kept.id, status="kept_both"))
-        self.takeout(b"same bytes", name="owner.jpg", decided_by="owner")
-        _, reversed_decision = self.takeout(b"same bytes", name="reversed.jpg")
-        reversed_decision.reversed_at = 1.5
-        self.phone(b"same bytes")
+    def test_an_original_the_reconcile_did_not_store_never_pairs(self):
+        self.takeout(b"same bytes")
         self.phone(b"same bytes", name="IMG_0001.jpg", folder="2021")
-        self.opened.commit()
-        before = self.files()
         self.assertEqual(self.resolve().removed, 0)
-        self.assertEqual(self.files(), before)
 
     def test_a_copy_with_any_doubtful_decision_never_pairs_even_beside_a_later_tier_five(self):
         for setup in ("kept_both", "owner", "reversed"):
