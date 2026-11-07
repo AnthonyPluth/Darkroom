@@ -16,7 +16,7 @@ from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder
 from darkroom.domain.ingest import place
 from darkroom.providers import exiftool
 from darkroom.storage import locks, paths
-from darkroom.storage.models import DedupeDecision, Export, LegacyFile, MediaItem, Person, PixelPerson
+from darkroom.storage.models import DedupeDecision, Export, LegacyFile, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
 LEGACY_FOLDER = "legacy"
@@ -240,6 +240,10 @@ def fingerprint_all(opened: Session, person: Person, root: Path, pending: list[P
             found.append(Seen(path, str(path.relative_to(root)), path.stat(), media.fingerprint(path, entry)))
         except NotMedia:
             report.ignored += 1
+            stale = known.pop(str(path.relative_to(root)), None)
+            if stale is not None:
+                opened.delete(stale)
+                opened.commit()
         except (OSError, ValueError) as error:
             mark_failed(opened, person, root, path, known, now, type(error).__name__, report)
     return found
@@ -320,12 +324,15 @@ def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision
     opened.commit()
 
 
-def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, LegacyFile], queue: PixelQueue, now: float, report: LegacyReport) -> None:
+def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, LegacyFile], queue: PixelQueue, now: float, report: LegacyReport,
+                skip: set[str]) -> None:
     waiting = opened.execute(
         select(LegacyFile).where(LegacyFile.person_id == person.id, LegacyFile.status == "unmatched", LegacyFile.original_item_id.is_not(None)).order_by(LegacyFile.id)
     ).scalars().all()
     for row in waiting:
         key = row.path
+        if key in skip:
+            continue
         try:
             report.queued += offer(opened, person, row, queue, now)
             opened.commit()
@@ -348,7 +355,9 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
         for key in [key for key in known if key.endswith("/") and key not in unreadable]:
             opened.delete(known.pop(key))
         for key in sorted(unreadable):
-            mark_failed(opened, person, root, root / key, known, now, "Unreadable", report, key)
+            own = key[:-1] if key[:-1] in known else None
+            mark_failed(opened, person, root, root / (own or key), known, now, "Unreadable", report, own or key)
+        proved = {shot.id for shot in proofs(opened, person)}
         for path in listed:
             row = known.get(str(path.relative_to(root)))
             if row is None or row.status == "failed":
@@ -357,12 +366,14 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
             report.already_seen += 1
             try:
                 stat = path.stat()
-            except OSError:
+            except OSError as error:
+                mark_failed(opened, person, root, path, known, now, type(error).__name__, report)
                 continue
-            if (stat.st_size, stat.st_mtime) != (row.bytes, row.mtime):
+            if row.status == "matched" and row.matched_item_id not in proved:
+                pending.append(path)
+            elif (stat.st_size, stat.st_mtime) != (row.bytes, row.mtime):
                 report.changed += 1
                 pending.append(path)
-        retry_queue(opened, person, root, known, queue, now, report)
         seen = fingerprint_all(opened, person, root, pending, known, now, report, read)
         for each, decision in zip(seen, decisions_for(opened, person, seen), strict=True):
             try:
@@ -370,6 +381,7 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
             except (CopyMismatch, OSError) as error:
                 opened.rollback()
                 mark_failed(opened, person, root, each.path, known, now, type(error).__name__, report)
+        retry_queue(opened, person, root, known, queue, now, report, {each.key for each in seen})
         events.record(opened, now, "legacy_imported", person.slug, f"{report.new} new, {report.matched} matched, {report.unmatched} unmatched, {report.failed} failed")
         opened.commit()
     monitoring.log("legacy imported", person=person.slug, new=report.new, matched=report.matched, unmatched=report.unmatched, failed=report.failed)
@@ -381,10 +393,13 @@ def totals(opened: Session) -> list[Totals]:
         (person_id, status): int(count)
         for person_id, status, count in opened.execute(select(LegacyFile.person_id, LegacyFile.status, func.count(LegacyFile.id)).group_by(LegacyFile.person_id, LegacyFile.status))
     }
-    queued = {
-        person_id: int(count)
-        for person_id, count in opened.execute(select(LegacyFile.person_id, func.count(LegacyFile.id)).where(LegacyFile.queued_at.is_not(None)).group_by(LegacyFile.person_id))
-    }
+    sent = (
+        select(LegacyFile.person_id, func.count(func.distinct(LegacyFile.id)))
+        .join(PixelCopy, PixelCopy.item_id == LegacyFile.original_item_id)
+        .join(PixelPerson, (PixelPerson.pixel_id == PixelCopy.pixel_id) & (PixelPerson.person_id == LegacyFile.person_id))
+        .where(LegacyFile.status == "unmatched").group_by(LegacyFile.person_id)
+    )
+    queued = {person_id: int(count) for person_id, count in opened.execute(sent)}
     pixels = {person_id: int(count) for person_id, count in opened.execute(select(PixelPerson.person_id, func.count(PixelPerson.pixel_id)).group_by(PixelPerson.person_id))}
     found = []
     for person in opened.execute(select(Person).order_by(Person.id)).scalars():

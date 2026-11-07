@@ -282,6 +282,72 @@ class LegacyImportTests(unittest.TestCase):
         again = self.home.run(Recorder(), at=NOW + 5)
         self.assertEqual((again.failed, again.new, again.queued, again.already_there), (0, 3, 3, 1))
 
+    def test_a_matched_file_is_unmatched_copied_and_offered_once_its_takeout_match_is_reversed(self):
+        from darkroom.domain import dedupe
+        from darkroom.storage.models import DedupeDecision
+
+        self.home.run()
+        self.assertEqual(self.home.rows()["google-only-copy.jpg"].status, "matched")
+        takeout = self.world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout", MediaItem.person_id == self.home.jo.id)).scalars().first()
+        decision = self.world.opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == takeout.id)).scalar_one()
+        dedupe.reverse(self.world.opened, decision.id, NOW, "owner")
+        self.world.opened.commit()
+        taking = Recorder()
+        again = self.home.run(taking, at=NOW + 5)
+        row = self.home.rows()["google-only-copy.jpg"]
+        self.assertEqual((row.status, row.matched_item_id is None, again.copied), ("unmatched", True, 1))
+        self.assertIn(("jo", self.world.opened.get(MediaItem, row.original_item_id).path), taking.offered)
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.matched, found.unmatched), (2, 4))
+
+    def test_a_recorded_file_whose_stat_fails_is_marked_failed(self):
+        self.home.run()
+        real = os.stat
+
+        def stat(path, *args, **kwargs):
+            if Path(path).name == "fresh.jpg":
+                raise PermissionError(13, "denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch("darkroom.domain.legacy.os.stat", stat):
+            again = self.home.run(at=NOW + 5)
+        self.assertEqual((again.failed, self.home.rows()["fresh.jpg"].status), (1, "failed"))
+        self.assertEqual(self.home.run(at=NOW + 9).failed, 0)
+        self.assertEqual(self.home.rows()["fresh.jpg"].status, "unmatched")
+
+    def test_a_recorded_file_that_later_fails_lstat_is_counted_once(self):
+        self.home.run()
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if Path(path).name == "fresh.jpg":
+                raise PermissionError(13, "denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch("darkroom.domain.legacy.os.lstat", lstat):
+            again = self.home.run(at=NOW + 5)
+        self.assertEqual((again.failed, "fresh.jpg/" in self.home.rows(), self.home.rows()["fresh.jpg"].status), (1, False, "failed"))
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.files, found.unmatched, found.failed), (6, 2, 1))
+
+    def test_a_recorded_file_that_stops_being_media_leaves_no_row(self):
+        self.home.run()
+        self.home.put("fresh.jpg", b"now just text")
+        again = self.home.run(at=NOW + 5)
+        self.assertNotIn("fresh.jpg", self.home.rows())
+        self.assertEqual(again.ignored, 2)
+        self.assertEqual({entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"].files, 5)
+
+    def test_a_changed_file_still_waiting_for_the_queue_is_offered_once_with_its_current_copy(self):
+        self.home.run(legacy.NoQueue())
+        self.home.put("fresh.jpg", self.fresh + b"x")
+        taking = Recorder()
+        again = self.home.run(taking, at=NOW + 5)
+        self.assertEqual((again.queued, len(taking.offered), len({path for _, path in taking.offered})), (3, 3, 3))
+        current = self.world.opened.get(MediaItem, self.home.rows()["fresh.jpg"].original_item_id)
+        self.assertEqual(current.sha1, legacy_sha(self.fresh + b"x"))
+        self.assertIn(("jo", current.path), taking.offered)
+
     def test_exports_the_person_owns_still_prove_after_their_account_stops_serving_them(self):
         from darkroom.storage.models import Export, GoogleAccount, PixelPerson
 
