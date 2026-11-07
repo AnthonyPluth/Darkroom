@@ -1,13 +1,16 @@
 import hashlib
 import itertools
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder
+from darkroom.domain import accounts, dedupe, pixel_folder, pixels
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
@@ -260,6 +263,168 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual(self.tend(at=NOW + 2).placed, 1)
         self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 3, always_send=True), 0)
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
+
+    def test_each_placed_copy_is_kept_when_a_later_one_fails_the_pass(self):
+        first, second = self.item(self.jo), self.item(self.jo)
+        pixel_folder.queue(self.opened, first, NOW)
+        pixel_folder.queue(self.opened, second, NOW)
+        self.opened.commit()
+        real = pixel_folder.paths.place_pixel_copy
+        calls = []
+
+        def stops_on_the_second(*args: object) -> str:
+            calls.append(args)
+            if len(calls) == 2:
+                raise RuntimeError("the process stopped")
+            return real(*args)
+
+        with mock.patch.object(pixel_folder.paths, "place_pixel_copy", stops_on_the_second), self.assertRaises(RuntimeError):
+            self.tend()
+        self.opened.rollback()
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed", "queued"])
+        self.assertEqual(self.tend(at=NOW + 1).placed, 1)
+
+    def test_a_reversal_from_another_connection_waits_for_a_prune_in_flight_and_then_requeues_the_photo(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        decision = self.match(item, self.jo_account, at=NOW + 10)
+        self.opened.commit()
+        other = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.2})
+        self.addCleanup(other.dispose)
+        real, attempts = pixel_folder.prune_copy, []
+
+        def reversed_meanwhile(*args: object) -> bool:
+            with Session(other) as elsewhere:
+                try:
+                    dedupe.reverse(elsewhere, decision.id, NOW + 15, "owner")
+                    elsewhere.commit()
+                    attempts.append("reversed")
+                except OperationalError:
+                    elsewhere.rollback()
+                    attempts.append("locked")
+            return real(*args)
+
+        with mock.patch.object(pixel_folder, "prune_copy", reversed_meanwhile):
+            self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        self.assertEqual(attempts, ["locked"])
+        with Session(other) as elsewhere:
+            dedupe.reverse(elsewhere, decision.id, NOW + 30, "owner")
+            elsewhere.commit()
+        self.opened.expire_all()
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 1)
+        self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
+
+    def test_a_reversal_from_another_connection_waits_for_a_skip_in_flight_and_then_requeues_the_photo(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        decision = self.match(item, self.jo_account, at=NOW + 1)
+        self.opened.commit()
+        other = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.2})
+        self.addCleanup(other.dispose)
+        real, attempts = pixel_folder.confirms_copy, []
+
+        def reversed_meanwhile(*args: object) -> bool:
+            found = real(*args)
+            if not attempts:
+                attempts.append("trying")
+                with Session(other) as elsewhere:
+                    try:
+                        dedupe.reverse(elsewhere, decision.id, NOW + 3, "owner")
+                        elsewhere.commit()
+                        attempts.append("reversed")
+                    except OperationalError:
+                        elsewhere.rollback()
+                        attempts.append("locked")
+            return found
+
+        with mock.patch.object(pixel_folder, "confirms_copy", reversed_meanwhile):
+            self.assertEqual(self.tend(at=NOW + 2).skipped, 1)
+        self.assertEqual(attempts, ["trying", "locked"])
+        with Session(other) as elsewhere:
+            dedupe.reverse(elsewhere, decision.id, NOW + 4, "owner")
+            elsewhere.commit()
+        self.opened.expire_all()
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
+        self.assertEqual(self.tend(at=NOW + 5).placed, 1)
+
+    def test_taking_the_person_off_the_pixel_while_a_copy_is_being_placed_is_refused_once_it_is_placed(self):
+        self.opened.add(PixelPerson(pixel_id=self.jo_pixel, person_id=self.sam))
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.opened.commit()
+        engine = self.opened.get_bind()
+        copying, go, outcome = threading.Event(), threading.Event(), []
+        real = pixel_folder.paths.place_pixel_copy
+
+        def slow_copy(*args: object) -> str:
+            copying.set()
+            go.wait(10)
+            return real(*args)
+
+        def take_jo_off() -> None:
+            with Session(engine) as elsewhere:
+                try:
+                    pixels.update(elsewhere, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 1)
+                    elsewhere.commit()
+                    outcome.append("applied")
+                except pixels.StillHasCopies:
+                    elsewhere.rollback()
+                    outcome.append("refused")
+
+        with mock.patch.object(pixel_folder.paths, "place_pixel_copy", slow_copy):
+            filling = threading.Thread(target=lambda: self.tend(at=NOW + 2))
+            filling.start()
+            self.assertTrue(copying.wait(10))
+            updating = threading.Thread(target=take_jo_off)
+            updating.start()
+            updating.join(0.5)
+            go.set()
+            filling.join(20)
+            updating.join(40)
+        self.assertEqual(outcome, ["refused"])
+        self.opened.expire_all()
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
+        self.assertTrue(pixel_folder.serves(self.opened, self.jo_pixel, self.jo))
+        self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
+
+    def test_changing_or_deleting_a_pixel_while_another_writer_holds_the_lock_is_busy(self):
+        self.opened.commit()
+        impatient = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.1})
+        self.addCleanup(impatient.dispose)
+        holder = impatient.connect()
+        self.addCleanup(holder.close)
+        holder.exec_driver_sql("BEGIN IMMEDIATE")
+        with Session(impatient) as elsewhere:
+            with self.assertRaises(accounts.Busy):
+                pixels.update(elsewhere, self.jo_pixel, {"name": "Renamed"}, NOW)
+            elsewhere.rollback()
+            with self.assertRaises(accounts.Busy):
+                pixels.delete(elsewhere, self.jo_pixel, NOW)
+        holder.exec_driver_sql("ROLLBACK")
+
+    def test_each_pruned_copy_is_kept_when_a_later_one_fails_the_pass(self):
+        first, second = self.item(self.jo), self.item(self.jo)
+        pixel_folder.queue(self.opened, first, NOW)
+        pixel_folder.queue(self.opened, second, NOW)
+        self.tend()
+        self.match(first, self.jo_account, at=NOW + 10)
+        self.match(second, self.jo_account, at=NOW + 10)
+        self.opened.commit()
+        real, calls = pixel_folder.prune_copy, []
+
+        def stops_on_the_second(*args: object) -> bool:
+            calls.append(args)
+            if len(calls) == 2:
+                raise RuntimeError("the process stopped")
+            return real(*args)
+
+        with mock.patch.object(pixel_folder, "prune_copy", stops_on_the_second), self.assertRaises(RuntimeError):
+            self.tend(at=NOW + 20)
+        self.opened.rollback()
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned", "placed"])
+        self.assertEqual(self.tend(at=NOW + 30).pruned, 1)
 
     def test_reversing_the_match_that_pruned_an_immich_photo_restores_it_despite_an_older_match(self):
         item = self.item(self.jo)

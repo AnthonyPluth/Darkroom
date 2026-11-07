@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events
@@ -110,31 +111,42 @@ def used_bytes(opened: Session, pixel_id: int) -> int:
 
 def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float) -> Tended:
     tended = Tended()
-    used = used_bytes(opened, pixel.id)
+    pixel_id = pixel.id
+    used = used_bytes(opened, pixel_id)
     waiting = opened.execute(
-        select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
+        select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
     ).scalars().all()
-    for position, row in enumerate(waiting):
-        if not row.always_send and confirms_copy(opened, pixel, row):
+    for position, copy_id in enumerate(waiting):
+        lock_copy(opened, copy_id)
+        row = opened.get(PixelCopy, copy_id, populate_existing=True)
+        current = opened.get(Pixel, pixel_id, populate_existing=True)
+        if row is None or current is None or row.state != "queued":
+            opened.commit()
+            continue
+        if not row.always_send and confirms_copy(opened, current, row):
             row.state, row.pruned_at = "pruned", now
             tended.skipped += 1
+            opened.commit()
             continue
         if used > 0 and used + row.bytes > cap_bytes:
-            tended.deferred = sum(1 for later in waiting[position:] if later.state == "queued")
+            opened.commit()
+            tended.deferred = len(waiting) - position
             break
-        item, person = opened.get(MediaItem, row.item_id), opened.get(Person, row.person_id)
-        if item is None or person is None or item.person_id != row.person_id or item.sha1 != row.sha1 or not serves(opened, pixel.id, row.person_id):
+        item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)
+        if item is None or person is None or item.person_id != row.person_id or item.sha1 != row.sha1 or not serves(opened, pixel_id, row.person_id):
             tended.failed += 1
+            opened.commit()
             continue
         try:
-            row.name = paths.place_pixel_copy(photos, pixel.id, person.slug, item.path, row.sha1)
+            row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1)
         except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
             tended.failed += 1
+            opened.commit()
             continue
         row.state, row.placed_at, row.pruned_at = "placed", now, None
         used += row.bytes
         tended.placed += 1
-    opened.flush()
+        opened.commit()
     return tended
 
 
@@ -144,24 +156,33 @@ def prune_copy(photos: Photos, row: PixelCopy, slug: str) -> bool:
     return paths.remove_pixel_copy(photos, row.pixel_id, slug, row.name, row.sha1)
 
 
+def lock_copy(opened: Session, copy_id: int) -> None:
+    opened.commit()
+    opened.execute(sql_update(PixelCopy).where(PixelCopy.id == copy_id).values(id=PixelCopy.id))
+
+
 def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
     tended = Tended()
-    placed = opened.execute(select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "placed").order_by(PixelCopy.id)).scalars().all()
-    for row in placed:
-        if not confirms_copy(opened, pixel, row):
-            continue
-        person = opened.get(Person, row.person_id)
-        if person is None:
+    pixel_id = pixel.id
+    placed = opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "placed").order_by(PixelCopy.id)).scalars().all()
+    for copy_id in placed:
+        lock_copy(opened, copy_id)
+        row = opened.get(PixelCopy, copy_id, populate_existing=True)
+        current = opened.get(Pixel, pixel_id, populate_existing=True)
+        person = None if row is None else opened.get(Person, row.person_id)
+        if row is None or current is None or person is None or row.state != "placed" or not confirms_copy(opened, current, row):
+            opened.commit()
             continue
         try:
             prune_copy(photos, row, person.slug)
         except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
             tended.refused += 1
-            events.record(opened, now, "pixel_prune_refused", f"pixel {pixel.id}", f"copy {row.id}")
+            events.record(opened, now, "pixel_prune_refused", f"pixel {pixel_id}", f"copy {row.id}")
+            opened.commit()
             continue
         row.state, row.pruned_at = "pruned", now
         tended.pruned += 1
-    opened.flush()
+        opened.commit()
     return tended
 
 

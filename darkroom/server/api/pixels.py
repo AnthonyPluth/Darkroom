@@ -78,6 +78,8 @@ def update_pixel(request: Annotated[Request, contract.PixelPatchBody]) -> Annota
         return error_response("no such person", 404)
     except (accounts.StillConfirming, pixels.StillHasCopies) as error:
         return error_response(str(error), 409)
+    except accounts.Busy as error:
+        return error_response(str(error), 503)
     return json_response({"pixel": reply})
 
 
@@ -92,4 +94,6 @@ def delete_pixel(request: Request) -> Annotated[Response, contract.Ok]:
         return error_response(NO_PIXEL, 404)
     except (accounts.StillConfirming, pixels.StillHasCopies) as error:
         return error_response(str(error), 409)
+    except accounts.Busy as error:
+        return error_response(str(error), 503)
     return json_response({"ok": True})

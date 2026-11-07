@@ -100,6 +100,17 @@ class AuthProblemTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), [])
 
+    def test_the_pixel_folder_cap_is_whole_gigabytes_and_at_least_one_or_darkroom_refuses_to_start(self):
+        self.assertEqual(settings_from().pixel_folder_cap_gb, 50)
+        self.assertEqual(settings_from(PIXEL_FOLDER_CAP_GB="20").pixel_folder_cap_gb, 20)
+        self.assertEqual(config.refuses_to_start(settings_from(PIXEL_FOLDER_CAP_GB="20")), [])
+        for value in ("0", "-5", "50GB", "1.5", "\u00b2"):
+            with self.subTest(value=value):
+                bad = settings_from(PIXEL_FOLDER_CAP_GB=value)
+                self.assertEqual(bad.pixel_folder_cap_gb, 0)
+                self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.refuses_to_start(bad)))
+                self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.problems(bad)))
+
     def test_an_upload_timeout_below_one_second_or_not_a_number_refuses_to_start(self):
         self.assertEqual(settings_from().upload_read_timeout, 3600)
         self.assertEqual(settings_from(UPLOAD_READ_TIMEOUT="90").upload_read_timeout, 90)

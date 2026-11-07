@@ -133,7 +133,7 @@ The alert channel is not decided (#199, question 3). Until it is, every alert in
 
 ### Pixel folders are pruned after a Takeout match
 
-A Pixel's transient folder is emptied by Darkroom deleting the per-Pixel copy, which Syncthing carries to the Pixel; it may do so only once a Takeout match proves Google has the photo (#199, question 6), which can take up to about two months after the photo was copied. That code is not built yet, so nothing prunes a Pixel's folder today; watch its free space. The permanent copies in `originals/` are never part of that folder.
+A Pixel's transient folder is emptied by Darkroom deleting the per-Pixel copy, which Syncthing carries to the Pixel; it may do so only once a Takeout match proves Google has the photo (#199, question 6), which can take up to about two months after the photo was copied. The hourly `pixels.tend` job prunes confirmed copies, then copies queued photos oldest first while the folder stays under `PIXEL_FOLDER_CAP_GB` (default 50); its log line counts what was placed, pruned, skipped, deferred, failed and refused. A refused prune is recorded as a `pixel_prune_refused` event and leaves the copy where it is: look for a link, a mount or a changed file in `_pixels/<pixel>/<person>/`. The folder layout is `_pixels/<pixel id>/<person>/`, and Syncthing shares `_pixels/<pixel id>/` with that Pixel as Send Only; it has to be able to read files Darkroom writes (0644, folders 0755). A mount at or below `_pixels/` stops placing and pruning. The permanent copies in `originals/` are never part of that folder.
 
 ### The iPhones and Immich's app
 

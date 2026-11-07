@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
+from sqlalchemy import update as sql_update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, events
@@ -80,7 +82,17 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
     return pixel
 
 
+def lock(opened: Session, pixel_id: int) -> None:
+    try:
+        opened.execute(sql_update(Pixel).where(Pixel.id == pixel_id).values(id=Pixel.id))
+    except OperationalError as error:
+        if "database is locked" not in str(error.orig):
+            raise
+        raise accounts.Busy("Darkroom is busy copying or pruning this Pixel's photos; try again in a moment") from None
+
+
 def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float) -> Pixel:
+    lock(opened, pixel_id)
     pixel = get(opened, pixel_id)
     account_id = fields.get("google_account_id", pixel.google_account_id)
     assert isinstance(account_id, int)
@@ -135,6 +147,7 @@ def require_still_served(opened: Session, pixel: Pixel, kept: set[int]) -> None:
 
 
 def delete(opened: Session, pixel_id: int, now: float) -> None:
+    lock(opened, pixel_id)
     pixel = get(opened, pixel_id)
     require_still_served(opened, pixel, set())
     waiting = opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state.in_(("queued", "placed"))).limit(1)).first()

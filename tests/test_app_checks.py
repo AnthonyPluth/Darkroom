@@ -22,7 +22,26 @@ class Checks(unittest.TestCase):
             self.assertEqual(check(context()), [], check.__name__)
 
     def test_the_checks_are_registered(self):
-        self.assertEqual([c.__name__ for c in ac.CHECKS], ["semgrep_targets"])
+        self.assertEqual([c.__name__ for c in ac.CHECKS], ["semgrep_targets", "conflict_markers"])
+
+
+class ConflictMarkers(unittest.TestCase):
+    def found(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text)
+            return ac.conflict_markers_in(root)
+
+    def test_a_committed_conflict_is_named_with_its_line(self):
+        text = "| a | b |\n<<<<<<< HEAD\n| c | d |\n=======\n| e | f |\n>>>>>>> branch\n"
+        self.assertEqual(self.found({"docs/DECISIONS.md": text}), ["docs/DECISIONS.md:2: a merge conflict marker was committed; resolve the conflict"])
+        self.assertEqual(len(self.found({"x.py": ">>>>>>> theirs\n"})), 1)
+
+    def test_ordinary_text_and_skipped_folders_pass(self):
+        self.assertEqual(self.found({"a.md": "Title\n=======\n\n    <<<<<<<< eight\nquote >>>>>>> mid-line\n",
+                                     "node_modules/x.js": "<<<<<<< HEAD\n", "picture.png": "<<<<<<< HEAD\n"}), [])
 
 
 class SemgrepTargets(unittest.TestCase):
