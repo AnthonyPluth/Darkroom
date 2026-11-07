@@ -40,7 +40,7 @@ class CheckinTests(DeviceCase):
     def test_any_device_request_counts_as_a_check_in(self):
         with db.session(self.engine) as opened:
             self.assertIsNone(opened.get(Device, self.device_id).last_checkin)
-        self.call("POST", "/api/device/assets/check", {"assets": "bad"})
+        self.call("GET", "/api/device/me")
         with db.session(self.engine) as opened:
             self.assertIsNotNone(opened.get(Device, self.device_id).last_checkin)
 

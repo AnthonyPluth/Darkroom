@@ -33,45 +33,7 @@ On a 401 the app stops uploading and asks the person to sign in again. Every acc
 
 ## Routes
 
-### `POST /api/device/assets/check`
-
-Declares assets and their resources, and asks which still need uploading.
-
-```json
-{"assets": [{"id": "<PhotoKit local identifier>", "resources": [
-  {"kind": "photo", "sha1": "<40 hex>", "bytes": 2481152, "filename": "IMG_0042.HEIC"},
-  {"kind": "live_video", "sha1": "<40 hex>", "bytes": 3311104, "filename": "IMG_0042.MOV"},
-  {"kind": "adjusted", "sha1": "<40 hex>", "bytes": 2655232, "filename": "IMG_0042_adjusted.HEIC"}]}]}
-```
-
-- Up to 500 assets per call, each with one to three resources and no kind twice. `kind` is `photo`, `live_video` or `adjusted`.
-- `filename` is PhotoKit's original filename for the photo; the Live Photo's video is `<stem>.MOV`; an edited version is `<stem>_adjusted.<ext>`. A filename is a plain name: no `/` or `\`, not starting with `.`, not ending in `.xmp`, at most 200 characters.
-- The list of resources is the asset's whole current set: a kind left out is forgotten, and a resource whose SHA-1 or filename changed needs uploading again. Either change clears any eligibility recorded for the asset.
-
-Reply: `{"needed": [{"id": "...", "kind": "photo"}]}`. A resource is not needed when one with the same SHA-1 was already uploaded from any iPhone of the same person, or when the person's originals already hold a file with that SHA-1 (for example one Möbius Sync delivered); Darkroom links it and nothing is sent.
-
-### `PUT /api/device/assets/{id}/resources/{kind}`
-
-Uploads one resource that the last check declared. `{id}` is the PhotoKit identifier percent-encoded as one path segment (`/` becomes `%2F`).
-
-Headers: `X-Darkroom-SHA1` (the resource's SHA-1), `X-Darkroom-Filename` (its filename) and `Content-Length`; both must match what the check declared. The body is the file's bytes, not chunked.
-
-- The body streams to the person's `originals/.uploads_tmp/` while it is hashed, then is saved once as `originals/<filename>`. There is no size cap. A connection that sends nothing for `UPLOAD_READ_TIMEOUT` seconds (default 3600; a whole number, at least 1, or Darkroom refuses to start) is dropped.
-- If `originals/<filename>` already holds other bytes, the file is saved as `<stem>~<first 8 of the SHA-1>.<ext>`; if it holds the same bytes, nothing is written.
-- Darkroom never replaces, moves or deletes a file under `originals/`.
-
-| Status | Meaning |
-| --- | --- |
-| 200 | Saved, or already there. `{"id", "kind", "sha1", "already": bool, "indexed": bool}`; `indexed` is false when the file could not be read as a photo or video (it is still kept). |
-| 400 | A bad kind, SHA-1, filename or asset id, or the body ended before its `Content-Length`. |
-| 401 | See above. Nothing is read or written. |
-| 404 | The asset or kind was not declared by a check. |
-| 408 | The upload went idle. |
-| 409 | The SHA-1 or filename is not what the check declared (check again), or both names are held by other bytes. |
-| 411 | No `Content-Length`, or a chunked body. |
-| 422 | The bytes' SHA-1 is not `X-Darkroom-SHA1`. Nothing is kept. |
-
-Sending the same resource again after it was saved answers 200 with `"already": true` without reading the body, so retries are safe.
+The upload routes (`POST /api/device/assets/check` and `PUT /api/device/assets/{id}/resources/{kind}`) were removed with the iPhone app (#199, #201).
 
 ### `GET /api/device/me`
 
