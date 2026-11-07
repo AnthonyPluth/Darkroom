@@ -122,6 +122,23 @@ class PixelFolderPathTests(unittest.TestCase):
             self.place()
         self.assertEqual(sorted(path.name for path in (self.root / "jo/originals").iterdir()), ["2024"])
         self.assertFalse((self.root / "_pixels/1").exists())
+        (self.root / "_pixels/.incoming").unlink()
+        (self.root / "_pixels/.incoming").symlink_to(self.root / "jo/originals/not-there")
+        with self.assertRaises(paths.OutsideRoot):
+            self.place()
+        self.assertFalse((self.root / "jo/originals/not-there").exists())
+        self.assert_kept_unchanged()
+
+    def test_a_folder_swapped_for_a_link_while_pruning_is_refused(self):
+        name = self.place()
+        real_lstat = Path.lstat
+
+        def swapped(path: Path, *args: object) -> os.stat_result:
+            return real_lstat(self.root / "jo/originals/2024") if path == self.root / "_pixels/1/jo/2024" else real_lstat(path, *args)
+
+        with mock.patch.object(Path, "lstat", swapped), self.assertRaises(paths.NotAPixelCopy):
+            paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
         self.assert_kept_unchanged()
 
     def test_a_copy_is_made_on_a_share_without_hard_links_and_others_can_read_it(self):
