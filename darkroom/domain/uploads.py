@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import eligibility, index, media
+from darkroom.domain import index, media
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import Device, MediaItem, Person, PhoneAsset, PhoneResource
@@ -124,29 +124,23 @@ def check(opened: Session, device_id: int, person_id: int, assets: list[Asset], 
         asset = asset_row(opened, device_id, declared.photokit_id, now)
         current = resources_of(opened, asset.id)
         wanted = {resource.kind for resource in declared.resources}
-        changed = False
         for kind, row in current.items():
             if kind not in wanted:
                 opened.delete(row)
-                changed = True
         for resource in declared.resources:
             existing = current.get(resource.kind)
             if existing is None:
                 row = PhoneResource(asset_id=asset.id, kind=resource.kind, sha1=resource.sha1, bytes=resource.bytes, filename=resource.filename)
                 opened.add(row)
                 opened.flush()
-                changed = True
             else:
                 row = existing
             if (row.sha1, row.filename) != (resource.sha1, resource.filename):
                 row.sha1, row.bytes, row.filename, row.uploaded_at, row.media_item_id = resource.sha1, resource.bytes, resource.filename, None, None
-                changed = True
             if row.media_item_id is None:
                 link(opened, person_id, row, now)
             if row.uploaded_at is None:
                 needed.append((declared.photokit_id, resource.kind))
-        if changed:
-            eligibility.forget(asset)
     opened.flush()
     return needed
 
