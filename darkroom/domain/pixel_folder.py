@@ -141,7 +141,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
             opened.commit()
             continue
         try:
-            row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1)
+            row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1, now)
         except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
             tended.failed += 1
             opened.commit()
