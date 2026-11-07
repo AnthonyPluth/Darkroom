@@ -30,6 +30,7 @@ UPLOADS_TMP = ".uploads_tmp"
 DOWNLOADS = ".downloads"
 PIXELS = "_pixels"
 INCOMING = ".incoming"
+PIXEL_COPY_MODE = 0o644
 SHARED_FOLDER_MODE = 0o2770
 
 
@@ -131,7 +132,10 @@ class Photos:
         return path
 
     def pixel_incoming(self) -> Path:
-        return self.inside(PIXELS, INCOMING)
+        expected = self.root / PIXELS / INCOMING
+        if self.inside(PIXELS, INCOMING) != expected:
+            raise OutsideRoot("the Pixels' staging folder is a link")
+        return expected
 
     def browser_profile(self, account: str) -> Path:
         return self.inside("_browser", self.name_part(account), "profile")
@@ -823,10 +827,14 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
             os.fsync(out.fileno())
         if digest.hexdigest() != sha1:
             raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
+        os.chmod(temp, PIXEL_COPY_MODE)
+        photos.pixel_copy(pixel_id, person, name)
         try:
             os.link(temp, destination)
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
+        except OSError:
+            copy_exclusive(temp, destination)
     finally:
         temp.unlink(missing_ok=True)
     return name
