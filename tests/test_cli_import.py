@@ -14,7 +14,7 @@ from tests.shared import add_person
 from tests.takeout_fixtures import standard_export
 
 
-class ImportTakeoutTests(unittest.TestCase):
+class CliCase(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -40,6 +40,9 @@ class ImportTakeoutTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = run.main(["import-takeout", *args])
         return code, out.getvalue(), err.getvalue()
+
+
+class ImportTakeoutTests(CliCase):
 
     def test_unpacks_the_manual_inbox(self):
         standard_export(Photos(self.photos).manual_inbox("jo"))
@@ -205,3 +208,42 @@ class ImportTakeoutTests(unittest.TestCase):
         self.assertIn("--account", err)
         code, _, _ = self.call("--person", "jo", "--dir", str(elsewhere), "--account", "jo2@example.com", "--unpack-only")
         self.assertEqual(code, 0)
+
+
+class ImportLegacyCommandTests(CliCase):
+    def legacy(self, *args, command="import-legacy"):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run.main([command, *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_needs_a_person_and_a_known_one(self):
+        self.assertEqual(self.legacy()[0], 1)
+        code, _, err = self.legacy("--person", "nobody")
+        self.assertEqual((code, "no person called nobody" in err), (1, True))
+
+    def test_needs_a_folder_and_waits_for_the_takeout_import(self):
+        code, _, err = self.legacy("--person", "jo")
+        self.assertEqual((code, "no legacy folder" in err), (1, True))
+        folder = self.root / "old"
+        folder.mkdir()
+        code, _, err = self.legacy("--person", "jo", "--dir", str(folder))
+        self.assertEqual((code, "after this person's Takeout is imported" in err), (1, True))
+        code, out, _ = self.legacy(command="legacy-report")
+        self.assertEqual((code, out.strip()), (0, "jo: 0 legacy files, 0 matched in Google, 0 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 0 waiting for it)"))
+
+    def test_imports_and_reports_after_the_takeout(self):
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        self.assertEqual(self.call("--person", "jo")[0], 0)
+        folder = self.root / "old"
+        folder.mkdir()
+        from tests.fixtures import media as fixtures
+
+        fixtures.make_jpeg(folder / "a.jpg", taken="2015:01:01 10:00:00", offset="+00:00", colour=(1, 2, 3))
+        code, out, _ = self.legacy("--person", "jo", "--dir", str(folder))
+        self.assertEqual(code, 0)
+        self.assertIn("1 new files, 0 matched in Google, 1 not in Google (1 copied to originals, 0 already there)", out)
+        code, out, _ = self.legacy("--person", "jo")
+        self.assertIn("0 new files", out)
+        _, out, _ = self.legacy(command="legacy-report")
+        self.assertIn("jo: 1 legacy files, 0 matched in Google, 1 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 1 waiting for it)", out)

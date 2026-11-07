@@ -267,6 +267,17 @@ class PixelFolderTests(unittest.TestCase):
         self.opened.rollback()
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed", "queued"])
         self.assertEqual(self.tend(at=NOW + 1).placed, 1)
+    def test_reversing_the_match_that_pruned_an_immich_photo_restores_it_despite_an_older_match(self):
+        item = self.item(self.jo)
+        self.match(item, self.jo_account, at=NOW - 100)
+        pixel_folder.queue(self.opened, item, NOW, always_send=True)
+        self.tend(at=NOW)
+        newer = self.match(item, self.jo_account, at=NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        dedupe.reverse(self.opened, newer.id, NOW + 30, "owner")
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
+        self.assertEqual(self.tend(at=NOW + 40).placed, 1)
+        self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
 
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)

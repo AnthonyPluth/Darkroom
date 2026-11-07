@@ -46,6 +46,10 @@ def confirmed_for(opened: Session, account_id: int, item_id: int, person_id: int
     return any(since is None or decided_at >= since for decided_at in confirming_matches(opened, account_id, item_id, person_id))
 
 
+def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
+    return confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
+
+
 def pixels_serving(opened: Session, person_id: int) -> list[Pixel]:
     return list(opened.execute(
         select(Pixel).join(PixelPerson, PixelPerson.pixel_id == Pixel.id).where(PixelPerson.person_id == person_id).order_by(Pixel.id)
@@ -93,7 +97,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
     ).scalars().all()
     for position, row in enumerate(waiting):
-        if not row.always_send and confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
+        if not row.always_send and confirms_copy(opened, pixel, row):
             row.state, row.pruned_at = "pruned", now
             tended.skipped += 1
             continue
@@ -127,7 +131,7 @@ def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
     tended = Tended()
     placed = opened.execute(select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "placed").order_by(PixelCopy.id)).scalars().all()
     for row in placed:
-        if not confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at):
+        if not confirms_copy(opened, pixel, row):
             continue
         person = opened.get(Person, row.person_id)
         if person is None:
@@ -158,7 +162,7 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
     requeued = 0
     for row in rows:
         pixel = opened.get(Pixel, row.pixel_id)
-        if pixel is None or confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
+        if pixel is None or confirms_copy(opened, pixel, row):
             continue
         row.state, row.queued_at, row.placed_at, row.pruned_at = "queued", now, None, None
         row.requeued += 1

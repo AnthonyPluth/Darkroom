@@ -16,8 +16,12 @@ Answers to the owner's questions in issues #10 and #199, copied here as agents r
 | iOS code (#199, question 5) | Remove it: the app and its workflows in #200, the device, upload, push and cleanup backend in #201 | #199, #200, #201 |
 | Pruning a Pixel's folder (#199, question 6) | Pruning is Darkroom deleting the transient per-Pixel copy; Syncthing carries the deletion to the Pixel, and `originals/` keeps the permanent copy. It may touch only the per-Pixel folder, held by its own Semgrep rules and tests (#216). The signal for when it may delete is the Takeout match (`confirmed_in_google`, an unreversed automatic tier 1 or 2 decision), replacing the fixed-delay, Pixel-report and by-hand options; waiting up to about two months is acceptable because the Pixel has the space. Removing a photo from a device doesn't remove the Google Photos copy once backed up | #199 |
 | Immich behaviour the design relies on | Assumptions until the spike confirms them on the running server (asset listing and ownership, stored checksum, original download, what Immich's clearing removes) | #202 |
+<<<<<<< HEAD
 | Per-destination confirmation (#199, Nov 6, decision 1) | A photo counts as confirmed for a Pixel only through an unreversed automatic tier 1 or 2 match in the Takeout of the Google account that Pixel uploads to; another person's Takeout never counts | #199, #216 |
 | First-run order (#199, Nov 6, decision 2) | Takeout first, then the legacy library, then the Immich reconcile; only unmatched files reach the Pixels | #199 |
 | Wrong match found after pruning (#199, Nov 6, decision 3) | Reversing the match re-queues the photo into that person's Pixel folder, copied from `originals/` | #199, #216 |
 | Pixel flooding (#199, Nov 6, decision 4) | The per-Pixel folder is capped by size (`PIXEL_FOLDER_CAP_GB`, default 50); the next photos go in only after earlier ones are confirmed and pruned | #199, #216 |
 | Late Immich photos (#199, Nov 6, decision 5) | Every photo that arrives in Immich is sent to the Pixel, even if that person's Takeout already has a match | #199, #216 |
+=======
+| Legacy-library import (#199, #217) | One-time, per person, read-only, after that person's Takeout import. A legacy file with no unreversed tier 1 or 2 match in that person's Takeout is not in Google: it is copied once into the person's `originals/legacy/` and queued for the Pixel folder. A matched file is recorded and not copied | #199, #217 |
+>>>>>>> issue-216-prune

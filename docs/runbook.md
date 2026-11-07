@@ -77,6 +77,17 @@ docker compose exec darkroom python run.py import-takeout --person <slug> [--acc
 
 `--dir` is a path inside the container, so it must be under a mount `docker-compose.yml` gives `darkroom` (`/photos` or `/data`); a folder elsewhere on the host is not visible to it. It registers the parts as a manual export for that person's Google account and runs the same pipeline as a downloaded one: unpack, dedupe, place, sidecars, Immich rescan, summary alert. `--unpack-only` stops after unpacking. Running it again for an export that was imported with no failed items says "already imported" and changes nothing. If the summary said some items "could not be imported", running it again retries those items, as long as the export's staging folder still exists; once it is gone the command says so and the items stay failed. The person needs a Google account in Darkroom to attach the export to; with several, say which with `--account`.
 
+### Importing a person's legacy library
+
+Once a person's Takeout is imported, their old Google Photos sync folder can be merged in, once. It must be a folder inside the `darkroom` container that does not overlap `/photos` (nor another person's legacy folder), for example a read-only mount of the old folder:
+
+```
+docker compose exec darkroom python run.py import-legacy --person <slug> [--dir <legacy folder>]
+docker compose exec darkroom python run.py legacy-report
+```
+
+Darkroom only reads that folder. Each photo or video is matched against that person's own Takeout: a match proves Google has it and nothing is copied. Any other file is copied once into the person's `originals/legacy/` and waits for their Pixel folder. A folder that cannot be listed, or a file that cannot be read or copied, counts as failed and is tried again on the next run. `legacy-report` prints, per person, the files seen, how many are matched in Google, and how many are not backed up (unmatched plus failed), with how many are already in the Pixel folder and how many wait for it. "Everything is backed up" is true when the not-backed-up count is 0. A second run changes nothing for files already seen.
+
 ### The schedule renewal
 
 About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal on its own (#40); you can ask for one with Renew now (below). The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
