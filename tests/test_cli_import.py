@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import run
-from darkroom.storage import db
-from darkroom.storage.models import Export, GoogleAccount, ImportRun
+from darkroom.storage import db, secretbox
+from darkroom.storage.models import Export, GoogleAccount, ImportRun, Person
 from darkroom.storage.paths import Photos
 from tests.shared import add_person
 from tests.takeout_fixtures import standard_export
@@ -247,3 +247,35 @@ class ImportLegacyCommandTests(CliCase):
         self.assertIn("0 new files", out)
         _, out, _ = self.legacy(command="legacy-report")
         self.assertIn("jo: 1 legacy files, 0 matched in Google, 1 not backed up (0 could not be imported yet, 0 sent to the Pixel folder, 1 waiting for it)", out)
+
+
+class ReconcileImmichCommandTests(CliCase):
+    def reconcile(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run.main(["reconcile-immich", *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_names_a_known_person_and_says_what_is_missing(self):
+        code, _, err = self.reconcile("--person", "nobody")
+        self.assertEqual((code, "no person called nobody" in err), (1, True))
+        code, _, err = self.reconcile()
+        self.assertEqual((code, "no Immich user and key" in err), (1, True))
+
+    def test_stores_a_phone_upload_after_the_takeout_and_reports_it(self):
+        from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
+        from tests.fixtures import media as fixtures
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        self.assertEqual(self.call("--person", "jo")[0], 0)
+        data = fixtures.make_jpeg(self.root / "scratch.jpg", taken="2015:01:01 10:00:00", offset="+00:00", colour=(4, 5, 6)).read_bytes()
+        with FakeImmich([FakePerson("jo", "u-jo", "lib-jo", "key-jo")], "admin") as fake:
+            fake.add_asset(FakeAsset(id="a1", owner_id="u-jo", data=data))
+            with db.session(self.engine) as opened:
+                person = opened.query(Person).filter(Person.slug == "jo").one()
+                person.immich_user_id = "u-jo"
+                person.immich_api_key_sealed = secretbox.seal("key-jo", "k")
+            with mock.patch.dict(os.environ, {"IMMICH_URL": fake.url}):
+                code, out, _ = self.reconcile("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("jo: 1 listed, 1 stored (1 copied to originals, 0 already there), 0 queued for the Pixel folder, 0 not phone uploads, 0 waiting, 0 failed", out)

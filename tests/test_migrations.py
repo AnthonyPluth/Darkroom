@@ -341,6 +341,22 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO pixels (name, google_account_id, created) VALUES ('New', 1, 5.0)")
             self.assertEqual(connection.exec_driver_sql("SELECT id FROM pixels").scalar_one(), 6)
 
+    def test_0023_immich_assets_adds_an_empty_table_and_the_window_column_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0022")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT immich_reconciled_until FROM people").all(), [(None,)])
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0022")
+        self.assertNotIn("immich_assets", inspect(self.engine).get_table_names())
+        self.assertNotIn("immich_reconciled_until", {column["name"] for column in inspect(self.engine).get_columns("people")})
+
     def test_0021_pixel_copy_seen_again_leaves_existing_copies_unseen_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
