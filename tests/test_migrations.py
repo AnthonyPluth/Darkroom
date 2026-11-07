@@ -155,11 +155,12 @@ class MigrationTests(unittest.TestCase):
             command.upgrade(config, "0006")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created) VALUES (1, 1, 'iPhone', 'h', 1.0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertIsNone(connection.exec_driver_sql("SELECT sub FROM devices").scalar_one())
             connection.exec_driver_sql("UPDATE devices SET sub = 'user-1'")
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0006")
@@ -197,11 +198,12 @@ class MigrationTests(unittest.TestCase):
             command.upgrade(config, "0008")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT eligibility_checked_at, cleanup_enabled FROM devices").one(), (None, 0))
             connection.exec_driver_sql("UPDATE devices SET eligibility_checked_at = 12.5")
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0008")
@@ -341,6 +343,44 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO pixels (name, google_account_id, created) VALUES ('New', 1, 5.0)")
             self.assertEqual(connection.exec_driver_sql("SELECT id FROM pixels").scalar_one(), 6)
 
+    def test_0024_drop_iphone_tables_removes_the_device_tables_and_columns_keeps_the_rest_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, push_token_sealed, push_token_digest) VALUES (1, 1, 'iPhone', 'h', 1.0, 'enc:v1:x', 'd')")
+            connection.exec_driver_sql("INSERT INTO phone_assets (id, device_id, photokit_id, created, eligible_at) VALUES (1, 1, 'p', 1.0, 2.0)")
+            connection.exec_driver_sql("INSERT INTO phone_resources (asset_id, kind, sha1, bytes, filename) VALUES (1, 'photo', 'a', 1, 'a.jpg')")
+            connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count, push_due, pushed_devices) VALUES ('k', 'failure', 's', 'm', 1.0, 1, 2.0, '[1]')")
+            connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, created) VALUES ('web', 'n', 'v', 'web', 1.0)")
+            connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, device_name, client_state, created) VALUES ('dev', 'n', 'v', 'device', 'iPhone', 'c', 1.0)")
+        db.migrate(self.engine)
+        tables = set(inspect(self.engine).get_table_names())
+        self.assertFalse({"devices", "phone_assets", "phone_resources"} & tables)
+        self.assertFalse({"push_due", "pushed_devices"} & {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        self.assertFalse({"device_name", "client_state"} & {column["name"] for column in inspect(self.engine).get_columns("auth_pending")})
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, sent_count FROM alerts").all(), [("k", 1)])
+            self.assertEqual(connection.exec_driver_sql("SELECT state, kind FROM auth_pending").all(), [("web", "web")])
+            self.assertEqual(connection.exec_driver_sql("SELECT slug FROM people").all(), [("jo",)])
+            with self.assertRaises(IntegrityError):
+                connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, created) VALUES ('d2', 'n', 'v', 'device', 1.0)")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0023")
+        tables = set(inspect(self.engine).get_table_names())
+        self.assertTrue({"devices", "phone_assets", "phone_resources"} <= tables)
+        self.assertTrue({"push_due", "pushed_devices"} <= {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM devices").scalar(), 0)
+            connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, device_name, created) VALUES ('d3', 'n', 'v', 'device', 'iPhone', 1.0)")
+
+    def test_0024_drop_iphone_tables_upgrades_an_empty_database(self):
+        db.migrate(self.engine)
+        self.assertFalse({"devices", "phone_assets", "phone_resources"} & set(inspect(self.engine).get_table_names()))
+
     def test_0023_immich_assets_adds_an_empty_table_and_the_window_column_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
@@ -451,11 +491,12 @@ class MigrationTests(unittest.TestCase):
             config.attributes["connection"] = connection
             command.upgrade(config, "0016")
             connection.exec_driver_sql("INSERT INTO auth_pending (state, nonce, verifier, kind, device_name, created) VALUES ('s', 'n', 'v', 'device', 'iPhone', 1.0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT state, client_state FROM auth_pending").all(), [("s", None)])
             connection.exec_driver_sql("UPDATE auth_pending SET client_state = 'abc'")
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0016")
@@ -471,11 +512,12 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, last_checkin) VALUES (1, 1, 'iPhone', 'h', 1.0, 5.0)")
             connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT last_checkin, wake_pushed_at FROM devices").all(), [(5.0, None)])
             connection.exec_driver_sql("UPDATE devices SET wake_pushed_at = 6.5")
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0015")
@@ -490,11 +532,12 @@ class MigrationTests(unittest.TestCase):
             config.attributes["connection"] = connection
             command.upgrade(config, "0014")
             connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count, push_due) VALUES ('k', 'failure', 's', 'm', 1.0, 1, 2.0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT key, push_due, pushed_devices FROM alerts").all(), [("k", 2.0, None)])
             connection.exec_driver_sql("UPDATE alerts SET pushed_devices = '{}'")
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0014")
@@ -515,12 +558,13 @@ class MigrationTests(unittest.TestCase):
                                        ("immich:failed:3:1", "failure", "jo"), ("expiring:3", "export_expiring", "export 3"),
                                        ("browser:failed:4", "failure", "4"), ("other", "failure", "nobody")]:
                 connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count) VALUES (?, ?, ?, 'm', 1.0, 1)", (key, kind, subject))
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT key, person_id, account_id, push_due FROM alerts ORDER BY id").all(),
                              [("sign-in:2", None, 2, None), ("unmatched:1", 1, None, None), ("immich:failed:3:1", 1, None, None),
                               ("expiring:3", None, 2, None), ("browser:failed:4", None, 2, None), ("other", None, None, None)])
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0013")
@@ -537,7 +581,9 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 1)")
             connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (2, 1, 'Old', 'h2', 1.0, 0)")
             connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
-        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT push_token_sealed, push_token_digest, push_token_at, cleanup_enabled FROM devices WHERE id = 1").one(),
                              (None, None, None, 1))
@@ -545,7 +591,7 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaises(IntegrityError):
                 connection.exec_driver_sql("UPDATE devices SET push_token_digest = 'd' WHERE id = 2")
         with self.engine.begin() as connection:
-            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar(), "0023")
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0011")

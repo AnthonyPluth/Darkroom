@@ -4,7 +4,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.domain.ingest import run, unpack
-from darkroom.storage.models import Alert, Device, Export, ImportRun, MediaItem, PhoneAsset, Person
+from darkroom.storage.models import Alert, Export, ImportRun, MediaItem, Person
 from tests.import_world import DAY, NOW, World, tree
 from tests.takeout_fixtures import TakeoutBuilder
 
@@ -74,10 +74,6 @@ class SharedPixelTests(unittest.TestCase):
 
     def test_the_alert_deletes_and_flags_nothing(self):
         before = {key: value for key, value in tree(self.world.root).items() if "/originals/" in f"/{key}"}
-        device = Device(person_id=self.world.ids["sam"], name="Sam's iPhone", token_hash="device-token-hash", created=1.0)
-        self.world.opened.add(device)
-        self.world.opened.flush()
-        self.world.opened.add(PhoneAsset(device_id=device.id, photokit_id="asset-1", created=1.0))
         self.world.run_import(self.export)
         flags_before = dict(self.world.opened.execute(select(MediaItem.id, MediaItem.confirmed_in_google)).all())
         run.check_unmatched(self.world.opened, self.world.settings, self.world.opened.get(Export, self.export.id), NOW, self.world.recorder)
@@ -85,8 +81,6 @@ class SharedPixelTests(unittest.TestCase):
         after = {key: value for key, value in tree(self.world.root).items() if "/originals/" in f"/{key}"}
         self.assertEqual({key: after[key] for key in before}, before)
         self.assertTrue(set(after) - set(before) <= {key for key in after if key.endswith(".xmp")})
-        asset = self.world.opened.execute(select(PhoneAsset)).scalar_one()
-        self.assertEqual((asset.eligible_at, asset.deleted_at), (None, None))
         for _, _, message in self.home.unmatched():
             self.assertNotIn("delet", message.lower())
 

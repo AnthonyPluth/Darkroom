@@ -21,7 +21,7 @@ from darkroom.domain import accounts, alerts, browser_jobs, demo, events, export
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
-from darkroom.storage.models import Alert, AuthSession, DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.storage.models import Alert, AuthSession, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos
 from tests.shared import fetch, settings_from, start_server
 
@@ -91,7 +91,6 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id])
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(PixelPerson).count(), 3)
-        self.assertEqual(self.rows(Device), [])
 
     def test_every_original_is_indexed_with_and_without_gps_including_a_live_photo_pair(self):
         self.assertEqual(self.summary.failed, 0)
