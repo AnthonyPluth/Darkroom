@@ -274,11 +274,11 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
-    def test_0019_pixel_copies_adds_an_empty_queue_and_can_be_undone(self):
+    def test_0020_pixel_copies_adds_an_empty_queue_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0018")
+            command.upgrade(config, "0019")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'Pixel', 1, 1.0)")
@@ -295,10 +295,29 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.downgrade(config, "0018")
+            command.downgrade(config, "0019")
         self.assertNotIn("pixel_copies", inspect(self.engine).get_table_names())
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT path FROM media_items").all(), [("jo/originals/a.jpg",)])
+
+    def test_0019_legacy_import_adds_a_folder_per_person_and_a_table_of_files_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0018")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT slug, legacy_path FROM people").all(), [("jo", None)])
+            connection.exec_driver_sql("INSERT INTO legacy_files (person_id, path, bytes, mtime, sha1, status, tier, seen_at) VALUES (1, 'a.jpg', 3, 1.0, 'x', 'unmatched', 5, 2.0)")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0018")
+        self.assertNotIn("legacy_files", inspect(self.engine).get_table_names())
+        self.assertNotIn("legacy_path", {column["name"] for column in inspect(self.engine).get_columns("people")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT slug FROM people").all(), [("jo",)])
 
     def test_0018_import_run_repeated_counts_no_repeat_for_old_runs_and_can_be_undone(self):
         config = db.alembic_config(self.engine)

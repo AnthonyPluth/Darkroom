@@ -117,6 +117,17 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 - Store every capture time as UTC plus an offset. Use the EXIF offset when present, otherwise look it up from the GPS position, otherwise mark it unknown.
 - Waypoint needs this to match photos to trips that cross time zones.
 
+## Legacy library import (#217)
+
+Each person may have a folder of photos from the old Google Photos sync. It is imported once, per person, after that person's Takeout import, and never changes.
+
+- **Source:** `python run.py import-legacy --person SLUG --dir /path` sets the person's legacy folder (an absolute path that overlaps neither the photo folder nor another person's legacy folder) and imports it. Darkroom only reads it: no write, rename or delete, and the Semgrep rule `darkroom-originals-read-only` covers it. It should also be mounted read-only into the container; that is deployment configuration, not added yet. Links and hidden files are skipped.
+- **Matching:** each file is fingerprinted (SHA-1, perceptual hashes, EXIF) and goes through the existing dedupe tiers against what proves Google has a photo of that person: the Takeout items of the Google accounts that serve them, and their originals that an unreversed automatic tier 1 or 2 decision confirms. A file is `matched` at tier 1 or 2 (proven in Google) and `unmatched` otherwise, including a tier 4 near match, which stays for review. A file that cannot be read or copied is `failed`. The accounts that count are those that serve the person now plus those of imported exports they own. Another person's Takeout never counts.
+- **Result:** every file is recorded once in `legacy_files` with its status, tier and the item it matched. An unmatched file gets a copy under the person's `originals/legacy/` (written once through `paths.write_once`, named with a SHA-1 prefix) unless the person already has an original with the same SHA-1. A matched file is only recorded.
+- **Pixel queue:** an unmatched original is offered to a `PixelQueue` (a narrow interface). Until the per-Pixel folder exists (#216) the queue accepts nothing, and the offer repeats on every run until it does.
+- **Report:** `python run.py legacy-report` prints, per person, how many legacy files are matched, not in Google, sent to the Pixel folder and waiting for it. Failed files count as not backed up. Whether "everything is backed up" is true is the not-backed-up count (unmatched plus failed) reaching zero.
+- **Re-runs:** a file already recorded is not read again, so a second run changes nothing; a new, failed or changed (size or time) file is handled again, and an earlier copy in `originals/legacy/` stays.
+
 ## Dedupe rules
 
 The original from Immich always wins. A Takeout copy only adds a file when nothing matches, plus any metadata the original lacks. Immich won't do this for us: external libraries deliberately allow identical files in different locations.
