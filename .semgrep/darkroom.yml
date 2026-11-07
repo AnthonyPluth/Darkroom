@@ -332,3 +332,62 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-pixel-prune-one-remover
+    message: >-
+      Pruning a Pixel's transient folder deletes only that Pixel's copy of one person's photo, never anything under
+      originals/, google-only/ or another person's part of the folder (AGENTS.md, promises 1 and 2). Only
+      darkroom/storage/paths.py removes, renames or replaces anything under _pixels/, through remove_pixel_copy, which
+      walks from the photo root without following a link, refuses a name outside that Pixel's folder for that person
+      and a folder that is a person's originals/ or google-only/ (by device and inode), and unlinks only the file it
+      hashed as the copy Darkroom placed. Go through pixel_folder.prune instead.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: $P.pixel_folder(...)
+      - pattern: $P.pixel_copy(...)
+      - pattern: $P.pixel_incoming(...)
+      - pattern: paths.PIXELS
+      - pattern: PIXELS
+      - pattern: |
+          "_pixels"
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($D, ...)
+              - pattern: os.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(remove|unlink|rmdir|removedirs|rename|renames|replace|truncate|link|symlink)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: shutil.move($D, ...)
+              - pattern: shutil.move($A, $D, ...)
+              - pattern: shutil.rmtree($D, ...)
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: $D.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(unlink|rmdir|rename|replace|write_bytes|write_text|symlink_to|hardlink_to|move|move_into)$
+          - focus-metavariable: $D
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-pixel-prune-one-caller
+    message: >-
+      A Pixel's copy is deleted only by darkroom/domain/pixel_folder.py's prune, which first checks that the photo is
+      confirmed in the Takeout of the Google account that Pixel uploads to (an unreversed automatic tier 1 or 2 match
+      for the same person). Call pixel_folder.prune instead of paths.remove_pixel_copy.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.remove_pixel_copy(...)
+          - pattern: remove_pixel_copy(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/pixel_folder.py"]

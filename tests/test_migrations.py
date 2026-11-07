@@ -274,6 +274,32 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0020_pixel_copies_adds_an_empty_queue_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0019")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'Pixel', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'phone', 'jo/originals/a.jpg', 'ab', 3, 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT COUNT(*) FROM pixel_copies").scalar_one(), 0)
+            connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, bytes, sha1, queued_at) VALUES (1, 1, 1, 3, 'ab', 2.0)")
+            self.assertEqual(connection.exec_driver_sql("SELECT state, requeued, always_send FROM pixel_copies").all(), [("queued", 0, 0)])
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, bytes, sha1, queued_at) VALUES (1, 1, 1, 3, 'ab', 2.0)")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE pixel_copies SET state = 'gone'")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0019")
+        self.assertNotIn("pixel_copies", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT path FROM media_items").all(), [("jo/originals/a.jpg",)])
+
     def test_0019_legacy_import_adds_a_folder_per_person_and_a_table_of_files_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

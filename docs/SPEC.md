@@ -158,7 +158,7 @@ Each person gets one folder tree on Unraid, and the originals in it are written 
   <person>/
     originals/          Copied once from Immich by Darkroom, never changed
     google-only/YYYY/MM Items found only in Takeout
-  <transient folder per Pixel>   Copies on their way to a Pixel (name and layout not decided)
+  _pixels/<pixel id>/<person>/   Copies on their way to a Pixel, one part per person it serves (#216)
   _inbox/<person>/      Downloaded Takeout parts and staging
   _browser/<account>/   Saved browser profiles
 ```
@@ -166,7 +166,7 @@ Each person gets one folder tree on Unraid, and the originals in it are written 
 **Syncthing**
 
 - Unraid shares each Pixel's transient folder with that Pixel as Send Only, so nothing on the Pixel can change Unraid's copy. The Pixel keeps its Syncthing app and settings. Pixels have limited space (about 128 GB), so the folder is not a permanent store: photos wait there until Google Photos has backed them up, then leave the synced folder.
-- Pruning is Darkroom deleting the transient per-Pixel copy: removing a photo from a synced folder removes it from the Pixel on the next sync, so Syncthing carries the deletion. This is a deletion path on Unraid that may touch only the per-Pixel folder, never `originals/` (promises 1 and 2 in AGENTS.md are restated for it), and it will need its own check (a Semgrep rule and a test) in a later issue before it ships.
+- Pruning is Darkroom deleting the transient per-Pixel copy: removing a photo from a synced folder removes it from the Pixel on the next sync, so Syncthing carries the deletion. This is a deletion path on Unraid that may touch only the per-Pixel folder, never `originals/` (promises 1 and 2 in AGENTS.md are restated for it), and it has its own check: Semgrep's `darkroom-pixel-prune-one-remover` and `darkroom-pixel-prune-one-caller`, and `tests/test_pixel_paths.py` (#216).
 - The signal for when Darkroom may delete is the Takeout match: the item's `confirmed_in_google` (an unreversed automatic tier 1 or 2 decision), not a fixed delay, a report from the Pixel or a manual check ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 6). Up to about two months of waiting is acceptable. Removing a photo from a device doesn't remove the Google Photos copy once it has been backed up (confirmed by the owner). The deletion never touches `originals/`, which keeps the permanent copy. Confirmation has to be per destination Pixel and Google account, not a single per-item flag, so that a match in one account doesn't empty the folder of a Pixel that backs up to another; how to track it is not decided.
 - The permanent copies are copies, not hardlinks: the transient folder and `originals/` are separate files.
 - Deleting or clearing a photo on an iPhone never reaches `originals/`: Darkroom only reads from Immich and writes copies.
