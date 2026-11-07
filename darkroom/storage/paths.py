@@ -808,6 +808,25 @@ def pixel_copy_name(photos: Photos, person: str, relative: str) -> str:
 NO_FOLLOW_FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+MOUNTINFO = Path("/proc/self/mountinfo")
+OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
+
+
+def mounts_under(folder: Path) -> list[Path]:
+    try:
+        lines = MOUNTINFO.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        fields = line.split(" ")
+        if len(fields) > 4:
+            point = Path(OCTAL_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), fields[4]))
+            if point.is_relative_to(folder) and point != folder:
+                found.append(point)
+    return found
+
+
 def kept_identities(photos: Photos) -> set[tuple[int, int]]:
     found = set()
     for folder in photos.kept_folders():
@@ -820,6 +839,7 @@ def kept_identities(photos: Photos) -> set[tuple[int, int]]:
 class PinnedFolders:
     def __init__(self, photos: Photos, parts: list[str], create: bool) -> None:
         self.parts = parts
+        self.device = -1
         self.fds = [os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)]
         try:
             kept = kept_identities(photos)
@@ -840,8 +860,14 @@ class PinnedFolders:
                 found = os.fstat(self.fds[-1])
                 if (found.st_dev, found.st_ino) in kept:
                     raise NotAPixelCopy("originals and google-only folders are never part of a Pixel's folder")
+                if len(self.fds) == 2:
+                    self.device = found.st_dev
+                    if mounts_under(photos.root / part):
+                        raise NotAPixelCopy("a folder is mounted inside the Pixels' folder")
+                elif found.st_dev != self.device:
+                    raise NotAPixelCopy("a folder on another device is inside the Pixels' folder")
                 if made:
-                    os.fchmod(self.fds[-1], PIXEL_FOLDER_MODE)
+                    os.fchmod(self.fds[-1], PIXEL_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Syncthing runs as another uid and must traverse the folders it sends; nothing is writable by others
         except BaseException:
             self.close()
             raise
