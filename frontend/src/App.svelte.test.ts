@@ -35,7 +35,7 @@ describe("signed out", () => {
     expect(link).toHaveAttribute("href", "/auth/login?next=%2Fpeople");
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByText("You are signed out. Darkroom is for the family's parents only.")).toBeInTheDocument();
-    expect(screen.getByText("Photos leave the phone only after Google Photos has them.")).toBeInTheDocument();
+    expect(screen.getByText("Photos leave a phone only once a safe copy is stored.")).toBeInTheDocument();
     expect(screen.getByText(/Reaching Darkroom away from home needs Tailscale/)).toBeInTheDocument();
     expect(screen.queryByText(/placeholder/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
