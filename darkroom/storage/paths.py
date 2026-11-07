@@ -1138,7 +1138,25 @@ def open_copy(name: str, folder: int) -> int:
         raise
 
 
-def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> os.stat_result:
+@dataclass(frozen=True)
+class Keeper:
+    folder: int
+    name: str
+    fd: int
+    found: os.stat_result
+
+    def still_there(self) -> None:
+        held = os.fstat(self.fd)
+        try:
+            named = os.stat(self.name, dir_fd=self.folder, follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise NotALosingCopy("the kept copy went away") from error
+        if held.st_nlink < 1 or not os.path.samestat(held, self.found) or not os.path.samestat(named, self.found):
+            raise NotALosingCopy("the kept copy went away")
+
+
+@contextlib.contextmanager
+def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iterator[Keeper]:
     parts = library_parts(photos, person, keeping, KEEPING_FOLDERS)
     try:
         with pinned_folder(photos, parts[:-1]) as folder:
@@ -1147,7 +1165,7 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> os.s
                 found = os.fstat(kept)
                 if not stat.S_ISREG(found.st_mode) or fd_sha1(kept) != sha1:
                     raise NotALosingCopy("the kept copy is not the file Darkroom recorded")
-                return found
+                yield Keeper(folder, parts[-1], kept, found)
             finally:
                 os.close(kept)
     except FileNotFoundError as error:
@@ -1156,15 +1174,15 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> os.s
 
 def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
-    kept = checked_keeper(photos, person, keeping, keeping_sha1)
-    try:
-        with pinned_folder(photos, parts[:-1]) as folder:
-            return drop_losing_copy(folder, parts[-1], losing_sha1, kept)
-    except FileNotFoundError:
-        return False
+    with checked_keeper(photos, person, keeping, keeping_sha1) as keeper:
+        try:
+            with pinned_folder(photos, parts[:-1]) as folder:
+                return drop_losing_copy(folder, parts[-1], losing_sha1, keeper)
+        except FileNotFoundError:
+            return False
 
 
-def drop_losing_copy(folder: int, name: str, sha1: str, kept: os.stat_result) -> bool:
+def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
     try:
         copy = open_copy(name, folder)
     except FileNotFoundError:
@@ -1174,12 +1192,13 @@ def drop_losing_copy(folder: int, name: str, sha1: str, kept: os.stat_result) ->
             found = os.fstat(copy)
             if not stat.S_ISREG(found.st_mode):
                 raise NotALosingCopy("only a file is removed")
-            if os.path.samestat(found, kept):
+            if os.path.samestat(found, keeper.found):
                 raise NotALosingCopy("the kept copy is the same file")
             if fd_sha1(copy) != sha1:
                 raise NotALosingCopy("the copy is not the file Darkroom recorded")
             if not os.path.samestat(found, os.stat(name, dir_fd=folder, follow_symlinks=False)):
                 raise NotALosingCopy("the copy changed while it was being removed")
+            keeper.still_there()
             os.unlink(name, dir_fd=folder)
         finally:
             os.close(copy)

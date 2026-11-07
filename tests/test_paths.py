@@ -463,11 +463,8 @@ class RemoveLosingCopyTests(unittest.TestCase):
         path.write_bytes(data)
         return path
 
-    def sha1(self, path):
-        return paths.file_sha1(path)
-
     def remove(self, losing="jo/google-only/2021/03/IMG_0001.jpg", losing_sha1=None, keeping="jo/originals/immich/IMG_0001-aaaa.jpg", keeping_sha1=None, person="jo"):
-        return paths.remove_losing_copy(self.photos, person, losing, losing_sha1 or self.sha1(self.loser), keeping, keeping_sha1 or self.sha1(self.keeper))
+        return paths.remove_losing_copy(self.photos, person, losing, losing_sha1 or paths.file_sha1(self.loser), keeping, keeping_sha1 or paths.file_sha1(self.keeper))
 
     def test_the_losing_takeout_copy_and_its_sidecar_go_and_the_keeper_stays_byte_for_byte(self):
         self.assertTrue(self.remove())
@@ -476,8 +473,8 @@ class RemoveLosingCopyTests(unittest.TestCase):
         self.assertEqual(self.keeper.read_bytes(), b"phone")
 
     def test_a_losing_immich_original_goes_when_the_takeout_copy_is_kept(self):
-        self.assertTrue(self.remove(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=self.sha1(self.keeper),
-                                    keeping="jo/google-only/2021/03/IMG_0001.jpg", keeping_sha1=self.sha1(self.loser)))
+        self.assertTrue(self.remove(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper),
+                                    keeping="jo/google-only/2021/03/IMG_0001.jpg", keeping_sha1=paths.file_sha1(self.loser)))
         self.assertFalse(self.keeper.exists())
         self.assertEqual(self.loser.read_bytes(), b"takeout")
 
@@ -492,15 +489,11 @@ class RemoveLosingCopyTests(unittest.TestCase):
             self.remove(**arguments)
         self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}, before)
 
-    def test_a_missing_keeper_is_refused(self):
+    def test_a_keeper_or_loser_that_is_not_the_file_darkroom_recorded_or_a_missing_keeper_is_refused(self):
+        self.assertRefused(keeping_sha1="a" * 40)
+        self.assertRefused(losing_sha1="a" * 40)
         self.keeper.unlink()
         self.assertRefused(keeping_sha1="a" * 40)
-
-    def test_a_keeper_with_another_sha1_is_refused(self):
-        self.assertRefused(keeping_sha1="a" * 40)
-
-    def test_a_loser_that_is_not_the_file_darkroom_recorded_is_refused(self):
-        self.assertRefused(losing_sha1="a" * 40)
 
     def test_paths_outside_the_persons_library_are_refused(self):
         self.file("sam/google-only/2021/03/IMG_0001.jpg", b"takeout")
@@ -515,23 +508,41 @@ class RemoveLosingCopyTests(unittest.TestCase):
         self.assertRefused(keeping="_inbox/jo/review/1/IMG_0001.jpg")
         self.assertRefused(person="sam")
 
-    def test_links_are_never_followed_or_removed(self):
+    def test_links_and_folders_are_never_followed_or_removed(self):
+        (self.root / "jo/google-only/2021/04/IMG_0002.jpg").mkdir(parents=True)
+        self.assertRefused(losing="jo/google-only/2021/04/IMG_0002.jpg")
         elsewhere = self.file("outside/a.jpg", b"takeout")
         link = self.root / "jo/google-only/2021/03/link.jpg"
         link.symlink_to(elsewhere)
-        self.assertRefused(losing="jo/google-only/2021/03/link.jpg", losing_sha1=self.sha1(elsewhere))
+        self.assertRefused(losing="jo/google-only/2021/03/link.jpg", losing_sha1=paths.file_sha1(elsewhere))
         self.assertTrue(link.is_symlink() and elsewhere.exists())
         (self.root / "jo/google-only/2020").symlink_to(self.root / "outside")
-        self.assertRefused(losing="jo/google-only/2020/a.jpg", losing_sha1=self.sha1(elsewhere))
+        self.assertRefused(losing="jo/google-only/2020/a.jpg", losing_sha1=paths.file_sha1(elsewhere))
         kept_link = self.root / "jo/originals/immich/kept.jpg"
         kept_link.symlink_to(self.keeper)
         self.assertRefused(keeping="jo/originals/immich/kept.jpg")
 
     def test_the_keeper_and_the_loser_are_never_the_same_file(self):
-        self.assertRefused(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=self.sha1(self.keeper))
+        self.assertRefused(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper))
         os.link(self.keeper, self.root / "jo/google-only/2021/03/hard.jpg")
-        self.assertRefused(losing="jo/google-only/2021/03/hard.jpg", losing_sha1=self.sha1(self.keeper))
+        self.assertRefused(losing="jo/google-only/2021/03/hard.jpg", losing_sha1=paths.file_sha1(self.keeper))
 
-    def test_a_folder_in_place_of_the_copy_is_refused(self):
-        (self.root / "jo/google-only/2021/04/IMG_0002.jpg").mkdir(parents=True)
-        self.assertRefused(losing="jo/google-only/2021/04/IMG_0002.jpg")
+    def test_a_keeper_removed_or_replaced_after_its_check_keeps_the_loser(self):
+        real = paths.fd_sha1
+        for change in ("removed", "replaced"):
+            with self.subTest(change=change):
+                self.setUp()
+
+                calls = []
+
+                def changing(fd, calls=calls, change=change):
+                    calls.append(fd)
+                    if len(calls) == 2:
+                        self.keeper.unlink()
+                        if change == "replaced":
+                            self.keeper.write_bytes(b"phone")
+                    return real(fd)
+
+                with mock.patch.object(paths, "fd_sha1", side_effect=changing), self.assertRaises(paths.NotALosingCopy):
+                    self.remove()
+                self.assertEqual(self.loser.read_bytes(), b"takeout")

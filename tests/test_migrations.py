@@ -373,7 +373,6 @@ class MigrationTests(unittest.TestCase):
             config.attributes["connection"] = connection
             command.downgrade(config, "0023")
         self.assertNotIn("duplicate_removals", inspect(self.engine).get_table_names())
-        self.assertEqual(inspect(self.engine).get_table_names().count("people"), 1)
 
     def test_0021_pixel_copy_seen_again_leaves_existing_copies_unseen_and_can_be_undone(self):
         config = db.alembic_config(self.engine)

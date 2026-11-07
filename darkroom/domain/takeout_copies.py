@@ -64,28 +64,22 @@ def held_back(opened: Session, person: Person) -> set[int]:
 
 
 def google_only(opened: Session, person: Person) -> list[tuple[MediaItem, DedupeDecision]]:
-    found = opened.execute(
-        select(MediaItem, DedupeDecision).join(DedupeDecision, DedupeDecision.takeout_item_id == MediaItem.id).where(
-            MediaItem.person_id == person.id, MediaItem.source == "takeout", MediaItem.path.startswith(f"{person.slug}/google-only/"),
-            DedupeDecision.person_id == person.id, DedupeDecision.tier == 5, DedupeDecision.decided_by == "auto", DedupeDecision.reversed_at.is_(None),
-        ).order_by(MediaItem.id, DedupeDecision.id)
-    ).all()
-    first: dict[int, tuple[MediaItem, DedupeDecision]] = {}
-    for item, decision in found:
-        first.setdefault(item.id, (item, decision))
-    return [(item, decision) for item, decision in first.values() if not doubted(opened, person, item)]
+    items = opened.execute(
+        select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "takeout", MediaItem.path.startswith(f"{person.slug}/google-only/")).order_by(MediaItem.id)
+    ).scalars().all()
+    return [(item, decisions[0]) for item in items if (decisions := decisions_of(opened, item)) and not doubted(opened, person, item, decisions)]
 
 
-def doubted(opened: Session, person: Person, item: MediaItem) -> bool:
-    owner = opened.execute(select(DedupeDecision.id).where(DedupeDecision.matched_item_id == item.id, DedupeDecision.decided_by == "owner").limit(1)).first()
-    return owner is not None or not all(
+def doubted(opened: Session, person: Person, item: MediaItem, decisions: list[DedupeDecision]) -> bool:
+    matched = opened.execute(select(DedupeDecision.id).where(DedupeDecision.matched_item_id == item.id).limit(1)).first()
+    return matched is not None or not all(
         decision.person_id == person.id and decision.tier == 5 and decision.decided_by == "auto" and decision.reversed_at is None and not edited(decision)
-        for decision in decisions_of(opened, item)
+        for decision in decisions
     )
 
 
 def decisions_of(opened: Session, item: MediaItem) -> list[DedupeDecision]:
-    return list(opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)).scalars())
+    return list(opened.execute(select(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id).order_by(DedupeDecision.id)).scalars())
 
 
 def immich_originals(opened: Session, person: Person) -> dict[int, MediaItem]:
