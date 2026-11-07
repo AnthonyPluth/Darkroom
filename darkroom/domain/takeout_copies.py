@@ -68,11 +68,14 @@ def held_back(opened: Session, person: Person) -> set[int]:
     return {item_id for row in rows for item_id in row if item_id is not None}
 
 
-def google_only(opened: Session, person: Person) -> list[tuple[MediaItem, DedupeDecision]]:
-    items = opened.execute(
+def placed_takeouts(opened: Session, person: Person) -> list[MediaItem]:
+    return list(opened.execute(
         select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "takeout", MediaItem.path.startswith(f"{person.slug}/google-only/")).order_by(MediaItem.id)
-    ).scalars().all()
-    return [(item, decision) for item in items if (decision := removable_takeout(opened, person, item)) is not None]
+    ).scalars())
+
+
+def google_only(opened: Session, person: Person) -> list[tuple[MediaItem, DedupeDecision]]:
+    return [(item, decision) for item in placed_takeouts(opened, person) if (decision := removable_takeout(opened, person, item)) is not None]
 
 
 def removable_takeout(opened: Session, person: Person, item: MediaItem) -> DedupeDecision | None:
@@ -121,8 +124,8 @@ def pairs(opened: Session, person: Person) -> list[Pair]:
     phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone").order_by(MediaItem.id)).scalars()
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in phone))
     by_path = {item.path: (item, decision) for item, decision in takeouts}
-    decided = dedupe.decide_all(index, [candidate_of(item) for item, _ in takeouts], dedupe.DedupeSettings())
-    matched = [d for d in decided if d.tier in dedupe.CONFIRMING_TIERS and d.matched_source == "phone" and d.matched_item_id in originals]
+    decided = dedupe.decide_all(index, [candidate_of(item) for item in placed_takeouts(opened, person)], dedupe.DedupeSettings())
+    matched = [d for d in decided if d.tier in dedupe.CONFIRMING_TIERS and d.matched_source == "phone" and d.matched_item_id in originals and d.source_path in by_path]
     shared = Counter(d.matched_item_id for d in matched)
     return [Pair(*by_path[d.source_path], originals[d.matched_item_id], d.tier) for d in matched
             if d.matched_item_id is not None and (d.tier == 1 or shared[d.matched_item_id] == 1)]
@@ -180,7 +183,7 @@ def still_matched(opened: Session, person: Person, takeout: MediaItem, phone: Me
     if rule_for(phone, takeout) != row.rule:
         return False
     shots = {item.id: item for item in [*neighbours(opened, person, "phone", takeout), phone]}
-    peers = [item for item in neighbours(opened, person, "takeout", takeout) if item.id != takeout.id and removable_takeout(opened, person, item)] + [takeout]
+    peers = [item for item in neighbours(opened, person, "takeout", takeout) if item.id != takeout.id and item.path.startswith(f"{person.slug}/google-only/")] + [takeout]
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in shots.values()))
     decided = dedupe.decide_all(index, [candidate_of(item) for item in peers], dedupe.DedupeSettings())
     mine = [d for d in decided if d.source_path == takeout.path]

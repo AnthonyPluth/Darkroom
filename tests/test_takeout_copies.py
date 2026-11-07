@@ -235,6 +235,28 @@ class ResolveTests(CopiesCase):
                 self.assertEqual(self.resolve().removed, 0)
                 self.assertEqual(self.files(), before)
 
+    def test_an_ineligible_takeout_peer_of_the_same_shot_keeps_the_match_ambiguous(self):
+        for kind in ("owner", "review", "reversed"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.takeout(b"google one", name="a.jpg")
+                _, other = self.takeout(b"google two, a different frame", name="b.jpg", tier=4 if kind == "review" else 5, decided_by="owner" if kind == "owner" else "auto")
+                other.reversed_at = 1.5 if kind == "reversed" else None
+                self.phone(b"phone shot")
+                before = self.files()
+                self.assertEqual((takeout_copies.pairs(self.opened, self.jo), self.resolve().removed), ([], 0))
+                self.assertEqual(self.files(), before)
+
+    def test_an_ineligible_peer_that_appears_after_the_removal_is_recorded_refuses_it(self):
+        takeout, _ = self.takeout(b"google one", name="a.jpg")
+        self.phone(b"phone shot")
+        (pair,) = takeout_copies.pairs(self.opened, self.jo)
+        with mock.patch.object(takeout_copies, "finish"):
+            takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
+        self.takeout(b"google two, a different frame", name="b.jpg", decided_by="owner")
+        self.assertEqual(self.resolve(at=3.0).refused, 1)
+        self.assertTrue((self.root / takeout.path).exists())
+
     def test_an_edited_copy_renamed_on_a_name_collision_never_pairs(self):
         self.takeout(b"google's edit", name="IMG_0001-edited~abcd1234.jpg", source="Takeout/Photos from 2021/IMG_0001-edited.jpg")
         self.phone(b"the phone's own bigger original")
