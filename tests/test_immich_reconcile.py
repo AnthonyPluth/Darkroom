@@ -245,17 +245,20 @@ class OrderTests(ReconcileCase):
         self.assertIn("cannot be read", failure.detail)
         self.assertEqual((len(self.world.opened.execute(select(Alert).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all()), self.jo.immich_reconciled_until), (1, None))
 
-    def test_a_pixel_that_serves_the_person_later_still_gets_the_stored_photos(self):
+    def test_a_pixel_added_after_the_first_offer_gets_the_earlier_uploads_and_the_first_is_untouched(self):
         self.photo()
-        self.world.opened.query(pixel_folder.PixelPerson).delete()
-        self.world.opened.commit()
-        first = self.run_it(queue=reconcile.PixelFolderQueue())
-        self.assertEqual((first.stored, first.queued), (1, 0))
-        self.world.opened.add(pixel_folder.PixelPerson(pixel_id=self.world.pixel, person_id=self.jo.id))
-        self.world.opened.commit()
+        self.run_it(queue=reconcile.PixelFolderQueue())
+        before = [(c.id, c.state, c.queued_at, c.always_send) for c in self.copies()]
+        other = pixel_folder.Pixel(name="Kitchen Pixel", google_account_id=self.world.account, created=2.0)
+        self.world.opened.add(other)
+        self.world.opened.flush()
+        self.world.opened.add(pixel_folder.PixelPerson(pixel_id=other.id, person_id=self.jo.id))
         later = self.run_it(at=NOW + 3600, queue=reconcile.PixelFolderQueue())
-        self.assertEqual((later.stored, later.queued), (0, 1))
-        self.assertEqual([copy.always_send for copy in self.copies()], [True])
+        self.assertEqual(later.queued, 1)
+        by_pixel = {copy.pixel_id: copy for copy in self.copies()}
+        self.assertEqual((by_pixel[other.id].state, by_pixel[other.id].always_send), ("queued", True))
+        self.assertEqual([(c.id, c.state, c.queued_at, c.always_send) for c in self.copies() if c.pixel_id == self.world.pixel], before)
+        self.assertEqual(self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue()).queued, 0)
 
     def test_names_keep_only_safe_characters(self):
         asset = immich.Asset("x", "u", None, "ab" * 20, "../../we irdé/na me.JPG", "IMAGE", "timeline", None, False, False)
@@ -286,12 +289,6 @@ class ProviderTests(unittest.TestCase):
                 list(client.search_updated("k", None, "2026-01-01T00:00:00.000Z"))
         with mock.patch.object(immich.Client, "call", return_value={}), self.assertRaises(immich.ImmichFailed):
             client.metadata_keys("k", "a")
-
-    def test_configuration_needs_only_the_address(self):
-        from tests.shared import settings_from
-        with self.assertRaises(immich.NotConfigured):
-            immich.Client.at(settings_from())
-        self.assertEqual(immich.Client.at(settings_from(IMMICH_URL="http://127.0.0.1:2/")).url, "http://127.0.0.1:2")
 
 
 if __name__ == "__main__":

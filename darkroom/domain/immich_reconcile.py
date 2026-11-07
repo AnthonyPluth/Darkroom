@@ -8,14 +8,14 @@ from datetime import UTC, datetime
 from pathlib import PurePath
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, events, index, legacy, media, pixel_folder
 from darkroom.providers import exiftool, immich
 from darkroom.storage import locks, paths, secretbox
-from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person
+from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
 IMMICH_FOLDER = "immich"
@@ -154,7 +154,7 @@ class Run:
 
     def offer(self, row: ImmichAsset) -> None:
         item = None if row.original_item_id is None else self.opened.get(MediaItem, row.original_item_id)
-        if item is not None and row.queued_at is None and self.queue.offer(self.opened, self.person, item, self.now):
+        if item is not None and self.queue.offer(self.opened, self.person, item, self.now):
             row.queued_at = self.now
             self.report.queued += 1
 
@@ -229,8 +229,9 @@ class Run:
             except immich.ImmichFailed as error:
                 if error.status in (401, 403):
                     raise
+        missing = exists().where(PixelPerson.person_id == self.person.id, ~exists().where(PixelCopy.pixel_id == PixelPerson.pixel_id, PixelCopy.item_id == ImmichAsset.original_item_id))
         unqueued = self.opened.execute(
-            select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status == "stored", ImmichAsset.queued_at.is_(None)).order_by(ImmichAsset.id)
+            select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status == "stored", ImmichAsset.original_item_id.is_not(None), missing).order_by(ImmichAsset.id)
         ).scalars().all()
         for row in unqueued:
             self.offer(row)
