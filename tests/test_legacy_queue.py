@@ -66,6 +66,15 @@ class PixelFolderQueueTests(QueueCase):
         self.assertEqual([pixel for pixel, _ in rows].count(second.id), 2)
         self.assertNotIn(elsewhere.id, [pixel for pixel, _ in rows])
 
+    def test_files_count_as_waiting_again_once_the_person_loses_their_last_pixel(self):
+        self.prepare()
+        self.home.run(legacy.PixelFolderQueue())
+        self.world.opened.query(PixelPerson).filter(PixelPerson.person_id == self.home.jo.id).delete()
+        self.world.opened.commit()
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.unmatched, found.queued, found.pixels), (2, 0, 0))
+        self.assertTrue(legacy.describe(found).endswith("2 waiting for it); no Pixel serves Jo, so nothing can be sent"))
+
     def test_a_matched_file_creates_no_copy(self):
         self.prepare()
         self.home.run(legacy.PixelFolderQueue())
