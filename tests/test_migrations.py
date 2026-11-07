@@ -274,6 +274,14 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def pixels_sequence(self):
+        with self.engine.connect() as connection:
+            return connection.exec_driver_sql("SELECT seq FROM sqlite_sequence WHERE name = 'pixels'").scalars().all()
+
+    def test_0022_pixel_ids_never_reused_on_a_database_with_no_pixels_keeps_one_sequence_row(self):
+        db.migrate(self.engine)
+        self.assertEqual(self.pixels_sequence(), [0])
+
     def pixels_schema(self):
         with self.engine.connect() as connection:
             return connection.exec_driver_sql("SELECT sql FROM sqlite_master WHERE name = 'pixels'").scalar_one()
@@ -298,6 +306,7 @@ class MigrationTests(unittest.TestCase):
             copies = connection.exec_driver_sql(kept).all()
         db.migrate(self.engine)
         self.assertIn("AUTOINCREMENT", self.pixels_schema())
+        self.assertEqual(self.pixels_sequence(), [3])
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT id, name, google_account_id FROM pixels ORDER BY id").all(), [(1, "One", 1), (2, "Two", 1)])
             self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, person_id FROM pixel_people ORDER BY pixel_id").all(), [(1, 1), (2, 1)])
@@ -326,6 +335,7 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (5, 'Five', 1, 1.0)")
         db.migrate(self.engine)
+        self.assertEqual(self.pixels_sequence(), [5])
         with self.engine.begin() as connection:
             connection.exec_driver_sql("DELETE FROM pixels")
             connection.exec_driver_sql("INSERT INTO pixels (name, google_account_id, created) VALUES ('New', 1, 5.0)")

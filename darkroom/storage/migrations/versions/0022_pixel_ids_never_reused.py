@@ -22,13 +22,10 @@ def rebuild_pixels(autoincrement: bool) -> None:
 
 def upgrade() -> None:
     rebuild_pixels(True)
+    op.execute("INSERT INTO sqlite_sequence (name, seq) SELECT 'pixels', 0 WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'pixels')")
     op.execute(
-        "UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT COALESCE(MAX(CAST(subject AS INTEGER)), 0) FROM events "
+        "UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT COALESCE(MAX(id), 0) FROM pixels), (SELECT COALESCE(MAX(CAST(subject AS INTEGER)), 0) FROM events "
         "WHERE type IN ('pixel_created', 'pixel_deleted'))) WHERE name = 'pixels'"
-    )
-    op.execute(
-        "INSERT INTO sqlite_sequence (name, seq) SELECT 'pixels', COALESCE(MAX(CAST(subject AS INTEGER)), 0) FROM events "
-        "WHERE type IN ('pixel_created', 'pixel_deleted') AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'pixels')"
     )
 
 
