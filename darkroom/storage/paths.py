@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -803,71 +804,165 @@ def pixel_copy_name(photos: Photos, person: str, relative: str) -> str:
     return original.relative_to(photos.originals(person)).as_posix()
 
 
+NO_FOLLOW_FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+class PinnedFolders:
+    def __init__(self, photos: Photos, parts: list[str], create: bool) -> None:
+        self.parts = parts
+        self.fds = [os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)]
+        try:
+            for part in parts:
+                if create:
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(part, 0o755, dir_fd=self.fds[-1])
+                try:
+                    self.fds.append(os.open(part, NO_FOLLOW_FOLDER, dir_fd=self.fds[-1]))
+                except NotADirectoryError as error:
+                    raise NotAPixelCopy("a link or a file is on the way to the Pixel's folder") from error
+                except OSError as error:
+                    if error.errno == errno.ELOOP:
+                        raise NotAPixelCopy("a link is on the way to the Pixel's folder") from error
+                    raise
+        except BaseException:
+            self.close()
+            raise
+
+    @property
+    def fd(self) -> int:
+        return self.fds[-1]
+
+    def close(self) -> None:
+        for fd in reversed(self.fds):
+            os.close(fd)
+        self.fds = []
+
+    def __enter__(self) -> PinnedFolders:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def open_no_follow(name: str, folder: int, flags: int = os.O_RDONLY, mode: int = 0o644) -> int:
+    try:
+        return os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=folder)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise NotAPixelCopy("a link is where the Pixel's copy goes") from error
+        raise
+
+
+def fd_sha1(fd: int) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, CHUNK):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def copy_fd(source: int, target: int) -> None:
+    os.lseek(source, 0, os.SEEK_SET)
+    while chunk := os.read(source, CHUNK):
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(target, view):]
+    os.fchmod(target, PIXEL_COPY_MODE)
+    os.fsync(target)
+
+
+def existing_copy(name: str, folder: int, sha1: str) -> bool:
+    try:
+        fd = open_no_follow(name, folder)
+    except FileNotFoundError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or fd_sha1(fd) != sha1:
+            raise AlreadyExists(name)
+        return True
+    finally:
+        os.close(fd)
+
+
 def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, sha1: str) -> str:
     original = photos.original(person, relative)
     if original.is_symlink() or not original.is_file():
         raise NotAPixelCopy("the original is not a file")
     name = pixel_copy_name(photos, person, relative)
-    destination = photos.pixel_copy(pixel_id, person, name)
-    if regular(destination) and file_sha1(destination) == sha1:
-        return name
-    incoming = photos.pixel_incoming()
-    incoming.mkdir(parents=True, exist_ok=True)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     photos.pixel_copy(pixel_id, person, name)
-    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
-    handle, temp_name = tempfile.mkstemp(dir=incoming, prefix=".copy-")
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(handle, "wb") as out, original.open("rb") as source:
-            while chunk := source.read(CHUNK):
-                digest.update(chunk)
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
-        if digest.hexdigest() != sha1:
-            raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
-        os.chmod(temp, PIXEL_COPY_MODE)
-        photos.pixel_copy(pixel_id, person, name)
+    photos.pixel_incoming()
+    *folders, leaf = name.split("/")
+    with PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=True) as destination, \
+            PinnedFolders(photos, [PIXELS, INCOMING], create=True) as incoming:
+        if existing_copy(leaf, destination.fd, sha1):
+            return name
+        temp = f".copy-{secrets.token_hex(8)}"
+        staged = open_no_follow(temp, incoming.fd, os.O_RDWR | os.O_CREAT | os.O_EXCL)
         try:
-            os.link(temp, destination)
-        except FileExistsError as error:
-            raise AlreadyExists(destination.name) from error
-        except OSError:
-            copy_exclusive(temp, destination)
-            os.chmod(destination, PIXEL_COPY_MODE)
-    finally:
-        temp.unlink(missing_ok=True)
+            source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                copy_fd(source, staged)
+            finally:
+                os.close(source)
+            if fd_sha1(staged) != sha1:
+                raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
+            try:
+                os.link(temp, leaf, src_dir_fd=incoming.fd, dst_dir_fd=destination.fd, follow_symlinks=False)
+            except FileExistsError as error:
+                raise AlreadyExists(leaf) from error
+            except OSError:
+                copy_staged(staged, leaf, destination.fd)
+        finally:
+            os.close(staged)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=incoming.fd)
     return name
 
 
-def unlink_in_place(photos: Photos, pixel_id: int, person: str, name: str, target: Path) -> None:
-    folder = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def copy_staged(staged: int, leaf: str, folder: int) -> None:
     try:
-        if photos.pixel_copy(pixel_id, person, name) != target or not os.path.samestat(os.fstat(folder), target.parent.lstat()):
-            raise NotAPixelCopy("the Pixel's folder changed while the copy was being pruned")
-        if not stat.S_ISREG(os.stat(target.name, dir_fd=folder, follow_symlinks=False).st_mode):
-            raise NotAPixelCopy("only a file is pruned from a Pixel's folder")
-        os.unlink(target.name, dir_fd=folder)
+        target = open_no_follow(leaf, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError as error:
+        raise AlreadyExists(leaf) from error
+    try:
+        copy_fd(staged, target)
+    except BaseException:
+        os.unlink(leaf, dir_fd=folder)
+        raise
     finally:
-        os.close(folder)
+        os.close(target)
 
 
 def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha1: str) -> bool:
-    folder = photos.pixel_folder(pixel_id, person)
     target = photos.pixel_copy(pixel_id, person, name)
     if not present(target):
         return False
     if not regular(target):
         raise NotAPixelCopy("only a file is pruned from a Pixel's folder")
-    for kept in photos.kept_folders():
-        if target.is_relative_to(kept.resolve()):
-            raise NotAPixelCopy("originals and google-only folders are never pruned")
-    if file_sha1(target) != sha1:
-        raise NotAPixelCopy("the file is not the copy Darkroom placed")
-    unlink_in_place(photos, pixel_id, person, name, target)
-    parent = target.parent
-    while parent != folder and parent.is_relative_to(folder) and not parent.is_symlink() and not any(parent.iterdir()):
-        parent.rmdir()
-        parent = parent.parent
+    *folders, leaf = name.split("/")
+    try:
+        pinned = PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=False)
+    except FileNotFoundError:
+        return False
+    with pinned:
+        try:
+            copy = open_no_follow(leaf, pinned.fd)
+        except FileNotFoundError:
+            return False
+        try:
+            found = os.fstat(copy)
+            if not stat.S_ISREG(found.st_mode):
+                raise NotAPixelCopy("only a file is pruned from a Pixel's folder")
+            if fd_sha1(copy) != sha1:
+                raise NotAPixelCopy("the file is not the copy Darkroom placed")
+            if not os.path.samestat(found, os.stat(leaf, dir_fd=pinned.fd, follow_symlinks=False)):
+                raise NotAPixelCopy("the copy changed while it was being pruned")
+            os.unlink(leaf, dir_fd=pinned.fd)
+        finally:
+            os.close(copy)
+        for depth in range(len(folders), 0, -1):
+            try:
+                os.rmdir(folders[depth - 1], dir_fd=pinned.fds[depth + 2])
+            except OSError:
+                break
     return True
