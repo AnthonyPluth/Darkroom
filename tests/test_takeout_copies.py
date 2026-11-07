@@ -323,7 +323,7 @@ class CrashTests(CopiesCase):
     def test_a_claim_a_crash_left_is_put_back_when_the_removal_is_refused(self):
         takeout, phone = self.pending()
         real = paths.os.unlink
-        with mock.patch.object(paths.os, "unlink", lambda name, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt) if str(name).startswith(paths.LOSING) else real(name, *a, **k)), \
+        with mock.patch.object(paths.os, "unlink", lambda name, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt) if name == paths.CLAIMED else real(name, *a, **k)), \
                 self.assertRaises(KeyboardInterrupt):
             self.resolve(at=3.0)
         self.assertFalse((self.root / takeout.path).exists())
