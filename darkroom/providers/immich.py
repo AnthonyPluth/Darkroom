@@ -16,6 +16,7 @@ from darkroom import config, tls
 TIMEOUT = 15.0
 MAX_REPLY = 4 * 1024 * 1024
 PAGE_SIZE = 250
+MAX_PASSES = 5
 DOWNLOAD_CHUNK = 1024 * 1024
 PHONE_KEY = "mobile-app"
 
@@ -154,6 +155,22 @@ class Client:
         if not library_id or "/" in library_id:
             raise ImmichFailed("not a library id")
         self.call("POST", f"/api/libraries/{quote(library_id, safe='')}/scan")
+
+    def search_stable(self, key: str, since: str | None, until: str) -> list[Asset]:
+        previous = list(self.search_updated(key, since, until))
+        for _ in range(MAX_PASSES):
+            current = list(self.search_updated(key, since, until))
+            if {asset.id for asset in current} == {asset.id for asset in previous}:
+                return current
+            previous = current
+        raise ImmichFailed("Immich's assets kept changing while they were listed")
+
+    def user_id(self, key: str) -> str:
+        found = self.call("GET", "/api/users/me", key=key)
+        identity = found.get("id") if isinstance(found, dict) else None
+        if not isinstance(identity, str):
+            raise ImmichFailed("Immich's answer about the key's user had no id")
+        return identity
 
     def search_updated(self, key: str, since: str | None, until: str) -> Iterator[Asset]:
         window = {"lte": until} if since is None else {"gte": since, "lte": until}

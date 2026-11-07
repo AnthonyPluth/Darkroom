@@ -245,7 +245,9 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
     until = now - MARGIN_SECONDS
     since = None if person.immich_reconciled_until is None else person.immich_reconciled_until - OVERLAP_SECONDS
     with person_lock(settings, person):
-        listing = list(run.client.search_updated(key, None if since is None else stamp(since), stamp(until)))
+        if run.client.user_id(key) != person.immich_user_id:
+            raise immich.ImmichFailed("the Immich key belongs to a different user than the person's")
+        listing = run.client.search_stable(key, None if since is None else stamp(since), stamp(until))
         run.report.listed = len(listing)
         for asset in listing:
             run.listed(asset)

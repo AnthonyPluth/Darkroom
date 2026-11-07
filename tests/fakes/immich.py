@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -70,6 +71,8 @@ class State:
     assets: list[FakeAsset] = field(default_factory=list)
     requests: list[tuple[str, str]] = field(default_factory=list)
     page_size: int = 250
+    searches: int = 0
+    on_search: Callable[[int], None] | None = None
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -139,6 +142,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
         def search(self, person: FakePerson, body: bytes) -> None:
             asked = json.loads(body or b"{}")
+            state.searches += 1
+            if state.on_search is not None:
+                state.on_search(state.searches)
             window = asked.get("filter", {}).get("updatedAt", {})
             found = [a for a in state.assets if a.owner_id == person.user_id and not a.trashed
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")]

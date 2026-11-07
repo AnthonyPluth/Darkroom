@@ -102,6 +102,32 @@ class StoreTests(ReconcileCase):
         self.assertEqual(self.rows()[late.id].status, "stored")
         self.assertEqual(self.jo.immich_reconciled_until, NOW + 3600 - reconcile.MARGIN_SECONDS)
 
+    def test_an_asset_leaving_the_window_between_pages_does_not_hide_another_one(self):
+        self.world.fake.state.page_size = 1
+        first, second, third = self.photo(), self.photo(), self.photo()
+
+        def move_first(count):
+            if count == 2:
+                first.updated_at = reconcile.stamp(NOW + 30)
+
+        self.world.fake.state.on_search = move_first
+        self.run_it()
+        self.assertEqual({asset_id for asset_id, row in self.rows().items() if row.status == "stored"}, {second.id, third.id})
+        self.world.fake.state.on_search = None
+        self.run_it(at=NOW + 3600)
+        self.assertEqual(self.rows()[first.id].status, "stored")
+
+    def test_listing_that_never_settles_fails_the_run(self):
+        self.photo()
+        calls = iter(range(100))
+
+        def drifting(self, key, since, until):
+            return iter([immich.asset_of(FakeAsset(id=f"x{next(calls)}", owner_id="u-jo", data=b"x").json())])
+
+        with mock.patch.object(immich.Client, "search_updated", drifting), self.assertRaisesRegex(immich.ImmichFailed, "kept changing"):
+            self.run_it()
+        self.assertIsNone(self.jo.immich_reconciled_until)
+
     def test_nothing_is_ever_deleted_or_changed_in_immich(self):
         self.photo()
         before = len(self.world.fake.requests())
@@ -170,6 +196,15 @@ class FailureTests(ReconcileCase):
         self.world.fake.mode("500")
         reconcile.reconcile_all(self.world.opened, self.settings, NOW + 3)
         self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.key == key)).scalars().all()), 2)
+
+    def test_a_key_of_another_immich_user_fails_the_run_alerts_and_keeps_the_window(self):
+        self.photo()
+        self.jo.immich_api_key_sealed = secretbox.seal("key-sam", SECRET)
+        self.assertEqual(reconcile.reconcile_all(self.world.opened, self.settings, NOW), {})
+        self.assertEqual((self.jo.immich_reconciled_until, self.stored()), (None, []))
+        failure = self.world.opened.execute(select(Event).where(Event.type == "immich_reconcile_failed")).scalars().one()
+        self.assertIn("different user", failure.detail)
+        self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all()), 1)
 
     def test_a_refused_key_stops_the_run_and_keeps_the_window(self):
         self.photo()
