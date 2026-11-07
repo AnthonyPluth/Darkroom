@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +37,30 @@ class Scan:
 
 
 @dataclass
+class FakeAsset:
+    id: str
+    owner_id: str
+    data: bytes
+    name: str = "IMG_0001.JPG"
+    kind: str = "IMAGE"
+    updated_at: str = "2026-01-01T00:00:00.000Z"
+    visibility: str = "timeline"
+    live_video_id: str | None = None
+    library_id: str | None = None
+    trashed: bool = False
+    metadata: tuple[str, ...] = ("mobile-app",)
+    checksum: str | None = None
+
+    def json(self) -> dict[str, object]:
+        checksum = self.checksum or base64.b64encode(hashlib.sha1(self.data, usedforsecurity=False).digest()).decode()
+        return {
+            "id": self.id, "ownerId": self.owner_id, "libraryId": self.library_id, "checksum": checksum, "type": self.kind,
+            "originalFileName": self.name, "visibility": self.visibility, "livePhotoVideoId": self.live_video_id,
+            "isTrashed": self.trashed, "isOffline": False, "updatedAt": self.updated_at,
+        }
+
+
+@dataclass
 class State:
     admin_key: str
     people: list[FakePerson]
@@ -41,6 +68,11 @@ class State:
     recorded: list[Scan] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     slow_seconds: float = SLOW_SECONDS
+    assets: list[FakeAsset] = field(default_factory=list)
+    requests: list[tuple[str, str]] = field(default_factory=list)
+    page_size: int = 250
+    searches: int = 0
+    on_search: Callable[[int], None] | None = None
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -78,6 +110,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
         def handle_any(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
+            self.body = body
             path = self.path.split("?", 1)[0]
             if path == "/__fake/mode" and self.command == "POST":
                 wanted = json.loads(body or b"{}").get("mode")
@@ -100,7 +133,42 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 return
             self.route(path)
 
+        def raw(self, data: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def search(self, person: FakePerson, body: bytes) -> None:
+            asked = json.loads(body or b"{}")
+            state.searches += 1
+            if state.on_search is not None:
+                state.on_search(state.searches)
+            window = asked.get("filter", {}).get("updatedAt", {})
+            found = [a for a in state.assets if a.owner_id == person.user_id and not a.trashed
+                     and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")]
+            start = int(asked.get("cursor") or 0)
+            size = min(int(asked.get("size", 250)), state.page_size)
+            end = start + size
+            self.reply(200, {"assets": {"items": [a.json() for a in found[start:end]], "nextCursor": str(end) if end < len(found) else None}})
+
+        def asset(self, person: FakePerson, parts: list[str]) -> None:
+            found = next((a for a in state.assets if a.id == parts[3] and a.owner_id == person.user_id), None)
+            if found is None:
+                self.reply(404, {"message": "Not found"})
+            elif len(parts) == 4:
+                self.reply(200, found.json())
+            elif parts[4] == "metadata":
+                self.reply(200, [{"key": key, "value": {}} for key in found.metadata])
+            elif parts[4] == "original":
+                self.raw(found.data)
+            else:
+                self.reply(404, {"message": "Not found"})
+
         def route(self, path: str) -> None:
+            with state.lock:
+                state.requests.append((self.command, path))
             if self.command == "GET" and path == "/api/server/ping":
                 self.reply(200, {"res": "pong"})
                 return
@@ -116,6 +184,10 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             elif self.command == "GET" and path == "/api/libraries":
                 visible = state.people if person is None else [person]
                 self.reply(200, [library_json(p) for p in visible])
+            elif self.command == "POST" and path == "/api/search/metadata" and person is not None:
+                self.search(person, self.body)
+            elif self.command == "GET" and path.startswith("/api/assets/") and person is not None:
+                self.asset(person, path.split("/"))
             elif self.command == "POST" and path.startswith("/api/libraries/") and path.endswith("/scan"):
                 self.scan(role, path.split("/")[3])
             else:
@@ -177,6 +249,15 @@ class FakeImmich:
         if name not in MODES:
             raise ValueError(f"unknown mode {name}")
         self.state.mode = name
+
+    def add_asset(self, asset: FakeAsset) -> FakeAsset:
+        with self.state.lock:
+            self.state.assets.append(asset)
+        return asset
+
+    def requests(self) -> list[tuple[str, str]]:
+        with self.state.lock:
+            return list(self.state.requests)
 
     def scans(self) -> list[Scan]:
         with self.state.lock:
