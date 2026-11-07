@@ -22,6 +22,7 @@ NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
 CHUNK = 1024 * 1024
 SIDECAR_SUFFIX = ".xmp"
 DROPPING = ".dropping-"
+KEEPING = ".keeping-"
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
@@ -1140,6 +1141,7 @@ def open_copy(name: str, folder: int) -> int:
 
 @dataclass(frozen=True)
 class Keeper:
+    path: Path
     folder: int
     name: str
     fd: int
@@ -1154,6 +1156,39 @@ class Keeper:
         if held.st_nlink < 1 or not os.path.samestat(held, self.found) or not os.path.samestat(named, self.found):
             raise NotALosingCopy("the kept copy went away")
 
+    def sidecar(self) -> bytes | None:
+        try:
+            fd = open_copy(self.name + SIDECAR_SUFFIX, self.folder)
+        except FileNotFoundError:
+            return None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise NotALosingCopy("the kept copy's sidecar is not a file")
+            os.lseek(fd, 0, os.SEEK_SET)
+            return b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+        finally:
+            os.close(fd)
+
+    def write_sidecar(self, data: bytes, before: bytes | None) -> None:
+        self.still_there()
+        if self.sidecar() != before:
+            raise NotALosingCopy("the kept copy's sidecar changed")
+        name, temp = self.name + SIDECAR_SUFFIX, f".xmp-{secrets.token_hex(8)}"
+        fd = open_no_follow(temp, self.folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            if before is None:
+                os.link(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder, follow_symlinks=False)
+            else:
+                os.replace(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=self.folder)
+
 
 @contextlib.contextmanager
 def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iterator[Keeper]:
@@ -1163,9 +1198,9 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
             kept = open_copy(parts[-1], folder)
             try:
                 found = os.fstat(kept)
-                if not stat.S_ISREG(found.st_mode) or fd_sha1(kept) != sha1:
+                if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1 or fd_sha1(kept) != sha1:
                     raise NotALosingCopy("the kept copy is not the file Darkroom recorded")
-                yield Keeper(folder, parts[-1], kept, found)
+                yield Keeper(photos.root.joinpath(*parts), folder, parts[-1], kept, found)
             finally:
                 os.close(kept)
     except FileNotFoundError as error:
@@ -1174,7 +1209,7 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
 
 def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
-    with checked_keeper(photos, person, keeping, keeping_sha1) as keeper:
+    with checked_keeper(photos, person, keeping, keeping_sha1) as keeper, holding(keeper):
         try:
             with pinned_folder(photos, parts[:-1]) as folder:
                 return drop_losing_copy(folder, parts[-1], losing_sha1, keeper)
@@ -1182,24 +1217,62 @@ def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: st
             return False
 
 
-def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
+@contextlib.contextmanager
+def holding(keeper: Keeper) -> Iterator[None]:
+    held = f"{KEEPING}{secrets.token_hex(8)}-{keeper.name}"
+    os.link(keeper.name, held, src_dir_fd=keeper.folder, dst_dir_fd=keeper.folder, follow_symlinks=False)
+    if not os.path.samestat(os.stat(held, dir_fd=keeper.folder, follow_symlinks=False), keeper.found):
+        os.unlink(held, dir_fd=keeper.folder)
+        raise NotALosingCopy("the kept copy changed while it was being held")
     try:
-        copy = open_copy(name, folder)
+        yield
+    finally:
+        try:
+            keeper.still_there()
+        except NotALosingCopy:
+            put_claim_back(keeper.folder, held, keeper.name)
+        else:
+            os.unlink(held, dir_fd=keeper.folder)
+
+
+def entry_at(name: str, folder: int) -> bool:
+    try:
+        os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def put_claim_back(folder: int, claim: str, name: str) -> None:
+    with contextlib.suppress(OSError):
+        os.link(claim, name, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
+        os.unlink(claim, dir_fd=folder)
+
+
+def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
+    claim = f"{DROPPING}{sha1[:16]}-{name}"
+    if not entry_at(claim, folder):
+        with contextlib.suppress(FileNotFoundError):
+            os.rename(name, claim, src_dir_fd=folder, dst_dir_fd=folder)
+    try:
+        copy = open_copy(claim, folder)
     except FileNotFoundError:
         copy = -1
+    except NotALosingCopy:
+        put_claim_back(folder, claim, name)
+        raise
     if copy >= 0:
         try:
             found = os.fstat(copy)
-            if not stat.S_ISREG(found.st_mode):
-                raise NotALosingCopy("only a file is removed")
-            if os.path.samestat(found, keeper.found):
-                raise NotALosingCopy("the kept copy is the same file")
-            if fd_sha1(copy) != sha1:
+            if not stat.S_ISREG(found.st_mode) or os.path.samestat(found, keeper.found) or fd_sha1(copy) != sha1:
+                put_claim_back(folder, claim, name)
                 raise NotALosingCopy("the copy is not the file Darkroom recorded")
-            if not os.path.samestat(found, os.stat(name, dir_fd=folder, follow_symlinks=False)):
-                raise NotALosingCopy("the copy changed while it was being removed")
-            keeper.still_there()
-            os.unlink(name, dir_fd=folder)
+            try:
+                keeper.still_there()
+            except NotALosingCopy:
+                put_claim_back(folder, claim, name)
+                raise
+            os.unlink(claim, dir_fd=folder)
         finally:
             os.close(copy)
     sidecar = name + SIDECAR_SUFFIX

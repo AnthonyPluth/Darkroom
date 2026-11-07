@@ -320,6 +320,29 @@ class CrashTests(CopiesCase):
         self.assertEqual(self.resolve(at=4.0).removed, 1)
         self.assertFalse((self.root / takeout.path).exists())
 
+    def test_a_tier_two_removal_whose_phone_item_changed_since_it_was_recorded_refuses(self):
+        for field, value in (("width", 4032), ("captured_utc", MOMENT + 10), ("model", "iPhone 15")):
+            with self.subTest(field=field):
+                self.setUp()
+                takeout, _ = self.takeout(b"google recompressed")
+                phone = self.phone(b"phone original")
+                (pair,) = takeout_copies.pairs(self.opened, self.jo)
+                with mock.patch.object(takeout_copies, "finish"):
+                    takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
+                setattr(phone, field, value)
+                self.opened.commit()
+                self.assertEqual(self.resolve(at=3.0).refused, 1)
+                self.assertTrue((self.root / takeout.path).exists())
+
+    def test_a_keeper_turned_into_a_link_gets_no_sidecar_and_nothing_is_removed(self):
+        takeout, phone = self.pending()
+        elsewhere = self.item("sam/originals/immich/other.jpg", b"same bytes", source="phone")
+        (self.root / phone.path).unlink()
+        (self.root / phone.path).symlink_to(self.root / elsewhere.path)
+        self.assertEqual(self.resolve(at=3.0).refused, 1)
+        self.assertEqual((self.root / f"{elsewhere.path}.xmp").exists(), False)
+        self.assertTrue((self.root / takeout.path).exists())
+
     def test_finishing_a_removal_queries_the_same_however_many_other_google_only_items_there_are(self):
         counts = []
         for others in (0, 20):

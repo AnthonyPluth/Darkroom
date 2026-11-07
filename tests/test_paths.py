@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import tempfile
@@ -471,7 +472,9 @@ class RemoveLosingCopyTests(unittest.TestCase):
         self.assertFalse(self.loser.exists())
         self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
         self.assertEqual(self.keeper.read_bytes(), b"phone")
+        (self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").write_bytes(b"<xmp/>")
         self.assertFalse(self.remove(losing_sha1="b" * 40))
+        self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
 
     def test_a_losing_immich_original_goes_when_the_takeout_copy_is_kept(self):
         self.assertTrue(self.remove(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper),
@@ -524,22 +527,32 @@ class RemoveLosingCopyTests(unittest.TestCase):
         os.link(self.keeper, self.root / "jo/google-only/2021/03/hard.jpg")
         self.assertRefused(losing="jo/google-only/2021/03/hard.jpg", losing_sha1=paths.file_sha1(self.keeper))
 
-    def test_a_keeper_removed_or_replaced_after_its_check_keeps_the_loser(self):
-        real = paths.fd_sha1
-        for change in ("removed", "replaced"):
-            with self.subTest(change=change):
+    def contents(self):
+        return sorted(p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink())
+
+    def test_a_file_swapped_in_at_any_step_is_never_removed_and_a_copy_of_the_photo_always_stays(self):
+        steps = [("fd_sha1", 1), ("fd_sha1", 2), ("link", 1), ("rename", 1), ("still_there", 1), ("unlink", 1), ("still_there", 2)]
+        for (step, nth), target in [(step, target) for step in steps for target in ("loser", "keeper")]:
+            with self.subTest(step=step, nth=nth, target=target):
                 self.setUp()
+                self.file("jo/google-only/2021/03/bystander.jpg", b"bystander")
+                calls, real = {}, {"fd_sha1": paths.fd_sha1, "link": os.link, "rename": os.rename, "unlink": os.unlink, "still_there": paths.Keeper.still_there}
 
-                calls = []
+                def hooked(*args, step=step, nth=nth, target=target, calls=calls, real=real, name="", **kwargs):
+                    calls[name] = calls.get(name, 0) + 1
+                    if name == step and calls[name] == nth:
+                        swapped = self.loser if target == "loser" else self.keeper
+                        swapped.with_name("incoming").write_bytes(b"intruder")
+                        real["rename"](swapped.with_name("incoming"), swapped)
+                    return real[name](*args, **kwargs)
 
-                def changing(fd, calls=calls, change=change):
-                    calls.append(fd)
-                    if len(calls) == 2:
-                        self.keeper.unlink()
-                        if change == "replaced":
-                            self.keeper.write_bytes(b"phone")
-                    return real(fd)
-
-                with mock.patch.object(paths, "fd_sha1", side_effect=changing), self.assertRaises(paths.NotALosingCopy):
-                    self.remove()
-                self.assertEqual(self.loser.read_bytes(), b"takeout")
+                patches = [mock.patch.object(paths, "fd_sha1", lambda *a: hooked(*a, name="fd_sha1")),
+                           mock.patch.object(paths.Keeper, "still_there", lambda keeper: hooked(keeper, name="still_there"))]
+                patches += [mock.patch.object(paths.os, call, lambda *a, call=call, **k: hooked(*a, name=call, **k)) for call in ("link", "rename", "unlink")]
+                with contextlib.ExitStack() as stack, contextlib.suppress(paths.NotALosingCopy, OSError):
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    self.remove(losing_sha1=paths.file_sha1(self.loser), keeping_sha1=paths.file_sha1(self.keeper))
+                left = self.contents()
+                self.assertTrue({b"bystander", b"intruder"} <= set(left), left)
+                self.assertTrue(b"phone" in left or b"takeout" in left if target == "keeper" else b"phone" in left, left)

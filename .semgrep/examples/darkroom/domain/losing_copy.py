@@ -1,10 +1,16 @@
 from darkroom.domain import takeout_copies
 from darkroom.storage import paths
+from darkroom.storage.paths import remove_losing_copy
 
 
 def drop_a_google_only_copy(photos, person, row):
     # ruleid: darkroom-losing-copy-one-caller
     paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1)
+
+
+def drop_by_bare_name(photos, slug, takeout, phone):
+    # ruleid: darkroom-losing-copy-one-caller
+    remove_losing_copy(photos, slug, takeout.path, takeout.sha1, phone.path, phone.sha1)
 
 
 def resolve_through_the_module(opened, photos, person, now):

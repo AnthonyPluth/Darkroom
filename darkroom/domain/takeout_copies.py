@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from darkroom.domain import dedupe, events, pixel_folder, xmp
 from darkroom.domain.ingest import pairing
@@ -162,24 +165,53 @@ def still_a_pair(opened: Session, person: Person, keeper: MediaItem, loser: Medi
     return loser is not phone or phone_may_go(opened, person, phone, takeout)
 
 
-def carry_metadata(photos: Photos, keeper: MediaItem, loser: MediaItem, tools: Tools) -> str | None:
+def neighbours(opened: Session, person: Person, source: str, item: MediaItem) -> list[MediaItem]:
+    when: list[ColumnElement[bool]] = [] if item.captured_utc is None else [MediaItem.captured_utc.between(math.floor(item.captured_utc) - 1, math.floor(item.captured_utc) + 2)]
+    when += [MediaItem.captured_local.startswith(item.captured_local[:19])] if item.captured_local else []
+    if not when:
+        return []
+    return list(opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == source, or_(*when))).scalars())
+
+
+def still_matched(opened: Session, person: Person, takeout: MediaItem, phone: MediaItem, row: DuplicateRemoval) -> bool:
+    if rule_for(phone, takeout) != row.rule:
+        return False
+    shots = {item.id: item for item in [*neighbours(opened, person, "phone", takeout), phone]}
+    peers = [item for item in neighbours(opened, person, "takeout", takeout) if item.id != takeout.id and removable_takeout(opened, person, item)] + [takeout]
+    index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in shots.values()))
+    decided = dedupe.decide_all(index, [candidate_of(item) for item in peers], dedupe.DedupeSettings())
+    mine = [d for d in decided if d.source_path == takeout.path]
+    rivals = [d for d in decided if d.source_path != takeout.path and d.tier == 2 and d.matched_item_id == phone.id]
+    return bool(mine) and mine[0].tier == row.tier and mine[0].matched_item_id == phone.id and (row.tier == 1 or not rivals)
+
+
+def carry_metadata(photos: Photos, person: Person, keeper: MediaItem, loser: MediaItem, tools: Tools) -> str | None:
     if loser.source != "takeout":
         return None
     google = xmp.GoogleMetadata.of(loser.sidecar_json)
     try:
-        media_path = photos.inside(*keeper.path.split("/"))
-        xmp.fill(media_path, google, False, tools.read, tools.write)
-        sidecar = paths.sidecar_of(media_path)
-        present = sidecar.exists() or sidecar.is_symlink()
-        if present:
-            paths.checked_sidecar(sidecar)
-        tags = tools.read([media_path, sidecar] if present else [media_path])
-    except (exiftool.WriteFailed, exiftool.Unreadable, paths.NotASidecar, paths.OutsideRoot, OSError):
+        with paths.checked_keeper(photos, person.slug, keeper.path, keeper.sha1) as pinned, tempfile.TemporaryDirectory() as folder:
+            before, staged = pinned.sidecar(), Path(folder) / f"{pinned.name}{paths.SIDECAR_SUFFIX}"
+            if before is not None:
+                staged.write_bytes(before)
+            fields = gaps_left(pinned.path, staged, google, tools)
+            if fields:
+                tools.write(staged, fields)
+                if gaps_left(pinned.path, staged, google, tools):
+                    return "Google's metadata could not be carried to the kept copy"
+                pinned.write_sidecar(staged.read_bytes(), before)
+    except (exiftool.WriteFailed, exiftool.Unreadable, paths.NotASidecar, paths.NotALosingCopy, paths.OutsideRoot, OSError, ValueError):
         return "the kept copy's sidecar could not be written"
-    own, existing = tags.get(media_path), tags.get(sidecar, {}) if present else {}
-    if own is None or "Error" in own or "Error" in existing or xmp.gaps(own, existing, google, False):
-        return "Google's metadata could not be carried to the kept copy"
     return None
+
+
+def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools: Tools) -> dict[str, str]:
+    present = staged.exists()
+    tags = tools.read([media_path, staged] if present else [media_path])
+    own, existing = tags.get(media_path), tags.get(staged, {}) if present else {}
+    if own is None or "Error" in own or "Error" in existing:
+        raise ValueError("the kept copy's metadata could not be read")
+    return xmp.gaps(own, existing, google, False)
 
 
 def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, now: float, resolved: Resolved, tools: Tools) -> None:
@@ -191,10 +223,11 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
     if keeper is None or loser is None or (keeper.path, keeper.sha1) != (row.kept_path, row.kept_sha1) or (loser.path, loser.sha1) != (row.removed_path, row.removed_sha1):
         refuse(opened, person, row, "the records changed", now, resolved)
         return
-    if not still_a_pair(opened, person, keeper, loser):
+    takeout, phone = (keeper, loser) if loser.source == "phone" else (loser, keeper)
+    if not still_a_pair(opened, person, keeper, loser) or not still_matched(opened, person, takeout, phone, row):
         refuse(opened, person, row, "the pair is no longer safe to resolve", now, resolved)
         return
-    unsaved = carry_metadata(photos, keeper, loser, tools)
+    unsaved = carry_metadata(photos, person, keeper, loser, tools)
     if unsaved is not None:
         refuse(opened, person, row, unsaved, now, resolved)
         return
