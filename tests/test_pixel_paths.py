@@ -233,6 +233,41 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
         self.assert_kept_unchanged()
 
+    def test_a_folder_below_originals_bind_mounted_into_the_pixel_folder_is_refused(self):
+        name = self.place()
+        mountinfo = self.root / "mountinfo"
+        point = str(self.root / "_pixels/1/jo/2024").replace(" ", "\\040")
+        mountinfo.write_text(f"36 35 98:0 /jo/originals/2024 {point} rw,noatime master:1 - ext4 /dev/root rw\n")
+        with mock.patch.object(paths, "MOUNTINFO", mountinfo):
+            self.assertEqual(paths.mounts_under(self.root / "_pixels"), [self.root / "_pixels/1/jo/2024"])
+            with self.assertRaises(paths.NotAPixelCopy):
+                paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+            with self.assertRaises(paths.NotAPixelCopy):
+                paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assert_kept_unchanged()
+
+    def test_a_folder_on_another_device_inside_the_pixel_folder_is_refused(self):
+        name = self.place()
+        (self.root / "jo/google-only/2024").mkdir()
+        below = (self.root / "jo/google-only/2024").stat()
+        other_device = os.stat_result((below[0], below[1], below[2] + 1, *below[3:10]))
+        real_fstat = os.fstat
+
+        def mounted(fd: int) -> os.stat_result:
+            found = real_fstat(fd)
+            return other_device if os.path.samestat(found, (self.root / "_pixels/1/jo/2024").stat()) else found
+
+        with mock.patch("darkroom.storage.paths.os.fstat", mounted), self.assertRaises(paths.NotAPixelCopy):
+            paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assert_kept_unchanged()
+
+    def test_unreadable_mount_information_leaves_the_other_checks(self):
+        with mock.patch.object(paths, "MOUNTINFO", self.root / "missing"):
+            self.assertEqual(paths.mounts_under(self.root / "_pixels"), [])
+            self.assertEqual(self.place(), "2024/IMG_0001.HEIC")
+
     def test_a_file_that_is_not_the_placed_copy_is_not_pruned(self):
         name = self.place()
         (self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").write_bytes(b"changed on the way")
