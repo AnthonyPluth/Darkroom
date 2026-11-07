@@ -337,8 +337,9 @@ rules:
       Pruning a Pixel's transient folder deletes only that Pixel's copy of one person's photo, never anything under
       originals/, google-only/ or another person's part of the folder (AGENTS.md, promises 1 and 2). Only
       darkroom/storage/paths.py removes, renames or replaces anything under _pixels/, through remove_pixel_copy, which
-      refuses a link on the way, a path outside that Pixel's folder for that person, anything in a kept folder and a
-      file that is not the copy Darkroom placed. Go through pixel_folder.prune instead.
+      walks from the photo root without following a link, refuses a name outside that Pixel's folder for that person
+      and a folder that is a person's originals/ or google-only/ (by device and inode), and unlinks only the file it
+      hashed as the copy Darkroom placed. Go through pixel_folder.prune instead.
     severity: ERROR
     languages: [python]
     mode: taint

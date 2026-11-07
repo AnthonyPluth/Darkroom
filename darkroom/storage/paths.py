@@ -32,6 +32,7 @@ DOWNLOADS = ".downloads"
 PIXELS = "_pixels"
 INCOMING = ".incoming"
 PIXEL_COPY_MODE = 0o644
+PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
 
 
@@ -807,15 +808,27 @@ def pixel_copy_name(photos: Photos, person: str, relative: str) -> str:
 NO_FOLLOW_FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+def kept_identities(photos: Photos) -> set[tuple[int, int]]:
+    found = set()
+    for folder in photos.kept_folders():
+        with contextlib.suppress(OSError):
+            each = folder.stat()
+            found.add((each.st_dev, each.st_ino))
+    return found
+
+
 class PinnedFolders:
     def __init__(self, photos: Photos, parts: list[str], create: bool) -> None:
         self.parts = parts
         self.fds = [os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)]
         try:
+            kept = kept_identities(photos)
             for part in parts:
+                made = False
                 if create:
                     with contextlib.suppress(FileExistsError):
-                        os.mkdir(part, 0o755, dir_fd=self.fds[-1])
+                        os.mkdir(part, PIXEL_FOLDER_MODE, dir_fd=self.fds[-1])
+                        made = True
                 try:
                     self.fds.append(os.open(part, NO_FOLLOW_FOLDER, dir_fd=self.fds[-1]))
                 except NotADirectoryError as error:
@@ -824,6 +837,11 @@ class PinnedFolders:
                     if error.errno == errno.ELOOP:
                         raise NotAPixelCopy("a link is on the way to the Pixel's folder") from error
                     raise
+                found = os.fstat(self.fds[-1])
+                if (found.st_dev, found.st_ino) in kept:
+                    raise NotAPixelCopy("originals and google-only folders are never part of a Pixel's folder")
+                if made:
+                    os.fchmod(self.fds[-1], PIXEL_FOLDER_MODE)
         except BaseException:
             self.close()
             raise
