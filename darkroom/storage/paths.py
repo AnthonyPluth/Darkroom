@@ -1157,27 +1157,34 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> os.s
 def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
     kept = checked_keeper(photos, person, keeping, keeping_sha1)
-    with pinned_folder(photos, parts[:-1]) as folder:
+    try:
+        with pinned_folder(photos, parts[:-1]) as folder:
+            return drop_losing_copy(folder, parts[-1], losing_sha1, kept)
+    except FileNotFoundError:
+        return False
+
+
+def drop_losing_copy(folder: int, name: str, sha1: str, kept: os.stat_result) -> bool:
+    try:
+        copy = open_copy(name, folder)
+    except FileNotFoundError:
+        copy = -1
+    if copy >= 0:
         try:
-            copy = open_copy(parts[-1], folder)
-        except FileNotFoundError:
-            copy = -1
-        if copy >= 0:
-            try:
-                found = os.fstat(copy)
-                if not stat.S_ISREG(found.st_mode):
-                    raise NotALosingCopy("only a file is removed")
-                if os.path.samestat(found, kept):
-                    raise NotALosingCopy("the kept copy is the same file")
-                if fd_sha1(copy) != losing_sha1:
-                    raise NotALosingCopy("the copy is not the file Darkroom recorded")
-                if not os.path.samestat(found, os.stat(parts[-1], dir_fd=folder, follow_symlinks=False)):
-                    raise NotALosingCopy("the copy changed while it was being removed")
-                os.unlink(parts[-1], dir_fd=folder)
-            finally:
-                os.close(copy)
-        sidecar = parts[-1] + SIDECAR_SUFFIX
-        with contextlib.suppress(FileNotFoundError):
-            if stat.S_ISREG(os.stat(sidecar, dir_fd=folder, follow_symlinks=False).st_mode):
-                os.unlink(sidecar, dir_fd=folder)
+            found = os.fstat(copy)
+            if not stat.S_ISREG(found.st_mode):
+                raise NotALosingCopy("only a file is removed")
+            if os.path.samestat(found, kept):
+                raise NotALosingCopy("the kept copy is the same file")
+            if fd_sha1(copy) != sha1:
+                raise NotALosingCopy("the copy is not the file Darkroom recorded")
+            if not os.path.samestat(found, os.stat(name, dir_fd=folder, follow_symlinks=False)):
+                raise NotALosingCopy("the copy changed while it was being removed")
+            os.unlink(name, dir_fd=folder)
+        finally:
+            os.close(copy)
+    sidecar = name + SIDECAR_SUFFIX
+    with contextlib.suppress(FileNotFoundError):
+        if stat.S_ISREG(os.stat(sidecar, dir_fd=folder, follow_symlinks=False).st_mode):
+            os.unlink(sidecar, dir_fd=folder)
     return copy >= 0

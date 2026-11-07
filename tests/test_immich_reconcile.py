@@ -6,8 +6,8 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import immich_reconcile as reconcile
-from darkroom.domain import pixel_folder
-from darkroom.providers import immich
+from darkroom.domain import media, pixel_folder
+from darkroom.providers import exiftool, immich
 from darkroom.storage import secretbox
 from darkroom.storage.models import Alert, Event, Export, ImmichAsset, ImportRun, MediaItem, Person, PixelCopy
 from tests.fakes.immich import FakeAsset
@@ -272,15 +272,18 @@ class TakeoutCopyTests(ReconcileCase):
         return sorted(p.relative_to(self.world.root).as_posix() for p in (self.world.root / "jo" / "google-only").rglob("*") if p.is_file())
 
     def test_takeout_then_immich_stores_a_photo_once_and_the_phone_original_still_goes_to_the_pixel(self):
-        takeout = self.world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout", MediaItem.path.like("jo/google-only/%")).order_by(MediaItem.id)).scalars().first()
+        takeout = self.world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout", MediaItem.path.like("jo/google-only/%IMG_2001%"))).scalar_one()
         path, data = takeout.path, (self.world.root / takeout.path).read_bytes()
         others = [name for name in self.google_only() if not name.startswith(path)]
         asset = self.world.fake.add_asset(FakeAsset(id="dup", owner_id="u-jo", data=data, name="IMG_9001.JPG"))
         report = self.run_it(queue=reconcile.PixelFolderQueue())
         self.assertEqual((report.stored, report.duplicates_removed), (1, 1))
         self.assertEqual(self.google_only(), others)
-        (name,) = self.stored()
-        self.assertEqual((self.world.root / "jo/originals/immich" / name).read_bytes(), data)
+        name, sidecar = self.stored()
+        self.assertEqual(((self.world.root / "jo/originals/immich" / name).read_bytes(), sidecar), (data, f"{name}.xmp"))
+        carried = exiftool.read([self.world.root / "jo/originals/immich" / sidecar])[self.world.root / "jo/originals/immich" / sidecar]
+        self.assertEqual(media.tag(carried, "Description"), "A made-up canal")
+        self.assertIsNotNone(media.tag(carried, "GPSLatitude"))
         item = self.world.opened.get(MediaItem, self.rows()[asset.id].original_item_id)
         self.assertEqual([(c.item_id, c.state, c.always_send) for c in self.copies()], [(item.id, "queued", True)])
         self.assertEqual(self.world.opened.execute(select(Event.detail).where(Event.type == "duplicate_removed")).scalars().all(), ["takeout copy, identical, tier 1"])

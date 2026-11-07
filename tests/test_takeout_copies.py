@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import takeout_copies
+from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import (
     DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, MediaItem, Person, Pixel, PixelCopy, PixelPerson, ReviewItem,
@@ -15,10 +17,28 @@ from darkroom.storage.models import (
 from tests.shared import add_person, own_database
 
 MOMENT = 1_615_000_000.0
+GOOGLE = json.dumps({"description": "A made-up canal", "geoData": {"latitude": 45.4, "longitude": 12.3}})
+VIDEO = {"duration_ms": 5000, "width": 1920, "height": 1080}
 
 
 def sha1(data):
     return hashlib.sha1(data, usedforsecurity=False).hexdigest()
+
+
+class FakeExif:
+    def __init__(self):
+        self.failing = False
+
+    def read(self, found):
+        return {path: json.loads(path.read_text()) if path.suffix == ".xmp" else {} for path in found}
+
+    def write(self, sidecar, fields):
+        if self.failing:
+            raise exiftool.WriteFailed("exiftool could not write the sidecar")
+        if not fields:
+            return False
+        sidecar.write_text(json.dumps((json.loads(sidecar.read_text()) if sidecar.exists() else {}) | dict(fields)))
+        return True
 
 
 class CopiesCase(unittest.TestCase):
@@ -42,6 +62,7 @@ class CopiesCase(unittest.TestCase):
         self.opened.add(PixelPerson(pixel_id=self.pixel.id, person_id=self.jo.id))
         self.opened.commit()
         self.counter = 0
+        self.exif = FakeExif()
 
     def item(self, relative, data, **fields):
         path = self.root / relative
@@ -53,15 +74,17 @@ class CopiesCase(unittest.TestCase):
         self.opened.flush()
         return item
 
-    def takeout(self, data, name="IMG_0001.jpg", tier=5, decided_by="auto", **fields):
-        item = self.item(f"jo/google-only/2021/03/{name}", data, source="takeout", export_id=self.export.id, **fields)
-        (self.root / f"{item.path}.xmp").write_bytes(b"<xmp/>")
-        self.counter += 1
-        decision = DedupeDecision(export_id=self.export.id, account_id=self.account, source_path=f"Takeout/{name}", person_id=self.jo.id, takeout_item_id=item.id,
+    def decide(self, item, source, tier=5, decided_by="auto"):
+        decision = DedupeDecision(export_id=self.export.id, account_id=self.account, source_path=source, person_id=self.jo.id, takeout_item_id=item.id,
                                   tier=tier, reason="no match", decided_by=decided_by, decided_at=1.0)
         self.opened.add(decision)
         self.opened.commit()
-        return item, decision
+        return decision
+
+    def takeout(self, data, name="IMG_0001.jpg", tier=5, decided_by="auto", source=None, **fields):
+        item = self.item(f"jo/google-only/2021/03/{name}", data, source="takeout", export_id=self.export.id, sidecar_json=GOOGLE, **fields)
+        (self.root / f"{item.path}.xmp").write_text("{}")
+        return item, self.decide(item, source or f"Takeout/{name}", tier, decided_by)
 
     def phone(self, data, name="IMG_0001-aaaa.jpg", folder="immich", **fields):
         item = self.item(f"jo/originals/{folder}/{name}", data, source="phone", **fields)
@@ -70,8 +93,12 @@ class CopiesCase(unittest.TestCase):
         self.opened.commit()
         return item
 
+    def takeout_wins(self, number=0):
+        takeout, _ = self.takeout(b"google 4k %d" % number, name=f"VID_{number}.mp4", captured_utc=MOMENT + 100 * number, **VIDEO | {"width": 3840, "height": 2160})
+        return takeout, self.phone(b"phone 1080p %d" % number, name=f"VID_{number}-a.mp4", captured_utc=MOMENT + 100 * number, **VIDEO)
+
     def resolve(self, at=2.0):
-        return takeout_copies.resolve_person(self.opened, self.photos, self.jo, at)
+        return takeout_copies.resolve_person(self.opened, self.photos, self.jo, at, takeout_copies.Tools(self.exif.read, self.exif.write))
 
     def files(self):
         return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
@@ -84,35 +111,64 @@ class CopiesCase(unittest.TestCase):
 
 
 class QualityRuleTests(CopiesCase):
-    def test_resolution_then_file_size_then_metadata_and_a_tie_keeps_the_phone_original(self):
+    def test_only_more_pixels_make_a_takeout_copy_beat_the_phone_original(self):
         phone = MediaItem(sha1="a", bytes=100, width=4000, height=3000, captured_utc=1.0, offset_minutes=0, make="Apple", model="iPhone")
         cases = [
             ({"width": 4032}, "takeout_better"), ({"width": 2000, "bytes": 999}, "phone_better"),
-            ({"bytes": 101}, "takeout_better"), ({"bytes": 99, "lat": 1.0, "lon": 2.0}, "phone_better"),
-            ({"lat": 1.0, "lon": 2.0}, "takeout_better"), ({}, "phone_better"), ({"sha1": "a", "width": 9000}, "identical"),
+            ({"bytes": 10_000}, "phone_better"), ({"bytes": 10_000, "lat": 1.0, "lon": 2.0}, "phone_better"),
+            ({}, "phone_better"), ({"sha1": "a", "width": 9000}, "identical"),
         ]
         for changed, wanted in cases:
             with self.subTest(changed=changed):
-                takeout = MediaItem(**({"sha1": "b", "bytes": 100, "width": 4000, "height": 3000, "captured_utc": 1.0, "offset_minutes": 0,
-                                        "make": "Apple", "model": "iPhone"} | changed))
+                takeout = MediaItem(**({"sha1": "b", "bytes": 100, "width": 4000, "height": 3000} | changed))
                 self.assertEqual(takeout_copies.rule_for(phone, takeout), wanted)
+        self.assertEqual(takeout_copies.rule_for(MediaItem(sha1="a", width=None, height=None), MediaItem(sha1="b", width=4000, height=3000)), "phone_better")
+
+    def test_a_same_resolution_bigger_takeout_file_never_deletes_the_phone_original(self):
+        takeout, _ = self.takeout(b"google's re-encoded copy, many more bytes than the phone's")
+        phone = self.phone(b"phone original")
+        self.assertEqual(self.resolve().removed, 1)
+        self.assertEqual((self.root / phone.path).read_bytes(), b"phone original")
+        self.assertFalse((self.root / takeout.path).exists())
+        self.assertEqual([(r.rule, r.removed_source) for r in self.removals()], [("phone_better", "takeout")])
 
 
 class ResolveTests(CopiesCase):
-    def test_an_identical_takeout_copy_leaves_and_the_original_is_never_rewritten(self):
+    def test_an_identical_takeout_copy_leaves_and_its_google_metadata_moves_to_the_originals_sidecar(self):
         takeout, decision = self.takeout(b"same bytes")
         phone = self.phone(b"same bytes")
         phone_id, takeout_id = phone.id, takeout.id
         resolved = self.resolve()
         self.assertEqual((resolved.removed, resolved.refused), (1, 0))
-        self.assertEqual(self.files(), ["jo/originals/immich/IMG_0001-aaaa.jpg"])
+        self.assertEqual(self.files(), ["jo/originals/immich/IMG_0001-aaaa.jpg", "jo/originals/immich/IMG_0001-aaaa.jpg.xmp"])
         self.assertEqual((self.root / phone.path).read_bytes(), b"same bytes")
+        carried = json.loads((self.root / f"{phone.path}.xmp").read_text())
+        self.assertEqual((carried["XMP-dc:Description"], carried["XMP-exif:GPSLatitude"]), ("A made-up canal", "45.4000000"))
         self.assertIsNone(self.opened.get(MediaItem, takeout_id))
         self.assertIsNotNone(self.opened.get(MediaItem, phone_id))
         (row,) = self.removals()
         self.assertEqual((row.state, row.rule, row.tier, row.removed_source, row.decision_id, row.kept_item_id), ("removed", "identical", 1, "takeout", decision.id, phone_id))
         self.assertTrue(takeout_copies.resolved_away(self.opened, decision.id))
         self.assertEqual(self.events("duplicate_removed"), ["takeout copy, identical, tier 1"])
+
+    def test_a_value_the_keeper_already_has_is_kept(self):
+        self.takeout(b"same bytes")
+        phone = self.phone(b"same bytes")
+        (self.root / f"{phone.path}.xmp").write_text(json.dumps({"XMP-dc:Description": "Jo's own caption"}))
+        self.assertEqual(self.resolve().removed, 1)
+        carried = json.loads((self.root / f"{phone.path}.xmp").read_text())
+        self.assertEqual((carried["XMP-dc:Description"], carried["XMP-exif:GPSLatitude"]), ("Jo's own caption", "45.4000000"))
+
+    def test_a_sidecar_that_cannot_be_written_refuses_and_removes_nothing(self):
+        takeout, _ = self.takeout(b"same bytes")
+        self.phone(b"same bytes")
+        self.exif.failing = True
+        before = self.files()
+        resolved = self.resolve()
+        self.assertEqual((resolved.removed, resolved.refused), (0, 1))
+        self.assertEqual(self.files(), before)
+        self.assertIsNotNone(self.opened.get(MediaItem, takeout.id))
+        self.assertEqual(self.events("duplicate_removal_refused"), ["takeout copy, identical: the kept copy's sidecar could not be written"])
 
     def test_rerunning_changes_nothing(self):
         self.takeout(b"same bytes")
@@ -124,16 +180,8 @@ class ResolveTests(CopiesCase):
         self.assertEqual((self.files(), [(r.id, r.state) for r in self.removals()]), (files, removals))
         self.assertEqual(len(self.events("duplicate_removed")), 1)
 
-    def test_a_better_phone_original_beats_googles_copy_at_tier_two(self):
-        self.takeout(b"google recompressed", width=4000)
-        phone = self.phone(b"the phone's own bigger original")
-        self.assertEqual(self.resolve().removed, 1)
-        self.assertEqual(self.files(), [phone.path])
-        self.assertEqual([(r.rule, r.tier, r.removed_source) for r in self.removals()], [("phone_better", 2, "takeout")])
-
-    def test_a_better_takeout_copy_beats_the_phone_original_and_the_phone_copy_is_not_sent_to_the_pixel(self):
-        takeout, _ = self.takeout(b"google's larger copy of it")
-        phone = self.phone(b"phone copy")
+    def test_a_takeout_copy_with_more_pixels_beats_the_phone_original_which_is_not_sent_to_the_pixel(self):
+        takeout, phone = self.takeout_wins()
         phone_id = phone.id
         self.opened.add(PixelCopy(pixel_id=self.pixel.id, item_id=phone_id, person_id=self.jo.id, state="queued", bytes=1, sha1=phone.sha1, queued_at=1.0, always_send=True))
         self.opened.commit()
@@ -145,36 +193,59 @@ class ResolveTests(CopiesCase):
         self.assertEqual(self.opened.execute(select(PixelCopy)).scalars().all(), [])
         self.assertEqual([(r.rule, r.removed_source, r.decision_id) for r in self.removals()], [("takeout_better", "phone", None)])
 
-    def test_the_phone_original_stays_when_it_is_matched_on_its_way_to_a_pixel_or_bound_for_another_account(self):
-        def matched(phone):
-            self.opened.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path=f"Takeout/m{phone.id}.jpg", person_id=self.jo.id,
+    def dependencies(self):
+        def matched(phone, takeout):
+            self.opened.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path=f"Takeout/m{phone.id}.mp4", person_id=self.jo.id,
                                            matched_item_id=phone.id, tier=1, reason="same SHA-1", decided_by="auto", decided_at=1.0))
 
-        def placed(phone):
+        def placed(phone, takeout):
             self.opened.add(PixelCopy(pixel_id=self.pixel.id, item_id=phone.id, person_id=self.jo.id, state="placed", bytes=1, sha1=phone.sha1, queued_at=1.0, placed_at=1.5))
 
-        def other_account(phone):
+        def other_account(phone, takeout):
             other = GoogleAccount(email="other@x.test", default_person_id=self.jo.id, created=1.0)
             self.opened.add(other)
             self.opened.flush()
             self.pixel.google_account_id = other.id
 
-        for number, reason in enumerate((matched, placed, other_account)):
-            with self.subTest(reason=reason.__name__):
-                self.takeout(b"google's larger copy %d" % number, name=f"IMG_{number}.jpg", captured_utc=MOMENT + 100 * number)
-                phone = self.phone(b"phone %d" % number, name=f"IMG_{number}-a.jpg", captured_utc=MOMENT + 100 * number)
-                reason(phone)
+        def confirmed(phone, takeout):
+            phone.confirmed_in_google = True
+
+        def export_gone(phone, takeout):
+            takeout.export_id = None
+
+        return matched, placed, other_account, confirmed, export_gone
+
+    def test_the_phone_original_stays_while_anything_depends_on_it(self):
+        for number, depend in enumerate(self.dependencies()):
+            with self.subTest(dependency=depend.__name__):
+                self.setUp()
+                takeout, phone = self.takeout_wins(number)
+                depend(phone, takeout)
                 self.opened.commit()
                 before = self.files()
                 resolved = self.resolve()
-                self.assertEqual((resolved.removed, resolved.kept_both), (0, number + 1))
+                self.assertEqual((resolved.removed, resolved.kept_both), (0, 1))
                 self.assertEqual(self.files(), before)
-                self.pixel.google_account_id = self.account
+
+    def test_a_dependency_that_appears_after_the_removal_is_recorded_refuses_it(self):
+        for number, depend in enumerate(self.dependencies()):
+            with self.subTest(dependency=depend.__name__):
+                self.setUp()
+                takeout, phone = self.takeout_wins(number)
+                (pair,) = takeout_copies.pairs(self.opened, self.jo)
+                with mock.patch.object(takeout_copies, "finish"):
+                    takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
+                depend(phone, takeout)
                 self.opened.commit()
+                before = self.files()
+                resolved = self.resolve(at=3.0)
+                self.assertEqual((resolved.removed, resolved.refused), (0, 1))
+                self.assertEqual(self.files(), before)
+                self.assertEqual([r.state for r in self.removals()], ["refused"])
 
     def test_only_an_automatic_tier_five_google_only_copy_is_a_takeout_item_that_can_go(self):
-        self.takeout(b"same bytes", name="kept.jpg", tier=4, decided_by="auto")
-        self.opened.add(ReviewItem(decision_id=self.opened.execute(select(DedupeDecision)).scalar_one().id, status="kept_both"))
+        _, kept = self.takeout(b"same bytes", name="kept.jpg", tier=4)
+        self.opened.add(ReviewItem(decision_id=kept.id, status="kept_both"))
         self.takeout(b"same bytes", name="owner.jpg", decided_by="owner")
         _, reversed_decision = self.takeout(b"same bytes", name="reversed.jpg")
         reversed_decision.reversed_at = 1.5
@@ -182,6 +253,36 @@ class ResolveTests(CopiesCase):
         self.phone(b"same bytes", name="IMG_0001.jpg", folder="2021")
         self.opened.commit()
         before = self.files()
+        self.assertEqual(self.resolve().removed, 0)
+        self.assertEqual(self.files(), before)
+
+    def test_a_copy_with_any_doubtful_decision_never_pairs_even_beside_a_later_tier_five(self):
+        for setup in ("kept_both", "owner", "reversed"):
+            with self.subTest(setup=setup):
+                self.setUp()
+                item, first = self.takeout(b"same bytes", tier=4 if setup == "kept_both" else 5, decided_by="owner" if setup == "owner" else "auto")
+                if setup == "kept_both":
+                    self.opened.add(ReviewItem(decision_id=first.id, status="kept_both"))
+                first.reversed_at = 1.5 if setup == "reversed" else None
+                later = Export(account_id=self.account, kind="incremental", google_id="g-2", created_at=2.0, status="imported", owner_person_id=self.jo.id)
+                self.opened.add(later)
+                self.opened.flush()
+                self.opened.add(DedupeDecision(export_id=later.id, account_id=self.account, source_path="Takeout/IMG_0001.jpg", person_id=self.jo.id,
+                                               takeout_item_id=item.id, tier=5, reason="no match", decided_by="auto", decided_at=2.0))
+                self.phone(b"same bytes")
+                before = self.files()
+                self.assertEqual(self.resolve().removed, 0)
+                self.assertEqual(self.files(), before)
+
+    def test_an_edited_copy_renamed_on_a_name_collision_never_pairs(self):
+        self.takeout(b"google's edit", name="IMG_0001-edited~abcd1234.jpg", source="Takeout/Photos from 2021/IMG_0001-edited.jpg")
+        self.phone(b"the phone's own bigger original")
+        self.opened.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path=None, person_id=self.jo.id,
+                                       takeout_item_id=self.takeout(b"no source", name="IMG_0002.jpg", captured_utc=MOMENT + 500)[0].id,
+                                       tier=5, reason="no match", decided_by="auto", decided_at=1.0))
+        self.phone(b"phone two", name="IMG_0002-b.jpg", captured_utc=MOMENT + 500)
+        before = self.files()
+        self.assertEqual(takeout_copies.pairs(self.opened, self.jo), [])
         self.assertEqual(self.resolve().removed, 0)
         self.assertEqual(self.files(), before)
 
@@ -211,7 +312,7 @@ class CrashTests(CopiesCase):
         phone = self.phone(b"same bytes")
         (pair,) = takeout_copies.pairs(self.opened, self.jo)
         with mock.patch.object(takeout_copies, "finish"):
-            takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved())
+            takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
         return takeout, phone
 
     def test_a_removal_recorded_before_a_crash_is_finished_on_the_next_run(self):
@@ -219,7 +320,7 @@ class CrashTests(CopiesCase):
         self.assertEqual([r.state for r in self.removals()], ["pending"])
         (self.root / takeout.path).unlink()
         self.assertEqual(self.resolve(at=3.0).removed, 1)
-        self.assertEqual(self.files(), [phone.path])
+        self.assertEqual(self.files(), [phone.path, f"{phone.path}.xmp"])
         self.assertEqual([(r.state, r.removed_at) for r in self.removals()], [("removed", 3.0)])
 
     def test_a_missing_or_changed_keeper_refuses_and_leaves_the_last_copy(self):
@@ -246,10 +347,19 @@ class CrashTests(CopiesCase):
         self.assertEqual(self.resolve(at=3.0).refused, 1)
         self.assertTrue((self.root / takeout.path).exists())
 
-    def test_a_filesystem_error_leaves_the_removal_pending_for_the_next_run(self):
+    def test_a_filesystem_error_is_reported_and_leaves_the_removal_pending_for_the_next_run(self):
         takeout, _ = self.pending()
         with mock.patch.object(paths, "remove_losing_copy", side_effect=PermissionError("denied")):
             self.assertEqual(self.resolve(at=3.0).failed, 1)
         self.assertEqual([r.state for r in self.removals()], ["pending"])
+        self.assertEqual(self.events("duplicate_removal_failed"), ["takeout copy, identical: PermissionError"])
         self.assertEqual(self.resolve(at=4.0).removed, 1)
         self.assertFalse((self.root / takeout.path).exists())
+
+    def test_a_losing_copy_whose_folder_is_gone_is_finished(self):
+        takeout, phone = self.pending()
+        (self.root / takeout.path).unlink()
+        (self.root / f"{takeout.path}.xmp").unlink()
+        (self.root / takeout.path).parent.rmdir()
+        self.assertEqual(self.resolve(at=3.0).removed, 1)
+        self.assertTrue((self.root / phone.path).exists())

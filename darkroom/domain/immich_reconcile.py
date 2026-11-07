@@ -70,6 +70,8 @@ class Report:
     waiting: int = 0
     failed: int = 0
     duplicates_removed: int = 0
+    duplicates_refused: int = 0
+    duplicates_failed: int = 0
 
 
 def stamp(at: float) -> str:
@@ -229,7 +231,8 @@ class Run:
             except immich.ImmichFailed as error:
                 if error.status in (401, 403):
                     raise
-        self.report.duplicates_removed = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now).removed
+        resolved = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now, takeout_copies.Tools(read=self.read))
+        self.report.duplicates_removed, self.report.duplicates_refused, self.report.duplicates_failed = resolved.removed, resolved.refused, resolved.failed
         missing = exists().where(PixelPerson.person_id == self.person.id, ~exists().where(PixelCopy.pixel_id == PixelPerson.pixel_id, PixelCopy.item_id == ImmichAsset.original_item_id))
         unqueued = self.opened.execute(
             select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status == "stored", ImmichAsset.original_item_id.is_not(None), missing).order_by(ImmichAsset.id)
@@ -258,9 +261,11 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
         person.immich_reconciled_until = max(until, person.immich_reconciled_until or 0.0)
         report = run.report
         events.record(opened, now, "immich_reconciled", person.slug,
-                      f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed")
+                      f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed, "
+                      f"{report.duplicates_removed} duplicates removed, {report.duplicates_refused} refused, {report.duplicates_failed} failed to remove")
         opened.commit()
-    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, ignored=report.ignored, waiting=report.waiting, failed=report.failed)
+    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, ignored=report.ignored, waiting=report.waiting, failed=report.failed,
+                   duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused, duplicates_failed=report.duplicates_failed)
     return report
 
 

@@ -108,7 +108,9 @@ rules:
     message: >-
       An original is written once (AGENTS.md, promise 1). Nothing outside darkroom/storage/paths.py opens a file under
       a person's originals/ for writing, removes, renames, replaces, moves, copies onto or changes it. Save a new
-      original through paths.write_once, and a sidecar through providers/exiftool.write_xmp.
+      original through paths.write_once, and a sidecar through providers/exiftool.write_xmp. The only original ever
+      deleted is the losing copy of a matched pair (#234), through paths.remove_losing_copy, called only by
+      takeout_copies (darkroom-losing-copy-one-caller).
     severity: ERROR
     languages: [python]
     mode: taint
