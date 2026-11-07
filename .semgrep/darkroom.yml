@@ -117,6 +117,7 @@ rules:
       - pattern: $P.original(...)
       - pattern: $P.uploads_tmp(...)
       - pattern: $X.originals_path
+      - pattern: $X.legacy_path
     pattern-sinks:
       - patterns:
           - pattern-either:

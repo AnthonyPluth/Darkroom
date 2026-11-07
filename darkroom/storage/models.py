@@ -23,6 +23,7 @@ class Person(Base):
     immich_api_key_sealed: Mapped[str | None] = mapped_column(Text)
     originals_path: Mapped[str] = mapped_column(String, nullable=False)
     google_only_path: Mapped[str] = mapped_column(String, nullable=False)
+    legacy_path: Mapped[str | None] = mapped_column(String)
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 
@@ -162,6 +163,27 @@ class MediaItem(Base):
     sidecar_json: Mapped[str | None] = mapped_column(Text)
     export_id: Mapped[int | None] = mapped_column(ForeignKey("exports.id", ondelete="SET NULL"))
     indexed_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class LegacyFile(Base):
+    __tablename__ = "legacy_files"
+    __table_args__ = (
+        UniqueConstraint("person_id", "path", name="uq_legacy_files_person_path"),
+        one_of("status", ("matched", "unmatched"), "ck_legacy_files_status"),
+        CheckConstraint("tier BETWEEN 1 AND 5", name="ck_legacy_files_tier"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mtime: Mapped[float] = mapped_column(Float, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    original_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    seen_at: Mapped[float] = mapped_column(Float, nullable=False)
+    queued_at: Mapped[float | None] = mapped_column(Float)
 
 
 class PhoneResource(Base):
