@@ -11,9 +11,9 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
-from darkroom.providers import apns, exiftool
+from darkroom.providers import apns, exiftool, immich
 from darkroom.dates import utc_now
-from darkroom.domain import demo, index, legacy
+from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
@@ -172,6 +172,30 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
     return code
 
 
+def run_reconcile_immich(slug: str | None) -> int:
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    code = 0
+    with db.session(engine) as opened:
+        people = opened.query(Person).order_by(Person.id)
+        found = people.filter(Person.slug == slug).all() if slug else people.all()
+        if slug and not found:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        for person in found:
+            try:
+                done = immich_reconcile.reconcile_person(opened, settings, person, utc_now().timestamp(), queue=immich_reconcile.PixelFolderQueue())
+            except (immich_reconcile.NotReady, immich_reconcile.Busy, immich.ImmichFailed) as error:
+                print(f"reconcile-immich: {person.slug}: {error}", file=sys.stderr)
+                code = 1
+            else:
+                print(f"{person.slug}: {done.listed} listed, {done.stored} stored ({done.copied} copied to originals, {done.already_there} already there), "
+                      f"{done.queued} queued for the Pixel folder, {done.ignored} not phone uploads, {done.waiting} waiting, {done.failed} failed")
+                code = 1 if done.failed else code
+    engine.dispose()
+    return code
+
+
 def legacy_report() -> int:
     settings = config.load()
     engine = db.make_engine(db.database_url(settings))
@@ -293,7 +317,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "legacy-report", "revoke-sessions", "demo"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -314,6 +338,8 @@ def main(argv: list[str]) -> int:
         return run_import_takeout(args.person, args.dir, args.unpack_only, args.account)
     if args.command == "import-legacy":
         return run_import_legacy(args.person, args.dir)
+    if args.command == "reconcile-immich":
+        return run_reconcile_immich(args.person)
     if args.command == "legacy-report":
         return legacy_report()
     if args.command == "jobs":

@@ -10,9 +10,9 @@ from sqlalchemy import Engine
 
 from darkroom import dates, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, index, pixel_folder, push, renewal, wake
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, push, renewal, wake
 from darkroom.domain.ingest import cleanup, run
-from darkroom.providers import apns
+from darkroom.providers import apns, immich
 from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
@@ -99,6 +99,7 @@ EXPORT_CHECK_TICK_SECONDS = 600.0
 EXPIRY_WATCH_SECONDS = 3600.0
 CLEANUP_HOUR = 4
 PIXEL_TEND_SECONDS = 3600.0
+IMMICH_RECONCILE_SECONDS = 900.0
 SCHEDULE_WATCH_HOUR = 5
 
 
@@ -197,6 +198,15 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused)
 
+    def reconcile_immich(at: float) -> None:
+        try:
+            client = immich.Client.at(settings)
+        except immich.NotConfigured:
+            return
+        with db.session(engine) as opened:
+            done = immich_reconcile.reconcile_all(opened, settings, at, client, immich_reconcile.PixelFolderQueue())
+        monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()))
+
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
     scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True)
@@ -204,5 +214,6 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: apns.Pus
     scheduler.every("exports.expiry", EXPIRY_WATCH_SECONDS, watch_expiry, now=now)
     scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)
     scheduler.daily_at("cleanup", CLEANUP_HOUR, clean_inbox, now=now)
+    scheduler.every("immich.reconcile", IMMICH_RECONCILE_SECONDS, reconcile_immich, now=now, own_thread=True)
     scheduler.every("pixels.tend", PIXEL_TEND_SECONDS, tend_pixels, now=now, own_thread=True)
     return scheduler

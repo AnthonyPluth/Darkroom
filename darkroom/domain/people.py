@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import re
 
+from sqlalchemy import delete as delete_rows
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
 from darkroom.storage import secretbox
-from darkroom.storage.models import Device, Export, GoogleAccount, MediaItem, Person, PixelPerson
+from darkroom.storage.models import Device, Export, GoogleAccount, ImmichAsset, MediaItem, Person, PixelPerson
 from darkroom.storage.paths import SLUG, Photos
 
 
@@ -90,6 +91,9 @@ PLAIN_FIELDS = ("name", "email", "immich_user_id", "immich_library_id")
 
 def update(opened: Session, person_id: int, changes: dict[str, str | None], change_key: bool, sealed_key: str | None, now: float) -> Person:
     person = get(opened, person_id)
+    if "immich_user_id" in changes and changes["immich_user_id"] != person.immich_user_id:
+        person.immich_reconciled_until = None
+        opened.execute(delete_rows(ImmichAsset).where(ImmichAsset.person_id == person.id, ImmichAsset.status != "stored"))
     for field in PLAIN_FIELDS:
         if field in changes:
             setattr(person, field, changes[field])
