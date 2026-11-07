@@ -95,3 +95,30 @@ def write_google_only(photos, person):
 def delete_the_tree(photos, person):
     # ruleid: darkroom-originals-read-only
     shutil.rmtree(photos.originals(person))
+
+
+def legacy_source_write(person_row):
+    # ruleid: darkroom-originals-read-only
+    os.remove(person_row.legacy_path)
+
+
+def legacy_source_rename(person_row, elsewhere):
+    root = person_row.legacy_path
+    # ruleid: darkroom-originals-read-only
+    os.rename(root, elsewhere)
+
+
+def legacy_source_clean(person_row):
+    # ruleid: darkroom-originals-read-only
+    shutil.rmtree(person_row.legacy_path)
+
+
+def legacy_source_read(person_row):
+    # ok: darkroom-originals-read-only
+    with open(person_row.legacy_path + "/a.jpg", "rb") as handle:
+        return handle.read()
+
+
+def legacy_source_copy_out(person_row):
+    # ok: darkroom-originals-read-only
+    shutil.copy2(person_row.legacy_path + "/a.jpg", "/tmp/stage/a.jpg")

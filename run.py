@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import apns, exiftool
 from darkroom.dates import utc_now
-from darkroom.domain import demo, index
+from darkroom.domain import demo, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
@@ -142,6 +142,46 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
     return code
 
 
+def run_import_legacy(slug: str | None, folder: str | None) -> int:
+    if not slug:
+        print("import-legacy needs --person", file=sys.stderr)
+        return 1
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    code = 0
+    with db.session(engine) as opened:
+        person = opened.query(Person).filter(Person.slug == slug).one_or_none()
+        if person is None:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        else:
+            now = utc_now().timestamp()
+            try:
+                if folder:
+                    legacy.set_source(opened, Photos(settings.photos_root), person, folder, now)
+                    opened.commit()
+                done = legacy.import_person(opened, settings, person, now)
+            except (legacy.BadSource, legacy.NoSource, legacy.NotReady, legacy.Busy) as error:
+                print(f"import-legacy: {error}", file=sys.stderr)
+                code = 1
+            else:
+                print(f"{slug}: {done.new} new files, {done.matched} matched in Google, {done.unmatched} not in Google "
+                      f"({done.copied} copied to originals, {done.already_there} already there), {done.already_seen} seen before, {done.ignored} not photos or videos, {done.failed} could not be read")
+                code = 1 if done.failed else 0
+    engine.dispose()
+    return code
+
+
+def legacy_report() -> int:
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    with db.session(engine) as opened:
+        for entry in legacy.totals(opened):
+            print(legacy.describe(entry))
+    engine.dispose()
+    return 0
+
+
 def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     if not (email or sub or everyone):
         print("revoke-sessions needs --email, --sub or --all", file=sys.stderr)
@@ -253,7 +293,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "revoke-sessions", "demo"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "legacy-report", "revoke-sessions", "demo"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -272,6 +312,10 @@ def main(argv: list[str]) -> int:
         return run_index(args.person)
     if args.command == "import-takeout":
         return run_import_takeout(args.person, args.dir, args.unpack_only, args.account)
+    if args.command == "import-legacy":
+        return run_import_legacy(args.person, args.dir)
+    if args.command == "legacy-report":
+        return legacy_report()
     if args.command == "jobs":
         if not args.name:
             parser.error("jobs needs the name of a job")
