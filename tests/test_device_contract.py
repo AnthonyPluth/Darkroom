@@ -6,14 +6,12 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 from darkroom.server import contract, routes
 
 REQUESTS = {
-    "CheckRequest": contract.DeviceCheckBody, "AssetDescriptor": contract.DeviceAssetDecl, "ResourceDescriptor": contract.DeviceResourceDecl,
     "CheckinRequest": contract.DeviceCheckinBody,
 }
 REPLIES = {
-    "CheckReply": contract.DeviceCheckReply, "NeededResource": contract.NeededResource, "DeviceMeReply": contract.DeviceMeReply,
+    "DeviceMeReply": contract.DeviceMeReply,
 }
 ROUTES = {
-    ("POST", "/api/device/assets/check"): ("CheckRequest", "CheckReply"),
     ("POST", "/api/device/checkin"): ("CheckinRequest", None),
     ("GET", "/api/device/me"): (None, "DeviceMeReply"),
 }
