@@ -560,14 +560,16 @@ class RemoveLosingCopyTests(unittest.TestCase):
         real = os.unlink
 
         def crashing(name, *args, **kwargs):
-            if str(name).startswith(paths.LOSING):
+            if name == paths.CLAIMED:
                 raise KeyboardInterrupt
             return real(name, *args, **kwargs)
 
         with mock.patch.object(paths.os, "unlink", crashing), self.assertRaises(KeyboardInterrupt):
             self.remove()
-        (claim,) = [p for p in self.loser.parent.iterdir() if p.name.startswith(paths.LOSING)]
+        (private,) = [p for p in self.loser.parent.iterdir() if p.name.startswith(paths.LOSING)]
+        claim = private / paths.CLAIMED
         self.assertTrue(claim.exists() and not self.loser.exists())
+        self.assertEqual(private.stat().st_mode & 0o777, paths.PRIVATE_MODE)
         return claim
 
     def test_a_crash_between_the_claim_and_the_unlink_is_finished_by_the_next_call(self):
@@ -599,8 +601,9 @@ class RemoveLosingCopyTests(unittest.TestCase):
 
         def racing(name, folder):
             found = real(name, folder)
-            if name.startswith(paths.LOSING) and not name.endswith(".xmp") and found is None:
-                self.file(f"jo/google-only/2021/03/{name}", b"someone else's file")
+            if name == paths.CLAIMED and found is None:
+                (private,) = [p for p in self.loser.parent.iterdir() if p.name.startswith(paths.LOSING)]
+                (private / name).write_bytes(b"someone else's file")
             return found
 
         with mock.patch.object(paths, "entry_at", racing), self.assertRaises(paths.NotALosingCopy):
@@ -610,11 +613,11 @@ class RemoveLosingCopyTests(unittest.TestCase):
     def test_a_sidecar_swapped_in_after_it_was_inspected_is_never_removed(self):
         real = paths.rename_no_replace
 
-        def swapping(source, target, folder):
-            if source.endswith(".xmp") and target.startswith(paths.LOSING):
+        def swapping(source, target, folder, into=None):
+            if source.endswith(".xmp") and target == paths.CLAIMED_SIDECAR:
                 self.file("jo/google-only/2021/03/incoming", b"a sidecar swapped in")
                 os.replace(self.loser.with_name("incoming"), self.loser.with_name("IMG_0001.jpg.xmp"))
-            return real(source, target, folder)
+            return real(source, target, folder, into)
 
         with mock.patch.object(paths, "rename_no_replace", swapping):
             self.remove()
@@ -625,6 +628,91 @@ class RemoveLosingCopyTests(unittest.TestCase):
         with mock.patch.object(paths, "LIBC", object()):
             self.assertTrue(self.remove())
         self.assertEqual((self.loser.exists(), self.keeper.read_bytes()), (False, b"phone"))
+
+    def test_a_swap_during_the_link_fallback_keeps_the_file_swapped_in(self):
+        real, swapped = paths.entry_at, []
+
+        def swapping(name, folder):
+            if name == self.loser.name and not swapped:
+                swapped.append(name)
+                self.file("jo/google-only/2021/03/incoming", b"intruder")
+                os.replace(self.loser.with_name("incoming"), self.loser)
+            return real(name, folder)
+
+        with mock.patch.object(paths, "LIBC", object()), mock.patch.object(paths, "entry_at", swapping), contextlib.suppress(paths.NotALosingCopy):
+            self.remove()
+        self.assertIn(b"intruder", self.contents())
+        self.assertIn(b"takeout", self.contents())
+
+    def test_a_crash_at_the_sidecar_claim_is_finished_by_the_next_call(self):
+        real = os.unlink
+
+        def crashing(name, *args, **kwargs):
+            if name == paths.CLAIMED_SIDECAR:
+                raise KeyboardInterrupt
+            return real(name, *args, **kwargs)
+
+        sha1 = paths.file_sha1(self.loser)
+        with mock.patch.object(paths.os, "unlink", crashing), self.assertRaises(KeyboardInterrupt):
+            self.remove()
+        self.assertEqual([p.name for p in self.loser.parent.glob(f"{paths.LOSING}*/*")], [paths.CLAIMED_SIDECAR])
+        self.assertFalse(self.remove(losing_sha1=sha1))
+        self.assertEqual(list(self.loser.parent.iterdir()), [])
+
+    def test_a_keeper_link_left_by_a_hard_crash_is_recovered(self):
+        held = self.keeper.with_name(f"{paths.KEEPING}0123456789abcdef")
+        os.link(self.keeper, held)
+        self.assertTrue(self.remove())
+        self.assertEqual((held.exists(), self.keeper.read_bytes(), self.keeper.stat().st_nlink), (False, b"phone", 1))
+
+    def test_a_link_fallback_cut_short_between_link_and_unlink_is_finished(self):
+        private = self.loser.parent / paths.claim_name(paths.file_sha1(self.loser), self.loser.name)
+        private.mkdir(mode=paths.PRIVATE_MODE)
+        os.link(self.loser, private / paths.CLAIMED)
+        self.assertTrue(self.remove())
+        self.assertEqual((self.loser.exists(), private.exists()), (False, False))
+
+    def test_a_file_swapped_into_the_private_claim_folder_before_the_unlink_survives(self):
+        real = paths.Keeper.still_there
+
+        def swapping(keeper):
+            (private,) = [p for p in self.loser.parent.iterdir() if p.name.startswith(paths.LOSING)]
+            if (private / paths.CLAIMED).exists():
+                (private / "incoming").write_bytes(b"intruder")
+                os.replace(private / "incoming", private / paths.CLAIMED)
+            return real(keeper)
+
+        with mock.patch.object(paths.Keeper, "still_there", swapping), contextlib.suppress(paths.NotALosingCopy):
+            self.remove()
+        self.assertIn(b"intruder", self.contents())
+
+    def test_a_claim_folder_that_is_not_darkroom_private_is_refused(self):
+        for kind in ("open", "link"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                private = self.loser.parent / paths.claim_name(paths.file_sha1(self.loser), self.loser.name)
+                if kind == "open":
+                    private.mkdir()
+                    os.chmod(private, 0o755)
+                else:
+                    (self.root / "outside").mkdir()
+                    private.symlink_to(self.root / "outside", target_is_directory=True)
+                self.assertRefused()
+
+    def test_a_newer_sidecar_written_while_the_keepers_was_staged_is_never_discarded(self):
+        sidecar = self.keeper.with_name(f"{self.keeper.name}.xmp")
+        sidecar.write_bytes(b"first")
+        real = paths.exchange
+
+        def racing(first, second, folder):
+            self.file("jo/originals/immich/incoming", b"newer, from another writer")
+            os.replace(self.keeper.with_name("incoming"), sidecar)
+            return real(first, second, folder)
+
+        with paths.checked_keeper(self.photos, "jo", "jo/originals/immich/IMG_0001-aaaa.jpg", paths.file_sha1(self.keeper)) as keeper:
+            with mock.patch.object(paths, "exchange", racing), self.assertRaises(paths.NotALosingCopy):
+                keeper.write_sidecar(b"ours", b"first")
+        self.assertEqual(sidecar.read_bytes(), b"newer, from another writer")
 
     def test_a_250_byte_name_is_claimed_and_removed(self):
         long = "a" * 246 + ".jpg"
