@@ -37,7 +37,7 @@ jobs:
       security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
       actions: read            # Scorecard, which scorecard: false skips
       id-token: write          # Scorecard, which scorecard: false skips
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@e46ed57c9783080142e148121176bd7d4a321a8a   # v2.3.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@b9f64fa5fd2859c87eabbbcda7b62e02b3dd0764   # v3.0.0
     with:
       code-paths: ^((darkroom|darkroom_browser|frontend/src|\.semgrep)/|run\.py$)
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
