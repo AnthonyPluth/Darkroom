@@ -4,5 +4,5 @@ def turn_cleanup_on_inside_eligibility(device):
 
 
 def mark_inside_eligibility(asset, now):
-    # ok: darkroom-eligibility-single-path
+    # ruleid: darkroom-eligibility-single-path
     asset.eligible_at = now

@@ -246,9 +246,9 @@ rules:
 
   - id: darkroom-eligibility-single-path
     message: >-
-      Whether a photo may be deleted from an iPhone is decided only in darkroom/domain/eligibility.py, from scratch at
-      request time (AGENTS.md, promise 3). Only that module writes PhoneAsset.eligible_at, eligible_confirmed_at and
-      deleted_at or Device.eligibility_checked_at. Go through eligibility.eligible_assets or forget instead.
+      Deleting from an iPhone was retired with the app (#199, #201) and darkroom/domain/eligibility.py was removed:
+      no module writes PhoneAsset.eligible_at, eligible_confirmed_at or deleted_at or Device.eligibility_checked_at
+      any more. The columns go with the migration that drops them.
     severity: ERROR
     languages: [python]
     patterns:
@@ -270,7 +270,7 @@ rules:
           regex: ^(eligible_at|eligible_confirmed_at|deleted_at|eligibility_checked_at)$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/domain/eligibility.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+      exclude: ["/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
 
   - id: darkroom-cleanup-never-on
     message: >-
