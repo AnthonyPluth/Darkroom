@@ -211,10 +211,9 @@ rules:
 
   - id: darkroom-push-token-one-module
     message: >-
-      A device's APNs push token is stored sealed with secretbox, and only darkroom/domain/push_tokens.py seals,
-      unseals, matches or clears it (so a token is read only while its device is not revoked and its owner can still
-      sign in, and the plain token never reaches a reply, a log or another column). Go through push_tokens.register,
-      forget or token_for instead of touching Device.push_token_sealed, push_token_digest or push_token_at here.
+      Push registration was removed with the iPhone app (#199, #201) and darkroom/domain/push_tokens.py with it: no
+      module reads or writes Device.push_token_sealed, push_token_digest or push_token_at any more. The columns go
+      with the migration that drops them.
     severity: ERROR
     languages: [python]
     pattern-either:
@@ -240,7 +239,7 @@ rules:
               regex: ^push_token_(sealed|digest|at)$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/domain/push_tokens.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+      exclude: ["/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
 
   - id: darkroom-eligibility-single-path
     message: >-
