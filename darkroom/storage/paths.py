@@ -30,6 +30,7 @@ UPLOADS_TMP = ".uploads_tmp"
 DOWNLOADS = ".downloads"
 PIXELS = "_pixels"
 INCOMING = ".incoming"
+PIXEL_COPY_MODE = 0o644
 SHARED_FOLDER_MODE = 0o2770
 
 
@@ -131,7 +132,10 @@ class Photos:
         return path
 
     def pixel_incoming(self) -> Path:
-        return self.inside(PIXELS, INCOMING)
+        expected = self.root / PIXELS / INCOMING
+        if self.inside(PIXELS, INCOMING) != expected:
+            raise OutsideRoot("the Pixels' staging folder is a link")
+        return expected
 
     def browser_profile(self, account: str) -> Path:
         return self.inside("_browser", self.name_part(account), "profile")
@@ -823,13 +827,30 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
             os.fsync(out.fileno())
         if digest.hexdigest() != sha1:
             raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
+        os.chmod(temp, PIXEL_COPY_MODE)
+        photos.pixel_copy(pixel_id, person, name)
         try:
             os.link(temp, destination)
         except FileExistsError as error:
             raise AlreadyExists(destination.name) from error
+        except OSError:
+            copy_exclusive(temp, destination)
+            os.chmod(destination, PIXEL_COPY_MODE)
     finally:
         temp.unlink(missing_ok=True)
     return name
+
+
+def unlink_in_place(photos: Photos, pixel_id: int, person: str, name: str, target: Path) -> None:
+    folder = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if photos.pixel_copy(pixel_id, person, name) != target or not os.path.samestat(os.fstat(folder), target.parent.lstat()):
+            raise NotAPixelCopy("the Pixel's folder changed while the copy was being pruned")
+        if not stat.S_ISREG(os.stat(target.name, dir_fd=folder, follow_symlinks=False).st_mode):
+            raise NotAPixelCopy("only a file is pruned from a Pixel's folder")
+        os.unlink(target.name, dir_fd=folder)
+    finally:
+        os.close(folder)
 
 
 def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha1: str) -> bool:
@@ -844,7 +865,7 @@ def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha
             raise NotAPixelCopy("originals and google-only folders are never pruned")
     if file_sha1(target) != sha1:
         raise NotAPixelCopy("the file is not the copy Darkroom placed")
-    target.unlink()
+    unlink_in_place(photos, pixel_id, person, name, target)
     parent = target.parent
     while parent != folder and parent.is_relative_to(folder) and not parent.is_symlink() and not any(parent.iterdir()):
         parent.rmdir()

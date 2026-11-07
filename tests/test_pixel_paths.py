@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from darkroom.storage import paths
 
@@ -110,6 +111,52 @@ class PixelFolderPathTests(unittest.TestCase):
         (self.root / "_pixels").symlink_to(self.root / "jo")
         with self.assertRaises(paths.OutsideRoot):
             paths.remove_pixel_copy(self.photos, 1, "jo", "2024/IMG_0001.HEIC", sha1(self.data))
+        self.assert_kept_unchanged()
+
+    def test_a_staging_folder_that_links_into_originals_is_refused(self):
+        (self.root / "_pixels").mkdir()
+        (self.root / "_pixels/.incoming").symlink_to(self.root / "jo/originals")
+        with self.assertRaises(paths.OutsideRoot):
+            self.photos.pixel_incoming()
+        with self.assertRaises(paths.OutsideRoot):
+            self.place()
+        self.assertEqual(sorted(path.name for path in (self.root / "jo/originals").iterdir()), ["2024"])
+        self.assertFalse((self.root / "_pixels/1").exists())
+        (self.root / "_pixels/.incoming").unlink()
+        (self.root / "_pixels/.incoming").symlink_to(self.root / "jo/originals/not-there")
+        with self.assertRaises(paths.OutsideRoot):
+            self.place()
+        self.assertFalse((self.root / "jo/originals/not-there").exists())
+        self.assert_kept_unchanged()
+
+    def test_a_folder_swapped_for_a_link_while_pruning_is_refused(self):
+        name = self.place()
+        real_lstat = Path.lstat
+
+        def swapped(path: Path, *args: object) -> os.stat_result:
+            return real_lstat(self.root / "jo/originals/2024") if path == self.root / "_pixels/1/jo/2024" else real_lstat(path, *args)
+
+        with mock.patch.object(Path, "lstat", swapped), self.assertRaises(paths.NotAPixelCopy):
+            paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assert_kept_unchanged()
+
+    def test_a_copy_is_made_on_a_share_without_hard_links_and_others_can_read_it(self):
+        with mock.patch("darkroom.storage.paths.os.link", side_effect=OSError("no hard links here")):
+            name = self.place()
+        copy = self.root / "_pixels/1/jo" / name
+        self.assertEqual(copy.read_bytes(), self.data)
+        self.assertEqual(copy.stat().st_mode & 0o044, 0o044)
+        self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
+        self.assert_kept_unchanged()
+
+    def test_a_different_file_already_in_the_copys_place_is_never_replaced(self):
+        (self.root / "_pixels/1/jo/2024").mkdir(parents=True)
+        (self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").write_bytes(b"something else")
+        with self.assertRaises(paths.AlreadyExists):
+            self.place()
+        self.assertEqual((self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").read_bytes(), b"something else")
+        self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
         self.assert_kept_unchanged()
 
     def test_a_file_that_is_not_the_placed_copy_is_not_pruned(self):
