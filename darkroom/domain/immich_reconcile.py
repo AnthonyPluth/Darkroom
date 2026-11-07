@@ -231,6 +231,8 @@ class Run:
             except immich.ImmichFailed as error:
                 if error.status in (401, 403):
                     raise
+
+    def settle(self) -> None:
         resolved = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now, takeout_copies.Tools(read=self.read))
         self.report.duplicates_removed, self.report.duplicates_refused, self.report.duplicates_failed = resolved.removed, resolved.refused, resolved.failed
         missing = exists().where(PixelPerson.person_id == self.person.id, ~exists().where(PixelCopy.pixel_id == PixelPerson.pixel_id, PixelCopy.item_id == ImmichAsset.original_item_id))
@@ -254,9 +256,15 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
             raise immich.ImmichFailed("the Immich key belongs to a different user than the person's")
         listing = run.client.search_stable(key, None if since is None else stamp(since), stamp(until))
         run.report.listed = len(listing)
-        for asset in listing:
-            run.listed(asset)
-        run.retry()
+        try:
+            for asset in listing:
+                run.listed(asset)
+            run.retry()
+        except Exception:
+            opened.rollback()
+            run.settle()
+            raise
+        run.settle()
         run.report.waiting = opened.query(ImmichAsset).filter(ImmichAsset.person_id == person.id, ImmichAsset.status == "waiting").count()
         person.immich_reconciled_until = max(until, person.immich_reconciled_until or 0.0)
         report = run.report

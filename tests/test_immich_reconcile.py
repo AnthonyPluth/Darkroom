@@ -295,6 +295,22 @@ class TakeoutCopyTests(ReconcileCase):
         self.assertEqual((tree(self.world.root), len(self.copies())), before)
 
 
+class SettleTests(ReconcileCase):
+    def test_originals_stored_before_a_later_asset_fails_still_reach_the_pixel(self):
+        first, second = self.photo(), self.photo()
+        real = immich.Client.metadata_keys
+
+        def failing(client, key, asset_id):
+            if asset_id == second.id:
+                raise immich.ImmichFailed("Immich answered 500", status=500)
+            return real(client, key, asset_id)
+
+        with mock.patch.object(immich.Client, "metadata_keys", failing), self.assertRaises(immich.ImmichFailed):
+            self.run_it(queue=reconcile.PixelFolderQueue())
+        self.assertEqual(self.rows()[first.id].status, "stored")
+        self.assertEqual([copy.item_id for copy in self.copies()], [self.rows()[first.id].original_item_id])
+
+
 class ProviderTests(unittest.TestCase):
     def test_checksums_and_assets_are_checked(self):
         digest = bytes(range(20))
