@@ -148,6 +148,8 @@ class SettingsTests(unittest.TestCase):
             "must be the ntfy server's address": ntfy_settings(url="https://user:pw@ntfy.example"),
             "without a topic, username, password or query": ntfy_settings(url="https://ntfy.example?topic=x"),
             "must use https:// unless": ntfy_settings(url="http://ntfy.example.com"),
+            "server's address, like": ntfy_settings(url="https://ntfy.example:bad"),
+            "address, like https": ntfy_settings(url="https://ntfy.example:70000"),
             "NTFY_TOPIC must be sealed": settings_from(DARKROOM_SECRET_KEY=SECRET, NTFY_URL="https://ntfy.example", NTFY_TOPIC=TOPIC),
             "NTFY_TOKEN must be sealed": settings_from(DARKROOM_SECRET_KEY=SECRET, NTFY_URL="https://ntfy.example", NTFY_TOPIC=sealed(TOPIC), NTFY_TOKEN=TOKEN),
         }
@@ -297,6 +299,33 @@ class PushPassTests(unittest.TestCase):
             alerts.close_other_kinds(opened, "sign-in:a", "wrong_account", 5.0)
         self.assertEqual(self.push(pusher, 10.0), 0)
         self.assertEqual(len(pusher.notes), 1)
+
+    def test_an_alert_replaced_while_still_queued_sends_nothing_for_the_replaced_kind(self):
+        pusher = FakePusher()
+        self.open_sign_in(0.0)
+        with db.session(self.engine) as opened:
+            alerts.close_other_kinds(opened, "sign-in:a", "wrong_account", 5.0)
+        self.assertEqual(self.push(pusher, 10.0), 0)
+        self.assertEqual(pusher.notes, [])
+        self.assertIsNone(self.alert().push_due)
+
+    def test_a_crash_while_a_close_is_queued_meanwhile_keeps_the_close_note(self):
+        pusher = FakePusher("raise")
+        self.open_sign_in(0.0)
+
+        def close_meanwhile():
+            with db.session(self.engine) as other:
+                alerts.close(other, "sign-in:a", 2.0)
+                other.commit()
+
+        pusher.during = close_meanwhile
+        with no_leaks(self, TOPIC):
+            self.push(pusher, 1.0)
+        pusher.during = None
+        self.assertEqual(self.alert().push_due, 2.0)
+        self.assertEqual(self.recorded(), [])
+        self.push(pusher, 3.0)
+        self.assertEqual(pusher.notes[-1].title, "Resolved: Google sign-in needed")
 
     def test_an_unreachable_server_is_retried_every_five_minutes_for_an_hour_then_recorded(self):
         pusher = FakePusher(*["retry"] * 20)

@@ -198,6 +198,7 @@ def close_other_kinds(opened: Session, key: str, kind: str, now: float) -> int:
     closed = 0
     for alert in opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None), Alert.kind != kind)).scalars():
         alert.closed = now
+        alert.push_due = None
         closed += 1
     return closed
 

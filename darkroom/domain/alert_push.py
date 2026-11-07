@@ -32,26 +32,27 @@ def detail_of(alert: Alert) -> str:
     return f"{alert.kind}, resolved" if closing(alert) else alert.kind
 
 
-def due(opened: Session, now: float) -> list[int]:
-    query = select(Alert.id).where(Alert.push_due.is_not(None), Alert.push_due <= now).order_by(Alert.push_due, Alert.id)
-    return list(opened.execute(query).scalars())
+def due(opened: Session, now: float) -> list[tuple[int, float]]:
+    query = select(Alert.id, Alert.push_due).where(Alert.push_due.is_not(None), Alert.push_due <= now).order_by(Alert.push_due, Alert.id)
+    return [(alert_id, due_at) for alert_id, due_at in opened.execute(query).tuples() if due_at is not None]
 
 
 def deliver_due(opened: Session, settings: Settings, pusher: Pusher | None, now: float) -> int:
     sent = 0
-    for alert_id in due(opened, now):
+    for alert_id, due_at in due(opened, now):
         try:
             sent += deliver_one(opened, settings, pusher, alert_id, now)
         except Exception as error:
             opened.rollback()
             monitoring.log("alert push failed", error=type(error).__name__)
-            give_up(opened, alert_id, now)
+            give_up(opened, alert_id, due_at, now)
     return sent
 
 
-def give_up(opened: Session, alert_id: int, now: float) -> None:
+def give_up(opened: Session, alert_id: int, due_at: float, now: float) -> None:
+    opened.expire_all()
     alert = opened.get(Alert, alert_id)
-    if alert is None or alert.push_due is None:
+    if alert is None or alert.push_due != due_at:
         return
     alert.push_due = None
     events.record(opened, now, "alert_failed", alert.subject, detail_of(alert))

@@ -260,7 +260,7 @@ def ntfy_problems(settings: Settings) -> list[str]:
     found = []
     try:
         parts = urlsplit(settings.ntfy_url)
-        host = parts.hostname or ""
+        host = (parts.hostname or "") if parts.port != 0 else ""
     except ValueError:
         parts, host = None, ""
     if parts is None or parts.scheme not in ("http", "https") or not host or parts.username or parts.password or parts.query or parts.fragment:
