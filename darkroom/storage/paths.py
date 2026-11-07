@@ -11,6 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -918,20 +919,55 @@ def copy_fd(source: int, target: int) -> None:
     os.fsync(target)
 
 
-def existing_copy(name: str, folder: int, sha1: str) -> bool:
+STAGED_COPY = re.compile(r"^\.copy-[0-9a-f]{16}$")
+STALE_STAGING_SECONDS = 3600
+
+
+def sweep_staging(folder: int, now: float) -> int:
+    swept = 0
+    for entry in os.listdir(folder):
+        if not STAGED_COPY.match(entry):
+            continue
+        try:
+            found = os.stat(entry, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(found.st_mode) and now - found.st_mtime > STALE_STAGING_SECONDS:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(entry, dir_fd=folder)
+                swept += 1
+    return swept
+
+
+def leftover_claim(found: os.stat_result) -> bool:
+    return stat.S_ISREG(found.st_mode) and found.st_size == 0 and found.st_nlink == 1
+
+
+def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result) -> os.stat_result | bool:
     try:
         fd = open_no_follow(name, folder)
     except FileNotFoundError:
         return False
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode) or fd_sha1(fd) != sha1:
+        found = os.fstat(fd)
+        if not stat.S_ISREG(found.st_mode):
             raise AlreadyExists(name)
+        if os.path.samestat(found, original):
+            raise NotAPixelCopy("the original itself is in the copy's place")
+        if found.st_nlink != 1:
+            raise NotAPixelCopy("the file in the copy's place has another name, so it is not touched")
+        if fd_sha1(fd) != sha1:
+            if leftover_claim(found):
+                return found
+            raise AlreadyExists(name)
+        if stat.S_IMODE(found.st_mode) != PIXEL_COPY_MODE:
+            os.fchmod(fd, PIXEL_COPY_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Syncthing runs as another uid and must read the copies it sends; nothing is writable by others
         return True
     finally:
         os.close(fd)
 
 
-def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, sha1: str) -> str:
+def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, sha1: str, now: Callable[[], float] = time.time) -> str:
     original = photos.original(person, relative)
     if original.is_symlink() or not original.is_file():
         raise NotAPixelCopy("the original is not a file")
@@ -941,43 +977,72 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
     *folders, leaf = name.split("/")
     with PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=True) as destination, \
             PinnedFolders(photos, [PIXELS, INCOMING], create=True) as incoming:
-        if existing_copy(leaf, destination.fd, sha1):
-            return name
-        temp = f".copy-{secrets.token_hex(8)}"
-        staged = open_no_follow(temp, incoming.fd, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+        sweep_staging(incoming.fd, now())
+        source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
         try:
-            source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
+            found = existing_copy(leaf, destination.fd, sha1, os.fstat(source))
+            if found is True:
+                return name
+            temp = f".copy-{secrets.token_hex(8)}"
+            staged = open_no_follow(temp, incoming.fd, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             try:
                 copy_fd(source, staged)
+                if fd_sha1(staged) != sha1:
+                    raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
+                if found is False:
+                    publish_staged(temp, incoming.fd, leaf, destination.fd)
+                else:
+                    replace_claim(temp, incoming.fd, leaf, destination.fd, found)
+                os.fsync(destination.fd)
             finally:
-                os.close(source)
-            if fd_sha1(staged) != sha1:
-                raise NotAPixelCopy("the original no longer has the SHA-1 Darkroom recorded")
-            try:
-                os.link(temp, leaf, src_dir_fd=incoming.fd, dst_dir_fd=destination.fd, follow_symlinks=False)
-            except FileExistsError as error:
-                raise AlreadyExists(leaf) from error
-            except OSError:
-                copy_staged(staged, leaf, destination.fd)
+                os.close(staged)
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(temp, dir_fd=incoming.fd)
         finally:
-            os.close(staged)
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(temp, dir_fd=incoming.fd)
+            os.close(source)
     return name
 
 
-def copy_staged(staged: int, leaf: str, folder: int) -> None:
+def publish_staged(temp: str, incoming: int, leaf: str, folder: int) -> None:
     try:
-        target = open_no_follow(leaf, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        os.link(temp, leaf, src_dir_fd=incoming, dst_dir_fd=folder, follow_symlinks=False)
+        return
+    except FileExistsError as error:
+        raise AlreadyExists(leaf) from error
+    except OSError:
+        pass
+    try:
+        claim = open_no_follow(leaf, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     except FileExistsError as error:
         raise AlreadyExists(leaf) from error
     try:
-        copy_fd(staged, target)
-    except BaseException:
-        os.unlink(leaf, dir_fd=folder)
-        raise
+        claimed = os.fstat(claim)
     finally:
-        os.close(target)
+        os.close(claim)
+    try:
+        replace_claim(temp, incoming, leaf, folder, claimed)
+    except BaseException:
+        drop_claim(leaf, folder, claimed)
+        raise
+
+
+def replace_claim(temp: str, incoming: int, leaf: str, folder: int, claimed: os.stat_result) -> None:
+    now = os.stat(leaf, dir_fd=folder, follow_symlinks=False)
+    if not (os.path.samestat(now, claimed) and leftover_claim(now)):
+        raise AlreadyExists(leaf)
+    try:
+        os.rename(temp, leaf, src_dir_fd=incoming, dst_dir_fd=folder)
+    except OSError as error:
+        if error.errno == errno.EXDEV:
+            raise NotAPixelCopy("the staging folder and the Pixel's folder are on different disks") from error
+        raise
+
+
+def drop_claim(leaf: str, folder: int, claimed: os.stat_result) -> None:
+    with contextlib.suppress(OSError):
+        now = os.stat(leaf, dir_fd=folder, follow_symlinks=False)
+        if os.path.samestat(now, claimed) and leftover_claim(now):
+            os.unlink(leaf, dir_fd=folder)
 
 
 def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha1: str) -> bool:
