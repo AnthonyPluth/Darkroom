@@ -3,9 +3,9 @@ import unittest
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe, exports, media, review
+from darkroom.domain import dedupe, exports, media, pixel_folder, review
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelPerson
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelCopy, PixelPerson
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
 
@@ -448,3 +448,55 @@ class FirstExportAfterRenewalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PixelFolderThroughImportsTests(IncrementalCase):
+    people = ("jo",)
+    pixel_people = ("jo",)
+
+    def jo_phone_item(self):
+        return self.world.opened.execute(select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id == self.world.ids["jo"])).scalar_one()
+
+    def copies(self):
+        return list(self.world.opened.execute(select(PixelCopy).order_by(PixelCopy.id)).scalars())
+
+    def tend(self, at):
+        tended = pixel_folder.tend(self.world.opened, self.world.photos, pixel_folder.DEFAULT_CAP_BYTES, at)
+        self.world.opened.commit()
+        return tended
+
+    def copy_path(self):
+        return self.world.root / f"_pixels/{self.world.pixel}/jo/IMG_1.JPG"
+
+    def test_an_immich_photo_already_matched_is_pruned_once_a_later_takeout_contains_it_again(self):
+        self.assertEqual(self.imported().failed, 0)
+        item = self.jo_phone_item()
+        self.assertEqual(pixel_folder.queue(self.world.opened, item, NOW + 10, always_send=True), 1)
+        self.assertEqual(self.tend(NOW + 20).placed, 1)
+        self.assertTrue(self.copy_path().is_file())
+        self.assertEqual(self.tend(NOW + 30).pruned, 0)
+        again = self.imported(at=NOW + 2 * DAY)
+        self.assertEqual((again.failed, again.repeated), (0, 1))
+        self.assertEqual(len(self.phone_matches()), 1)
+        self.assertEqual(self.tend(NOW + 2 * DAY + 10).pruned, 1)
+        self.assertFalse(self.copy_path().exists())
+        self.assertEqual([c.state for c in self.copies()], ["pruned"])
+        self.assertEqual((self.world.root / item.path).read_bytes(), self.phone)
+
+    def test_a_takeout_created_before_the_copy_was_placed_does_not_prune_an_immich_photo(self):
+        self.imported()
+        item = self.jo_phone_item()
+        pixel_folder.queue(self.world.opened, item, NOW + 10, always_send=True)
+        self.tend(NOW + 3 * DAY)
+        self.imported(at=NOW + 2 * DAY)
+        self.assertEqual(self.tend(NOW + 3 * DAY + 10).pruned, 0)
+        self.assertTrue(self.copy_path().is_file())
+
+    def test_an_ordinary_copy_is_pruned_by_a_match_stamped_before_it_was_placed(self):
+        item = self.jo_phone_item()
+        self.assertEqual(pixel_folder.queue(self.world.opened, item, NOW - 100), 1)
+        self.assertEqual(self.tend(NOW + 50).placed, 1)
+        self.assertEqual(self.imported(at=NOW).failed, 0)
+        self.assertEqual(self.tend(NOW + 60).pruned, 1)
+        self.assertFalse(self.copy_path().exists())
+        self.assertEqual((self.world.root / item.path).read_bytes(), self.phone)

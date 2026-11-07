@@ -47,7 +47,24 @@ def confirmed_for(opened: Session, account_id: int, item_id: int, person_id: int
 
 
 def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
-    return confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
+    if not confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
+        return False
+    if not row.always_send or row.placed_at is None:
+        return True
+    seen_after_placing = row.seen_again_at is not None and row.seen_again_at >= row.placed_at
+    return seen_after_placing or confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
+
+
+def seen_again(opened: Session, account_id: int, item_id: int, person_id: int, at: float) -> None:
+    rows = opened.execute(
+        select(PixelCopy).join(Pixel, Pixel.id == PixelCopy.pixel_id).where(
+            Pixel.google_account_id == account_id, PixelCopy.item_id == item_id, PixelCopy.person_id == person_id,
+            PixelCopy.state == "placed", PixelCopy.always_send.is_(True),
+        )
+    ).scalars()
+    for row in rows:
+        row.seen_again_at = at if row.seen_again_at is None else max(row.seen_again_at, at)
+    opened.flush()
 
 
 def pixels_serving(opened: Session, person_id: int) -> list[Pixel]:

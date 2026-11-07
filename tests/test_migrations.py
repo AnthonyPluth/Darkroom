@@ -274,6 +274,28 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0021_pixel_copy_seen_again_leaves_existing_copies_unseen_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0020")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'Pixel', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'phone', 'jo/originals/a.jpg', 'ab', 3, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, state, bytes, sha1, queued_at, placed_at, always_send) VALUES (1, 1, 1, 'placed', 3, 'ab', 2.0, 3.0, 1)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, placed_at, seen_again_at FROM pixel_copies").all(), [("placed", 3.0, None)])
+            connection.exec_driver_sql("UPDATE pixel_copies SET seen_again_at = 4.0")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0020")
+        self.assertNotIn("seen_again_at", {column["name"] for column in inspect(self.engine).get_columns("pixel_copies")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, placed_at FROM pixel_copies").all(), [("placed", 3.0)])
+
     def test_0020_pixel_copies_adds_an_empty_queue_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
