@@ -1090,3 +1090,120 @@ def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha
             except OSError:
                 break
     return True
+
+
+class NotALosingCopy(ValueError):
+    pass
+
+
+LOSING_FOLDERS = (("google-only",), ("originals", "immich"))
+KEEPING_FOLDERS = (("google-only",), ("originals",))
+
+
+def library_parts(photos: Photos, person: str, relative: str, folders: tuple[tuple[str, ...], ...]) -> list[str]:
+    parts = relative.split("/")
+    inside = any(tuple(parts[1:1 + len(folder)]) == folder and len(parts) > 1 + len(folder) for folder in folders)
+    if "\0" in relative or parts[0] != photos.person_part(person) or any(part in {"", ".", ".."} for part in parts) or not inside:
+        raise NotALosingCopy("not a file in the person's library")
+    if photos.root.joinpath(*parts).resolve() != photos.root.joinpath(*parts):
+        raise NotALosingCopy("a link is on the way to the copy")
+    return parts
+
+
+@contextlib.contextmanager
+def pinned_folder(photos: Photos, parts: list[str]) -> Iterator[int]:
+    fds = [os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)]
+    try:
+        for part in parts:
+            try:
+                fds.append(os.open(part, NO_FOLLOW_FOLDER, dir_fd=fds[-1]))
+            except NotADirectoryError as error:
+                raise NotALosingCopy("a link or a file is on the way to the copy") from error
+            except OSError as error:
+                if error.errno == errno.ELOOP:
+                    raise NotALosingCopy("a link is on the way to the copy") from error
+                raise
+        yield fds[-1]
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+def open_copy(name: str, folder: int) -> int:
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise NotALosingCopy("the copy is a link") from error
+        raise
+
+
+@dataclass(frozen=True)
+class Keeper:
+    folder: int
+    name: str
+    fd: int
+    found: os.stat_result
+
+    def still_there(self) -> None:
+        held = os.fstat(self.fd)
+        try:
+            named = os.stat(self.name, dir_fd=self.folder, follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise NotALosingCopy("the kept copy went away") from error
+        if held.st_nlink < 1 or not os.path.samestat(held, self.found) or not os.path.samestat(named, self.found):
+            raise NotALosingCopy("the kept copy went away")
+
+
+@contextlib.contextmanager
+def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iterator[Keeper]:
+    parts = library_parts(photos, person, keeping, KEEPING_FOLDERS)
+    try:
+        with pinned_folder(photos, parts[:-1]) as folder:
+            kept = open_copy(parts[-1], folder)
+            try:
+                found = os.fstat(kept)
+                if not stat.S_ISREG(found.st_mode) or fd_sha1(kept) != sha1:
+                    raise NotALosingCopy("the kept copy is not the file Darkroom recorded")
+                yield Keeper(folder, parts[-1], kept, found)
+            finally:
+                os.close(kept)
+    except FileNotFoundError as error:
+        raise NotALosingCopy("the kept copy is missing") from error
+
+
+def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str) -> bool:
+    parts = library_parts(photos, person, losing, LOSING_FOLDERS)
+    with checked_keeper(photos, person, keeping, keeping_sha1) as keeper:
+        try:
+            with pinned_folder(photos, parts[:-1]) as folder:
+                return drop_losing_copy(folder, parts[-1], losing_sha1, keeper)
+        except FileNotFoundError:
+            return False
+
+
+def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
+    try:
+        copy = open_copy(name, folder)
+    except FileNotFoundError:
+        copy = -1
+    if copy >= 0:
+        try:
+            found = os.fstat(copy)
+            if not stat.S_ISREG(found.st_mode):
+                raise NotALosingCopy("only a file is removed")
+            if os.path.samestat(found, keeper.found):
+                raise NotALosingCopy("the kept copy is the same file")
+            if fd_sha1(copy) != sha1:
+                raise NotALosingCopy("the copy is not the file Darkroom recorded")
+            if not os.path.samestat(found, os.stat(name, dir_fd=folder, follow_symlinks=False)):
+                raise NotALosingCopy("the copy changed while it was being removed")
+            keeper.still_there()
+            os.unlink(name, dir_fd=folder)
+        finally:
+            os.close(copy)
+    sidecar = name + SIDECAR_SUFFIX
+    with contextlib.suppress(FileNotFoundError):
+        if stat.S_ISREG(os.stat(sidecar, dir_fd=folder, follow_symlinks=False).st_mode):
+            os.unlink(sidecar, dir_fd=folder)
+    return copy >= 0
