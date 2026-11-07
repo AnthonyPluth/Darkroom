@@ -10,7 +10,7 @@ from sqlalchemy import Engine
 
 from darkroom import dates, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, push, renewal, wake
+from darkroom.domain import alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, push, renewal
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import apns, immich
 from darkroom.storage import db
@@ -121,10 +121,6 @@ def push_alerts(settings: Settings, engine: Engine, pusher: apns.Pusher | None, 
         pushed = push.deliver_due(opened, settings, pusher, at)
     if pushed:
         monitoring.log("alert pushes sent", count=pushed)
-    with db.session(engine) as opened:
-        woken = wake.wake_due(opened, settings, pusher, at)
-    if woken:
-        monitoring.log("wake pushes sent", count=woken)
     return pushed
 
 

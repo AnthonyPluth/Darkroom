@@ -19,7 +19,6 @@ PORT = 443
 TIMEOUT = 15.0
 TOKEN_LIFETIME = 45 * 60.0
 EXPIRES_AFTER = 24 * 3600
-WAKE_EXPIRES_AFTER = 3600
 MAX_KEY_FILE = 16 * 1024
 MAX_PAYLOAD = 4096
 MAX_TIMESTAMP_MS = 10**14
@@ -41,11 +40,6 @@ class Push:
 
 
 @dataclass(frozen=True)
-class Wake:
-    pass
-
-
-@dataclass(frozen=True)
 class Result:
     outcome: Outcome
     reason: str
@@ -53,7 +47,7 @@ class Result:
 
 
 class Pusher(Protocol):
-    def send(self, tokens: Sequence[str], push: Push | Wake) -> list[Result]: ...
+    def send(self, tokens: Sequence[str], push: Push) -> list[Result]: ...
 
 
 @dataclass(frozen=True)
@@ -122,9 +116,7 @@ class Signer:
         self.token, self.issued = "", 0.0
 
 
-def payload_of(push: Push | Wake) -> bytes:
-    if isinstance(push, Wake):
-        return json.dumps({"aps": {"content-available": 1}}, separators=(",", ":")).encode()
+def payload_of(push: Push) -> bytes:
     body = json.dumps({"aps": {"alert": {"title": push.title}, "sound": "default", "thread-id": push.kind},
                        "kind": push.kind, "alert_id": push.alert_id}, separators=(",", ":")).encode()
     if len(body) > MAX_PAYLOAD:
@@ -158,15 +150,12 @@ class Apns:
     def __post_init__(self) -> None:
         self.signer = Signer(self.credentials)
 
-    def headers(self, push: Push | Wake, now: float) -> dict[str, str]:
+    def headers(self, push: Push, now: float) -> dict[str, str]:
         base = {"authorization": f"bearer {self.signer.bearer(now)}", "apns-topic": self.credentials.bundle_id, "content-type": "application/json"}
-        if isinstance(push, Wake):
-            return base | {"apns-push-type": "background", "apns-priority": "5", "apns-expiration": str(int(now) + WAKE_EXPIRES_AFTER),
-                           "apns-collapse-id": "wake"}
         return base | {"apns-push-type": "alert", "apns-priority": "10", "apns-expiration": str(int(now) + EXPIRES_AFTER),
                        "apns-collapse-id": f"alert-{push.alert_id}"}
 
-    def send(self, tokens: Sequence[str], push: Push | Wake) -> list[Result]:
+    def send(self, tokens: Sequence[str], push: Push) -> list[Result]:
         results: list[Result | None] = [None if DEVICE_TOKEN.fullmatch(token) else Result("invalid_token", "BadDeviceToken") for token in tokens]
         if all(results):
             return [result for result in results if result is not None]
@@ -184,7 +173,7 @@ class Apns:
             return [result or Result("failed", "Unreachable") for result in results]
         return [result or Result("failed", "Unreachable") for result in results]
 
-    def one(self, connection: tls.Http2, token: str, push: Push | Wake, body: bytes) -> Result:
+    def one(self, connection: tls.Http2, token: str, push: Push, body: bytes) -> Result:
         reply = connection.post(f"/3/device/{token}", self.headers(push, self.clock()), body)
         reason, unregistered_at = reply_of(reply.body)
         if reply.status == 403 and reason == "ExpiredProviderToken":

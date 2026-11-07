@@ -12,11 +12,9 @@ import shutil
 import stat
 import sys
 import tempfile
-import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
@@ -377,66 +375,6 @@ def clear_placing(destination: Path, token: str, committed: bool) -> None:
         return
     with contextlib.suppress(OSError):
         record.unlink(missing_ok=True)
-
-
-class Readable(Protocol):
-    def read(self, size: int, /) -> bytes: ...
-
-
-class IncompleteUpload(OSError):
-    pass
-
-
-class NotAnUpload(ValueError):
-    pass
-
-
-def upload_temp(path: Path) -> Path:
-    if path.is_symlink() or path.parent.name != UPLOADS_TMP or path.parent.parent.name != "originals":
-        raise NotAnUpload("only a file in a person's upload folder is an upload")
-    return path
-
-
-def receive_upload(folder: Path, stream: Readable, length: int) -> tuple[Path, str]:
-    if folder.name != UPLOADS_TMP or folder.parent.name != "originals" or folder.is_symlink():
-        raise NotAnUpload("uploads are received only into a person's upload folder")
-    folder.mkdir(parents=False, exist_ok=True)
-    temp = folder / uuid.uuid4().hex
-    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
-    handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(handle, "wb") as out:
-            remaining = length
-            while remaining > 0:
-                chunk = stream.read(min(CHUNK, remaining))
-                if not chunk:
-                    raise IncompleteUpload("the upload ended before its Content-Length")
-                digest.update(chunk)
-                out.write(chunk)
-                remaining -= len(chunk)
-            out.flush()
-            os.fsync(out.fileno())
-    except BaseException:
-        temp.unlink(missing_ok=True)
-        raise
-    return temp, digest.hexdigest()
-
-
-def discard_upload(temp: Path) -> None:
-    upload_temp(temp).unlink(missing_ok=True)
-
-
-def adopt_upload(temp: Path, destination: Path) -> None:
-    upload_temp(temp)
-    if destination.exists() or destination.is_symlink():
-        raise AlreadyExists(destination.name)
-    try:
-        os.link(temp, destination)
-    except FileExistsError as error:
-        raise AlreadyExists(destination.name) from error
-    except OSError:
-        copy_exclusive(temp, destination)
-    temp.unlink(missing_ok=True)
 
 
 def sidecar_of(media: Path) -> Path:

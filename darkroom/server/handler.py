@@ -76,10 +76,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_any(self) -> None:
         parts = urlsplit(self.path)
-        found = routes.match(self.command, parts.path)
-        if found is not None and found[0].streams:
-            self.handle_stream(parts.path, parts.query)
-            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -90,13 +86,6 @@ class Handler(BaseHTTPRequestHandler):
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
                           self.rfile.read(length) if length else b"", self.settings, self.engine)
         self.answer(safe_dispatch(request))
-
-    def handle_stream(self, path: str, query: str) -> None:
-        self.close_connection = True
-        self.connection.settimeout(self.settings.upload_read_timeout)
-        request = Request(self.command, path, parse_qs(query), dict(self.headers.items()), b"", self.settings, self.engine, stream=self.rfile)
-        response = safe_dispatch(request)
-        self.answer(replace(response, headers={**response.headers, "Connection": "close"}))
 
     def answer(self, response: Response) -> None:
         self.send_response(response.status)
