@@ -216,31 +216,34 @@ rules:
   - id: darkroom-push-token-one-module
     message: >-
       Push registration was removed with the iPhone app (#199, #201) and darkroom/domain/push_tokens.py with it: no
-      module reads or writes Device.push_token_sealed, push_token_digest or push_token_at any more. The columns go
-      with the migration that drops them.
+      module reads or writes Device.push_token_sealed, push_token_digest or push_token_at any more. The one exception
+      is clearing all three at once, as devices.revoke does so that a revoked device keeps no token stored before the
+      removal; it goes with the migration that drops the columns.
     severity: ERROR
     languages: [python]
-    pattern-either:
-      - pattern: $X.push_token_sealed
-      - pattern: $X.push_token_digest
-      - pattern: $X.push_token_at
-      - patterns:
-          - pattern-either:
-              - pattern: getattr($X, $NAME, ...)
-              - pattern: setattr($X, $NAME, ...)
-              - pattern: delattr($X, $NAME)
-          - metavariable-regex:
-              metavariable: $NAME
-              regex: ^["']push_token_(sealed|digest|at)["']$
-      - patterns:
-          - pattern-either:
-              - pattern: $CALL(..., $F=$V, ...)
-              - pattern: |
-                  {..., "$F": $V, ...}
-              - pattern: $D["$F"]
-          - metavariable-regex:
-              metavariable: $F
-              regex: ^push_token_(sealed|digest|at)$
+    patterns:
+      - pattern-not-inside: $DEVICE.push_token_sealed, $DEVICE.push_token_digest, $DEVICE.push_token_at = None, None, $T
+      - pattern-either:
+          - pattern: $X.push_token_sealed
+          - pattern: $X.push_token_digest
+          - pattern: $X.push_token_at
+          - patterns:
+              - pattern-either:
+                  - pattern: getattr($X, $NAME, ...)
+                  - pattern: setattr($X, $NAME, ...)
+                  - pattern: delattr($X, $NAME)
+              - metavariable-regex:
+                  metavariable: $NAME
+                  regex: ^["']push_token_(sealed|digest|at)["']$
+          - patterns:
+              - pattern-either:
+                  - pattern: $CALL(..., $F=$V, ...)
+                  - pattern: |
+                      {..., "$F": $V, ...}
+                  - pattern: $D["$F"]
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^push_token_(sealed|digest|at)$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
