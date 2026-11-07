@@ -289,7 +289,6 @@ class ProviderTests(unittest.TestCase):
 
     def test_configuration_needs_only_the_address(self):
         from tests.shared import settings_from
-
         with self.assertRaises(immich.NotConfigured):
             immich.Client.at(settings_from())
         self.assertEqual(immich.Client.at(settings_from(IMMICH_URL="http://127.0.0.1:2/")).url, "http://127.0.0.1:2")

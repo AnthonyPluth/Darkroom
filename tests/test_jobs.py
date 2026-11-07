@@ -290,7 +290,6 @@ class BuildTests(unittest.TestCase):
     def test_the_reconcile_job_does_nothing_without_an_immich_address_and_runs_every_quarter_hour(self):
         import tempfile
         from unittest import mock
-
         from tests.shared import settings_from
 
         with tempfile.TemporaryDirectory() as folder:

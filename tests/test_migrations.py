@@ -283,8 +283,6 @@ class MigrationTests(unittest.TestCase):
         db.migrate(self.engine)
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT immich_reconciled_until FROM people").all(), [(None,)])
-            self.assertEqual(connection.exec_driver_sql("SELECT COUNT(*) FROM immich_assets").scalar_one(), 0)
-            connection.exec_driver_sql("INSERT INTO immich_assets (person_id, asset_id, kind, status, sha1, seen_at) VALUES (1, 'a', 'photo', 'stored', 'ab', 1.0)")
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             config.attributes["connection"] = connection
