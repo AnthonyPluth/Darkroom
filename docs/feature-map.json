@@ -165,28 +165,6 @@
       ]
     },
     {
-      "route": "GET /api/people/{id}/devices",
-      "auth": "session",
-      "handler": "darkroom.server.api.people.list_person_devices",
-      "frontend": [
-        "frontend/src/pages/People.svelte"
-      ],
-      "tests": [
-        "tests/test_every_route.py"
-      ]
-    },
-    {
-      "route": "DELETE /api/devices/{id}",
-      "auth": "session",
-      "handler": "darkroom.server.api.devices.revoke_device",
-      "frontend": [
-        "frontend/src/pages/People.svelte"
-      ],
-      "tests": [
-        "tests/test_every_route.py"
-      ]
-    },
-    {
       "route": "GET /api/accounts",
       "auth": "session",
       "handler": "darkroom.server.api.accounts.list_accounts",

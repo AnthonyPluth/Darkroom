@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, checkedIn, count, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
+import { ago, count, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
 
 const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m - 1, d, h, min).getTime() / 1000;
 
@@ -18,13 +18,6 @@ describe("ago", () => {
     expect(ago(0, 5 * 3600)).toBe("5 hours ago");
     expect(ago(0, 86_400)).toBe("1 day ago");
     expect(ago(0, 3 * 86_400)).toBe("3 days ago");
-  });
-});
-
-describe("checkedIn", () => {
-  it("reads as a phrase", () => {
-    expect(checkedIn(null, 10)).toBe("never checked in");
-    expect(checkedIn(0, 600)).toBe("checked in 10 minutes ago");
   });
 });
 

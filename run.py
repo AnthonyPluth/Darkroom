@@ -281,7 +281,7 @@ def run_demo(folder: str | None) -> int:
         unseed(settings)
         print(f"demo: {error}; nothing was left under {folder}, so the same folder can be used again", file=sys.stderr)
         return 1
-    print(f"Seeded {summary.people} made-up people with {summary.accounts} Google accounts, {summary.pixels} Pixels, {summary.devices} iPhones, "
+    print(f"Seeded {summary.people} made-up people with {summary.accounts} Google accounts, {summary.pixels} Pixels, "
           f"{summary.originals} originals ({summary.indexed} indexed, {summary.failed} failed) and {summary.alerts} open alert.")
     print(f"Serve it with: DARKROOM_DEMO=1 DARKROOM_DATA_DIR={settings.data_dir} DARKROOM_PHOTOS_ROOT={settings.photos_root} python run.py serve")
     print(f"The demo member's session cookie is in {session_file} (the browser driver of a later issue sets it for you); "

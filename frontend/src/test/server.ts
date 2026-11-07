@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, BrowserJobView, DeviceView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
+import type { AccountView, BrowserJobView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -36,10 +36,6 @@ export const familyAccount: AccountView = { id: 11, email: "family.photos@exampl
 export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], last_sync: 940, created: 1 };
 export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], last_sync: null, created: 1 };
 
-export const joPhone: DeviceView = { id: 30, person_id: 1, name: "Jo's iPhone", cleanup_enabled: false, last_checkin: 990, app_version: "0.1.0", pending_uploads: 0, created: 1, revoked_at: null };
-export const samPhone: DeviceView = { id: 31, person_id: 2, name: "Sam's iPhone", cleanup_enabled: false, last_checkin: null, app_version: null, pending_uploads: 18, created: 1, revoked_at: null };
-export const oldPhone: DeviceView = { id: 32, person_id: 2, name: "Old iPhone", cleanup_enabled: false, last_checkin: 100, app_version: "0.0.9", pending_uploads: 0, created: 1, revoked_at: 500 };
-
 export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [] };
 
 export const signInAlert = { id: 1, kind: "sign_in_needed", subject: "family.photos@example.com", message: "family.photos@example.com needs someone to sign in to Google again.", link: null, opened: 900 };
@@ -53,21 +49,19 @@ export const seededStatus: Status = {
       id: 1, slug: "jo-example", name: "Jo Example", indexed: 120, with_gps: 100, unknown_time: 3,
       accounts: [{ id: 10, email: "jo.photos@example.com", session_state: "ok", session_checked: 1000, schedule_end: null }],
       pixels: [{ id: 20, name: "Pixel 9a", google_account_id: 10 }],
-      devices: [{ id: 30, name: "Jo's iPhone", last_checkin: 990, pending_uploads: 0, cleanup_enabled: false }],
       last_import: 700, unmatched: null, alerts: [],
     },
     {
       id: 2, slug: "sam-example", name: "Sam Example", indexed: 0, with_gps: 0, unknown_time: 0,
       accounts: [{ id: 11, email: "family.photos@example.com", session_state: "needs_sign_in", session_checked: 1000, schedule_end: 5_000_000 }],
       pixels: [],
-      devices: [{ id: 31, name: "Sam's iPhone", last_checkin: null, pending_uploads: 18, cleanup_enabled: false }],
       last_import: null, unmatched: null, alerts: [signInAlert, unmatchedAlert],
     },
   ],
 };
 
 export const someEvents: EventView[] = [
-  { id: 3, time: 995, type: "device_checkin", subject: "jo-example", detail: "Jo's iPhone" },
+  { id: 3, time: 995, type: "originals_indexed", subject: "jo-example", detail: "new=4 failed=0" },
   { id: 2, time: 900, type: "mystery_event", subject: "sam-example", detail: null },
   { id: 1, time: 100, type: "person_created", subject: "jo-example", detail: null },
 ];

@@ -80,8 +80,6 @@ class PeopleApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", "/api/people/abc", {"name": "X"}), (404, {"error": "no such person"}))
         self.assertEqual(self.call("DELETE", "/api/people/999"), (404, {"error": "no such person"}))
         self.assertEqual(self.call("DELETE", "/api/people/abc"), (404, {"error": "no such person"}))
-        self.assertEqual(self.call("GET", "/api/people/999/devices"), (404, {"error": "no such person"}))
-        self.assertEqual(self.call("GET", "/api/people/x/devices"), (404, {"error": "no such person"}))
 
     def test_the_immich_key_is_sealed_and_never_returned_logged_or_stored_plain(self):
         with no_leaks(self, IMMICH_KEY, database=self.engine, replies=self.replies):
@@ -117,7 +115,7 @@ class PeopleApiTests(ApiCase):
             types = [e.type for e in opened.execute(select(Event).order_by(Event.id)).scalars()]
         self.assertEqual(types.count("immich_key_removed"), 1)
 
-    def test_deleting_is_refused_while_the_person_has_media_devices_accounts_or_pixels_and_files_stay(self):
+    def test_deleting_is_refused_while_the_person_has_media_accounts_or_pixels_and_files_stay(self):
         person = self.person("Jo")
         pid = person["id"]
         with db.session(self.engine) as opened:
@@ -127,8 +125,6 @@ class PeopleApiTests(ApiCase):
         self.assertIn("media items", reply["error"])
         with db.session(self.engine) as opened:
             opened.query(MediaItem).delete()
-        self.add_device(pid)
-        self.assertIn("devices", self.call("DELETE", f"/api/people/{pid}")[1]["error"])
         self.account(pid)
         self.assertIn("Google accounts", self.call("DELETE", f"/api/people/{pid}")[1]["error"])
         self.assertEqual(self.call("GET", "/api/people")[1]["people"][0]["id"], pid)
@@ -178,30 +174,6 @@ class PeopleApiTests(ApiCase):
         (self.photos / "_inbox").unlink()
         self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 201)
         self.assertTrue((self.photos / "jo" / "originals").is_dir())
-
-    def test_devices_of_a_person_are_listed_without_their_token(self):
-        person = self.person("Jo")
-        device_id = self.add_device(person["id"])
-        status, reply = self.call("GET", f"/api/people/{person['id']}/devices")
-        self.assertEqual(status, 200)
-        (device,) = reply["devices"]
-        self.assertEqual((device["id"], device["name"], device["pending_uploads"], device["revoked_at"]), (device_id, "Jo's iPhone", 3, None))
-        self.assertFalse({"token_hash", "token"} & set(device))
-
-    def test_revoking_a_device_is_idempotent_turns_cleanup_off_and_records_an_event(self):
-        person = self.person("Jo")
-        device_id = self.add_device(person["id"])
-        status, reply = self.call("DELETE", f"/api/devices/{device_id}")
-        self.assertEqual(status, 200)
-        revoked = reply["device"]["revoked_at"]
-        self.assertIsInstance(revoked, float)
-        self.assertFalse(reply["device"]["cleanup_enabled"])
-        self.assertEqual(self.call("DELETE", f"/api/devices/{device_id}")[1]["device"]["revoked_at"], revoked)
-        self.assertEqual(self.call("DELETE", "/api/devices/999"), (404, {"error": "no such device"}))
-        self.assertEqual(self.call("DELETE", "/api/devices/x"), (404, {"error": "no such device"}))
-        status, events = self.call("GET", "/api/events")
-        self.assertEqual([e["type"] for e in events["events"] if e["type"] == "device_revoked"], ["device_revoked"])
-        self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}")[0], 409)
 
 
 class NoSecretKeyTests(ApiCase):

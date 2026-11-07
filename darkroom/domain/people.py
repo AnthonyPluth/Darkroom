@@ -9,8 +9,21 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import events
 from darkroom.storage import secretbox
-from darkroom.storage.models import Device, Export, GoogleAccount, ImmichAsset, MediaItem, Person, PixelPerson
+from darkroom.storage.models import Export, GoogleAccount, ImmichAsset, MediaItem, Person, PixelPerson
 from darkroom.storage.paths import SLUG, Photos
+
+
+class NoPerson(LookupError):
+    pass
+
+
+def person_for(opened: Session, email: str | None, verified: bool) -> Person:
+    if not email or not verified:
+        raise NoPerson("Darkroom has no person with this email")
+    found = list(opened.execute(select(Person).where(func.lower(Person.email) == email.strip().lower())).scalars())
+    if len(found) != 1:
+        raise NoPerson("Darkroom has no person with this email" if not found else "more than one person has this email")
+    return found[0]
 
 
 class SlugTaken(ValueError):
@@ -113,7 +126,6 @@ def blockers(opened: Session, person_id: int) -> list[str]:
     found = []
     counts = (
         ("media items", select(func.count(MediaItem.id)).where(MediaItem.person_id == person_id)),
-        ("devices", select(func.count(Device.id)).where(Device.person_id == person_id)),
         ("Google accounts that list them as the default person", select(func.count(GoogleAccount.id)).where(GoogleAccount.default_person_id == person_id)),
         ("Takeout exports they own", select(func.count(Export.id)).where(Export.owner_person_id == person_id)),
         ("Pixels that serve them", select(func.count(PixelPerson.pixel_id)).where(PixelPerson.person_id == person_id)),

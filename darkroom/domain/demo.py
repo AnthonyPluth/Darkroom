@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from darkroom import oidc
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, index, media, renewal
-from darkroom.storage.models import BrowserJob, DedupeDecision, Device, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.storage.models import BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -41,10 +41,6 @@ class DemoPerson:
     slug: str
     name: str
     email: str
-    phone: str
-    app_version: str
-    checked_in_hours_ago: float
-    pending_uploads: int
 
 
 @dataclass(frozen=True)
@@ -72,9 +68,9 @@ class Shot:
 
 
 PEOPLE = (
-    DemoPerson("avery", "Avery Example", "avery@example.com", "Avery's iPhone", "0.1.0", 1.0, 0),
-    DemoPerson("blair", "Blair Example", "blair@example.com", "Blair's iPhone", "0.1.0", 3 * 24.0, 12),
-    DemoPerson("casey", "Casey Example", "casey@example.com", "Casey's iPhone", "0.0.9", 20 * 24.0, 3),
+    DemoPerson("avery", "Avery Example", "avery@example.com"),
+    DemoPerson("blair", "Blair Example", "blair@example.com"),
+    DemoPerson("casey", "Casey Example", "casey@example.com"),
 )
 
 RENEWAL_UNSURE = "ScheduleNotConfirmed: Takeout did not confirm a recurring export; check Takeout before trying again"
@@ -111,7 +107,6 @@ class Summary:
     people: int
     accounts: int
     pixels: int
-    devices: int
     originals: int
     indexed: int
     failed: int
@@ -223,10 +218,6 @@ def seed_person(opened: Session, photos: Photos, who: DemoPerson, today: date, n
     opened.add(person)
     opened.flush()
     originals = photos.ensure_person_tree(who.slug)[0]
-    checked_in = now - who.checked_in_hours_ago * HOUR
-    opened.add(Device(person_id=person.id, name=who.phone, token_hash=f"demo-unusable:{who.slug}", cleanup_enabled=False, last_checkin=checked_in,
-                      app_version=who.app_version, pending_uploads=who.pending_uploads, created=now - 300 * DAY))
-    events.record(opened, checked_in, "device_checkin", who.slug, who.phone)
     files = [path for shot in SHOTS[who.slug] for path in write_shot(originals, shot, today)]
     report = index.index_person(opened, photos, person, now)
     events.record(opened, now, "originals_indexed", who.slug, f"new={report.new} failed={report.failed}")
@@ -320,7 +311,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_import(opened, photos, people, today, now)
     seed_download(opened, now)
     opened.flush()
-    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), len(PEOPLE), originals, indexed, failed, opened_alerts)
+    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), originals, indexed, failed, opened_alerts)
 
 
 def sign_in(opened: Session, settings: Settings, now: float) -> str:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from darkroom import validate
-from darkroom.domain import devices, people
+from darkroom.domain import people
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
 from darkroom.storage import db, secretbox
@@ -100,14 +100,3 @@ def delete_person(request: Request) -> Annotated[Response, contract.Ok]:
     return json_response({"ok": True})
 
 
-def list_person_devices(request: Request) -> Annotated[Response, contract.Devices]:
-    person_id = path_id(request)
-    if person_id is None:
-        return error_response(NO_PERSON, 404)
-    try:
-        with db.session(engine_of(request)) as opened:
-            people.get(opened, person_id)
-            listed = [devices.as_dict(device) for device in devices.of_person(opened, person_id)]
-    except people.NoSuchPerson:
-        return error_response(NO_PERSON, 404)
-    return json_response({"devices": listed})

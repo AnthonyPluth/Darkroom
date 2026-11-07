@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, familyAccount, joAccount, joPhone, jo, oldPhone, reply, sam, samPhone, serve, shared, solo } from "../test/server";
+import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo } from "../test/server";
 import People from "./People.svelte";
 
 beforeEach(() => {
@@ -21,8 +21,6 @@ const seeded = () => ({
   "GET /api/people": { people: [jo, sam] },
   "GET /api/accounts": { accounts: [joAccount, familyAccount] },
   "GET /api/pixels": { pixels: [solo, shared] },
-  "GET /api/people/1/devices": { devices: [joPhone] },
-  "GET /api/people/2/devices": { devices: [samPhone, oldPhone] },
 });
 
 function show(routes: Parameters<typeof serve>[0]) {
@@ -37,14 +35,13 @@ describe("the People page with no data", () => {
     show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("Add a person first.")).toBeInTheDocument();
     expect(screen.getByText("Add a Google account first.")).toBeInTheDocument();
-    expect(screen.getByText("No iPhone has signed in yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add person" })).toBeEnabled();
   });
 
   it("says no accounts or Pixels yet once there is a person", async () => {
-    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/people/1/devices": { devices: [] }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("No Google accounts yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
@@ -62,12 +59,9 @@ describe("the People page with data", () => {
     expect(rows[0]).toHaveTextContent("API key saved");
     expect(rows[0]).toHaveTextContent("jo.photos@example.com, family.photos@example.com");
     expect(rows[0]).toHaveTextContent("Pixel 9a, Pixel 8 (also Sam Example)");
-    expect(rows[0]).toHaveTextContent("Jo's iPhone");
     expect(rows[1]).toHaveTextContent("Not linked");
     expect(rows[1]).toHaveTextContent("No API key");
     expect(rows[1]).toHaveTextContent("Pixel 8 (also Jo Example)");
-    expect(rows[1]).toHaveTextContent("Sam's iPhone");
-    expect(rows[1]).not.toHaveTextContent("Old iPhone");
   });
 
   it("lists accounts with their session and a sign-in link only where one is needed", async () => {
@@ -103,27 +97,6 @@ describe("the People page with data", () => {
     expect(cell(never)).toHaveTextContent("Not synced yet");
     expect(cell(never)).toHaveClass("text-ink-muted");
   });
-
-  it("shows each iPhone with its state and a revoke button only while it works", async () => {
-    show(seeded());
-    const joCard = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
-    expect(within(joCard).getByText("Checked in")).toBeInTheDocument();
-    expect(within(joCard).getByText("0.1.0")).toBeInTheDocument();
-    expect(within(joCard).getByText("just now")).toBeInTheDocument();
-    const samCard = screen.getByRole("article", { name: "Sam's iPhone, Sam Example" });
-    expect(within(samCard).getByText("Never checked in")).toBeInTheDocument();
-    expect(within(samCard).getByText("Never")).toBeInTheDocument();
-    expect(within(samCard).getByText("Unknown")).toBeInTheDocument();
-    const oldCard = screen.getByRole("article", { name: "Old iPhone, Sam Example" });
-    expect(within(oldCard).getByText("Revoked")).toBeInTheDocument();
-    expect(within(oldCard).queryByRole("button")).not.toBeInTheDocument();
-  });
-
-  it("marks an iPhone with uploads waiting", async () => {
-    show({ ...seeded(), "GET /api/people/1/devices": { devices: [{ ...joPhone, pending_uploads: 4 }] } });
-    const card = await screen.findByRole("article", { name: "Jo's iPhone, Jo Example" });
-    expect(within(card).getByText("Uploads pending", { selector: "span" })).toHaveAttribute("data-tone", "warn");
-  });
 });
 
 describe("forms in dialogs", () => {
@@ -133,12 +106,10 @@ describe("forms in dialogs", () => {
     const server = show({
       ...seeded(),
       "GET /api/people": () => ({ people: listed }),
-      "GET /api/people/1/devices": { devices: [] },
       "POST /api/people": () => {
         listed = [jo, created];
         return reply(201, { person: created });
       },
-      "GET /api/people/3/devices": { devices: [] },
     });
     await userEvent.click(await screen.findByRole("button", { name: "Add person" }));
     const dialog = await screen.findByRole("dialog", { name: "Add person" });
@@ -180,13 +151,13 @@ describe("forms in dialogs", () => {
   });
 
   it("deletes a person after asking, and reports a refusal", async () => {
-    const server = show({ ...seeded(), "DELETE /api/people/2": reply(409, { error: "Sam Example still has devices; remove those first" }) });
+    const server = show({ ...seeded(), "DELETE /api/people/2": reply(409, { error: "Sam Example still has Pixels that serve them; remove those first" }) });
     await userEvent.click(await screen.findByRole("button", { name: "Edit Sam Example" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete person" }));
     const ask = await screen.findByRole("dialog", { name: "Delete Sam Example?" });
     expect(ask).toHaveTextContent("Their folders are never touched.");
     await userEvent.click(within(ask).getByRole("button", { name: "Delete person" }));
-    expect(await within(ask).findByRole("alert")).toHaveTextContent("still has devices");
+    expect(await within(ask).findByRole("alert")).toHaveTextContent("still has Pixels that serve them");
     expect(server.sent("DELETE /api/people/2")).toHaveLength(1);
     await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -195,19 +166,19 @@ describe("forms in dialogs", () => {
   it("does not show a refused delete's error when another confirmation opens", async () => {
     show({
       ...seeded(),
-      "DELETE /api/people/2": reply(409, { error: "Sam Example still has devices; remove those first" }),
-      "DELETE /api/devices/30": { device: { ...joPhone, revoked_at: 1 } },
+      "DELETE /api/people/2": reply(409, { error: "Sam Example still has Pixels that serve them; remove those first" }),
     });
     await userEvent.click(await screen.findByRole("button", { name: "Edit Sam Example" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete person" }));
     const ask = await screen.findByRole("dialog", { name: "Delete Sam Example?" });
     await userEvent.click(within(ask).getByRole("button", { name: "Delete person" }));
-    expect(await within(ask).findByRole("alert")).toHaveTextContent("still has devices");
+    expect(await within(ask).findByRole("alert")).toHaveTextContent("still has Pixels that serve them");
     await userEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    await userEvent.click(await screen.findByRole("button", { name: "Revoke Jo's iPhone, Jo Example" }));
-    const revoke = await screen.findByRole("dialog", { name: "Revoke Jo's iPhone?" });
-    expect(within(revoke).queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 9a" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete Pixel" }));
+    const other = await screen.findByRole("dialog", { name: "Delete Pixel 9a?" });
+    expect(within(other).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("deletes a person that can go and loads the list again", async () => {
@@ -280,16 +251,6 @@ describe("forms in dialogs", () => {
     await userEvent.click(within(await screen.findByRole("dialog", { name: "Delete Pixel 9a?" })).getByRole("button", { name: "Delete Pixel" }));
     await waitFor(() => expect(server.sent("DELETE /api/pixels/20")).toHaveLength(1));
   });
-
-  it("revokes an iPhone after asking", async () => {
-    const server = show({ ...seeded(), "DELETE /api/devices/30": { device: { ...joPhone, revoked_at: 1 } } });
-    await userEvent.click(await screen.findByRole("button", { name: "Revoke Jo's iPhone, Jo Example" }));
-    const ask = await screen.findByRole("dialog", { name: "Revoke Jo's iPhone?" });
-    expect(ask).toHaveTextContent("Photos already uploaded stay where they are.");
-    await userEvent.click(within(ask).getByRole("button", { name: "Revoke iPhone" }));
-    await waitFor(() => expect(server.sent("DELETE /api/devices/30")).toHaveLength(1));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  });
 });
 
 describe("when loading fails", () => {
@@ -300,10 +261,5 @@ describe("when loading fails", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("table", { name: "Persons" })).toBeInTheDocument();
-  });
-
-  it("names the person whose iPhones couldn't be loaded", async () => {
-    show({ ...seeded(), "GET /api/people/2/devices": reply(500, {}) });
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load the iPhones of Sam Example (500)");
   });
 });

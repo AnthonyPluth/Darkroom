@@ -74,10 +74,10 @@ class SeededDemo(unittest.TestCase):
         with db.session(self.engine) as opened:
             return opened.query(model).order_by(model.id).all()
 
-    def test_three_people_three_accounts_a_shared_pixel_and_one_iphone_each(self):
+    def test_three_people_three_accounts_and_a_shared_pixel(self):
         people = self.rows(Person)
         self.assertEqual([p.slug for p in people], ["avery", "blair", "casey"])
-        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels, self.summary.devices), (3, 3, 2, 3))
+        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels), (3, 3, 2))
         by_slug = {p.slug: p.id for p in people}
         shared, single, ended = self.rows(GoogleAccount)
         self.assertEqual((ended.default_person_id, ended.session_state), (by_slug["blair"], "ok"))
@@ -91,11 +91,7 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id])
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(PixelPerson).count(), 3)
-        devices = self.rows(Device)
-        self.assertEqual(sorted(d.person_id for d in devices), sorted(by_slug.values()))
-        for device in devices:
-            self.assertFalse(device.cleanup_enabled)
-            self.assertFalse(all(c in "0123456789abcdef" for c in device.token_hash), "a demo device must have no usable token")
+        self.assertEqual(self.rows(Device), [])
 
     def test_every_original_is_indexed_with_and_without_gps_including_a_live_photo_pair(self):
         self.assertEqual(self.summary.failed, 0)
@@ -127,7 +123,7 @@ class SeededDemo(unittest.TestCase):
         with db.session(self.engine) as opened:
             types = [e.type for e in events.recent(opened)]
         self.assertEqual(types.count("alert_sent"), 3)
-        self.assertEqual(types.count("device_checkin"), 3)
+        self.assertEqual(types.count("device_checkin"), 0)
         self.assertEqual(types.count("originals_indexed"), 3)
 
     def test_nothing_reads_as_a_real_person_place_or_device(self):
@@ -138,9 +134,6 @@ class SeededDemo(unittest.TestCase):
             self.assertTrue(account.email.endswith("@example.com"), account.email)
         for pixel in self.rows(Pixel):
             self.assertTrue(pixel.syncthing_device_id.startswith("DEMO-"), pixel.syncthing_device_id)
-        first_names = {p.name.split()[0] for p in self.rows(Person)}
-        for device in self.rows(Device):
-            self.assertIn(device.name.split("'")[0], first_names, device.name)
         for item in self.rows(MediaItem):
             if item.lat is not None:
                 self.assertIn((item.lat, item.lon), demo.OCEANS, item.path)
@@ -148,11 +141,7 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual(demo.MEMBER.email, "avery@example.com")
         self.assertTrue(demo.MEMBER.sub.startswith("demo:"))
 
-    def test_check_ins_and_captures_are_relative_to_today(self):
-        devices = {d.name: d for d in self.rows(Device)}
-        self.assertEqual(devices["Avery's iPhone"].last_checkin, NOON - 3600)
-        self.assertEqual(devices["Blair's iPhone"].last_checkin, NOON - 3 * DAY)
-        self.assertEqual(devices["Casey's iPhone"].last_checkin, NOON - 20 * DAY)
+    def test_captures_are_relative_to_today(self):
         days = sorted(date.fromisoformat(item.captured_local[:10]) for item in self.rows(MediaItem))
         self.assertEqual((days[0], days[-1]), (TODAY - timedelta(days=400), TODAY - timedelta(days=1)))
         self.assertTrue(all(item.indexed_at == NOON for item in self.rows(MediaItem)))
