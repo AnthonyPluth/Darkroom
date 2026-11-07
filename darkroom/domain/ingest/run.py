@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, dedupe, events, exports, xmp
+from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
@@ -164,7 +164,13 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
     if any(candidate.source_path not in known for candidate in candidates):
         index = dedupe.PersonIndex.load(opened, export.account_id, owner_person(opened, export).id)
         for decision in dedupe.decide_all(index, candidates, dedupe.load_settings(opened)):
-            if decision.source_path in known or dedupe.repeated(opened, decision, export.id):
+            if decision.source_path in known:
+                continue
+            if dedupe.repeated(opened, decision, export.id):
+                if decision.matched_item_id is not None:
+                    pixel_folder.seen_again(opened, export.account_id, decision.matched_item_id, decision.person_id,
+                                            export.created_at if export.created_at is not None else now)
+                    opened.commit()
                 continue
             try:
                 dedupe.apply(opened, decision, export, now)
