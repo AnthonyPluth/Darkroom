@@ -122,6 +122,8 @@ def push_alerts(settings: Settings, engine: Engine, pusher: Pusher | None, at: f
 
 
 def pusher_of(settings: Settings) -> Pusher | None:
+    if settings.demo:
+        return None
     found = ntfy.of(settings)
     if found is None and config.ntfy_configured(settings):
         monitoring.log("ntfy is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.ntfy_problems(settings) + ntfy.problems(settings)))

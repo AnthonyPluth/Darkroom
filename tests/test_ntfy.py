@@ -445,6 +445,26 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual([e.type for e in reversed(events.recent(opened))], ["alert_sent", "alert_sent"])
             self.assertEqual(opened.query(Alert).filter(Alert.key == "sign-in:b").one().push_due, 40.0 + alert_push.RETRY_AFTER)
 
+    def test_the_demo_never_posts_to_a_real_topic_not_even_a_close_note(self):
+        fake = FakeNtfy(self)
+        engine = own_database(self)
+        settings = ntfy_settings(url=fake.url, DARKROOM_DEMO="1", DARKROOM_HOST="127.0.0.1")
+        self.assertIsNotNone(ntfy.of(settings))
+        scheduler = jobs.build(settings, engine)
+        with db.session(engine) as opened:
+            alerts.open_alert(opened, settings, "sign-in:a", "sign_in_needed", EMAIL, alerts.sign_in_needed(EMAIL), None, 0.0, about=alerts.NOBODY)
+            alerts.close(opened, "sign-in:a", 5.0)
+        scheduler.run_one("alerts.push", 10.0)
+        with db.session(engine) as opened:
+            alerts.open_alert(opened, settings, "sign-in:b", "sign_in_needed", EMAIL, alerts.sign_in_needed(EMAIL), None, 20.0, about=alerts.NOBODY)
+            alerts.tick(opened, settings, DAY + 20.0)
+            alerts.close(opened, "sign-in:b", DAY + 30.0)
+        scheduler.run_one("alerts.push", DAY + 40.0)
+        self.assertEqual(fake.requests, [])
+        self.assertIsNone(jobs.pusher_of(settings_from(DARKROOM_DEMO="1", DARKROOM_SECRET_KEY=SECRET, NTFY_URL=fake.url, NTFY_TOPIC=sealed(TOPIC))))
+        with db.session(engine) as opened:
+            self.assertTrue(all(alert.push_due is None for alert in opened.query(Alert)))
+
     def test_an_alert_closed_before_its_push_sends_only_the_resolved_note(self):
         engine = own_database(self)
         settings = ntfy_settings()
