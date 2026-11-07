@@ -177,7 +177,7 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
     requeued = 0
     for row in rows:
         pixel = opened.get(Pixel, row.pixel_id)
-        if pixel is None or confirms_copy(opened, pixel, row):
+        if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
             continue
         row.state, row.queued_at, row.placed_at, row.pruned_at = "queued", now, None, None
         row.requeued += 1

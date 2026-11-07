@@ -446,10 +446,6 @@ class FirstExportAfterRenewalTests(unittest.TestCase):
         self.assertEqual(exports.kind_for(world.opened, account, NOW + year + 30 * DAY), "incremental")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PixelFolderThroughImportsTests(IncrementalCase):
     people = ("jo",)
     pixel_people = ("jo",)
@@ -500,3 +496,7 @@ class PixelFolderThroughImportsTests(IncrementalCase):
         self.assertEqual(self.tend(NOW + 60).pruned, 1)
         self.assertFalse(self.copy_path().exists())
         self.assertEqual((self.world.root / item.path).read_bytes(), self.phone)
+
+
+if __name__ == "__main__":
+    unittest.main()

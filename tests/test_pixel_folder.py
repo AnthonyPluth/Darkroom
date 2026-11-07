@@ -168,6 +168,20 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned"])
         self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
 
+    def test_a_reversed_match_leaves_the_photo_pruned_on_a_pixel_that_no_longer_serves_the_person(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        decision = self.match(item, self.jo_account, at=NOW + 10)
+        self.tend(at=NOW + 20)
+        self.opened.delete(self.opened.get(PixelPerson, (self.jo_pixel, self.jo)))
+        self.opened.flush()
+        dedupe.reverse(self.opened, decision.id, NOW + 30, "owner")
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("pruned", 0)])
+        tended = self.tend(at=NOW + 40)
+        self.assertEqual((tended.placed, tended.failed), (0, 0))
+        self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
+
     def test_reversing_a_match_in_another_account_requeues_nothing(self):
         item = self.item(self.jo)
         pixel_folder.queue(self.opened, item, NOW)
