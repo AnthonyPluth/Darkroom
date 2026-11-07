@@ -287,7 +287,7 @@ class MigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT COUNT(*) FROM pixel_copies").scalar_one(), 0)
             connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, bytes, sha1, queued_at) VALUES (1, 1, 1, 3, 'ab', 2.0)")
-            self.assertEqual(connection.exec_driver_sql("SELECT state, requeued FROM pixel_copies").all(), [("queued", 0)])
+            self.assertEqual(connection.exec_driver_sql("SELECT state, requeued, always_send FROM pixel_copies").all(), [("queued", 0, 0)])
             with self.assertRaises(IntegrityError), connection.begin_nested():
                 connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, bytes, sha1, queued_at) VALUES (1, 1, 1, 3, 'ab', 2.0)")
             with self.assertRaises(IntegrityError), connection.begin_nested():

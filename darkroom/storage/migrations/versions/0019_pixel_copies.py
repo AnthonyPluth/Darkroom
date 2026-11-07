@@ -23,6 +23,7 @@ def upgrade() -> None:
         sa.Column("placed_at", sa.Float(), nullable=True),
         sa.Column("pruned_at", sa.Float(), nullable=True),
         sa.Column("requeued", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("always_send", sa.Boolean(), server_default="0", nullable=False),
         sa.CheckConstraint("state IN ('queued', 'placed', 'pruned')", name="ck_pixel_copies_state"),
         sa.ForeignKeyConstraint(["item_id"], ["media_items.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["person_id"], ["people.id"], ondelete="CASCADE"),

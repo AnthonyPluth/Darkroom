@@ -220,6 +220,7 @@ class PixelCopy(Base):
     placed_at: Mapped[float | None] = mapped_column(Float)
     pruned_at: Mapped[float | None] = mapped_column(Float)
     requeued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    always_send: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
 
 
 class ReviewItem(Base):
