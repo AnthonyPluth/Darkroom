@@ -12,11 +12,11 @@ from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import accounts, dedupe, events, index, media
+from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder
 from darkroom.domain.ingest import place
 from darkroom.providers import exiftool
 from darkroom.storage import locks, paths
-from darkroom.storage.models import DedupeDecision, Export, LegacyFile, MediaItem, Person
+from darkroom.storage.models import DedupeDecision, Export, LegacyFile, MediaItem, Person, PixelPerson
 from darkroom.storage.paths import Photos
 
 LEGACY_FOLDER = "legacy"
@@ -58,6 +58,17 @@ class NoQueue:
         return False
 
 
+class PixelFolderQueue:
+    def offer(self, opened: Session, person: Person, original: MediaItem, now: float) -> bool:
+        if not pixel_folder.pixels_serving(opened, person.id):
+            return False
+        try:
+            pixel_folder.queue(opened, original, now)
+        except pixel_folder.NotInOriginals:
+            return False
+        return True
+
+
 @dataclass
 class LegacyReport:
     new: int = 0
@@ -82,6 +93,7 @@ class Totals:
     unmatched: int
     failed: int
     queued: int
+    pixels: int
 
 
 @dataclass(frozen=True)
@@ -275,8 +287,9 @@ def offer(opened: Session, person: Person, row: LegacyFile, queue: PixelQueue, n
     original = None if row.original_item_id is None else opened.get(MediaItem, row.original_item_id)
     if original is None or not queue.offer(opened, person, original, now):
         return False
-    row.queued_at = now
-    return True
+    first = row.queued_at is None
+    row.queued_at = now if first else row.queued_at
+    return first
 
 
 def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision: dedupe.Decision, known: dict[str, LegacyFile], now: float,
@@ -307,13 +320,18 @@ def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision
     opened.commit()
 
 
-def retry_queue(opened: Session, person: Person, queue: PixelQueue, now: float, report: LegacyReport) -> None:
+def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, LegacyFile], queue: PixelQueue, now: float, report: LegacyReport) -> None:
     waiting = opened.execute(
-        select(LegacyFile).where(LegacyFile.person_id == person.id, LegacyFile.status == "unmatched", LegacyFile.queued_at.is_(None)).order_by(LegacyFile.id)
+        select(LegacyFile).where(LegacyFile.person_id == person.id, LegacyFile.status == "unmatched", LegacyFile.original_item_id.is_not(None)).order_by(LegacyFile.id)
     ).scalars().all()
     for row in waiting:
-        report.queued += offer(opened, person, row, queue, now)
-    opened.commit()
+        key = row.path
+        try:
+            report.queued += offer(opened, person, row, queue, now)
+            opened.commit()
+        except OSError as error:
+            opened.rollback()
+            mark_failed(opened, person, root, root / key, known, now, type(error).__name__, report)
 
 
 def import_person(opened: Session, settings: config.Settings, person: Person, now: float, read: index.Reader = exiftool.read,
@@ -344,7 +362,7 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
             if (stat.st_size, stat.st_mtime) != (row.bytes, row.mtime):
                 report.changed += 1
                 pending.append(path)
-        retry_queue(opened, person, queue, now, report)
+        retry_queue(opened, person, root, known, queue, now, report)
         seen = fingerprint_all(opened, person, root, pending, known, now, report, read)
         for each, decision in zip(seen, decisions_for(opened, person, seen), strict=True):
             try:
@@ -367,10 +385,11 @@ def totals(opened: Session) -> list[Totals]:
         person_id: int(count)
         for person_id, count in opened.execute(select(LegacyFile.person_id, func.count(LegacyFile.id)).where(LegacyFile.queued_at.is_not(None)).group_by(LegacyFile.person_id))
     }
+    pixels = {person_id: int(count) for person_id, count in opened.execute(select(PixelPerson.person_id, func.count(PixelPerson.pixel_id)).group_by(PixelPerson.person_id))}
     found = []
     for person in opened.execute(select(Person).order_by(Person.id)).scalars():
         matched, unmatched, failed = (counts.get((person.id, status), 0) for status in ("matched", "unmatched", "failed"))
-        found.append(Totals(person.slug, person.name, bool(person.legacy_path), matched + unmatched + failed, matched, unmatched, failed, queued.get(person.id, 0)))
+        found.append(Totals(person.slug, person.name, bool(person.legacy_path), matched + unmatched + failed, matched, unmatched, failed, queued.get(person.id, 0), pixels.get(person.id, 0)))
     return found
 
 
@@ -378,5 +397,6 @@ def describe(entry: Totals) -> str:
     if not entry.configured and not entry.files:
         return f"{entry.slug}: no legacy folder"
     waiting = entry.unmatched - entry.queued
-    return (f"{entry.slug}: {entry.files} legacy files, {entry.matched} matched in Google, {entry.unmatched + entry.failed} not backed up "
+    text = (f"{entry.slug}: {entry.files} legacy files, {entry.matched} matched in Google, {entry.unmatched + entry.failed} not backed up "
             f"({entry.failed} could not be imported yet, {entry.queued} sent to the Pixel folder, {waiting} waiting for it)")
+    return text if entry.pixels or not waiting else f"{text}; no Pixel serves {entry.name}, so nothing can be sent"
