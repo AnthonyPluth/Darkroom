@@ -190,6 +190,15 @@ class PixelsApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.sam["id"], self.kai["id"]]})[0], 200)
         self.assertEqual(self.states(), [(self.sam["id"], "placed")])
 
+    def test_a_busy_pixel_answers_503_to_try_again(self):
+        pixel = self.pixel(self.account["id"])
+        from darkroom.domain import pixels as pixel_domain
+
+        with mock.patch.object(pixel_domain, "lock", side_effect=accounts.Busy("Darkroom is busy; try again in a moment")):
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed"})[0], 503)
+            self.assertEqual(self.call("DELETE", f"/api/pixels/{pixel['id']}")[0], 503)
+        self.assertEqual(self.call("GET", "/api/pixels")[1]["pixels"][0]["name"], "Pixel A")
+
 class AccountsApiTests(ApiCase):
     def test_create_list_update_delete(self):
         jo, sam = self.person("Jo"), self.person("Sam")

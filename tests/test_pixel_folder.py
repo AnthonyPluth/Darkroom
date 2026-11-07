@@ -1,6 +1,7 @@
 import hashlib
 import itertools
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder, pixels
+from darkroom.domain import accounts, dedupe, pixel_folder, pixels
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
@@ -348,35 +349,60 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
         self.assertEqual(self.tend(at=NOW + 5).placed, 1)
 
-    def test_taking_the_person_off_the_pixel_from_another_connection_waits_for_a_placement_in_flight(self):
+    def test_taking_the_person_off_the_pixel_while_a_copy_is_being_placed_is_refused_once_it_is_placed(self):
         self.opened.add(PixelPerson(pixel_id=self.jo_pixel, person_id=self.sam))
         item = self.item(self.jo)
         pixel_folder.queue(self.opened, item, NOW)
         self.opened.commit()
-        other = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.2})
-        self.addCleanup(other.dispose)
-        real, attempts = pixel_folder.serves, []
+        engine = self.opened.get_bind()
+        copying, go, outcome = threading.Event(), threading.Event(), []
+        real = pixel_folder.paths.place_pixel_copy
 
-        def removed_meanwhile(*args: object) -> bool:
-            found = real(*args)
-            with Session(other) as elsewhere:
+        def slow_copy(*args: object) -> str:
+            copying.set()
+            go.wait(10)
+            return real(*args)
+
+        def take_jo_off() -> None:
+            with Session(engine) as elsewhere:
                 try:
                     pixels.update(elsewhere, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 1)
                     elsewhere.commit()
-                    attempts.append("removed")
-                except OperationalError:
+                    outcome.append("applied")
+                except pixels.StillHasCopies:
                     elsewhere.rollback()
-                    attempts.append("locked")
-            return found
+                    outcome.append("refused")
 
-        with mock.patch.object(pixel_folder, "serves", removed_meanwhile):
-            self.assertEqual(self.tend(at=NOW + 2).placed, 1)
-        self.assertEqual(attempts, ["locked"])
+        with mock.patch.object(pixel_folder.paths, "place_pixel_copy", slow_copy):
+            filling = threading.Thread(target=lambda: self.tend(at=NOW + 2))
+            filling.start()
+            self.assertTrue(copying.wait(10))
+            updating = threading.Thread(target=take_jo_off)
+            updating.start()
+            updating.join(0.5)
+            go.set()
+            filling.join(20)
+            updating.join(40)
+        self.assertEqual(outcome, ["refused"])
         self.opened.expire_all()
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
+        self.assertTrue(pixel_folder.serves(self.opened, self.jo_pixel, self.jo))
         self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
-        with Session(other) as elsewhere, self.assertRaises(pixels.StillHasCopies):
-            pixels.update(elsewhere, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 3)
+
+    def test_changing_or_deleting_a_pixel_while_another_writer_holds_the_lock_is_busy(self):
+        self.opened.commit()
+        impatient = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.1})
+        self.addCleanup(impatient.dispose)
+        holder = impatient.connect()
+        self.addCleanup(holder.close)
+        holder.exec_driver_sql("BEGIN IMMEDIATE")
+        with Session(impatient) as elsewhere:
+            with self.assertRaises(accounts.Busy):
+                pixels.update(elsewhere, self.jo_pixel, {"name": "Renamed"}, NOW)
+            elsewhere.rollback()
+            with self.assertRaises(accounts.Busy):
+                pixels.delete(elsewhere, self.jo_pixel, NOW)
+        holder.exec_driver_sql("ROLLBACK")
 
     def test_each_pruned_copy_is_kept_when_a_later_one_fails_the_pass(self):
         first, second = self.item(self.jo), self.item(self.jo)
