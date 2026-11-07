@@ -1,0 +1,256 @@
+import dataclasses
+import hashlib
+import unittest
+from unittest import mock
+
+from sqlalchemy import select
+
+from darkroom.domain import immich_reconcile as reconcile
+from darkroom.domain import pixel_folder
+from darkroom.providers import immich
+from darkroom.storage import secretbox
+from darkroom.storage.models import Alert, Event, ImmichAsset, MediaItem, Person, PixelCopy
+from tests.fakes.immich import FakeAsset
+from tests.import_world import NOW, World, tree
+
+OLD = "2020-01-01T00:00:00.000Z"
+SECRET = "reconcile-secret"
+
+
+def sha1(data):
+    return hashlib.sha1(data, usedforsecurity=False).hexdigest()
+
+
+class ReconcileCase(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        self.settings = dataclasses.replace(self.world.settings, secret_key=SECRET)
+        self.jo = self.world.opened.get(Person, self.world.ids["jo"])
+        self.jo.immich_api_key_sealed = secretbox.seal("key-jo", SECRET)
+        self.world.opened.commit()
+        export = self.world.downloaded()
+        self.world.run_import(export)
+        self.counter = 0
+
+    def photo(self, **fields):
+        self.counter += 1
+        data = self.world.scratch_jpeg(f"p{self.counter}.jpg", taken=f"2021:03:0{self.counter} 10:00:00", offset="+00:00", colour=(self.counter, 9, 9))
+        fields.setdefault("id", f"a{self.counter}")
+        fields.setdefault("name", f"IMG_{self.counter:04d}.JPG")
+        return self.world.fake.add_asset(FakeAsset(owner_id="u-jo", data=data, updated_at=fields.pop("updated_at", "2026-01-01T00:00:00.000Z"), **fields))
+
+    def run_it(self, at=NOW, queue=None):
+        return reconcile.reconcile_person(self.world.opened, self.settings, self.jo, at, queue=queue)
+
+    def stored(self):
+        return sorted(p.name for p in (self.world.root / "jo" / "originals" / "immich").rglob("*") if p.is_file()) if (self.world.root / "jo" / "originals" / "immich").exists() else []
+
+    def rows(self):
+        return {row.asset_id: row for row in self.world.opened.execute(select(ImmichAsset)).scalars()}
+
+    def copies(self):
+        return list(self.world.opened.execute(select(PixelCopy).order_by(PixelCopy.id)).scalars())
+
+
+class StoreTests(ReconcileCase):
+    def test_a_phone_upload_is_written_once_into_originals_and_queued_for_the_pixel_even_when_takeout_matches(self):
+        asset = self.photo()
+        confirmed = self.world.fake.add_asset(FakeAsset(id="old", owner_id="u-jo", data=(self.world.root / "jo/originals/IMG_1001.JPG").read_bytes(), name="IMG_1001.JPG"))
+        report = self.run_it(queue=reconcile.PixelFolderQueue())
+        self.assertEqual((report.listed, report.stored, report.copied, report.already_there, report.queued), (2, 2, 1, 1, 2))
+        (name,) = self.stored()
+        self.assertTrue(name.startswith("IMG_0001-"))
+        self.assertEqual((self.world.root / "jo/originals/immich" / name).read_bytes(), asset.data)
+        item = self.world.opened.execute(select(MediaItem).where(MediaItem.sha1 == sha1(asset.data))).scalar_one()
+        self.assertEqual(item.path, f"jo/originals/immich/{name}")
+        queued = {copy.item_id: copy for copy in self.copies()}
+        self.assertEqual(len(queued), 2)
+        self.assertTrue(all(copy.always_send and copy.state == "queued" for copy in queued.values()))
+        self.assertEqual({row.status for row in self.rows().values()}, {"stored"})
+        self.assertIn(confirmed.id, self.rows())
+
+    def test_a_second_run_changes_nothing_and_rewrites_no_original(self):
+        self.photo()
+        self.run_it(queue=reconcile.PixelFolderQueue())
+        before, rows, copies = tree(self.world.root / "jo" / "originals"), len(self.rows()), len(self.copies())
+        again = self.run_it(at=NOW + 3600, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((again.stored, again.copied, again.queued), (0, 0, 0))
+        self.assertEqual((tree(self.world.root / "jo" / "originals"), len(self.rows()), len(self.copies())), (before, rows, copies))
+
+    def test_only_phone_uploads_of_this_person_count(self):
+        self.photo(metadata=())
+        self.photo(library_id="lib-jo")
+        self.photo(trashed=True)
+        self.world.fake.add_asset(FakeAsset(id="sams", owner_id="u-sam", data=b"x"))
+        self.photo(id="owned-by-partner", updated_at="2026-01-01T00:00:00.000Z")
+        before = tree(self.world.root / "jo" / "originals")
+        report = self.run_it()
+        self.assertEqual((report.stored, report.ignored), (1, 2))
+        self.assertEqual(len(self.stored()), 1)
+        self.assertEqual(set(tree(self.world.root / "jo" / "originals")) - set(before), {f"immich/{self.stored()[0]}"})
+        self.assertNotIn("sams", self.rows())
+
+    def test_pages_are_all_read_and_only_the_window_is_listed_next_time(self):
+        self.world.fake.state.page_size = 1
+        for _ in range(3):
+            self.photo()
+        self.assertEqual(self.run_it().stored, 3)
+        self.photo(updated_at=OLD)
+        late = self.photo(updated_at=reconcile.stamp(NOW + 1800))
+        report = self.run_it(at=NOW + 3600)
+        self.assertEqual((report.listed, report.stored), (1, 1))
+        self.assertEqual(self.rows()[late.id].status, "stored")
+        self.assertEqual(self.jo.immich_reconciled_until, NOW + 3600 - reconcile.MARGIN_SECONDS)
+
+    def test_nothing_is_ever_deleted_or_changed_in_immich(self):
+        self.photo()
+        before = len(self.world.fake.requests())
+        self.run_it()
+        methods = {(method, path) for method, path in self.world.fake.requests()[before:] if method != "GET"}
+        self.assertEqual(methods, {("POST", "/api/search/metadata")})
+
+
+class LivePhotoTests(ReconcileCase):
+    def live(self):
+        video = self.world.fake.add_asset(FakeAsset(id="vid", owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
+                                                  visibility="hidden", metadata=()))
+        still = self.photo(live_video_id="vid")
+        return still, video
+
+    def test_both_halves_are_stored_linked_and_queued(self):
+        still, video = self.live()
+        with mock.patch("darkroom.domain.immich_reconcile.index.index_file", wraps=reconcile.index.index_file):
+            report = self.run_it(queue=reconcile.PixelFolderQueue())
+        self.assertEqual((report.stored, report.queued, report.waiting), (2, 2, 0))
+        rows = self.rows()
+        self.assertEqual((rows[still.id].linked_asset_id, rows[video.id].linked_asset_id), (video.id, still.id))
+        self.assertEqual((rows[still.id].kind, rows[video.id].kind), ("photo", "live_video"))
+        self.assertEqual(len(self.copies()), 2)
+
+    def test_a_hidden_video_without_its_still_waits_and_is_never_stored_alone(self):
+        self.world.fake.add_asset(FakeAsset(id="vid", owner_id="u-jo", data=b"v", kind="VIDEO", visibility="hidden", metadata=()))
+        report = self.run_it()
+        self.assertEqual((report.stored, report.waiting), (0, 1))
+        self.assertEqual(self.stored(), [])
+        self.assertEqual(self.rows()["vid"].status, "waiting")
+
+    def test_a_still_whose_video_has_not_arrived_waits_and_is_stored_when_it_does(self):
+        still = self.photo(live_video_id="vid")
+        report = self.run_it()
+        self.assertEqual((report.stored, report.waiting, self.rows()[still.id].status), (0, 1, "waiting"))
+        self.assertEqual(self.stored(), [])
+        self.world.fake.add_asset(FakeAsset(id="vid", owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  later", name="IMG_0001.MOV", kind="VIDEO", visibility="hidden", metadata=()))
+        later = self.run_it(at=NOW + 3600)
+        self.assertEqual((later.stored, self.rows()[still.id].status, self.rows()["vid"].status), (2, "stored", "stored"))
+
+
+class FailureTests(ReconcileCase):
+    def test_a_download_that_does_not_match_its_checksum_writes_nothing_and_is_retried(self):
+        asset = self.photo()
+        good = asset.data
+        asset.data = b"truncated"
+        asset.checksum = __import__("base64").b64encode(bytes.fromhex(sha1(good))).decode()
+        report = self.run_it()
+        self.assertEqual((report.stored, report.failed, self.stored(), self.rows()[asset.id].status), (0, 1, [], "failed"))
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "ChecksumMismatch")
+        asset.data = good
+        retried = self.run_it(at=NOW + 3600)
+        self.assertEqual((retried.stored, retried.failed, self.rows()[asset.id].status), (1, 0, "stored"))
+
+    def test_an_unreachable_immich_alerts_once_until_a_good_run_and_keeps_the_window(self):
+        self.photo()
+        self.world.fake.mode("500")
+        self.assertEqual(reconcile.reconcile_all(self.world.opened, self.settings, NOW), {})
+        reconcile.reconcile_all(self.world.opened, self.settings, NOW + 1)
+        key = f"immich:reconcile:{self.jo.id}"
+        self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.key == key)).scalars().all()), 1)
+        self.assertEqual((self.jo.immich_reconciled_until, self.stored()), (None, []))
+        self.world.fake.mode("ok")
+        self.assertEqual(reconcile.reconcile_all(self.world.opened, self.settings, NOW + 2)["jo"].stored, 1)
+        self.world.fake.mode("500")
+        reconcile.reconcile_all(self.world.opened, self.settings, NOW + 3)
+        self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.key == key)).scalars().all()), 2)
+
+    def test_a_refused_key_stops_the_run_and_keeps_the_window(self):
+        self.photo()
+        self.jo.immich_api_key_sealed = secretbox.seal("wrong", SECRET)
+        with self.assertRaises(immich.ImmichFailed) as caught:
+            self.run_it()
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual((self.jo.immich_reconciled_until, self.stored()), (None, []))
+
+
+class OrderTests(ReconcileCase):
+    def test_it_waits_for_the_takeout_the_legacy_import_and_a_readable_key(self):
+        lee = World(self, people=("jo",), pixel_people=("jo",))
+        lee_person = lee.opened.get(Person, lee.ids["jo"])
+        lee_person.immich_api_key_sealed = secretbox.seal("key-jo", SECRET)
+        settings = dataclasses.replace(lee.settings, secret_key=SECRET)
+        with self.assertRaisesRegex(reconcile.NotReady, "Takeout"):
+            reconcile.reconcile_person(lee.opened, settings, lee_person, NOW)
+        self.jo.legacy_path = "/old"
+        with self.assertRaisesRegex(reconcile.NotReady, "legacy"):
+            self.run_it()
+        self.world.opened.add(Event(time=1.0, type="legacy_imported", subject="jo"))
+        self.assertEqual(self.run_it().failed, 0)
+        self.jo.immich_api_key_sealed = None
+        with self.assertRaisesRegex(reconcile.NotReady, "no Immich user"):
+            self.run_it()
+        self.jo.immich_api_key_sealed = secretbox.seal("key-jo", "other-secret")
+        with self.assertRaisesRegex(reconcile.NotReady, "cannot be read"):
+            self.run_it()
+        with self.assertRaisesRegex(reconcile.NotReady, "SECRET_KEY"):
+            reconcile.reconcile_person(self.world.opened, self.world.settings, self.jo, NOW)
+
+    def test_a_pixel_that_serves_the_person_later_still_gets_the_stored_photos(self):
+        self.photo()
+        self.world.opened.query(pixel_folder.PixelPerson).delete()
+        self.world.opened.commit()
+        first = self.run_it(queue=reconcile.PixelFolderQueue())
+        self.assertEqual((first.stored, first.queued), (1, 0))
+        self.world.opened.add(pixel_folder.PixelPerson(pixel_id=self.world.pixel, person_id=self.jo.id))
+        self.world.opened.commit()
+        later = self.run_it(at=NOW + 3600, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((later.stored, later.queued), (0, 1))
+        self.assertEqual([copy.always_send for copy in self.copies()], [True])
+
+    def test_names_keep_only_safe_characters(self):
+        asset = immich.Asset("x", "u", None, "ab" * 20, "../../we irdé/na me.JPG", "IMAGE", "timeline", None, False, False)
+        self.assertEqual(reconcile.copy_name(asset), "na_me-abababab.jpg")
+        odd = dataclasses.replace(asset, file_name="")
+        self.assertEqual(reconcile.copy_name(odd), "asset-abababab")
+
+
+class ProviderTests(unittest.TestCase):
+    def test_checksums_and_assets_are_checked(self):
+        digest = bytes(range(20))
+        encoded = __import__("base64").b64encode(digest).decode()
+        self.assertEqual(immich.sha1_of_checksum(encoded), digest.hex())
+        for bad in ("***", __import__("base64").b64encode(b"short").decode()):
+            with self.assertRaises(immich.ImmichFailed):
+                immich.sha1_of_checksum(bad)
+        for bad in (None, {}, {"id": "a", "ownerId": "u", "type": "IMAGE"}):
+            with self.assertRaises(immich.ImmichFailed):
+                immich.asset_of(bad)
+        for bad in ("", "a/b", "a?b"):
+            with self.assertRaises(immich.ImmichFailed):
+                immich.asset_path(bad)
+
+    def test_search_and_metadata_replies_are_checked(self):
+        client = immich.Client("http://127.0.0.1:1", "k")
+        for reply in ({}, {"assets": {"items": "no"}}, []):
+            with mock.patch.object(immich.Client, "call", return_value=reply), self.assertRaises(immich.ImmichFailed):
+                list(client.search_updated("k", None, "2026-01-01T00:00:00.000Z"))
+        with mock.patch.object(immich.Client, "call", return_value={}), self.assertRaises(immich.ImmichFailed):
+            client.metadata_keys("k", "a")
+
+    def test_configuration_needs_only_the_address(self):
+        from tests.shared import settings_from
+
+        with self.assertRaises(immich.NotConfigured):
+            immich.Client.at(settings_from())
+        self.assertEqual(immich.Client.at(settings_from(IMMICH_URL="http://127.0.0.1:2/")).url, "http://127.0.0.1:2")
+
+
+if __name__ == "__main__":
+    unittest.main()

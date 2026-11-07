@@ -244,7 +244,7 @@ class BuildTests(unittest.TestCase):
         export_id = world.hand_dropped().id
         scheduler = jobs.build(world.settings, world.engine)
         self.assertEqual((scheduler.jobs["imports"].interval, scheduler.jobs["imports"].own_thread), (60.0, True))
-        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name not in ("imports", "alerts.push", "pixels.tend")))
+        self.assertFalse(any(job.own_thread for name, job in scheduler.jobs.items() if name not in ("imports", "alerts.push", "pixels.tend", "immich.reconcile")))
         scheduler.run_one("imports", NOW)
         self.assertEqual(world.reopen().get(Export, export_id).status, "downloaded")
         run.request_import(world.opened, export_id)
@@ -286,6 +286,22 @@ class BuildTests(unittest.TestCase):
             self.assertEqual((root / f"_pixels/{pixel.id}/jo/a.jpg").read_bytes(), b"photo")
             with db.session(engine) as opened:
                 self.assertEqual([row.state for row in opened.query(PixelCopy)], ["placed"])
+
+    def test_the_reconcile_job_does_nothing_without_an_immich_address_and_runs_every_quarter_hour(self):
+        import tempfile
+        from unittest import mock
+
+        from tests.shared import settings_from
+
+        with tempfile.TemporaryDirectory() as folder:
+            settings = settings_from(DARKROOM_PHOTOS_ROOT=folder, DARKROOM_DATA_DIR=folder)
+            engine = own_database(self)
+            scheduler = jobs.build(settings, engine)
+            self.assertEqual((scheduler.jobs["immich.reconcile"].interval, scheduler.jobs["immich.reconcile"].own_thread), (900.0, True))
+            scheduler.run_one("immich.reconcile", 5.0)
+            with mock.patch.object(jobs.immich_reconcile, "reconcile_all", return_value={}) as called:
+                jobs.build(settings_from(DARKROOM_PHOTOS_ROOT=folder, DARKROOM_DATA_DIR=folder, IMMICH_URL="http://127.0.0.1:9"), engine).run_one("immich.reconcile", 5.0)
+            called.assert_called_once()
 
     def test_the_cleanup_job_runs_daily_and_removes_old_staging(self):
         from darkroom.storage.models import Export

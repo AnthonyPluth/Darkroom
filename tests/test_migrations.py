@@ -274,6 +274,24 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT number FROM export_parts").scalars().all(), [1])
 
 
+    def test_0022_immich_assets_adds_an_empty_table_and_the_window_column_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0021")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT immich_reconciled_until FROM people").all(), [(None,)])
+            self.assertEqual(connection.exec_driver_sql("SELECT COUNT(*) FROM immich_assets").scalar_one(), 0)
+            connection.exec_driver_sql("INSERT INTO immich_assets (person_id, asset_id, kind, status, sha1, seen_at) VALUES (1, 'a', 'photo', 'stored', 'ab', 1.0)")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0021")
+        self.assertNotIn("immich_assets", inspect(self.engine).get_table_names())
+        self.assertNotIn("immich_reconciled_until", {column["name"] for column in inspect(self.engine).get_columns("people")})
+
     def test_0021_pixel_copy_seen_again_leaves_existing_copies_unseen_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

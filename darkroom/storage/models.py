@@ -24,6 +24,7 @@ class Person(Base):
     originals_path: Mapped[str] = mapped_column(String, nullable=False)
     google_only_path: Mapped[str] = mapped_column(String, nullable=False)
     legacy_path: Mapped[str | None] = mapped_column(String)
+    immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 
@@ -181,6 +182,25 @@ class LegacyFile(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     tier: Mapped[int | None] = mapped_column(Integer)
     matched_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    original_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    seen_at: Mapped[float] = mapped_column(Float, nullable=False)
+    queued_at: Mapped[float | None] = mapped_column(Float)
+
+
+class ImmichAsset(Base):
+    __tablename__ = "immich_assets"
+    __table_args__ = (
+        UniqueConstraint("person_id", "asset_id", name="uq_immich_assets_person_asset"),
+        one_of("status", ("stored", "waiting", "ignored", "failed"), "ck_immich_assets_status"),
+        one_of("kind", ("photo", "live_video"), "ck_immich_assets_kind"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    linked_asset_id: Mapped[str | None] = mapped_column(String)
     original_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     seen_at: Mapped[float] = mapped_column(Float, nullable=False)
     queued_at: Mapped[float | None] = mapped_column(Float)
