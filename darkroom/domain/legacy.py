@@ -287,8 +287,9 @@ def offer(opened: Session, person: Person, row: LegacyFile, queue: PixelQueue, n
     original = None if row.original_item_id is None else opened.get(MediaItem, row.original_item_id)
     if original is None or not queue.offer(opened, person, original, now):
         return False
-    row.queued_at = now
-    return True
+    first = row.queued_at is None
+    row.queued_at = now if first else row.queued_at
+    return first
 
 
 def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision: dedupe.Decision, known: dict[str, LegacyFile], now: float,
@@ -321,7 +322,7 @@ def settle(opened: Session, photos: Photos, person: Person, seen: Seen, decision
 
 def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, LegacyFile], queue: PixelQueue, now: float, report: LegacyReport) -> None:
     waiting = opened.execute(
-        select(LegacyFile).where(LegacyFile.person_id == person.id, LegacyFile.status == "unmatched", LegacyFile.queued_at.is_(None)).order_by(LegacyFile.id)
+        select(LegacyFile).where(LegacyFile.person_id == person.id, LegacyFile.status == "unmatched", LegacyFile.original_item_id.is_not(None)).order_by(LegacyFile.id)
     ).scalars().all()
     for row in waiting:
         key = row.path

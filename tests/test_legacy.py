@@ -177,8 +177,8 @@ class LegacyImportTests(unittest.TestCase):
         self.assertEqual((again.new, again.queued, len(taking.offered)), (0, 3, 3))
         self.assertEqual({path for path, row in self.home.rows().items() if row.queued_at is not None}, {"not-backed-up.jpg", "fresh.jpg", "sams-photo.jpg"})
         last = Recorder()
-        self.home.run(last, at=NOW + 9)
-        self.assertEqual(last.offered, [])
+        again = self.home.run(last, at=NOW + 9)
+        self.assertEqual((again.queued, len(last.offered)), (0, 3))
 
     def test_matched_files_are_never_offered_to_the_pixel_queue(self):
         taking = Recorder()

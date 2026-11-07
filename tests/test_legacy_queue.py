@@ -52,6 +52,20 @@ class PixelFolderQueueTests(QueueCase):
         self.assertEqual(len([p for p in (self.world.root / "_pixels" / str(second.id) / "jo").rglob("*") if p.is_file()]), 2)
         self.assertEqual(tree(self.world.root / "jo" / "originals"), before)
 
+    def test_a_pixel_added_later_gets_the_files_already_imported_and_the_first_pixel_no_duplicates(self):
+        self.prepare()
+        self.home.run(legacy.PixelFolderQueue())
+        second = self.second_pixel("jo")
+        elsewhere = self.second_pixel("sam")
+        again = self.home.run(legacy.PixelFolderQueue(), at=NOW + 5)
+        self.assertEqual((again.new, again.queued), (0, 0))
+        rows = sorted((copy.pixel_id, copy.item_id) for copy in self.copies())
+        self.assertEqual(len(rows), len(set(rows)))
+        self.assertEqual(sorted({pixel for pixel, _ in rows}), sorted([self.world.pixel, second.id]))
+        self.assertEqual([pixel for pixel, _ in rows].count(self.world.pixel), 2)
+        self.assertEqual([pixel for pixel, _ in rows].count(second.id), 2)
+        self.assertNotIn(elsewhere.id, [pixel for pixel, _ in rows])
+
     def test_a_matched_file_creates_no_copy(self):
         self.prepare()
         self.home.run(legacy.PixelFolderQueue())
