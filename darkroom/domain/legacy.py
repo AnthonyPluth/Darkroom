@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -143,8 +143,18 @@ def person_lock(settings: config.Settings, person: Person) -> Iterator[None]:
         raise Busy("a legacy import is already running for this person") from error
 
 
-def files_of(root: Path) -> list[Path]:
-    return [path for path in index.walk(root) if not path.is_symlink()]
+def files_of(root: Path) -> tuple[list[Path], set[str]]:
+    unreadable: set[str] = set()
+
+    def failed(error: OSError) -> None:
+        folder = Path(error.filename) if error.filename else root
+        unreadable.add(f"{folder.relative_to(root) if folder.is_relative_to(root) else '.'}/")
+
+    found: list[Path] = []
+    for folder, names, files in os.walk(root, onerror=failed):
+        names[:] = [name for name in names if name not in index.SKIPPED_FOLDERS and not name.startswith(".")]
+        found.extend(Path(folder, name) for name in files)
+    return sorted(path for path in found if not path.is_symlink() and path.is_file() and index.wanted(root, path)), unreadable
 
 
 def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
@@ -165,14 +175,17 @@ def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
     return tuple(replace(dedupe.shot_of(found[item_id]), source="phone") for item_id in sorted(found))
 
 
-def mark_failed(opened: Session, person: Person, root: Path, path: Path, known: dict[str, LegacyFile], now: float, reason: str, report: LegacyReport) -> None:
-    key = str(path.relative_to(root))
+def mark_failed(opened: Session, person: Person, root: Path, path: Path, known: dict[str, LegacyFile], now: float, reason: str, report: LegacyReport,
+                key: str | None = None) -> None:
+    key = key or str(path.relative_to(root))
     try:
         stat = path.stat()
         size, mtime = stat.st_size, stat.st_mtime
     except OSError:
         size, mtime = 0, 0.0
     row = known.get(key)
+    if row is not None and not inspect(row).persistent:
+        row = None
     if row is None:
         row = LegacyFile(person_id=person.id, path=key, bytes=size, mtime=mtime, sha1="", status="failed", seen_at=now)
         opened.add(row)
@@ -303,7 +316,12 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
     with person_lock(settings, person):
         known = {row.path: row for row in opened.execute(select(LegacyFile).where(LegacyFile.person_id == person.id)).scalars()}
         pending: list[Path] = []
-        for path in files_of(root):
+        listed, unreadable = files_of(root)
+        for key in [key for key in known if key.endswith("/") and key not in unreadable]:
+            opened.delete(known.pop(key))
+        for key in sorted(unreadable):
+            mark_failed(opened, person, root, root / key, known, now, "Unreadable", report, key)
+        for path in listed:
             row = known.get(str(path.relative_to(root)))
             if row is None or row.status == "failed":
                 pending.append(path)

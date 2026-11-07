@@ -1,6 +1,7 @@
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import select
 
@@ -228,6 +229,40 @@ class LegacyImportTests(unittest.TestCase):
             report = legacy.import_person(self.world.opened, self.world.settings, self.home.jo, NOW, read=failing)
         self.assertEqual((report.failed, report.new), (6 + 1, 0))
         self.assertEqual({row.status for row in self.home.rows().values()}, {"failed"})
+
+    def test_a_folder_that_cannot_be_listed_counts_as_not_backed_up_until_a_later_run_reads_it(self):
+        real = os.walk
+
+        def walk(top, onerror=None, **kwargs):
+            yield from real(top, onerror=onerror, **kwargs)
+            onerror(PermissionError(13, "denied", str(Path(top) / "locked")))
+
+        with mock.patch("darkroom.domain.legacy.os.walk", walk):
+            first = self.home.run()
+        self.assertEqual((first.failed, first.new), (1, 6))
+        self.assertEqual(self.home.rows()["locked/"].status, "failed")
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.failed, found.unmatched), (1, 3))
+        self.assertIn("4 not backed up (1 could not be imported yet", legacy.describe(found))
+        with mock.patch("darkroom.domain.legacy.os.walk", walk):
+            again = self.home.run(at=NOW + 5)
+        self.assertEqual((again.failed, again.new), (1, 0))
+        fixed = self.home.run(at=NOW + 9)
+        self.assertEqual((fixed.failed, fixed.new), (0, 0))
+        self.assertNotIn("locked/", self.home.rows())
+        self.assertEqual({entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"].failed, 0)
+
+    def test_a_queue_that_raises_leaves_the_file_counted_as_failed_and_retried(self):
+        class Raising:
+            def offer(self, opened, person, original, now):
+                raise OSError("queue folder is full")
+
+        report = self.home.run(Raising())
+        self.assertEqual(report.failed, 3)
+        found = {entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"]
+        self.assertEqual((found.matched, found.unmatched, found.failed), (3, 0, 3))
+        again = self.home.run(Recorder(), at=NOW + 5)
+        self.assertEqual((again.failed, again.new, again.queued, again.already_there), (0, 3, 3, 1))
 
     def test_exports_the_person_owns_still_prove_after_their_account_stops_serving_them(self):
         from darkroom.storage.models import Export, GoogleAccount, PixelPerson
