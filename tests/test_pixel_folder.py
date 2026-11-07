@@ -259,6 +259,16 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual(self.tend(at=NOW + 40).placed, 1)
         self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
 
+    def test_a_repeat_in_another_accounts_or_persons_takeout_leaves_the_copy_unseen(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW, always_send=True)
+        self.tend(at=NOW)
+        pixel_folder.seen_again(self.opened, self.sam_account, item.id, self.jo, NOW + 10)
+        pixel_folder.seen_again(self.opened, self.jo_account, item.id, self.sam, NOW + 10)
+        self.assertEqual([c.seen_again_at for c in self.copies(self.jo_pixel)], [None])
+        pixel_folder.seen_again(self.opened, self.jo_account, item.id, self.jo, NOW + 10)
+        self.assertEqual([c.seen_again_at for c in self.copies(self.jo_pixel)], [NOW + 10])
+
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)
         pixel_folder.queue(self.opened, item, NOW)
