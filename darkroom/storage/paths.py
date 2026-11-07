@@ -1292,8 +1292,10 @@ def holding(keeper: Keeper) -> Iterator[None]:
         try:
             keeper.still_there()
         except NotALosingCopy:
-            with contextlib.suppress(OSError, NotALosingCopy):
+            try:
                 rename_no_replace(held, keeper.name, keeper.folder)
+            except (OSError, NotALosingCopy) as error:
+                raise NotALosingCopy(f"the kept copy's name was taken, so it stays as {held}") from error
         else:
             os.unlink(held, dir_fd=keeper.folder)
 

@@ -1,6 +1,6 @@
 from darkroom.domain import takeout_copies
 from darkroom.storage import paths
-from darkroom.storage.paths import remove_losing_copy
+from darkroom.storage.paths import checked_keeper, remove_losing_copy, restore_losing_copy
 
 
 def drop_a_google_only_copy(photos, person, row):
@@ -27,3 +27,10 @@ def pin_a_keeper_elsewhere(photos, slug, phone):
     # ruleid: darkroom-losing-copy-one-caller
     with paths.checked_keeper(photos, slug, phone.path, phone.sha1) as keeper:
         return keeper.sidecar()
+
+
+def internals_by_bare_name(photos, slug, row, phone):
+    # ruleid: darkroom-losing-copy-one-caller
+    restore_losing_copy(photos, slug, row.removed_path, row.removed_sha1)
+    # ruleid: darkroom-losing-copy-one-caller
+    return checked_keeper(photos, slug, phone.path, phone.sha1)

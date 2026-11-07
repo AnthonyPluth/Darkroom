@@ -760,6 +760,21 @@ class RemoveLosingCopyTests(unittest.TestCase):
             self.remove()
         self.assertEqual((self.loser.read_bytes(), self.loser.with_name("IMG_0001.jpg.xmp").read_bytes()), (b"a new photo", b"its sidecar"))
 
+    def test_a_keeper_whose_name_is_taken_after_the_loser_went_is_kept_and_reported(self):
+        real = os.unlink
+
+        def taking(name, *args, **kwargs):
+            if name == paths.CLAIMED:
+                self.file("jo/originals/immich/incoming", b"intruder")
+                os.replace(self.keeper.with_name("incoming"), self.keeper)
+            return real(name, *args, **kwargs)
+
+        with mock.patch.object(paths.os, "unlink", taking), self.assertRaisesRegex(paths.NotALosingCopy, "stays as"):
+            self.remove()
+        self.assertEqual(sorted(self.contents()), sorted([b"intruder", b"phone"]))
+        (held,) = [p for p in self.keeper.parent.iterdir() if p.name.startswith(paths.KEEPING)]
+        self.assertEqual(held.read_bytes(), b"phone")
+
     def test_a_250_byte_name_is_claimed_and_removed(self):
         long = "a" * 246 + ".jpg"
         self.loser.rename(self.loser.with_name(long))
