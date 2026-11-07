@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, events
-from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelPerson
+from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelCopy, PixelPerson
 
 
 class NoSuchPixel(LookupError):
@@ -13,6 +13,10 @@ class NoSuchPixel(LookupError):
 
 
 class NoPeople(ValueError):
+    pass
+
+
+class StillHasCopies(ValueError):
     pass
 
 
@@ -109,6 +113,10 @@ def require_still_served(opened: Session, pixel: Pixel, kept: set[int]) -> None:
 def delete(opened: Session, pixel_id: int, now: float) -> None:
     pixel = get(opened, pixel_id)
     require_still_served(opened, pixel, set())
+    waiting = opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state.in_(("queued", "placed"))).limit(1)).first()
+    if waiting is not None:
+        raise StillHasCopies(f"{pixel.name} still has photos in its folder or waiting for it; they leave only once Google Photos has them and Darkroom prunes them, "
+                             "so delete the Pixel after that")
     opened.delete(pixel)
     opened.flush()
     events.record(opened, now, "pixel_deleted", str(pixel_id))
