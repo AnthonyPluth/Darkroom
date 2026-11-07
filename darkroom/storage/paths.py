@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -1173,7 +1174,9 @@ class Keeper:
         name, temp = self.name + SIDECAR_SUFFIX, f".xmp-{secrets.token_hex(8)}"
         fd = open_no_follow(temp, self.folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         try:
-            os.write(fd, data)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -1182,7 +1185,8 @@ class Keeper:
                 os.link(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder, follow_symlinks=False)
             elif exchange(temp, name, self.folder):
                 if read_entry(temp, self.folder) != before:
-                    exchange(temp, name, self.folder)
+                    if read_entry(name, self.folder) == data and exchange(temp, name, self.folder) and read_entry(temp, self.folder) != data:
+                        exchange(temp, name, self.folder)
                     raise NotALosingCopy("the kept copy's sidecar changed")
             else:
                 if self.sidecar() != before:
@@ -1233,6 +1237,10 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
             kept = open_copy(parts[-1], folder)
             try:
                 found = os.fstat(kept)
+                try:
+                    fcntl.flock(kept, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise NotALosingCopy("another removal is using the kept copy") from error
                 if stat.S_ISREG(found.st_mode) and found.st_nlink > 1:
                     drop_held_links(folder, found)
                     found = os.fstat(kept)
@@ -1368,7 +1376,7 @@ def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
             finally:
                 os.close(copy)
         if entry_at(name, folder) is None and entry_at(CLAIMED, private) is None:
-            drop_losing_sidecar(folder, name + SIDECAR_SUFFIX, private)
+            drop_losing_sidecar(folder, name, private)
     return copy >= 0
 
 
@@ -1394,7 +1402,8 @@ def unlink_claimed(private: int, claim: str, expected: os.stat_result) -> None:
     os.unlink(claim, dir_fd=private)
 
 
-def drop_losing_sidecar(folder: int, sidecar: str, private: int) -> None:
+def drop_losing_sidecar(folder: int, name: str, private: int) -> None:
+    sidecar = name + SIDECAR_SUFFIX
     left = entry_at(CLAIMED_SIDECAR, private)
     if left is not None and stat.S_ISREG(left.st_mode):
         with contextlib.suppress(FileNotFoundError, NotALosingCopy):
@@ -1405,6 +1414,8 @@ def drop_losing_sidecar(folder: int, sidecar: str, private: int) -> None:
     with contextlib.suppress(FileNotFoundError, FileExistsError):
         rename_no_replace(sidecar, CLAIMED_SIDECAR, folder, private)
         try:
+            if entry_at(name, folder) is not None:
+                raise NotALosingCopy("a photo is at the name again, so the sidecar is its")
             unlink_claimed(private, CLAIMED_SIDECAR, seen)
         except NotALosingCopy:
             put_claim_back(private, CLAIMED_SIDECAR, folder, sidecar)
