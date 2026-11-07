@@ -16,8 +16,12 @@ def env_list(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(part.strip() for part in env(name, default).split(",") if part.strip())
 
 
-def whole_seconds(raw: str) -> int:
+def whole_number(raw: str) -> int:
     return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 9 else 0
+
+
+def whole_seconds(raw: str) -> int:
+    return whole_number(raw)
 
 
 def env_flag(name: str) -> bool:
@@ -81,7 +85,7 @@ def load() -> Settings:
         apns_team_id=env("APNS_TEAM_ID"),
         apns_bundle_id=env("APNS_BUNDLE_ID"),
         apns_key_file=env("APNS_KEY_FILE"),
-        pixel_folder_cap_gb=whole_seconds(env("PIXEL_FOLDER_CAP_GB", "50")),
+        pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
     )
 
 
