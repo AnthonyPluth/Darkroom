@@ -160,7 +160,7 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
                 if folder:
                     legacy.set_source(opened, Photos(settings.photos_root), person, folder, now)
                     opened.commit()
-                done = legacy.import_person(opened, settings, person, now)
+                done = legacy.import_person(opened, settings, person, now, queue=legacy.PixelFolderQueue())
             except (legacy.BadSource, legacy.NoSource, legacy.NotReady, legacy.Busy) as error:
                 print(f"import-legacy: {error}", file=sys.stderr)
                 code = 1
