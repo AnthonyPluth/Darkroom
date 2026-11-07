@@ -1,6 +1,8 @@
 import contextlib
+import errno
 import hashlib
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -299,6 +301,130 @@ class PixelFolderPathTests(unittest.TestCase):
             paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
         self.assert_kept_unchanged()
 
+
+    def no_links(self):
+        return mock.patch("darkroom.storage.paths.os.link", side_effect=OSError("no hard links here"))
+
+    def crash_in_a_child(self, crash):
+        child = os.fork()
+        if child == 0:
+            try:
+                with self.no_links(), crash:
+                    self.place()
+            finally:
+                os._exit(0)
+        _, status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+
+    def test_a_crash_while_placing_without_hard_links_never_leaves_part_of_a_copy(self):
+        def exit_now(*_args, **_kwargs):
+            os._exit(0)
+
+        def half_then_exit(source, target):
+            os.write(target, self.data[: len(self.data) // 2])
+            os._exit(0)
+
+        real_fsync = os.fsync
+
+        def exit_after_publishing(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                os._exit(0)
+            real_fsync(fd)
+
+        crashes = {
+            "while staging": (mock.patch("darkroom.storage.paths.copy_fd", half_then_exit), None),
+            "after claiming the name": (mock.patch("darkroom.storage.paths.replace_claim", exit_now), b""),
+            "just before the rename": (mock.patch("darkroom.storage.paths.os.rename", exit_now), b""),
+            "after the rename": (mock.patch("darkroom.storage.paths.os.fsync", exit_after_publishing), self.data),
+        }
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        for point, (crash, left) in crashes.items():
+            with self.subTest(point):
+                with contextlib.suppress(FileNotFoundError):
+                    copy.unlink()
+                self.crash_in_a_child(crash)
+                self.assertEqual(copy.read_bytes() if copy.exists() else None, left)
+                with self.no_links():
+                    self.place()
+                self.assertEqual(copy.read_bytes(), self.data)
+                self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o644)
+                self.assert_kept_unchanged()
+
+    def test_an_empty_leftover_in_the_copys_place_is_replaced(self):
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        for link_fails in (True, False):
+            with self.subTest(link_fails=link_fails):
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.unlink(missing_ok=True)
+                copy.touch()
+                with self.no_links() if link_fails else contextlib.nullcontext():
+                    self.place()
+                self.assertEqual(copy.read_bytes(), self.data)
+                self.assertEqual(copy.stat().st_nlink, 1)
+                self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
+        self.assert_kept_unchanged()
+
+    def test_a_staging_folder_on_another_disk_leaves_nothing_at_the_copys_place(self):
+        with self.no_links(), mock.patch("darkroom.storage.paths.os.rename", side_effect=OSError(errno.EXDEV, "cross-device")):
+            with self.assertRaises(paths.NotAPixelCopy):
+                self.place()
+        self.assertFalse((self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").exists())
+        self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
+        self.assert_kept_unchanged()
+
+    def test_stale_staging_files_are_swept_and_nothing_else_is(self):
+        incoming = self.root / "_pixels/.incoming"
+        incoming.mkdir(parents=True)
+        old = 1_000_000.0
+        stale = incoming / ".copy-0123456789abcdef"
+        fresh = incoming / ".copy-fedcba9876543210"
+        link = incoming / ".copy-1111111111111111"
+        folder = incoming / ".copy-2222222222222222"
+        unrelated = incoming / "notes"
+        stale.write_bytes(b"half a photo")
+        fresh.write_bytes(b"being written")
+        link.symlink_to(self.root / "jo/originals/2024/IMG_0001.HEIC")
+        folder.mkdir()
+        unrelated.write_bytes(b"not Darkroom's")
+        for each in (stale, link, folder, unrelated):
+            os.utime(each, (old, old), follow_symlinks=False)
+        now = old + 3601
+        os.utime(fresh, (now - 60, now - 60))
+        paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data), now=lambda: now)
+        self.assertFalse(stale.exists())
+        self.assertEqual(fresh.read_bytes(), b"being written")
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(unrelated.read_bytes(), b"not Darkroom's")
+        self.assertEqual(sorted(each.name for each in incoming.iterdir()), sorted([fresh.name, link.name, folder.name, unrelated.name]))
+        self.assert_kept_unchanged()
+
+    def test_a_copy_already_in_place_is_made_readable_by_others(self):
+        name = self.place()
+        copy = self.root / "_pixels/1/jo" / name
+        copy.chmod(0o600)
+        self.assertEqual(self.place(), name)
+        self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o644)
+        self.assert_kept_unchanged()
+
+    def test_a_hard_link_in_the_copys_place_is_refused(self):
+        original = self.root / "jo/originals/2024/IMG_0001.HEIC"
+        original.chmod(0o600)
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        copy.parent.mkdir(parents=True)
+        os.link(original, copy)
+        with self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o600)
+        copy.unlink()
+        other = self.root / "elsewhere"
+        other.write_bytes(self.data)
+        other.chmod(0o600)
+        os.link(other, copy)
+        with self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertEqual(stat.S_IMODE(other.stat().st_mode), 0o600)
+        self.assert_kept_unchanged()
 
 if __name__ == "__main__":
     unittest.main()
