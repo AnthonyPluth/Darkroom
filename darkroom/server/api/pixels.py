@@ -76,7 +76,7 @@ def update_pixel(request: Annotated[Request, contract.PixelPatchBody]) -> Annota
         return error_response("no such Google account", 404)
     except accounts.NoSuchPerson:
         return error_response("no such person", 404)
-    except accounts.StillConfirming as error:
+    except (accounts.StillConfirming, pixels.StillHasCopies) as error:
         return error_response(str(error), 409)
     return json_response({"pixel": reply})
 
@@ -90,6 +90,6 @@ def delete_pixel(request: Request) -> Annotated[Response, contract.Ok]:
             pixels.delete(opened, pixel_id, now())
     except pixels.NoSuchPixel:
         return error_response(NO_PIXEL, 404)
-    except accounts.StillConfirming as error:
+    except (accounts.StillConfirming, pixels.StillHasCopies) as error:
         return error_response(str(error), 409)
     return json_response({"ok": True})

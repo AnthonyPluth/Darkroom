@@ -2,11 +2,11 @@ import time
 import unittest
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from darkroom.storage import db
 from darkroom.domain import accounts, alerts, browser_jobs, dedupe
-from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, MediaItem, Pixel, PixelCopy, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -128,6 +128,67 @@ class PixelsApiTests(ApiCase):
             self.assertEqual(opened.execute(select(PixelPerson)).scalars().all(), [])
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["jo", "sam", "kai"])
 
+
+    def test_a_pixel_with_copies_queued_or_in_its_folder_is_not_deleted_until_they_are_pruned(self):
+        pixel = self.pixel(self.account["id"])
+        with db.session(self.engine) as opened:
+            item = MediaItem(person_id=self.jo["id"], source="phone", path="jo/originals/a.jpg", sha1="a" * 40, bytes=1, indexed_at=1.0)
+            opened.add(item)
+            opened.flush()
+            opened.add(PixelCopy(pixel_id=pixel["id"], item_id=item.id, person_id=self.jo["id"], state="placed", bytes=1, sha1="a" * 40, queued_at=1.0))
+        for state in ("placed", "queued"):
+            with self.subTest(state=state):
+                with db.session(self.engine) as opened:
+                    opened.execute(update(PixelCopy).values(state=state))
+                status, reply = self.call("DELETE", f"/api/pixels/{pixel['id']}")
+                self.assertEqual(status, 409)
+                self.assertIn("still has photos", reply["error"])
+                self.assertEqual([p["id"] for p in self.call("GET", "/api/pixels")[1]["pixels"]], [pixel["id"]])
+        with db.session(self.engine) as opened:
+            opened.execute(update(PixelCopy).values(state="pruned"))
+        self.assertEqual(self.call("DELETE", f"/api/pixels/{pixel['id']}"), (200, {"ok": True}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(PixelCopy)).scalars().all(), [])
+
+    def copy_of(self, pixel_id, person_id, state, name="a.jpg"):
+        with db.session(self.engine) as opened:
+            item = MediaItem(person_id=person_id, source="phone", path=f"p{person_id}/originals/{name}", sha1="a" * 40, bytes=1, indexed_at=1.0)
+            opened.add(item)
+            opened.flush()
+            opened.add(PixelCopy(pixel_id=pixel_id, item_id=item.id, person_id=person_id, state=state, bytes=1, sha1="a" * 40, queued_at=1.0))
+
+    def states(self):
+        with db.session(self.engine) as opened:
+            return sorted((row.person_id, row.state) for row in opened.execute(select(PixelCopy)).scalars())
+
+    def test_taking_someone_off_a_pixel_drops_their_queued_photos_so_it_can_then_be_deleted(self):
+        pixel = self.pixel(self.account["id"], people_ids=[self.jo["id"], self.sam["id"]])
+        self.copy_of(pixel["id"], self.sam["id"], "queued", "q.jpg")
+        self.copy_of(pixel["id"], self.jo["id"], "pruned", "p.jpg")
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"]]})[0], 200)
+        self.assertEqual(self.states(), [(self.jo["id"], "pruned")])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(Event.detail).where(Event.type == "pixel_copies_dropped")).scalars().all(),
+                             ["1 queued photos of people it no longer serves"])
+        self.assertEqual(self.call("DELETE", f"/api/pixels/{pixel['id']}"), (200, {"ok": True}))
+
+    def test_a_pixel_keeps_its_account_and_people_while_their_photos_are_in_its_folder(self):
+        status, reply = self.call("POST", "/api/accounts", {"email": "other@example.test", "default_person_id": self.sam["id"]})
+        self.assertEqual(status, 201, reply)
+        other = reply["account"]
+        pixel = self.pixel(self.account["id"], people_ids=[self.jo["id"], self.sam["id"]])
+        self.copy_of(pixel["id"], self.sam["id"], "placed", "s.jpg")
+        self.copy_of(pixel["id"], self.jo["id"], "queued", "j.jpg")
+        for change in ({"people_ids": [self.jo["id"]]}, {"google_account_id": other["id"]}):
+            with self.subTest(change=change):
+                status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", change)
+                self.assertEqual(status, 409)
+                self.assertIn("still has photos in its folder", reply["error"])
+        self.assertEqual(self.states(), [(self.jo["id"], "queued"), (self.sam["id"], "placed")])
+        (found,) = self.call("GET", "/api/pixels")[1]["pixels"]
+        self.assertEqual((found["google_account_id"], found["people_ids"]), (self.account["id"], sorted([self.jo["id"], self.sam["id"]])))
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.sam["id"], self.kai["id"]]})[0], 200)
+        self.assertEqual(self.states(), [(self.sam["id"], "placed")])
 
 class AccountsApiTests(ApiCase):
     def test_create_list_update_delete(self):

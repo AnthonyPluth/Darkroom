@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, events
-from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelPerson
+from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelCopy, PixelPerson
 
 
 class NoSuchPixel(LookupError):
@@ -13,6 +13,10 @@ class NoSuchPixel(LookupError):
 
 
 class NoPeople(ValueError):
+    pass
+
+
+class StillHasCopies(ValueError):
     pass
 
 
@@ -85,6 +89,9 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     assert isinstance(chosen, list)
     require_people(opened, chosen)
     require_still_served(opened, pixel, set(chosen) if account_id == pixel.google_account_id else set())
+    leaving = set(people_of(opened, pixel.id)) - set(chosen)
+    require_no_placed_copies(opened, pixel, None if account_id != pixel.google_account_id else leaving)
+    drop_queued_copies(opened, pixel, leaving, now)
     before = accounts.served_people(opened, account_id)
     pixel.google_account_id = account_id
     if "people_ids" in fields:
@@ -100,6 +107,27 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     return pixel
 
 
+def require_no_placed_copies(opened: Session, pixel: Pixel, people: set[int] | None) -> None:
+    query = select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "placed")
+    if people is not None:
+        if not people:
+            return
+        query = query.where(PixelCopy.person_id.in_(people))
+    if opened.execute(query.limit(1)).first() is not None:
+        raise StillHasCopies(f"{pixel.name} still has photos in its folder for the Google account and people it serves now; they leave only once "
+                             "Google Photos has them and Darkroom prunes them, so change the Pixel's account or people after that")
+
+
+def drop_queued_copies(opened: Session, pixel: Pixel, people: set[int], now: float) -> None:
+    if not people:
+        return
+    waiting = [PixelCopy.pixel_id == pixel.id, PixelCopy.state == "queued", PixelCopy.person_id.in_(people)]
+    dropped = opened.execute(select(func.count(PixelCopy.id)).where(*waiting)).scalar_one()
+    opened.execute(sql_delete(PixelCopy).where(*waiting))
+    if dropped:
+        events.record(opened, now, "pixel_copies_dropped", f"pixel {pixel.id}", f"{dropped} queued photos of people it no longer serves")
+
+
 def require_still_served(opened: Session, pixel: Pixel, kept: set[int]) -> None:
     account = require_account(opened, pixel.google_account_id)
     still = {account.default_person_id} | accounts.served_by_pixels(opened, account.id, except_pixel_id=pixel.id) | kept
@@ -109,6 +137,10 @@ def require_still_served(opened: Session, pixel: Pixel, kept: set[int]) -> None:
 def delete(opened: Session, pixel_id: int, now: float) -> None:
     pixel = get(opened, pixel_id)
     require_still_served(opened, pixel, set())
+    waiting = opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state.in_(("queued", "placed"))).limit(1)).first()
+    if waiting is not None:
+        raise StillHasCopies(f"{pixel.name} still has photos in its folder or waiting for it; they leave only once Google Photos has them and Darkroom prunes them, "
+                             "so delete the Pixel after that")
     opened.delete(pixel)
     opened.flush()
     events.record(opened, now, "pixel_deleted", str(pixel_id))
