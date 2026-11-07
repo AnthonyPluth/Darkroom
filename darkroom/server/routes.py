@@ -16,7 +16,6 @@ class Route:
     path: str
     handler: Callable[[Request], Response]
     auth: str
-    streams: bool = False
 
 
 ROUTES: tuple[Route, ...] = (
