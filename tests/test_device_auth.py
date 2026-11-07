@@ -318,7 +318,7 @@ class RevokedAndLapsedTests(DeviceSignInCase):
             before = device.last_checkin
         self.assertEqual(self.checkin(token)[0], 401)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        self.assertEqual(self.call("POST", "/api/device/assets/check", headers=headers, body=b'{"assets": []}')[0], 401)
+        self.assertEqual(self.call("GET", "/api/device/me", headers=headers)[0], 401)
         with db.session(self.engine) as opened:
             device = opened.query(Device).one()
             self.assertEqual((device.last_checkin, device.pending_uploads, device.cleanup_enabled), (before, 0, False))

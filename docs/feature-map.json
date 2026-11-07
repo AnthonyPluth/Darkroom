@@ -587,36 +587,13 @@
       ]
     },
     {
-      "route": "POST /api/device/assets/check",
-      "auth": "device",
-      "handler": "darkroom.server.api.device.check_assets",
-      "frontend": [],
-      "tests": [
-        "tests/device_world.py",
-        "tests/test_device_auth.py",
-        "tests/test_device_checkin.py",
-        "tests/test_device_contract.py",
-        "tests/test_every_route.py",
-        "tests/test_upload.py"
-      ]
-    },
-    {
-      "route": "PUT /api/device/assets/{id}/resources/{kind}",
-      "auth": "device",
-      "handler": "darkroom.server.api.device.upload_resource",
-      "frontend": [],
-      "tests": [
-        "tests/device_world.py",
-        "tests/test_every_route.py"
-      ]
-    },
-    {
       "route": "GET /api/device/me",
       "auth": "device",
       "handler": "darkroom.server.api.device.device_me",
       "frontend": [],
       "tests": [
         "tests/test_device_auth.py",
+        "tests/test_device_checkin.py",
         "tests/test_device_contract.py",
         "tests/test_device_me.py",
         "tests/test_every_route.py"
