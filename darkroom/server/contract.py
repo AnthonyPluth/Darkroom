@@ -519,39 +519,6 @@ class ReassignBody(TypedDict):
     person_id: int
 
 
-class DeviceResourceDecl(TypedDict):
-    kind: str
-    sha1: str
-    bytes: int
-    filename: str
-
-
-class DeviceAssetDecl(TypedDict):
-    id: str
-    resources: list[DeviceResourceDecl]
-
-
-class DeviceCheckBody(TypedDict):
-    assets: list[DeviceAssetDecl]
-
-
-class NeededResource(TypedDict):
-    id: str
-    kind: str
-
-
-class DeviceCheckReply(TypedDict):
-    needed: list[NeededResource]
-
-
-class UploadReply(TypedDict):
-    id: str
-    kind: str
-    sha1: str
-    already: bool
-    indexed: bool
-
-
 class DeviceMeReply(TypedDict):
     person: str
     device: str
