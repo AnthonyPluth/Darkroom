@@ -2,11 +2,11 @@ import time
 import unittest
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from darkroom.storage import db
 from darkroom.domain import accounts, alerts, browser_jobs, dedupe
-from darkroom.storage.models import Alert, BrowserJob, Event, Export, Pixel, PixelPerson
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, MediaItem, Pixel, PixelCopy, PixelPerson
 from tests.api_world import ApiCase
 
 
@@ -128,6 +128,27 @@ class PixelsApiTests(ApiCase):
             self.assertEqual(opened.execute(select(PixelPerson)).scalars().all(), [])
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["jo", "sam", "kai"])
 
+
+    def test_a_pixel_with_copies_queued_or_in_its_folder_is_not_deleted_until_they_are_pruned(self):
+        pixel = self.pixel(self.account["id"])
+        with db.session(self.engine) as opened:
+            item = MediaItem(person_id=self.jo["id"], source="phone", path="jo/originals/a.jpg", sha1="a" * 40, bytes=1, indexed_at=1.0)
+            opened.add(item)
+            opened.flush()
+            opened.add(PixelCopy(pixel_id=pixel["id"], item_id=item.id, person_id=self.jo["id"], state="placed", bytes=1, sha1="a" * 40, queued_at=1.0))
+        for state in ("placed", "queued"):
+            with self.subTest(state=state):
+                with db.session(self.engine) as opened:
+                    opened.execute(update(PixelCopy).values(state=state))
+                status, reply = self.call("DELETE", f"/api/pixels/{pixel['id']}")
+                self.assertEqual(status, 409)
+                self.assertIn("still has photos", reply["error"])
+                self.assertEqual([p["id"] for p in self.call("GET", "/api/pixels")[1]["pixels"]], [pixel["id"]])
+        with db.session(self.engine) as opened:
+            opened.execute(update(PixelCopy).values(state="pruned"))
+        self.assertEqual(self.call("DELETE", f"/api/pixels/{pixel['id']}"), (200, {"ok": True}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(PixelCopy)).scalars().all(), [])
 
 class AccountsApiTests(ApiCase):
     def test_create_list_update_delete(self):
