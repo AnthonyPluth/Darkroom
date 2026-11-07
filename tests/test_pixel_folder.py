@@ -168,6 +168,20 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned"])
         self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
 
+    def test_a_reversed_match_leaves_the_photo_pruned_on_a_pixel_that_no_longer_serves_the_person(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        decision = self.match(item, self.jo_account, at=NOW + 10)
+        self.tend(at=NOW + 20)
+        self.opened.delete(self.opened.get(PixelPerson, (self.jo_pixel, self.jo)))
+        self.opened.flush()
+        dedupe.reverse(self.opened, decision.id, NOW + 30, "owner")
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("pruned", 0)])
+        tended = self.tend(at=NOW + 40)
+        self.assertEqual((tended.placed, tended.failed), (0, 0))
+        self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
+
     def test_reversing_a_match_in_another_account_requeues_nothing(self):
         item = self.item(self.jo)
         pixel_folder.queue(self.opened, item, NOW)
@@ -258,6 +272,16 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
         self.assertEqual(self.tend(at=NOW + 40).placed, 1)
         self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
+
+    def test_a_repeat_in_another_accounts_or_persons_takeout_leaves_the_copy_unseen(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW, always_send=True)
+        self.tend(at=NOW)
+        pixel_folder.seen_again(self.opened, self.sam_account, item.id, self.jo, NOW + 10)
+        pixel_folder.seen_again(self.opened, self.jo_account, item.id, self.sam, NOW + 10)
+        self.assertEqual([c.seen_again_at for c in self.copies(self.jo_pixel)], [None])
+        pixel_folder.seen_again(self.opened, self.jo_account, item.id, self.jo, NOW + 10)
+        self.assertEqual([c.seen_again_at for c in self.copies(self.jo_pixel)], [NOW + 10])
 
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)

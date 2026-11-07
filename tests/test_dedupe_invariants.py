@@ -164,7 +164,8 @@ class NothingIsDeletedMovedOrWritten(Household):
         imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
         self.assertFalse(imported & {"os", "shutil", "subprocess", "tempfile", "io"})
-        forbidden = {"open", "unlink", "rename", "rmdir", "rmtree", "remove", "write_text", "write_bytes", "touch", "mkdir", "delete", "move", "copy", "copyfile", "chmod", "execute_delete"}
+        forbidden = {"open", "unlink", "rename", "rmdir", "rmtree", "remove", "write_text", "write_bytes", "touch", "mkdir", "delete", "move", "copy", "copyfile", "chmod", "execute_delete",
+                     "prune", "prune_copy", "fill", "tend", "place_pixel_copy", "remove_pixel_copy"}
         calls = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "") for node in ast.walk(tree) if isinstance(node, ast.Call)}
         self.assertEqual(calls & forbidden, set())
         names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

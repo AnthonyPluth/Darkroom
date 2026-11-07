@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, MediaItem, Person, Pixel, PixelCopy, PixelPerson
+from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
 GIGABYTE = 1024**3
@@ -34,7 +34,8 @@ class Tended:
 
 def confirming_matches(opened: Session, account_id: int, item_id: int, person_id: int) -> list[float]:
     return list(opened.execute(
-        select(DedupeDecision.decided_at).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id).where(
+        select(func.coalesce(Export.created_at, DedupeDecision.decided_at)).select_from(DedupeDecision).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id)
+        .join(Export, Export.id == DedupeDecision.export_id).where(
             DedupeDecision.matched_item_id == item_id, DedupeDecision.account_id == account_id, DedupeDecision.person_id == person_id,
             DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(accounts.CONFIRMING_TIERS),
             MediaItem.person_id == person_id,
@@ -43,11 +44,28 @@ def confirming_matches(opened: Session, account_id: int, item_id: int, person_id
 
 
 def confirmed_for(opened: Session, account_id: int, item_id: int, person_id: int, since: float | None = None) -> bool:
-    return any(since is None or decided_at >= since for decided_at in confirming_matches(opened, account_id, item_id, person_id))
+    return any(since is None or observed_at >= since for observed_at in confirming_matches(opened, account_id, item_id, person_id))
 
 
 def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
-    return confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
+    if not confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
+        return False
+    if not row.always_send or row.placed_at is None:
+        return True
+    seen_after_placing = row.seen_again_at is not None and row.seen_again_at >= row.placed_at
+    return seen_after_placing or confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
+
+
+def seen_again(opened: Session, account_id: int, item_id: int, person_id: int, at: float) -> None:
+    rows = opened.execute(
+        select(PixelCopy).join(Pixel, Pixel.id == PixelCopy.pixel_id).where(
+            Pixel.google_account_id == account_id, PixelCopy.item_id == item_id, PixelCopy.person_id == person_id,
+            PixelCopy.state == "placed", PixelCopy.always_send.is_(True),
+        )
+    ).scalars()
+    for row in rows:
+        row.seen_again_at = at if row.seen_again_at is None else max(row.seen_again_at, at)
+    opened.flush()
 
 
 def pixels_serving(opened: Session, person_id: int) -> list[Pixel]:
@@ -160,7 +178,7 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
     requeued = 0
     for row in rows:
         pixel = opened.get(Pixel, row.pixel_id)
-        if pixel is None or confirms_copy(opened, pixel, row):
+        if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
             continue
         row.state, row.queued_at, row.placed_at, row.pruned_at = "queued", now, None, None
         row.requeued += 1
