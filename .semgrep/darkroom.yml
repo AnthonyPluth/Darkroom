@@ -108,7 +108,9 @@ rules:
     message: >-
       An original is written once (AGENTS.md, promise 1). Nothing outside darkroom/storage/paths.py opens a file under
       a person's originals/ for writing, removes, renames, replaces, moves, copies onto or changes it. Save a new
-      original through paths.write_once, and a sidecar through providers/exiftool.write_xmp.
+      original through paths.write_once, and a sidecar through providers/exiftool.write_xmp. The only original ever
+      deleted is the losing copy of a matched pair (#234), through paths.remove_losing_copy, called only by
+      takeout_copies (darkroom-losing-copy-one-caller).
     severity: ERROR
     languages: [python]
     mode: taint
@@ -391,3 +393,18 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/pixel_folder.py"]
+
+  - id: darkroom-losing-copy-one-caller
+    message: >-
+      The losing copy of a matched pair is deleted only by darkroom/domain/takeout_copies.py, which matches the pair,
+      applies the quality rule, records and re-checks the removal and only then calls paths.remove_losing_copy
+      (AGENTS.md, promises 1 and 2; #234). Call takeout_copies.resolve_person instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.remove_losing_copy(...)
+          - pattern: remove_losing_copy(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]
