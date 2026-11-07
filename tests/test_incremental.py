@@ -446,10 +446,6 @@ class FirstExportAfterRenewalTests(unittest.TestCase):
         self.assertEqual(exports.kind_for(world.opened, account, NOW + year + 30 * DAY), "incremental")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PixelFolderThroughImportsTests(IncrementalCase):
     people = ("jo",)
     pixel_people = ("jo",)
@@ -500,3 +496,19 @@ class PixelFolderThroughImportsTests(IncrementalCase):
         self.assertEqual(self.tend(NOW + 60).pruned, 1)
         self.assertFalse(self.copy_path().exists())
         self.assertEqual((self.world.root / item.path).read_bytes(), self.phone)
+
+    def test_an_older_archive_imported_after_placing_does_not_prune_an_immich_photo_but_a_newer_one_does(self):
+        item = self.jo_phone_item()
+        self.assertEqual(pixel_folder.queue(self.world.opened, item, NOW - 100, always_send=True), 1)
+        self.assertEqual(self.tend(NOW + 10).placed, 1)
+        self.assertEqual(self.imported(at=NOW + DAY // 2).failed, 0)
+        self.assertEqual(len(self.phone_matches()), 1)
+        self.assertEqual(self.tend(NOW + DAY).pruned, 0)
+        self.assertTrue(self.copy_path().is_file())
+        self.assertEqual(self.imported(at=NOW + 3 * DAY).repeated, 1)
+        self.assertEqual(self.tend(NOW + 3 * DAY + 10).pruned, 1)
+        self.assertFalse(self.copy_path().exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
