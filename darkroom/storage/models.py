@@ -65,6 +65,7 @@ class GoogleAccount(Base):
 
 class Pixel(Base):
     __tablename__ = "pixels"
+    __table_args__ = {"sqlite_autoincrement": True}
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     syncthing_device_id: Mapped[str | None] = mapped_column(String)

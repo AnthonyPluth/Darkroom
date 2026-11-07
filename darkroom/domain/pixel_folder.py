@@ -95,6 +95,9 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
             if always_send and not existing.always_send and existing.state == "pruned":
                 existing.state, existing.queued_at, existing.placed_at, existing.pruned_at = "queued", now, None, None
                 queued += 1
+            elif existing.state == "pruned" and not confirms_copy(opened, pixel, existing):
+                revive(opened, existing, now)
+                queued += 1
             existing.always_send = existing.always_send or always_send
             continue
         withheld = not always_send and confirmed_for(opened, pixel.google_account_id, item.id, item.person_id)
@@ -194,6 +197,12 @@ def tend(opened: Session, photos: Photos, cap_bytes: int, now: float) -> Tended:
     return tended
 
 
+def revive(opened: Session, row: PixelCopy, now: float) -> None:
+    row.state, row.queued_at, row.placed_at, row.pruned_at = "queued", now, None, None
+    row.requeued += 1
+    events.record(opened, now, "pixel_copy_requeued", f"pixel {row.pixel_id}", f"copy {row.id}")
+
+
 def requeue(opened: Session, item_id: int, now: float) -> int:
     rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item_id, PixelCopy.state == "pruned")).scalars().all()
     requeued = 0
@@ -201,9 +210,21 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
         pixel = opened.get(Pixel, row.pixel_id)
         if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
             continue
-        row.state, row.queued_at, row.placed_at, row.pruned_at = "queued", now, None, None
-        row.requeued += 1
+        revive(opened, row, now)
         requeued += 1
-        events.record(opened, now, "pixel_copy_requeued", f"pixel {pixel.id}", f"copy {row.id}")
+    opened.flush()
+    return requeued
+
+
+def requeue_unconfirmed(opened: Session, pixel: Pixel, people: set[int] | None, now: float) -> int:
+    query = select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "pruned").order_by(PixelCopy.id)
+    if people is not None:
+        query = query.where(PixelCopy.person_id.in_(people))
+    requeued = 0
+    for row in opened.execute(query).scalars().all():
+        if not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+            continue
+        revive(opened, row, now)
+        requeued += 1
     opened.flush()
     return requeued

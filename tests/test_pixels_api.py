@@ -128,6 +128,13 @@ class PixelsApiTests(ApiCase):
             self.assertEqual(opened.execute(select(PixelPerson)).scalars().all(), [])
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["jo", "sam", "kai"])
 
+    def test_a_deleted_pixels_id_is_never_given_to_a_new_pixel(self):
+        kept = self.pixel(self.account["id"], "Kept")
+        gone = self.pixel(self.account["id"], "Gone")
+        self.assertEqual(self.call("DELETE", f"/api/pixels/{gone['id']}"), (200, {"ok": True}))
+        new = self.pixel(self.account["id"], "New")
+        self.assertNotIn(new["id"], (kept["id"], gone["id"]))
+        self.assertGreater(new["id"], gone["id"])
 
     def test_a_pixel_with_copies_queued_or_in_its_folder_is_not_deleted_until_they_are_pruned(self):
         pixel = self.pixel(self.account["id"])
