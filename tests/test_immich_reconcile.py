@@ -231,11 +231,19 @@ class OrderTests(ReconcileCase):
         self.jo.immich_api_key_sealed = None
         with self.assertRaisesRegex(reconcile.NotReady, "no Immich user"):
             self.run_it()
+
+    def test_an_unreadable_key_is_a_visible_failure_not_a_silent_skip(self):
+        self.photo()
+        for sealed, settings, wanted in ((secretbox.seal("key-jo", "other-secret"), self.settings, "cannot be read"), (secretbox.seal("key-jo", SECRET), self.world.settings, "SECRET_KEY")):
+            with self.subTest(wanted=wanted):
+                self.jo.immich_api_key_sealed = sealed
+                with self.assertRaisesRegex(immich.ImmichFailed, wanted):
+                    self.run_it() if settings is self.settings else reconcile.reconcile_person(self.world.opened, settings, self.jo, NOW)
         self.jo.immich_api_key_sealed = secretbox.seal("key-jo", "other-secret")
-        with self.assertRaisesRegex(reconcile.NotReady, "cannot be read"):
-            self.run_it()
-        with self.assertRaisesRegex(reconcile.NotReady, "SECRET_KEY"):
-            reconcile.reconcile_person(self.world.opened, self.world.settings, self.jo, NOW)
+        self.assertEqual(reconcile.reconcile_all(self.world.opened, self.settings, NOW), {})
+        failure = self.world.opened.execute(select(Event).where(Event.type == "immich_reconcile_failed")).scalars().one()
+        self.assertIn("cannot be read", failure.detail)
+        self.assertEqual((len(self.world.opened.execute(select(Alert).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all()), self.jo.immich_reconciled_until), (1, None))
 
     def test_a_pixel_that_serves_the_person_later_still_gets_the_stored_photos(self):
         self.photo()

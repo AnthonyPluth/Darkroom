@@ -86,11 +86,11 @@ def person_key(settings: config.Settings, person: Person) -> str:
     if not person.immich_user_id or not person.immich_api_key_sealed:
         raise NotReady("this person has no Immich user and key")
     if not settings.secret_key:
-        raise NotReady("Darkroom has no DARKROOM_SECRET_KEY, so it cannot read the Immich key")
+        raise immich.ImmichFailed("Darkroom has no DARKROOM_SECRET_KEY, so it cannot read the Immich key")
     try:
         return secretbox.unseal(person.immich_api_key_sealed, settings.secret_key)
     except secretbox.Unreadable:
-        raise NotReady("the stored Immich key cannot be read") from None
+        raise immich.ImmichFailed("the stored Immich key cannot be read with DARKROOM_SECRET_KEY") from None
 
 
 def require_earlier_imports(opened: Session, person: Person) -> None:
