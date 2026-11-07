@@ -9,7 +9,7 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import eligibility
+from darkroom.domain import eligibility, uploads
 from darkroom.storage.models import PhoneAsset, User
 from tests.eligibility_world import Household
 
@@ -153,6 +153,18 @@ class EligibleListTests(unittest.TestCase):
 
 
 class CheckForgetsTests(unittest.TestCase):
+    def test_a_new_check_that_changes_the_asset_forgets_its_evaluation(self):
+        home = Household(self)
+        jo = home.person("jo")
+        phone = home.device(jo)
+        photo = home.photo(phone, through=home.account(jo))
+        home.eligible(phone, photo)
+        row = photo.rows["photo"]
+        declared = uploads.Asset(photo.id, (uploads.Resource("photo", row.sha1, row.bytes, row.filename), uploads.Resource("adjusted", "a" * 40, 5, "IMG_A.HEIC")))
+        uploads.check(home.opened, phone.id, jo.id, [declared], home.now)
+        home.opened.refresh(photo.asset)
+        self.assertEqual((photo.asset.eligible_at, photo.asset.eligible_confirmed_at), (None, None))
+
     def test_access_lapse_is_read_from_the_user_record(self):
         home = Household(self)
         jo = home.person("jo")

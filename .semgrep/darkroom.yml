@@ -242,6 +242,34 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/push_tokens.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
 
+  - id: darkroom-eligibility-single-path
+    message: >-
+      Whether a photo may be deleted from an iPhone is decided only in darkroom/domain/eligibility.py, from scratch at
+      request time (AGENTS.md, promise 3). Only that module writes PhoneAsset.eligible_at, eligible_confirmed_at and
+      deleted_at or Device.eligibility_checked_at. Go through eligibility.eligible_assets or forget instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $X.$F = $V
+          - pattern: ($X.$F, ...) = $V
+          - pattern: ($A, $X.$F, ...) = $V
+          - pattern: ($A, $B, $X.$F, ...) = $V
+          - pattern: ($A, $B, $C, $X.$F, ...) = $V
+          - pattern: setattr($X, "$F", ...)
+          - pattern: $D["$F"] = $V
+          - pattern: |
+              {..., "$F": $V, ...}
+          - patterns:
+              - pattern: $CALL(..., $F=$V, ...)
+              - pattern-not: $Q.filter_by(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(eligible_at|eligible_confirmed_at|deleted_at|eligibility_checked_at)$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/eligibility.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+
   - id: darkroom-cleanup-never-on
     message: >-
       Deleting from an iPhone was retired with the app (#199, #201): nothing turns a device's cleanup on, in any
