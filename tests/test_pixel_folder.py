@@ -315,6 +315,39 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual(self.tend(at=NOW + 40).placed, 1)
         self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
 
+    def test_a_reversal_from_another_connection_waits_for_a_skip_in_flight_and_then_requeues_the_photo(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        decision = self.match(item, self.jo_account, at=NOW + 1)
+        self.opened.commit()
+        other = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.2})
+        self.addCleanup(other.dispose)
+        real, attempts = pixel_folder.confirms_copy, []
+
+        def reversed_meanwhile(*args: object) -> bool:
+            found = real(*args)
+            if not attempts:
+                attempts.append("trying")
+                with Session(other) as elsewhere:
+                    try:
+                        dedupe.reverse(elsewhere, decision.id, NOW + 3, "owner")
+                        elsewhere.commit()
+                        attempts.append("reversed")
+                    except OperationalError:
+                        elsewhere.rollback()
+                        attempts.append("locked")
+            return found
+
+        with mock.patch.object(pixel_folder, "confirms_copy", reversed_meanwhile):
+            self.assertEqual(self.tend(at=NOW + 2).skipped, 1)
+        self.assertEqual(attempts, ["trying", "locked"])
+        with Session(other) as elsewhere:
+            dedupe.reverse(elsewhere, decision.id, NOW + 4, "owner")
+            elsewhere.commit()
+        self.opened.expire_all()
+        self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
+        self.assertEqual(self.tend(at=NOW + 5).placed, 1)
+
     def test_each_pruned_copy_is_kept_when_a_later_one_fails_the_pass(self):
         first, second = self.item(self.jo), self.item(self.jo)
         pixel_folder.queue(self.opened, first, NOW)

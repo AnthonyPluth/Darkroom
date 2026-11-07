@@ -116,10 +116,18 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
     ).scalars().all()
     for position, row in enumerate(waiting):
-        if not row.always_send and confirms_copy(opened, pixel, row):
-            row.state, row.pruned_at = "pruned", now
-            tended.skipped += 1
-            continue
+        if not row.always_send:
+            lock_copy(opened, row.id)
+            opened.refresh(row)
+            if row.state != "queued":
+                opened.commit()
+                continue
+            if confirms_copy(opened, pixel, row):
+                row.state, row.pruned_at = "pruned", now
+                tended.skipped += 1
+                opened.commit()
+                continue
+            opened.commit()
         if used > 0 and used + row.bytes > cap_bytes:
             tended.deferred = sum(1 for later in waiting[position:] if later.state == "queued")
             break
