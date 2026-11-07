@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder
+from darkroom.domain import dedupe, pixel_folder, pixels
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
@@ -347,6 +347,36 @@ class PixelFolderTests(unittest.TestCase):
         self.opened.expire_all()
         self.assertEqual([(c.state, c.requeued) for c in self.copies(self.jo_pixel)], [("queued", 1)])
         self.assertEqual(self.tend(at=NOW + 5).placed, 1)
+
+    def test_taking_the_person_off_the_pixel_from_another_connection_waits_for_a_placement_in_flight(self):
+        self.opened.add(PixelPerson(pixel_id=self.jo_pixel, person_id=self.sam))
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.opened.commit()
+        other = create_engine(self.opened.get_bind().url, connect_args={"timeout": 0.2})
+        self.addCleanup(other.dispose)
+        real, attempts = pixel_folder.serves, []
+
+        def removed_meanwhile(*args: object) -> bool:
+            found = real(*args)
+            with Session(other) as elsewhere:
+                try:
+                    pixels.update(elsewhere, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 1)
+                    elsewhere.commit()
+                    attempts.append("removed")
+                except OperationalError:
+                    elsewhere.rollback()
+                    attempts.append("locked")
+            return found
+
+        with mock.patch.object(pixel_folder, "serves", removed_meanwhile):
+            self.assertEqual(self.tend(at=NOW + 2).placed, 1)
+        self.assertEqual(attempts, ["locked"])
+        self.opened.expire_all()
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
+        self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
+        with Session(other) as elsewhere, self.assertRaises(pixels.StillHasCopies):
+            pixels.update(elsewhere, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 3)
 
     def test_each_pruned_copy_is_kept_when_a_later_one_fails_the_pass(self):
         first, second = self.item(self.jo), self.item(self.jo)

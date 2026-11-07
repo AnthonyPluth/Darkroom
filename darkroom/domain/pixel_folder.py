@@ -111,40 +111,42 @@ def used_bytes(opened: Session, pixel_id: int) -> int:
 
 def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float) -> Tended:
     tended = Tended()
-    used = used_bytes(opened, pixel.id)
+    pixel_id = pixel.id
+    used = used_bytes(opened, pixel_id)
     waiting = opened.execute(
-        select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
+        select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
     ).scalars().all()
-    for position, row in enumerate(waiting):
-        if not row.always_send:
-            lock_copy(opened, row.id)
-            opened.refresh(row)
-            if row.state != "queued":
-                opened.commit()
-                continue
-            if confirms_copy(opened, pixel, row):
-                row.state, row.pruned_at = "pruned", now
-                tended.skipped += 1
-                opened.commit()
-                continue
+    for position, copy_id in enumerate(waiting):
+        lock_copy(opened, copy_id)
+        row = opened.get(PixelCopy, copy_id, populate_existing=True)
+        current = opened.get(Pixel, pixel_id, populate_existing=True)
+        if row is None or current is None or row.state != "queued":
             opened.commit()
+            continue
+        if not row.always_send and confirms_copy(opened, current, row):
+            row.state, row.pruned_at = "pruned", now
+            tended.skipped += 1
+            opened.commit()
+            continue
         if used > 0 and used + row.bytes > cap_bytes:
-            tended.deferred = sum(1 for later in waiting[position:] if later.state == "queued")
+            opened.commit()
+            tended.deferred = len(waiting) - position
             break
-        item, person = opened.get(MediaItem, row.item_id), opened.get(Person, row.person_id)
-        if item is None or person is None or item.person_id != row.person_id or item.sha1 != row.sha1 or not serves(opened, pixel.id, row.person_id):
+        item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)
+        if item is None or person is None or item.person_id != row.person_id or item.sha1 != row.sha1 or not serves(opened, pixel_id, row.person_id):
             tended.failed += 1
+            opened.commit()
             continue
         try:
-            row.name = paths.place_pixel_copy(photos, pixel.id, person.slug, item.path, row.sha1)
+            row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1)
         except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
             tended.failed += 1
+            opened.commit()
             continue
         row.state, row.placed_at, row.pruned_at = "placed", now, None
         used += row.bytes
         tended.placed += 1
         opened.commit()
-    opened.flush()
     return tended
 
 
