@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 import time
@@ -15,10 +14,6 @@ from tests.shared import fetch, own_database, settings_from, start_server
 
 TOKEN = "device-token-canary-5d4c3b2a1f0e9d8c7b6a"
 OTHER_TOKEN = "device-token-canary-other-0f1e2d3c4b5a69788"
-
-
-def sha1(data: bytes) -> str:
-    return hashlib.sha1(data, usedforsecurity=False).hexdigest()
 
 
 class DeviceCase(unittest.TestCase):
