@@ -144,14 +144,14 @@ Matching runs against everyone the export's Google account serves, in this order
 
 **Rules**
 
-- Dedupe auto-deletes nothing. Every decision is stored with its tier and reason, and can be reversed from the review queue.
+- Dedupe auto-deletes nothing. Every decision is stored with its tier and reason, and can be reversed from the review queue. The one deletion that follows a match is resolving a Takeout copy once the Immich original arrives (below).
 - A matched item belongs to the person whose Immich user holds the original (assumed to be the asset's owner, #202). A Google-only item goes to the person who owned the export when it was created (the account's default person at that moment; old exports without an owner use the current default) and can be reassigned from the review queue. Matching never crosses Google accounts, so the same photo can still land in two people's libraries, for example from a shared album.
 - A tier 1 or 2 match also records that Google has the original (`confirmed_in_google`). No iPhone deletion rests on it any more, since Immich's own app clears photos. The flag is the signal for pruning a Pixel's transient folder (decided on [#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 6): only an unreversed automatic tier 1 or 2 decision counts, and waiting up to about two months for a Takeout export is acceptable because the Pixel has the space.
 - Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same Immich item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
 
 ## Storage, Syncthing and Immich
 
-Each person gets one folder tree on Unraid, and the originals in it are written once. Darkroom is the only thing that writes to these folders. Immich's own upload storage is separate from them (assumed, #202).
+Each person gets one folder tree on Unraid, and the originals in it are written once (never modified or moved; the only one ever deleted is an Immich original that loses to a better Takeout copy, below). Darkroom is the only thing that writes to these folders. Immich's own upload storage is separate from them (assumed, #202).
 
 ```text
 /mnt/user/photos/
@@ -240,6 +240,7 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | ExportPart | export, part number, size, downloads used (of 5), status |
 | MediaItem | person, source (Immich / Takeout), path, SHA-1, pHash, dHash, capture time (UTC) + offset, dimensions or duration, camera make and model, latitude, longitude, GPS source (EXIF / Google / none), confirmed in Google (yes / no; the signal for pruning a Pixel's folder, #199), raw sidecar JSON |
 | DedupeDecision | Takeout item, matched item, tier, reason, decided by (auto / you), decided at |
+| DuplicateRemoval | person, the Takeout decision, kept and removed item with their paths and SHA-1, the removed copy's source, rule (identical / phone better / Takeout better), tier, state (pending / removed / refused), reason, created and removed at |
 | Event | time, type, subject, detail. Feeds alerts and the status page |
 
 The `Device` records (iPhone name, sign-in token, last check-in) and the push tokens go away with the iPhone app.
@@ -287,7 +288,7 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 | An export expires before it's downloaded (about 7 days, 5 downloads per part) | Daily status check, alerts at 24 hours and 4 days, retries capped at 2 per part |
 | Immich's iOS background backup lags | Assumed to be a delay, not a loss (#202 checks how reliable it is). Darkroom copies each asset once Immich has it |
 | Renewing the schedule triggers another full export | Dedupe makes it safe. Plan disk headroom of about twice the largest library during an import |
-| A wrong dedupe match hides a photo | Nothing is deleted on Unraid, decisions are reversible, and Google still holds every original |
+| A wrong dedupe match hides a photo | Only the losing copy of an automatic tier 1 or 2 pair is deleted, after the kept copy is checked; other decisions are reversible, and Google still holds every original |
 | No alert channel exists, so a sign-in prompt goes unseen | Not decided (#199, question 3). Until then alerts show on the status page only |
 
 ## Phases
@@ -303,7 +304,15 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
 
-Order of the first imports: the initial Immich reconciliation must run before the Takeout backfill, or reconciliation must dedupe and safely resolve Takeout copies already placed in `google-only/`, so that photos Immich already holds are not placed twice. Which of the two is not decided.
+Order of the first imports: Takeout first, then the legacy library, then the Immich reconcile (#199, decision 2), and the reconcile resolves the Takeout copies already placed in `google-only/` so that a photo Immich holds is not stored twice (owner decisions of Nov 7, #234).
+
+**Resolving Takeout copies (#234).** Once in each reconcile run, after it has stored that run's phone originals and before any of them is offered to a Pixel, the reconcile matches that person's `google-only/` items placed by an unreversed automatic tier 5 decision against the originals it stored in `originals/immich/`, with the dedupe tiers (SHA-1 first, then tier 2; an edited copy, an ambiguous shot, tier 3 or 4 never count). For each pair it keeps one copy and deletes the other with its `.xmp` (no trash area: the owner's decision is "if a duplicate exists on Unraid, delete the duplicate"):
+
+- Identical (same SHA-1): the phone original stays and the Takeout copy goes.
+- Otherwise the quality rule: the copy with more pixels (width times height) wins; on a tie the larger file; on a tie the fuller metadata (a time with its offset, a location, the camera's make and model, one point each); on a tie the phone original. The Takeout copy has to be strictly better to win.
+- A phone original is deleted only when nothing depends on it: no dedupe decision matches it, no Pixel copy of it was placed or pruned, and every Pixel of the person uploads to the Google account whose Takeout the copy came from (that account already has the better copy). Otherwise both stay. A deleted phone original is not sent to a Pixel and its queued copies are dropped; a kept one is sent as before (decision 5) and keeps its `confirmed_in_google`. Only phone items carry that flag, so deleting a Takeout copy loses no confirmation; a later Takeout match confirms the phone original and fills its sidecar from Google's metadata as usual.
+
+The kept copy must be present, a regular file in the same person's library and have the SHA-1 Darkroom recorded before anything is deleted. Each removal is recorded (`duplicate_removals`) before the delete, so a crash is finished on the next run or refused with an event when the kept copy is missing or changed, never leaving zero copies; each deletion is a `duplicate_removed` event. Re-running changes nothing, and a retried import never places a removed Takeout copy again.
 
 ## Open questions
 

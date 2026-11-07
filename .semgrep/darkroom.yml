@@ -391,3 +391,20 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/pixel_folder.py"]
+
+  - id: darkroom-losing-copy-one-caller
+    message: >-
+      The losing copy of a matched pair (a Takeout copy in google-only/ and the Immich original in originals/immich/
+      that is the same photo) is deleted only by darkroom/domain/takeout_copies.py, which first matches the pair at an
+      automatic tier 1 or 2, applies the quality rule, records the removal before it deletes, and only then calls
+      paths.remove_losing_copy, which checks that the kept copy is present with the SHA-1 Darkroom recorded (AGENTS.md,
+      promises 1 and 2; owner decision on #234). Call takeout_copies.resolve_person instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.remove_losing_copy(...)
+          - pattern: remove_losing_copy(...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]

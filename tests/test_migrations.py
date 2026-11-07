@@ -357,6 +357,24 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("immich_assets", inspect(self.engine).get_table_names())
         self.assertNotIn("immich_reconciled_until", {column["name"] for column in inspect(self.engine).get_columns("people")})
 
+    def test_0024_duplicate_removals_adds_an_empty_table_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0023")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM duplicate_removals").scalar(), 0)
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO duplicate_removals (person_id, kept_path, kept_sha1, removed_path, removed_sha1, removed_source, rule, tier, state, created_at) "
+                                           "VALUES (1, 'k', 'a', 'r', 'b', 'takeout', 'identical', 1, 'gone', 1.0)")
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0023")
+        self.assertNotIn("duplicate_removals", inspect(self.engine).get_table_names())
+        self.assertEqual(inspect(self.engine).get_table_names().count("people"), 1)
+
     def test_0021_pixel_copy_seen_again_leaves_existing_copies_unseen_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

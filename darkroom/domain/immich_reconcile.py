@@ -12,13 +12,13 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, index, legacy, media, pixel_folder
+from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, takeout_copies
 from darkroom.providers import exiftool, immich
 from darkroom.storage import locks, paths, secretbox
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
-IMMICH_FOLDER = "immich"
+IMMICH_FOLDER = takeout_copies.IMMICH_FOLDER
 OVERLAP_SECONDS = 300.0
 MARGIN_SECONDS = 60.0
 STEM_LIMIT = 100
@@ -69,6 +69,7 @@ class Report:
     ignored: int = 0
     waiting: int = 0
     failed: int = 0
+    duplicates_removed: int = 0
 
 
 def stamp(at: float) -> str:
@@ -189,7 +190,6 @@ class Run:
             self.report.stored += 1
             self.report.copied += copied
             self.report.already_there += not copied
-            self.offer(row)
         self.opened.commit()
 
     def fail(self, asset: immich.Asset, kind: str, reason: str) -> None:
@@ -229,6 +229,7 @@ class Run:
             except immich.ImmichFailed as error:
                 if error.status in (401, 403):
                     raise
+        self.report.duplicates_removed = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now).removed
         missing = exists().where(PixelPerson.person_id == self.person.id, ~exists().where(PixelCopy.pixel_id == PixelPerson.pixel_id, PixelCopy.item_id == ImmichAsset.original_item_id))
         unqueued = self.opened.execute(
             select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status == "stored", ImmichAsset.original_item_id.is_not(None), missing).order_by(ImmichAsset.id)
