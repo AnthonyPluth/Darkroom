@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -153,8 +154,17 @@ def files_of(root: Path) -> tuple[list[Path], set[str]]:
     found: list[Path] = []
     for folder, names, files in os.walk(root, onerror=failed):
         names[:] = [name for name in names if name not in index.SKIPPED_FOLDERS and not name.startswith(".")]
-        found.extend(Path(folder, name) for name in files)
-    return sorted(path for path in found if not path.is_symlink() and path.is_file() and index.wanted(root, path)), unreadable
+        for path in (Path(folder, name) for name in files):
+            if not index.wanted(root, path):
+                continue
+            try:
+                regular = stat.S_ISREG(os.lstat(path).st_mode)
+            except OSError:
+                unreadable.add(f"{path.relative_to(root)}/")
+                continue
+            if regular:
+                found.append(path)
+    return sorted(found), unreadable
 
 
 def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:

@@ -252,6 +252,24 @@ class LegacyImportTests(unittest.TestCase):
         self.assertNotIn("locked/", self.home.rows())
         self.assertEqual({entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"].failed, 0)
 
+    def test_a_file_that_cannot_be_inspected_counts_as_not_backed_up_until_a_later_run_reads_it(self):
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if Path(path).name == "reencoded.jpg":
+                raise PermissionError(13, "denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch("darkroom.domain.legacy.os.lstat", lstat):
+            first = self.home.run()
+        self.assertEqual((first.failed, first.new), (1, 5))
+        self.assertEqual(self.home.rows()["reencoded.jpg/"].status, "failed")
+        self.assertNotIn("reencoded.jpg", self.home.rows())
+        self.assertEqual({entry.slug: entry for entry in legacy.totals(self.world.opened)}["jo"].failed, 1)
+        fixed = self.home.run(at=NOW + 5)
+        self.assertEqual((fixed.failed, fixed.new), (0, 1))
+        self.assertEqual((self.home.rows()["reencoded.jpg"].status, "reencoded.jpg/" in self.home.rows()), ("matched", False))
+
     def test_a_queue_that_raises_leaves_the_file_counted_as_failed_and_retried(self):
         class Raising:
             def offer(self, opened, person, original, now):
