@@ -626,6 +626,36 @@ class RemoveLosingCopyTests(unittest.TestCase):
             self.assertTrue(self.remove())
         self.assertEqual((self.loser.exists(), self.keeper.read_bytes()), (False, b"phone"))
 
+    def test_a_swap_during_the_link_fallback_keeps_the_file_swapped_in(self):
+        real, swapped = paths.entry_at, []
+
+        def swapping(name, folder):
+            if name == self.loser.name and not swapped:
+                swapped.append(name)
+                self.file("jo/google-only/2021/03/incoming", b"intruder")
+                os.replace(self.loser.with_name("incoming"), self.loser)
+            return real(name, folder)
+
+        with mock.patch.object(paths, "LIBC", object()), mock.patch.object(paths, "entry_at", swapping), contextlib.suppress(paths.NotALosingCopy):
+            self.remove()
+        self.assertIn(b"intruder", self.contents())
+        self.assertIn(b"takeout", self.contents())
+
+    def test_a_crash_at_the_sidecar_claim_is_finished_by_the_next_call(self):
+        real = os.unlink
+
+        def crashing(name, *args, **kwargs):
+            if str(name).startswith(paths.LOSING) and str(name).endswith(".xmp"):
+                raise KeyboardInterrupt
+            return real(name, *args, **kwargs)
+
+        sha1 = paths.file_sha1(self.loser)
+        with mock.patch.object(paths.os, "unlink", crashing), self.assertRaises(KeyboardInterrupt):
+            self.remove()
+        self.assertEqual([p.name.endswith(".xmp") for p in self.loser.parent.iterdir()], [True])
+        self.assertFalse(self.remove(losing_sha1=sha1))
+        self.assertEqual(list(self.loser.parent.iterdir()), [])
+
     def test_a_250_byte_name_is_claimed_and_removed(self):
         long = "a" * 246 + ".jpg"
         self.loser.rename(self.loser.with_name(long))

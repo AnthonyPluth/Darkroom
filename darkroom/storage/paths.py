@@ -1278,7 +1278,8 @@ def rename_no_replace(source: str, target: str, folder: int) -> None:
         if failure not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
             raise OSError(failure, os.strerror(failure), source)
     os.link(source, target, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
-    linked, still = entry_at(target, folder), entry_at(source, folder)
+    linked = entry_at(target, folder)
+    still = entry_at(source, folder)
     if linked is None or still is None or not os.path.samestat(linked, still):
         raise NotALosingCopy("the file changed while it was being claimed")
     os.unlink(source, dir_fd=folder)
@@ -1329,6 +1330,10 @@ def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
 
 
 def drop_losing_sidecar(folder: int, sidecar: str, claim: str) -> None:
+    left = entry_at(claim, folder)
+    if left is not None and stat.S_ISREG(left.st_mode):
+        with contextlib.suppress(FileNotFoundError, NotALosingCopy):
+            unlink_claimed(folder, sidecar, claim, left)
     seen = entry_at(sidecar, folder)
     if seen is None or not stat.S_ISREG(seen.st_mode):
         return
