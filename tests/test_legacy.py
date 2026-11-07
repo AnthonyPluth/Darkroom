@@ -27,9 +27,9 @@ def listing(root):
 
 
 class LegacyWorld:
-    def __init__(self, test):
+    def __init__(self, test, **world):
         self.test = test
-        self.world = World(test)
+        self.world = World(test, **world)
         self.source = self.world.base / "old-sync" / "jo"
         self.source.mkdir(parents=True)
         self.jo = self.world.opened.get(Person, self.world.ids["jo"])
