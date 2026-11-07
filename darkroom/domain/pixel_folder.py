@@ -69,13 +69,15 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
     for pixel in pixels_serving(opened, item.person_id):
         existing = opened.execute(select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.item_id == item.id)).scalar_one_or_none()
         if existing is not None:
+            if always_send and not existing.always_send and existing.state == "pruned":
+                existing.state, existing.queued_at, existing.placed_at, existing.pruned_at = "queued", now, None, None
+                queued += 1
             existing.always_send = existing.always_send or always_send
             continue
-        if not always_send and confirmed_for(opened, pixel.google_account_id, item.id, item.person_id):
-            continue
-        opened.add(PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=item.person_id, state="queued", bytes=item.bytes, sha1=item.sha1,
-                             queued_at=now, always_send=always_send))
-        queued += 1
+        withheld = not always_send and confirmed_for(opened, pixel.google_account_id, item.id, item.person_id)
+        opened.add(PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=item.person_id, state="pruned" if withheld else "queued",
+                             bytes=item.bytes, sha1=item.sha1, queued_at=now, pruned_at=now if withheld else None, always_send=always_send))
+        queued += 0 if withheld else 1
     opened.flush()
     return queued
 

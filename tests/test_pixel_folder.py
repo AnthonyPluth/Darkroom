@@ -206,6 +206,7 @@ class PixelFolderTests(unittest.TestCase):
         item = self.item(self.jo)
         self.match(item, self.jo_account)
         self.assertEqual(pixel_folder.queue(self.opened, item, NOW), 0)
+        self.assertEqual([(c.state, c.name) for c in self.copies(self.jo_pixel)], [("pruned", None)])
         self.match(item, self.sam_account)
         self.assertEqual(pixel_folder.queue(self.opened, self.item(self.jo), NOW), 1)
 
@@ -226,6 +227,25 @@ class PixelFolderTests(unittest.TestCase):
         self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
         self.match(item, self.jo_account, at=NOW + 20)
         self.assertEqual(self.tend(at=NOW + 30).pruned, 1)
+
+    def test_a_photo_confirmed_before_it_was_queued_is_sent_once_that_match_is_reversed(self):
+        item = self.item(self.jo)
+        decision = self.match(item, self.jo_account, at=NOW - 10)
+        self.assertEqual(pixel_folder.queue(self.opened, item, NOW), 0)
+        self.assertEqual(self.tend(at=NOW + 1).placed, 0)
+        dedupe.reverse(self.opened, decision.id, NOW + 2, "owner")
+        self.assertEqual(self.tend(at=NOW + 3).placed, 1)
+        self.assertEqual(self.copy_path(self.jo_pixel, item).read_bytes(), (self.root / item.path).read_bytes())
+
+    def test_an_immich_arrival_puts_a_withheld_photo_back_in_the_queue(self):
+        item = self.item(self.jo)
+        self.match(item, self.jo_account, at=NOW - 10)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 1, always_send=True), 1)
+        self.assertEqual([(c.state, c.always_send) for c in self.copies(self.jo_pixel)], [("queued", True)])
+        self.assertEqual(self.tend(at=NOW + 2).placed, 1)
+        self.assertEqual(pixel_folder.queue(self.opened, item, NOW + 3, always_send=True), 0)
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["placed"])
 
     def test_queueing_twice_keeps_one_row_per_pixel(self):
         item = self.item(self.jo)
