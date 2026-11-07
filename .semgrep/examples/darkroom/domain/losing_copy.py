@@ -16,3 +16,14 @@ def drop_by_bare_name(photos, slug, takeout, phone):
 def resolve_through_the_module(opened, photos, person, now):
     # ok: darkroom-losing-copy-one-caller
     return takeout_copies.resolve_person(opened, photos, person, now)
+
+
+def put_a_claim_back_by_hand(photos, slug, row):
+    # ruleid: darkroom-losing-copy-one-caller
+    paths.restore_losing_copy(photos, slug, row.removed_path, row.removed_sha1)
+
+
+def pin_a_keeper_elsewhere(photos, slug, phone):
+    # ruleid: darkroom-losing-copy-one-caller
+    with paths.checked_keeper(photos, slug, phone.path, phone.sha1) as keeper:
+        return keeper.sidecar()

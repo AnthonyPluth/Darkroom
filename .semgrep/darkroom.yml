@@ -405,6 +405,9 @@ rules:
       - pattern-either:
           - pattern: $M.remove_losing_copy(...)
           - pattern: remove_losing_copy(...)
+          - pattern: $M.drop_losing_copy(...)
+          - pattern: $M.restore_losing_copy(...)
+          - pattern: $M.checked_keeper(...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]
