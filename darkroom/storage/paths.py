@@ -11,7 +11,6 @@ import shutil
 import stat
 import sys
 import tempfile
-import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -923,7 +922,7 @@ STAGED_COPY = re.compile(r"^\.copy-[0-9a-f]{16}$")
 STALE_STAGING_SECONDS = 3600
 
 
-def sweep_staging(folder: int, now: float) -> int:
+def sweep_staging(folder: int, older_than: float) -> int:
     swept = 0
     for entry in os.listdir(folder):
         if not STAGED_COPY.match(entry):
@@ -932,7 +931,7 @@ def sweep_staging(folder: int, now: float) -> int:
             found = os.stat(entry, dir_fd=folder, follow_symlinks=False)
         except FileNotFoundError:
             continue
-        if stat.S_ISREG(found.st_mode) and now - found.st_mtime > STALE_STAGING_SECONDS:
+        if stat.S_ISREG(found.st_mode) and found.st_mtime < older_than:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(entry, dir_fd=folder)
                 swept += 1
@@ -943,7 +942,18 @@ def leftover_claim(found: os.stat_result) -> bool:
     return stat.S_ISREG(found.st_mode) and found.st_size == 0 and found.st_nlink == 1
 
 
-def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result) -> os.stat_result | bool:
+def drop_staged_twin(incoming: int, found: os.stat_result) -> bool:
+    for entry in os.listdir(incoming):
+        if not STAGED_COPY.match(entry):
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            if os.path.samestat(os.stat(entry, dir_fd=incoming, follow_symlinks=False), found):
+                os.unlink(entry, dir_fd=incoming)
+                return True
+    return False
+
+
+def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result, incoming: int) -> os.stat_result | bool:
     try:
         fd = open_no_follow(name, folder)
     except FileNotFoundError:
@@ -954,9 +964,11 @@ def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result) -
             raise AlreadyExists(name)
         if os.path.samestat(found, original):
             raise NotAPixelCopy("the original itself is in the copy's place")
+        matches = fd_sha1(fd) == sha1
         if found.st_nlink != 1:
-            raise NotAPixelCopy("the file in the copy's place has another name, so it is not touched")
-        if fd_sha1(fd) != sha1:
+            if not (matches and found.st_nlink == 2 and drop_staged_twin(incoming, found)):
+                raise NotAPixelCopy("the file in the copy's place has another name, so it is not touched")
+        elif not matches:
             if leftover_claim(found):
                 return found
             raise AlreadyExists(name)
@@ -967,7 +979,7 @@ def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result) -
         os.close(fd)
 
 
-def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, sha1: str, now: Callable[[], float] = time.time) -> str:
+def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, sha1: str, now: float) -> str:
     original = photos.original(person, relative)
     if original.is_symlink() or not original.is_file():
         raise NotAPixelCopy("the original is not a file")
@@ -977,10 +989,10 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
     *folders, leaf = name.split("/")
     with PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=True) as destination, \
             PinnedFolders(photos, [PIXELS, INCOMING], create=True) as incoming:
-        sweep_staging(incoming.fd, now())
+        sweep_staging(incoming.fd, now - STALE_STAGING_SECONDS)
         source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
         try:
-            found = existing_copy(leaf, destination.fd, sha1, os.fstat(source))
+            found = existing_copy(leaf, destination.fd, sha1, os.fstat(source), incoming.fd)
             if found is True:
                 return name
             temp = f".copy-{secrets.token_hex(8)}"

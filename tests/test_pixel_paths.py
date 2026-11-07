@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -39,7 +40,7 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertEqual(now, self.kept)
 
     def place(self, pixel_id: int = 1, person: str = "jo") -> str:
-        return paths.place_pixel_copy(self.photos, pixel_id, person, f"{person}/originals/2024/IMG_0001.HEIC", sha1(self.data if person == "jo" else b"sam's photo"))
+        return paths.place_pixel_copy(self.photos, pixel_id, person, f"{person}/originals/2024/IMG_0001.HEIC", sha1(self.data if person == "jo" else b"sam's photo"), time.time())
 
     def test_the_folder_of_a_pixel_and_person(self):
         self.assertEqual(self.photos.pixel_folder(3, "jo"), self.root / "_pixels/3/jo")
@@ -63,12 +64,12 @@ class PixelFolderPathTests(unittest.TestCase):
 
     def test_a_copy_is_refused_when_the_original_changed_or_is_not_in_originals(self):
         with self.assertRaises(paths.NotAPixelCopy):
-            paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", "0" * 40)
+            paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", "0" * 40, time.time())
         self.assertFalse((self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").exists())
         with self.assertRaises(paths.OutsideRoot):
-            paths.place_pixel_copy(self.photos, 1, "jo", "sam/originals/2024/IMG_0001.HEIC", sha1(b"sam's photo"))
+            paths.place_pixel_copy(self.photos, 1, "jo", "sam/originals/2024/IMG_0001.HEIC", sha1(b"sam's photo"), time.time())
         with self.assertRaises(paths.OutsideRoot):
-            paths.place_pixel_copy(self.photos, 1, "jo", "jo/google-only/g.jpg", sha1(b"google only"))
+            paths.place_pixel_copy(self.photos, 1, "jo", "jo/google-only/g.jpg", sha1(b"google only"), time.time())
         self.assert_kept_unchanged()
 
     def test_pruning_removes_only_the_copy_and_its_empty_folders(self):
@@ -245,7 +246,7 @@ class PixelFolderPathTests(unittest.TestCase):
             with self.assertRaises(paths.NotAPixelCopy):
                 paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
             with self.assertRaises(paths.NotAPixelCopy):
-                paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data))
+                paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data), time.time())
         self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
         self.assert_kept_unchanged()
 
@@ -271,7 +272,7 @@ class PixelFolderPathTests(unittest.TestCase):
             with self.assertRaises(paths.NotAPixelCopy):
                 paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
             with self.assertRaises(paths.NotAPixelCopy):
-                paths.place_pixel_copy(self.photos, 2, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data))
+                paths.place_pixel_copy(self.photos, 2, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data), time.time())
         self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
         self.assertFalse((self.root / "_pixels/2/jo/2024/IMG_0001.HEIC").exists())
         self.assert_kept_unchanged()
@@ -350,6 +351,26 @@ class PixelFolderPathTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o644)
                 self.assert_kept_unchanged()
 
+    def test_a_crash_right_after_the_hard_link_leaves_a_copy_the_next_pass_accepts(self):
+        def exit_now(*_args, **_kwargs):
+            os._exit(0)
+
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        child = os.fork()
+        if child == 0:
+            try:
+                with mock.patch("darkroom.storage.paths.os.unlink", exit_now):
+                    self.place()
+            finally:
+                os._exit(0)
+        os.waitpid(child, 0)
+        self.assertEqual(copy.read_bytes(), self.data)
+        self.assertEqual(copy.stat().st_nlink, 2)
+        self.assertEqual(self.place(), "2024/IMG_0001.HEIC")
+        self.assertEqual(copy.stat().st_nlink, 1)
+        self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
+        self.assert_kept_unchanged()
+
     def test_an_empty_leftover_in_the_copys_place_is_replaced(self):
         copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
         for link_fails in (True, False):
@@ -390,7 +411,7 @@ class PixelFolderPathTests(unittest.TestCase):
             os.utime(each, (old, old), follow_symlinks=False)
         now = old + 3601
         os.utime(fresh, (now - 60, now - 60))
-        paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data), now=lambda: now)
+        paths.place_pixel_copy(self.photos, 1, "jo", "jo/originals/2024/IMG_0001.HEIC", sha1(self.data), now)
         self.assertFalse(stale.exists())
         self.assertEqual(fresh.read_bytes(), b"being written")
         self.assertTrue(link.is_symlink())
