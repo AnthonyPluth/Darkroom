@@ -201,6 +201,27 @@ class DedupeDecision(Base):
     reversed_at: Mapped[float | None] = mapped_column(Float)
 
 
+class PixelCopy(Base):
+    __tablename__ = "pixel_copies"
+    __table_args__ = (
+        UniqueConstraint("pixel_id", "item_id", name="uq_pixel_copies_pixel_item"),
+        Index("ix_pixel_copies_pixel_state", "pixel_id", "state"),
+        one_of("state", ("queued", "placed", "pruned"), "ck_pixel_copies_state"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pixel_id: Mapped[int] = mapped_column(ForeignKey("pixels.id", ondelete="CASCADE"), nullable=False)
+    item_id: Mapped[int] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"), nullable=False)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="queued", server_default="queued")
+    name: Mapped[str | None] = mapped_column(String)
+    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    queued_at: Mapped[float] = mapped_column(Float, nullable=False)
+    placed_at: Mapped[float | None] = mapped_column(Float)
+    pruned_at: Mapped[float | None] = mapped_column(Float)
+    requeued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
 class ReviewItem(Base):
     __tablename__ = "review_items"
     __table_args__ = (one_of("status", ("pending", "kept_both", "skipped", "undone"), "ck_review_items_status"),)
