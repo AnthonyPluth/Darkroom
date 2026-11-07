@@ -371,6 +371,29 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
         self.assert_kept_unchanged()
 
+    def test_a_copy_linked_to_a_staging_name_is_refused_unless_it_matches_with_exactly_two_links(self):
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        copy.parent.mkdir(parents=True)
+        incoming = self.root / "_pixels/.incoming"
+        incoming.mkdir()
+        staged = incoming / ".copy-0123456789abcdef"
+        copy.write_bytes(b"not the photo")
+        os.link(copy, staged)
+        with self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertTrue(os.path.samefile(copy, staged))
+        self.assertEqual(copy.read_bytes(), b"not the photo")
+        copy.unlink()
+        staged.unlink()
+        copy.write_bytes(self.data)
+        os.link(copy, staged)
+        os.link(copy, self.root / "elsewhere")
+        with self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertTrue(os.path.samefile(copy, staged))
+        self.assertEqual(copy.stat().st_nlink, 3)
+        self.assert_kept_unchanged()
+
     def test_an_empty_leftover_in_the_copys_place_is_replaced(self):
         copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
         for link_fails in (True, False):
