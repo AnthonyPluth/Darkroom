@@ -18,13 +18,17 @@ rules:
       (#201), so import-linter can no longer protect them; this rule does.
     severity: ERROR
     languages: [python]
-    pattern-either:
-      - pattern: import socket
-      - pattern: from socket import $X
-      - pattern: import h2
-      - pattern: import h2.$X
+    patterns:
+      - pattern-either:
+          - pattern: import $M
+          - pattern: import $M as $A
+          - pattern: from $M import $X
+          - pattern: from $M import $X as $A
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(socket|h2)(\..*)?$
     paths:
-      include: ["/darkroom/", "/run.py"]
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/tls.py"]
 
   - id: darkroom-subprocess-only-exiftool
