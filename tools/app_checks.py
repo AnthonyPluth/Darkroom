@@ -35,4 +35,30 @@ def semgrep_targets(context: Any) -> list[str]:
     return check_semgrep_targets(workflow.read_text(encoding="utf-8"), root)
 
 
-CHECKS = [semgrep_targets]
+CONFLICT_MARKER = re.compile(r"^(<{7}|>{7})( |$)", re.MULTILINE)
+CHECKED_SUFFIXES = {".py", ".md", ".ts", ".js", ".svelte", ".css", ".html", ".yml", ".yaml", ".toml", ".json", ".sh", ".cfg", ".ini"}
+SKIPPED_FOLDERS = {".git", "node_modules", ".venv", "static", "__pycache__", "artifacts", ".claude"}
+
+
+def conflict_markers_in(root: Path) -> list[str]:
+    problems = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if any(part in SKIPPED_FOLDERS for part in relative.parts) or path.suffix not in CHECKED_SUFFIXES or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found = CONFLICT_MARKER.search(text)
+        if found:
+            line = text.count("\n", 0, found.start()) + 1
+            problems.append(f"{relative}:{line}: a merge conflict marker was committed; resolve the conflict")
+    return problems
+
+
+def conflict_markers(context: Any) -> list[str]:
+    return conflict_markers_in(context.root)
+
+
+CHECKS = [semgrep_targets, conflict_markers]
