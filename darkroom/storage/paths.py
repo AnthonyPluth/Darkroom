@@ -26,6 +26,10 @@ DROPPING = ".dropping-"
 KEEPING = ".keeping-"
 LOSING = ".losing-"
 RENAME_NOREPLACE = 1
+RENAME_EXCHANGE = 2
+PRIVATE_MODE = 0o700
+CLAIMED = "copy"
+CLAIMED_SIDECAR = "copy.xmp"
 SET_ASIDE = re.compile(rf"^{re.escape(DROPPING)}[0-9a-f]{{16}}-(.+)$")
 SET_ASIDE_RECORD = re.compile(rf"^{re.escape(DROPPING)}([0-9a-f]{{16}})\.json$")
 TOKEN = len(DROPPING) + 16
@@ -1160,17 +1164,7 @@ class Keeper:
             raise NotALosingCopy("the kept copy went away")
 
     def sidecar(self) -> bytes | None:
-        try:
-            fd = open_copy(self.name + SIDECAR_SUFFIX, self.folder)
-        except FileNotFoundError:
-            return None
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise NotALosingCopy("the kept copy's sidecar is not a file")
-            os.lseek(fd, 0, os.SEEK_SET)
-            return b"".join(iter(lambda: os.read(fd, CHUNK), b""))
-        finally:
-            os.close(fd)
+        return read_entry(self.name + SIDECAR_SUFFIX, self.folder)
 
     def write_sidecar(self, data: bytes, before: bytes | None) -> None:
         self.still_there()
@@ -1186,11 +1180,49 @@ class Keeper:
         try:
             if before is None:
                 os.link(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder, follow_symlinks=False)
+            elif exchange(temp, name, self.folder):
+                if read_entry(temp, self.folder) != before:
+                    exchange(temp, name, self.folder)
+                    raise NotALosingCopy("the kept copy's sidecar changed")
             else:
+                if self.sidecar() != before:
+                    raise NotALosingCopy("the kept copy's sidecar changed")
                 os.replace(temp, name, src_dir_fd=self.folder, dst_dir_fd=self.folder)
         finally:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temp, dir_fd=self.folder)
+
+
+def read_entry(name: str, folder: int) -> bytes | None:
+    try:
+        fd = open_copy(name, folder)
+    except FileNotFoundError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotALosingCopy("the kept copy's sidecar is not a file")
+        return b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+    finally:
+        os.close(fd)
+
+
+def exchange(first: str, second: str, folder: int) -> bool:
+    renameat2 = getattr(LIBC, "renameat2", None)
+    if renameat2 is None:
+        return False
+    if renameat2(folder, os.fsencode(first), folder, os.fsencode(second), RENAME_EXCHANGE) == 0:
+        return True
+    failure = ctypes.get_errno()
+    if failure in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+        return False
+    raise OSError(failure, os.strerror(failure), first)
+
+
+def drop_held_links(folder: int, kept: os.stat_result) -> None:
+    for name in os.listdir(folder):
+        found = entry_at(name, folder) if name.startswith(KEEPING) else None
+        if found is not None and os.path.samestat(found, kept):
+            os.unlink(name, dir_fd=folder)
 
 
 @contextlib.contextmanager
@@ -1201,6 +1233,9 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
             kept = open_copy(parts[-1], folder)
             try:
                 found = os.fstat(kept)
+                if stat.S_ISREG(found.st_mode) and found.st_nlink > 1:
+                    drop_held_links(folder, found)
+                    found = os.fstat(kept)
                 if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1 or fd_sha1(kept) != sha1:
                     raise NotALosingCopy("the kept copy is not the file Darkroom recorded")
                 yield Keeper(photos.root.joinpath(*parts), folder, parts[-1], kept, found)
@@ -1226,12 +1261,11 @@ def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: st
 
 def restore_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
-    claim = claim_name(losing_sha1, parts[-1])
     try:
-        with pinned_folder(photos, parts[:-1]) as folder:
-            if entry_at(claim, folder) is None or entry_at(parts[-1], folder) is not None:
+        with pinned_folder(photos, parts[:-1]) as folder, private_folder(folder, claim_name(losing_sha1, parts[-1]), create=False) as private:
+            if private is None or entry_at(CLAIMED, private) is None or entry_at(parts[-1], folder) is not None:
                 return False
-            put_claim_back(folder, claim, parts[-1])
+            put_claim_back(private, CLAIMED, folder, parts[-1])
             return entry_at(parts[-1], folder) is not None
     except FileNotFoundError:
         return False
@@ -1250,7 +1284,8 @@ def holding(keeper: Keeper) -> Iterator[None]:
         try:
             keeper.still_there()
         except NotALosingCopy:
-            put_claim_back(keeper.folder, held, keeper.name)
+            with contextlib.suppress(OSError, NotALosingCopy):
+                rename_no_replace(held, keeper.name, keeper.folder)
         else:
             os.unlink(held, dir_fd=keeper.folder)
 
@@ -1269,74 +1304,107 @@ def claim_name(sha1: str, name: str) -> str:
 LIBC = ctypes.CDLL(None, use_errno=True)
 
 
-def rename_no_replace(source: str, target: str, folder: int) -> None:
+def rename_no_replace(source: str, target: str, folder: int, into: int | None = None) -> None:
+    into = folder if into is None else into
     renameat2 = getattr(LIBC, "renameat2", None)
     if renameat2 is not None:
-        if renameat2(folder, os.fsencode(source), folder, os.fsencode(target), RENAME_NOREPLACE) == 0:
+        if renameat2(folder, os.fsencode(source), into, os.fsencode(target), RENAME_NOREPLACE) == 0:
             return
         failure = ctypes.get_errno()
         if failure not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
             raise OSError(failure, os.strerror(failure), source)
-    os.link(source, target, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
-    linked = entry_at(target, folder)
+    os.link(source, target, src_dir_fd=folder, dst_dir_fd=into, follow_symlinks=False)
+    linked = entry_at(target, into)
     still = entry_at(source, folder)
     if linked is None or still is None or not os.path.samestat(linked, still):
         raise NotALosingCopy("the file changed while it was being claimed")
     os.unlink(source, dir_fd=folder)
 
 
-def put_claim_back(folder: int, claim: str, name: str) -> None:
+@contextlib.contextmanager
+def private_folder(folder: int, name: str, create: bool) -> Iterator[int | None]:
+    if create:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(name, PRIVATE_MODE, dir_fd=folder)
+    try:
+        private = os.open(name, NO_FOLLOW_FOLDER, dir_fd=folder)
+    except FileNotFoundError:
+        yield None
+        return
+    except OSError as error:
+        raise NotALosingCopy("the claim folder is not Darkroom's") from error
+    try:
+        found = os.fstat(private)
+        if found.st_uid != os.getuid() or found.st_mode & 0o077:
+            raise NotALosingCopy("the claim folder is not Darkroom's")
+        yield private
+    finally:
+        os.close(private)
+        with contextlib.suppress(OSError):
+            os.rmdir(name, dir_fd=folder)
+
+
+def put_claim_back(private: int, claim: str, folder: int, name: str) -> None:
     with contextlib.suppress(OSError, NotALosingCopy):
-        rename_no_replace(claim, name, folder)
-
-
-def unlink_claimed(folder: int, name: str, claim: str, expected: os.stat_result) -> None:
-    found = entry_at(claim, folder)
-    if found is None or not os.path.samestat(found, expected):
-        put_claim_back(folder, claim, name)
-        raise NotALosingCopy("the claimed file is not the one that was checked")
-    os.unlink(claim, dir_fd=folder)
+        rename_no_replace(claim, name, private, folder)
 
 
 def drop_losing_copy(folder: int, name: str, sha1: str, keeper: Keeper) -> bool:
-    claim = claim_name(sha1, name)
-    if entry_at(claim, folder) is None:
-        with contextlib.suppress(FileNotFoundError, FileExistsError):
-            rename_no_replace(name, claim, folder)
-    try:
-        copy = open_copy(claim, folder)
-    except FileNotFoundError:
-        copy = -1
-    except NotALosingCopy:
-        put_claim_back(folder, claim, name)
-        raise
-    if copy >= 0:
+    with private_folder(folder, claim_name(sha1, name), create=True) as private:
+        assert private is not None
+        if entry_at(CLAIMED, private) is None:
+            with contextlib.suppress(FileNotFoundError, FileExistsError):
+                rename_no_replace(name, CLAIMED, folder, private)
         try:
-            found = os.fstat(copy)
-            if not stat.S_ISREG(found.st_mode) or os.path.samestat(found, keeper.found) or fd_sha1(copy) != sha1:
-                put_claim_back(folder, claim, name)
-                raise NotALosingCopy("the copy is not the file Darkroom recorded")
+            copy = open_copy(CLAIMED, private)
+        except FileNotFoundError:
+            copy = -1
+        except NotALosingCopy:
+            put_claim_back(private, CLAIMED, folder, name)
+            raise
+        if copy >= 0:
             try:
-                keeper.still_there()
-            except NotALosingCopy:
-                put_claim_back(folder, claim, name)
-                raise
-            unlink_claimed(folder, name, claim, found)
-        finally:
-            os.close(copy)
-    if entry_at(name, folder) is None and entry_at(claim, folder) is None:
-        drop_losing_sidecar(folder, name + SIDECAR_SUFFIX, claim + SIDECAR_SUFFIX)
+                drop_claimed(folder, name, private, copy, sha1, keeper)
+            finally:
+                os.close(copy)
+        if entry_at(name, folder) is None and entry_at(CLAIMED, private) is None:
+            drop_losing_sidecar(folder, name + SIDECAR_SUFFIX, private)
     return copy >= 0
 
 
-def drop_losing_sidecar(folder: int, sidecar: str, claim: str) -> None:
-    left = entry_at(claim, folder)
+def drop_claimed(folder: int, name: str, private: int, copy: int, sha1: str, keeper: Keeper) -> None:
+    found = os.fstat(copy)
+    try:
+        if not stat.S_ISREG(found.st_mode) or os.path.samestat(found, keeper.found) or fd_sha1(copy) != sha1:
+            raise NotALosingCopy("the copy is not the file Darkroom recorded")
+        keeper.still_there()
+    except NotALosingCopy:
+        put_claim_back(private, CLAIMED, folder, name)
+        raise
+    twin = entry_at(name, folder)
+    if twin is not None and os.path.samestat(twin, found):
+        os.unlink(name, dir_fd=folder)
+    unlink_claimed(private, CLAIMED, found)
+
+
+def unlink_claimed(private: int, claim: str, expected: os.stat_result) -> None:
+    found = entry_at(claim, private)
+    if found is None or not os.path.samestat(found, expected):
+        raise NotALosingCopy("the claimed file is not the one that was checked")
+    os.unlink(claim, dir_fd=private)
+
+
+def drop_losing_sidecar(folder: int, sidecar: str, private: int) -> None:
+    left = entry_at(CLAIMED_SIDECAR, private)
     if left is not None and stat.S_ISREG(left.st_mode):
         with contextlib.suppress(FileNotFoundError, NotALosingCopy):
-            unlink_claimed(folder, sidecar, claim, left)
+            unlink_claimed(private, CLAIMED_SIDECAR, left)
     seen = entry_at(sidecar, folder)
     if seen is None or not stat.S_ISREG(seen.st_mode):
         return
-    with contextlib.suppress(FileNotFoundError, FileExistsError, NotALosingCopy):
-        rename_no_replace(sidecar, claim, folder)
-        unlink_claimed(folder, sidecar, claim, seen)
+    with contextlib.suppress(FileNotFoundError, FileExistsError):
+        rename_no_replace(sidecar, CLAIMED_SIDECAR, folder, private)
+        try:
+            unlink_claimed(private, CLAIMED_SIDECAR, seen)
+        except NotALosingCopy:
+            put_claim_back(private, CLAIMED_SIDECAR, folder, sidecar)
