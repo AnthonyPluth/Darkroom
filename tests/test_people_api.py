@@ -3,7 +3,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import Event, MediaItem, Person
+from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person
 from tests.api_world import SECRET_KEY, ApiCase
 from tests.privacy import no_leaks
 
@@ -46,6 +46,20 @@ class PeopleApiTests(ApiCase):
                 self.assertEqual(self.call("POST", "/api/people", body), (400, {"error": message}))
         self.assertEqual(self.call("POST", "/api/people", raw=b"not json"), (400, {"error": "the request is not valid JSON"}))
         self.assertEqual(self.call("POST", "/api/people", raw=b"[]"), (400, {"error": "the request must be a JSON object"}))
+
+    def test_a_new_immich_user_restarts_the_reconcile_window_and_drops_unfinished_rows_only(self):
+        person = self.person("Jo", immich_user_id="u-1")
+        with db.session(self.engine) as opened:
+            opened.get(Person, person["id"]).immich_reconciled_until = 99.0
+            for name, status in (("a", "stored"), ("b", "waiting"), ("c", "failed"), ("d", "ignored")):
+                opened.add(ImmichAsset(person_id=person["id"], asset_id=name, kind="photo", status=status, sha1="ab", seen_at=1.0))
+        self.assertEqual(self.call("PATCH", f"/api/people/{person['id']}", {"name": "Jo", "immich_user_id": "u-1"})[0], 200)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(Person, person["id"]).immich_reconciled_until, 99.0)
+        self.assertEqual(self.call("PATCH", f"/api/people/{person['id']}", {"immich_user_id": "u-2"})[0], 200)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(Person, person["id"]).immich_reconciled_until)
+            self.assertEqual([row.asset_id for row in opened.execute(select(ImmichAsset)).scalars()], ["a"])
 
     def test_update_changes_only_what_is_sent_and_null_clears(self):
         person = self.person("Jo", email="jo@example.test", immich_user_id="u-1", immich_library_id="l-1")
