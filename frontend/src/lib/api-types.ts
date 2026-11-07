@@ -121,10 +121,6 @@ export interface DeviceMeReply {
   device: string;
 }
 
-export interface DevicePushTokenBody {
-  token: string;
-}
-
 export interface DeviceReply {
   device: DeviceView;
 }
@@ -590,8 +586,6 @@ export interface Endpoints {
   "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
   "GET /api/device/me": { body: never; reply: DeviceMeReply };
   "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
-  "PUT /api/device/push-token": { body: DevicePushTokenBody; reply: Ok };
-  "DELETE /api/device/push-token": { body: never; reply: Ok };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

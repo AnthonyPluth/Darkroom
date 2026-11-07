@@ -3,7 +3,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person
+from darkroom.storage.models import Device, Event, ImmichAsset, MediaItem, Person
 from tests.api_world import SECRET_KEY, ApiCase
 from tests.privacy import no_leaks
 
@@ -203,6 +203,19 @@ class PeopleApiTests(ApiCase):
         self.assertEqual([e["type"] for e in events["events"] if e["type"] == "device_revoked"], ["device_revoked"])
         self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}")[0], 409)
 
+
+    def test_revoking_a_device_forgets_its_token_and_it_cannot_register_again(self):
+        person = self.person("Jo")
+        device_id = self.add_device(person["id"])
+        with db.session(self.engine) as opened:
+            device = opened.get(Device, device_id)
+            device.push_token_sealed, device.push_token_digest, device.push_token_at = "enc:v1:stored-before-the-removal", "d" * 64, 1.0
+        self.assertEqual(self.call("DELETE", f"/api/devices/{device_id}")[0], 200)
+        with db.session(self.engine) as opened:
+            device = opened.get(Device, device_id)
+            self.assertEqual((device.push_token_sealed, device.push_token_digest), (None, None))
+            self.assertIsNotNone(device.push_token_at)
+        self.assertEqual(self.call("PUT", "/api/device/push-token", {"token": "a1" * 32})[0], 404)
 
 class NoSecretKeyTests(ApiCase):
     extra_env = {"DARKROOM_SECRET_KEY": ""}

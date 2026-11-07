@@ -1,6 +1,5 @@
 from sqlalchemy import update
 
-from darkroom.domain import push_tokens
 from darkroom.storage.models import Device
 from darkroom.storage import secretbox
 
@@ -58,8 +57,3 @@ def rename_devices_in_bulk(opened):
 def read_another_column_by_name(device):
     # ok: darkroom-push-token-one-module
     return getattr(device, "name")
-
-
-def read_the_token_through_the_module(opened, settings, device, now):
-    # ok: darkroom-push-token-one-module
-    return push_tokens.token_for(opened, settings, device, now)
