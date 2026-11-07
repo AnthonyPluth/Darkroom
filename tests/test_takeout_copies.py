@@ -320,6 +320,18 @@ class CrashTests(CopiesCase):
         self.assertEqual(self.resolve(at=4.0).removed, 1)
         self.assertFalse((self.root / takeout.path).exists())
 
+    def test_a_claim_a_crash_left_is_put_back_when_the_removal_is_refused(self):
+        takeout, phone = self.pending()
+        real = paths.os.unlink
+        with mock.patch.object(paths.os, "unlink", lambda name, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt) if str(name).startswith(paths.LOSING) else real(name, *a, **k)), \
+                self.assertRaises(KeyboardInterrupt):
+            self.resolve(at=3.0)
+        self.assertFalse((self.root / takeout.path).exists())
+        phone.sha1 = "c" * 40
+        self.opened.commit()
+        self.assertEqual(self.resolve(at=4.0).refused, 1)
+        self.assertTrue((self.root / takeout.path).exists())
+
     def test_a_tier_two_removal_whose_phone_item_changed_since_it_was_recorded_refuses(self):
         for field, value in (("width", 4032), ("captured_utc", MOMENT + 10), ("model", "iPhone 15")):
             with self.subTest(field=field):

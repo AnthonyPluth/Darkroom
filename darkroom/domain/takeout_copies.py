@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tempfile
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -151,7 +152,9 @@ def resolve(opened: Session, photos: Photos, person: Person, pair: Pair, now: fl
     finish(opened, photos, person, row, now, resolved, tools)
 
 
-def refuse(opened: Session, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:
+def refuse(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:
+    with suppress(paths.NotALosingCopy, paths.OutsideRoot, OSError):
+        paths.restore_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1)
     row.state, row.reason = "refused", reason
     resolved.refused += 1
     events.record(opened, now, "duplicate_removal_refused", person.slug, f"{row.removed_source} copy, {row.rule}: {reason}")
@@ -221,20 +224,20 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
     keeper = None if row.kept_item_id is None else opened.get(MediaItem, row.kept_item_id, populate_existing=True)
     loser = None if row.removed_item_id is None else opened.get(MediaItem, row.removed_item_id, populate_existing=True)
     if keeper is None or loser is None or (keeper.path, keeper.sha1) != (row.kept_path, row.kept_sha1) or (loser.path, loser.sha1) != (row.removed_path, row.removed_sha1):
-        refuse(opened, person, row, "the records changed", now, resolved)
+        refuse(opened, photos, person, row, "the records changed", now, resolved)
         return
     takeout, phone = (keeper, loser) if loser.source == "phone" else (loser, keeper)
     if not still_a_pair(opened, person, keeper, loser) or not still_matched(opened, person, takeout, phone, row):
-        refuse(opened, person, row, "the pair is no longer safe to resolve", now, resolved)
+        refuse(opened, photos, person, row, "the pair is no longer safe to resolve", now, resolved)
         return
     unsaved = carry_metadata(photos, person, keeper, loser, tools)
     if unsaved is not None:
-        refuse(opened, person, row, unsaved, now, resolved)
+        refuse(opened, photos, person, row, unsaved, now, resolved)
         return
     try:
         paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1)
     except (paths.NotALosingCopy, paths.OutsideRoot) as error:
-        refuse(opened, person, row, str(error), now, resolved)
+        refuse(opened, photos, person, row, str(error), now, resolved)
         return
     except OSError as error:
         opened.rollback()
