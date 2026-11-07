@@ -204,6 +204,35 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertEqual(list(self.photos.pixel_incoming().iterdir()), [])
         self.assert_kept_unchanged()
 
+    def test_folders_made_for_a_copy_can_be_traversed_by_others_under_any_umask(self):
+        (self.root / "_pixels").mkdir()
+        os.chmod(self.root / "_pixels", 0o750)
+        old = os.umask(0o077)
+        try:
+            name = self.place()
+        finally:
+            os.umask(old)
+        for folder in ("_pixels/1", "_pixels/1/jo", "_pixels/1/jo/2024"):
+            self.assertEqual((self.root / folder).stat().st_mode & 0o777, 0o755, folder)
+        self.assertEqual((self.root / "_pixels").stat().st_mode & 0o777, 0o750)
+        self.assertEqual((self.root / "_pixels/1/jo" / name).stat().st_mode & 0o777, 0o644)
+
+    def test_a_kept_folder_mounted_inside_the_pixel_folder_is_refused(self):
+        name = self.place()
+        kept = (self.root / "jo/originals").stat()
+        real_fstat = os.fstat
+
+        def mounted(fd: int) -> os.stat_result:
+            found = real_fstat(fd)
+            if os.path.samestat(found, (self.root / "_pixels/1/jo/2024").stat()):
+                return kept
+            return found
+
+        with mock.patch("darkroom.storage.paths.os.fstat", mounted), self.assertRaises(paths.NotAPixelCopy):
+            paths.remove_pixel_copy(self.photos, 1, "jo", name, sha1(self.data))
+        self.assertTrue((self.root / "_pixels/1/jo" / name).is_file())
+        self.assert_kept_unchanged()
+
     def test_a_file_that_is_not_the_placed_copy_is_not_pruned(self):
         name = self.place()
         (self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").write_bytes(b"changed on the way")
