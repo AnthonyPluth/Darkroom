@@ -5,7 +5,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import alerts, browser_jobs, events, exports
+from darkroom.domain import alerts, browser_jobs, events, exports, renewal
 from darkroom.storage.paths import Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
 
@@ -113,6 +113,7 @@ def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
         "session_checked": account.session_checked,
         "schedule_created": account.schedule_created,
         "schedule_end": account.schedule_end,
+        "renew_from": None if account.schedule_end is None else account.schedule_end - renewal.NOTICE,
         "served_people": sorted(served_people(opened, account.id)),
         "created": account.created,
     }

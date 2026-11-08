@@ -119,6 +119,16 @@
           "id": {
             "type": "integer"
           },
+          "renew_from": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schedule_created": {
             "anyOf": [
               {
@@ -164,6 +174,7 @@
           "default_person_id",
           "email",
           "id",
+          "renew_from",
           "schedule_created",
           "schedule_end",
           "served_people",

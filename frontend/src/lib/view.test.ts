@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
+import { onDay } from "./format";
 import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, sessionChip } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, sessionChip } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -164,5 +165,63 @@ describe("jobSentence", () => {
     expect(waiting("verify")).toBe("Download: waiting for you to confirm your identity in the remote browser.");
     expect(waiting("wrong_account")).toBe("Download: waiting for you to switch to the right Google account.");
     expect(waiting("")).toBe("Download: waiting for you to sign in.");
+  });
+});
+
+describe("renewNow", () => {
+  const NOW = 1_000_000;
+  const inWindow = { ...joAccount, schedule_created: 100, schedule_end: NOW + 10 * 86400, renew_from: NOW - 11 * 86400 };
+  const job = (kind: string, status: string, extra = {}) => ({ ...queuedConnect, account_id: 10, kind, status, created: NOW - 3600, ...extra });
+
+  it("is not drawn without a schedule or an end date", () => {
+    expect(renewNow(joAccount, [], NOW)).toBeNull();
+    expect(renewNow({ ...inWindow, schedule_created: null }, [], NOW)).toBeNull();
+    expect(renewNow({ ...inWindow, schedule_end: null, renew_from: null }, [], NOW)).toBeNull();
+  });
+
+  it("waits for the window and names the day it opens", () => {
+    const early = { ...inWindow, renew_from: NOW + 86400 };
+    expect(renewNow(early, [], NOW)).toEqual({ enabled: false, sentence: `Darkroom asks for the renewal itself from ${onDay(NOW + 86400)}, three weeks before the schedule ends. Renew now is available from then.` });
+    expect(renewNow(inWindow, [], NOW)?.enabled).toBe(true);
+    expect(renewNow({ ...inWindow, renew_from: NOW }, [], NOW)?.enabled).toBe(true);
+  });
+
+  it("is enabled in the window with nothing wrong", () => {
+    expect(renewNow(inWindow, [], NOW)).toEqual({ enabled: true, sentence: "Renew now creates next year's schedule in Takeout without waiting for the daily check. Darkroom does not retry a renewal on its own." });
+  });
+
+  it("is disabled while an account needs to sign in, an attempt is unanswered or a job is open", () => {
+    expect(renewNow({ ...inWindow, session_state: "needs_sign_in" }, [], NOW)).toEqual({ enabled: false, sentence: "This account needs to sign in to Google again before its schedule can be renewed. Press Connect first." });
+    const unanswered = job("renew", "failed", { needs_check: true });
+    expect(renewNow(inWindow, [unanswered], NOW)).toEqual({ enabled: false, sentence: "Answer the Takeout question above first." });
+    expect(renewNow(inWindow, [job("schedule", "failed", { needs_check: true })], NOW)?.enabled).toBe(false);
+    for (const kind of ["schedule", "renew"]) {
+      for (const status of ["queued", "running", "waiting_for_user"]) {
+        expect(renewNow(inWindow, [job(kind, status)], NOW)).toEqual({ enabled: false, sentence: "A schedule or renew job is already open for this account." });
+      }
+    }
+    expect(renewNow(inWindow, [job("connect", "queued"), job("status", "running"), job("download", "running")], NOW)?.enabled).toBe(true);
+  });
+
+  it("follows the route's order when several reasons apply", () => {
+    const early = { ...inWindow, renew_from: NOW + 86400, session_state: "needs_sign_in" };
+    expect(renewNow(early, [job("renew", "queued")], NOW)?.sentence).toMatch(/^Darkroom asks for the renewal itself/);
+    const signIn = { ...inWindow, session_state: "needs_sign_in" };
+    expect(renewNow(signIn, [job("renew", "queued")], NOW)?.sentence).toMatch(/^This account needs to sign in/);
+    expect(renewNow(inWindow, [job("renew", "queued"), job("schedule", "failed", { needs_check: true })], NOW)?.sentence).toBe("Answer the Takeout question above first.");
+  });
+
+  it("says the last renewal failed only for a failure inside this window, and that wins over the ended sentence", () => {
+    const failed = job("renew", "failed", { message: "UnexpectedPage: the page changed" });
+    expect(renewNow(inWindow, [failed], NOW)).toEqual({ enabled: true, sentence: "The last renewal failed. Darkroom does not retry a renewal on its own: press Renew now to try again." });
+    expect(renewNow(inWindow, [{ ...failed, created: inWindow.renew_from - 1 }], NOW)?.sentence).toMatch(/^Renew now creates next year's schedule/);
+    expect(renewNow(inWindow, [job("renew", "done")], NOW)?.sentence).toMatch(/^Renew now creates next year's schedule/);
+    const ended = { ...inWindow, schedule_end: NOW - 86400 };
+    expect(renewNow(ended, [failed], NOW)?.sentence).toMatch(/^The last renewal failed/);
+  });
+
+  it("is enabled after the schedule ended and says scheduled exports have stopped", () => {
+    const ended = { ...inWindow, schedule_end: NOW - 86400 };
+    expect(renewNow(ended, [], NOW)).toEqual({ enabled: true, sentence: `This schedule ended on ${onDay(NOW - 86400)}, so scheduled exports have stopped. Renew now or Create schedule sets up a new yearly schedule in Takeout; both run the same steps.` });
   });
 });
