@@ -11,16 +11,15 @@ from typing import Annotated, Any, Literal, NotRequired, Required, Union, get_ar
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from darkroom.domain import devices
 from darkroom.server import contract, routes
 
 OPENAPI_OUT = ROOT / "docs/openapi.json"
 TS_OUT = ROOT / "frontend/src/lib/api-types.ts"
 JSON_TYPES: dict[object, dict[str, object]] = {bool: {"type": "boolean"}, int: {"type": "integer"}, float: {"type": "number"},
                                                str: {"type": "string"}, type(None): {"type": "null"}}
-ERROR = {"description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is. A device route's 401 for a token that matches a device also says why, in `reason`.",
+ERROR = {"description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is.",
          "content": {"application/json": {"schema": {"type": "object", "required": ["error"], "properties": {
-             "error": {"type": "string"}, "reason": {"type": "string", "enum": list(devices.REFUSALS)}}}}}}
+             "error": {"type": "string"}}}}}}
 TS_SCALARS = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean", "null": "null"}
 
 

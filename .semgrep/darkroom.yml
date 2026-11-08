@@ -204,9 +204,8 @@ rules:
 
   - id: darkroom-device-token-single-path
     message: >-
-      A device token is looked up only in darkroom/domain/devices.py's authenticate, which refuses a revoked device and
-      a person whose access lapsed before anything else runs. Authenticate a device through devices.authenticate (the
-      `device` auth kind) instead of matching Device.token_hash here.
+      The `device` auth kind and devices.authenticate were removed with the iPhone app (#199, #201): no module looks a
+      device up by its token any more. The devices table goes with the migration that drops it.
     severity: ERROR
     languages: [python]
     pattern-either:
@@ -214,7 +213,7 @@ rules:
       - pattern: $S.query(Device).filter_by(..., token_hash=$V, ...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/domain/devices.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
+      exclude: ["/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
 
   - id: darkroom-push-token-one-module
     message: >-
