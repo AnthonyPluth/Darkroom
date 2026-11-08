@@ -11,7 +11,7 @@ from darkroom.domain import accounts, browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
 from darkroom.storage.paths import Photos, ProfileNotRemoved
-from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, own_sqlite_database
+from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, write_elsewhere
 
 
 def add_account(opened, email, default_person):
@@ -122,52 +122,31 @@ class DeleteTests(unittest.TestCase):
         self.deleted(account, now=1000.0 + browser_jobs.LEASE_SECONDS + 1)
 
     def test_the_delete_holds_the_write_lock_before_it_checks_for_browser_jobs(self):
-        self.engine = own_sqlite_database(self)
         account = self.account_with_job("queued")
-        database = self.engine.url.database
         checked = browser_jobs.holds_profile
         seen = []
 
         def claim_meanwhile(opened, account_id, now):
-            other = sqlite3.connect(database, timeout=0)
-            try:
-                other.execute("UPDATE browser_jobs SET status = 'running', started = 2.0, heartbeat = 2.0 WHERE account_id = ?", (account_id,))
-                other.commit()
-                seen.append("claimed")
-            except sqlite3.OperationalError as error:
-                seen.append(str(error))
-            finally:
-                other.close()
+            seen.append(write_elsewhere(self, self.engine, "UPDATE browser_jobs SET status = 'running', started = 2.0, heartbeat = 2.0 WHERE account_id = :account", account=account_id))
             return checked(opened, account_id, now)
 
         with mock.patch.object(browser_jobs, "holds_profile", claim_meanwhile):
             self.deleted(account)
-        self.assertEqual(seen, ["database is locked"])
+        self.assertEqual(seen, ["locked"])
 
     def test_a_write_committed_after_the_deletes_first_statement_waits_for_the_delete(self):
-        self.engine = own_sqlite_database(self)
         account = self.account_with_job("queued")
-        database = self.engine.url.database
         seen = []
 
         def write_meanwhile(conn, cursor, statement, parameters, context, executemany):
-            if seen:
-                return
-            other = sqlite3.connect(database, timeout=0)
-            try:
-                other.execute("UPDATE browser_jobs SET heartbeat = 3.0 WHERE account_id = ?", (account,))
-                other.commit()
-                seen.append("committed")
-            except sqlite3.OperationalError as error:
-                seen.append(str(error))
-            finally:
-                other.close()
+            if not seen:
+                seen.append(write_elsewhere(self, self.engine, "UPDATE browser_jobs SET heartbeat = 3.0 WHERE account_id = :account", account=account))
 
         event.listen(self.engine, "after_cursor_execute", write_meanwhile)
         self.addCleanup(event.remove, self.engine, "after_cursor_execute", write_meanwhile)
         with db.session(self.engine) as opened:
             accounts.delete(opened, self.photos, account, 2.0)
-        self.assertEqual(seen, ["database is locked"])
+        self.assertEqual(seen, ["locked"])
         with db.session(self.engine) as opened:
             self.assertIsNone(opened.get(GoogleAccount, account))
 
@@ -245,28 +224,17 @@ class UpdateLockTests(unittest.TestCase):
             self.account = add_account(opened, "jo@x.test", self.person)
 
     def test_an_update_takes_the_write_lock_before_it_reads(self):
-        self.seed(own_sqlite_database(self))
-        database = self.engine.url.database
         seen = []
 
         def write_meanwhile(conn, cursor, statement, parameters, context, executemany):
-            if seen:
-                return
-            other = sqlite3.connect(database, timeout=0)
-            try:
-                other.execute("UPDATE google_accounts SET session_state = 'ok' WHERE id = ?", (self.account,))
-                other.commit()
-                seen.append("committed")
-            except sqlite3.OperationalError as error:
-                seen.append(str(error))
-            finally:
-                other.close()
+            if not seen:
+                seen.append(write_elsewhere(self, self.engine, "UPDATE google_accounts SET session_state = 'ok' WHERE id = :account", account=self.account))
 
         event.listen(self.engine, "after_cursor_execute", write_meanwhile)
         self.addCleanup(event.remove, self.engine, "after_cursor_execute", write_meanwhile)
         with db.session(self.engine) as opened:
             accounts.update(opened, self.account, "renamed@x.test", None, 2.0)
-        self.assertEqual(seen, ["database is locked"])
+        self.assertEqual(seen, ["locked"])
         with db.session(self.engine) as opened:
             self.assertEqual(opened.get(GoogleAccount, self.account).email, "renamed@x.test")
 

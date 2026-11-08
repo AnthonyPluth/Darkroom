@@ -10,13 +10,13 @@ import unittest
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from email.message import Message
 from pathlib import Path
 from unittest import mock
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -83,8 +83,25 @@ def impatient_engine(test: unittest.TestCase, engine: Engine, seconds: float) ->
         event.listen(other, "connect", db.set_sqlite_pragmas)
     else:
         other = create_engine(engine.url, connect_args={"options": f"-c lock_timeout={int(seconds * 1000)}"})
+        db.serialise_writes(other)
     test.addCleanup(other.dispose)
     return other
+
+
+def try_elsewhere(test: unittest.TestCase, engine: Engine, work: Callable[[Session], object]) -> str:
+    other = impatient_engine(test, engine, 0.1)
+    try:
+        with db.session(other) as opened:
+            work(opened)
+    except OperationalError as error:
+        if not db.is_busy(error):
+            raise
+        return "locked"
+    return "committed"
+
+
+def write_elsewhere(test: unittest.TestCase, engine: Engine, statement: str, **values: object) -> str:
+    return try_elsewhere(test, engine, lambda opened: opened.execute(text(statement), values))
 
 
 @contextmanager

@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, pixel_folder, pixels
+from darkroom.storage import db
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database
@@ -397,6 +398,38 @@ class PixelFolderTests(unittest.TestCase):
                 elsewhere.rollback()
                 with self.assertRaises(accounts.Busy):
                     pixels.delete(elsewhere, self.jo_pixel, NOW)
+
+    def test_reviving_a_pruned_copy_waits_for_a_pixel_delete_that_has_checked_and_finds_the_pixel_gone(self):
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        self.match(item, self.jo_account, at=NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        self.opened.commit()
+        engine = self.opened.get_bind().engine
+        other = impatient_engine(self, engine, 0.2)
+        real, attempts = pixels.require_still_served, []
+
+        def revived_meanwhile(*args: object) -> None:
+            real(*args)
+            with Session(other) as elsewhere:
+                try:
+                    pixel_folder.queue(elsewhere, elsewhere.get(MediaItem, item.id), NOW + 25, always_send=True)
+                    elsewhere.commit()
+                    attempts.append("queued")
+                except OperationalError as error:
+                    elsewhere.rollback()
+                    attempts.append("locked" if db.is_busy(error) else "failed")
+
+        with mock.patch.object(pixels, "require_still_served", revived_meanwhile):
+            pixels.delete(self.opened, self.jo_pixel, NOW + 30)
+        self.opened.commit()
+        self.assertEqual(attempts, ["locked"])
+        self.assertEqual(self.copies(self.jo_pixel), [])
+        with Session(other) as elsewhere:
+            self.assertEqual(pixel_folder.queue(elsewhere, elsewhere.get(MediaItem, item.id), NOW + 40, always_send=True), 0)
+            elsewhere.commit()
+        self.assertEqual(self.copies(self.jo_pixel), [])
 
     def test_each_pruned_copy_is_kept_when_a_later_one_fails_the_pass(self):
         first, second = self.item(self.jo), self.item(self.jo)

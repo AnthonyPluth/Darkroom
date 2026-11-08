@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,8 +22,8 @@ from darkroom.config import Settings
 from darkroom.storage.models import Base
 
 __all__ = [
-    "MIGRATIONS", "Base", "UnsupportedDatabase", "alembic_config", "connect", "create_fresh", "database_url", "dialect_of", "is_busy", "make_engine", "migrate", "normalise_url", "session",
-    "upsert", "write_lock",
+    "MIGRATIONS", "Base", "UnsupportedDatabase", "alembic_config", "connect", "create_fresh", "database_url", "dialect_of", "is_busy", "make_engine", "migrate", "normalise_url",
+    "serialise_writes", "session", "upsert", "write_lock",
 ]
 
 MIGRATIONS = Path(__file__).resolve().parent / "migrations"
@@ -32,6 +33,10 @@ WRITE_LOCK_KEY = 0x44524B52
 POSTGRESQL_PREFIXES = ("postgresql://", "postgres://")
 POSTGRESQL_DRIVER_URL = "postgresql+psycopg://"
 LOCK_NOT_AVAILABLE = "55P03"
+WRITE_LOCK_HELD = "darkroom_write_lock_held"
+WRITE_LOCK_SQL = f"SELECT pg_advisory_xact_lock({WRITE_LOCK_KEY})"
+READ_ONLY_STATEMENT = re.compile(r"^\s*(?:SELECT|WITH|SHOW|SET|RESET|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|EXPLAIN)\b", re.IGNORECASE)
+LOCKING_OR_WRITING = re.compile(r"\bFOR\s+(?:NO\s+KEY\s+)?(?:UPDATE|SHARE)\b|\b(?:INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
 
 
 class UnsupportedDatabase(ValueError):
@@ -68,8 +73,32 @@ def make_engine(url: str) -> Engine:
         event.listen(engine, "connect", set_sqlite_pragmas)
         return engine
     if name == "postgresql":
-        return create_engine(url, pool_pre_ping=True, pool_recycle=RECYCLE_SECONDS, connect_args={"options": f"-c lock_timeout={LOCK_WAIT_MS}"})
+        engine = create_engine(url, pool_pre_ping=True, pool_recycle=RECYCLE_SECONDS, connect_args={"options": f"-c lock_timeout={LOCK_WAIT_MS}"})
+        serialise_writes(engine)
+        return engine
     raise unsupported(name)
+
+
+def writes(statement: str) -> bool:
+    return READ_ONLY_STATEMENT.match(statement) is None or LOCKING_OR_WRITING.search(statement) is not None
+
+
+def forget_write_lock(connection: Connection) -> None:
+    connection.info.pop(WRITE_LOCK_HELD, None)
+
+
+def take_write_lock_before_writing(connection: Connection, cursor: object, statement: str, parameters: object, context: object, executemany: bool) -> None:
+    if connection.info.get(WRITE_LOCK_HELD) or not writes(statement):
+        return
+    connection.exec_driver_sql(WRITE_LOCK_SQL)
+    connection.info[WRITE_LOCK_HELD] = True
+
+
+def serialise_writes(engine: Engine) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    event.listen(engine, "begin", forget_write_lock)
+    event.listen(engine, "before_cursor_execute", take_write_lock_before_writing)
 
 
 def dialect_of(opened: Session | Connection) -> str:
