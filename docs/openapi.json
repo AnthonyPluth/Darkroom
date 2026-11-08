@@ -8,15 +8,6 @@
               "properties": {
                 "error": {
                   "type": "string"
-                },
-                "reason": {
-                  "enum": [
-                    "device_revoked",
-                    "sign_in_lapsed",
-                    "sign_in_unavailable",
-                    "sign_in_refused"
-                  ],
-                  "type": "string"
                 }
               },
               "required": [
@@ -26,7 +17,7 @@
             }
           }
         },
-        "description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is. A device route's 401 for a token that matches a device also says why, in `reason`."
+        "description": "Refused (4xx) or failed (5xx): what went wrong, to show as it is."
       }
     },
     "schemas": {
@@ -561,44 +552,6 @@
           "page",
           "page_size",
           "total"
-        ],
-        "type": "object"
-      },
-      "DeviceCheckinBody": {
-        "additionalProperties": false,
-        "properties": {
-          "app_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "pending_uploads": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "pending_uploads"
-        ],
-        "type": "object"
-      },
-      "DeviceMeReply": {
-        "additionalProperties": false,
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "person": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "person"
         ],
         "type": "object"
       },
@@ -3099,58 +3052,6 @@
           }
         },
         "x-auth": "session"
-      }
-    },
-    "/api/device/checkin": {
-      "post": {
-        "operationId": "checkin",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeviceCheckinBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Ok"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "device"
-      }
-    },
-    "/api/device/me": {
-      "get": {
-        "operationId": "device_me",
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceMeReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "device"
       }
     },
     "/api/devices/{id}": {

@@ -110,7 +110,7 @@ broken_contract_guidance = "Reach the database through darkroom.storage.db."
 id = "network-through-tls"
 name = "Only darkroom.tls opens outbound connections"
 type = "protected"
-protected_modules = ["ssl", "http", "socket", "h2"]
+protected_modules = ["ssl", "http"]
 allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
@@ -144,7 +144,7 @@ broken_contract_guidance = "Drive the browser through darkroom_browser.live; par
 id = "providers-alone"
 name = "Providers import no other provider"
 type = "independence"
-modules = ["darkroom.providers.apns", "darkroom.providers.exiftool", "darkroom.providers.immich"]
+modules = ["darkroom.providers.exiftool", "darkroom.providers.immich", "darkroom.providers.ntfy"]
 
 [[tool.importlinter.contracts]]
 id = "subprocess-only-exiftool"
