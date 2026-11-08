@@ -11,7 +11,7 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - No device (iPhone) token can be issued or used any more: device sign-in, the `device` auth kind and `devices.authenticate` were removed (#201). A token stored before that is only its SHA-256, and no module looks a device up by it (Semgrep's `darkroom-device-token-single-path`); the table goes with the migration.
 - Every route declares who may call it (`session`, `worker` or `public`), and an unlisted kind answers 401. A new route needs a test.
 - No push token can be registered any more: the push-token routes and `darkroom/domain/push_tokens.py` were removed (#201), and nothing reads a stored token (Semgrep's `darkroom-push-token-one-module` fails any read or write of the push-token columns). A token stored before that is still kept only sealed with `DARKROOM_SECRET_KEY` (`secretbox`) and as its SHA-256, and revoking the device clears it (`devices.revoke`, the rule's one exception, which clears all three columns at once). The columns go with the migration that drops them.
-- Darkroom sends no pushes and holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201).
+- Darkroom holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201). Alerts reach a phone only through ntfy, when it is set up (`docs/deploy/ntfy.md`).
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner).
 
 ## Reporting a problem
