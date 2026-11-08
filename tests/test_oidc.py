@@ -198,12 +198,6 @@ class FinishLoginTests(ProviderCase):
             self.finish(query, state, code, now=NOW + oidc.LOGIN_TTL + 1)
         self.assertEqual(self.provider.token_requests, [])
 
-    def test_a_pending_device_login_is_not_a_web_login(self):
-        with db.session(self.engine) as opened:
-            opened.add(AuthPending(state="dev-state", nonce="n", verifier="v", kind="device", created=NOW))
-        with self.assertRaises(oidc.SignInFailed):
-            self.finish({}, "dev-state", "code-x")
-
     def test_provider_errors_and_missing_parameters_are_refused(self):
         _, state, _ = self.begin()
         with db.session(self.engine) as opened:

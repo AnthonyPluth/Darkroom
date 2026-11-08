@@ -28,27 +28,6 @@ class Person(Base):
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 
-class Device(Base):
-    __tablename__ = "devices"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    sub: Mapped[str | None] = mapped_column(String)
-    cleanup_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
-    last_checkin: Mapped[float | None] = mapped_column(Float)
-    app_version: Mapped[str | None] = mapped_column(String)
-    pending_uploads: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    created: Mapped[float] = mapped_column(Float, nullable=False)
-    revoked_at: Mapped[float | None] = mapped_column(Float)
-    eligibility_checked_at: Mapped[float | None] = mapped_column(Float)
-    push_token_sealed: Mapped[str | None] = mapped_column(Text)
-    push_token_digest: Mapped[str | None] = mapped_column(String)
-    push_token_at: Mapped[float | None] = mapped_column(Float)
-    wake_pushed_at: Mapped[float | None] = mapped_column(Float)
-    __table_args__ = (Index("ix_devices_push_token_digest", "push_token_digest", unique=True),)
-
-
 class GoogleAccount(Base):
     __tablename__ = "google_accounts"
     __table_args__ = (one_of("session_state", ("unknown", "ok", "needs_sign_in"), "ck_google_accounts_session_state"),)
@@ -78,18 +57,6 @@ class PixelPerson(Base):
     __tablename__ = "pixel_people"
     pixel_id: Mapped[int] = mapped_column(ForeignKey("pixels.id", ondelete="CASCADE"), primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
-
-
-class PhoneAsset(Base):
-    __tablename__ = "phone_assets"
-    __table_args__ = (UniqueConstraint("device_id", "photokit_id", name="uq_phone_assets_device_photokit"),)
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
-    photokit_id: Mapped[str] = mapped_column(String, nullable=False)
-    created: Mapped[float] = mapped_column(Float, nullable=False)
-    eligible_at: Mapped[float | None] = mapped_column(Float)
-    eligible_confirmed_at: Mapped[float | None] = mapped_column(Float)
-    deleted_at: Mapped[float | None] = mapped_column(Float)
 
 
 class Export(Base):
@@ -205,22 +172,6 @@ class ImmichAsset(Base):
     original_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     seen_at: Mapped[float] = mapped_column(Float, nullable=False)
     queued_at: Mapped[float | None] = mapped_column(Float)
-
-
-class PhoneResource(Base):
-    __tablename__ = "phone_resources"
-    __table_args__ = (
-        UniqueConstraint("asset_id", "kind", name="uq_phone_resources_asset_kind"),
-        one_of("kind", ("photo", "live_video", "adjusted"), "ck_phone_resources_kind"),
-    )
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    asset_id: Mapped[int] = mapped_column(ForeignKey("phone_assets.id", ondelete="CASCADE"), nullable=False)
-    kind: Mapped[str] = mapped_column(String, nullable=False)
-    sha1: Mapped[str] = mapped_column(String, nullable=False)
-    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    filename: Mapped[str] = mapped_column(String, nullable=False)
-    uploaded_at: Mapped[float | None] = mapped_column(Float)
-    media_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
 
 
 class DedupeDecision(Base):
@@ -357,7 +308,6 @@ class Alert(Base):
     person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("google_accounts.id", ondelete="SET NULL"))
     push_due: Mapped[float | None] = mapped_column(Float)
-    pushed_devices: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("ix_alerts_key", "key"),)
 
 
@@ -373,14 +323,12 @@ class Event(Base):
 
 class AuthPending(Base):
     __tablename__ = "auth_pending"
-    __table_args__ = (one_of("kind", ("web", "device"), "ck_auth_pending_kind"),)
+    __table_args__ = (one_of("kind", ("web",), "ck_auth_pending_kind"),)
     state: Mapped[str] = mapped_column(String, primary_key=True)
     nonce: Mapped[str] = mapped_column(String, nullable=False)
     verifier: Mapped[str] = mapped_column(String, nullable=False)
     next: Mapped[str | None] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String, nullable=False, default="web", server_default="web")
-    device_name: Mapped[str | None] = mapped_column(String)
-    client_state: Mapped[str | None] = mapped_column(String)
     created: Mapped[float] = mapped_column(Float, nullable=False)
 
 

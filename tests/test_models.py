@@ -4,8 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.models import (
-    Alert, BrowserJob, DedupeDecision, Device, Event, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, PhoneAsset,
-    PhoneResource, Person, ReviewItem,
+    Alert, BrowserJob, DedupeDecision, Event, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, ReviewItem,
 )
 from tests.shared import add_person, own_database
 
@@ -21,12 +20,9 @@ class ModelTests(unittest.TestCase):
     def test_defaults(self):
         with db.session(self.engine) as opened:
             jo = add_person(opened, "jo")
-            device = Device(person_id=jo, name="Phone", token_hash="h", created=1.0)
             item = media(jo)
-            opened.add_all([device, item])
+            opened.add(item)
             opened.flush()
-            self.assertFalse(device.cleanup_enabled)
-            self.assertEqual(device.pending_uploads, 0)
             self.assertFalse(item.confirmed_in_google)
             self.assertEqual((item.time_source, item.gps_source), ("unknown", "none"))
 
@@ -45,20 +41,6 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(IntegrityError), db.session(self.engine) as opened:
             jo = add_person(opened, "jo")
             opened.add(GoogleAccount(email="a@x", default_person_id=jo, session_state="maybe", created=1.0))
-
-    def test_a_resource_kind_is_unique_per_asset(self):
-        with db.session(self.engine) as opened:
-            jo = add_person(opened, "jo")
-            device = Device(person_id=jo, name="Phone", token_hash="h", created=1.0)
-            opened.add(device)
-            opened.flush()
-            asset = PhoneAsset(device_id=device.id, photokit_id="P1", created=1.0)
-            opened.add(asset)
-            opened.flush()
-            opened.add(PhoneResource(asset_id=asset.id, kind="photo", sha1="a", bytes=1, filename="a.jpg"))
-            opened.add(PhoneResource(asset_id=asset.id, kind="live_video", sha1="b", bytes=1, filename="a.mov"))
-        with self.assertRaises(IntegrityError), db.session(self.engine) as opened:
-            opened.add(PhoneResource(asset_id=1, kind="photo", sha1="c", bytes=1, filename="b.jpg"))
 
     def test_the_rest_round_trip(self):
         with db.session(self.engine) as opened:

@@ -3,7 +3,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import Device, Event, ImmichAsset, MediaItem, Person, PhoneAsset, PhoneResource
+from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person
 from tests.api_world import SECRET_KEY, ApiCase
 from tests.privacy import no_leaks
 
@@ -140,26 +140,6 @@ class PeopleApiTests(ApiCase):
         self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [other["id"]]})
         self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}"), (200, {"ok": True}))
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["sam"])
-        self.assertEqual(original.read_bytes(), b"photo bytes")
-
-    def test_deleting_a_person_with_old_device_rows_removes_them_and_never_the_folders(self):
-        person = self.person("Jo")
-        original = self.photos / "jo" / "originals" / "keep.jpg"
-        original.write_bytes(b"photo bytes")
-        before = sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*"))
-        with db.session(self.engine) as opened:
-            device = Device(person_id=person["id"], name="Jo's iPhone", token_hash="old-device-token-hash", created=1.0)
-            opened.add(device)
-            opened.flush()
-            asset = PhoneAsset(device_id=device.id, photokit_id="asset-1", created=1.0)
-            opened.add(asset)
-            opened.flush()
-            opened.add(PhoneResource(asset_id=asset.id, kind="photo", sha1="a" * 40, bytes=11, filename="IMG_0001.JPG"))
-        self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}"), (200, {"ok": True}))
-        with db.session(self.engine) as opened:
-            self.assertEqual((opened.query(Device).count(), opened.query(PhoneAsset).count(), opened.query(PhoneResource).count()), (0, 0, 0))
-            self.assertIsNone(opened.get(Person, person["id"]))
-        self.assertEqual(sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*")), before)
         self.assertEqual(original.read_bytes(), b"photo bytes")
 
     def test_a_deleted_persons_folder_name_is_never_reused_and_its_files_are_not_indexed(self):

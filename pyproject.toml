@@ -12,7 +12,6 @@ dependencies = [
     "imagehash (>=4.3,<5.0)",
     "pillow-heif (>=0.20,<2.0)",
     "timezonefinder (>=6.5,<9.0)",
-    "h2 (>=4.3,<5.0)",
 ]
 
 [project.optional-dependencies]
