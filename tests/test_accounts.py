@@ -234,6 +234,20 @@ if on_postgres():
             with db.session(self.engine) as opened:
                 self.person = add_person(opened, "jo")
 
+        def test_a_second_creation_between_the_first_ones_check_and_write_is_held_off_until_it_commits(self):
+            real, outcome = accounts.require_free_email, []
+
+            def second_between_check_and_write(opened, email, except_id=None):
+                real(opened, email, except_id)
+                if not outcome:
+                    outcome.append(try_elsewhere(self, self.engine, lambda other: accounts.create(other, "user@example.com", self.person, 2.0)))
+
+            with mock.patch.object(accounts, "require_free_email", second_between_check_and_write), db.session(self.engine) as first:
+                accounts.create(first, "User@example.com", self.person, 1.0)
+            self.assertEqual(outcome, ["locked"])
+            with db.session(self.engine) as opened:
+                self.assertEqual([each.email for each in opened.query(GoogleAccount)], ["User@example.com"])
+
         def test_a_person_delete_holds_off_an_account_made_for_them_after_its_check(self):
             real, outcome = people.blockers, []
 

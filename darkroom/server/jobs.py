@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
@@ -54,6 +55,11 @@ class Scheduler:
     def guarded(self, job: Registered, now: float) -> None:
         try:
             job.run(now)
+        except OperationalError as error:
+            if not db.is_busy(error):
+                monitoring.log("job failed", job=job.name, error=type(error).__name__)
+                return
+            monitoring.log("job postponed: the database was busy", job=job.name)
         except Exception as error:
             monitoring.log("job failed", job=job.name, error=type(error).__name__)
 
@@ -161,7 +167,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
 
     def check_exports(at: float) -> None:
         try:
-            with db.session(engine, writing=True) as opened:
+            with db.session(engine) as opened:
                 queued = exports.check_due(opened, at, scheduler.zone)
         except browser_jobs.Busy:
             monitoring.log("export status checks postponed: the database was busy")
@@ -176,7 +182,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             monitoring.log("export expiry alerts opened", count=opened_now)
 
     def watch_schedules(at: float) -> None:
-        with db.session(engine, writing=True) as opened:
+        with db.session(engine) as opened:
             queued = renewal.watch_schedules(opened, settings, at)
         if queued:
             monitoring.log("schedule renewals queued", count=queued)

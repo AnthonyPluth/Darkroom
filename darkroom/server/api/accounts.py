@@ -45,7 +45,7 @@ def update_account(request: Annotated[Request, contract.AccountPatchBody]) -> An
         body = validate.json_object(request.body, limit=MAX_BODY)
         email = validate.email(body, "email") if validate.present(body, "email") else None
         person_id = validate.whole_number(body, "default_person_id", minimum=1) if validate.present(body, "default_person_id") else None
-        with db.session(engine_of(request), writing=True) as opened:
+        with db.session(engine_of(request)) as opened:
             accounts.lock(opened, account_id)
             before = accounts.served_people(opened, account_id)
             account = accounts.update(opened, account_id, email, person_id, now())
@@ -69,7 +69,7 @@ def delete_account(request: Request) -> Annotated[Response, contract.Ok]:
     if account_id is None:
         return error_response(NO_ACCOUNT, 404)
     try:
-        with db.session(engine_of(request), writing=True) as opened:
+        with db.session(engine_of(request)) as opened:
             accounts.delete(opened, Photos(request.settings.photos_root), account_id, now())
     except accounts.NoSuchAccount:
         return error_response(NO_ACCOUNT, 404)
@@ -87,7 +87,7 @@ def start_job(request: Request, kind: str) -> Response:
     if account_id is None:
         return error_response(NO_ACCOUNT, 404)
     try:
-        with db.session(engine_of(request), writing=True) as opened:
+        with db.session(engine_of(request)) as opened:
             reply = browser_jobs.as_dict(browser_jobs.enqueue_once(opened, account_id, kind, now()), request.settings)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)
@@ -119,7 +119,7 @@ def renew_schedule(request: Request) -> Annotated[Response, contract.BrowserJobR
     if account_id is None:
         return error_response(NO_ACCOUNT, 404)
     try:
-        with db.session(engine_of(request), writing=True) as opened:
+        with db.session(engine_of(request)) as opened:
             reply = browser_jobs.as_dict(renewal.renew_now(opened, request.settings, account_id, now()), request.settings)
     except browser_jobs.UnknownAccount:
         return error_response(NO_ACCOUNT, 404)

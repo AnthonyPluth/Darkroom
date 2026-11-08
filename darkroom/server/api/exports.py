@@ -31,7 +31,7 @@ def export_one(request: Request) -> Annotated[Response, contract.ExportReply]:
 
 def check_now(request: Request) -> Annotated[Response, contract.CheckNowReply]:
     try:
-        with db.session(engine_of(request), writing=True) as opened:
+        with db.session(engine_of(request)) as opened:
             queued, skipped = exports.check_now(opened, now())
             jobs = [browser_jobs.as_dict(job, request.settings) for job in queued]
     except browser_jobs.Busy as error:
