@@ -1,14 +1,19 @@
 import dataclasses
 import json
+import time
 import unittest
 from unittest import mock
 
+from darkroom import oidc
 from darkroom.server import routes
+from darkroom.storage import db
+from darkroom.storage.models import Device, Person, User
 from tests.shared import fetch, own_database, settings_from, start_server
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
+DEVICE_TOKEN = "every-route-device-token-canary-0123456789abcdef"
 PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
@@ -120,6 +125,37 @@ class EveryRouteTests(unittest.TestCase):
         from darkroom.server import handler
 
         self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker"})
+
+    def a_live_device(self):
+        with db.session(self.engine) as opened:
+            person = Person(name="Jo", slug="jo", email="jo@example.test", originals_path="jo/originals", google_only_path="jo/google-only", created=1.0)
+            opened.add(person)
+            opened.flush()
+            opened.add(User(sub="jo", email="jo@example.test", email_verified=True, groups='["parents"]', last_seen=time.time()))
+            opened.add(Device(person_id=person.id, name="iPhone", token_hash=oidc.hash_token(DEVICE_TOKEN), sub="jo", created=1.0))
+
+    def test_a_device_token_opens_only_device_routes(self):
+        self.a_live_device()
+        found = [route for route in routes.ROUTES if route.auth != "public"]
+        self.assertTrue(found)
+        for route in found:
+            for headers in ({"Authorization": f"Bearer {DEVICE_TOKEN}"}, {"Cookie": f"darkroom_session={DEVICE_TOKEN}"}):
+                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
+                    sent = {**headers, "Origin": "https://darkroom.example"} if route.method != "GET" else headers
+                    status, _, body = fetch(self.base, route.method, route.path, sent, None if route.method == "GET" else b"{}")
+                    self.assertEqual(status, 401)
+                    self.assertEqual(json.loads(body), {"error": "sign in required"})
+
+    def test_the_retired_device_kind_opens_nothing(self):
+        self.assertNotIn("device", routes.AUTH_KINDS)
+        self.a_live_device()
+        retired = (*routes.ROUTES, routes.Route("GET", "/api/retired-device", never_runs, "device"))
+        with mock.patch.object(routes, "ROUTES", retired):
+            self.assertFalse(all(route.auth in routes.AUTH_KINDS for route in routes.ROUTES))
+            for headers in ({}, {"Authorization": f"Bearer {DEVICE_TOKEN}"}):
+                with self.subTest(headers=headers):
+                    status, _, body = fetch(self.base, "GET", "/api/retired-device", headers)
+                    self.assertEqual((status, json.loads(body)), (401, {"error": "sign in required"}))
 
     def test_a_new_unguarded_route_fails_this_test(self):
         extra = (*routes.ROUTES, routes.Route("GET", "/api/open", never_runs, "public"))
