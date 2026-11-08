@@ -145,7 +145,7 @@ PAGE = """<!doctype html>
 <div class="wrap">
 <div class="side">
 <div class="brand"><span class="dot"></span>Darkroom</div>
-<div class="pitch"><strong>Photos leave the phone only after Google Photos has them.</strong><span>Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</span></div>
+<div class="pitch"><strong>Photos leave a phone only once a safe copy is stored.</strong><span>Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</span></div>
 </div>
 <main><div class="card">
 <h1>Sign in</h1>
