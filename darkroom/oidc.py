@@ -57,10 +57,9 @@ class ProviderRefused(SignInFailed):
 
 
 class NotAllowed(SignInFailed):
-    def __init__(self, who: str, client_state: str | None = None) -> None:
+    def __init__(self, who: str) -> None:
         super().__init__("not allowed")
         self.who = who
-        self.client_state = client_state
 
 
 @dataclass(frozen=True)
@@ -188,28 +187,19 @@ def with_query(endpoint: str, params: dict[str, str]) -> str:
     return endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
 
 
-def start_login(opened: Session, settings: Settings, next_path: str | None, now: float, device_name: str | None = None,
-                client_state: str | None = None) -> tuple[str, str]:
+def start_login(opened: Session, settings: Settings, next_path: str | None, now: float) -> tuple[str, str]:
     document = discovery(settings, now)
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
     opened.execute(delete(AuthPending).where(AuthPending.created < now - LOGIN_TTL))
     sweep_expired(opened, now)
     surplus = select(AuthPending.state).order_by(AuthPending.created.desc()).offset(MAX_PENDING - 1)
     opened.execute(delete(AuthPending).where(AuthPending.state.in_(surplus)))
-    kind = "web" if device_name is None else "device"
-    opened.add(AuthPending(state=state, nonce=nonce, verifier=verifier, next=safe_next(next_path) if device_name is None else None, kind=kind,
-                           device_name=device_name, client_state=client_state, created=now))
+    opened.add(AuthPending(state=state, nonce=nonce, verifier=verifier, next=safe_next(next_path), kind="web", created=now))
     opened.flush()
     params = {"response_type": "code", "client_id": settings.oidc_client_id, "redirect_uri": redirect_uri(settings),
               "scope": SCOPES, "state": state, "nonce": nonce,
               "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()), "code_challenge_method": "S256"}
     return with_query(document["authorization_endpoint"], params), state
-
-
-def pending_kind(opened: Session, state: str | None) -> str | None:
-    if not state or len(state) > 200:
-        return None
-    return opened.execute(select(AuthPending.kind).where(AuthPending.state == state)).scalar_one_or_none()
 
 
 def take_pending(opened: Session, state: str, now: float, kind: str = "web") -> AuthPending:
@@ -437,56 +427,6 @@ def finish_login(opened: Session, settings: Settings, query: Mapping[str, list[s
     remember_user(opened, who, now)
     token = new_session(opened, settings, who.sub, now, tokens.get("refresh_token"))
     return SignedIn(token, safe_next(pending.next), seal_refresh_token(settings, tokens.get("refresh_token")) is not None)
-
-
-def authorize_device(settings: Settings, info: Mapping[str, Any]) -> Identity:
-    sub = info.get("sub")
-    if not isinstance(sub, str) or not sub:
-        raise SignInFailed("the provider did not say who signed in")
-    if is_demo_sub(sub):
-        raise SignInFailed("the provider named a demo user")
-    email = email_of(info)
-    groups = groups_of(info)
-    if not device_groups(settings) & set(groups):
-        raise NotAllowed(email or sub)
-    name = info.get("name") or info.get("preferred_username")
-    return Identity(sub, email, name.strip() if isinstance(name, str) and name.strip() else None, groups, info.get("email_verified") is True)
-
-
-def device_groups(settings: Settings) -> set[str]:
-    return {group.lower() for group in settings.oidc_device_groups}
-
-
-def finish_device_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float) -> tuple[Identity, str, str]:
-    state, code = callback_state(query, login_cookie)
-    pending = take_pending(opened, state, now, "device")
-    if not pending.client_state:
-        raise SignInFailed("this sign-in did not carry the app's state")
-    document = discovery(settings, now)
-    tokens = exchange_code(settings, document, code, pending.verifier)
-    try:
-        who = authorize_device(settings, claims_from(settings, document, tokens, pending.nonce, None))
-    except NotAllowed as error:
-        raise NotAllowed(error.who, pending.client_state) from None
-    remember_user(opened, who, now)
-    return who, pending.device_name or "iPhone", pending.client_state
-
-
-def device_access_lapsed(opened: Session, settings: Settings, sub: str | None, email: str | None, now: float) -> str | None:
-    if not configured(settings):
-        return "sign_in_unavailable"
-    address = email_of({"email": email})
-    user = opened.get(User, sub) if sub else None
-    if address is None or user is None or not user.email_verified or email_of({"email": user.email}) != address:
-        return "user_removed"
-    if not device_groups(settings) & set(stored_groups(user)):
-        return "user_removed"
-    if user.last_seen is None or now - user.last_seen > NO_RECHECK_DAYS * 86_400:
-        return "sign_in_lapsed"
-    newer = select(User.sub).where(func.lower(User.email) == address, User.email_verified.is_(True), User.sub != user.sub, User.last_seen > user.last_seen)
-    if opened.execute(newer.limit(1)).first() is not None:
-        return "email_moved"
-    return None
 
 
 def stored_groups(user: User) -> tuple[str, ...]:

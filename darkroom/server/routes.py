@@ -4,10 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth
-from darkroom.server.api import accounts, browser, browser_internal, device, devices, exports, imports, people, pixels, review, status
+from darkroom.server.api import accounts, browser, browser_internal, devices, exports, imports, people, pixels, review, status
 from darkroom.server.common import Request, Response
 
-AUTH_KINDS = ("session", "device", "worker", "public")
+AUTH_KINDS = ("session", "worker", "public")
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,6 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/auth/callback", auth.callback, "public"),
     Route("POST", "/auth/logout", auth.logout, "session"),
     Route("GET", "/auth/signed-out", auth.signed_out, "public"),
-    Route("GET", "/auth/device/start", auth.device_start, "public"),
     Route("GET", "/api/me", auth.me, "session"),
     Route("GET", "/api/status", status.status, "session"),
     Route("GET", "/api/events", status.recent_events, "session"),
@@ -66,8 +65,6 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/decisions/{id}/reverse", review.reverse, "session"),
     Route("GET", "/api/media", review.list_media, "session"),
     Route("POST", "/api/media/{id}/reassign", review.reassign, "session"),
-    Route("GET", "/api/device/me", device.device_me, "device"),
-    Route("POST", "/api/device/checkin", device.checkin, "device"),
     Route("POST", "/internal/browser/jobs/claim", browser_internal.claim, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/heartbeat", browser_internal.heartbeat, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/progress", browser_internal.progress, "worker"),

@@ -17,7 +17,7 @@ Authenticator = Callable[[Request], Principal | None]
 
 MAX_BODY = 8 * 1024 * 1024
 
-AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal, "device": auth.device_principal}
+AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal}
 
 
 def authenticate(route: routes.Route, request: Request) -> Principal | None:
@@ -37,9 +37,7 @@ def dispatch(request: Request) -> Response:
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":
         return route.handler(request)
-    principal: Principal | Response | None = auth.device_check(request) if route.auth == "device" else authenticate(route, request)
-    if isinstance(principal, Response):
-        return principal
+    principal = authenticate(route, request)
     if principal is None:
         return error_response("sign in required", 401)
     response = route.handler(replace(request, user=principal))

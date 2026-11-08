@@ -518,13 +518,3 @@ class MediaReply(TypedDict):
 
 class ReassignBody(TypedDict):
     person_id: int
-
-
-class DeviceMeReply(TypedDict):
-    person: str
-    device: str
-
-
-class DeviceCheckinBody(TypedDict):
-    pending_uploads: int
-    app_version: NotRequired[str | None]

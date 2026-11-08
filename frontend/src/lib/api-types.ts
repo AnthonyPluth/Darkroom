@@ -112,16 +112,6 @@ export interface Decisions {
   page_size: number;
 }
 
-export interface DeviceCheckinBody {
-  pending_uploads: number;
-  app_version?: string | null;
-}
-
-export interface DeviceMeReply {
-  person: string;
-  device: string;
-}
-
 export interface DeviceReply {
   device: DeviceView;
 }
@@ -585,8 +575,6 @@ export interface Endpoints {
   "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
   "GET /api/media": { body: never; reply: MediaList };
   "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
-  "GET /api/device/me": { body: never; reply: DeviceMeReply };
-  "POST /api/device/checkin": { body: DeviceCheckinBody; reply: Ok };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

@@ -36,8 +36,6 @@ class Principal:
     name: str | None = None
     groups: tuple[str, ...] = ()
     renewed: int | None = None
-    device_id: int | None = None
-    person_id: int | None = None
 
 
 @dataclass(frozen=True)
