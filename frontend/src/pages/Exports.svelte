@@ -57,7 +57,7 @@
   async function renew(id: number, email: string): Promise<void> {
     error = "";
     notice = "";
-    refusal = null;
+    if (refusal?.accountId === id) refusal = null;
     let refused = false;
     const queued = await act(() => apiCall<"POST /api/accounts/{id}/schedule/renew">(`/api/accounts/${id}/schedule/renew`, { method: "POST" }), {
       busy: (on) => (busy += on ? 1 : -1),

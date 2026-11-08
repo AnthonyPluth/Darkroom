@@ -541,6 +541,22 @@ describe("the Exports page", () => {
       expect(within(region).getByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com");
     });
 
+    it("keeps one account's refusal when Renew now is pressed for another account", async () => {
+      const other = { ...window, id: 12, email: "other.photos@example.com" };
+      show({
+        "GET /api/accounts": { accounts: [window, other] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "POST /api/accounts/10/schedule/renew": reply(409, { error: "a schedule or renew job for this account is already waiting or running" }),
+        "POST /api/accounts/12/schedule/renew": reply(201, { job: { ...renewJob, id: 31, account_id: 12 } }),
+      });
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      await userEvent.click(within(region).getByRole("button", { name: "Renew now" }));
+      await within(region).findByRole("alert");
+      await userEvent.click(within(card("other.photos@example.com")).getByRole("button", { name: "Renew now" }));
+      expect(await screen.findByText("Renewal queued for other.photos@example.com.")).toBeInTheDocument();
+      expect(within(region).getByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com");
+    });
+
     it("keeps the refusal in the page's alert line when the reload fails, until the retry works", async () => {
       let reloads = 0;
       show({
