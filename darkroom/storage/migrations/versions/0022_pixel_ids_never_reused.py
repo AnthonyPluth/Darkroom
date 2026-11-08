@@ -7,6 +7,13 @@ branch_labels = None
 depends_on = None
 
 CHILDREN = ("pixel_people", "pixel_copies")
+SEQUENCE_FOR_PIXELS = (
+    "SELECT setval(sequence, GREATEST(highest, 1), highest >= 1) FROM ("
+    "SELECT pg_get_serial_sequence('pixels', 'id') AS sequence, GREATEST("
+    "COALESCE(pg_sequence_last_value(pg_get_serial_sequence('pixels', 'id')::regclass), 0), "
+    "(SELECT COALESCE(MAX(id), 0) FROM pixels), "
+    "(SELECT COALESCE(MAX(CAST(subject AS INTEGER)), 0) FROM events WHERE type IN ('pixel_created', 'pixel_deleted'))) AS highest) AS found"
+)
 
 
 def rebuild_pixels(autoincrement: bool) -> None:
@@ -21,6 +28,9 @@ def rebuild_pixels(autoincrement: bool) -> None:
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(SEQUENCE_FOR_PIXELS)
+        return
     rebuild_pixels(True)
     op.execute("INSERT INTO sqlite_sequence (name, seq) SELECT 'pixels', 0 WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'pixels')")
     op.execute(
@@ -30,4 +40,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        return
     rebuild_pixels(False)

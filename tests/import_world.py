@@ -27,6 +27,10 @@ INDEXED = NOW - 30 * DAY
 ADMIN_KEY = "fake-immich-admin-key-canary"
 
 
+def path_of(item_id: Any) -> Any:
+    return select(MediaItem.path).where(MediaItem.id == item_id).scalar_subquery()
+
+
 def sha1_of(path: Path) -> str:
     return hashlib.sha1(path.read_bytes(), usedforsecurity=False).hexdigest()
 
@@ -173,8 +177,8 @@ class World:
 
         return {
             "tree": tree(self.root, "manual", "google-123", "parts"),
-            "decisions": rows(select(DedupeDecision.source_path, DedupeDecision.tier, DedupeDecision.person_id, DedupeDecision.matched_item_id,
-                                     DedupeDecision.takeout_item_id, DedupeDecision.decided_by).order_by(DedupeDecision.source_path)),
+            "decisions": rows(select(DedupeDecision.source_path, DedupeDecision.tier, DedupeDecision.person_id, path_of(DedupeDecision.matched_item_id),
+                                     path_of(DedupeDecision.takeout_item_id), DedupeDecision.decided_by).order_by(DedupeDecision.source_path)),
             "items": rows(select(MediaItem.person_id, MediaItem.source, MediaItem.path, MediaItem.sha1, MediaItem.confirmed_in_google).order_by(MediaItem.path)),
             "reviews": rows(select(ReviewItem.status, ReviewItem.hold_path).order_by(ReviewItem.id)),
             "runs": rows(select(ImportRun.status, ImportRun.stage, ImportRun.added, ImportRun.skipped_t1, ImportRun.skipped_t2, ImportRun.skipped_t3,

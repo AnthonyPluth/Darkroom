@@ -28,6 +28,19 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # PostgreSQL instead of the default SQLite (docs/deploy/postgres.md): uncomment this service and the `volumes:` entry at the end of the file, put
+  # DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom and the same password in .env, and add
+  # `depends_on: [postgres]` to darkroom. Nothing moves an existing SQLite database over.
+  # postgres:
+  #   image: postgres:17
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: darkroom
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+  #     POSTGRES_DB: darkroom
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+
   darkroom-browser:
     build:
       context: .
@@ -59,3 +72,6 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp:./deploy/browser/seccomp.json
+
+# volumes:
+#   postgres-data:

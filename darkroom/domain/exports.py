@@ -355,7 +355,7 @@ def as_dict(opened: Session, export: Export) -> dict[str, object]:
 
 
 def listing(opened: Session, limit: int = LIST_LIMIT) -> list[Export]:
-    query = select(Export).order_by(Export.created_at.desc(), Export.id.desc()).limit(min(limit, LIST_LIMIT))
+    query = select(Export).order_by(Export.created_at.desc().nulls_last(), Export.id.desc()).limit(min(limit, LIST_LIMIT))
     return list(opened.execute(query).scalars())
 
 

@@ -15,7 +15,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from darkroom.domain import dedupe, events, pixel_folder, xmp
 from darkroom.domain.ingest import pairing
 from darkroom.providers import exiftool
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, DuplicateRemoval, Export, ImmichAsset, MediaItem, Person, PixelCopy
 from darkroom.storage.paths import Photos
 
@@ -233,6 +233,7 @@ def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools:
 
 def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, now: float, resolved: Resolved, tools: Tools) -> None:
     opened.commit()
+    db.write_lock(opened)
     opened.execute(update(DuplicateRemoval).where(DuplicateRemoval.id == row.id).values(id=DuplicateRemoval.id))
     opened.refresh(row)
     keeper = None if row.kept_item_id is None else opened.get(MediaItem, row.kept_item_id, populate_existing=True)

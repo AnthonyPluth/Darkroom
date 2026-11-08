@@ -7,7 +7,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -161,6 +161,7 @@ def prune_copy(photos: Photos, row: PixelCopy, slug: str) -> bool:
 
 def lock_copy(opened: Session, copy_id: int) -> None:
     opened.commit()
+    db.write_lock(opened)
     opened.execute(sql_update(PixelCopy).where(PixelCopy.id == copy_id).values(id=PixelCopy.id))
 
 

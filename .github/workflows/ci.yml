@@ -46,6 +46,33 @@ jobs:
       - name: No comments or docstrings (fleet no-comments)
         run: tools/fleet no-comments
 
+  python-postgres:
+    runs-on: ubuntu-latest   # hosted: small repository
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install exiftool
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
+      - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
+      - name: Tests against PostgreSQL (each test makes its own database)
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: make test-pg
+
   generated:
     runs-on: ubuntu-latest   # hosted: small repository
     timeout-minutes: 15

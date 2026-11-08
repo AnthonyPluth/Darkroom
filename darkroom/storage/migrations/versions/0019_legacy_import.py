@@ -16,7 +16,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("person_id", sa.Integer(), nullable=False),
         sa.Column("path", sa.String(), nullable=False),
-        sa.Column("bytes", sa.Integer(), nullable=False),
+        sa.Column("bytes", sa.Integer().with_variant(sa.BigInteger(), "postgresql"), nullable=False),
         sa.Column("mtime", sa.Float(), nullable=False),
         sa.Column("sha1", sa.String(), nullable=False),
         sa.Column("status", sa.String(), nullable=False),

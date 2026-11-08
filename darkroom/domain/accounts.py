@@ -6,6 +6,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events, exports, renewal
+from darkroom.storage import db
 from darkroom.storage.paths import Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
 
@@ -184,9 +185,10 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
 
 def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
     try:
+        db.write_lock(opened)
         opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
     except OperationalError as error:
-        if "database is locked" not in str(error.orig):
+        if not db.is_busy(error):
             raise
         raise Busy("Darkroom is busy with another change; try deleting the account again in a moment") from None
     account = get(opened, account_id)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, CheckConstraint, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+Bytes = Integer().with_variant(BigInteger(), "postgresql")
 
 
 def one_of(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
@@ -90,11 +93,11 @@ class ExportPart(Base):
     export_id: Mapped[int] = mapped_column(ForeignKey("exports.id", ondelete="CASCADE"), nullable=False)
     number: Mapped[int] = mapped_column(Integer, nullable=False)
     filename: Mapped[str | None] = mapped_column(String)
-    bytes: Mapped[int | None] = mapped_column(Integer)
+    bytes: Mapped[int | None] = mapped_column(Bytes)
     downloads_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
-    bytes_done: Mapped[int | None] = mapped_column(Integer)
+    bytes_done: Mapped[int | None] = mapped_column(Bytes)
 
 
 class MediaItem(Base):
@@ -112,7 +115,7 @@ class MediaItem(Base):
     source: Mapped[str] = mapped_column(String, nullable=False)
     path: Mapped[str] = mapped_column(String, nullable=False)
     sha1: Mapped[str] = mapped_column(String, nullable=False)
-    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
     mtime: Mapped[float | None] = mapped_column(Float)
     phash: Mapped[str | None] = mapped_column(String)
     dhash: Mapped[str | None] = mapped_column(String)
@@ -144,7 +147,7 @@ class LegacyFile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
     path: Mapped[str] = mapped_column(String, nullable=False)
-    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
     mtime: Mapped[float] = mapped_column(Float, nullable=False)
     sha1: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
@@ -208,7 +211,7 @@ class PixelCopy(Base):
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False, default="queued", server_default="queued")
     name: Mapped[str | None] = mapped_column(String)
-    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
     sha1: Mapped[str] = mapped_column(String, nullable=False)
     queued_at: Mapped[float] = mapped_column(Float, nullable=False)
     placed_at: Mapped[float | None] = mapped_column(Float)

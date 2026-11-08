@@ -7,9 +7,16 @@ from unittest import mock
 
 import run
 from darkroom.providers import exiftool
+from darkroom.storage import db
 
 
 class RunTests(unittest.TestCase):
+    def test_the_demo_stays_on_sqlite_whatever_database_url_says(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@db.example/darkroom"}, clear=True):
+                settings = run.demo_settings(folder)
+        self.assertEqual(db.database_url(settings), f"sqlite:///{folder}/data/darkroom.db")
+
     def test_check_config_reports_problems_and_a_missing_exiftool(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err:
             values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder}

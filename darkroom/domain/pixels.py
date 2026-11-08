@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, events, pixel_folder
+from darkroom.storage import db
 from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelCopy, PixelPerson
 
 
@@ -84,9 +85,10 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
 
 def lock(opened: Session, pixel_id: int) -> None:
     try:
+        db.write_lock(opened)
         opened.execute(sql_update(Pixel).where(Pixel.id == pixel_id).values(id=Pixel.id))
     except OperationalError as error:
-        if "database is locked" not in str(error.orig):
+        if not db.is_busy(error):
             raise
         raise accounts.Busy("Darkroom is busy copying or pruning this Pixel's photos; try again in a moment") from None
 
