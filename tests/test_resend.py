@@ -361,6 +361,17 @@ class PushPassTests(unittest.TestCase):
         self.assertEqual(len(set(keys)), 3)
         self.assertTrue(all(key and EMAIL not in key and len(key) <= 256 for key in keys))
 
+    def test_keys_differ_between_alerts_that_share_an_id_and_between_instances(self):
+        def key(secret: str = SECRET, opened: float = 0.0) -> str:
+            alert = Alert(id=1, key="k", kind="sign_in_needed", subject="s", message="m", opened=opened, sent_count=1)
+            return alert_push.key_for(settings_from(DARKROOM_SECRET_KEY=secret), alert)
+
+        self.assertEqual(key(), key())
+        self.assertNotEqual(key(opened=0.0), key(opened=5.0))
+        self.assertNotEqual(key(secret=SECRET), key(secret="another-instance-key"))
+        self.assertEqual(len(key()), 64)
+        self.assertNotIn(SECRET, key())
+
     def test_a_retry_that_then_succeeds_is_recorded_as_sent(self):
         pusher = FakePusher("retry")
         self.open_sign_in(0.0)

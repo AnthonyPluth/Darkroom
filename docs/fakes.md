@@ -60,4 +60,4 @@ An `Idempotency-Key` header is remembered in `fake.sent`: the same key with the 
 
 ### What it does not cover
 
-Domain verification, API key permissions, rate limits, idempotency keys, validation of the addresses or the body, and delivery to an inbox. Any path answers like `/emails`.
+Domain verification, API key permissions, rate limits, the 24 hour expiry of an idempotency key, a request still in progress under the same key (Resend's other `409`), validation of the addresses or the body, and delivery to an inbox. Any path answers like `/emails`.
