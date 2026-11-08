@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, xmp
+from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, takeout_copies, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
@@ -211,7 +211,7 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
         if fields is None or row is None:
             failed += 1
             continue
-        if row.tier == 5 and row.takeout_item_id is not None:
+        if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(opened, row.id)):
             continue
         new_row = row.tier == 5 and row.takeout_item_id is None
         try:

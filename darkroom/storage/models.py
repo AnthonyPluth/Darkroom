@@ -267,6 +267,31 @@ class PixelCopy(Base):
     seen_again_at: Mapped[float | None] = mapped_column(Float)
 
 
+class DuplicateRemoval(Base):
+    __tablename__ = "duplicate_removals"
+    __table_args__ = (
+        Index("ix_duplicate_removals_person_state", "person_id", "state"),
+        one_of("state", ("pending", "removed", "refused"), "ck_duplicate_removals_state"),
+        one_of("rule", ("identical", "phone_better", "takeout_better"), "ck_duplicate_removals_rule"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    decision_id: Mapped[int | None] = mapped_column(ForeignKey("dedupe_decisions.id", ondelete="CASCADE"))
+    kept_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    removed_item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    kept_path: Mapped[str] = mapped_column(String, nullable=False)
+    kept_sha1: Mapped[str] = mapped_column(String, nullable=False)
+    removed_path: Mapped[str] = mapped_column(String, nullable=False)
+    removed_sha1: Mapped[str] = mapped_column(String, nullable=False)
+    removed_source: Mapped[str] = mapped_column(String, nullable=False)
+    rule: Mapped[str] = mapped_column(String, nullable=False)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    removed_at: Mapped[float | None] = mapped_column(Float)
+
+
 class ReviewItem(Base):
     __tablename__ = "review_items"
     __table_args__ = (one_of("status", ("pending", "kept_both", "skipped", "undone"), "ck_review_items_status"),)
