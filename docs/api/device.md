@@ -12,36 +12,9 @@ Who may sign in an iPhone: someone in one of `OIDC_DEVICE_GROUPS` (default `fami
 
 Each sign-in creates a new device with its own token, bound to the Pocket ID account (subject) that signed in. Signing in again after a revoke is how an iPhone gets back in; the old token stays refused. When a different account signs in an iPhone for the same person (the email moved to another account, or the account was recreated), the person's devices bound to other accounts are revoked.
 
-## Calling the API
+## Calling the API (removed)
 
-Every device route takes `Authorization: Bearer <token>`. Darkroom answers `401 {"error": "sign in required"}` when:
-
-- the token is missing or unknown;
-- the device was revoked on the People page (`revoked_at` is set);
-- the person's access lapsed: the account that signed the device in no longer has the person's email verified, is no longer in `OIDC_DEVICE_GROUPS`, or has not signed in to Darkroom (web or app) for 30 days;
-- another verified account with the person's email has signed in to Darkroom more recently than the device's account (the email moved, or the account was recreated);
-- Darkroom has no sign-in provider configured.
-
-When the token matches a device, the 401 also says why, in `reason` (nothing else is added, and an unknown, missing or malformed token gets the plain `{"error": "sign in required"}`):
-
-- `device_revoked`: the device was revoked (on the People page, or because another account signed in an iPhone for the person) The token never works again; a new sign-in is a new device.
-- `sign_in_lapsed`: no sign-in to Darkroom for 30 days. The same token works again after the person signs in.
-- `sign_in_unavailable`: Darkroom has no sign-in provider configured.
-- `sign_in_refused`: the account's access lapsed otherwise (email no longer verified or matching, no longer in `OIDC_DEVICE_GROUPS`, or the email moved to a newer account). The same token works again if that is undone.
-
-On a 401 the app stops uploading and asks the person to sign in again. Every accepted request records the device's last check-in.
-
-## Routes
-
-The upload routes (`POST /api/device/assets/check` and `PUT /api/device/assets/{id}/resources/{kind}`) were removed with the iPhone app (#199, #201).
-
-### `GET /api/device/me`
-
-Who this iPhone uploads for. Reply: `{"person": "Sam", "device": "Sam's iPhone"}` and nothing else: the person's name on the People page and this iPhone's name. The email, groups, subject and ids are never in the reply. 401 as for every device route, including the `reason`. Like any accepted device request, it records the device's last check-in.
-
-### `POST /api/device/checkin`
-
-`{"pending_uploads": 12, "app_version": "0.1.0"}` (the version is optional). Records the count and version with the check-in time; the People and Status pages show them per iPhone. Reply: `{"ok": true}`.
+The `device` auth kind and every route that took a device token were removed with the iPhone app (#199, #201): `GET /api/device/me`, `POST /api/device/checkin`, the upload routes (`POST /api/device/assets/check`, `PUT /api/device/assets/{id}/resources/{kind}`) and the push-token routes. A device token gets `401 {"error": "sign in required"}` on every route, with no `reason`, the same as no token (`tests/test_every_route.py`).
 
 ### Push tokens (removed)
 
