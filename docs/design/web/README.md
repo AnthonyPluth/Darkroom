@@ -13,7 +13,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `02-status-desktop.dc.html`, `02-status-phone.dc.html` | Status (home) |
 | `03-people-desktop.dc.html`, `03-people-phone.dc.html` | People |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` | Exports |
-| `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (proposal, #164, not signed off) |
+| `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (signed off, #164, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904)) |
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
@@ -59,9 +59,9 @@ Approved departures (#40), approved by the owner on #16 via the session owner on
 2. Exports: the warning box for an unconfirmed first schedule (departure 4 of #29) gains a "Takeout has the schedule" button next to "I checked Takeout, there is no schedule".
 3. Exports: Create schedule is enabled again once an account's schedule has ended unrenewed (with no schedule or renew job open and no attempt left unanswered), and the line under it then describes a new schedule.
 
-## Proposal: Renew now on Exports (#164, needs owner sign-off)
+## Renew now on Exports (#164, signed off)
 
-Status: **proposal, not signed off.** Nothing here is built. The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+Status: **signed off by the owner on 2026-11-08: all six open points approved as recommended.** Recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904). The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is built to this design in the pull request for #164. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
 ### The button
 
@@ -100,7 +100,7 @@ The route's own message is shown in the account card, under the sentence, as a d
 
 The two alerts that name the button say where it is. "Takeout schedule not renewed", before the end: "The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to ask for another." After the end: "The export schedule for {account} was not renewed, and it ended on {end}, so scheduled exports have stopped. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to create a new schedule." They no longer mention Create schedule, so the alert gives one way out. "Takeout schedule ending" and "renewal not confirmed" keep their text. The change is in `darkroom/domain/alerts.py` and its tests, in the build pull request.
 
-### Open points (all need owner sign-off)
+### Open points (approved as recommended, 2026-11-08)
 
 1. **Where the button sits.** Recommended: last in the button row, secondary, as drawn. Alternative: primary while the renewal has failed, which draws the eye but gives the card two primary actions at times.
 2. **Disabled with a reason, or hidden.** Recommended: disabled with the sentence above (the owner sees that it exists and when it opens); hidden only when there is no schedule. Alternative: hide it outside the window.

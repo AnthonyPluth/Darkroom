@@ -246,6 +246,18 @@ class AccountJobsApiTests(ApiCase):
         self.assertIn("not due for renewal", reply["error"])
         self.assertEqual(self.renew_jobs(), [])
 
+    def test_the_account_view_carries_the_day_renewal_opens_and_it_matches_the_refusal(self):
+        self.assertIsNone(self.account_view()["renew_from"])
+        end = dates.utc_now().timestamp() + 60 * 86400
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            account.schedule_created, account.schedule_end = end - 365 * 86400, end
+        opens = self.account_view()["renew_from"]
+        self.assertEqual(opens, end - renewal.NOTICE)
+        status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/renew")
+        self.assertEqual(status, 409)
+        self.assertIn(renewal.on_date(opens, self.settings.timezone), reply["error"])
+
     def test_renew_now_for_an_unknown_account_is_404(self):
         for path in (f"/api/accounts/{self.account_id + 50}/schedule/renew", "/api/accounts/abc/schedule/renew"):
             self.assertEqual(self.call("POST", path)[0], 404)

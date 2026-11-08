@@ -90,11 +90,11 @@ def schedule_renewal_failed(account: str, end: str, ended: bool = False) -> Word
     if ended:
         return Wording(
             "Takeout schedule not renewed",
-            f"The export schedule for {account} was not renewed, and it ended on {end}. Darkroom does not retry a renewal on its own; you can ask for another with Renew now, or press Create schedule on the Exports page to make a new one.",
+            f"The export schedule for {account} was not renewed, and it ended on {end}, so scheduled exports have stopped. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to create a new schedule.",
         )
     return Wording(
         "Takeout schedule not renewed",
-        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal on its own; you can ask for another with Renew now. Once it has ended, press Create schedule on the Exports page to make a new one.",
+        f"The export schedule for {account} was not renewed, and it ends on {end}. Darkroom does not retry a renewal on its own. Press Renew now on the Exports page to ask for another.",
     )
 
 
