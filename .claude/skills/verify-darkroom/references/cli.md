@@ -134,7 +134,7 @@ tools/control reset [options]
 
 Fresh demo data: a new copy of the seed on a new demo server and a new browser, and the page opened again.
 
-What you changed (added a person, revoked an iPhone) is gone. The viewport and route stay; the port changes, and the browser is new and signed in again.
+What you changed (added a person, edited a Pixel) is gone. The viewport and route stay; the port changes, and the browser is new and signed in again.
 
 Options:
   --dry-run  say what it would do, and do nothing

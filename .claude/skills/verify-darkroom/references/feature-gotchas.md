@@ -8,11 +8,11 @@ Hand-edited. `tools/user_feature_map.py` merges these into [feature-map.md](feat
 - `Continue with Pocket ID` leads to `/auth/login`, which a demo server answers with "Demo mode" and no provider.
 
 ## status
-- The demo has one Google account that needs a sign-in, so Status lists it under "Needs you"; the iPhones show check-ins relative to the frozen day (2026-06-15).
+- The demo has one Google account that needs a sign-in, so Status lists it under "Needs you"; dates show relative to the frozen day (2026-06-15).
 - "Open remote browser" and each person's link lead to other pages of the app; `goto` them by name.
 
 ## people
-- Every person, account, Pixel and iPhone has its own Edit or Revoke button: name it with the person (`click button "Edit Avery Example"`) or pass `--nth`.
+- Every person, account and Pixel has its own Edit button: name it with the person (`click button "Edit Avery Example"`) or pass `--nth`.
 - Forms here change demo data only; `reset` puts it back. Put no real email, name or Immich key in one.
 
 ## open-people

@@ -205,7 +205,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 **Web UI** (internal only, Traefik + Pocket ID, `parents` group, reachable remotely over Tailscale)
 
-- **People:** each person's Google accounts, Pixels, Immich user and session status. The per-iPhone check-in, uploads pending and photos eligible to delete go away with the iPhone app; a changed People page needs the owner's sign-off first (AGENTS.md, promise 6).
+- **People:** each person's Google accounts, Pixels, Immich user and session status. The per-iPhone check-in, uploads pending and photos eligible to delete went with the iPhone app (#201); a changed People page needs the owner's sign-off first (AGENTS.md, promise 6).
 - **Exports:** schedule end date, last and next export, download progress per part.
 - **Imports:** counts added, skipped as duplicates, sent to review, and missing GPS; the summary line also names the items already imported by an earlier export.
 - **Review queue:** side-by-side thumbnails for likely re-encodes. Keep both, skip, or undo any past decision.
@@ -243,7 +243,7 @@ A single SQLite database is enough. Photos never enter it, only their index and 
 | DuplicateRemoval | person, the Takeout decision, kept and removed item with their paths and SHA-1, the removed copy's source, rule (identical / phone better / Takeout better), tier, state (pending / removed / refused), reason, created and removed at |
 | Event | time, type, subject, detail. Feeds alerts and the status page |
 
-The `Device` records (iPhone name, sign-in token, last check-in) and the push tokens go away with the iPhone app.
+The `Device` records (iPhone name, sign-in token, last check-in) and the push tokens went with the iPhone app (#201, migration 0025).
 
 ## Deployment and stack
 
