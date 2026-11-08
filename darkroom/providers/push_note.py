@@ -10,7 +10,6 @@ Outcome = Literal["sent", "retry", "failed"]
 class Note:
     title: str
     message: str
-    tags: str
     click: str | None = None
 
 

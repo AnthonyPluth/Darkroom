@@ -24,8 +24,8 @@ def note_for(settings: Settings, alert: Alert) -> Note:
     title = alerts.TITLES.get(alert.kind, FALLBACK_TITLE)
     click = settings.public_url if settings.public_url.startswith(("https://", "http://")) else None
     if closing(alert):
-        return Note(f"Resolved: {title}", CLOSED_TEXT, "white_check_mark", click)
-    return Note(title, OPEN_TEXT, "warning", click)
+        return Note(f"Resolved: {title}", CLOSED_TEXT, click)
+    return Note(title, OPEN_TEXT, click)
 
 
 def detail_of(alert: Alert) -> str:

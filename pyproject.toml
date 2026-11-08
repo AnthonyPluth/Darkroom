@@ -143,7 +143,7 @@ broken_contract_guidance = "Drive the browser through darkroom_browser.live; par
 id = "providers-alone"
 name = "Providers import no other provider"
 type = "independence"
-modules = ["darkroom.providers.exiftool", "darkroom.providers.immich", "darkroom.providers.ntfy"]
+modules = ["darkroom.providers.exiftool", "darkroom.providers.immich", "darkroom.providers.resend"]
 
 [[tool.importlinter.contracts]]
 id = "subprocess-only-exiftool"

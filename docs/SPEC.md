@@ -213,7 +213,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 The web UI is dark mode only: one theme, with no light theme and no theme switch.
 
-**Alerts** — the channel is not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3). They were push alerts to the iPhone app, which no longer exists, and nothing has replaced them. Until the owner picks a channel, an alert is recorded as an event and shown on the status page, and nothing is delivered. The events below keep their timing; where each one is delivered is the open part. An alert carries only its kind and an id, never an email address, name or file name.
+**Alerts** — an alert is recorded as an event and shown on the status page. When Resend is set up (`RESEND_API_KEY`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`; [docs/deploy/alerts-email.md](deploy/alerts-email.md)) it is also emailed to the one owner address; without it nothing is delivered and the event is `alert_disabled`. The events below keep their timing. An alert carries only its kind and an id, never an email address, name or file name, and the email carries only the kind's fixed title, a fixed line and a link to `DARKROOM_PUBLIC_URL`.
 
 | Event | Alert |
 | --- | --- |

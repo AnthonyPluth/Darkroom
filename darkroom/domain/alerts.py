@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.config import Settings, demo_allowed
 from darkroom.domain import events
-from darkroom.providers import ntfy
+from darkroom.providers import resend
 from darkroom.storage.models import Alert
 
 HOUR = 3600.0
@@ -134,7 +134,7 @@ def queued(settings: Settings, title: str, message: str, link: str | None = None
 def notifier_for(settings: Settings) -> Notifier:
     if demo_allowed(settings):
         return recorded
-    return queued if ntfy.of(settings) is not None else undelivered
+    return queued if resend.of(settings) is not None else undelivered
 
 
 def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording, now: float, notifier: Notifier | None) -> str:
