@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import tempfile
@@ -441,6 +442,245 @@ class SharedInboxTests(unittest.TestCase):
                     call()
                 self.assertEqual(mode_of(elsewhere), 0o755)
                 link.unlink()
+
+
+class RemoveLosingCopyTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.keeper = self.file("jo/originals/immich/IMG_0001-aaaa.jpg", b"phone")
+        self.loser = self.file("jo/google-only/2021/03/IMG_0001.jpg", b"takeout")
+        self.file("jo/google-only/2021/03/IMG_0001.jpg.xmp", b"<xmp/>")
+
+    def file(self, relative, data):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def remove(self, losing="jo/google-only/2021/03/IMG_0001.jpg", losing_sha1=None, keeping="jo/originals/immich/IMG_0001-aaaa.jpg", keeping_sha1=None, person="jo"):
+        return paths.remove_losing_copy(self.photos, person, losing, losing_sha1 or paths.file_sha1(self.loser), keeping, keeping_sha1 or paths.file_sha1(self.keeper))
+
+    def test_the_losing_takeout_copy_and_its_sidecar_go_and_the_keeper_stays_byte_for_byte(self):
+        self.assertTrue(self.remove())
+        self.assertFalse(self.loser.exists())
+        self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
+        self.assertEqual(self.keeper.read_bytes(), b"phone")
+        (self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").write_bytes(b"<xmp/>")
+        self.assertFalse(self.remove(losing_sha1="b" * 40))
+        self.assertFalse((self.root / "jo/google-only/2021/03/IMG_0001.jpg.xmp").exists())
+
+    def test_a_losing_immich_original_goes_when_the_takeout_copy_is_kept(self):
+        self.assertTrue(self.remove(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper),
+                                    keeping="jo/google-only/2021/03/IMG_0001.jpg", keeping_sha1=paths.file_sha1(self.loser)))
+        self.assertFalse(self.keeper.exists())
+        self.assertEqual(self.loser.read_bytes(), b"takeout")
+
+
+    def assertRefused(self, **arguments):
+        before = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}
+        with self.assertRaises((paths.NotALosingCopy, paths.OutsideRoot)):
+            self.remove(**arguments)
+        self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}, before)
+
+    def test_a_keeper_or_loser_that_is_not_the_file_darkroom_recorded_or_a_missing_keeper_is_refused(self):
+        self.assertRefused(keeping_sha1="a" * 40)
+        self.assertRefused(losing_sha1="a" * 40)
+        recorded = paths.file_sha1(self.keeper)
+        self.keeper.unlink()
+        self.assertRefused(keeping_sha1=recorded)
+
+    def test_paths_outside_the_persons_library_are_refused(self):
+        self.file("sam/google-only/2021/03/IMG_0001.jpg", b"takeout")
+        self.file("_inbox/jo/review/1/IMG_0001.jpg", b"takeout")
+        self.file("jo/originals/IMG_0001.jpg", b"takeout")
+        for losing in ("sam/google-only/2021/03/IMG_0001.jpg", "_inbox/jo/review/1/IMG_0001.jpg", "jo/originals/IMG_0001.jpg",
+                       "jo/google-only/../originals/IMG_0001.jpg", "jo/google-only", "jo/originals/immich", "/etc/passwd"):
+            with self.subTest(losing=losing):
+                self.assertRefused(losing=losing)
+        self.file("sam/originals/immich/a.jpg", b"phone")
+        self.assertRefused(keeping="sam/originals/immich/a.jpg")
+        self.assertRefused(keeping="_inbox/jo/review/1/IMG_0001.jpg")
+        self.assertRefused(person="sam")
+
+    def test_links_and_folders_are_never_followed_or_removed(self):
+        (self.root / "jo/google-only/2021/04/IMG_0002.jpg").mkdir(parents=True)
+        self.assertRefused(losing="jo/google-only/2021/04/IMG_0002.jpg")
+        elsewhere = self.file("outside/a.jpg", b"takeout")
+        link = self.root / "jo/google-only/2021/03/link.jpg"
+        link.symlink_to(elsewhere)
+        self.assertRefused(losing="jo/google-only/2021/03/link.jpg", losing_sha1=paths.file_sha1(elsewhere))
+        self.assertTrue(link.is_symlink() and elsewhere.exists())
+        (self.root / "jo/google-only/2020").symlink_to(self.root / "outside")
+        self.assertRefused(losing="jo/google-only/2020/a.jpg", losing_sha1=paths.file_sha1(elsewhere))
+        kept_link = self.root / "jo/originals/immich/kept.jpg"
+        kept_link.symlink_to(self.keeper)
+        self.assertRefused(keeping="jo/originals/immich/kept.jpg")
+
+    def test_the_keeper_and_the_loser_are_never_the_same_file(self):
+        self.assertRefused(losing="jo/originals/immich/IMG_0001-aaaa.jpg", losing_sha1=paths.file_sha1(self.keeper))
+        os.link(self.keeper, self.root / "jo/google-only/2021/03/hard.jpg")
+        self.assertRefused(losing="jo/google-only/2021/03/hard.jpg", losing_sha1=paths.file_sha1(self.keeper))
+
+    def contents(self):
+        return sorted(p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink())
+
+    def test_a_file_swapped_in_at_any_step_is_never_removed_and_a_copy_of_the_photo_always_stays(self):
+        steps = [("fd_sha1", 1), ("fd_sha1", 2), ("link", 1), ("rename_no_replace", 1), ("still_there", 1), ("unlink", 1), ("still_there", 2), ("rename_no_replace", 2)]
+        for (step, nth), target in [(step, target) for step in steps for target in ("loser", "keeper")]:
+            with self.subTest(step=step, nth=nth, target=target):
+                self.setUp()
+                self.file("jo/google-only/2021/03/bystander.jpg", b"bystander")
+                calls, real = {}, {"fd_sha1": paths.fd_sha1, "link": os.link, "rename": os.rename, "unlink": os.unlink, "still_there": paths.Keeper.still_there,
+                                   "rename_no_replace": paths.rename_no_replace}
+
+                def hooked(*args, step=step, nth=nth, target=target, calls=calls, real=real, name="", **kwargs):
+                    calls[name] = calls.get(name, 0) + 1
+                    if name == step and calls[name] == nth:
+                        swapped = self.loser if target == "loser" else self.keeper
+                        swapped.with_name("incoming").write_bytes(b"intruder")
+                        real["rename"](swapped.with_name("incoming"), swapped)
+                    return real[name](*args, **kwargs)
+
+                patches = [mock.patch.object(paths, "fd_sha1", lambda *a: hooked(*a, name="fd_sha1")),
+                           mock.patch.object(paths, "rename_no_replace", lambda *a: hooked(*a, name="rename_no_replace")),
+                           mock.patch.object(paths.Keeper, "still_there", lambda keeper: hooked(keeper, name="still_there"))]
+                patches += [mock.patch.object(paths.os, call, lambda *a, call=call, **k: hooked(*a, name=call, **k)) for call in ("link", "unlink")]
+                with contextlib.ExitStack() as stack, contextlib.suppress(paths.NotALosingCopy, OSError):
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    self.remove(losing_sha1=paths.file_sha1(self.loser), keeping_sha1=paths.file_sha1(self.keeper))
+                left = self.contents()
+                self.assertTrue({b"bystander", b"intruder"} <= set(left), left)
+                self.assertTrue(b"phone" in left or b"takeout" in left if target == "keeper" else b"phone" in left, left)
+
+    def crash_at_the_unlink(self):
+        real = os.unlink
+
+        def crashing(name, *args, **kwargs):
+            if str(name).startswith(paths.LOSING):
+                raise KeyboardInterrupt
+            return real(name, *args, **kwargs)
+
+        with mock.patch.object(paths.os, "unlink", crashing), self.assertRaises(KeyboardInterrupt):
+            self.remove()
+        (claim,) = [p for p in self.loser.parent.iterdir() if p.name.startswith(paths.LOSING)]
+        self.assertTrue(claim.exists() and not self.loser.exists())
+        return claim
+
+    def test_a_crash_between_the_claim_and_the_unlink_is_finished_by_the_next_call(self):
+        claim, sha1 = self.crash_at_the_unlink(), paths.file_sha1(self.keeper)
+        self.assertTrue(paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", paths.file_sha1(claim), "jo/originals/immich/IMG_0001-aaaa.jpg", sha1))
+        self.assertEqual(sorted(p.name for p in self.loser.parent.iterdir()), [])
+
+    def test_a_claim_left_by_a_crash_goes_back_when_the_pair_no_longer_holds(self):
+        claim = self.crash_at_the_unlink()
+        sha1 = paths.file_sha1(claim)
+        self.keeper.write_bytes(b"changed")
+        with self.assertRaises(paths.NotALosingCopy):
+            paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", sha1, "jo/originals/immich/IMG_0001-aaaa.jpg", "a" * 40)
+        self.assertEqual((self.loser.read_bytes(), claim.exists()), (b"takeout", False))
+        self.crash_at_the_unlink()
+        self.assertTrue(paths.restore_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", sha1))
+        self.assertEqual(self.loser.read_bytes(), b"takeout")
+        self.assertFalse(paths.restore_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", sha1))
+
+    def test_a_stale_claim_never_takes_the_sidecar_of_a_photo_now_at_the_name(self):
+        claim = self.crash_at_the_unlink()
+        self.file("jo/google-only/2021/03/IMG_0001.jpg", b"a new photo")
+        self.file("jo/google-only/2021/03/IMG_0001.jpg.xmp", b"its own sidecar")
+        paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", paths.file_sha1(claim), "jo/originals/immich/IMG_0001-aaaa.jpg", paths.file_sha1(self.keeper))
+        self.assertEqual((self.loser.read_bytes(), self.loser.with_name("IMG_0001.jpg.xmp").read_bytes()), (b"a new photo", b"its own sidecar"))
+
+    def test_a_file_put_at_the_claim_name_after_the_check_is_never_replaced(self):
+        real = paths.entry_at
+
+        def racing(name, folder):
+            found = real(name, folder)
+            if name.startswith(paths.LOSING) and not name.endswith(".xmp") and found is None:
+                self.file(f"jo/google-only/2021/03/{name}", b"someone else's file")
+            return found
+
+        with mock.patch.object(paths, "entry_at", racing), self.assertRaises(paths.NotALosingCopy):
+            self.remove()
+        self.assertEqual(sorted(self.contents()), sorted([b"phone", b"takeout", b"<xmp/>", b"someone else's file"]))
+
+    def test_a_sidecar_swapped_in_after_it_was_inspected_is_never_removed(self):
+        real = paths.rename_no_replace
+
+        def swapping(source, target, folder):
+            if source.endswith(".xmp") and target.startswith(paths.LOSING):
+                self.file("jo/google-only/2021/03/incoming", b"a sidecar swapped in")
+                os.replace(self.loser.with_name("incoming"), self.loser.with_name("IMG_0001.jpg.xmp"))
+            return real(source, target, folder)
+
+        with mock.patch.object(paths, "rename_no_replace", swapping):
+            self.remove()
+        self.assertFalse(self.loser.exists())
+        self.assertIn(b"a sidecar swapped in", self.contents())
+
+    def test_without_renameat2_the_claim_falls_back_to_a_checked_link(self):
+        with mock.patch.object(paths, "LIBC", object()):
+            self.assertTrue(self.remove())
+        self.assertEqual((self.loser.exists(), self.keeper.read_bytes()), (False, b"phone"))
+
+    def test_a_swap_during_the_link_fallback_keeps_the_file_swapped_in(self):
+        real, swapped = paths.entry_at, []
+
+        def swapping(name, folder):
+            if name == self.loser.name and not swapped:
+                swapped.append(name)
+                self.file("jo/google-only/2021/03/incoming", b"intruder")
+                os.replace(self.loser.with_name("incoming"), self.loser)
+            return real(name, folder)
+
+        with mock.patch.object(paths, "LIBC", object()), mock.patch.object(paths, "entry_at", swapping), contextlib.suppress(paths.NotALosingCopy):
+            self.remove()
+        self.assertIn(b"intruder", self.contents())
+        self.assertIn(b"takeout", self.contents())
+
+    def test_a_crash_at_the_sidecar_claim_is_finished_by_the_next_call(self):
+        real = os.unlink
+
+        def crashing(name, *args, **kwargs):
+            if str(name).startswith(paths.LOSING) and str(name).endswith(".xmp"):
+                raise KeyboardInterrupt
+            return real(name, *args, **kwargs)
+
+        sha1 = paths.file_sha1(self.loser)
+        with mock.patch.object(paths.os, "unlink", crashing), self.assertRaises(KeyboardInterrupt):
+            self.remove()
+        self.assertEqual([p.name.endswith(".xmp") for p in self.loser.parent.iterdir()], [True])
+        self.assertFalse(self.remove(losing_sha1=sha1))
+        self.assertEqual(list(self.loser.parent.iterdir()), [])
+
+    def test_a_250_byte_name_is_claimed_and_removed(self):
+        long = "a" * 246 + ".jpg"
+        self.loser.rename(self.loser.with_name(long))
+        self.loser.with_name("IMG_0001.jpg.xmp").unlink()
+        self.assertTrue(self.remove(losing=f"jo/google-only/2021/03/{long}", losing_sha1=paths.file_sha1(self.loser.with_name(long))))
+        self.assertEqual(list(self.loser.parent.iterdir()), [])
+
+    def test_the_keepers_sidecar_is_read_and_written_only_through_its_pinned_folder(self):
+        sidecar = self.keeper.with_name(f"{self.keeper.name}.xmp")
+        with paths.checked_keeper(self.photos, "jo", "jo/originals/immich/IMG_0001-aaaa.jpg", paths.file_sha1(self.keeper)) as keeper:
+            self.assertIsNone(keeper.sidecar())
+            keeper.write_sidecar(b"first", None)
+            self.assertEqual((keeper.sidecar(), sidecar.read_bytes()), (b"first", b"first"))
+            keeper.write_sidecar(b"second", b"first")
+            with self.assertRaises(paths.NotALosingCopy):
+                keeper.write_sidecar(b"third", b"first")
+        self.assertEqual(sidecar.read_bytes(), b"second")
+        self.assertEqual([p.name for p in self.keeper.parent.iterdir() if p.name.startswith(".xmp-")], [])
+        sidecar.unlink()
+        sidecar.symlink_to(self.loser)
+        with paths.checked_keeper(self.photos, "jo", "jo/originals/immich/IMG_0001-aaaa.jpg", paths.file_sha1(self.keeper)) as keeper, self.assertRaises(paths.NotALosingCopy):
+            keeper.write_sidecar(b"through a link", None)
+        self.assertEqual(self.loser.read_bytes(), b"takeout")
+        with self.assertRaises(paths.NotALosingCopy), paths.checked_keeper(self.photos, "jo", "jo/originals/immich/IMG_0001-aaaa.jpg", "a" * 40):
+            self.fail("a keeper that is not the recorded file is never yielded")
 
 
 if __name__ == "__main__":
