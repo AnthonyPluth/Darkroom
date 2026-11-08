@@ -160,8 +160,9 @@ def resolve(opened: Session, photos: Photos, person: Person, pair: Pair, now: fl
 def refuse(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:
     with suppress(paths.NotALosingCopy, paths.OutsideRoot, OSError):
         paths.restore_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1)
-    if not loser_present(photos, person, row):
-        fail(opened, person, row, "LoserAlreadyGone", now, resolved)
+    at_name, claimed = loser_state(photos, person, row)
+    if claimed or not at_name:
+        fail(opened, person, row, "LoserNotBackAtItsName" if claimed else "LoserAlreadyGone", now, resolved)
         return
     row.state, row.reason = "refused", reason
     resolved.refused += 1
@@ -245,6 +246,10 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
         return
     try:
         paths.remove_losing_copy(photos, person.slug, row.removed_path, row.removed_sha1, row.kept_path, row.kept_sha1, carrier(loser, tools))
+    except paths.KeeperBusy:
+        opened.rollback()
+        fail(opened, person, row, "KeeperBusy", now, resolved)
+        return
     except (paths.NotALosingCopy, paths.OutsideRoot) as error:
         refuse(opened, photos, person, row, str(error), now, resolved)
         return
@@ -255,11 +260,15 @@ def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemova
     complete(opened, person, row, loser, now, resolved)
 
 
-def loser_present(photos: Photos, person: Person, row: DuplicateRemoval) -> bool:
+def loser_state(photos: Photos, person: Person, row: DuplicateRemoval) -> tuple[bool, bool]:
     try:
-        return paths.losing_copy_present(photos, person.slug, row.removed_path, row.removed_sha1)
+        return paths.losing_copy_state(photos, person.slug, row.removed_path, row.removed_sha1)
     except (paths.NotALosingCopy, paths.OutsideRoot, OSError):
-        return True
+        return True, True
+
+
+def loser_present(photos: Photos, person: Person, row: DuplicateRemoval) -> bool:
+    return any(loser_state(photos, person, row))
 
 
 def fail(opened: Session, person: Person, row: DuplicateRemoval, reason: str, now: float, resolved: Resolved) -> None:

@@ -345,6 +345,28 @@ class CrashTests(CopiesCase):
         resolved = self.resolve(at=3.0)
         self.assertEqual((resolved.failed, resolved.refused, [r.state for r in self.removals()]), (1, 0, ["pending"]))
 
+    def test_a_loser_hidden_in_its_claim_is_never_marked_refused(self):
+        takeout, phone = self.pending()
+        loser = self.root / takeout.path
+        private = loser.parent / paths.claim_name(takeout.sha1, loser.name)
+        private.mkdir(mode=paths.PRIVATE_MODE)
+        loser.rename(private / paths.CLAIMED)
+        loser.write_bytes(b"another file now at the name")
+        phone.sha1 = "c" * 40
+        self.opened.commit()
+        resolved = self.resolve(at=3.0)
+        self.assertEqual((resolved.refused, resolved.failed, [r.state for r in self.removals()]), (0, 1, ["pending"]))
+        self.assertEqual(self.events("duplicate_removal_failed"), ["takeout copy, identical: LoserNotBackAtItsName"])
+        self.assertTrue((private / paths.CLAIMED).exists())
+
+    def test_a_busy_keeper_leaves_the_removal_pending_for_the_next_run(self):
+        takeout, phone = self.pending()
+        with paths.checked_keeper(self.photos, "jo", phone.path, phone.sha1):
+            resolved = self.resolve(at=3.0)
+        self.assertEqual((resolved.refused, resolved.failed, [r.state for r in self.removals()]), (0, 1, ["pending"]))
+        self.assertTrue((self.root / takeout.path).exists())
+        self.assertEqual(self.resolve(at=4.0).removed, 1)
+
     def test_a_missing_or_changed_keeper_refuses_and_leaves_the_last_copy(self):
         for change in ("missing", "changed"):
             with self.subTest(change=change):
