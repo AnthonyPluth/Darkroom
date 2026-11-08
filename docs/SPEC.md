@@ -83,7 +83,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 **Limits it must respect**
 
 - Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that started a download and failed before every part was downloaded, or a job that had nothing left to download and only had to finish a complete export; a job that fails right after downloading the last part is not counted) is marked failed, which frees the account.
-- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (the delivery channel is not decided, #199), and resumes after you sign in.
+- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (emailed to the owner when Resend is set up, otherwise shown on the status page), and resumes after you sign in.
 - Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
@@ -289,7 +289,7 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 | Immich's iOS background backup lags | Assumed to be a delay, not a loss (#202 checks how reliable it is). Darkroom copies each asset once Immich has it |
 | Renewing the schedule triggers another full export | Dedupe makes it safe. Plan disk headroom of about twice the largest library during an import |
 | A wrong dedupe match hides a photo | Only the losing copy of an automatic tier 1 or 2 pair is deleted, after the kept copy is checked; other decisions are reversible, and Google still holds every original |
-| No alert channel exists, so a sign-in prompt goes unseen | Not decided (#199, question 3). Until then alerts show on the status page only |
+| No alert channel is set up, so a sign-in prompt goes unseen | Alerts are emailed to the owner through Resend when it is set up (docs/deploy/alerts-email.md); otherwise they show on the status page only |
 
 ## Phases
 
@@ -300,7 +300,7 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 3. **Ingest and dedupe.** Run on one hand-downloaded export: pairing, metadata, dedupe tiers, `google-only/` placement, XMP sidecars, review queue. Done when one account's history is fully imported.
 4. **Browser worker.** Connect account via noVNC, create the schedule, daily status check, downloads within Google's limits, re-auth alerts.
 5. **Immich reconcile.** The spike (#202) first, then the job that reads new Immich assets, writes `originals/` once and the Pixels' transient folders, and Syncthing as the Pixels' peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.
-6. **Pruning and alerts.** Pruning a Pixel's transient folder on a Takeout match, with its own Semgrep rule and test first; and an alert channel, which is not decided (#199).
+6. **Pruning and alerts.** Pruning a Pixel's transient folder on a Takeout match, with its own Semgrep rule and test first; and the alert channel, email through Resend (decided; docs/deploy/alerts-email.md).
 7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
 
@@ -319,7 +319,7 @@ The kept copy must be present, a regular file in the same person's library and h
 
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
-- [ ] Which alert channel replaces the app's push? Not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3).
+- [x] Which alert channel replaces the app's push? Email through Resend to one owner address ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3; docs/DECISIONS.md).
 - [ ] What can the reconcile job rely on in Immich (asset listing and ownership, stored checksum, original download, what "clear backed-up photos" removes, duplicates when `originals/` is imported)? The spike, [#202](https://github.com/AnthonyPluth/Darkroom/issues/202).
 - [ ] Does renewing a scheduled export start again with a full export, or carry on incrementally?
 - [ ] Are Takeout copies byte-identical to the originals on Unraid (tier 1), or does Google change their metadata (tier 2)?

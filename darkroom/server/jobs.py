@@ -124,6 +124,8 @@ def push_alerts(settings: Settings, engine: Engine, pusher: Pusher | None, at: f
 def pusher_of(settings: Settings) -> Pusher | None:
     if settings.demo:
         return None
+    if config.ignored_alert_variables():
+        monitoring.log("NTFY_* is set and ignored; alerts are emailed, so set RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO", level="warning")
     found = resend.of(settings)
     if found is None and config.resend_configured(settings):
         monitoring.log("Resend is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.resend_problems(settings) + resend.problems(settings)))

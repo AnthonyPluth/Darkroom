@@ -35,6 +35,8 @@ def check_config() -> int:
     found += resend.problems(settings)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
+    if config.ignored_alert_variables():
+        print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
     print(alert_channel(settings))
     if not found:
         print("Configuration looks complete.")

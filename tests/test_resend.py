@@ -107,6 +107,17 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((sender.api_key, sender.sender, sender.recipient), (KEY, FROM, TO))
         self.assertIs(alerts.notifier_for(settings), alerts.queued)
 
+    def test_leftover_ntfy_variables_are_reported_without_their_values_and_stop_nothing(self):
+        canary = "https://ntfy.canary.example"
+        with mock.patch.dict(os.environ, {"NTFY_URL": canary}, clear=True):
+            self.assertTrue(config.ignored_alert_variables())
+            with no_leaks(self, canary), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertIsNone(jobs.pusher_of(settings_from(DARKROOM_SECRET_KEY=SECRET)))
+        self.assertIn('"level": "warning"', err.getvalue())
+        self.assertIn("RESEND_API_KEY", err.getvalue())
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(config.ignored_alert_variables())
+
     def test_the_sealed_prefix_is_secretboxes(self):
         self.assertEqual(config.SEALED_PREFIX, secretbox.PREFIX)
 
@@ -175,6 +186,10 @@ class CommandTests(unittest.TestCase):
         code, _, err = self.check_config(RESEND_API_KEY=sealed(KEY, "old-key"), ALERT_EMAIL_FROM=FROM, ALERT_EMAIL_TO=TO)
         self.assertEqual(code, 1)
         self.assertIn("cannot be read with this DARKROOM_SECRET_KEY", err)
+        code, _, err = self.check_config(NTFY_TOPIC="canary-topic")
+        self.assertEqual(code, 0)
+        self.assertIn("NTFY_URL, NTFY_TOPIC or NTFY_TOKEN is set and ignored", err)
+        self.assertNotIn("canary-topic", err)
         code, _, err = self.check_config(RESEND_API_KEY=sealed(KEY))
         self.assertEqual(code, 1)
         self.assertIn("go together", err)

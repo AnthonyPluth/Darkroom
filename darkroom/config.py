@@ -212,6 +212,14 @@ SEALED_PREFIX = "enc:v1:"
 ADDRESS = re.compile(r"[^@\s<>,;\"()\[\]\\]+@[^@\s<>,;\"()\[\]\\]+\.[^@\s<>,;\"()\[\]\\]+")
 
 
+REMOVED_ALERT_VARIABLES = ("NTFY_URL", "NTFY_TOPIC", "NTFY_TOKEN")
+IGNORED_VARIABLES_NOTE = "NTFY_URL, NTFY_TOPIC or NTFY_TOKEN is set and ignored: alerts are emailed now, so set RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO (docs/deploy/alerts-email.md) and remove the NTFY_* lines"
+
+
+def ignored_alert_variables() -> bool:
+    return any(env(name) for name in REMOVED_ALERT_VARIABLES)
+
+
 def resend_configured(settings: Settings) -> bool:
     return bool(settings.resend_api_key or settings.alert_email_from or settings.alert_email_to)
 

@@ -37,3 +37,27 @@ A missing or wrong key gets `401`. Modes, set with `fake.mode(name)` or `POST /_
 ### What it does not cover
 
 Assets, search, thumbnails, uploads, sidecar handling, scan progress, jobs, or anything Waypoint's photos epic needs. Scans finish at once and change nothing.
+
+## Fake Resend (`tests/fakes/resend.py`)
+
+A loopback stand-in for Resend's send-email endpoint, for `providers/resend.py`. It binds only to `127.0.0.1`. Field names and the `Authorization: Bearer` header come from Resend's public API reference and have not been checked against a real account: delivery to a real Resend account and inbox is not verified.
+
+Run in a test:
+
+```python
+fake = FakeResend(self)
+resend.Resend("re_key", "alerts@mail.example.test", "owner@example.test", fake.url).send(note)
+fake.requests[0].json()
+```
+
+### What it covers
+
+| Request | Answer |
+| --- | --- |
+| `POST /emails` | `fake.status` (200 by default) with `{"id": ...}`, or a `{"name", "message"}` error body from 300 up; the request's path, headers and body are recorded in `fake.requests` |
+
+`fake.delay` holds each answer back (a slow server) and `fake.location` adds a `Location` header (a redirect, which the provider must not follow).
+
+### What it does not cover
+
+Domain verification, API key permissions, rate limits, idempotency keys, validation of the addresses or the body, and delivery to an inbox. Any path answers like `/emails`.
