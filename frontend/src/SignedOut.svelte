@@ -8,7 +8,7 @@
       <span class="block size-3.5 rounded-full bg-accent"></span>Darkroom
     </div>
     <div class="mt-12 flex max-w-105 flex-col gap-3 md:mt-0 md:gap-4">
-      <p class="text-3xl leading-tight font-bold tracking-tight md:text-4xl">Photos leave the phone only after Google Photos has them.</p>
+      <p class="text-3xl leading-tight font-bold tracking-tight md:text-4xl">Photos leave a phone only once a safe copy is stored.</p>
       <p class="text-md text-ink-muted">Darkroom syncs the family's iPhones to the Pixels, imports Google Takeout, and keeps one copy of everything.</p>
     </div>
     <div class="hidden gap-1.5 md:flex" aria-hidden="true">

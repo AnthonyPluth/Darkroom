@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -46,10 +45,6 @@ class Settings:
     browser_token: str
     vnc_url: str
     timezone: str
-    apns_key_id: str = ""
-    apns_team_id: str = ""
-    apns_bundle_id: str = ""
-    apns_key_file: str = ""
     pixel_folder_cap_gb: int = 50
     ntfy_url: str = ""
     ntfy_topic: str = ""
@@ -78,10 +73,6 @@ def load() -> Settings:
         browser_token=env("DARKROOM_BROWSER_TOKEN"),
         vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
-        apns_key_id=env("APNS_KEY_ID"),
-        apns_team_id=env("APNS_TEAM_ID"),
-        apns_bundle_id=env("APNS_BUNDLE_ID"),
-        apns_key_file=env("APNS_KEY_FILE"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
         ntfy_url=env("NTFY_URL").rstrip("/"),
         ntfy_topic=env("NTFY_TOPIC"),
@@ -197,7 +188,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + apns_problems(settings) + ntfy_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + ntfy_problems(settings)
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
@@ -214,35 +205,6 @@ def vnc_url_problems(settings: Settings) -> list[str]:
     if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
         return []
     return ["VNC_URL is not usable: it must be an http:// or https:// address without a username or password, so the Remote browser page shows no viewer"]
-
-
-APPLE_ID = re.compile(r"[A-Z0-9]{10}")
-BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-
-
-def apns_values(settings: Settings) -> tuple[str, str, str, str]:
-    return settings.apns_key_id, settings.apns_team_id, settings.apns_bundle_id, settings.apns_key_file
-
-
-def apns_configured(settings: Settings) -> bool:
-    return any(apns_values(settings))
-
-
-def apns_problems(settings: Settings) -> list[str]:
-    if not apns_configured(settings):
-        return []
-    if not all(apns_values(settings)):
-        return ["APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID and APNS_KEY_FILE go together; set all four or none, so alerts reach the iPhone app"]
-    found = []
-    if not APPLE_ID.fullmatch(settings.apns_key_id):
-        found.append("APNS_KEY_ID must be the 10-character key ID Apple shows for the auth key (capital letters and digits)")
-    if not APPLE_ID.fullmatch(settings.apns_team_id):
-        found.append("APNS_TEAM_ID must be the 10-character Apple Developer team ID (capital letters and digits)")
-    if len(settings.apns_bundle_id) > 155 or not BUNDLE_ID.fullmatch(settings.apns_bundle_id):
-        found.append("APNS_BUNDLE_ID must be the iPhone app's bundle ID, for example com.example.darkroom")
-    if not Path(settings.apns_key_file).is_absolute():
-        found.append("APNS_KEY_FILE must be an absolute path to the .p8 auth key")
-    return found
 
 
 SEALED_PREFIX = "enc:v1:"
