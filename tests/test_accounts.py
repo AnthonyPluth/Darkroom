@@ -7,11 +7,11 @@ from unittest import mock
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import accounts, browser_jobs
+from darkroom.domain import accounts, browser_jobs, people
 from darkroom.storage import db
-from darkroom.storage.models import BrowserJob, GoogleAccount, Pixel, PixelPerson
+from darkroom.storage.models import BrowserJob, GoogleAccount, Person, Pixel, PixelPerson
 from darkroom.storage.paths import Photos, ProfileNotRemoved
-from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, write_elsewhere
+from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, on_postgres, own_database, try_elsewhere, write_elsewhere
 
 
 def add_account(opened, email, default_person):
@@ -207,6 +207,46 @@ class DeleteTests(unittest.TestCase):
                 link.unlink()
                 if link != staging:
                     staging.rmdir()
+
+
+class CheckThenWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = own_database(self)
+        with db.session(self.engine) as opened:
+            self.person = add_person(opened, "jo")
+
+    def test_two_creations_with_case_variants_of_one_email_cannot_both_pass_the_check(self):
+        with db.session(self.engine) as first:
+            accounts.create(first, "User@example.com", self.person, 1.0)
+            second = try_elsewhere(self, self.engine, lambda opened: accounts.create(opened, "user@example.com", self.person, 2.0))
+        self.assertEqual(second, "locked")
+        with self.assertRaises(accounts.EmailTaken), db.session(self.engine) as again:
+            accounts.create(again, "user@example.com", self.person, 3.0)
+        with db.session(self.engine) as opened:
+            self.assertEqual([each.email for each in opened.query(GoogleAccount)], ["User@example.com"])
+
+
+if on_postgres():
+
+    class PostgresCheckThenWriteTests(unittest.TestCase):
+        def setUp(self):
+            self.engine = own_database(self)
+            with db.session(self.engine) as opened:
+                self.person = add_person(opened, "jo")
+
+        def test_a_person_delete_holds_off_an_account_made_for_them_after_its_check(self):
+            real, outcome = people.blockers, []
+
+            def account_meanwhile(opened, person_id):
+                found = real(opened, person_id)
+                outcome.append(try_elsewhere(self, self.engine, lambda other: accounts.create(other, "jo@x.test", person_id, 2.0)))
+                return found
+
+            with mock.patch.object(people, "blockers", account_meanwhile), db.session(self.engine) as opened:
+                people.delete(opened, self.person, 3.0)
+            self.assertEqual(outcome, ["locked"])
+            with db.session(self.engine) as opened:
+                self.assertEqual((opened.query(GoogleAccount).count(), opened.get(Person, self.person)), (0, None))
 
 
 if __name__ == "__main__":

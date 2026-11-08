@@ -274,8 +274,9 @@ if on_postgres():
                 add_person(elsewhere, "sam")
             with db.session(engine) as opened:
                 add_person(opened, "kim")
-                with self.assertRaises(OperationalError), db.session(impatient_engine(self, engine, 0.1)) as elsewhere:
+                with self.assertRaises(OperationalError) as busy, db.session(impatient_engine(self, engine, 0.1)) as elsewhere:
                     add_person(elsewhere, "lee")
+                self.assertTrue(db.is_busy(busy.exception))
 
         def test_upsert_updates_on_conflict_and_leaves_alone_without_changes(self):
             engine = own_database(self)

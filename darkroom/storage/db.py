@@ -115,9 +115,11 @@ def write_lock(opened: Session) -> None:
 
 
 @contextmanager
-def session(engine: Engine) -> Iterator[Session]:
+def session(engine: Engine, writing: bool = False) -> Iterator[Session]:
     with Session(engine, expire_on_commit=False) as opened:
         try:
+            if writing:
+                write_lock(opened)
             yield opened
             opened.commit()
         except BaseException:

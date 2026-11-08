@@ -42,7 +42,7 @@ def create_person(request: Annotated[Request, contract.PersonCreateBody]) -> Ann
         user_id = validate.text_or_none(body, "immich_user_id")
         library_id = validate.text_or_none(body, "immich_library_id")
         sealed = key_of(request, body)
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             person = people.create(opened, Photos(request.settings.photos_root), name, slug, email, user_id, library_id, sealed, now())
             reply = people.as_dict(person)
     except validate.Invalid as error:
@@ -74,7 +74,7 @@ def update_person(request: Annotated[Request, contract.PersonPatchBody]) -> Anno
                 changes[field] = validate.text_or_none(body, field)
         change_key = validate.present(body, "immich_api_key")
         sealed = key_of(request, body) if change_key else None
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             person = people.update(opened, person_id, changes, change_key, sealed, now())
             reply = people.as_dict(person)
     except validate.Invalid as error:
@@ -91,7 +91,7 @@ def delete_person(request: Request) -> Annotated[Response, contract.Ok]:
     if person_id is None:
         return error_response(NO_PERSON, 404)
     try:
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             people.delete(opened, person_id, now())
     except people.NoSuchPerson:
         return error_response(NO_PERSON, 404)

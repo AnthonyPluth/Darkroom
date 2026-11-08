@@ -133,6 +133,7 @@ def require_free_email(opened: Session, email: str, except_id: int | None = None
 
 
 def create(opened: Session, email: str, default_person_id: int, now: float) -> GoogleAccount:
+    db.write_lock(opened)
     require_person(opened, default_person_id)
     require_free_email(opened, email)
     account = GoogleAccount(email=email, default_person_id=default_person_id, created=now)

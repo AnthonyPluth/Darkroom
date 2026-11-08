@@ -70,6 +70,7 @@ def set_people(opened: Session, pixel_id: int, people_ids: list[int]) -> None:
 
 
 def create(opened: Session, name: str, syncthing_device_id: str | None, account_id: int, people_ids: list[int] | None, now: float) -> Pixel:
+    db.write_lock(opened)
     account = require_account(opened, account_id)
     chosen = people_ids if people_ids is not None else [account.default_person_id]
     require_people(opened, chosen)

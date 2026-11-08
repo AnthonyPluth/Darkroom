@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
-from darkroom.storage import secretbox
+from darkroom.storage import db, secretbox
 from darkroom.storage.models import Export, GoogleAccount, ImmichAsset, MediaItem, Person, PixelPerson
 from darkroom.storage.paths import SLUG, Photos
 
@@ -77,6 +77,7 @@ def as_dict(person: Person) -> dict[str, object]:
 
 def create(opened: Session, photos: Photos, name: str, slug: str, email: str | None, immich_user_id: str | None,
            immich_library_id: str | None, sealed_key: str | None, now: float) -> Person:
+    db.write_lock(opened)
     slug = slug or slugify(name)
     if not SLUG.match(slug):
         raise BadSlug("slug must be lower-case letters, numbers and dashes, starting with a letter or number")
@@ -103,6 +104,7 @@ PLAIN_FIELDS = ("name", "email", "immich_user_id", "immich_library_id")
 
 
 def update(opened: Session, person_id: int, changes: dict[str, str | None], change_key: bool, sealed_key: str | None, now: float) -> Person:
+    db.write_lock(opened)
     person = get(opened, person_id)
     if "immich_user_id" in changes and changes["immich_user_id"] != person.immich_user_id:
         person.immich_reconciled_until = None
@@ -137,6 +139,7 @@ def blockers(opened: Session, person_id: int) -> list[str]:
 
 
 def delete(opened: Session, person_id: int, now: float) -> None:
+    db.write_lock(opened)
     person = get(opened, person_id)
     found = blockers(opened, person_id)
     if found:

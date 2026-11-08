@@ -111,7 +111,7 @@ def resolve(request: Annotated[Request, contract.ResolveBody]) -> Annotated[Resp
         if action not in review.ACTIONS:
             raise validate.Invalid("action is keep_both; skip leaves the pair for later and saves nothing")
         at = now()
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             with review.saving(opened) as effects:
                 changed = review.resolve(opened, photos_of(request), wanted, action, at, effects, by=review.person_of_session(opened, *who(request)))
                 hit = review.found(opened, wanted)
@@ -132,7 +132,7 @@ def undo(request: Request) -> Annotated[Response, contract.ReviewReply]:
         return error_response(NO_REVIEW, 404)
     try:
         at = now()
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             with review.saving(opened) as effects:
                 changed = review.undo(opened, photos_of(request), wanted, at, effects, by=review.person_of_session(opened, *who(request)))
                 hit = review.found(opened, wanted)
@@ -161,7 +161,7 @@ def reverse(request: Request) -> Annotated[Response, contract.DecisionReply]:
     if wanted is None:
         return error_response(NO_DECISION, 404)
     try:
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             row = review.reverse(opened, wanted, now())
             reply = review.decision_view(opened, row)
     except review.NoSuchDecision:
@@ -179,7 +179,7 @@ def reassign(request: Annotated[Request, contract.ReassignBody]) -> Annotated[Re
         body = validate.json_object(request.body, limit=MAX_BODY)
         person_id = validate.whole_number(body, "person_id", minimum=1)
         at = now()
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             with review.saving(opened) as effects:
                 item, changed = review.reassign(opened, photos_of(request), wanted, person_id, at, effects, by=review.person_of_session(opened, *who(request)))
                 reply = review.media_view(item)
