@@ -14,8 +14,7 @@ PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/si
 BEARER_KINDS = {"device", "worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 DEVICE_TOKEN = "every-route-device-token-canary-0123456789abcdef"
-DEVICE_ROUTES = {"GET /api/device/me", "POST /api/device/checkin",
-                 "PUT /api/device/push-token", "DELETE /api/device/push-token"}
+DEVICE_ROUTES = {"GET /api/device/me", "POST /api/device/checkin"}
 PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
