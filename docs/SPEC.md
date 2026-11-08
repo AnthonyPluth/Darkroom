@@ -83,7 +83,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 **Limits it must respect**
 
 - Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that started a download and failed before every part was downloaded, or a job that had nothing left to download and only had to finish a complete export; a job that fails right after downloading the last part is not counted) is marked failed, which frees the account.
-- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (the delivery channel is not decided, #199), and resumes after you sign in.
+- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (pushed through ntfy when it is set up, see Alerts), and resumes after you sign in.
 - Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
@@ -213,7 +213,7 @@ Day to day you only hear from the service when it needs a sign-in or has finishe
 
 The web UI is dark mode only: one theme, with no light theme and no theme switch.
 
-**Alerts** — the channel is not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3). They were push alerts to the iPhone app, which no longer exists, and nothing has replaced them. Until the owner picks a channel, an alert is recorded as an event and shown on the status page, and nothing is delivered. The events below keep their timing; where each one is delivered is the open part. An alert carries only its kind and an id, never an email address, name or file name.
+**Alerts** — an alert is always recorded as an event and shown on the status page. The push channel is ntfy (#252), which replaced the iPhone app's push. It is on when `NTFY_URL` and `NTFY_TOPIC` are both set (`NTFY_TOKEN` is optional, for a server that needs one); the topic and the token are sealed with `python run.py seal-secret` and pasted in as the sealed text, and `check-config` refuses a plain value. The `alerts.push` job (every minute) sends each alert that is due, and again when it closes, as a "Resolved" note. A note carries only the alert's title, a fixed line pointing to the Status page and a link to `DARKROOM_PUBLIC_URL`, never an email address, name or file name. A send that fails in a way that may pass is retried every 5 minutes for up to an hour, then recorded as an `alert_failed` event. With ntfy not set up, the alert is recorded as an `alert_disabled` event and nothing is sent. Demo mode never posts. Delivery to a real phone has not been verified yet; the sending is covered by tests against a fake. The events below keep their timing.
 
 | Event | Alert |
 | --- | --- |
@@ -289,7 +289,7 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 | Immich's iOS background backup lags | Assumed to be a delay, not a loss (#202 checks how reliable it is). Darkroom copies each asset once Immich has it |
 | Renewing the schedule triggers another full export | Dedupe makes it safe. Plan disk headroom of about twice the largest library during an import |
 | A wrong dedupe match hides a photo | Only the losing copy of an automatic tier 1 or 2 pair is deleted, after the kept copy is checked; other decisions are reversible, and Google still holds every original |
-| No alert channel exists, so a sign-in prompt goes unseen | Not decided (#199, question 3). Until then alerts show on the status page only |
+| Without ntfy set up, a sign-in prompt goes unseen | Alerts always show on the status page. Set `NTFY_URL` and `NTFY_TOPIC` to have them pushed; delivery to a real phone is not verified yet |
 
 ## Phases
 
@@ -300,7 +300,7 @@ Build ingest before the browser worker: a hand-downloaded export gives real data
 3. **Ingest and dedupe.** Run on one hand-downloaded export: pairing, metadata, dedupe tiers, `google-only/` placement, XMP sidecars, review queue. Done when one account's history is fully imported.
 4. **Browser worker.** Connect account via noVNC, create the schedule, daily status check, downloads within Google's limits, re-auth alerts.
 5. **Immich reconcile.** The spike (#202) first, then the job that reads new Immich assets, writes `originals/` once and the Pixels' transient folders, and Syncthing as the Pixels' peer. Done when Möbius Sync is off every iPhone and new photos still reach Google Photos.
-6. **Pruning and alerts.** Pruning a Pixel's transient folder on a Takeout match, with its own Semgrep rule and test first; and an alert channel, which is not decided (#199).
+6. **Pruning and alerts.** Pruning a Pixel's transient folder on a Takeout match, with its own Semgrep rule and test first; and the alert channel, ntfy (#252).
 7. **Steady state.** Incremental imports, schedule renewal.
 8. **Waypoint integration.** Separate spec: match Immich photos to any trip by date and GPS, with the itinerary as the location fallback.
 
@@ -319,7 +319,7 @@ The kept copy must be present, a regular file in the same person's library and h
 
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
-- [ ] Which alert channel replaces the app's push? Not decided ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3).
+- [x] Which alert channel replaces the app's push? ntfy (#252); delivery to a real phone is not verified yet.
 - [ ] What can the reconcile job rely on in Immich (asset listing and ownership, stored checksum, original download, what "clear backed-up photos" removes, duplicates when `originals/` is imported)? The spike, [#202](https://github.com/AnthonyPluth/Darkroom/issues/202).
 - [ ] Does renewing a scheduled export start again with a full export, or carry on incrementally?
 - [ ] Are Takeout copies byte-identical to the originals on Unraid (tier 1), or does Google change their metadata (tier 2)?

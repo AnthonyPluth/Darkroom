@@ -127,9 +127,9 @@ The alert says how many of a person's originals still have no match in Google a 
 
 If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library, and nothing is lost: the permanent copy is in the person's `originals/`.
 
-### Alerts have no delivery channel yet
+### Alerts are pushed through ntfy
 
-The alert channel is not decided (#199, question 3). Until it is, every alert in this runbook is recorded as an event and shown on the status page, and nothing is sent to a phone or an inbox. Look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end.
+Every alert in this runbook is recorded as an event and shown on the status page. When ntfy is set up it is also pushed to the phones subscribed to your topic, and again when it closes ("Resolved: ..."). To set it up, put `NTFY_URL` (the server's address, like `https://ntfy.sh`; `http://` only for a server on the LAN) and `NTFY_TOPIC` in `.env`, and `NTFY_TOKEN` if the server needs a login. Topic and token must be sealed: run `printf %s "<topic>" | python run.py seal-secret` with the same `DARKROOM_SECRET_KEY` the service uses and paste what it prints; a plain value, or just one of URL and topic, fails `check-config`. Subscribe to the topic in the ntfy app. The `alerts.push` job sends every minute; a note holds the alert's title and a link to Darkroom, never a name or file name. If ntfy cannot be reached, Darkroom retries every 5 minutes for up to an hour, then records an `alert_failed` event; with ntfy not set up it records `alert_disabled`. Demo mode never sends. Delivery to a real phone has not been verified yet: after setting it up, check that the next real alert arrives. Look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end.
 
 ### Pixel folders are pruned after a Takeout match
 
