@@ -12,6 +12,25 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/tls.py", "/darkroom_browser/client.py"]
 
+  - id: darkroom-no-raw-sockets
+    message: >-
+      Open outbound connections only through darkroom/tls.py. Nothing imports socket or h2 since the APNs client went
+      (#201), so import-linter can no longer protect them; this rule does.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: import $M
+          - pattern: import $M as $A
+          - pattern: from $M import $X
+          - pattern: from $M import $X as $A
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(socket|h2)(\..*)?$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/tls.py"]
+
   - id: darkroom-subprocess-only-exiftool
     message: >-
       Run external programs only from darkroom/providers/exiftool.py (and the browser worker's runner), so every
@@ -196,20 +215,6 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/devices.py", "/darkroom/storage/models.py", "/darkroom/storage/migrations/"]
-
-  - id: darkroom-apns-key-one-reader
-    message: >-
-      The APNs auth key is read only by darkroom/providers/apns.py's load_key, which refuses a file others can read and
-      never puts the key in an error, a reply or a log. Send pushes through darkroom.providers.apns (apns.of) instead of
-      reading APNS_KEY_FILE here.
-    severity: ERROR
-    languages: [python]
-    pattern-either:
-      - pattern: $S.apns_key_file
-      - pattern: load_pem_private_key(...)
-    paths:
-      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/config.py", "/darkroom/providers/apns.py"]
 
   - id: darkroom-push-token-one-module
     message: >-
