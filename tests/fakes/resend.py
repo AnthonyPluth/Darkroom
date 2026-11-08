@@ -41,9 +41,8 @@ class FakeResend:
                     time.sleep(fake.delay)
                 key = self.headers.get("Idempotency-Key")
                 status = fake.status
-                if status < 300 and key:
-                    if fake.sent.setdefault(key, body.decode()) != body.decode():
-                        status = 409
+                if status < 300 and key and fake.sent.setdefault(key, body.decode()) != body.decode():
+                    status = 409
                 self.send_response(status)
                 if fake.location:
                     self.send_header("Location", fake.location)
