@@ -112,34 +112,6 @@ export interface Decisions {
   page_size: number;
 }
 
-export interface DeviceReply {
-  device: DeviceView;
-}
-
-export interface DeviceState {
-  id: number;
-  name: string;
-  last_checkin: number | null;
-  pending_uploads: number;
-  cleanup_enabled: boolean;
-}
-
-export interface DeviceView {
-  id: number;
-  person_id: number;
-  name: string;
-  cleanup_enabled: boolean;
-  last_checkin: number | null;
-  app_version: string | null;
-  pending_uploads: number;
-  created: number;
-  revoked_at: number | null;
-}
-
-export interface Devices {
-  devices: DeviceView[];
-}
-
 export interface DoneBody {
   result?: Record<string, unknown>;
 }
@@ -404,7 +376,6 @@ export interface PersonStatus {
   unknown_time: number;
   accounts: AccountState[];
   pixels: PixelState[];
-  devices: DeviceState[];
   last_import: number | null;
   unmatched: number | null;
   alerts: AlertView[];
@@ -544,8 +515,6 @@ export interface Endpoints {
   "POST /api/people": { body: PersonCreateBody; reply: PersonReply };
   "PATCH /api/people/{id}": { body: PersonPatchBody; reply: PersonReply };
   "DELETE /api/people/{id}": { body: never; reply: Ok };
-  "GET /api/people/{id}/devices": { body: never; reply: Devices };
-  "DELETE /api/devices/{id}": { body: never; reply: DeviceReply };
   "GET /api/accounts": { body: never; reply: Accounts };
   "POST /api/accounts": { body: AccountCreateBody; reply: AccountReply };
   "PATCH /api/accounts/{id}": { body: AccountPatchBody; reply: AccountReply };

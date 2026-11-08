@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { AccountView, DeviceView, PersonView, PixelView } from "$lib/api-types";
+  import type { AccountView, PersonView, PixelView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
   import { ago, names, nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
@@ -27,11 +27,7 @@
       apiCall<"GET /api/accounts">("/api/accounts", { failed: "Couldn't load the Google accounts" }),
       apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
     ]);
-    const lists = await Promise.all(
-      people.people.map((p) => apiCall<"GET /api/people/{id}/devices">(`/api/people/${p.id}/devices`, { failed: `Couldn't load the iPhones of ${p.name}` })),
-    );
-    const devices: DeviceView[] = lists.flatMap((l) => l.devices);
-    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, devices, now: nowSeconds() };
+    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, now: nowSeconds() };
   });
 
   let formOpen = $state(false);
@@ -74,26 +70,10 @@
     return next.item ? `Edit ${noun}` : `Add ${noun}`;
   }
 
-  function deviceChip(device: DeviceView): { tone: "ok" | "warn" | "bad" | "neutral"; label: string } {
-    if (device.revoked_at !== null) return { tone: "bad", label: "Revoked" };
-    if (device.last_checkin === null) return { tone: "neutral", label: "Never checked in" };
-    if (device.pending_uploads > 0) return { tone: "warn", label: "Uploads pending" };
-    return { tone: "ok", label: "Checked in" };
-  }
-
-  function revoke(device: DeviceView, owner: string): void {
-    ask({
-      title: `Revoke ${device.name}?`,
-      message: `${owner}'s iPhone will stop being able to sign in to Darkroom. Photos already uploaded stay where they are.`,
-      confirm: "Revoke iPhone",
-      run: () => apiCall<"DELETE /api/devices/{id}">(`/api/devices/${device.id}`, { method: "DELETE" }),
-    });
-  }
-
   function removePerson(person: PersonView): void {
     ask({
       title: `Delete ${person.name}?`,
-      message: "Only a person with no photos, iPhones, Google accounts or Pixels can be deleted. Their folders are never touched.",
+      message: "Only a person with no photos, Google accounts or Pixels can be deleted. Their folders are never touched.",
       confirm: "Delete person",
       run: () => apiCall<"DELETE /api/people/{id}">(`/api/people/${person.id}`, { method: "DELETE" }),
     });
@@ -121,7 +101,7 @@
 <div class="flex flex-col gap-7">
   <div class="flex flex-col gap-1">
     <h1 class="text-xl font-bold tracking-tight">People</h1>
-    <p class="text-ink-muted">Who the family is, and which Google accounts, Pixels and iPhones serve them.</p>
+    <p class="text-ink-muted">Who the family is, and which Google accounts and Pixels serve them.</p>
   </div>
 
   {#if loader.current.kind === "loading"}
@@ -135,14 +115,13 @@
         <h2 class="text-md font-semibold">Persons</h2>
         <button type="button" class="btn" onclick={() => edit({ kind: "person", item: null })}>Add person</button>
       </div>
-      <Table label="Persons" columns={["Person", "Immich user", "Google account", "Pixel", "iPhone", ""]} rows={data.people} empty="No one has been added yet.">
+      <Table label="Persons" columns={["Person", "Immich user", "Google account", "Pixel", ""]} rows={data.people} empty="No one has been added yet.">
         {#snippet row(person)}
           <tr>
             <td data-label="Person"><b>{person.name}</b></td>
             <td data-label="Immich user">{person.immich_user_id ?? "Not linked"}<br /><span class="text-ink-muted">{person.has_immich_key ? "API key saved" : "No API key"}</span></td>
             <td data-label="Google account">{names(data.accounts.filter((a) => a.served_people.includes(person.id)).map((a) => a.email), "None")}</td>
             <td data-label="Pixel">{names(data.pixels.filter((p) => p.people_ids.includes(person.id)).map((p) => pixelLabel(p, person, data.people)), "None")}</td>
-            <td data-label="iPhone">{names(data.devices.filter((d) => d.person_id === person.id && d.revoked_at === null).map((d) => d.name), "None")}</td>
             <td class="md:text-right"><button type="button" class="btn" aria-label="Edit {person.name}" onclick={() => edit({ kind: "person", item: person })}>Edit</button></td>
           </tr>
         {/snippet}
@@ -191,37 +170,6 @@
           </tr>
         {/snippet}
       </Table>
-    </section>
-
-    <section class="flex flex-col gap-3" aria-label="iPhones">
-      <h2 class="text-md font-semibold">iPhones</h2>
-      {#if data.devices.length === 0}
-        <p class="text-ink-muted">No iPhone has signed in yet.</p>
-      {:else}
-        <div class="grid gap-4 md:grid-cols-2">
-          {#each data.devices as device (device.id)}
-            {@const chip = deviceChip(device)}
-            {@const owner = personName(data.people, device.person_id)}
-            <article class="card" aria-label="{device.name}, {owner}">
-              <div class="flex items-center justify-between gap-3">
-                <h3 class="text-md font-semibold">{device.name}, {owner}</h3>
-                <Chip tone={chip.tone} label={chip.label} />
-              </div>
-              <dl class="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
-                <dt class="text-ink-muted">Last check-in</dt>
-                <dd>{device.last_checkin === null ? "Never" : ago(device.last_checkin, data.now)}</dd>
-                <dt class="text-ink-muted">Uploads pending</dt>
-                <dd>{device.pending_uploads}</dd>
-                <dt class="text-ink-muted">App version</dt>
-                <dd>{device.app_version ?? "Unknown"}</dd>
-              </dl>
-              {#if device.revoked_at === null}
-                <button type="button" class="btn btn-danger self-start" aria-label="Revoke {device.name}, {owner}" onclick={() => revoke(device, owner)}>Revoke</button>
-              {/if}
-            </article>
-          {/each}
-        </div>
-      {/if}
     </section>
 
     <Modal bind:open={formOpen} title={editing ? formTitle(editing) : ""}>

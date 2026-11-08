@@ -17,10 +17,6 @@ describe("describeEvent", () => {
     expect(describeEvent(event("pixel_created", "3"))).toBe("Added a Pixel.");
     expect(describeEvent(event("pixel_updated", "3"))).toBe("Changed a Pixel.");
     expect(describeEvent(event("pixel_deleted", "3"))).toBe("Removed a Pixel.");
-    expect(describeEvent(event("device_revoked", "jo", "Jo's iPhone"))).toBe("Revoked Jo's iPhone for jo.");
-    expect(describeEvent(event("device_revoked"))).toBe("Revoked an iPhone for jo.");
-    expect(describeEvent(event("device_checkin", "jo", "Jo's iPhone"))).toBe("Jo's iPhone checked in for jo.");
-    expect(describeEvent(event("device_checkin"))).toBe("An iPhone checked in for jo.");
     expect(describeEvent(event("originals_indexed", "jo", "new=4 failed=0"))).toBe("Indexed the originals of jo (new=4 failed=0).");
     expect(describeEvent(event("originals_indexed"))).toBe("Indexed the originals of jo.");
     expect(describeEvent(event("index_failed", "jo", "ValueError"))).toBe("Could not index a file of jo: ValueError.");

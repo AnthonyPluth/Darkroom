@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, browser_jobs
 from darkroom.domain.ingest import run
-from darkroom.storage.models import Alert, Device, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
 
 
 def open_alerts(opened: Session) -> list[Alert]:
@@ -40,18 +40,12 @@ def account_state(account: GoogleAccount) -> dict[str, object]:
             "schedule_end": account.schedule_end}
 
 
-def device_state(device: Device) -> dict[str, object]:
-    return {"id": device.id, "name": device.name, "last_checkin": device.last_checkin, "pending_uploads": device.pending_uploads,
-            "cleanup_enabled": device.cleanup_enabled}
-
-
 def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None]
                   ) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
     emails = {account.email for account in people_accounts}
     served_pixels = list(opened.execute(select(Pixel).join(PixelPerson, PixelPerson.pixel_id == Pixel.id).where(PixelPerson.person_id == person.id).order_by(Pixel.id)).scalars())
-    devices = list(opened.execute(select(Device).where(Device.person_id == person.id, Device.revoked_at.is_(None)).order_by(Device.id)).scalars())
     concerning = [alert_dict(alert) for alert in alerts_open if alert.subject == person.slug or alert.subject in emails]
     return {
         "id": person.id,
@@ -62,7 +56,6 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "unknown_time": counts[2],
         "accounts": [account_state(account) for account in people_accounts],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
-        "devices": [device_state(device) for device in devices],
         "last_import": last_import(opened, serving),
         "unmatched": unmatched.get(person.slug),
         "alerts": concerning,

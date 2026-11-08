@@ -53,7 +53,7 @@ describe("the Status page with the seeded data", () => {
     expect(router.path).toBe("/browser");
   });
 
-  it("shows a card per person with their health, accounts, Pixels, iPhones and counts", async () => {
+  it("shows a card per person with their health, accounts, Pixels and counts", async () => {
     show(routes);
     const jo = await screen.findByRole("article", { name: "Jo Example" });
     expect(within(jo).getByText("Healthy")).toBeInTheDocument();
@@ -61,7 +61,6 @@ describe("the Status page with the seeded data", () => {
     expect(within(jo).getByText("jo.photos@example.com")).toBeInTheDocument();
     expect(within(jo).getByText("Session ok")).toBeInTheDocument();
     expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
-    expect(within(jo).getByText("Jo's iPhone: checked in just now, 0 pending")).toBeInTheDocument();
     expect(within(jo).getAllByText("Not checked yet")).toHaveLength(1);
     for (const unknown of within(jo).getAllByText("Not checked yet")) expect(unknown).toHaveClass("text-ink-muted");
     expect(within(jo).queryByText(/^0 (photos|originals)$/)).not.toBeInTheDocument();
@@ -70,7 +69,6 @@ describe("the Status page with the seeded data", () => {
     expect(within(sam).getByText("Needs attention")).toBeInTheDocument();
     expect(within(sam).getByText("Sign-in needed")).toBeInTheDocument();
     expect(within(sam).getByText(/Schedule ends/)).toBeInTheDocument();
-    expect(within(sam).getByText("Sam's iPhone: never checked in, 18 pending")).toBeInTheDocument();
     expect(within(sam).getByText("None yet")).toBeInTheDocument();
     expect(within(sam).getAllByText("None")).toHaveLength(1);
     await userEvent.click(within(sam).getByRole("link", { name: "Open Sam Example" }));
@@ -82,16 +80,16 @@ describe("the Status page with the seeded data", () => {
     const events = await screen.findByRole("region", { name: "Recent events" });
     const items = within(events).getAllByRole("listitem");
     expect(items).toHaveLength(3);
-    expect(items[0]).toHaveTextContent("Jo's iPhone checked in for jo-example.");
+    expect(items[0]).toHaveTextContent("Indexed the originals of jo-example (new=4 failed=0).");
     expect(items[1]).toHaveTextContent("Mystery event: sam-example.");
     expect(items[2]).toHaveTextContent("Added jo-example.");
   });
 
-  it("notes when a person has no account, Pixel or iPhone", async () => {
-    const lonely = { ...seededStatus, alerts: [], people: [{ ...seededStatus.people[0], accounts: [], pixels: [], devices: [] }] };
+  it("notes when a person has no account or Pixel", async () => {
+    const lonely = { ...seededStatus, alerts: [], people: [{ ...seededStatus.people[0], accounts: [], pixels: [] }] };
     show({ ...routes, "GET /api/status": lonely });
     const card = await screen.findByRole("article", { name: "Jo Example" });
-    expect(within(card).getAllByText("None")).toHaveLength(3);
+    expect(within(card).getAllByText("None")).toHaveLength(2);
   });
 
   it("shows the counts once they have been checked, and a count of 0 as checked", async () => {

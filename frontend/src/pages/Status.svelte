@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { apiCall } from "$lib/contract";
   import { describeEvent } from "$lib/events";
-  import { ago, checkedIn, count, names, nowSeconds, onDay, when } from "$lib/format";
+  import { ago, count, names, nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
   import { alertChip, NOT_CHECKED, needsAttention, needsSentence, sessionChip } from "$lib/view";
@@ -89,14 +89,6 @@
                 </dd>
                 <dt class="text-ink-muted">Pixel</dt>
                 <dd>{names(person.pixels.map((p) => p.name), "None")}</dd>
-                <dt class="text-ink-muted">iPhone</dt>
-                <dd class="flex flex-col gap-1">
-                  {#each person.devices as device (device.id)}
-                    <span>{device.name}: {checkedIn(device.last_checkin, data.now)}, {device.pending_uploads} pending</span>
-                  {:else}
-                    <span class="text-ink-muted">None</span>
-                  {/each}
-                </dd>
                 <dt class="text-ink-muted">Last import</dt>
                 <dd>{person.last_import === null ? "None yet" : when(person.last_import, data.now)}</dd>
                 <dt class="text-ink-muted">Unmatched</dt>

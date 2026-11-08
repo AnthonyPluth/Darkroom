@@ -38,14 +38,6 @@ class PixelState(TypedDict):
     google_account_id: int
 
 
-class DeviceState(TypedDict):
-    id: int
-    name: str
-    last_checkin: float | None
-    pending_uploads: int
-    cleanup_enabled: bool
-
-
 class PersonStatus(TypedDict):
     id: int
     slug: str
@@ -55,7 +47,6 @@ class PersonStatus(TypedDict):
     unknown_time: int
     accounts: list[AccountState]
     pixels: list[PixelState]
-    devices: list[DeviceState]
     last_import: float | None
     unmatched: int | None
     alerts: list[AlertView]
@@ -172,26 +163,6 @@ class PixelPatchBody(TypedDict):
     google_account_id: NotRequired[int]
     syncthing_device_id: NotRequired[str | None]
     people_ids: NotRequired[list[int]]
-
-
-class DeviceView(TypedDict):
-    id: int
-    person_id: int
-    name: str
-    cleanup_enabled: bool
-    last_checkin: float | None
-    app_version: str | None
-    pending_uploads: int
-    created: float
-    revoked_at: float | None
-
-
-class Devices(TypedDict):
-    devices: list[DeviceView]
-
-
-class DeviceReply(TypedDict):
-    device: DeviceView
 
 
 class EventView(TypedDict):

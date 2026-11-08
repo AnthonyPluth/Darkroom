@@ -11,7 +11,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, devices, events, exports, media, thumbs, xmp
+from darkroom.domain import accounts, dedupe, events, exports, media, people, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -351,8 +351,8 @@ def by_prefix(by: int | None) -> str:
 def person_of_session(opened: Session, sub: str, email: str | None) -> int | None:
     verified = opened.execute(select(User.email_verified).where(User.sub == sub)).scalar_one_or_none() or False
     try:
-        return devices.person_for(opened, email, verified).id
-    except devices.NoPerson:
+        return people.person_for(opened, email, verified).id
+    except people.NoPerson:
         return None
 
 

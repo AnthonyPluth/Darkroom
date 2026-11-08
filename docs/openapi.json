@@ -566,133 +566,6 @@
         ],
         "type": "object"
       },
-      "DeviceReply": {
-        "additionalProperties": false,
-        "properties": {
-          "device": {
-            "$ref": "#/components/schemas/DeviceView"
-          }
-        },
-        "required": [
-          "device"
-        ],
-        "type": "object"
-      },
-      "DeviceState": {
-        "additionalProperties": false,
-        "properties": {
-          "cleanup_enabled": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "last_checkin": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "pending_uploads": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "cleanup_enabled",
-          "id",
-          "last_checkin",
-          "name",
-          "pending_uploads"
-        ],
-        "type": "object"
-      },
-      "DeviceView": {
-        "additionalProperties": false,
-        "properties": {
-          "app_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "cleanup_enabled": {
-            "type": "boolean"
-          },
-          "created": {
-            "type": "number"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "last_checkin": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "pending_uploads": {
-            "type": "integer"
-          },
-          "person_id": {
-            "type": "integer"
-          },
-          "revoked_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "app_version",
-          "cleanup_enabled",
-          "created",
-          "id",
-          "last_checkin",
-          "name",
-          "pending_uploads",
-          "person_id",
-          "revoked_at"
-        ],
-        "type": "object"
-      },
-      "Devices": {
-        "additionalProperties": false,
-        "properties": {
-          "devices": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "devices"
-        ],
-        "type": "object"
-      },
       "DoneBody": {
         "additionalProperties": false,
         "properties": {
@@ -2074,12 +1947,6 @@
             },
             "type": "array"
           },
-          "devices": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceState"
-            },
-            "type": "array"
-          },
           "id": {
             "type": "integer"
           },
@@ -2128,7 +1995,6 @@
         "required": [
           "accounts",
           "alerts",
-          "devices",
           "id",
           "indexed",
           "last_import",
@@ -3065,27 +2931,6 @@
         "x-auth": "session"
       }
     },
-    "/api/devices/{id}": {
-      "delete": {
-        "operationId": "revoke_device",
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "session"
-      }
-    },
     "/api/events": {
       "get": {
         "operationId": "recent_events",
@@ -3394,27 +3239,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PersonReply"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "x-auth": "session"
-      }
-    },
-    "/api/people/{id}/devices": {
-      "get": {
-        "operationId": "list_person_devices",
-        "responses": {
-          "2XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Devices"
                 }
               }
             },
