@@ -358,10 +358,10 @@ class MigrationTests(unittest.TestCase):
         db.migrate(self.engine)
         tables = set(inspect(self.engine).get_table_names())
         self.assertFalse({"devices", "phone_assets", "phone_resources"} & tables)
-        self.assertFalse({"push_due", "pushed_devices"} & {column["name"] for column in inspect(self.engine).get_columns("alerts")})
+        self.assertEqual({"push_due"}, {"push_due", "pushed_devices"} & {column["name"] for column in inspect(self.engine).get_columns("alerts")})
         self.assertFalse({"device_name", "client_state"} & {column["name"] for column in inspect(self.engine).get_columns("auth_pending")})
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT key, sent_count FROM alerts").all(), [("k", 1)])
+            self.assertEqual(connection.exec_driver_sql("SELECT key, sent_count, push_due FROM alerts").all(), [("k", 1, 2.0)])
             self.assertEqual(connection.exec_driver_sql("SELECT state, kind FROM auth_pending").all(), [("web", "web")])
             self.assertEqual(connection.exec_driver_sql("SELECT slug FROM people").all(), [("jo",)])
             with self.assertRaises(IntegrityError):
