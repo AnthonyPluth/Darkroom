@@ -833,7 +833,21 @@ class RemoveLosingCopyTests(unittest.TestCase):
 
         with mock.patch.object(paths.Keeper, "still_there", changing), self.assertRaises(paths.NotALosingCopy):
             paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", paths.file_sha1(self.loser), "jo/originals/immich/IMG_0001-aaaa.jpg",
-                                     paths.file_sha1(self.keeper), lambda keeper: keeper.write_sidecar(b"carried", None))
+                                     paths.file_sha1(self.keeper), lambda keeper: keeper.write_sidecar(b"carried", None) or b"carried")
+        self.assertEqual(self.loser.read_bytes(), b"takeout")
+
+    def test_a_sidecar_replaced_right_after_the_carry_published_it_keeps_the_loser(self):
+        sidecar = self.keeper.with_name(f"{self.keeper.name}.xmp")
+
+        def carry(keeper):
+            keeper.write_sidecar(b"carried with Google's metadata", None)
+            self.file("jo/originals/immich/incoming", b"another writer's sidecar without it")
+            os.replace(self.keeper.with_name("incoming"), sidecar)
+            return b"carried with Google's metadata"
+
+        with self.assertRaises(paths.NotALosingCopy):
+            paths.remove_losing_copy(self.photos, "jo", "jo/google-only/2021/03/IMG_0001.jpg", paths.file_sha1(self.loser), "jo/originals/immich/IMG_0001-aaaa.jpg",
+                                     paths.file_sha1(self.keeper), carry)
         self.assertEqual(self.loser.read_bytes(), b"takeout")
 
     def test_a_250_byte_name_is_claimed_and_removed(self):

@@ -1195,13 +1195,11 @@ def checked_keeper(photos: Photos, person: str, keeping: str, sha1: str) -> Iter
 
 
 def remove_losing_copy(photos: Photos, person: str, losing: str, losing_sha1: str, keeping: str, keeping_sha1: str,
-                       carry: Callable[[Keeper], None] | None = None) -> bool:
+                       carry: Callable[[Keeper], bytes | None] | None = None) -> bool:
     parts = library_parts(photos, person, losing, LOSING_FOLDERS)
     try:
         with checked_keeper(photos, person, keeping, keeping_sha1) as keeper, holding(keeper):
-            if carry is not None:
-                carry(keeper)
-            kept_sidecar = keeper.sidecar()
+            kept_sidecar = keeper.sidecar() if carry is None else carry(keeper)
             try:
                 with pinned_folder(photos, parts[:-1]) as folder:
                     return drop_losing_copy(folder, parts[-1], losing_sha1, keeper, kept_sidecar)

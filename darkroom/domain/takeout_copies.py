@@ -197,22 +197,25 @@ def still_matched(opened: Session, person: Person, takeout: MediaItem, phone: Me
     return bool(mine) and mine[0].tier == row.tier and mine[0].matched_item_id == phone.id and (row.tier == 1 or not rivals)
 
 
-def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], None] | None:
+def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], bytes | None] | None:
     if loser.source != "takeout":
         return None
     google = xmp.GoogleMetadata.of(loser.sidecar_json)
 
-    def carry(pinned: paths.Keeper) -> None:
+    def carry(pinned: paths.Keeper) -> bytes | None:
         try:
             with tempfile.TemporaryDirectory() as folder:
                 before, staged = pinned.sidecar(), Path(folder) / f"{pinned.name}{paths.SIDECAR_SUFFIX}"
                 if before is not None:
                     staged.write_bytes(before)
+                if not gaps_left(pinned.path, staged, google, tools):
+                    return before
+                tools.write(staged, gaps_left(pinned.path, staged, google, tools))
                 if gaps_left(pinned.path, staged, google, tools):
-                    tools.write(staged, gaps_left(pinned.path, staged, google, tools))
-                    if gaps_left(pinned.path, staged, google, tools):
-                        raise paths.NotALosingCopy("Google's metadata could not be carried to the kept copy")
-                    pinned.write_sidecar(staged.read_bytes(), before)
+                    raise paths.NotALosingCopy("Google's metadata could not be carried to the kept copy")
+                published = staged.read_bytes()
+                pinned.write_sidecar(published, before)
+                return published
         except (exiftool.WriteFailed, exiftool.Unreadable, paths.NotASidecar, OSError, ValueError) as error:
             raise paths.NotALosingCopy("the kept copy's sidecar could not be written") from error
 
