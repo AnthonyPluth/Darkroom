@@ -5,8 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from darkroom.storage import db
-from darkroom.storage.models import Device
 from tests.shared import fetch, own_database, settings_from, start_server
 
 SECRET_KEY = "api-world-secret-key-0123456789"
@@ -46,10 +44,3 @@ class ApiCase(unittest.TestCase):
         status, reply = self.call("POST", "/api/pixels", {"name": name, "google_account_id": account_id, **extra})
         self.assertEqual(status, 201, reply)
         return reply["pixel"]
-
-    def add_device(self, person_id, name="Jo's iPhone", last_checkin=100.0, pending=3):
-        with db.session(self.engine) as opened:
-            device = Device(person_id=person_id, name=name, token_hash=f"hash-{person_id}-{name}", last_checkin=last_checkin, pending_uploads=pending, created=1.0)
-            opened.add(device)
-            opened.flush()
-            return device.id

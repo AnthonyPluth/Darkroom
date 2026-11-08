@@ -15,7 +15,7 @@ BEARER_KINDS = {"worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 DEVICE_TOKEN = "every-route-device-token-canary-0123456789abcdef"
 PEOPLE_AND_STATUS_ROUTES = {
-    "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}", "GET /api/people/{id}/devices", "DELETE /api/devices/{id}",
+    "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
     "POST /api/accounts/{id}/connect", "POST /api/accounts/{id}/schedule", "POST /api/accounts/{id}/schedule/checked", "POST /api/accounts/{id}/schedule/renew", "GET /api/browser/view",
     "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events",
@@ -55,7 +55,7 @@ class EveryRouteTests(unittest.TestCase):
         public = {f"{route.method} {route.path}" for route in routes.ROUTES if route.auth == "public"}
         self.assertEqual(public, PUBLIC, "a public route must be listed here, with a reason in the pull request")
 
-    def test_the_people_accounts_pixels_devices_and_status_routes_are_session_routes(self):
+    def test_the_people_accounts_pixels_and_status_routes_are_session_routes(self):
         found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
         for key in PEOPLE_AND_STATUS_ROUTES:
             with self.subTest(route=key):

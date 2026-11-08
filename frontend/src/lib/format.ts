@@ -60,7 +60,3 @@ export function names(list: readonly string[], none: string): string {
 export function nowSeconds(): number {
   return Date.now() / 1000;
 }
-
-export function checkedIn(then: number | null, now: number): string {
-  return then === null ? "never checked in" : `checked in ${ago(then, now)}`;
-}

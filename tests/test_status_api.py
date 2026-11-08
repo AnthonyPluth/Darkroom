@@ -25,7 +25,7 @@ class StatusApiTests(ApiCase):
         jo = self.person("Jo")
         (card,) = self.call("GET", "/api/status")[1]["people"]
         self.assertEqual(card, {"id": jo["id"], "slug": "jo", "name": "Jo", "indexed": 0, "with_gps": 0, "unknown_time": 0, "accounts": [], "pixels": [],
-                                "devices": [], "last_import": None, "unmatched": None, "alerts": []})
+                                "last_import": None, "unmatched": None, "alerts": []})
 
     def seed_media(self, person_id):
         rows = (("a.jpg", "exif", "exif_offset"), ("b.jpg", "none", "unknown"), ("c.jpg", "exif", "unknown"), ("d.jpg", "none", "gps_lookup"))
@@ -41,20 +41,15 @@ class StatusApiTests(ApiCase):
         people = self.call("GET", "/api/status")[1]["people"]
         self.assertEqual([(p["slug"], p["indexed"], p["with_gps"], p["unknown_time"]) for p in people], [("jo", 4, 2, 2), ("sam", 0, 0, 0)])
 
-    def test_accounts_pixels_and_devices_appear_on_every_person_they_serve(self):
+    def test_accounts_and_pixels_appear_on_every_person_they_serve(self):
         jo, sam = self.person("Jo"), self.person("Sam")
         account = self.account(jo["id"])
         pixel = self.pixel(account["id"], "Shared", people_ids=[jo["id"], sam["id"]])
-        self.add_device(jo["id"], "Jo's iPhone", last_checkin=50.0, pending=7)
-        revoked = self.add_device(jo["id"], "Old iPhone")
-        self.call("DELETE", f"/api/devices/{revoked}")
         people = {p["slug"]: p for p in self.call("GET", "/api/status")[1]["people"]}
         for slug in ("jo", "sam"):
             self.assertEqual([a["email"] for a in people[slug]["accounts"]], ["jo.photos@example.test"], slug)
             self.assertEqual([(x["id"], x["name"]) for x in people[slug]["pixels"]], [(pixel["id"], "Shared")], slug)
         self.assertEqual(people["jo"]["accounts"][0]["session_state"], "unknown")
-        self.assertEqual(people["jo"]["devices"], [{"id": people["jo"]["devices"][0]["id"], "name": "Jo's iPhone", "last_checkin": 50.0, "pending_uploads": 7, "cleanup_enabled": False}])
-        self.assertEqual(people["sam"]["devices"], [])
 
     def test_open_alerts_are_listed_overall_and_on_the_people_they_concern(self):
         jo, sam = self.person("Jo"), self.person("Sam")
@@ -122,13 +117,12 @@ class SeededDemoStatusTests(unittest.TestCase):
             reply = json.loads(body)
         people = {p["slug"]: p for p in reply["people"]}
         self.assertEqual(sorted(people), ["avery", "blair", "casey"])
-        self.assertTrue(all(p["indexed"] > 0 and len(p["devices"]) == 1 for p in people.values()))
+        self.assertTrue(all(p["indexed"] > 0 for p in people.values()))
         self.assertEqual([a["email"] for a in people["blair"]["accounts"]], ["avery.photos@example.com", "blair.photos@example.com"])
         self.assertEqual(people["blair"]["accounts"][0]["session_state"], "needs_sign_in")
         self.assertEqual(sorted(a["kind"] for a in reply["alerts"]), ["schedule_renewal_failed", "schedule_renewal_unconfirmed", "sign_in_needed"])
         self.assertEqual(sorted(a["kind"] for a in people["avery"]["alerts"]), ["schedule_renewal_unconfirmed", "sign_in_needed"])
         self.assertEqual(people["casey"]["alerts"], [])
-        self.assertEqual(people["casey"]["devices"][0]["pending_uploads"], 3)
 
 
 if __name__ == "__main__":

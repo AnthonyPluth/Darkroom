@@ -12,8 +12,6 @@ const SENTENCES: Record<string, (e: EventView) => string> = {
   pixel_created: () => "Added a Pixel.",
   pixel_updated: () => "Changed a Pixel.",
   pixel_deleted: () => "Removed a Pixel.",
-  device_revoked: (e) => `Revoked ${e.detail ?? "an iPhone"} for ${e.subject}.`,
-  device_checkin: (e) => `${e.detail ?? "An iPhone"} checked in for ${e.subject}.`,
   originals_indexed: (e) => `Indexed the originals of ${e.subject}${e.detail ? ` (${e.detail})` : ""}.`,
   index_failed: (e) => `Could not index a file of ${e.subject}${e.detail ? `: ${e.detail}` : ""}.`,
   alert_sent: (e) => `Sent an alert about ${e.subject}${e.detail ? ` (${e.detail})` : ""}.`,

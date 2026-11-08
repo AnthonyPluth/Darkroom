@@ -3,7 +3,7 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import Device, Event, ImmichAsset, MediaItem, Person
+from darkroom.storage.models import Device, Event, ImmichAsset, MediaItem, Person, PhoneAsset, PhoneResource
 from tests.api_world import SECRET_KEY, ApiCase
 from tests.privacy import no_leaks
 
@@ -80,8 +80,6 @@ class PeopleApiTests(ApiCase):
         self.assertEqual(self.call("PATCH", "/api/people/abc", {"name": "X"}), (404, {"error": "no such person"}))
         self.assertEqual(self.call("DELETE", "/api/people/999"), (404, {"error": "no such person"}))
         self.assertEqual(self.call("DELETE", "/api/people/abc"), (404, {"error": "no such person"}))
-        self.assertEqual(self.call("GET", "/api/people/999/devices"), (404, {"error": "no such person"}))
-        self.assertEqual(self.call("GET", "/api/people/x/devices"), (404, {"error": "no such person"}))
 
     def test_the_immich_key_is_sealed_and_never_returned_logged_or_stored_plain(self):
         with no_leaks(self, IMMICH_KEY, database=self.engine, replies=self.replies):
@@ -117,7 +115,7 @@ class PeopleApiTests(ApiCase):
             types = [e.type for e in opened.execute(select(Event).order_by(Event.id)).scalars()]
         self.assertEqual(types.count("immich_key_removed"), 1)
 
-    def test_deleting_is_refused_while_the_person_has_media_devices_accounts_or_pixels_and_files_stay(self):
+    def test_deleting_is_refused_while_the_person_has_media_accounts_or_pixels_and_files_stay(self):
         person = self.person("Jo")
         pid = person["id"]
         with db.session(self.engine) as opened:
@@ -127,8 +125,6 @@ class PeopleApiTests(ApiCase):
         self.assertIn("media items", reply["error"])
         with db.session(self.engine) as opened:
             opened.query(MediaItem).delete()
-        self.add_device(pid)
-        self.assertIn("devices", self.call("DELETE", f"/api/people/{pid}")[1]["error"])
         self.account(pid)
         self.assertIn("Google accounts", self.call("DELETE", f"/api/people/{pid}")[1]["error"])
         self.assertEqual(self.call("GET", "/api/people")[1]["people"][0]["id"], pid)
@@ -144,6 +140,26 @@ class PeopleApiTests(ApiCase):
         self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [other["id"]]})
         self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}"), (200, {"ok": True}))
         self.assertEqual([p["slug"] for p in self.call("GET", "/api/people")[1]["people"]], ["sam"])
+        self.assertEqual(original.read_bytes(), b"photo bytes")
+
+    def test_deleting_a_person_with_old_device_rows_removes_them_and_never_the_folders(self):
+        person = self.person("Jo")
+        original = self.photos / "jo" / "originals" / "keep.jpg"
+        original.write_bytes(b"photo bytes")
+        before = sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*"))
+        with db.session(self.engine) as opened:
+            device = Device(person_id=person["id"], name="Jo's iPhone", token_hash="old-device-token-hash", created=1.0)
+            opened.add(device)
+            opened.flush()
+            asset = PhoneAsset(device_id=device.id, photokit_id="asset-1", created=1.0)
+            opened.add(asset)
+            opened.flush()
+            opened.add(PhoneResource(asset_id=asset.id, kind="photo", sha1="a" * 40, bytes=11, filename="IMG_0001.JPG"))
+        self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}"), (200, {"ok": True}))
+        with db.session(self.engine) as opened:
+            self.assertEqual((opened.query(Device).count(), opened.query(PhoneAsset).count(), opened.query(PhoneResource).count()), (0, 0, 0))
+            self.assertIsNone(opened.get(Person, person["id"]))
+        self.assertEqual(sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*")), before)
         self.assertEqual(original.read_bytes(), b"photo bytes")
 
     def test_a_deleted_persons_folder_name_is_never_reused_and_its_files_are_not_indexed(self):
@@ -179,43 +195,6 @@ class PeopleApiTests(ApiCase):
         self.assertEqual(self.call("POST", "/api/people", {"name": "Jo"})[0], 201)
         self.assertTrue((self.photos / "jo" / "originals").is_dir())
 
-    def test_devices_of_a_person_are_listed_without_their_token(self):
-        person = self.person("Jo")
-        device_id = self.add_device(person["id"])
-        status, reply = self.call("GET", f"/api/people/{person['id']}/devices")
-        self.assertEqual(status, 200)
-        (device,) = reply["devices"]
-        self.assertEqual((device["id"], device["name"], device["pending_uploads"], device["revoked_at"]), (device_id, "Jo's iPhone", 3, None))
-        self.assertFalse({"token_hash", "token"} & set(device))
-
-    def test_revoking_a_device_is_idempotent_turns_cleanup_off_and_records_an_event(self):
-        person = self.person("Jo")
-        device_id = self.add_device(person["id"])
-        status, reply = self.call("DELETE", f"/api/devices/{device_id}")
-        self.assertEqual(status, 200)
-        revoked = reply["device"]["revoked_at"]
-        self.assertIsInstance(revoked, float)
-        self.assertFalse(reply["device"]["cleanup_enabled"])
-        self.assertEqual(self.call("DELETE", f"/api/devices/{device_id}")[1]["device"]["revoked_at"], revoked)
-        self.assertEqual(self.call("DELETE", "/api/devices/999"), (404, {"error": "no such device"}))
-        self.assertEqual(self.call("DELETE", "/api/devices/x"), (404, {"error": "no such device"}))
-        status, events = self.call("GET", "/api/events")
-        self.assertEqual([e["type"] for e in events["events"] if e["type"] == "device_revoked"], ["device_revoked"])
-        self.assertEqual(self.call("DELETE", f"/api/people/{person['id']}")[0], 409)
-
-
-    def test_revoking_a_device_forgets_its_token_and_it_cannot_register_again(self):
-        person = self.person("Jo")
-        device_id = self.add_device(person["id"])
-        with db.session(self.engine) as opened:
-            device = opened.get(Device, device_id)
-            device.push_token_sealed, device.push_token_digest, device.push_token_at = "enc:v1:stored-before-the-removal", "d" * 64, 1.0
-        self.assertEqual(self.call("DELETE", f"/api/devices/{device_id}")[0], 200)
-        with db.session(self.engine) as opened:
-            device = opened.get(Device, device_id)
-            self.assertEqual((device.push_token_sealed, device.push_token_digest), (None, None))
-            self.assertIsNotNone(device.push_token_at)
-        self.assertEqual(self.call("PUT", "/api/device/push-token", {"token": "a1" * 32})[0], 404)
 
 class NoSecretKeyTests(ApiCase):
     extra_env = {"DARKROOM_SECRET_KEY": ""}
