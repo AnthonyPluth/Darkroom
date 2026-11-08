@@ -61,7 +61,7 @@ Approved departures (#40), approved by the owner on #16 via the session owner on
 
 ## Proposal: Renew now on Exports (#164, needs owner sign-off)
 
-Status: **proposal, not signed off.** Nothing here is built. The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+Status: **proposal, not signed off.** The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is built to this proposal's recommendations in the pull request for #164, which stays a draft and is held by promise 6 until the owner signs this off on #16. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
 ### The button
 

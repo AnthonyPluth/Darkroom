@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { act, actGet } from "$lib/act";
+  import { ApiError } from "$lib/api";
   import { apiCall } from "$lib/contract";
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -26,6 +27,8 @@
   let busy = $state(0);
   let error = $state("");
   let notice = $state("");
+  let refusal = $state<{ accountId: number; text: string } | null>(null);
+  const topError = $derived(error || (loader.current.kind === "error" && refusal !== null ? refusal.text : ""));
 
   onMount(() => {
     void loader.load();
@@ -36,6 +39,7 @@
   async function start(request: () => Promise<unknown>): Promise<void> {
     error = "";
     notice = "";
+    refusal = null;
     const started = await act(request, { busy: (on) => (busy += on ? 1 : -1), onError: (message) => (error = message) });
     if (started) await loader.load(true);
   }
@@ -48,6 +52,22 @@
       notice = checkNowSentence(reply.jobs.length, reply.skipped);
       await loader.load(true);
     }
+  }
+
+  async function renew(id: number, email: string): Promise<void> {
+    error = "";
+    notice = "";
+    refusal = null;
+    let refused = false;
+    const queued = await act(() => apiCall<"POST /api/accounts/{id}/schedule/renew">(`/api/accounts/${id}/schedule/renew`, { method: "POST" }), {
+      busy: (on) => (busy += on ? 1 : -1),
+      onError: (message, err) => {
+        refusal = { accountId: id, text: `Couldn't renew ${email}: ${message.replace(/[.]$/, "")}.` };
+        refused = err instanceof ApiError && err.status === 409;
+      },
+    });
+    if (queued) notice = `Renewal queued for ${email}.`;
+    if (queued || refused) await loader.load(true);
   }
 
   const connect = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
@@ -64,8 +84,8 @@
     <button type="button" class="btn btn-primary w-full md:w-auto" disabled={busy > 0 || loader.current.kind !== "ready"} onclick={checkNow}>Check exports now</button>
   </div>
 
-  {#if error}
-    <p role="alert" class="rounded-md border border-danger bg-danger-bg px-3 py-2.5 text-danger">{error}</p>
+  {#if topError}
+    <p role="alert" class="rounded-md border border-danger bg-danger-bg px-3 py-2.5 text-danger">{topError}</p>
   {/if}
   {#if notice}
     <p role="status" class="rounded-md border border-line bg-surface px-3 py-2.5">{notice}</p>
@@ -97,6 +117,7 @@
       {@const mine = accountExports(data.exports, account.id)}
       {@const current = currentExport(mine)}
       {@const earlier = earlierExports(mine, current)}
+      {@const renewal = renewNow(account, data.jobs, data.now)}
       {@const times = data.schedules.find((each) => each.account_id === account.id)}
       <section class="card" aria-label={account.email}>
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -168,11 +189,20 @@
           {/if}
           <button type="button" class="btn" disabled={busy > 0 || connecting !== undefined} onclick={() => connect(account.id)}>Connect</button>
           <button type="button" class="btn" disabled={busy > 0 || scheduling !== undefined || renewing !== undefined || scheduleLive(account, data.now) || maybe !== undefined || maybeRenewal !== undefined} onclick={() => schedule(account.id)}>Create schedule</button>
+          {#if renewal}
+            <button type="button" class="btn" disabled={busy > 0 || !renewal.enabled} aria-describedby="renew-note-{account.id}" onclick={() => renew(account.id, account.email)}>Renew now</button>
+          {/if}
         </div>
+        {#if renewal}
+          <p id="renew-note-{account.id}" class="text-ink-muted">{renewal.sentence}</p>
+        {/if}
         {#if scheduleLive(account, data.now)}
           <p class="text-ink-muted">The schedule exports Google Photos every 2 months for 1 year.</p>
         {:else}
           <p class="text-ink-muted">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every 2 months for 1 year.</p>
+        {/if}
+        {#if refusal !== null && refusal.accountId === account.id}
+          <p role="alert" class="rounded-md border border-danger bg-danger-bg px-3 py-2.5 text-danger">{refusal.text}</p>
         {/if}
       </section>
       {#if current}

@@ -1,5 +1,6 @@
 import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
+import { onDay } from "./format";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
   if (state === "ok") return { tone: "ok", label: "Session ok" };
@@ -65,6 +66,22 @@ export function maybeRenewed(jobs: readonly BrowserJobView[], accountId: number)
 
 export function scheduleLive(account: AccountView, now: number): boolean {
   return account.schedule_created !== null && (account.schedule_end === null || account.schedule_end > now);
+}
+
+export type RenewNow = { enabled: boolean; sentence: string };
+
+export function renewNow(account: AccountView, jobs: readonly BrowserJobView[], now: number): RenewNow | null {
+  const end = account.schedule_end;
+  const from = account.renew_from;
+  if (account.schedule_created === null || end === null || from === null) return null;
+  if (now < from) return { enabled: false, sentence: `Darkroom asks for the renewal itself from ${onDay(from)}, three weeks before the schedule ends. Renew now is available from then.` };
+  if (account.session_state === "needs_sign_in") return { enabled: false, sentence: "This account needs to sign in to Google again before its schedule can be renewed. Press Connect first." };
+  if (maybeCreated(jobs, account.id) !== undefined || maybeRenewed(jobs, account.id) !== undefined) return { enabled: false, sentence: "Answer the Takeout question above first." };
+  if (openJob(jobs, account.id, "schedule") !== undefined || openJob(jobs, account.id, "renew") !== undefined) return { enabled: false, sentence: "A schedule or renew job is already open for this account." };
+  const last = latestJob(jobs, account.id, "renew");
+  if (last !== undefined && last.status === "failed" && last.created >= from) return { enabled: true, sentence: "The last renewal failed. Darkroom does not retry a renewal on its own: press Renew now to try again." };
+  if (end <= now) return { enabled: true, sentence: `This schedule ended on ${onDay(end)}, so scheduled exports have stopped. Renew now or Create schedule sets up a new yearly schedule in Takeout; both run the same steps.` };
+  return { enabled: true, sentence: "Renew now creates next year's schedule in Takeout without waiting for the daily check. Darkroom does not retry a renewal on its own." };
 }
 
 function waitingSentence(reason: string): string {

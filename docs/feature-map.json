@@ -294,7 +294,9 @@
       "route": "POST /api/accounts/{id}/schedule/renew",
       "auth": "session",
       "handler": "darkroom.server.api.accounts.renew_schedule",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py"
       ]

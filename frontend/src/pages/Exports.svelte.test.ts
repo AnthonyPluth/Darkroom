@@ -422,4 +422,141 @@ describe("the Exports page", () => {
     expect(screen.getByText("Expired before it was downloaded")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /Current export parts/ })).not.toBeInTheDocument();
   });
+
+  describe("Renew now", () => {
+    const window = { ...joAccount, schedule_created: 100, schedule_end: 900_000, renew_from: 500 };
+    const early = { ...joAccount, id: 11, email: "early.photos@example.com", schedule_created: 100, schedule_end: 9_000_000, renew_from: 8_000_000 };
+    const renewJob = { ...queuedConnect, id: 30, account_id: 10, kind: "renew" };
+    const card = (email = "jo.photos@example.com") => screen.getByRole("region", { name: email });
+
+    it("is not drawn for an account with no schedule", async () => {
+      show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] } });
+      const jo = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      expect(within(jo).queryByRole("button", { name: "Renew now" })).not.toBeInTheDocument();
+      expect(within(jo).getByText(/^Create schedule exports only Google Photos/)).toBeInTheDocument();
+    });
+
+    it("sits last in the button row, disabled before the window with the day it opens as its description", async () => {
+      show({ "GET /api/accounts": { accounts: [early] }, "GET /api/browser/jobs": { jobs: [] } });
+      const region = await screen.findByRole("region", { name: "early.photos@example.com" });
+      const buttons = within(region).getAllByRole("button").map((button) => button.textContent);
+      expect(buttons).toEqual(["Connect", "Create schedule", "Renew now"]);
+      const button = within(region).getByRole("button", { name: "Renew now" });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAccessibleDescription(`Darkroom asks for the renewal itself from ${onDay(8_000_000)}, three weeks before the schedule ends. Renew now is available from then.`);
+    });
+
+    it("queues one renewal, reloads and turns the button off", async () => {
+      let jobs: unknown[] = [];
+      const server = show({
+        "GET /api/accounts": { accounts: [window] },
+        "GET /api/browser/jobs": () => ({ jobs }),
+        "POST /api/accounts/10/schedule/renew": () => {
+          jobs = [renewJob];
+          return reply(201, { job: renewJob });
+        },
+      });
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      const button = within(region).getByRole("button", { name: "Renew now" });
+      expect(button).toBeEnabled();
+      expect(button).toHaveAccessibleDescription(/^Renew now creates next year's schedule in Takeout/);
+      await userEvent.click(button);
+      expect(await within(region).findByText("Renew schedule: waiting for the browser worker to pick it up.")).toBeInTheDocument();
+      expect(server.sent("POST /api/accounts/10/schedule/renew")).toHaveLength(1);
+      expect(screen.getByRole("status")).toHaveTextContent("Renewal queued for jo.photos@example.com.");
+      expect(within(region).getByRole("button", { name: "Renew now" })).toBeDisabled();
+      expect(within(region).getByText("A schedule or renew job is already open for this account.")).toBeInTheDocument();
+    });
+
+    it("is off while a schedule job is open, a sign-in is needed or Takeout's answer is awaited", async () => {
+      const signIn = { ...window, id: 12, email: "signin.photos@example.com", session_state: "needs_sign_in" };
+      const unanswered = { ...window, id: 13, email: "unanswered.photos@example.com" };
+      const open = { ...window, id: 14, email: "open.photos@example.com" };
+      const jobs = [
+        { ...queuedConnect, id: 41, account_id: 13, kind: "renew", status: "failed", needs_check: true },
+        { ...queuedConnect, id: 42, account_id: 14, kind: "schedule" },
+      ];
+      show({ "GET /api/accounts": { accounts: [signIn, unanswered, open] }, "GET /api/browser/jobs": { jobs } });
+      await screen.findByRole("region", { name: "open.photos@example.com" });
+      const expectations: [string, RegExp][] = [
+        ["signin.photos@example.com", /^This account needs to sign in to Google again/],
+        ["unanswered.photos@example.com", /^Answer the Takeout question above first\.$/],
+        ["open.photos@example.com", /^A schedule or renew job is already open/],
+      ];
+      for (const [email, sentence] of expectations) {
+        const region = card(email);
+        expect(within(region).getByRole("button", { name: "Renew now" })).toBeDisabled();
+        expect(within(region).getByText(sentence)).toBeInTheDocument();
+      }
+    });
+
+    it("is on after a failed renewal inside the window, and after the end beside Create schedule", async () => {
+      const failed = { ...failedSchedule, id: 50, account_id: 10, kind: "renew", created: 600, message: "UnexpectedPage: the page changed" };
+      const ended = { ...joAccount, id: 12, email: "ended.photos@example.com", schedule_created: 100, schedule_end: 900, renew_from: -1_000_000 };
+      show({ "GET /api/accounts": { accounts: [window, ended] }, "GET /api/browser/jobs": { jobs: [failed] } });
+      await screen.findByRole("region", { name: "ended.photos@example.com" });
+      expect(within(card()).getByRole("button", { name: "Renew now" })).toBeEnabled();
+      expect(within(card()).getByText("The last renewal failed. Darkroom does not retry a renewal on its own: press Renew now to try again.")).toBeInTheDocument();
+      const endedCard = card("ended.photos@example.com");
+      expect(within(endedCard).getByRole("button", { name: "Renew now" })).toBeEnabled();
+      expect(within(endedCard).getByRole("button", { name: "Create schedule" })).toBeEnabled();
+      expect(within(endedCard).getByText(/^This schedule ended on 1 Jan 1970, so scheduled exports have stopped/)).toBeInTheDocument();
+    });
+
+    it("shows the route's refusal in the account's card, reloads, and clears it at the next press in the card", async () => {
+      let accounts = [window];
+      const server = show({
+        "GET /api/accounts": () => ({ accounts }),
+        "GET /api/browser/jobs": { jobs: [] },
+        "POST /api/accounts/10/schedule/renew": () => {
+          accounts = [{ ...window, session_state: "needs_sign_in" }];
+          return reply(409, { error: "this account needs to sign in to Google again before its schedule can be renewed" });
+        },
+        "POST /api/accounts/10/connect": reply(201, { job: queuedConnect }),
+      });
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      await userEvent.click(within(region).getByRole("button", { name: "Renew now" }));
+      const refusal = await within(region).findByRole("alert");
+      expect(refusal).toHaveTextContent("Couldn't renew jo.photos@example.com: this account needs to sign in to Google again before its schedule can be renewed.");
+      expect(server.sent("GET /api/accounts")).toHaveLength(2);
+      expect(await within(region).findByText(/^This account needs to sign in to Google again before its schedule can be renewed\. Press Connect first\./)).toBeInTheDocument();
+      expect(within(region).getByRole("button", { name: "Renew now" })).toBeDisabled();
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      await userEvent.click(within(region).getByRole("button", { name: "Connect" }));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("keeps the refusal in the page's alert line when the reload fails, until the retry works", async () => {
+      let reloads = 0;
+      show({
+        "GET /api/accounts": () => {
+          reloads += 1;
+          return reloads === 2 ? reply(500, { error: "accounts unavailable" }) : { accounts: [window] };
+        },
+        "GET /api/browser/jobs": { jobs: [] },
+        "POST /api/accounts/10/schedule/renew": reply(409, { error: "a schedule or renew job for this account is already waiting or running" }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Renew now" }));
+      const alerts = await screen.findAllByRole("alert");
+      expect(alerts.map((alert) => alert.textContent)).toContain("Couldn't renew jo.photos@example.com: a schedule or renew job for this account is already waiting or running.");
+      expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "jo.photos@example.com" })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      expect(within(region).getByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com: a schedule or renew job for this account is already waiting or running.");
+    });
+
+    it("shows any other failure in the card without reloading", async () => {
+      const server = show({
+        "GET /api/accounts": { accounts: [window] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "POST /api/accounts/10/schedule/renew": reply(500, { error: "database is locked" }),
+      });
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      await userEvent.click(within(region).getByRole("button", { name: "Renew now" }));
+      expect(await within(region).findByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com: database is locked.");
+      expect(server.sent("GET /api/accounts")).toHaveLength(1);
+      expect(within(region).getByRole("button", { name: "Renew now" })).toBeEnabled();
+    });
+  });
 });

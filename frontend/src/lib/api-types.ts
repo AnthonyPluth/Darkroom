@@ -28,6 +28,7 @@ export interface AccountView {
   session_checked: number | null;
   schedule_created: number | null;
   schedule_end: number | null;
+  renew_from: number | null;
   served_people: number[];
   created: number;
 }

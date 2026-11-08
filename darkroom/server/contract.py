@@ -115,6 +115,7 @@ class AccountView(TypedDict):
     session_checked: float | None
     schedule_created: float | None
     schedule_end: float | None
+    renew_from: float | None
     served_people: list[int]
     created: float
 
