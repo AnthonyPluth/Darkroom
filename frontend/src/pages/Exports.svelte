@@ -36,10 +36,10 @@
     return () => clearInterval(timer);
   });
 
-  async function start(request: () => Promise<unknown>): Promise<void> {
+  async function start(accountId: number, request: () => Promise<unknown>): Promise<void> {
     error = "";
     notice = "";
-    refusal = null;
+    if (refusal?.accountId === accountId) refusal = null;
     const started = await act(request, { busy: (on) => (busy += on ? 1 : -1), onError: (message) => (error = message) });
     if (started) await loader.load(true);
   }
@@ -70,9 +70,9 @@
     if (queued || refused) await loader.load(true);
   }
 
-  const connect = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
-  const checked = (id: number, found: boolean) => start(() => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST", body: { found } }));
-  const schedule = (id: number) => start(() => apiCall<"POST /api/accounts/{id}/schedule">(`/api/accounts/${id}/schedule`, { method: "POST" }));
+  const connect = (id: number) => start(id, () => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
+  const checked = (id: number, found: boolean) => start(id, () => apiCall<"POST /api/accounts/{id}/schedule/checked">(`/api/accounts/${id}/schedule/checked`, { method: "POST", body: { found } }));
+  const schedule = (id: number) => start(id, () => apiCall<"POST /api/accounts/{id}/schedule">(`/api/accounts/${id}/schedule`, { method: "POST" }));
 </script>
 
 <div class="flex flex-col gap-6">

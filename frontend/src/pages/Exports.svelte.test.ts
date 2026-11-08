@@ -526,6 +526,21 @@ describe("the Exports page", () => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 
+    it("keeps one account's refusal when a button of another account is pressed", async () => {
+      const other = { ...window, id: 12, email: "other.photos@example.com" };
+      show({
+        "GET /api/accounts": { accounts: [window, other] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "POST /api/accounts/10/schedule/renew": reply(409, { error: "a schedule or renew job for this account is already waiting or running" }),
+        "POST /api/accounts/12/connect": reply(201, { job: queuedConnect }),
+      });
+      const region = await screen.findByRole("region", { name: "jo.photos@example.com" });
+      await userEvent.click(within(region).getByRole("button", { name: "Renew now" }));
+      await within(region).findByRole("alert");
+      await userEvent.click(within(card("other.photos@example.com")).getByRole("button", { name: "Connect" }));
+      expect(within(region).getByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com");
+    });
+
     it("keeps the refusal in the page's alert line when the reload fails, until the retry works", async () => {
       let reloads = 0;
       show({
