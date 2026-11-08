@@ -43,7 +43,6 @@ jobs:
       max-turns: ${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}
       second-review-paths: |
         darkroom/domain/dedupe.py
-        darkroom/domain/eligibility.py
         darkroom/domain/review.py
         darkroom/domain/ingest/cleanup.py
         darkroom/domain/ingest/place.py
@@ -55,12 +54,8 @@ jobs:
         darkroom/tls.py
         darkroom/server/handler.py
         darkroom/server/routes.py
-        darkroom/server/api/cleanup.py
         darkroom/server/api/review.py
-        darkroom/server/api/uploads.py
-        darkroom/server/api/devices.py
         darkroom/server/api/browser_internal.py
-        darkroom/server/mcp_*.py
         darkroom_browser/live.py
         darkroom_browser/runner.py
         .semgrep/**
