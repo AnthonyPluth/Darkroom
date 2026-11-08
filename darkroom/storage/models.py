@@ -282,6 +282,7 @@ class Alert(Base):
     closed: Mapped[float | None] = mapped_column(Float)
     person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("google_accounts.id", ondelete="SET NULL"))
+    push_due: Mapped[float | None] = mapped_column(Float)
     __table_args__ = (Index("ix_alerts_key", "key"),)
 
 

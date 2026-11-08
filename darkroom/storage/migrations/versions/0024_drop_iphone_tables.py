@@ -14,7 +14,6 @@ def upgrade() -> None:
     op.drop_index("ix_devices_push_token_digest", table_name="devices")
     op.drop_table("devices")
     with op.batch_alter_table("alerts", schema=None) as batch_op:
-        batch_op.drop_column("push_due")
         batch_op.drop_column("pushed_devices")
     op.execute("DELETE FROM auth_pending WHERE kind != 'web'")
     with op.batch_alter_table("auth_pending", schema=None, recreate="always") as batch_op:
@@ -31,7 +30,6 @@ def downgrade() -> None:
         batch_op.add_column(sa.Column("client_state", sa.String(), nullable=True))
         batch_op.create_check_constraint("ck_auth_pending_kind", "kind IN ('web', 'device')")
     with op.batch_alter_table("alerts", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("push_due", sa.Float(), nullable=True))
         batch_op.add_column(sa.Column("pushed_devices", sa.Text(), nullable=True))
     op.create_table(
         "devices",
