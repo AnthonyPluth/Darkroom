@@ -4,7 +4,7 @@ def clear_inside_the_removed_module(device, now):
 
 
 def clear_every_column_when_revoking(device, now):
-    # ok: darkroom-push-token-one-module
+    # ruleid: darkroom-push-token-one-module
     device.push_token_sealed, device.push_token_digest, device.push_token_at = None, None, now
 
 
