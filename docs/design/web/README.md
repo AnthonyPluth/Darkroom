@@ -13,7 +13,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `02-status-desktop.dc.html`, `02-status-phone.dc.html` | Status (home) |
 | `03-people-desktop.dc.html`, `03-people-phone.dc.html` | People |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` | Exports |
-| `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (proposal, #164, not signed off) |
+| `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (signed off, #164, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904)) |
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
@@ -61,7 +61,7 @@ Approved departures (#40), approved by the owner on #16 via the session owner on
 
 ## Renew now on Exports (#164, signed off)
 
-Status: **signed off by the owner on 2026-11-08: all six open points approved as recommended.** The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is built to this design in the pull request for #164. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+Status: **signed off by the owner on 2026-11-08: all six open points approved as recommended.** Recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904). The server route is on `main` (`POST /api/accounts/{id}/schedule/renew`, #173); the button is built to this design in the pull request for #164. Boards: `04-exports-renew-desktop.dc.html` and `04-exports-renew-phone.dc.html` show one account card in each state below (ten states, each with the existing Create schedule sentence kept); everything else on the page is as in the signed-off boards. The boards use the signed-off tokens only. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
 ### The button
 
