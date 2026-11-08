@@ -10,7 +10,7 @@ from darkroom.storage import db
 from darkroom.storage.models import Device, Person, User
 from tests.shared import fetch, own_database, settings_from, start_server
 
-PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out", "GET /auth/device/start"}
+PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"worker"}
 WORKER_TOKEN = "every-route-worker-token-canary-0123456789abcdef"
 DEVICE_TOKEN = "every-route-device-token-canary-0123456789abcdef"

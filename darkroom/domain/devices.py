@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import secrets
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom import oidc
 from darkroom.domain import events
 from darkroom.storage.models import Device, Person
 
@@ -24,19 +22,6 @@ def person_for(opened: Session, email: str | None, verified: bool) -> Person:
     if len(found) != 1:
         raise NoPerson("Darkroom has no person with this email" if not found else "more than one person has this email")
     return found[0]
-
-
-def enrol(opened: Session, sub: str, email: str | None, verified: bool, name: str, now: float) -> tuple[Device, str]:
-    person = person_for(opened, email, verified)
-    for other in of_person(opened, person.id):
-        if other.revoked_at is None and other.sub != sub:
-            revoke(opened, other.id, now)
-    token = secrets.token_urlsafe(32)
-    device = Device(person_id=person.id, name=name, token_hash=oidc.hash_token(token), sub=sub, created=now, last_checkin=now)
-    opened.add(device)
-    opened.flush()
-    events.record(opened, now, "device_signed_in", person.slug, name)
-    return device, token
 
 
 def get(opened: Session, device_id: int) -> Device:

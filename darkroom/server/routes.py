@@ -24,7 +24,6 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/auth/callback", auth.callback, "public"),
     Route("POST", "/auth/logout", auth.logout, "session"),
     Route("GET", "/auth/signed-out", auth.signed_out, "public"),
-    Route("GET", "/auth/device/start", auth.device_start, "public"),
     Route("GET", "/api/me", auth.me, "session"),
     Route("GET", "/api/status", status.status, "session"),
     Route("GET", "/api/events", status.recent_events, "session"),
