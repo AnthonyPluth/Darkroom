@@ -12,7 +12,7 @@ from darkroom.storage import secretbox
 ENDPOINT = "https://api.resend.com/emails"
 TIMEOUT = 10.0
 MAX_REPLY = 64 * 1024
-RETRY_STATUSES = frozenset({408, 425, 429})
+RETRY_STATUSES = frozenset({408, 409, 425, 429})
 
 
 class Unusable(Exception):
@@ -31,6 +31,8 @@ class Resend:
         text = f"{note.message}\n\n{note.click}" if note.click else note.message
         body = json.dumps({"from": self.sender, "to": [self.recipient], "subject": note.title, "text": text}).encode()
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "User-Agent": "Darkroom"}
+        if note.key:
+            headers["Idempotency-Key"] = note.key
         host = urlsplit(self.endpoint).hostname or ""
         try:
             with tls.urlopen(self.endpoint, data=body, headers=headers, method="POST", timeout=self.timeout, allow_http=config.local_host(host)) as reply:

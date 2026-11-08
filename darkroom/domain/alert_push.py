@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,12 +22,17 @@ def closing(alert: Alert) -> bool:
     return alert.closed is not None and alert.kind not in alerts.ONE_SHOT_KINDS
 
 
+def key_for(alert: Alert) -> str:
+    stage = "resolved" if closing(alert) else "open"
+    return hashlib.sha256(f"darkroom-alert:{alert.id}:{alert.sent_count}:{stage}".encode()).hexdigest()
+
+
 def note_for(settings: Settings, alert: Alert) -> Note:
     title = alerts.TITLES.get(alert.kind, FALLBACK_TITLE)
     click = settings.public_url if settings.public_url.startswith(("https://", "http://")) else None
     if closing(alert):
-        return Note(f"Resolved: {title}", CLOSED_TEXT, click)
-    return Note(title, OPEN_TEXT, click)
+        return Note(f"Resolved: {title}", CLOSED_TEXT, click, key_for(alert))
+    return Note(title, OPEN_TEXT, click, key_for(alert))
 
 
 def detail_of(alert: Alert) -> str:

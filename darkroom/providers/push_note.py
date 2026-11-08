@@ -11,6 +11,7 @@ class Note:
     title: str
     message: str
     click: str | None = None
+    key: str = ""
 
 
 class Pusher(Protocol):

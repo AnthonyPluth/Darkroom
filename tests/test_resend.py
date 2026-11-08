@@ -52,6 +52,21 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(received.headers["Content-Type"], "application/json")
         self.assertEqual(received.json(), {"from": FROM, "to": [TO], "subject": "Google sign-in needed", "text": "Open it.\n\nhttps://d.example"})
 
+    def test_the_idempotency_key_is_sent_and_a_repeated_key_is_one_email(self):
+        keyed = Note("Google sign-in needed", "Open it.", "https://d.example", "k1")
+        self.assertEqual(self.sender.send(keyed), "sent")
+        self.assertEqual(self.sender.send(keyed), "sent")
+        self.assertEqual([received.headers["Idempotency-Key"] for received in self.fake.requests], ["k1", "k1"])
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertEqual(self.sender.send(dataclasses.replace(keyed, key="k2")), "sent")
+        self.assertEqual(len(self.fake.sent), 2)
+        self.assertEqual(self.sender.send(self.note), "sent")
+        self.assertNotIn("Idempotency-Key", self.fake.requests[-1].headers)
+
+    def test_a_key_reused_with_another_body_is_refused_and_retried(self):
+        self.sender.send(Note("A", "m", None, "k"))
+        self.assertEqual(self.sender.send(Note("B", "m", None, "k")), "retry")
+
     def test_without_a_link_the_text_is_the_message_alone(self):
         self.assertEqual(self.sender.send(Note("T", "m")), "sent")
         self.assertEqual(self.fake.requests[0].json()["text"], "m")
@@ -243,7 +258,8 @@ class PushPassTests(unittest.TestCase):
         self.assertEqual(self.alert().push_due, 0.0)
         self.assertEqual(self.push(pusher, 30.0), 1)
         self.assertEqual(self.push(pusher, 90.0), 0)
-        self.assertEqual(pusher.notes, [Note("Google sign-in needed", alert_push.OPEN_TEXT, "https://d.example")])
+        self.assertEqual(pusher.notes, [Note("Google sign-in needed", alert_push.OPEN_TEXT, "https://d.example", pusher.notes[0].key)])
+        self.assertEqual(len(pusher.notes[0].key), 64)
         self.assertNotIn(EMAIL, repr(pusher.notes))
         self.assertEqual(self.recorded(), [("alert_sent", "sign_in_needed")])
         self.assertIsNone(self.alert().push_due)
@@ -325,6 +341,25 @@ class PushPassTests(unittest.TestCase):
         self.assertLessEqual(at, alert_push.RETRY_FOR)
         self.assertEqual(len(pusher.notes), 1 + int(alert_push.RETRY_FOR // alert_push.RETRY_AFTER))
         self.assertEqual(self.recorded(), [("alert_failed", "sign_in_needed")])
+
+    def test_one_email_keeps_its_key_across_retries_and_the_next_repeat_and_the_resolved_email_get_new_ones(self):
+        pusher = FakePusher("retry", "retry", "sent", "sent", "sent")
+        self.open_sign_in(0.0)
+        self.push(pusher, 0.0)
+        self.push(pusher, alert_push.RETRY_AFTER)
+        self.push(pusher, 2 * alert_push.RETRY_AFTER)
+        with db.session(self.engine) as opened:
+            alerts.tick(opened, self.settings, DAY)
+        self.push(pusher, DAY)
+        with db.session(self.engine) as opened:
+            alerts.close(opened, "sign-in:a", DAY + 10)
+        self.push(pusher, DAY + 20)
+        keys = [note.key for note in pusher.notes]
+        self.assertEqual(len(keys), 5)
+        self.assertEqual(keys[0], keys[1])
+        self.assertEqual(keys[1], keys[2])
+        self.assertEqual(len(set(keys)), 3)
+        self.assertTrue(all(key and EMAIL not in key and len(key) <= 256 for key in keys))
 
     def test_a_retry_that_then_succeeds_is_recorded_as_sent(self):
         pusher = FakePusher("retry")
@@ -454,6 +489,27 @@ class EndToEndTests(unittest.TestCase):
                     self.assertNotIn(private, everything.replace(TO, "").replace(FROM, ""))
         self.assertEqual(sent["Darkroom needs a look"], f"{alert_push.OPEN_TEXT}\n\nhttps://d.example")
         self.assertEqual(sent["Resolved: Google sign-in needed"], f"{alert_push.CLOSED_TEXT}\n\nhttps://d.example")
+
+    def test_a_send_accepted_but_not_answered_in_time_is_retried_without_a_second_email(self):
+        fake = FakeResend(self)
+        engine = own_database(self)
+        settings = resend_settings()
+        fake.delay = 0.6
+        sender = resend.Resend(KEY, FROM, TO, fake.url, timeout=0.2)
+        with no_leaks(self, KEY, FROM, TO, database=engine):
+            with db.session(engine) as opened:
+                alerts.open_alert(opened, settings, "sign-in:a", "sign_in_needed", EMAIL, alerts.sign_in_needed(EMAIL), None, 0.0, about=alerts.NOBODY)
+            jobs.push_alerts(settings, engine, sender, 1.0)
+            fake.delay = 0.0
+            deadline = time.monotonic() + 5
+            while not fake.sent and time.monotonic() < deadline:
+                time.sleep(0.05)
+            jobs.push_alerts(settings, engine, sender, 1.0 + alert_push.RETRY_AFTER)
+        self.assertEqual(len(fake.requests), 2)
+        self.assertEqual(len(fake.sent), 1)
+        self.assertEqual(len({received.headers["Idempotency-Key"] for received in fake.requests}), 1)
+        with db.session(engine) as opened:
+            self.assertEqual([e.type for e in reversed(events.recent(opened))], ["alert_sent"])
 
     def test_the_demo_never_posts_to_a_real_address_not_even_a_close_note(self):
         fake = FakeResend(self)

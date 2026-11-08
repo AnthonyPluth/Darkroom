@@ -30,6 +30,7 @@ class FakeResend:
         self.status = 200
         self.delay = 0.0
         self.location = ""
+        self.sent: dict[str, str] = {}
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -38,10 +39,15 @@ class FakeResend:
                 fake.requests.append(Received(self.path, dict(self.headers.items()), body))
                 if fake.delay:
                     time.sleep(fake.delay)
-                self.send_response(fake.status)
+                key = self.headers.get("Idempotency-Key")
+                status = fake.status
+                if status < 300 and key:
+                    if fake.sent.setdefault(key, body.decode()) != body.decode():
+                        status = 409
+                self.send_response(status)
                 if fake.location:
                     self.send_header("Location", fake.location)
-                reply = json.dumps({"id": "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794"} if fake.status < 300 else {"name": "validation_error", "message": "refused"}).encode()
+                reply = json.dumps({"id": "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794"} if status < 300 else {"name": "validation_error", "message": "refused"}).encode()
                 self.send_header("Content-Length", str(len(reply)))
                 self.end_headers()
                 with contextlib.suppress(OSError):

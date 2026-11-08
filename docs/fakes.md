@@ -56,7 +56,7 @@ fake.requests[0].json()
 | --- | --- |
 | `POST /emails` | `fake.status` (200 by default) with `{"id": ...}`, or a `{"name", "message"}` error body from 300 up; the request's path, headers and body are recorded in `fake.requests` |
 
-`fake.delay` holds each answer back (a slow server) and `fake.location` adds a `Location` header (a redirect, which the provider must not follow).
+An `Idempotency-Key` header is remembered in `fake.sent`: the same key with the same body is accepted again but counts once (`len(fake.sent)` is the number of distinct emails), and with a different body it answers `409`. `fake.delay` holds each answer back (a slow server) and `fake.location` adds a `Location` header (a redirect, which the provider must not follow).
 
 ### What it does not cover
 
