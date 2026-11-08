@@ -8,11 +8,12 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
 
-from darkroom import monitoring, oidc
+from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, renewal
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, renewal
 from darkroom.domain.ingest import cleanup, run
-from darkroom.providers import immich
+from darkroom.providers import immich, ntfy
+from darkroom.providers.push_note import Pusher
 from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
@@ -89,6 +90,7 @@ class Scheduler:
 
 
 ALERT_TICK_SECONDS = 600.0
+PUSH_TICK_SECONDS = 60.0
 INDEX_SECONDS = 3600.0
 INDEX_FIRST_AFTER_SECONDS = 120.0
 SESSION_RECHECK_SECONDS = 3600.0
@@ -111,8 +113,26 @@ def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.Rech
     return summary
 
 
-def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
+def push_alerts(settings: Settings, engine: Engine, pusher: Pusher | None, at: float) -> int:
+    with db.session(engine) as opened:
+        pushed = alert_push.deliver_due(opened, settings, pusher, at)
+    if pushed:
+        monitoring.log("alert pushes sent", count=pushed)
+    return pushed
+
+
+def pusher_of(settings: Settings) -> Pusher | None:
+    if settings.demo:
+        return None
+    found = ntfy.of(settings)
+    if found is None and config.ntfy_configured(settings):
+        monitoring.log("ntfy is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.ntfy_problems(settings) + ntfy.problems(settings)))
+    return found
+
+
+def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
+    found_pusher = pusher if pusher is not None else pusher_of(settings)
 
     def tick_alerts(at: float) -> None:
         with db.session(engine) as opened:
@@ -185,6 +205,10 @@ def build(settings: Settings, engine: Engine, now: float = 0.0) -> Scheduler:
             done = immich_reconcile.reconcile_all(opened, settings, at, client, immich_reconcile.PixelFolderQueue())
         monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()))
 
+    def send_pushes(at: float) -> None:
+        push_alerts(settings, engine, found_pusher, at)
+
+    scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now, own_thread=True)
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
     scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True)

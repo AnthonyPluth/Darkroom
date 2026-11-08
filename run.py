@@ -7,17 +7,18 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
-from darkroom.providers import exiftool, immich
+from darkroom.providers import exiftool, immich, ntfy
 from darkroom.dates import utc_now
 from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
-from darkroom.storage import db
+from darkroom.storage import db, secretbox
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
 
@@ -32,11 +33,35 @@ def check_config() -> int:
     except (exiftool.Missing, OSError) as error:
         found.append(str(error))
     found += oidc.recheck_problems(settings, utc_now().timestamp())
+    found += ntfy.problems(settings)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
+    print(alert_channel(settings))
     if not found:
         print("Configuration looks complete.")
     return 1 if found else 0
+
+
+def alert_channel(settings: config.Settings) -> str:
+    if not config.ntfy_configured(settings):
+        return "Alerts: shown on the Status page only (set NTFY_URL and NTFY_TOPIC to push them to a phone)."
+    if ntfy.of(settings) is None:
+        return "Alerts: shown on the Status page only, because the ntfy settings above need fixing."
+    token = "with an access token" if settings.ntfy_token else "without an access token"
+    return f"Alerts: pushed through the ntfy server at {urlsplit(settings.ntfy_url).hostname}, {token}."
+
+
+def seal_secret() -> int:
+    settings = config.load()
+    if not settings.secret_key:
+        print("seal-secret needs DARKROOM_SECRET_KEY, the same one the service runs with", file=sys.stderr)
+        return 1
+    plain = sys.stdin.readline().strip()
+    if not plain:
+        print("seal-secret reads the value to seal from standard input, for example: printf %s \"$TOPIC\" | python run.py seal-secret", file=sys.stderr)
+        return 1
+    print(secretbox.seal(plain, settings.secret_key))
+    return 0
 
 
 def migrate(settings: config.Settings | None = None) -> int:
@@ -316,7 +341,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -329,6 +354,8 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(args.data)
+    if args.command == "seal-secret":
+        return seal_secret()
     if args.command == "revoke-sessions":
         return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":
