@@ -7,15 +7,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from darkroom_browser import selectors
+from darkroom_browser import monitoring, selectors
+from darkroom_browser.config import env
 from darkroom_browser.context import DownloadInterrupted
 from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
+from darkroom_browser.launch import CHROME_CHANNEL, choose_channel, launch_options
 from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
 CANCELLED = "canceled"
-VIEWPORT = {"width": 1280, "height": 900}
 
 
 class NotTypeable(ValueError):
@@ -124,6 +125,16 @@ class Live:
             raise failure
 
 
+def launch_context(playwright: Any, profile_dir: Path, downloads: Path, channel: str | None) -> Any:
+    try:
+        return playwright.chromium.launch_persistent_context(**launch_options(profile_dir, downloads, channel))
+    except Exception as error:
+        if channel is None:
+            raise
+        monitoring.log("chrome_launch_failed", error=type(error).__name__, channel=channel)
+    return playwright.chromium.launch_persistent_context(**launch_options(profile_dir, downloads, None))
+
+
 def open_context(profile_dir: Path) -> Live:
     from playwright.sync_api import sync_playwright
 
@@ -131,7 +142,10 @@ def open_context(profile_dir: Path) -> Live:
     sweep_downloads(downloads)
     profile_dir.mkdir(parents=True, exist_ok=True)
     playwright = sync_playwright().start()
-    context = playwright.chromium.launch_persistent_context(user_data_dir=str(profile_dir), headless=False, viewport=VIEWPORT, accept_downloads=True,
-                                                            downloads_path=str(downloads))
+    try:
+        context = launch_context(playwright, profile_dir, downloads, choose_channel(env("BROWSER_CHANNEL", CHROME_CHANNEL)))
+    except BaseException:
+        playwright.stop()
+        raise
     page = context.pages[0] if context.pages else context.new_page()
     return Live(page, context, playwright, downloads, profile_dir)

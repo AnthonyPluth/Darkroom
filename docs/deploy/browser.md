@@ -6,6 +6,16 @@ The `darkroom-browser` container is a stateless executor: `darkroom` owns the jo
 
 `deploy/browser/entrypoint.sh` starts, in order: Xvfb on `DISPLAY` (`:99`), x11vnc on `VNC_PORT` (5900) with no password, websockify + noVNC on `NOVNC_PORT` (6080), then `python -m darkroom_browser`. Chromium is launched by Playwright only while a job runs and exits with it, so the container idles between jobs. The image is `mcr.microsoft.com/playwright/python` pinned to one Playwright release; that image carries the browsers and their system libraries, not the Python package, so the build installs `playwright` (with `greenlet` and `pyee`) from `deploy/browser/requirements.txt`, pinned to the same release with `--require-hashes` (x86_64 and aarch64 wheels), and then imports it and checks the version. `tests/browser/test_image.py` fails when the image tag and the pip pin drift apart. To move to a new Playwright release, change both, refresh the hashes from PyPI, and re-run the noop job: its result carries the installed `playwright` version. The container runs as the non-root user `darkroom-browser` (uid 10002), drops every capability and sets `no-new-privileges`.
 
+## Google Chrome, and what it does and does not fix
+
+Google can refuse a sign-in in the remote viewer with "This browser or app may not be secure". Playwright's defaults mark the browser as automated (the `--enable-automation` flag, `navigator.webdriver`) and its bundled Chromium is Chromium for Testing, not Google Chrome. The image installs Google Chrome stable at build time (`python -m playwright install --with-deps chrome`, the pinned Playwright's own installer, as root; Chrome for Linux is amd64 only, so on aarch64 the step is skipped and the worker keeps using the bundled Chromium) and `darkroom_browser/launch.py` starts it with `channel="chrome"`, without `--enable-automation` and with `--disable-blink-features=AutomationControlled`. Nothing else changes: no stealth plugin, no user-agent or fingerprint patch, and the worker still never types a password or a 2FA code (`selectors.TYPEABLE`); you sign in by hand in the viewer. The worker passes `chromium_sandbox=True` (Playwright's default is off, and then it adds `--no-sandbox` itself), so the browser's sandbox runs and depends on the user namespaces `seccomp.json` allows; `seccomp.json` and `cap_drop: [ALL]` are unchanged: Chrome and Chromium share the sandbox code, so the profile is expected to work for both. If Chrome does not start, the worker logs a `chrome_launch_failed` event (the error's type only) to `docker logs darkroom-browser` and falls back to Chromium; look for that line when sign-in is still refused, since Chromium is the browser Google refuses. A profile that Chrome has opened may not open cleanly in a later Chromium fallback; if the fallback misbehaves, use a fresh profile.
+
+`BROWSER_CHANNEL` (default `chrome`) chooses the browser: `chromium` (or empty) uses the bundled Chromium. When Chrome is not in the image (aarch64, or the build skipped it) or fails to launch, the worker falls back to the bundled Chromium instead of failing the job.
+
+This is not a guarantee. Google changes how it detects browsers, and it may still refuse the sign-in. If it does: try again (a second attempt often passes), try from a fresh profile (stop the worker, remove `_browser/<account id>/profile/` on the host, press Connect again), and if it still refuses, use the manual fallback: download the Takeout parts yourself and put them in `_inbox/<slug>/manual/` (see "Hand-dropping an export" in the [runbook](../runbook.md)).
+
+Chrome makes the amd64 image larger (a few hundred MB; not measured here, so check the image size after the first build) and Trivy's scan of the image sees its packages. Playwright's installer downloads Chrome stable from Google at build time, so Chrome is not pinned to a version, it is whatever stable is on the day the image is built, and a rebuild brings security fixes.
+
 ## Configuration
 
 | Variable | Service | Meaning |
@@ -14,12 +24,15 @@ The `darkroom-browser` container is a stateless executor: `darkroom` owns the jo
 | `DARKROOM_URL` | browser | Where the worker reaches `darkroom`: `http://darkroom:8000` on the compose network. |
 | `PHOTOS_ROOT` | browser | `/photos` inside the container: `_inbox/` and `_browser/` are mounted there read-write. |
 | `POLL_SECONDS` | browser | How often an idle worker asks for a job (15). |
+| `BROWSER_CHANNEL` | browser | `chrome` (default): Google Chrome when the image has it; `chromium`: always the bundled Chromium. |
 | `DISPLAY` | browser | The Xvfb display (`:99`). |
 | `VNC_URL` | darkroom | The address a person opens to see the browser (the Traefik route below). It goes into the "Google sign-in needed" alert. |
 
 ## Chromium sandbox: seccomp instead of `--no-sandbox`
 
 Chromium's own sandbox needs user namespaces (`clone`/`unshare` with `CLONE_NEWUSER`), which Docker's default seccomp profile only allows to a process with `CAP_SYS_ADMIN`. Rather than start Chromium with `--no-sandbox`, the compose service applies `deploy/browser/seccomp.json`: an allowlist profile that permits the syscalls Chromium and Python need, including namespace creation, and denies everything else with `EPERM`. Keep `cap_drop: [ALL]`; the sandbox does not need any capability once namespaces are allowed. `shm_size: 1g` is set because Chromium uses `/dev/shm` for its renderers and the Docker default of 64 MB makes tabs crash.
+
+With the sandbox on, Chrome and Chromium both fail to start when the host blocks unprivileged user namespaces; with Chrome that shows up as a `chrome_launch_failed` event in `docker logs darkroom-browser` before the worker falls back to Chromium (which then fails the same way).
 
 If Chromium still fails to start on Unraid, check `docker logs darkroom-browser` for `clone` or `unshare` errors and compare the kernel's `kernel.unprivileged_userns_clone` (Debian-derived) or `user.max_user_namespaces` (must be above 0).
 

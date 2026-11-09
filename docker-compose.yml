@@ -65,6 +65,7 @@ services:
       DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
       PHOTOS_ROOT: /photos
       POLL_SECONDS: ${POLL_SECONDS:-15}
+      BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}
       DISPLAY: ":99"
       TZ: ${TZ:-UTC}
     shm_size: 1g

@@ -123,7 +123,7 @@ id = "worker-http-through-client"
 name = "In the browser worker only client.py talks to darkroom"
 type = "forbidden"
 source_modules = ["darkroom_browser.__main__", "darkroom_browser.capture", "darkroom_browser.config", "darkroom_browser.context", "darkroom_browser.jobs",
-                  "darkroom_browser.live", "darkroom_browser.monitoring", "darkroom_browser.pages", "darkroom_browser.runner", "darkroom_browser.scrub",
+                  "darkroom_browser.launch", "darkroom_browser.live", "darkroom_browser.monitoring", "darkroom_browser.pages", "darkroom_browser.runner", "darkroom_browser.scrub",
                   "darkroom_browser.selectors"]
 forbidden_modules = ["urllib", "http", "socket", "ssl"]
 ignore_imports = [

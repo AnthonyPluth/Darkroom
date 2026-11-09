@@ -36,6 +36,15 @@ class BrowserImageTests(unittest.TestCase):
         self.assertGreaterEqual((major, minor), (int(extra.group(1)), int(extra.group(2))))
         self.assertLess(major, int(extra.group(3)))
 
+    def test_google_chrome_is_installed_as_root_on_amd64_only(self):
+        install = re.search(r"^RUN .*playwright install --with-deps chrome.*$", DOCKERFILE, re.M)
+        self.assertIsNotNone(install, "the image installs Google Chrome with the pinned Playwright's own installer")
+        self.assertIn('dpkg --print-architecture)" = "amd64"', DOCKERFILE, "Chrome for Linux is amd64 only")
+        self.assertLess(DOCKERFILE.index("--require-hashes"), install.start(), "the pinned playwright package provides the installer")
+        self.assertLess(install.start(), DOCKERFILE.index("USER darkroom-browser"), "Chrome is installed as root")
+        self.assertNotIn("--no-sandbox", DOCKERFILE)
+        self.assertNotRegex(DOCKERFILE, r"curl[^\n]*\|\s*(ba)?sh")
+
     def test_the_image_stays_non_root(self):
         self.assertIn("USER darkroom-browser", DOCKERFILE)
         self.assertLess(DOCKERFILE.index("--require-hashes"), DOCKERFILE.index("USER darkroom-browser"), "packages are installed before dropping root")

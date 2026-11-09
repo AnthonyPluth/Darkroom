@@ -41,6 +41,8 @@ Alert "Google sign-in needed" (or "Wrong Google account"). The worker never type
 2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page (a page the worker does not recognise for more than 5 minutes fails the job).
 3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes.
 
+The worker starts Google Chrome without Playwright's automation flag (see [deploy/browser.md](deploy/browser.md)), which is meant to stop Google answering "This browser or app may not be secure". It may still do so, because Google changes its detection. Try signing in again, or from a fresh profile (stop the worker, remove `_browser/<account id>/profile/` on the host, press Connect again). If Google keeps refusing, skip the worker: download the Takeout parts yourself and hand-drop them in `_inbox/<slug>/manual/` (see "Hand-dropping an export").
+
 A job waits 48 hours for the sign-in and then fails ("Darkroom needs a look" names it). Signing in afterwards does not resume it, and Darkroom does not start it again: Connect only queues a separate connect job. The account also stays marked as needing sign-in, so "Check exports now" and the daily check skip it until a connect succeeds. To recover:
 
 1. Press Connect on the Exports page, sign in as above, and wait for the connect job to finish.
