@@ -143,6 +143,28 @@ Each iPhone backs up and clears its photos with Immich's own iOS app; Darkroom d
 
 `DARKROOM_BROWSER_TOKEN` is a shared secret of at least 32 printable ASCII characters. Make a new one with `openssl rand -hex 32`, put it in `.env`, and recreate both containers with `docker compose up -d --force-recreate darkroom darkroom-browser` (`docker compose restart` keeps the old environment). Until both run with the new value the worker gets 401 and does no jobs; queued jobs wait.
 
+### "Darkroom could not create the person's folders"
+
+Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<person>` and `_inbox/<person>/manual` on the photo share, and the reply says which kind of failure it was after the colon. The server log has a line `person folders could not be created` with the `errno` name and the `folder` relative to the share (for example `_inbox/jo`); it never holds the full path or the person's name. Nothing is left behind: the folders this call made are removed, and the person is not saved.
+
+| Reply says | `errno` | Cause |
+| --- | --- | --- |
+| permission denied | `EACCES`, `EPERM` | The share (or `_inbox`, `_browser`) is not owned by uid 10001 and gid 10010, or `docker compose` created `_inbox` or `_browser` as root. |
+| read-only | `EROFS` | The share is mounted read-only. |
+| out of space | `ENOSPC`, `EDQUOT` | The disk or quota is full. |
+| missing | `ENOENT` | The share is not mounted, or `PHOTOS_ROOT` points at a folder that does not exist. |
+| see the server log | anything else | Read the `errno` in the log line. |
+
+`docker compose` creates a missing bind-mount source such as `_inbox` as root, so create these folders yourself before the first `docker compose up`. To fix the ownership on the host:
+
+```
+mkdir -p "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
+chown 10001:10010 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
+chmod 2770 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
+```
+
+Then add the person again. Shared-group details are in `docs/deploy/browser.md`.
+
 ## Immich reconcile
 
 The `immich.reconcile` job (every 15 minutes, or `python run.py reconcile-immich [--person SLUG]`) reads each person's phone uploads from Immich with that person's own API key (`POST /api/search/metadata` on `updatedAt`, the cursor being an SQL offset, so a window is re-read with a 5 minute overlap and every step is idempotent) and runs only after that person's Takeout and, when a legacy folder is set, their legacy import. A phone upload is an asset with the `mobile-app` metadata key, no library, owned by the person's Immich user; a Live Photo's hidden video is stored with its still, and a video or still whose other half has not arrived waits and is retried. Each new original is downloaded once, checked against Immich's base64 SHA-1 and written once to `<person>/originals/immich/` (the file is finished under a temporary name and linked into place, so a failed download leaves nothing), then queued for every Pixel that serves the person with `always_send`, even if a Takeout already matches. A photo whose SHA-1 is already in the person's originals is not written again. Darkroom only reads Immich through its API and never changes anything there or on a phone. Known gap: a Takeout copy already in `google-only/` stays next to the new original until #234 resolves such duplicates. A failing run is recorded as `immich_reconcile_failed` and opens one alert until a run succeeds; `immich_reconciled` events and the log line count what was listed, stored, ignored, waiting and failed.
