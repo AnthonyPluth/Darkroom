@@ -268,6 +268,29 @@ class FolderFailureTests(ApiCase):
                 self.assertNotIn(deeper, json.dumps(line))
             self.assertFalse((self.photos / "cpn1").exists())
 
+    def test_a_failed_rollback_leaves_the_folder_and_a_retry_is_refused_as_in_use(self):
+        real = Path.mkdir
+
+        def failing(path, *args, **kwargs):
+            if path.name == "manual":
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real(path, *args, **kwargs)
+
+        def stuck(path):
+            raise OSError(errno.EROFS, "read-only", str(path))
+
+        err = io.StringIO()
+        with mock.patch.object(Path, "mkdir", failing), mock.patch.object(Path, "rmdir", stuck), contextlib.redirect_stderr(err):
+            status, reply = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
+        self.assertEqual(status, 500)
+        self.assertTrue(reply["error"].startswith("Darkroom could not create the person's folders: Darkroom cannot write to its photo share (permission denied)"))
+        self.assertEqual(self.folder_line(err.getvalue())["errno"], "EACCES")
+        self.assertTrue((self.photos / "cpn1").is_dir())
+        self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+        status, reply = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
+        self.assertEqual(status, 409)
+        self.assertIn("already in use on disk", reply["error"])
+
     def test_an_error_without_a_path_logs_an_unknown_folder(self):
         with mock.patch("darkroom.domain.people.Photos.ensure_person_tree", side_effect=OSError(errno.EACCES, "denied")):
             err = io.StringIO()

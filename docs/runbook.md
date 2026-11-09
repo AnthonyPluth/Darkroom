@@ -145,7 +145,7 @@ Each iPhone backs up and clears its photos with Immich's own iOS app; Darkroom d
 
 ### "Darkroom could not create the person's folders"
 
-Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<person>` and `_inbox/<person>/manual` on the photo share, and the reply says which kind of failure it was after the colon. The server log has a line `person folders could not be created` with the `errno` name and the `folder` relative to the share (for example `_inbox/jo`); it never holds the full path or the person's name. Nothing is left behind: the folders this call made are removed, and the person is not saved.
+Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<person>` and `_inbox/<person>/manual` on the photo share, and the reply says which kind of failure it was after the colon. The server log has a line `person folders could not be created` with the `errno` name and the `folder` relative to the share (for example `_inbox/jo`); it never holds the full path or the person's name. The person is not saved, and the folders this call made are removed again. If the share itself failed part-way (it went read-only or disappeared, so the removal failed too), a folder can be left behind, most likely `<photos>/<slug>/` or `<photos>/_inbox/<slug>/`. Darkroom never reuses an existing folder name and answers 409 on a retry, so check that these hold no photos, remove them by hand, and then add the person again.
 
 | Reply says | `errno` | Cause |
 | --- | --- | --- |
