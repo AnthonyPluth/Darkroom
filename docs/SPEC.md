@@ -1,8 +1,12 @@
 # Darkroom — Spec
 
-Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31). This file is the repo copy for agents, revised for the Immich-first design (#199).
+Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31), the Immich-first decisions (#199), and the storage-ownership decision in #259. This file distinguishes the new target from the existing implementation; #259 is a design change, not a completed migration.
 
 ## Overview
+
+**Owner decision, 2026-11-09 (#259): Immich owns and organises the library; Darkroom only coordinates it.** The target has no second permanent photo library in `originals/` or `google-only/`. Takeout extras reach Immich-managed storage through its API. The proposed upload, verification, retention, Pixel and migration rules are in [Immich-managed storage](design/immich-managed-storage.md), pending owner sign-off and live upload verification.
+
+**Current implementation, retained until cutover:** the paragraph and detailed implementation sections below describe the file-based system that is still in the code. Their permanent-copy, external-library and losing-copy-deletion rules are superseded as a target by #259, but must not be removed from the runtime before the new safety checks and migration are approved.
 
 Darkroom (working name) keeps one complete, deduplicated photo library per family member in Immich. Each person's iPhone backs up to Immich with Immich's own iOS app and clears its backed-up photos with Immich's own "clear backed-up photos" feature; Darkroom ships no iPhone app. Darkroom reads each new asset from Immich and writes a copy once into the person's `originals/` on Unraid. Google Takeout exports fill the gaps, and a browser worker automates Takeout, so the only manual work is an occasional Google sign-in. A transient per-Pixel folder, synced by Syncthing, carries new photos to each person's Pixel, which uploads them to Google Photos; Darkroom deletes a photo's copy from that folder once a Takeout match proves Google has it, and Syncthing carries the deletion to the Pixel.
 
@@ -37,7 +41,40 @@ New photos already pass through the home network on their way to Google, so the 
 
 Darkroom changes the chain this way: Immich's iOS app replaces Möbius Sync as what takes photos off the iPhone, Darkroom copies them from Immich into the person's `originals/` and into a transient folder per Pixel, and Unraid syncs that folder to the Pixel with Syncthing. The Pixels and Google Photos stay as they are. Darkroom isn't deployed yet, so everyone switches at once, with no pilot phase.
 
+## Immich-managed storage target (#259)
+
+The ownership decision is accepted; the detailed design and implementation are not yet approved or deployed. Approval is recorded on [issue #259](https://github.com/AnthonyPluth/Darkroom/issues/259) before any implementation issues are opened. The [design](design/immich-managed-storage.md) is the complete proposal and evidence record.
+
+| Area | Target and current gate |
+| --- | --- |
+| Library | Immich-managed assets, one owner per person. No new external-library destination and no direct Darkroom access to Immich's media storage |
+| Takeout import | Pair and dedupe in `_inbox/`, upload original bytes plus missing-field XMP through the person's key, then verify owner, checksum, unedited read-back, metadata and required compound resources before committing a receipt |
+| Disk retention | Proposed 14 days after verified whole-export completion, followed by guarded inbox cleanup and a fresh custody check. Unresolved imports/reviews remain pinned with alerts; no age-only deletion. `_pixels/` remains bounded transient transport, `_browser/` remains service state, and there is no new permanent media cache |
+| Matching and quality | Match owner-scoped Immich asset IDs/checksums and cached fingerprints. Retain automatic tier 1/2 proof and the preference for the higher-quality photo. Proposed first version never deletes/replaces an Immich asset: distinct-byte quality conflicts need owner resolution rather than silently inheriting #234's local unlink authority |
+| Pixels | Fetch and verify the Immich original for placement or requeue. Preserve the cap, per-destination proof and late-phone rules; retain source origins so a Takeout upload does not loop back into its own Google account |
+| Credentials | Per-person encrypted API keys, owner-bound and scoped for reads/downloads/uploads. No admin-key upload fallback or asset-delete grant; existing-asset metadata updates require a separately verified and approved path |
+| Migration | Expand the catalogue/receipts first; freeze old writers/deletion jobs, backfill and verify existing files and dependent rows, then cut over. Retain historical `duplicate_removals` and Pixel state. Old photo folders are owner-managed archives, never automatically deleted by migration |
+
+```mermaid
+flowchart LR
+  takeout[Google Takeout] --> inbox[Temporary inbox]
+  inbox --> darkroom[Darkroom: match and verify]
+  darkroom -->|owner-scoped API upload| immich[Immich-managed library]
+  immich -->|catalogue and verified original reads| darkroom
+  darkroom --> pixels[Transient Pixel folders]
+  pixels --> google[Google Photos]
+  google --> takeout
+```
+
+The upload spike is incomplete on a live server. Pinned v3.3.6 API/source inspection establishes endpoint/schema expectations, not successful deployment behaviour. The previous [#202 spike](design/immich-reconcile.md) observed reads and a checksum match, not an upload. Duplicate responses do not prove a new sidecar was applied; metadata preservation, compound uploads, ownership separation, proxy limits and crash recovery must pass the live gates in the design before enabling the new workflow.
+
+Proposed replacements for promises 1 and 2 prohibit rewriting/replacing existing Immich originals and prohibit Darkroom trash/delete/purge calls. Cleanup may remove only authorised transient inbox/Pixel copies. These rules require provider allowlists, negative filesystem/API tests, privacy checks and a stronger-model safety review before implementation. The existing `AGENTS.md`/`SECURITY.md` rules remain enforced in current code; this spec does not grant new deletion authority.
+
+Until implementation is complete, keep `PHOTOS_ROOT` on a dedicated Darkroom share, never Immich's storage. Immich's database/media backup and restore procedure becomes essential: a verified API receipt is not a backup, and the target no longer has `originals/` as an independent durable copy. The iPhone policy is unchanged.
+
 ## Architecture
+
+**Current implementation:** this diagram and the permanent-copy flow below describe the pre-#259 runtime. The approved ownership target is above; its detailed design remains pending sign-off.
 
 Two sources feed one deduplicated library per person, and Waypoint reads it through Immich.
 
@@ -93,6 +130,8 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 ## Ingest pipeline
 
+**Current implementation:** `originals/`, `google-only/` placement and external-library rescans below remain live until migration. The #259 target replaces them with API uploads, owner-scoped receipts and verified temporary retention; see [the import protocol](design/immich-managed-storage.md#3-import-and-verification-protocol).
+
 Every photo, from either source, ends up in one per-person index with a hash, a fingerprint, a capture time and a location. Nothing is deleted until a whole export has been processed.
 
 **Immich assets (continuous)**
@@ -119,6 +158,8 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 
 ## Legacy library import (#217)
 
+**Current implementation:** #259 keeps legacy input read-only but proposes importing missing resources into Immich rather than making new permanent `originals/legacy/` copies. Existing records, sources and Pixel obligations need the explicit migration in the design.
+
 Each person may have a folder of photos from the old Google Photos sync. It is imported once, per person, after that person's Takeout import, and never changes.
 
 - **Source:** `python run.py import-legacy --person SLUG --dir /path` sets the person's legacy folder (an absolute path that overlaps neither the photo folder nor another person's legacy folder) and imports it. Darkroom only reads it: no write, rename or delete, and the Semgrep rule `darkroom-originals-read-only` covers it. It should also be mounted read-only into the container; that is deployment configuration, not added yet. Links and hidden files are skipped.
@@ -129,6 +170,8 @@ Each person may have a folder of photos from the old Google Photos sync. It is i
 - **Re-runs:** a file already recorded is not read again, so a second run changes nothing; a new, failed or changed (size or time) file is handled again, and an earlier copy in `originals/legacy/` stays. A matched file is checked every run: when the match that proved it is reversed, it becomes unmatched, is copied and offered to the Pixel queue (owner decision 3). A file that stops being media loses its record. The queued count comes from the Pixel copies that exist for Pixels that serve the person now.
 
 ## Dedupe rules
+
+**Current implementation:** these tiers remain relevant, but the local-path placement/deletion consequences below are not the #259 target. The [quality proposal](design/immich-managed-storage.md#5-matching-and-the-higher-quality-rule) distinguishes exact-byte receipts, accepted policy matches and owner-resolved Immich duplicates. It does not authorise deleting an Immich asset.
 
 The original from Immich always wins. A Takeout copy only adds a file when nothing matches, plus any metadata the original lacks. Immich won't do this for us: external libraries deliberately allow identical files in different locations.
 
@@ -150,6 +193,8 @@ Matching runs against everyone the export's Google account serves, in this order
 - Tier 2 needs exactly one candidate both ways: when another item of the same export also qualifies for the same Immich item, both go to review. An edited copy (`-edited`) is never matched at tier 2, since it would prove only that Google has the edit; byte-identical copies still match at tier 1.
 
 ## Storage, Syncthing and Immich
+
+**Current implementation:** this folder tree and external-library configuration remain in use until the [#259 migration](design/immich-managed-storage.md#9-migration-and-rollback-sequence). The target has no active permanent `originals/` or `google-only/` tree, no rescan destination for new imports and no direct Immich storage mount in Darkroom.
 
 Each person gets one folder tree on Unraid, and the originals in it are written once (never modified or moved; the only one ever deleted is an Immich original that loses to a better Takeout copy, below). Darkroom is the only thing that writes to these folders. Immich's own upload storage is separate from them (assumed, #202).
 
@@ -227,6 +272,8 @@ The web UI is dark mode only: one theme, with no light theme and no theme switch
 
 ## Data model
 
+**Current implementation:** these are the existing records. #259 proposes additive asset/resource and receipt references before removing local-path dependencies; it preserves decision, `duplicate_removals` and `pixel_copies` history. No schema or historical migration changes in the design task.
+
 A single database is enough: SQLite by default, in the data folder, or PostgreSQL when `DATABASE_URL` says so ([docs/deploy/postgres.md](deploy/postgres.md)). Photos never enter it, only their index and the decisions made about them.
 
 | Entity | Key fields |
@@ -246,6 +293,8 @@ A single database is enough: SQLite by default, in the data folder, or PostgreSQ
 The `Device` records (iPhone name, sign-in token, last check-in) and the push tokens went with the iPhone app (#201, migration 0025).
 
 ## Deployment and stack
+
+**Current implementation:** the access table and admin/rescan key below describe today's service. Under #259, Immich owns its own storage exclusively; Darkroom retains only its service state and transient working/Pixel folders and uses per-person API keys. Container mounts and obsolete settings change only in approved implementation follow-ups.
 
 Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, AnthonyPluth/Runway), so the same tooling, CI and Claude setup carry over. Two containers on Unraid, from one repo.
 
@@ -273,6 +322,8 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 ## Risks and mitigations
 
+The table below describes the current copy-based safeguards. The #259 target removes the independent `originals/` copy and requires verified API receipts plus Immich database/media backup and a rehearsed restore. It cannot reuse the current local-copy mitigation as a backup claim. [The design](design/immich-managed-storage.md#6-replacement-safety-promises-and-checks) lists the new failure and deletion checks.
+
 Darkroom no longer deletes anything from the iPhones, so the one step that can lose a photo is Immich's own clearing, which Darkroom can't gate. The browser automation is the most fragile part, so everything downstream of the inbox works without it: a hand-downloaded export runs through the same pipeline.
 
 | Risk | Mitigation |
@@ -292,6 +343,8 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 | No alert channel is set up, so a sign-in prompt goes unseen | Alerts are emailed to the owner through Resend when it is set up (docs/deploy/alerts-email.md); otherwise they show on the status page only |
 
 ## Phases
+
+These phases record the #199 implementation, including the existing local losing-copy behaviour. The future storage change follows [#259's separate bounded PR sequence](design/immich-managed-storage.md#9-migration-and-rollback-sequence), only after owner sign-off and the live API gates. No implementation issues are opened by this design change.
 
 Build ingest before the browser worker: a hand-downloaded export gives real data to build against, and the backfill lands sooner. Everyone switches to Immich's app at once, since Darkroom isn't deployed yet.
 
@@ -317,6 +370,7 @@ The kept copy must be present, a regular file in the same person's library and h
 
 ## Open questions
 
+- [ ] Owner sign-off on #259's quality/deletion boundary, retention, Pixel routing and migration/rollback proposal, followed by its live upload/metadata gates. See [approval and remaining gates](design/immich-managed-storage.md#10-approval-and-remaining-gates).
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
 - [x] Which alert channel replaces the app's push? Email through Resend to one owner address ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3; docs/DECISIONS.md).
@@ -336,6 +390,7 @@ The kept copy must be present, a regular file in the same person's library and h
 - [Android Authority: Incremental Takeout for Google Photos](https://androidauthority.com/google-photos-incremental-takeout-3673297/)
 - [9to5Google: Google Photos scheduled export](https://9to5google.com/2026/06/01/google-photos-schedule-export/)
 - [Design: ingest from Immich's own app (#199)](https://github.com/AnthonyPluth/Darkroom/issues/199)
+- [Design: Immich owns the library (#259)](design/immich-managed-storage.md)
 - [Immich docs: external libraries](https://immich.app/docs/features/libraries)
 - [Immich docs (v1.119): library owner and external asset metadata](https://v1.119.1.archive.immich.app/docs/features/libraries)
 - [Immich docs (v1.120): multiple import paths and exclusion patterns](https://v1.120.0.archive.immich.app/docs/features/libraries)
