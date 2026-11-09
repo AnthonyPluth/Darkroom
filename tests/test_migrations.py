@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.schema import metadata
+from tests.managed_pixel_fixtures import seed_pixel_source_parents
 from tests.shared import on_postgres, own_database_url
 
 
@@ -178,6 +179,39 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             for table, rows in before.items():
                 self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+        db.migrate(self.engine)
+
+    def test_0028_managed_pixel_sources_preserves_queue_and_catalogue_and_downgrades_empty_references(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0027")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'owner-a', 1, ' { } ', -0.125)")
+            connection.execute(text("INSERT INTO managed_import_receipts (intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, updated_at) "
+                                    "VALUES (1, 'generated-resource', 'generated-group', :sha1, :bytes, ' { } ', 1.125)"), {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4 + 17})
+            connection.execute(text("INSERT INTO managed_asset_origins (version_id, person_id, owner_id, asset_id, sha1, kind, source_key, evidence_snapshot, recorded_at) "
+                                    "VALUES (1, 1, 'owner-a', 'asset-a', :sha1, 'phone', 'generated-mobile', ' { } ', -0.125)"), {"sha1": "a" * 40})
+            tables = ("people", "google_accounts", "pixels", "media_items", "pixel_copies", "exports", "managed_import_intents",
+                      "managed_import_receipts", "managed_asset_versions", "managed_asset_origins")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all() for table in tables}
+            indexed = ("media_items", "pixel_copies", "managed_asset_versions")
+            before_indexes = {table: inspect(connection).get_indexes(table) for table in indexed}
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0027")
+        self.assertNotIn("managed_pixel_sources", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            for table in indexed:
+                self.assertEqual(inspect(connection).get_indexes(table), before_indexes[table])
         db.migrate(self.engine)
 
     def test_migrating_twice_changes_nothing(self):
