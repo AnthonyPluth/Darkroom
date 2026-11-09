@@ -58,7 +58,7 @@ def classify(page: str) -> str:
 
 
 CONFIRMATION_PHRASES = ("export created", "we've started creating a copy", "your export has been scheduled", "export scheduled", "google is creating a copy of data from google photos")
-RECURRING = re.compile(r"(?:every (?:1 |one )?month|monthly) for (?:1 year|a year|12 months)|you have \d+ more scheduled exports")
+RECURRING = re.compile(r"(?:every (?:1 |one )?month|monthly) for (?:1 year|a year|12 months)")
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,12 @@ def parse_schedule_confirmation(page: str) -> ScheduleConfirmation | None:
     if not any(phrase in text for phrase in CONFIRMATION_PHRASES):
         return None
     recurring = RECURRING.search(text)
-    return ScheduleConfirmation(recurring.group(0)) if recurring is not None else None
+    if recurring is not None:
+        return ScheduleConfirmation(recurring.group(0))
+    existing = parse_existing_schedule(page)
+    if existing is not None and existing.is_monthly:
+        return ScheduleConfirmation(f"{existing.total} scheduled exports")
+    return None
 
 
 SCHEDULE_BANNER = "more scheduled exports"
@@ -86,8 +91,8 @@ class ExistingSchedule:
     next_start: datetime
 
     @property
-    def interval_months(self) -> int:
-        return MONTHS_IN_SCHEDULE // self.total
+    def is_monthly(self) -> bool:
+        return self.total == MONTHS_IN_SCHEDULE
 
 
 def has_schedule_banner(page: str) -> bool:

@@ -50,7 +50,7 @@ def shift_months(moment: datetime, months: int) -> datetime:
 
 def adopt(ctx: JobContext, existing: takeout.ExistingSchedule) -> dict[str, object]:
     ctx.progress("Takeout already has a schedule; recording it")
-    first = shift_months(existing.next_start, -(existing.next_number - 1) * existing.interval_months)
+    first = shift_months(existing.next_start, 1 - existing.next_number)
     return {"schedule_created": first.timestamp(), "schedule_end": one_year_after(first.timestamp())}
 
 
@@ -87,6 +87,8 @@ def create_schedule(ctx: JobContext, adopt_existing: bool = True) -> dict[str, o
         page = browser.content()
         existing = takeout.parse_existing_schedule(page)
         if existing is not None:
+            if not existing.is_monthly:
+                raise ScheduleNotConfirmed("Takeout's schedule is not monthly; change it in Takeout before Darkroom records it")
             return adopt(ctx, existing)
         if takeout.has_schedule_banner(page):
             raise ScheduleNotConfirmed("Takeout shows scheduled exports that Darkroom could not read; check Takeout before trying again")

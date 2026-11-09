@@ -195,10 +195,11 @@ class ExistingScheduleTests(unittest.TestCase):
         self.assertEqual(browser.waited, [])
         self.assertEqual(len(reporter.kinds("progress")), 1)
 
-    def test_an_existing_every_two_months_schedule_ends_a_year_after_its_first_export(self):
+    def test_an_existing_every_two_months_schedule_is_refused_and_nothing_is_created(self):
         browser = ScriptedBrowser([banner_page(BIMONTHLY_BANNER)])
         ctx, _, _ = context_for(browser, wall=CREATED)
-        self.assertEqual(schedule.create_schedule(ctx), {"schedule_created": FIRST, "schedule_end": LAST})
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
+            schedule.create_schedule(ctx)
         self.assertEqual(browser.clicks, [])
 
     def test_a_schedule_banner_that_cannot_be_read_creates_nothing(self):
