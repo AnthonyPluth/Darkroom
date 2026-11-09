@@ -10,7 +10,7 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - Secrets (API keys, tokens, `DARKROOM_SECRET_KEY`) are never committed, logged, returned in a reply or put in an error message. `.env.example` lists the configuration; real values stay in `.env`.
 - Darkroom holds no device (iPhone) or push tokens any more: device sign-in, the `device` auth kind, push registration and revocation were removed (#201), and migration 0025 dropped the `devices` table with every token stored in it.
 - Every route declares who may call it (`session`, `worker` or `public`), and an unlisted kind answers 401. A new route needs a test.
-- Darkroom holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201). Alerts reach a phone only through ntfy, when it is set up (`docs/deploy/ntfy.md`).
+- Darkroom holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201). Alerts go out only as email to the one owner address through Resend, when it is set up (`docs/deploy/alerts-email.md`).
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner).
 
 ## Reporting a problem

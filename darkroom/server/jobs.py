@@ -13,7 +13,7 @@ from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
 from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, renewal
 from darkroom.domain.ingest import cleanup, run
-from darkroom.providers import immich, ntfy
+from darkroom.providers import immich, resend
 from darkroom.providers.push_note import Pusher
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -130,9 +130,11 @@ def push_alerts(settings: Settings, engine: Engine, pusher: Pusher | None, at: f
 def pusher_of(settings: Settings) -> Pusher | None:
     if settings.demo:
         return None
-    found = ntfy.of(settings)
-    if found is None and config.ntfy_configured(settings):
-        monitoring.log("ntfy is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.ntfy_problems(settings) + ntfy.problems(settings)))
+    if config.ignored_alert_variables():
+        monitoring.log("NTFY_* is set and ignored; alerts are emailed, so set RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO", level="warning")
+    found = resend.of(settings)
+    if found is None and config.resend_configured(settings):
+        monitoring.log("Resend is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.resend_problems(settings) + resend.problems(settings)))
     return found
 
 

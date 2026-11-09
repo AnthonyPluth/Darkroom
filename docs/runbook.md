@@ -127,9 +127,9 @@ The alert says how many of a person's originals still have no match in Google a 
 
 If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library, and nothing is lost: the permanent copy is in the person's `originals/`.
 
-### Alerts have no delivery channel yet
+### Where alerts arrive
 
-The alert channel is not decided (#199, question 3). Until it is, every alert in this runbook is recorded as an event and shown on the status page, and nothing is sent to a phone or an inbox. Look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end.
+Every alert in this runbook is recorded as an event and shown on the status page. When Resend is set up ([docs/deploy/alerts-email.md](deploy/alerts-email.md)) each one is also emailed to the owner's address, with only its title and a link back to Darkroom; without it, nothing is sent and the status page is the only place. Either way, look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end. `python run.py check-config` says which of the two is in force.
 
 ### Pixel folders are pruned after a Takeout match
 

@@ -7,12 +7,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
-from darkroom.providers import exiftool, immich, ntfy
+from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import utc_now
 from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
@@ -33,9 +32,11 @@ def check_config() -> int:
     except (exiftool.Missing, OSError) as error:
         found.append(str(error))
     found += oidc.recheck_problems(settings, utc_now().timestamp())
-    found += ntfy.problems(settings)
+    found += resend.problems(settings)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
+    if config.ignored_alert_variables():
+        print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
     print(alert_channel(settings))
     if not found:
         print("Configuration looks complete.")
@@ -43,12 +44,11 @@ def check_config() -> int:
 
 
 def alert_channel(settings: config.Settings) -> str:
-    if not config.ntfy_configured(settings):
-        return "Alerts: shown on the Status page only (set NTFY_URL and NTFY_TOPIC to push them to a phone)."
-    if ntfy.of(settings) is None:
-        return "Alerts: shown on the Status page only, because the ntfy settings above need fixing."
-    token = "with an access token" if settings.ntfy_token else "without an access token"
-    return f"Alerts: pushed through the ntfy server at {urlsplit(settings.ntfy_url).hostname}, {token}."
+    if not config.resend_configured(settings):
+        return "Alerts: shown on the Status page only (set RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO to email them to the owner)."
+    if resend.of(settings) is None:
+        return "Alerts: shown on the Status page only, because the Resend settings above need fixing."
+    return "Alerts: emailed to the owner through Resend, from the sender address you set."
 
 
 def seal_secret() -> int:

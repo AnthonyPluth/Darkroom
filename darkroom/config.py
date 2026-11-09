@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -45,9 +46,9 @@ class Settings:
     vnc_url: str
     timezone: str
     pixel_folder_cap_gb: int = 50
-    ntfy_url: str = ""
-    ntfy_topic: str = ""
-    ntfy_token: str = ""
+    resend_api_key: str = ""
+    alert_email_from: str = ""
+    alert_email_to: str = ""
 
 
 def load() -> Settings:
@@ -72,9 +73,9 @@ def load() -> Settings:
         vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
-        ntfy_url=env("NTFY_URL").rstrip("/"),
-        ntfy_topic=env("NTFY_TOPIC"),
-        ntfy_token=env("NTFY_TOKEN"),
+        resend_api_key=env("RESEND_API_KEY"),
+        alert_email_from=env("ALERT_EMAIL_FROM"),
+        alert_email_to=env("ALERT_EMAIL_TO"),
     )
 
 
@@ -186,7 +187,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + ntfy_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings)
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
@@ -208,28 +209,32 @@ def vnc_url_problems(settings: Settings) -> list[str]:
 SEALED_PREFIX = "enc:v1:"
 
 
-def ntfy_configured(settings: Settings) -> bool:
-    return bool(settings.ntfy_url or settings.ntfy_topic or settings.ntfy_token)
+ADDRESS = re.compile(r"[^@\s<>,;\"()\[\]\\]+@[^@\s<>,;\"()\[\]\\]+\.[^@\s<>,;\"()\[\]\\]+")
 
 
-def ntfy_problems(settings: Settings) -> list[str]:
-    if not ntfy_configured(settings):
+REMOVED_ALERT_VARIABLES = ("NTFY_URL", "NTFY_TOPIC", "NTFY_TOKEN")
+IGNORED_VARIABLES_NOTE = "NTFY_URL, NTFY_TOPIC or NTFY_TOKEN is set and ignored: alerts are emailed now, so set RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO (docs/deploy/alerts-email.md) and remove the NTFY_* lines"
+
+
+def ignored_alert_variables() -> bool:
+    return any(env(name) for name in REMOVED_ALERT_VARIABLES)
+
+
+def resend_configured(settings: Settings) -> bool:
+    return bool(settings.resend_api_key or settings.alert_email_from or settings.alert_email_to)
+
+
+def resend_problems(settings: Settings) -> list[str]:
+    if not resend_configured(settings):
         return []
-    if not (settings.ntfy_url and settings.ntfy_topic):
-        return ["NTFY_URL and NTFY_TOPIC go together; set both, or neither so alerts stay on the Status page"]
+    if not (settings.resend_api_key and settings.alert_email_from and settings.alert_email_to):
+        return ["RESEND_API_KEY, ALERT_EMAIL_FROM and ALERT_EMAIL_TO go together; set all three, or none so alerts stay on the Status page"]
     found = []
-    try:
-        parts = urlsplit(settings.ntfy_url)
-        host = (parts.hostname or "") if parts.port != 0 else ""
-    except ValueError:
-        parts, host = None, ""
-    if parts is None or parts.scheme not in ("http", "https") or not host or parts.username or parts.password or parts.query or parts.fragment:
-        found.append("NTFY_URL must be the ntfy server's address, like https://ntfy.sh, without a topic, username, password or query")
-    elif parts.scheme == "http" and not local_host(host):
-        found.append("NTFY_URL must use https:// unless the ntfy server is on the LAN")
-    for name, value in (("NTFY_TOPIC", settings.ntfy_topic), ("NTFY_TOKEN", settings.ntfy_token)):
-        if value and not value.startswith(SEALED_PREFIX):
-            found.append(f"{name} must be sealed: run `python run.py seal-secret` and paste what it prints")
+    if not settings.resend_api_key.startswith(SEALED_PREFIX):
+        found.append("RESEND_API_KEY must be sealed: run `python run.py seal-secret` and paste what it prints")
+    for name, value in (("ALERT_EMAIL_FROM", settings.alert_email_from), ("ALERT_EMAIL_TO", settings.alert_email_to)):
+        if not ADDRESS.fullmatch(value):
+            found.append(f"{name} must be one email address, like alerts@example.com")
     return found
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,12 +23,19 @@ def closing(alert: Alert) -> bool:
     return alert.closed is not None and alert.kind not in alerts.ONE_SHOT_KINDS
 
 
+def key_for(settings: Settings, alert: Alert) -> str:
+    stage = f"resolved:{alert.closed!r}" if closing(alert) else "open"
+    material = f"darkroom-alert:{alert.id}:{alert.opened!r}:{alert.sent_count}:{stage}"
+    instance = hmac.new(settings.secret_key.encode(), b"darkroom-idempotency-key", hashlib.sha256).digest()
+    return hmac.new(instance, material.encode(), hashlib.sha256).hexdigest()
+
+
 def note_for(settings: Settings, alert: Alert) -> Note:
     title = alerts.TITLES.get(alert.kind, FALLBACK_TITLE)
     click = settings.public_url if settings.public_url.startswith(("https://", "http://")) else None
     if closing(alert):
-        return Note(f"Resolved: {title}", CLOSED_TEXT, "white_check_mark", click)
-    return Note(title, OPEN_TEXT, "warning", click)
+        return Note(f"Resolved: {title}", CLOSED_TEXT, click, key_for(settings, alert))
+    return Note(title, OPEN_TEXT, click, key_for(settings, alert))
 
 
 def detail_of(alert: Alert) -> str:
