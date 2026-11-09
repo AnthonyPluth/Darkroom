@@ -209,6 +209,12 @@ class ExistingScheduleTests(unittest.TestCase):
         self.assertEqual(result["schedule_created"], datetime(2026, 3, 10, 4, 0, tzinfo=UTC).timestamp())
         self.assertEqual(result["schedule_end"], datetime(2027, 3, 10, 5, 0, tzinfo=UTC).timestamp())
 
+    def test_the_last_export_of_a_schedule_is_read_from_the_singular_banner(self):
+        browser = ScriptedBrowser([banner_page("<h3>You have 1 more scheduled export</h3><p>Export 12 of 12 will start on October 9, 2027</p>")])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        self.assertEqual(schedule.create_schedule(ctx), {"schedule_created": FIRST, "schedule_end": LAST})
+        self.assertEqual(browser.clicks, [])
+
     def test_an_existing_monthly_schedule_is_recorded_without_touching_the_page(self):
         browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
         ctx, _, reporter = context_for(browser, wall=CREATED)

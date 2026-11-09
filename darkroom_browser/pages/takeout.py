@@ -79,7 +79,7 @@ def parse_schedule_confirmation(page: str) -> ScheduleConfirmation | None:
     return None
 
 
-SCHEDULE_BANNER = "more scheduled exports"
+SCHEDULE_BANNER = "more scheduled export"
 EXISTING_SCHEDULE = re.compile(r"export (\d+) of (\d+) will start on ([a-z]+ \d{1,2}, \d{4})")
 MONTHS_IN_SCHEDULE = 12
 
