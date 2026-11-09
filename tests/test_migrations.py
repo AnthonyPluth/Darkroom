@@ -148,6 +148,38 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
         db.migrate(self.engine)
 
+    def test_0027_managed_asset_catalog_preserves_a_populated_journal_and_downgrades_empty_catalogue(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0026")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', -0.125)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'jo@example.test', 1, 1.25)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'generated-owner', 1, ' { } ', -0.125)")
+            connection.execute(text("INSERT INTO managed_import_receipts (intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, updated_at) "
+                                    "VALUES (1, 'generated-resource', 'generated-group', :sha1, :bytes, ' { } ', 1.125)"), {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4 + 17})
+            tables = ("people", "google_accounts", "exports", "managed_import_intents", "managed_import_receipts")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table}").all() for table in tables}
+            before_indexes = {table: inspect(connection).get_indexes(table) for table in ("managed_import_intents", "managed_import_receipts")}
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0026")
+        self.assertNotIn("managed_asset_versions", inspect(self.engine).get_table_names())
+        self.assertNotIn("managed_asset_origins", inspect(self.engine).get_table_names())
+        for table in ("managed_import_intents", "managed_import_receipts"):
+            self.assertFalse(any(index["name"].endswith("catalog_binding") for index in inspect(self.engine).get_indexes(table)))
+            self.assertEqual(inspect(self.engine).get_indexes(table), before_indexes[table])
+        with self.engine.connect() as connection:
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+        db.migrate(self.engine)
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)
