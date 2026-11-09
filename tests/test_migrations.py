@@ -123,6 +123,31 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT added FROM import_runs").scalar(), 3)
 
+    def test_0026_managed_import_receipts_preserves_existing_records_and_downgrades_an_empty_journal(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0025")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', -0.125)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'jo@example.test', 1, 1.25)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO media_items (person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 'phone', 'jo/originals/generated.jpg', 'ab', 7, -0.125)")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table}").all() for table in ("people", "google_accounts", "exports", "media_items")}
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0025")
+        self.assertNotIn("managed_import_intents", inspect(self.engine).get_table_names())
+        self.assertNotIn("managed_import_receipts", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+        db.migrate(self.engine)
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

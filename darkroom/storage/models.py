@@ -83,6 +83,65 @@ class Export(Base):
     owner_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"))
 
 
+class ManagedImportIntent(Base):
+    __tablename__ = "managed_import_intents"
+    __table_args__ = (
+        UniqueConstraint("person_id", "owner_id", "export_id", name="uq_managed_import_intents_owner_export"),
+        CheckConstraint("schema_version = 1", name="ck_managed_import_intents_schema_version"),
+        CheckConstraint("length(owner_id) > 0", name="ck_managed_import_intents_owner"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
+    export_id: Mapped[int] = mapped_column(ForeignKey("exports.id", ondelete="RESTRICT"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    resource_manifest: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class ManagedImportReceipt(Base):
+    __tablename__ = "managed_import_receipts"
+    __table_args__ = (
+        UniqueConstraint("intent_id", "resource_key", "source_sha1", name="uq_managed_import_receipts_resource"),
+        one_of("state", ("prepared", "outcome_unknown", "returned", "bytes_verified", "metadata_verified", "committed"), "ck_managed_import_receipts_state"),
+        CheckConstraint("expected_bytes >= 0 AND (verified_bytes IS NULL OR verified_bytes >= 0)", name="ck_managed_import_receipts_bytes"),
+        CheckConstraint("length(source_sha1) = 40", name="ck_managed_import_receipts_source_sha1"),
+        CheckConstraint("length(resource_key) > 0 AND length(compound_key) > 0 AND (asset_id IS NULL OR length(asset_id) > 0)",
+                        name="ck_managed_import_receipts_identity"),
+        CheckConstraint("upload_outcome IS NULL OR upload_outcome IN ('created', 'duplicate')", name="ck_managed_import_receipts_outcome"),
+        CheckConstraint("(state IN ('prepared', 'outcome_unknown') AND asset_id IS NULL AND upload_outcome IS NULL) OR "
+                        "(state IN ('returned', 'bytes_verified', 'metadata_verified', 'committed') AND asset_id IS NOT NULL AND upload_outcome IS NOT NULL)",
+                        name="ck_managed_import_receipts_asset"),
+        CheckConstraint("(state IN ('prepared', 'outcome_unknown', 'returned') AND verified_sha1 IS NULL AND verified_bytes IS NULL AND bytes_verified_at IS NULL) OR "
+                        "(state IN ('bytes_verified', 'metadata_verified', 'committed') AND verified_sha1 IS NOT NULL AND verified_sha1 = source_sha1 "
+                        "AND verified_bytes IS NOT NULL AND verified_bytes = expected_bytes AND bytes_verified_at IS NOT NULL)",
+                        name="ck_managed_import_receipts_verified_bytes"),
+        CheckConstraint("(state IN ('prepared', 'outcome_unknown', 'returned', 'bytes_verified') AND metadata_evidence IS NULL AND metadata_verified_at IS NULL) OR "
+                        "(state IN ('metadata_verified', 'committed') AND metadata_evidence IS NOT NULL AND metadata_verified_at IS NOT NULL)",
+                        name="ck_managed_import_receipts_metadata"),
+        CheckConstraint("(state = 'committed' AND committed_at IS NOT NULL) OR (state != 'committed' AND committed_at IS NULL)",
+                        name="ck_managed_import_receipts_commit"),
+        Index("ix_managed_import_receipts_intent_state", "intent_id", "state"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[int] = mapped_column(ForeignKey("managed_import_intents.id", ondelete="RESTRICT"), nullable=False)
+    resource_key: Mapped[str] = mapped_column(String, nullable=False)
+    compound_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_sha1: Mapped[str] = mapped_column(String, nullable=False)
+    expected_bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+    expected_metadata: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="prepared", server_default="prepared")
+    asset_id: Mapped[str | None] = mapped_column(String)
+    upload_outcome: Mapped[str | None] = mapped_column(String)
+    verified_sha1: Mapped[str | None] = mapped_column(String)
+    verified_bytes: Mapped[int | None] = mapped_column(Bytes)
+    bytes_verified_at: Mapped[float | None] = mapped_column(Float)
+    metadata_evidence: Mapped[str | None] = mapped_column(Text)
+    metadata_verified_at: Mapped[float | None] = mapped_column(Float)
+    committed_at: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 class ExportPart(Base):
     __tablename__ = "export_parts"
     __table_args__ = (
