@@ -1,10 +1,12 @@
 # Darkroom — Spec
 
-Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31), the Immich-first decisions (#199), and the storage-ownership decision in #259. This file distinguishes the new target from the existing implementation; #259 is a design change, not a completed migration.
+Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31), the Immich-first decisions (#199), the storage-ownership decision in #259, and the one-container decisions in #284. This file distinguishes each new target from the existing implementation; #259 and #284 are design changes, not completed migrations.
 
 ## Overview
 
 **Owner decision, 2026-11-09 (#259): Immich owns and organises the library; Darkroom only coordinates it.** The target has no second permanent photo library in `originals/` or `google-only/`. Takeout extras reach Immich-managed storage through its API. The owner-approved upload, verification, retention, Pixel and migration rules are in [Immich-managed storage](design/immich-managed-storage.md); sign-off is recorded on #259. Implementation follow-ups may proceed, while production uploads, cleanup and migration remain gated on live validation, safety review and the applicable backup/restore evidence.
+
+**Owner decisions, 2026-11-09 (#284): one container for everything.** Darkroom is to be a one-stop shop that is dead simple to run: one container holding the app, the Takeout browser and the Pixel transport (Syncthing), coordinated by Darkroom, with no secret or internal address set by hand. Immich stays separate, as #259 says. The [single-container design](design/single-container.md) is a proposal awaiting sign-off on #284; the runtime below is still two containers and a hand-configured Syncthing.
 
 **Current implementation, retained until cutover:** the paragraph and detailed implementation sections below describe the file-based system that is still in the code. Their permanent-copy, external-library and losing-copy-deletion rules are superseded as a target by #259, but must not be removed from the runtime before the new safety checks and migration are approved.
 
@@ -72,6 +74,21 @@ Proposed replacements for promises 1 and 2 prohibit rewriting/replacing existing
 
 Until implementation is complete, keep `PHOTOS_ROOT` on a dedicated Darkroom share, never Immich's storage. Immich's database/media backup and restore procedure becomes essential: a verified API receipt is not a backup, and the target no longer has `originals/` as an independent durable copy. The iPhone policy is unchanged.
 
+## Single-container target (#284)
+
+The decisions are the owner's; the detailed [design](design/single-container.md), its open questions and its plan await sign-off on [issue #284](https://github.com/AnthonyPluth/Darkroom/issues/284), and its assumptions about Syncthing, Chromium in the image and Unraid are unverified until the spikes it lists. Nothing below is implemented.
+
+| Area | Target | Text in this spec it supersedes as a target |
+| --- | --- | --- |
+| Packaging | One image and one container: the app, the Takeout worker with Chrome, Xvfb and noVNC, and Syncthing, started and restarted by Darkroom's own init. The separate browser container stays as a fallback | "Two containers on Unraid, from one repo" and the `darkroom-browser` row under Deployment and stack; "One container" under the worker's Runtime, which meant the worker's own |
+| Pixel transport | Darkroom runs Syncthing and derives its configuration from `pixels` and `pixel_people`: one Send Only folder per Pixel at `_pixels/<pixel id>/`, the `*.xmp` ignore pattern, device IDs learned by a pairing step in the web UI, removal with the Pixel | The "Syncthing on Unraid" row under Deployment and stack; "Add `*.xmp` to Unraid's `.stignore`"; `.stignore` in phase 1 and "Syncthing as the Pixels' peer" in phase 5 as manual setup. The Pixels keep their own Syncthing app, and Send Only, the size cap, per-destination proof and pruning on the Takeout match (#199, #216) are unchanged |
+| Browser token and addresses | The worker token is generated at every start and handed to the worker inside the container; `DARKROOM_URL` and `VNC_URL` disappear, and the remote browser view is served by the app behind its own sign-in | The token, `DARKROOM_URL` and `VNC_URL` settings in `docs/deploy/browser.md`, and the separate Traefik route for the noVNC view under Runtime notes |
+| Other settings | The secret key is generated; the public address, sign-in details, Immich address and alert email are asked once in a first-run wizard; environment variables still override | Setting these by hand in `.env` as the only way |
+| Storage | One appdata folder holds the database, the key, the browser profiles and Syncthing's identity; the working folders (`_inbox/`, `_pixels/`) stay on the share | `_browser/<account>/` on the photo share |
+| Security position | The owner accepts the browser sharing the container because the deployment is local-only. The design keeps separate unix users, no Darkroom secret in the browser's environment and Chrome's sandbox, and lists what deep scan #54 must re-scan | The two-container boundary described in `docs/deploy/browser.md`, as a target |
+
+Promises 1 to 6 in `AGENTS.md` are unchanged; the design shows how each holds and names the checks that must exist first. No screen (the wizard, pairing, transport status) is built before the owner signs off its design.
+
 ## Architecture
 
 **Current implementation:** this diagram and the permanent-copy flow below describe the pre-#259 runtime. The approved ownership target is above; its detailed design remains pending sign-off.
@@ -100,7 +117,7 @@ Immich's iOS app uploads into Immich's own storage. Darkroom reads each new asse
 
 The worker drives Google Takeout in a real browser, reusing a session you sign in to by hand. It never types a Google password or 2FA code. One scheduled export per account covers both needs: its first archive is the full library (the one-time backfill), and later archives contain only new or changed items.
 
-**Runtime**
+**Runtime** (current implementation; #284's target moves these processes into the one Darkroom container, see [the design](design/single-container.md#4-the-browser-in-the-container))
 
 - One container: Chromium driven by Playwright, running headed on a virtual display (Xvfb), with noVNC for remote viewing.
 - One persistent browser profile per Google account, stored on Unraid.
@@ -210,6 +227,8 @@ Each person gets one folder tree on Unraid, and the originals in it are written 
 
 **Syncthing**
 
+**Current implementation:** Syncthing is installed and configured by hand as described here. Under #284 Darkroom runs and configures it ([the design](design/single-container.md#7-syncthing-integration)); the rules about Send Only, pruning, the cap and `*.xmp` stay the same.
+
 - Unraid shares each Pixel's transient folder with that Pixel as Send Only, so nothing on the Pixel can change Unraid's copy. The Pixel keeps its Syncthing app and settings. Pixels have limited space (about 128 GB), so the folder is not a permanent store: photos wait there until Google Photos has backed them up, then leave the synced folder.
 - Pruning is Darkroom deleting the transient per-Pixel copy: removing a photo from a synced folder removes it from the Pixel on the next sync, so Syncthing carries the deletion. This is a deletion path on Unraid that may touch only the per-Pixel folder, never `originals/` (promises 1 and 2 in AGENTS.md are restated for it), and it has its own check: Semgrep's `darkroom-pixel-prune-one-remover` and `darkroom-pixel-prune-one-caller`, and `tests/test_pixel_paths.py` (#216).
 - The signal for when Darkroom may delete is the Takeout match: the item's `confirmed_in_google` (an unreversed automatic tier 1 or 2 decision), not a fixed delay, a report from the Pixel or a manual check ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 6). Up to about two months of waiting is acceptable. Removing a photo from a device doesn't remove the Google Photos copy once it has been backed up (confirmed by the owner). The deletion never touches `originals/`, which keeps the permanent copy. Confirmation has to be per destination Pixel and Google account, not a single per-item flag, so that a match in one account doesn't empty the folder of a Pixel that backs up to another (#199, owner decision 1). Darkroom keeps one `pixel_copies` row per Pixel and photo, and prunes a copy only on an unreversed automatic tier 1 or 2 match in the Takeout of that Pixel's Google account, for the same person (#216). A photo that arrives through Immich is sent even when a match already exists (owner decision 5), so its copy is pruned only once Google has it after the copy was placed: a match from a Takeout that Google created since, or a later Takeout that contains it again.
@@ -296,6 +315,8 @@ The `Device` records (iPhone name, sign-in token, last check-in) and the push to
 
 **Current implementation:** the access table and admin/rescan key below describe today's service. Under #259, Immich owns its own storage exclusively; Darkroom retains only its service state and transient working/Pixel folders and uses per-person API keys. Container mounts and obsolete settings change only in approved implementation follow-ups.
 
+#284's target is one container that also holds the browser worker and Syncthing ([design](design/single-container.md#3-target-architecture)); the table and notes below describe what is deployed today.
+
 Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, AnthonyPluth/Runway), so the same tooling, CI and Claude setup carry over. Two containers on Unraid, from one repo.
 
 | Component | Runs | Access |
@@ -371,6 +392,7 @@ The kept copy must be present, a regular file in the same person's library and h
 ## Open questions
 
 - [ ] Owner sign-off on #259's quality/deletion boundary, retention, Pixel routing and migration/rollback proposal, followed by its live upload/metadata gates. See [approval and remaining gates](design/immich-managed-storage.md#10-approval-and-remaining-gates).
+- [ ] Owner sign-off on #284's single-container design and its open questions (order, unix users, the seccomp profile on Unraid, who may open the first-run wizard, where the generated key lives, volumes, Syncthing's network and pairing, the re-scan after #54). See [open questions](design/single-container.md#11-open-questions-for-the-owner).
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
 - [x] Which alert channel replaces the app's push? Email through Resend to one owner address ([#199](https://github.com/AnthonyPluth/Darkroom/issues/199), question 3; docs/DECISIONS.md).
@@ -391,6 +413,7 @@ The kept copy must be present, a regular file in the same person's library and h
 - [9to5Google: Google Photos scheduled export](https://9to5google.com/2026/06/01/google-photos-schedule-export/)
 - [Design: ingest from Immich's own app (#199)](https://github.com/AnthonyPluth/Darkroom/issues/199)
 - [Design: Immich owns the library (#259)](design/immich-managed-storage.md)
+- [Design: one container for everything (#284)](design/single-container.md)
 - [Immich docs: external libraries](https://immich.app/docs/features/libraries)
 - [Immich docs (v1.119): library owner and external asset metadata](https://v1.119.1.archive.immich.app/docs/features/libraries)
 - [Immich docs (v1.120): multiple import paths and exclusion patterns](https://v1.120.0.archive.immich.app/docs/features/libraries)
