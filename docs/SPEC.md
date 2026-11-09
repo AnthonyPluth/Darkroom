@@ -4,7 +4,7 @@ Source of truth: the "Photo Coordinator Service — Spec" doc (as of 2026-10-31)
 
 ## Overview
 
-**Owner decision, 2026-11-09 (#259): Immich owns and organises the library; Darkroom only coordinates it.** The target has no second permanent photo library in `originals/` or `google-only/`. Takeout extras reach Immich-managed storage through its API. The proposed upload, verification, retention, Pixel and migration rules are in [Immich-managed storage](design/immich-managed-storage.md), pending owner sign-off and live upload verification.
+**Owner decision, 2026-11-09 (#259): Immich owns and organises the library; Darkroom only coordinates it.** The target has no second permanent photo library in `originals/` or `google-only/`. Takeout extras reach Immich-managed storage through its API. The owner-approved upload, verification, retention, Pixel and migration rules are in [Immich-managed storage](design/immich-managed-storage.md); sign-off is recorded on #259. Implementation follow-ups may proceed, while production uploads, cleanup and migration remain gated on live validation, safety review and the applicable backup/restore evidence.
 
 **Current implementation, retained until cutover:** the paragraph and detailed implementation sections below describe the file-based system that is still in the code. Their permanent-copy, external-library and losing-copy-deletion rules are superseded as a target by #259, but must not be removed from the runtime before the new safety checks and migration are approved.
 
@@ -344,7 +344,7 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 
 ## Phases
 
-These phases record the #199 implementation, including the existing local losing-copy behaviour. The future storage change follows [#259's separate bounded PR sequence](design/immich-managed-storage.md#9-migration-and-rollback-sequence), only after owner sign-off and the live API gates. No implementation issues are opened by this design change.
+These phases record the #199 implementation, including the existing local losing-copy behaviour. The future storage change follows [#259's separate bounded PR sequence](design/immich-managed-storage.md#9-migration-and-rollback-sequence), with owner sign-off recorded on #259 and the live API/safety gates still required before enabling the relevant workflow. Approved implementation follow-ups begin in #265 and #266.
 
 Build ingest before the browser worker: a hand-downloaded export gives real data to build against, and the backfill lands sooner. Everyone switches to Immich's app at once, since Darkroom isn't deployed yet.
 

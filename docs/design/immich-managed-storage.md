@@ -1,8 +1,8 @@
 # Immich owns the library; Darkroom coordinates
 
-Design for [#259](https://github.com/AnthonyPluth/Darkroom/issues/259), prepared 2026-11-09. **Pending owner sign-off. No implementation or migration is authorised by this document.**
+Design for [#259](https://github.com/AnthonyPluth/Darkroom/issues/259), prepared 2026-11-09. **Owner approved; sign-off recorded on #259. Implementation follows the gates below; production uploads, cleanup and migration are not enabled by design approval.**
 
-The owner has decided that Immich stores and organises the photos. Darkroom must not maintain another permanent library in `originals/` and `google-only/`. The upload, retention, quality and migration rules below are proposals for making that decision safe. Current code continues to use the existing folders until the implementation sequence is approved and completed.
+The owner has decided that Immich stores and organises the photos. Darkroom must not maintain another permanent library in `originals/` and `google-only/`. The upload, retention, quality and migration rules below are the approved target for making that decision safe. Current code continues to use the existing folders until the gated implementation sequence is completed.
 
 ## 1. Scope and ownership
 
@@ -83,7 +83,7 @@ The receipt state sequence is `prepared → outcome_unknown/returned → bytes_v
 
 ## 4. What remains on Darkroom's disk
 
-The proposed successful-import retention remains **14 days**, measured from the final verified completion of the whole export, not its download time or an upload response. It provides a bounded undo/retry window; it is not a permanent library. The owner must approve this duration in section 10.
+The approved successful-import retention remains **14 days**, measured from the final verified completion of the whole export, not its download time or an upload response. It provides a bounded undo/retry window; it is not a permanent library. Owner approval of this duration is recorded in section 10.
 
 | Data | Location | Lifetime and remover |
 | --- | --- | --- |
@@ -94,7 +94,7 @@ The proposed successful-import retention remains **14 days**, measured from the 
 | Receipts, catalogue, decisions and minimal metadata needed for replay | Database/data directory | Persistent non-media service state; backed up with the database, with no media blobs or new thumbnail library |
 | Browser profiles and failure captures | `_browser/` | Existing sensitive service state and existing lifecycle, unchanged by #259 |
 
-Cleanup rechecks every required resource's committed disposition under the write lock and a fresh Immich read. An exact receipt needs the same owner/ID/checksum, managed custody (`libraryId: null`) and an available untrashed original. A policy match also needs its unreversed authorised decision, verified managed keeper and completed metadata handling. A resource changed, removed or unconfirmed since import pins the source again. If Immich is unavailable, cleanup does nothing. The local delete has a pending/completed journal so a crash cannot convert missing files into a fabricated success receipt.
+Cleanup rechecks every required resource's committed disposition under the write lock and a fresh Immich read. An exact receipt needs the same owner/ID/checksum, managed custody (`libraryId: null`) and an available untrashed original. A policy match also needs its unreversed authorised decision, verified managed keeper and completed metadata handling. A resource changed, removed or unconfirmed since import pins the source again. If Immich is unavailable, cleanup does nothing. Every cleanup batch must also prove that each required managed resource and its metadata/compound links were committed before, and are included in, an identified successful restorable Immich database/media recovery point, with corresponding Darkroom state and secrets. Verify the recovery point against an owner-configured backup integration or an explicit owner attestation bound to that recovery point and manifest; a schedule or old rehearsal alone is insufficient. Require its age to remain within the approved retention window and its latest backup status to be successful; missing coverage, a failed/stopped backup, stale evidence or an unavailable verifier pins sources and pauses cleanup. No such backup integration exists yet, so cleanup remains disabled until this proof is implemented and tested. The local delete has a pending/completed journal so a crash cannot convert missing files into a fabricated success receipt.
 
 The local write lock coordinates Darkroom jobs; it **does not lock Immich**. A user or another client can remove an asset after the final read and race inbox cleanup. Rechecking narrows that window but does not make the two systems atomic. The target deliberately has no independent permanent Darkroom copy after retention, so owner acceptance of that boundary and a tested Immich backup/restore are prerequisites before any inbox cleanup can be enabled, including opt-in imports before full cutover. No server-side custody lease or cross-system transaction has been verified; do not claim that fresh reads alone prevent every last-copy loss.
 
@@ -113,13 +113,13 @@ Keep the existing tier rules: exact checksum first; unique same-shot matches wit
 | Higher-pixel copy of a proven same photo arrives | Preserve it as a verified Immich-managed asset if needed, but do not delete or replace the incumbent automatically. Resolution of two different-byte Immich assets is an owner action until separately authorised |
 | Different dimensions without a proven identity, burst ambiguity, RAW/JPEG, edited or video-quality ambiguity | Review. More pixels, byte size or pHash alone does not prove a duplicate or justify discarding a resource |
 
-This carries forward #234's quality preference, not its authority to unlink a copy in a Darkroom-owned folder. **Automatically keeping only the higher-quality Immich asset conflicts with the proposed prohibition on deleting Immich assets.** The recommended first version reports the winner and requires the owner to resolve distinct-byte duplicates in Immich. It cannot promise their automatic removal. If automatic removal is required, it needs a separate owner decision, backup/recovery design and security review before implementation; it is not implied by #234 or approval of uploads.
+This carries forward #234's quality preference, not its authority to unlink a copy in a Darkroom-owned folder. **Automatically keeping only the higher-quality Immich asset conflicts with the approved prohibition on deleting Immich assets.** The approved first version reports the winner and requires the owner to resolve distinct-byte duplicates in Immich. It cannot promise their automatic removal. If automatic removal is required, it needs a separate owner decision, backup/recovery design and security review before implementation; it is not implied by #234 or approval of uploads.
 
 No permanent Takeout metadata is lost merely because bytes match. Preserve the original sidecar/provenance in service state and complete the approved missing-field enrichment before releasing held source material. Do not copy the old XMP writer into Immich's filesystem or assume re-uploading a duplicate applies metadata. User edits take precedence; unresolved conflicts remain review items.
 
 ## 6. Replacement safety promises and checks
 
-These are proposed replacements for the file-based portions of promises 1 and 2; the current `AGENTS.md`, `SECURITY.md` and their enforcement remain in force until a follow-up changes them together with tests.
+These are approved target replacements for the file-based portions of promises 1 and 2; the current `AGENTS.md`, `SECURITY.md` and their enforcement remain in force until a follow-up changes them together with tests.
 
 **Promise 1 — Immich owns originals.** Darkroom may create an asset through an approved upload API and read originals, but never rewrite/replace existing original bytes or directly access Immich's storage. Metadata changes require a separately verified, owner-approved missing-field API path; they may not modify media bytes.
 
@@ -155,7 +155,7 @@ A leaked read/download key can expose that person's library and any partner acce
 
 ## 9. Migration and rollback sequence
 
-No implementation issues are opened until the owner signs off #259. Each row below becomes a separate, bounded follow-up after that approval, **under 1,000 added lines including tests**; split a row again if it exceeds the budget. Removals do not count toward that limit. New tables/columns use new Alembic migrations with SQLite and PostgreSQL tests; historical migrations are not edited.
+Owner sign-off is recorded on #259; #265 and #266 begin the follow-ups. Each row below becomes a separate, bounded follow-up, **under 1,000 added lines including tests**; split a row again if it exceeds the budget. Removals do not count toward that limit. New tables/columns use new Alembic migrations with SQLite and PostgreSQL tests; historical migrations are not edited.
 
 | Step | Change and acceptance gate | Rollback |
 | --- | --- | --- |
@@ -164,11 +164,11 @@ No implementation issues are opened until the owner signs off #259. Each row bel
 | 2. Additive catalogue and receipts | Add asset/resource identity, owner/checksum, source origins, metadata/receipt states and versioned Pixel references. Keep legacy columns and IDs; no file moves | Disable readers of new fields and keep the additive schema/data so intervening legacy records survive. Snapshot restoration is allowed only within a verified zero-write window with matching storage state and all jobs stopped; never restore a stale pre-migration snapshot over subsequent imports, decisions or Pixel updates |
 | 3. Upload and read-back provider | Streaming multipart and unedited hash verification, bounded retries and uncertain-outcome recovery; fixture/test account only, no scheduler switch | Disable uploads; keep receipts. Never delete an uploaded asset to undo a deployment |
 | 4. Metadata and compound-resource completion | Verified XMP mapping, extraction polling, supported existing-asset enrichment, Live Photo resource/link tests and missing-field conflict rules | Disable this path, retain sources and intents; do not overwrite metadata back from a stale snapshot |
-| 5. Opt-in ingest and guarded retention | Switch a controlled import to native uploads/catalogue dedupe only after pausing that owner's legacy writers, reconcile and cleanup and waiting for active leases. Completion requires receipts and fresh checks. Before enabling any 14-day cleanup, rehearse restoring the Immich database/media and Darkroom database/secrets, record a backup schedule/recovery point within retention, and obtain owner acceptance of the remote-deletion boundary. Until these gates pass, retain all sources and pause new downloads on disk pressure | Stop new imports and cleanup. Keep sources, receipts and created Immich assets for reconciliation; no destructive compensation or blind restart of the old writer |
+| 5. Opt-in ingest and guarded retention | Switch a controlled import to native uploads/catalogue dedupe only after pausing that owner's legacy writers, reconcile and cleanup and waiting for active leases. Completion requires receipts and fresh checks. Before enabling any 14-day cleanup, rehearse restoring the Immich database/media and Darkroom database/secrets, record a backup schedule/recovery point within retention, and obtain owner acceptance of the remote-deletion boundary. Every cleanup batch additionally requires the current recovery-point coverage and backup-health proof in section 4; stale or failed backup evidence pauses cleanup. Until these gates pass, retain all sources and pause new downloads on disk pressure | Stop new imports and cleanup. Keep sources, receipts and created Immich assets for reconciliation; no destructive compensation or blind restart of the old writer |
 | 6. Pixel source conversion | Use verified Immich reads for placement/requeue, preserve per-destination generations, cap, always-send and reversal semantics | Pause Pixel placement/pruning; keep existing copies and rows. The legacy source path may be used only for an individually verified unmigrated row |
 | 7. Backfill existing state | Map local items to verified same-owner managed assets or upload missing resources. Migrate every dependent decision/review/legacy/Pixel reference; produce an exception report | Stop the backfill. Keep old files read-only and both identifier sets. Resume from receipts; do not replay old losing-copy removals |
 | 8. Cutover and retire old writers | Stop every old worker first; repeat the backup/restore rehearsal already required before step 5 cleanup; disable local placement, external-library rescans and losing-copy execution. Switch all runtime writers together only after parity and receipt gates pass | Before native writes, a snapshot rollback requires a verified zero-write window since a matched DB/folder snapshot; otherwise preserve intervening records and recover forward. After native writes, pause imports/pruning and recover forward from receipts; an old binary must not be restarted against the mixed/new catalogue |
-| 9. Contract and owner-managed archive retirement | After an agreed rollback window and audit, remove obsolete path dependencies/configuration and archive historical state. Only then retire schema fields in a separately tested migration. The owner, not a job, decides when to dispose of old photo folders | Restore the matched database/schema backup plus owner-retained source archive, with writers stopped. Loss of that archive ends the old-file rollback option and must be explicitly acknowledged |
+| 9. Contract and owner-managed archive retirement | After an agreed rollback window and audit, remove obsolete path dependencies/configuration and archive historical state. Only then retire schema fields in a separately tested migration. The owner, not a job, decides when to dispose of old photo folders | Keep current data and roll the schema forward if any native import, decision or Pixel update committed after the backup. Restoring a matched database/schema backup plus owner-retained source archive requires a verified zero-write window since that snapshot, matching storage state and all writers stopped. Loss of that archive ends the old-file rollback option and must be explicitly acknowledged |
 
 ### Existing folders and tables
 
@@ -183,7 +183,7 @@ Parity is per owner and required resource: verify IDs, decoded checksums, read-b
 
 ## 10. Approval and remaining gates
 
-| Item | Proposed decision / gate | Status |
+| Item | Approved target / validation gate | Status |
 | --- | --- | --- |
 | Ownership | Immich owns the library; Darkroom has no second permanent photo library | Owner decision recorded in #259 |
 | API deletion and quality | No automatic Immich deletion/replacement; distinct-byte quality conflicts require owner resolution. Automatic winner-only removal needs a separate policy | Owner approved; sign-off recorded on #259 |
