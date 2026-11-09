@@ -140,7 +140,8 @@ class UploadBodyTests(unittest.TestCase):
             with self.subTest(filename=filename), self.assertRaises(immich.ImmichFailed):
                 body(filename=filename)
         for stamp in ("", "2024-01-02", "2024-01-02T03:04:05", "2024-01-02 03:04:05+05:45", "2024-01-02T03:04:05-00:00",
-                      "2024-02-30T03:04:05Z", "2024-01-02T03:04:05+25:00", CREATED + "\r\nInjected: value"):
+                      "2024-02-30T03:04:05Z", "2024-01-02T03:04:05+25:00", "2024-01-02T03:04:05+01:60",
+                      "2024-01-02T03:04:05-00:99", CREATED + "\r\nInjected: value"):
             for field in ("file_created_at", "file_modified_at"):
                 with self.subTest(stamp=stamp, field=field), self.assertRaises(immich.ImmichFailed):
                     body(**{field: stamp})
