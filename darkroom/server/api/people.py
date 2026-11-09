@@ -18,8 +18,8 @@ NO_SECRET = "Darkroom has no DARKROOM_SECRET_KEY, so it cannot keep an Immich ke
 NO_PERSON = "no such person"
 NO_FOLDERS = "Darkroom could not create the person's folders"
 FOLDER_CAUSES = {
-    "EACCES": "Darkroom cannot write to its photo share (permission denied): the share must be owned by uid 10001 and gid 10010",
-    "EPERM": "Darkroom cannot write to its photo share (permission denied): the share must be owned by uid 10001 and gid 10010",
+    "EACCES": "Darkroom cannot write to its photo share (permission denied): check the share's ownership and permissions, because Darkroom runs as uid 10001 with group 10010 and the share and its _inbox and _browser folders must be writable by that user or group, for example group 10010 with mode 2770",
+    "EPERM": "Darkroom cannot write to its photo share (permission denied): check the share's ownership and permissions, because Darkroom runs as uid 10001 with group 10010 and the share and its _inbox and _browser folders must be writable by that user or group, for example group 10010 with mode 2770",
     "EROFS": "Darkroom's photo share is read-only: mount it read-write",
     "ENOSPC": "Darkroom's photo share is out of space: free some space on it",
     "EDQUOT": "Darkroom's photo share is out of space: free some space on it",

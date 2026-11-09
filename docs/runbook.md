@@ -149,7 +149,7 @@ Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<per
 
 | Reply says | `errno` | Cause |
 | --- | --- | --- |
-| permission denied | `EACCES`, `EPERM` | The share (or `_inbox`, `_browser`) is not owned by uid 10001 and gid 10010, or `docker compose` created `_inbox` or `_browser` as root. |
+| permission denied | `EACCES`, `EPERM` | The share, `_inbox` or `_browser` is not writable by uid 10001 or group 10010 (wrong owner or group, or mode bits without group write and search), `docker compose` created `_inbox` or `_browser` as root, or something else refuses the write: an ACL, SELinux, or NFS root or user squashing. |
 | read-only | `EROFS` | The share is mounted read-only. |
 | out of space | `ENOSPC`, `EDQUOT` | The disk or quota is full. |
 | missing | `ENOENT` | The share is not mounted, or `PHOTOS_ROOT` points at a folder that does not exist. |

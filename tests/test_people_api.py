@@ -220,7 +220,7 @@ class FolderFailureTests(ApiCase):
             self.assertNotIn(private, json.dumps(reply))
 
     def test_permission_denied_names_the_owner_the_share_needs(self):
-        self.check(errno.EACCES, "EACCES", "Darkroom cannot write to its photo share (permission denied): the share must be owned by uid 10001 and gid 10010")
+        self.check(errno.EACCES, "EACCES", "Darkroom cannot write to its photo share (permission denied): check the share's ownership and permissions, because Darkroom runs as uid 10001 with group 10010 and the share and its _inbox and _browser folders must be writable by that user or group, for example group 10010 with mode 2770")
 
     def test_a_read_only_share_says_so(self):
         self.check(errno.EROFS, "EROFS", "Darkroom's photo share is read-only: mount it read-write")
