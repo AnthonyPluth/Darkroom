@@ -14,7 +14,7 @@ These constraints check record shape, **not that an API call or verification act
 
 ## Rollback and retention
 
-The normal rollback keeps these additive tables and disables their future readers/writers. An old database snapshot must not overwrite imports, decisions or Pixel changes made since that snapshot.
+The normal rollback keeps these additive tables and disables their future readers/writers. Keep migration `0026` available to Alembic; a forward patch can disable new behavior while retaining the journal. An older image that does not know revision `0026` cannot start against that revision. Return to that image only after an empty-journal downgrade succeeds. An old database snapshot must not overwrite imports, decisions or Pixel changes made since that snapshot.
 
 The migration downgrade refuses if either journal table contains any row, including an unverified intent. It takes PostgreSQL table locks, or SQLite's write lock, before checking emptiness so a concurrent insert cannot be silently lost between the check and a drop. An empty journal can be downgraded to `0025` without changing existing records. Stop workers before operating on the schema.
 

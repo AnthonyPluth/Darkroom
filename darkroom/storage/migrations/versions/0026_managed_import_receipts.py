@@ -77,7 +77,7 @@ def downgrade() -> None:
     else:
         connection.execute(sa.text("UPDATE managed_import_intents SET id = id WHERE 1 = 0"))
     for table in ("managed_import_intents", "managed_import_receipts"):
-        if connection.execute(sa.text(f"SELECT 1 FROM {table} LIMIT 1")).first() is not None:
+        if connection.execute(sa.select(1).select_from(sa.table(table)).limit(1)).first() is not None:
             raise RuntimeError("the managed import journal is not empty; retain the additive schema and its receipts")
     op.drop_index("ix_managed_import_receipts_intent_state", table_name="managed_import_receipts")
     op.drop_table("managed_import_receipts")
