@@ -58,7 +58,7 @@ def classify(page: str) -> str:
 
 
 CONFIRMATION_PHRASES = ("export created", "we've started creating a copy", "your export has been scheduled", "export scheduled")
-RECURRING = re.compile(r"every 2 months for (?:1 year|a year|12 months)")
+RECURRING = re.compile(r"(?:every (?:1 |one )?month|monthly) for (?:1 year|a year|12 months)")
 
 
 @dataclass(frozen=True)

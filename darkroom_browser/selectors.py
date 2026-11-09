@@ -21,11 +21,11 @@ PART_LINK_TEMPLATE = 'a[href="{href}"]'
 TYPEABLE: frozenset[str] = frozenset()
 
 EXPORT_SELECT_NONE = "button:has-text('Deselect all')"
-EXPORT_PHOTOS_CHECKBOX = "input[type='checkbox'][aria-label='Google Photos']"
+EXPORT_PHOTOS_CHECKBOX = ":is(input[type='checkbox'], [role='checkbox']):is([aria-label='Google Photos' i], [aria-label$=' Google Photos' i])"
 EXPORT_NEXT_STEP = "button:has-text('Next step')"
 EXPORT_DELIVERY_MENU = "[aria-label='Delivery method']"
 EXPORT_DELIVERY_EMAIL = "[role='option']:has-text('Send download link via email')"
-EXPORT_FREQUENCY_RECURRING = "input[type='radio'][aria-label*='Export every 2 months for 1 year']"
+EXPORT_FREQUENCY_MONTHLY = ":is(input[type='radio'], [role='radio']):is([aria-label*='every month' i], [aria-label*='every 1 month' i], [aria-label*='monthly' i])"
 EXPORT_TYPE_MENU = "[aria-label='File type']"
 EXPORT_TYPE_ZIP = "[role='option']:has-text('.zip')"
 EXPORT_SIZE_MENU = "[aria-label='File size']"

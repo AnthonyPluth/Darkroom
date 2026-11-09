@@ -111,7 +111,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 | Job | When | What it does |
 | --- | --- | --- |
 | Connect account | Onboarding, and whenever a session expires | Opens Takeout in the noVNC view. You sign in, including 2FA. The worker confirms the session and saves the profile |
-| Create schedule | Once per account, and again once a schedule has ended unrenewed | Google Photos only, download link by email, .zip, 50 GB parts, scheduled export (every 2 months for 1 year) |
+| Create schedule | Once per account, and again once a schedule has ended unrenewed | Google Photos only, download link by email, .zip, 50 GB parts, scheduled export (every month for 1 year) |
 | Check status | Daily | Reads the Takeout downloads page for new exports. No Gmail access needed |
 | Download | When an export is ready | Downloads every part to the person's inbox on Unraid, one at a time. Verifies the part count and runs a zip integrity test |
 | Renew | About 3 weeks before the schedule ends, or on request (`POST /api/accounts/{id}/schedule/renew`) | Creates the next year's schedule and records the new end date |

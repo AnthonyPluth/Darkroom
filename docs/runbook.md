@@ -59,7 +59,7 @@ A job waits 48 hours for the sign-in and then fails ("Darkroom needs a look" nam
 Takeout keeps an export for about a week. The alert "A Takeout export is about to expire" means Darkroom has not finished downloading it; an export marked expired on the Exports page is gone.
 
 - If it is only about to expire, check that the worker is running and has not hit a failure alert (above and below). The daily check (or "Check exports now") re-queues a download that failed, up to 3 download jobs that failed after starting a part, per export; it only runs for an account that is signed in. If Darkroom will not get there in time, download the parts by hand from Takeout's export list while the alert is still open, then hand-drop them (below).
-- If it expired, Takeout no longer has the files, so nothing can be downloaded, by Darkroom or by hand. The only recovery is a new export: request one in Takeout (Darkroom itself only creates the schedule), download it, and hand-drop the parts. The scheduled exports keep coming every 2 months until the schedule ends.
+- If it expired, Takeout no longer has the files, so nothing can be downloaded, by Darkroom or by hand. The only recovery is a new export: request one in Takeout (Darkroom itself only creates the schedule), download it, and hand-drop the parts. The scheduled exports keep coming every month until the schedule ends.
 
 ### Google changed a page
 
@@ -98,7 +98,7 @@ About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout 
 
 The worker clicked Create export but Takeout did not confirm it, or the worker stopped reporting. Takeout may have the new schedule.
 
-1. Open Takeout's export list for the account the alert names (in the remote browser, or signed in as that account anywhere) and look for a new scheduled export (every 2 months, created around the time of the renew job).
+1. Open Takeout's export list for the account the alert names (in the remote browser, or signed in as that account anywhere) and look for a new scheduled export (every month, created around the time of the renew job).
 2. On the Exports page, press "Takeout has the new schedule" if it is there. Darkroom records it, ending a year after the renew job started, closes the alert and confirms the renewal; the next renewal is queued 3 weeks before that date.
 3. Press "Takeout has no new schedule" if it is not. The alert becomes "Takeout schedule not renewed" (below). Don't create one by hand in Takeout: Darkroom would not know about it, and next year's renewal would not happen.
 

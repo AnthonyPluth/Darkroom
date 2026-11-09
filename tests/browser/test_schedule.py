@@ -11,11 +11,11 @@ from tests.snapshots import snapshot_pending
 
 RECORDED_CLICKS = [
     "button:has-text('Deselect all')",
-    "input[type='checkbox'][aria-label='Google Photos']",
+    ":is(input[type='checkbox'], [role='checkbox']):is([aria-label='Google Photos' i], [aria-label$=' Google Photos' i])",
     "button:has-text('Next step')",
     "[aria-label='Delivery method']",
     "[role='option']:has-text('Send download link via email')",
-    "input[type='radio'][aria-label*='Export every 2 months for 1 year']",
+    ":is(input[type='radio'], [role='radio']):is([aria-label*='every month' i], [aria-label*='every 1 month' i], [aria-label*='monthly' i])",
     "[aria-label='File type']",
     "[role='option']:has-text('.zip')",
     "[aria-label='File size']",

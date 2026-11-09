@@ -13,7 +13,7 @@ CLICK_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("go to the delivery step", selectors.EXPORT_NEXT_STEP),
     ("open the delivery menu", selectors.EXPORT_DELIVERY_MENU),
     ("send the download link by email", selectors.EXPORT_DELIVERY_EMAIL),
-    ("export every 2 months for 1 year", selectors.EXPORT_FREQUENCY_RECURRING),
+    ("export every month for 1 year", selectors.EXPORT_FREQUENCY_MONTHLY),
     ("open the file type menu", selectors.EXPORT_TYPE_MENU),
     ("choose .zip", selectors.EXPORT_TYPE_ZIP),
     ("open the file size menu", selectors.EXPORT_SIZE_MENU),
