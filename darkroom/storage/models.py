@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -89,6 +89,7 @@ class ManagedImportIntent(Base):
         UniqueConstraint("person_id", "owner_id", "export_id", name="uq_managed_import_intents_owner_export"),
         CheckConstraint("schema_version = 1", name="ck_managed_import_intents_schema_version"),
         CheckConstraint("length(owner_id) > 0", name="ck_managed_import_intents_owner"),
+        Index("ix_managed_import_intents_catalog_binding", "id", "person_id", "owner_id", unique=True),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
@@ -122,6 +123,7 @@ class ManagedImportReceipt(Base):
         CheckConstraint("(state = 'committed' AND committed_at IS NOT NULL) OR (state != 'committed' AND committed_at IS NULL)",
                         name="ck_managed_import_receipts_commit"),
         Index("ix_managed_import_receipts_intent_state", "intent_id", "state"),
+        Index("ix_managed_import_receipts_catalog_binding", "id", "intent_id", "asset_id", "source_sha1", "state", unique=True),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     intent_id: Mapped[int] = mapped_column(ForeignKey("managed_import_intents.id", ondelete="RESTRICT"), nullable=False)
@@ -140,6 +142,75 @@ class ManagedImportReceipt(Base):
     metadata_verified_at: Mapped[float | None] = mapped_column(Float)
     committed_at: Mapped[float | None] = mapped_column(Float)
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class ManagedAssetVersion(Base):
+    __tablename__ = "managed_asset_versions"
+    __table_args__ = (
+        UniqueConstraint("person_id", "owner_id", "asset_id", "sha1", name="uq_managed_asset_versions_identity"),
+        UniqueConstraint("id", "person_id", "owner_id", "asset_id", "sha1", name="uq_managed_asset_versions_binding"),
+        CheckConstraint("length(owner_id) > 0 AND length(asset_id) > 0 AND length(sha1) = 40", name="ck_managed_asset_versions_identity"),
+        CheckConstraint("bytes IS NULL OR bytes >= 0", name="ck_managed_asset_versions_bytes"),
+        CheckConstraint("library_id IS NULL OR length(library_id) > 0", name="ck_managed_asset_versions_library"),
+        CheckConstraint("linked_video_asset_id IS NULL OR length(linked_video_asset_id) > 0", name="ck_managed_asset_versions_link"),
+        one_of("kind", ("IMAGE", "VIDEO"), "ck_managed_asset_versions_kind"),
+        one_of("state", ("observed", "bytes_verified", "missing", "trashed", "offline", "external", "superseded"), "ck_managed_asset_versions_state"),
+        CheckConstraint("state != 'bytes_verified' OR (library_id IS NULL AND bytes IS NOT NULL AND bytes_verified_at IS NOT NULL)",
+                        name="ck_managed_asset_versions_verified"),
+        CheckConstraint("state != 'external' OR library_id IS NOT NULL", name="ck_managed_asset_versions_external"),
+        Index("ix_managed_asset_versions_owner_state", "person_id", "owner_id", "state"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int | None] = mapped_column(Bytes)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="observed", server_default="observed")
+    library_id: Mapped[str | None] = mapped_column(String)
+    linked_video_asset_id: Mapped[str | None] = mapped_column(String)
+    metadata_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    seen_at: Mapped[float] = mapped_column(Float, nullable=False)
+    bytes_verified_at: Mapped[float | None] = mapped_column(Float)
+
+
+class ManagedAssetOrigin(Base):
+    __tablename__ = "managed_asset_origins"
+    __table_args__ = (
+        UniqueConstraint("version_id", "kind", "source_key", name="uq_managed_asset_origins_source"),
+        ForeignKeyConstraint(["version_id", "person_id", "owner_id", "asset_id", "sha1"],
+                             ["managed_asset_versions.id", "managed_asset_versions.person_id", "managed_asset_versions.owner_id",
+                              "managed_asset_versions.asset_id", "managed_asset_versions.sha1"], ondelete="RESTRICT", name="fk_managed_asset_origins_version"),
+        ForeignKeyConstraint(["intent_id", "person_id", "owner_id"],
+                             ["managed_import_intents.id", "managed_import_intents.person_id", "managed_import_intents.owner_id"],
+                             ondelete="RESTRICT", name="fk_managed_asset_origins_intent_owner"),
+        ForeignKeyConstraint(["receipt_id", "intent_id", "asset_id", "sha1", "receipt_state"],
+                             ["managed_import_receipts.id", "managed_import_receipts.intent_id", "managed_import_receipts.asset_id",
+                              "managed_import_receipts.source_sha1", "managed_import_receipts.state"], ondelete="RESTRICT", name="fk_managed_asset_origins_receipt"),
+        one_of("kind", ("phone", "takeout", "legacy", "other"), "ck_managed_asset_origins_kind"),
+        CheckConstraint("length(source_key) > 0", name="ck_managed_asset_origins_source"),
+        CheckConstraint("(receipt_id IS NULL AND intent_id IS NULL AND receipt_state IS NULL) OR "
+                        "(receipt_id IS NOT NULL AND intent_id IS NOT NULL AND receipt_state IS NOT NULL AND receipt_state = 'committed')",
+                        name="ck_managed_asset_origins_receipt"),
+        CheckConstraint("kind != 'takeout' OR receipt_id IS NOT NULL", name="ck_managed_asset_origins_takeout"),
+        CheckConstraint("kind != 'phone' OR receipt_id IS NULL", name="ck_managed_asset_origins_phone"),
+        Index("ix_managed_asset_origins_receipt", "receipt_id", "intent_id"),
+        Index("ix_managed_asset_origins_intent", "intent_id", "person_id", "owner_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    person_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    source_key: Mapped[str] = mapped_column(String, nullable=False)
+    intent_id: Mapped[int | None] = mapped_column(Integer)
+    receipt_id: Mapped[int | None] = mapped_column(Integer)
+    receipt_state: Mapped[str | None] = mapped_column(String)
+    evidence_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class ExportPart(Base):

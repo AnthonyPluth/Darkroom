@@ -20,6 +20,8 @@ class ManagedImportReceiptTests(unittest.TestCase):
         self.engine = db.make_engine(own_database_url(self))
         self.addCleanup(self.engine.dispose)
         db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.head_revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
         with self.engine.begin() as connection:
             connection.execute(insert(Person), [
                 {"id": 1, "name": "Jo", "slug": "jo", "originals_path": "o", "google_only_path": "g", "created": -0.125},
@@ -137,7 +139,7 @@ class ManagedImportReceiptTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.execute(select(ManagedImportIntent.resource_manifest)).scalar_one(), SNAPSHOT)
             self.assertEqual(connection.execute(select(ManagedImportReceipt)).all(), [])
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0026")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), self.head_revision)
 
     def test_downgrade_refuses_prepared_or_committed_journal_and_preserves_every_record(self):
         for state in ("prepared", "committed"):
@@ -148,7 +150,7 @@ class ManagedImportReceiptTests(unittest.TestCase):
                 config.attributes["connection"] = connection
                 command.downgrade(config, "0025")
             with self.engine.connect() as connection:
-                self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0026")
+                self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), self.head_revision)
                 self.assertEqual(len(connection.execute(select(ManagedImportReceipt)).all()), 1 if state == "prepared" else 2)
                 self.assertEqual(connection.execute(select(ManagedImportIntent.resource_manifest)).scalar_one(), SNAPSHOT)
             self.assertIn("managed_import_receipts", inspect(self.engine).get_table_names())
