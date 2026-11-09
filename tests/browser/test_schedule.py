@@ -1,5 +1,7 @@
+import os
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
 from darkroom_browser import selectors
 from darkroom_browser.context import Cancelled
@@ -186,6 +188,19 @@ LAST = datetime(2027, 11, 9, tzinfo=UTC).timestamp()
 
 @snapshot_pending
 class ExistingScheduleTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"TZ": "UTC"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_banner_date_is_a_calendar_date_in_the_workers_zone(self):
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with mock.patch.dict(os.environ, {"TZ": "America/Los_Angeles"}):
+            result = schedule.create_schedule(ctx)
+        self.assertEqual(result["schedule_created"], datetime(2026, 11, 9, 8, 0, tzinfo=UTC).timestamp())
+        self.assertEqual(result["schedule_end"], datetime(2027, 11, 9, 8, 0, tzinfo=UTC).timestamp())
+
     def test_an_existing_monthly_schedule_is_recorded_without_touching_the_page(self):
         browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
         ctx, _, reporter = context_for(browser, wall=CREATED)

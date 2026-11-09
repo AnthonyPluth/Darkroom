@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
@@ -110,7 +110,7 @@ def parse_existing_schedule(page: str) -> ExistingSchedule | None:
     if not 1 <= number <= total or MONTHS_IN_SCHEDULE % total != 0:
         return None
     try:
-        start = datetime.strptime(found.group(3), "%B %d, %Y").replace(tzinfo=UTC)
+        start = datetime.strptime(found.group(3), "%B %d, %Y")
     except ValueError:
         return None
     return ExistingSchedule(number, total, start)
