@@ -18,9 +18,12 @@ RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then python -m playwright i
 WORKDIR /app
 COPY darkroom_browser ./darkroom_browser
 COPY deploy/browser/entrypoint.sh /app/entrypoint.sh
+COPY deploy/browser/smoke.sh /app/smoke.sh
 
-RUN groupadd --system --gid 10010 darkroom-share \
-    && useradd --system --uid 10002 --gid 10010 --home-dir /home/darkroom-browser --create-home darkroom-browser \
+ARG PUID=99
+ARG PGID=100
+RUN if ! getent group "$PGID" >/dev/null; then groupadd --system --gid "$PGID" darkroom-share; fi \
+    && useradd --system --uid "$PUID" --gid "$PGID" --home-dir /home/darkroom-browser --create-home darkroom-browser \
     && mkdir -p /photos /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix \
     && chmod 0755 /app/entrypoint.sh \

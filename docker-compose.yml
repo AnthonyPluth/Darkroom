@@ -1,9 +1,13 @@
 services:
   darkroom:
-    build: .
+    build:
+      context: .
+      args:
+        PUID: ${PUID:-99}
+        PGID: ${PGID:-100}
     image: ghcr.io/anthonypluth/darkroom:latest
     restart: unless-stopped
-    user: "10001:10010"
+    user: "${PUID:-99}:${PGID:-100}"
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -45,9 +49,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.browser
+      args:
+        PUID: ${PUID:-99}
+        PGID: ${PGID:-100}
     image: ghcr.io/anthonypluth/darkroom-browser:latest
     restart: unless-stopped
-    user: "10002:10010"
+    user: "${PUID:-99}:${PGID:-100}"
     profiles: [browser]
     depends_on:
       - darkroom

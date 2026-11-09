@@ -272,7 +272,7 @@ def share_folder(path: Path) -> None:
     if found.st_gid != os.getegid():
         os.chown(path, -1, os.getegid(), follow_symlinks=False)
     if stat.S_IMODE(path.lstat().st_mode) != SHARED_FOLDER_MODE:
-        os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the shared inbox group (gid 10010) needs rwx, others get nothing
+        os.chmod(path, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the configured shared inbox group needs rwx, others get nothing
 
 
 def make_shared(path: Path) -> Path:

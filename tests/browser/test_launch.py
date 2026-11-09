@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from darkroom_browser.launch import choose_channel, launch_options
+from darkroom_browser.launch import BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
+from darkroom_browser.runner import failure_message
 
 PROFILE = Path("/photos/_browser/3/profile")
 DOWNLOADS = Path("/photos/_inbox/.downloads/3")
@@ -81,6 +82,24 @@ class LaunchError(Exception):
     pass
 
 
+class LaunchDiagnosticTests(unittest.TestCase):
+    def test_known_startup_failures_have_fixed_reasons(self):
+        for text, reason in (
+            ("Failed to move to new namespace: Operation not permitted", "sandbox_unavailable"),
+            ("No usable sandbox!", "sandbox_unavailable"),
+            ("Check failed: sys_chroot: Operation not permitted", "sandbox_unavailable"),
+            ("Failed to create a ProcessSingleton for your profile directory", "profile_in_use"),
+            ("The profile appears to be in use by another Google Chrome process", "profile_in_use"),
+            ("Missing X server or $DISPLAY", "display_unavailable"),
+            ("Permission denied", "permission_denied"),
+            ("chrome_crashpad_handler: --database is required", "permission_denied"),
+            ("Executable doesn't exist at /private/browser", "browser_missing"),
+            ("Target page, context or browser has been closed", "browser_exited"),
+        ):
+            with self.subTest(reason=reason, text=text):
+                self.assertEqual(launch_failure_reason(LaunchError(text)), reason)
+
+
 class FakePlaywright:
     def __init__(self, failures):
         self.failures = list(failures)
@@ -132,22 +151,34 @@ class OpenContextTests(unittest.TestCase):
         self.assertEqual([call.get("channel") for call in fake.calls], ["chrome", None])
         self.assertEqual(result.page, fake.page)
         self.assertEqual(fake.stopped, 0)
-        self.assertEqual(json.loads(log), {"event": "chrome_launch_failed", "error": "LaunchError", "channel": "chrome"})
+        self.assertEqual(json.loads(log), {"event": "chrome_launch_failed", "error": "LaunchError", "channel": "chrome", "reason": "browser_exited"})
         self.assertNotIn("secret", log)
 
     def test_both_failing_stops_playwright_and_raises_the_last_error(self):
         fake = FakePlaywright([LaunchError("chrome"), ValueError("chromium")])
-        result, _ = self.open(fake)
-        self.assertIsInstance(result, ValueError)
+        result, log = self.open(fake)
+        self.assertIsInstance(result, BrowserLaunchFailed)
         self.assertEqual(fake.stopped, 1)
+        self.assertEqual([json.loads(line)["event"] for line in log.splitlines()], ["chrome_launch_failed", "chromium_launch_failed"])
 
     def test_bundled_chromium_failing_is_not_retried(self):
         fake = FakePlaywright([LaunchError("x")])
         result, log = self.open(fake, requested="chromium")
-        self.assertIsInstance(result, LaunchError)
+        self.assertIsInstance(result, BrowserLaunchFailed)
         self.assertEqual(len(fake.calls), 1)
         self.assertEqual(fake.stopped, 1)
-        self.assertEqual(log, "")
+        self.assertEqual(json.loads(log)["reason"], "browser_exited")
+
+    def test_launch_failure_reaches_the_job_without_private_browser_output(self):
+        private = "canary@example.invalid /private/profile token=canary-value"
+        fake = FakePlaywright([LaunchError("No usable sandbox! " + private), LaunchError("Failed to move to new namespace " + private)])
+        result, log = self.open(fake)
+        self.assertIsInstance(result, BrowserLaunchFailed)
+        self.assertIn("seccomp.json", failure_message(result))
+        self.assertIn("unprivileged user namespaces", failure_message(result))
+        self.assertEqual([json.loads(line)["reason"] for line in log.splitlines()], ["sandbox_unavailable"] * 2)
+        for value in ("canary", "/private/profile"):
+            self.assertNotIn(value, log + failure_message(result))
 
 
 if __name__ == "__main__":

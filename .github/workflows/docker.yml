@@ -64,6 +64,9 @@ jobs:
         env:
           PHOTOS_ROOT: /tmp/photos
         run: docker compose config --quiet
+      - name: Launch the browser with the deployment sandbox
+        run: |
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --entrypoint bash darkroom-browser:smoke /app/smoke.sh
 
   publish:
     needs: build
