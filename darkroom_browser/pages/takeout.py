@@ -57,8 +57,8 @@ def classify(page: str) -> str:
     return UNKNOWN
 
 
-CONFIRMATION_PHRASES = ("export created", "we've started creating a copy", "your export has been scheduled", "export scheduled")
-RECURRING = re.compile(r"every 2 months for (?:1 year|a year|12 months)")
+CONFIRMATION_PHRASES = ("export created", "we've started creating a copy", "your export has been scheduled", "export scheduled", "google is creating a copy of data from google photos")
+RECURRING = re.compile(r"(?:every (?:1 |one )?month|monthly) for (?:1 year|a year|12 months)")
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,49 @@ def parse_schedule_confirmation(page: str) -> ScheduleConfirmation | None:
     if not any(phrase in text for phrase in CONFIRMATION_PHRASES):
         return None
     recurring = RECURRING.search(text)
-    return ScheduleConfirmation(recurring.group(0)) if recurring is not None else None
+    if recurring is not None:
+        return ScheduleConfirmation(recurring.group(0))
+    existing = parse_existing_schedule(page)
+    if existing is not None and existing.is_monthly:
+        return ScheduleConfirmation(f"{existing.total} scheduled exports")
+    return None
+
+
+SCHEDULE_BANNER = "more scheduled export"
+EXISTING_SCHEDULE = re.compile(r"export (\d+) of (\d+) will start on ([a-z]+ \d{1,2}, \d{4})")
+MONTHS_IN_SCHEDULE = 12
+
+
+@dataclass(frozen=True)
+class ExistingSchedule:
+    next_number: int
+    total: int
+    next_start: datetime
+
+    @property
+    def is_monthly(self) -> bool:
+        return self.total == MONTHS_IN_SCHEDULE
+
+
+def has_schedule_banner(page: str) -> bool:
+    return SCHEDULE_BANNER in visible_text(page)
+
+
+def parse_existing_schedule(page: str) -> ExistingSchedule | None:
+    text = visible_text(page)
+    if SCHEDULE_BANNER not in text:
+        return None
+    found = EXISTING_SCHEDULE.search(text)
+    if found is None:
+        return None
+    number, total = int(found.group(1)), int(found.group(2))
+    if not 1 <= number <= total or MONTHS_IN_SCHEDULE % total != 0:
+        return None
+    try:
+        start = datetime.strptime(found.group(3), "%B %d, %Y")
+    except ValueError:
+        return None
+    return ExistingSchedule(number, total, start)
 
 
 ACCOUNT_LABEL = re.compile(r"""aria-label\s*=\s*["']""" + re.escape(selectors.SIGNED_IN_ACCOUNT_LABEL_PREFIX) + r"""[^"']*?\(([^()"'\s]+@[^()"'\s]+)\)""", re.IGNORECASE)

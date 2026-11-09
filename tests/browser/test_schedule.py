@@ -1,25 +1,28 @@
+import os
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
 from darkroom_browser import selectors
 from darkroom_browser.context import Cancelled
-from darkroom_browser.jobs import REGISTRY, schedule, session
+from darkroom_browser.jobs import REGISTRY, renew, schedule, session
 from tests.browser.scripted import ScriptedBrowser, context_for
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN
-from tests.browser.test_parse_schedule import CONFIRMED, ONE_OFF
+from tests.browser.test_parse_schedule import CONFIRMED, ONE_OFF, STARTED_MONTHLY
 from tests.snapshots import snapshot_pending
 
 RECORDED_CLICKS = [
     "button:has-text('Deselect all')",
-    "input[type='checkbox'][aria-label='Google Photos']",
+    "input[type='checkbox'][name='Google Photos']",
     "button:has-text('Next step')",
-    "[aria-label='Delivery method']",
-    "[role='option']:has-text('Send download link via email')",
-    "input[type='radio'][aria-label*='Export every 2 months for 1 year']",
-    "[aria-label='File type']",
-    "[role='option']:has-text('.zip')",
-    "[aria-label='File size']",
-    "[role='option']:has-text('50 GB')",
+    "[role='combobox'][aria-labelledby]",
+    "[role='option'][data-value='TEMP']",
+    "label:text-is('Export every month for 1 year')",
+    "label:text-is('Only new and updated items')",
+    "[role='combobox'][aria-label='File type select']",
+    "[role='option'][data-value='ZIP']",
+    "[role='combobox'][aria-label='File size select']",
+    "[role='option'][data-value='53687091200']",
     "button:has-text('Create export')",
 ]
 CREATED = datetime(2026, 11, 4, 9, 30, tzinfo=UTC).timestamp()
@@ -38,7 +41,7 @@ class ScheduleJobTests(unittest.TestCase):
         self.assertEqual(browser.clicks, RECORDED_CLICKS)
         self.assertEqual(browser.waited, RECORDED_CLICKS)
         self.assertEqual(result, {"schedule_created": CREATED, "schedule_end": datetime(2027, 11, 4, 9, 30, tzinfo=UTC).timestamp()})
-        self.assertEqual(len(reporter.kinds("progress")), 11)
+        self.assertEqual(len(reporter.kinds("progress")), 12)
         self.assertEqual(reporter.kinds("waiting"), [])
         self.assertEqual(browser.typed, [])
 
@@ -48,7 +51,7 @@ class ScheduleJobTests(unittest.TestCase):
         ctx, _, _ = context_for(browser, wall=CREATED)
         with self.assertRaises(TimeoutError):
             schedule.create_schedule(ctx)
-        self.assertEqual(browser.clicks, RECORDED_CLICKS[:9])
+        self.assertEqual(browser.clicks, RECORDED_CLICKS[:10])
         self.assertNotIn(selectors.EXPORT_CREATE, browser.clicks)
 
     def test_a_one_off_confirmation_is_not_a_schedule(self):
@@ -171,6 +174,93 @@ class ScheduleJobTests(unittest.TestCase):
 
     def test_the_job_is_registered(self):
         self.assertIs(REGISTRY["schedule"], schedule.create_schedule)
+
+
+def banner_page(text: str) -> str:
+    return SIGNED_IN.replace("</main>", f"<section><h2>Your exports</h2>{text}</section></main>")
+
+
+MONTHLY_BANNER = "<h3>You have 11 more scheduled exports</h3><p>Export 2 of 12 will start on December 9, 2026</p>"
+BIMONTHLY_BANNER = "<h3>You have 5 more scheduled exports</h3><p>Export 2 of 6 will start on January 9, 2027</p>"
+FIRST = datetime(2026, 11, 9, tzinfo=UTC).timestamp()
+LAST = datetime(2027, 11, 9, tzinfo=UTC).timestamp()
+
+
+@snapshot_pending
+class ExistingScheduleTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"TZ": "UTC"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_banner_date_is_a_calendar_date_in_the_workers_zone(self):
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with mock.patch.dict(os.environ, {"TZ": "America/Los_Angeles"}):
+            result = schedule.create_schedule(ctx)
+        self.assertEqual(result["schedule_created"], datetime(2026, 11, 9, 8, 0, tzinfo=UTC).timestamp())
+        self.assertEqual(result["schedule_end"], datetime(2027, 11, 9, 8, 0, tzinfo=UTC).timestamp())
+
+    def test_the_adopted_end_is_the_same_local_date_a_year_later_across_a_daylight_saving_change(self):
+        browser = ScriptedBrowser([banner_page("<h3>You have 12 more scheduled exports</h3><p>Export 1 of 12 will start on March 10, 2026</p>")])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            result = schedule.create_schedule(ctx)
+        self.assertEqual(result["schedule_created"], datetime(2026, 3, 10, 4, 0, tzinfo=UTC).timestamp())
+        self.assertEqual(result["schedule_end"], datetime(2027, 3, 10, 5, 0, tzinfo=UTC).timestamp())
+
+    def test_the_last_export_of_a_schedule_is_read_from_the_singular_banner(self):
+        browser = ScriptedBrowser([banner_page("<h3>You have 1 more scheduled export</h3><p>Export 12 of 12 will start on October 9, 2027</p>")])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        self.assertEqual(schedule.create_schedule(ctx), {"schedule_created": FIRST, "schedule_end": LAST})
+        self.assertEqual(browser.clicks, [])
+
+    def test_an_existing_monthly_schedule_is_recorded_without_touching_the_page(self):
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
+        ctx, _, reporter = context_for(browser, wall=CREATED)
+        result = schedule.create_schedule(ctx)
+        self.assertEqual(result, {"schedule_created": FIRST, "schedule_end": LAST})
+        self.assertEqual(browser.clicks, [])
+        self.assertEqual(browser.waited, [])
+        self.assertEqual(len(reporter.kinds("progress")), 1)
+
+    def test_an_existing_every_two_months_schedule_is_refused_and_nothing_is_created(self):
+        browser = ScriptedBrowser([banner_page(BIMONTHLY_BANNER)])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
+            schedule.create_schedule(ctx)
+        self.assertEqual(browser.clicks, [])
+
+    def test_a_schedule_banner_that_cannot_be_read_creates_nothing(self):
+        for text in ("<h3>You have 7 more scheduled exports</h3><p>Export 2 of 7 will start on December 9, 2026</p>", "<h3>You have 3 more scheduled exports</h3>"):
+            with self.subTest(text=text):
+                browser = ScriptedBrowser([banner_page(text)])
+                ctx, _, _ = context_for(browser, wall=CREATED)
+                with self.assertRaises(schedule.ScheduleNotConfirmed):
+                    schedule.create_schedule(ctx)
+                self.assertEqual(browser.clicks, [])
+
+    def test_renewing_creates_a_new_schedule_even_while_one_is_running(self):
+        started = STARTED_MONTHLY.replace("December 9, 2026", "December 10, 2026")
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)], after_click={selectors.EXPORT_CREATE: [started]})
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        result = renew.renew_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
+        self.assertEqual(result["schedule_created"], CREATED)
+
+    def test_renewing_is_not_confirmed_by_a_page_that_did_not_change_after_create(self):
+        unchanged = banner_page(MONTHLY_BANNER + "<div>Google is creating a copy of data from Google Photos</div>")
+        browser = ScriptedBrowser([unchanged], after_click={selectors.EXPORT_CREATE: [unchanged]})
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
+            renew.renew_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
+
+    def test_the_schedule_job_creates_when_there_is_no_banner(self):
+        browser = export_page()
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        schedule.create_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
 
 
 if __name__ == "__main__":

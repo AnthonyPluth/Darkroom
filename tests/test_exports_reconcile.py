@@ -184,35 +184,41 @@ class NextExportTests(unittest.TestCase):
     def account(self, created, end):
         return GoogleAccount(email="a@example.test", default_person_id=1, created=1.0, schedule_created=created, schedule_end=end)
 
-    def test_the_next_export_is_two_months_after_the_last_scheduled_one(self):
+    def test_the_next_export_is_a_month_after_the_last_scheduled_one(self):
         account = self.account(at(2026, 11, 2, 3, 0), at(2027, 11, 2, 3, 0))
-        self.assertEqual(exports.next_export_at(account, at(2026, 11, 2, 12, 0)), at(2027, 1, 2, 3, 0))
-        self.assertEqual(exports.next_export_at(account, at(2027, 1, 2, 3, 0)), at(2027, 3, 2, 3, 0))
-        self.assertEqual(exports.next_export_at(account, at(2027, 8, 1)), at(2027, 9, 2, 3, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 11, 2, 12, 0)), at(2026, 12, 2, 3, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 12, 2, 3, 0)), at(2027, 1, 2, 3, 0))
+        self.assertEqual(exports.next_export_at(account, at(2027, 8, 1)), at(2027, 8, 2, 3, 0))
+        self.assertEqual(exports.next_export_at(account, at(2027, 9, 3)), at(2027, 10, 2, 3, 0))
+
+    def test_the_next_export_keeps_the_local_wall_clock_across_a_daylight_saving_change(self):
+        account = self.account(at(2026, 3, 10, 4, 0), at(2027, 3, 10, 5, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 10, 11), ZoneInfo("America/New_York")), at(2026, 11, 10, 5, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 10, 11)), at(2026, 11, 10, 4, 0))
 
     def test_there_is_none_after_the_last_scheduled_export_or_without_a_schedule(self):
         account = self.account(at(2026, 11, 2, 3, 0), at(2027, 11, 2, 3, 0))
-        self.assertIsNone(exports.next_export_at(account, at(2027, 9, 3)))
+        self.assertIsNone(exports.next_export_at(account, at(2027, 10, 3)))
         self.assertIsNone(exports.next_export_at(self.account(None, None), 1.0))
         self.assertIsNone(exports.next_export_at(self.account(at(2026, 1, 1), None), 1.0))
 
     def test_a_month_that_is_too_short_uses_its_last_days(self):
         account = self.account(at(2026, 12, 31, 3, 0), at(2027, 12, 31, 3, 0))
-        self.assertEqual(exports.next_export_at(account, at(2027, 1, 1)), at(2027, 2, 28, 3, 0))
+        self.assertEqual(exports.next_export_at(account, at(2027, 2, 1)), at(2027, 2, 28, 3, 0))
 
 
     def test_a_short_month_ends_on_its_real_last_day(self):
         cases = [
-            (at(2026, 12, 31, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
-            (at(2026, 12, 31, 3, 0), at(2027, 3, 1), at(2027, 4, 30, 3, 0)),
-            (at(2026, 12, 31, 3, 0), at(2027, 5, 1), at(2027, 6, 30, 3, 0)),
-            (at(2027, 12, 31, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
-            (at(2027, 12, 30, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
-            (at(2026, 12, 30, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
-            (at(2026, 12, 29, 3, 0), at(2027, 1, 1), at(2027, 2, 28, 3, 0)),
-            (at(2027, 12, 29, 3, 0), at(2028, 1, 1), at(2028, 2, 29, 3, 0)),
-            (at(2026, 8, 31, 3, 0), at(2026, 9, 1), at(2026, 10, 31, 3, 0)),
-            (at(2026, 8, 31, 3, 0), at(2026, 11, 1), at(2026, 12, 31, 3, 0)),
+            (at(2026, 12, 31, 3, 0), at(2027, 2, 1), at(2027, 2, 28, 3, 0)),
+            (at(2026, 12, 31, 3, 0), at(2027, 4, 1), at(2027, 4, 30, 3, 0)),
+            (at(2026, 12, 31, 3, 0), at(2027, 6, 1), at(2027, 6, 30, 3, 0)),
+            (at(2027, 12, 31, 3, 0), at(2028, 2, 1), at(2028, 2, 29, 3, 0)),
+            (at(2027, 12, 30, 3, 0), at(2028, 2, 1), at(2028, 2, 29, 3, 0)),
+            (at(2026, 12, 30, 3, 0), at(2027, 2, 1), at(2027, 2, 28, 3, 0)),
+            (at(2026, 12, 29, 3, 0), at(2027, 2, 1), at(2027, 2, 28, 3, 0)),
+            (at(2027, 12, 29, 3, 0), at(2028, 2, 1), at(2028, 2, 29, 3, 0)),
+            (at(2026, 8, 31, 3, 0), at(2026, 10, 1), at(2026, 10, 31, 3, 0)),
+            (at(2026, 8, 31, 3, 0), at(2026, 12, 1), at(2026, 12, 31, 3, 0)),
         ]
         for created, now, expected in cases:
             with self.subTest(created=created, now=now):

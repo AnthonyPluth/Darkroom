@@ -4,7 +4,7 @@ import calendar
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -22,7 +22,7 @@ DOWNLOAD_KIND = "download"
 MAX_EXPORTS = 100
 MAX_PARTS = 200
 MAX_ID = 200
-CADENCE_MONTHS = 2
+CADENCE_MONTHS = 1
 SCHEDULE_SLACK = 86400.0
 CHECK_START_HOUR = 3
 CHECK_WINDOW_MINUTES = 240
@@ -111,20 +111,20 @@ def listing_from_result(result: dict[str, object]) -> list[Listed]:
     return listing
 
 
-def add_months(moment: float, months: int) -> float:
-    start = datetime.fromtimestamp(moment, UTC)
+def add_months(moment: float, months: int, zone: tzinfo = UTC) -> float:
+    start = datetime.fromtimestamp(moment, zone)
     index = start.month - 1 + months
     year, month = start.year + index // 12, index % 12 + 1
     day = min(start.day, calendar.monthrange(year, month)[1])
     return start.replace(year=year, month=month, day=day).timestamp()
 
 
-def next_export_at(account: GoogleAccount, now: float) -> float | None:
+def next_export_at(account: GoogleAccount, now: float, zone: tzinfo = UTC) -> float | None:
     created, end = account.schedule_created, account.schedule_end
     if created is None or end is None:
         return None
     for step in range(1, 13):
-        moment = add_months(created, CADENCE_MONTHS * step)
+        moment = add_months(created, CADENCE_MONTHS * step, zone)
         if moment >= end:
             return None
         if moment > now:
@@ -366,8 +366,8 @@ def one(opened: Session, export_id: int) -> Export:
     return export
 
 
-def schedule_dicts(opened: Session, now: float) -> list[dict[str, object]]:
+def schedule_dicts(opened: Session, now: float, zone: tzinfo = UTC) -> list[dict[str, object]]:
     return [
-        {"account_id": account.id, "last_export_at": last_export_at(opened, account.id), "next_export_at": next_export_at(account, now)}
+        {"account_id": account.id, "last_export_at": last_export_at(opened, account.id), "next_export_at": next_export_at(account, now, zone)}
         for account in opened.execute(select(GoogleAccount).order_by(GoogleAccount.id)).scalars()
     ]

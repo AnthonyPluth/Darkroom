@@ -4,10 +4,13 @@ from darkroom_browser.pages import takeout
 from tests.snapshots import snapshot_pending
 
 CONFIRMED = """<!doctype html><html><head><title>Google Takeout</title><script>var s = "export created";</script></head>
-<body><h1>Export created</h1><p>We&#8217;ve started creating a copy of your Google Photos data. Export every 2 months for 1 year.</p>
+<body><h1>Export created</h1><p>We&#8217;ve started creating a copy of your Google Photos data. Export every month for 1 year.</p>
 <p>You&#8217;ll get an email with a download link when each export is ready.</p></body></html>"""
 
-CONFIRMED_SCHEDULED = "<html><body><h2>Your export has been scheduled</h2><p>Frequency: Export every 2 months for 12 months</p></body></html>"
+CONFIRMED_SCHEDULED = "<html><body><h2>Your export has been scheduled</h2><p>Frequency: Export every month for 12 months</p></body></html>"
+
+STARTED_MONTHLY = """<html><body><h2>You have 11 more scheduled exports</h2><p>Export 2 of 12 will start on December 9, 2026</p><a>Cancel scheduled exports</a>
+<div>Google is creating a copy of data from Google Photos</div><div>Your files are currently being prepared</div></body></html>"""
 
 ONE_OFF = "<html><body><h1>Export created</h1><p>We've started creating a copy of your Google Photos data. This can take a long time.</p></body></html>"
 
@@ -27,8 +30,19 @@ class SignedInEmailTests(unittest.TestCase):
 @snapshot_pending
 class ParseScheduleConfirmationTests(unittest.TestCase):
     def test_a_recurring_confirmation_names_its_frequency(self):
-        self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED), takeout.ScheduleConfirmation("every 2 months for 1 year"))
-        self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED_SCHEDULED), takeout.ScheduleConfirmation("every 2 months for 12 months"))
+        self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED), takeout.ScheduleConfirmation("every month for 1 year"))
+        self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED_SCHEDULED), takeout.ScheduleConfirmation("every month for 12 months"))
+
+    def test_a_started_export_with_scheduled_exports_left_is_a_schedule(self):
+        found = takeout.parse_schedule_confirmation(STARTED_MONTHLY)
+        self.assertEqual(found, takeout.ScheduleConfirmation("12 scheduled exports"))
+
+    def test_a_started_export_with_an_every_two_months_schedule_is_not_accepted(self):
+        page = STARTED_MONTHLY.replace("11 more", "5 more").replace("2 of 12", "2 of 6")
+        self.assertIsNone(takeout.parse_schedule_confirmation(page))
+
+    def test_scheduled_exports_left_without_a_started_export_is_not_a_confirmation(self):
+        self.assertIsNone(takeout.parse_schedule_confirmation("<html><body><h2>You have 11 more scheduled exports</h2></body></html>"))
 
     def test_a_one_off_export_is_not_a_schedule(self):
         self.assertIsNone(takeout.parse_schedule_confirmation(ONE_OFF))
@@ -36,12 +50,14 @@ class ParseScheduleConfirmationTests(unittest.TestCase):
     def test_other_pages_and_hidden_script_text_are_not_confirmations(self):
         self.assertIsNone(takeout.parse_schedule_confirmation(""))
         self.assertIsNone(takeout.parse_schedule_confirmation("<html><body><h1>Create a new export</h1></body></html>"))
-        hidden = "<html><body><script>var s = 'export created every 2 months for 1 year';</script><p>Choose data</p></body></html>"
+        hidden = "<html><body><script>var s = 'export created every month for 1 year';</script><p>Choose data</p></body></html>"
         self.assertIsNone(takeout.parse_schedule_confirmation(hidden))
 
     def test_a_different_frequency_is_not_accepted(self):
-        page = "<html><body><h1>Export created</h1><p>Export every 3 months for 1 year</p></body></html>"
-        self.assertIsNone(takeout.parse_schedule_confirmation(page))
+        for frequency in ("every 2 months for 1 year", "every 3 months for 1 year"):
+            with self.subTest(frequency=frequency):
+                page = f"<html><body><h1>Export created</h1><p>Export {frequency}</p></body></html>"
+                self.assertIsNone(takeout.parse_schedule_confirmation(page))
 
 
 if __name__ == "__main__":

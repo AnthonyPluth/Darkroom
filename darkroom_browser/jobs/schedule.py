@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import calendar
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from darkroom_browser import selectors
+from darkroom_browser.config import env
 from darkroom_browser.context import Browser, Cancelled, JobContext
 from darkroom_browser.jobs.session import UnexpectedPage, ensure_signed_in
 from darkroom_browser.pages import takeout
@@ -13,7 +16,8 @@ CLICK_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("go to the delivery step", selectors.EXPORT_NEXT_STEP),
     ("open the delivery menu", selectors.EXPORT_DELIVERY_MENU),
     ("send the download link by email", selectors.EXPORT_DELIVERY_EMAIL),
-    ("export every 2 months for 1 year", selectors.EXPORT_FREQUENCY_RECURRING),
+    ("export every month for 1 year", selectors.EXPORT_FREQUENCY_MONTHLY),
+    ("export only new and updated items after the first", selectors.EXPORT_ONLY_NEW_AND_UPDATED),
     ("open the file type menu", selectors.EXPORT_TYPE_MENU),
     ("choose .zip", selectors.EXPORT_TYPE_ZIP),
     ("open the file size menu", selectors.EXPORT_SIZE_MENU),
@@ -39,6 +43,26 @@ def one_year_after(created: float) -> float:
     return later.timestamp()
 
 
+def shift_months(moment: datetime, months: int) -> datetime:
+    index = moment.year * 12 + moment.month - 1 + months
+    year, month = divmod(index, 12)
+    month += 1
+    return moment.replace(year=year, month=month, day=min(moment.day, calendar.monthrange(year, month)[1]))
+
+
+def local_zone() -> ZoneInfo:
+    try:
+        return ZoneInfo(env("TZ", "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def adopt(ctx: JobContext, existing: takeout.ExistingSchedule) -> dict[str, object]:
+    ctx.progress("Takeout already has a schedule; recording it")
+    first = shift_months(existing.next_start.replace(tzinfo=local_zone()), 1 - existing.next_number)
+    return {"schedule_created": first.timestamp(), "schedule_end": shift_months(first, 12).timestamp()}
+
+
 def drive(ctx: JobContext, browser: Browser) -> None:
     for step, selector in CLICK_SEQUENCE:
         ctx.progress(step)
@@ -52,10 +76,10 @@ def drive(ctx: JobContext, browser: Browser) -> None:
             raise ScheduleNotConfirmed(f"the click on Create export did not finish ({type(error).__name__}); check Takeout before trying again") from error
 
 
-def await_confirmation(ctx: JobContext, browser: Browser) -> None:
+def await_confirmation(ctx: JobContext, browser: Browser, before: takeout.ExistingSchedule | None = None) -> None:
     for attempt in range(CONFIRM_POLLS + 1):
         page = browser.content()
-        if takeout.parse_schedule_confirmation(page) is not None:
+        if takeout.parse_schedule_confirmation(page) is not None and (before is None or takeout.parse_existing_schedule(page) != before):
             return
         if takeout.classify(page) in (takeout.SIGN_IN_NEEDED, takeout.VERIFY_ITS_YOU):
             raise ScheduleNotConfirmed("Takeout showed a sign-in page after Create export; check Takeout before trying again")
@@ -65,12 +89,21 @@ def await_confirmation(ctx: JobContext, browser: Browser) -> None:
     raise ScheduleNotConfirmed("Takeout did not confirm a recurring export; check Takeout before trying again")
 
 
-def create_schedule(ctx: JobContext) -> dict[str, object]:
+def create_schedule(ctx: JobContext, adopt_existing: bool = True) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
+    page = browser.content()
+    before = takeout.parse_existing_schedule(page)
+    if adopt_existing:
+        if before is not None:
+            if not before.is_monthly:
+                raise ScheduleNotConfirmed("Takeout's schedule is not monthly; change it in Takeout before Darkroom records it")
+            return adopt(ctx, before)
+        if takeout.has_schedule_banner(page):
+            raise ScheduleNotConfirmed("Takeout shows scheduled exports that Darkroom could not read; check Takeout before trying again")
     drive(ctx, browser)
     try:
-        await_confirmation(ctx, browser)
+        await_confirmation(ctx, browser, before)
     except (Cancelled, ScheduleNotConfirmed):
         raise
     except Exception as error:
