@@ -18,6 +18,8 @@ class ManagedAssetCatalogTests(unittest.TestCase):
         self.engine = db.make_engine(own_database_url(self))
         self.addCleanup(self.engine.dispose)
         db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.head_revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
         with self.engine.begin() as connection:
             connection.execute(insert(Person), [
                 {"id": 1, "name": "Jo", "slug": "jo", "originals_path": "o", "google_only_path": "g", "created": -0.125},
@@ -156,6 +158,6 @@ class ManagedAssetCatalogTests(unittest.TestCase):
                 config.attributes["connection"] = connection
                 command.downgrade(config, "0026")
             with self.engine.connect() as connection:
-                self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0027")
+                self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), self.head_revision)
                 self.assertEqual(connection.execute(select(ManagedAssetVersion.metadata_snapshot)).scalar_one(), SNAPSHOT)
                 self.assertEqual(len(connection.execute(select(ManagedAssetOrigin)).all()), int(origins_present))

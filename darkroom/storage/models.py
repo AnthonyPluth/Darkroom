@@ -159,6 +159,7 @@ class ManagedAssetVersion(Base):
                         name="ck_managed_asset_versions_verified"),
         CheckConstraint("state != 'external' OR library_id IS NOT NULL", name="ck_managed_asset_versions_external"),
         Index("ix_managed_asset_versions_owner_state", "person_id", "owner_id", "state"),
+        Index("ix_managed_asset_versions_pixel_binding", "id", "person_id", "owner_id", "asset_id", "sha1", "bytes", unique=True),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
@@ -236,6 +237,7 @@ class MediaItem(Base):
         UniqueConstraint("person_id", "path", name="uq_media_items_person_path"),
         Index("ix_media_items_person_sha1", "person_id", "sha1"),
         Index("ix_media_items_person_captured", "person_id", "captured_utc"),
+        Index("ix_media_items_pixel_source_binding", "id", "person_id", unique=True),
         one_of("source", ("phone", "takeout"), "ck_media_items_source"),
         one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown"), "ck_media_items_time_source"),
         one_of("gps_source", ("exif", "google", "none"), "ck_media_items_gps_source"),
@@ -333,6 +335,7 @@ class PixelCopy(Base):
     __table_args__ = (
         UniqueConstraint("pixel_id", "item_id", name="uq_pixel_copies_pixel_item"),
         Index("ix_pixel_copies_pixel_state", "pixel_id", "state"),
+        Index("ix_pixel_copies_source_binding", "id", "pixel_id", "item_id", "person_id", unique=True),
         one_of("state", ("queued", "placed", "pruned"), "ck_pixel_copies_state"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -349,6 +352,42 @@ class PixelCopy(Base):
     requeued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     always_send: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     seen_again_at: Mapped[float | None] = mapped_column(Float)
+
+
+class ManagedPixelSource(Base):
+    __tablename__ = "managed_pixel_sources"
+    __table_args__ = (
+        UniqueConstraint("copy_id", "generation", "google_account_id", name="uq_managed_pixel_sources_generation"),
+        ForeignKeyConstraint(["copy_id", "pixel_id", "item_id", "person_id"],
+                             ["pixel_copies.id", "pixel_copies.pixel_id", "pixel_copies.item_id", "pixel_copies.person_id"],
+                             ondelete="RESTRICT", name="fk_managed_pixel_sources_copy"),
+        ForeignKeyConstraint(["item_id", "person_id"], ["media_items.id", "media_items.person_id"],
+                             ondelete="RESTRICT", name="fk_managed_pixel_sources_item"),
+        ForeignKeyConstraint(["version_id", "person_id", "owner_id", "asset_id", "sha1", "bytes"],
+                             ["managed_asset_versions.id", "managed_asset_versions.person_id", "managed_asset_versions.owner_id",
+                              "managed_asset_versions.asset_id", "managed_asset_versions.sha1", "managed_asset_versions.bytes"],
+                             ondelete="RESTRICT", name="fk_managed_pixel_sources_version"),
+        CheckConstraint("generation >= 0 AND bytes >= 0", name="ck_managed_pixel_sources_counts"),
+        CheckConstraint("length(destination_email) > 0", name="ck_managed_pixel_sources_destination"),
+        Index("ix_managed_pixel_sources_version", "version_id"),
+        Index("ix_managed_pixel_sources_item", "item_id", "person_id"),
+        Index("ix_managed_pixel_sources_account", "google_account_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    copy_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    pixel_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    person_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    version_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    sha1: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    google_account_id: Mapped[int] = mapped_column(ForeignKey("google_accounts.id", ondelete="RESTRICT"), nullable=False)
+    destination_email: Mapped[str] = mapped_column(String, nullable=False)
+    copy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class DuplicateRemoval(Base):
