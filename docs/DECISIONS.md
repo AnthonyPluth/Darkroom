@@ -1,6 +1,6 @@
 # Decisions
 
-Answers to the owner's questions in issues #10 and #199, copied here as agents reach them. Until an item is answered, the proposed default in the issue applies.
+Answers to the owner's questions in issues #10, #199 and #259, copied here as agents reach them. Until an item is answered, the proposed default in the issue applies. Historical decisions below describe the implementation they authorised; the #259 section records which storage assumptions are superseded as a target, without claiming that the migration has shipped.
 
 | Item | Decision | Source |
 | --- | --- | --- |
@@ -23,3 +23,24 @@ Answers to the owner's questions in issues #10 and #199, copied here as agents r
 | Pixel flooding (#199, Nov 6, decision 4) | The per-Pixel folder is capped by size (`PIXEL_FOLDER_CAP_GB`, default 50); the next photos go in only after earlier ones are confirmed and pruned | #199, #216 |
 | Late Immich photos (#199, Nov 6, decision 5) | Every photo that arrives in Immich is sent to the Pixel, even if that person's Takeout already has a match | #199, #216 |
 | Duplicates on Unraid (#234, Nov 7) | In the owner's words: "Let's make sure we're not storing duplicate images permanently - figure out which one is higher quality and keep that one. If both images are identical, get rid of the duplicate." On how it goes: "if a duplicate exists on Unraid, delete the duplicate", with no trash area. When the Immich reconcile stores a phone original that matches a Takeout copy in `google-only/` (automatic tier 1 or 2), identical copies keep the phone original; otherwise the Takeout copy is kept only if it has strictly more pixels, and the other copy is deleted. Byte count and metadata never make a phone original lose. This supersedes "dedupe deletes nothing on Unraid" (promise 2) and the no-deletion half of promise 1 for the losing copy of a matched pair only, never anything else | #234, #199 |
+
+## Immich-managed storage (#259, 2026-11-09)
+
+**Owner decision:** Immich manages and organises the library. Darkroom is a coordinator and does not keep another permanent photo library. Takeout extras go through Immich's API into its own managed storage; Darkroom must never write into Immich's filesystem directly. [Issue #259](https://github.com/AnthonyPluth/Darkroom/issues/259) records the decision; [the approved design](design/immich-managed-storage.md) defines the target, evidence and implementation gates.
+
+The ownership decision and detailed design are **owner approved, with sign-off recorded on #259**. Gated implementation follow-ups are authorised (#265, #266); API upload/metadata assumptions remain unverified on a live server. Production uploads, cleanup and migration remain blocked by live validation and the applicable safety and backup/restore gates. Keep the dedicated Darkroom share and all current safety checks until those follow-ups complete.
+
+| Earlier decision | Effect of #259 |
+| --- | --- |
+| #199 question 2: permanent copies in `originals/` alongside the Pixel copies | Superseded as the target. Immich holds the durable original; temporary API downloads feed the separate, capped Pixel transport folder |
+| #199 legacy import and first-run order | Read-only legacy intake and Takeout-first ordering remain. The destination becomes a verified managed Immich asset, not a new permanent `originals/legacy/` copy; existing rows and sources require backfill |
+| #199 question 6 and per-destination confirmation | Preserved: an unreversed automatic tier 1/2 Takeout match for that Pixel's Google account and person is the pruning signal. Only the source for placement/reversal changes from `originals/` to a verified Immich original |
+| #199 reversal, size cap and late Immich arrivals | Preserve requeue, the 50 GB default cap and the always-send rule for independently arriving phone resources. Source receipts must prevent Darkroom's Takeout uploads from becoming an import loop; detailed routing follows the approved design and its validation gates |
+| External libraries for `google-only/` and library rescans | Superseded as the destination for new imports. Do not detach old libraries until custody and metadata are verified and all mappings are migrated |
+| #234 local losing-copy deletion | Its quality preference remains. Its authority to unlink a losing Darkroom-owned file does not authorise deleting, trashing or replacing an Immich asset. The approved first version requires owner resolution of distinct-byte quality conflicts; automatic Immich deletion would require a separate explicit decision and safety review |
+| #199 safety of a durable copy in both Immich and `originals/` | Superseded for the target. There is no independent Darkroom copy; an Immich database/media backup and rehearsed restore are prerequisites, and API read-back is not a backup |
+| iPhone behaviour, browser credential policy and alert delivery | Unchanged by #259. Darkroom gains no authority over phone clearing, typing credentials or a new delivery channel |
+
+**Proposals, not owner decisions yet:** 14 days of successful-import retention after whole-export verification, pinned unresolved imports/reviews, no automatic Immich asset deletion/replacement, separately gated missing-field enrichment, and the staged migration/rollback sequence in the design. Existing `media_items` identities, `duplicate_removals` history and `pixel_copies` obligations are preserved through additive backfill; no migration automatically deletes old source folders.
+
+Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, multipart fields and `created`/`duplicate` responses. It does not prove a successful upload, cross-user isolation, metadata round trip or cleanup safety on the deployment. The prior #202 spike observed reads/checksums only. A disposable-instance write spike and the stronger-model deletion-safety review requested in #259 remain gates before implementation.
