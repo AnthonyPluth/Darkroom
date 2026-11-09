@@ -212,11 +212,20 @@ class ExistingScheduleTests(unittest.TestCase):
                 self.assertEqual(browser.clicks, [])
 
     def test_renewing_creates_a_new_schedule_even_while_one_is_running(self):
-        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)], after_click={selectors.EXPORT_CREATE: [STARTED_MONTHLY]})
+        started = STARTED_MONTHLY.replace("December 9, 2026", "December 10, 2026")
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)], after_click={selectors.EXPORT_CREATE: [started]})
         ctx, _, _ = context_for(browser, wall=CREATED)
         result = renew.renew_schedule(ctx)
         self.assertEqual(browser.clicks, RECORDED_CLICKS)
         self.assertEqual(result["schedule_created"], CREATED)
+
+    def test_renewing_is_not_confirmed_by_a_page_that_did_not_change_after_create(self):
+        unchanged = banner_page(MONTHLY_BANNER + "<div>Google is creating a copy of data from Google Photos</div>")
+        browser = ScriptedBrowser([unchanged], after_click={selectors.EXPORT_CREATE: [unchanged]})
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with self.assertRaises(schedule.ScheduleNotConfirmed):
+            renew.renew_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
 
     def test_the_schedule_job_creates_when_there_is_no_banner(self):
         browser = export_page()

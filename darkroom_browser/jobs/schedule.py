@@ -67,10 +67,10 @@ def drive(ctx: JobContext, browser: Browser) -> None:
             raise ScheduleNotConfirmed(f"the click on Create export did not finish ({type(error).__name__}); check Takeout before trying again") from error
 
 
-def await_confirmation(ctx: JobContext, browser: Browser) -> None:
+def await_confirmation(ctx: JobContext, browser: Browser, before: takeout.ExistingSchedule | None = None) -> None:
     for attempt in range(CONFIRM_POLLS + 1):
         page = browser.content()
-        if takeout.parse_schedule_confirmation(page) is not None:
+        if takeout.parse_schedule_confirmation(page) is not None and (before is None or takeout.parse_existing_schedule(page) != before):
             return
         if takeout.classify(page) in (takeout.SIGN_IN_NEEDED, takeout.VERIFY_ITS_YOU):
             raise ScheduleNotConfirmed("Takeout showed a sign-in page after Create export; check Takeout before trying again")
@@ -83,18 +83,18 @@ def await_confirmation(ctx: JobContext, browser: Browser) -> None:
 def create_schedule(ctx: JobContext, adopt_existing: bool = True) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
+    page = browser.content()
+    before = takeout.parse_existing_schedule(page)
     if adopt_existing:
-        page = browser.content()
-        existing = takeout.parse_existing_schedule(page)
-        if existing is not None:
-            if not existing.is_monthly:
+        if before is not None:
+            if not before.is_monthly:
                 raise ScheduleNotConfirmed("Takeout's schedule is not monthly; change it in Takeout before Darkroom records it")
-            return adopt(ctx, existing)
+            return adopt(ctx, before)
         if takeout.has_schedule_banner(page):
             raise ScheduleNotConfirmed("Takeout shows scheduled exports that Darkroom could not read; check Takeout before trying again")
     drive(ctx, browser)
     try:
-        await_confirmation(ctx, browser)
+        await_confirmation(ctx, browser, before)
     except (Cancelled, ScheduleNotConfirmed):
         raise
     except Exception as error:
