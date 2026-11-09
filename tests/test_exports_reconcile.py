@@ -1,15 +1,14 @@
 import json
-import sqlite3
 import unittest
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 
 from darkroom.domain import browser_jobs, exports
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount
-from tests.shared import add_person, own_database
+from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database
 
 DAY = 86400.0
 
@@ -252,15 +251,10 @@ class CheckingTests(ReconcileCase):
         self.assertEqual(len(self.status_jobs()), 1)
 
     def test_a_locked_database_is_busy_and_not_an_account_that_has_a_job_open(self):
-        database = self.engine.url.database
-        impatient = create_engine(f"sqlite:///{database}", connect_args={"timeout": 0})
-        self.addCleanup(impatient.dispose)
-        holder = sqlite3.connect(database, timeout=0, isolation_level=None)
-        self.addCleanup(holder.close)
-        holder.execute("BEGIN IMMEDIATE")
-        with db.session(impatient) as opened, self.assertRaises(browser_jobs.Busy):
-            exports.check_now(opened, NOW)
-        holder.execute("ROLLBACK")
+        impatient = impatient_engine(self, self.engine, 0.05)
+        with another_writer_holds_the_lock(self.engine):
+            with db.session(impatient) as opened, self.assertRaises(browser_jobs.Busy):
+                exports.check_now(opened, NOW)
         self.assertEqual(self.status_jobs(), [])
         with db.session(self.engine) as opened:
             queued, skipped = exports.check_now(opened, NOW)

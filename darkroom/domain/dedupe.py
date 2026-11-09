@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import accounts, events, media, pixel_folder
 from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
+from darkroom.storage import db
 from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, ReviewItem, Setting
 from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
 
@@ -401,6 +402,7 @@ def confirm_served_matches(opened: Session, account_id: int, served: set[int]) -
 
 
 def reverse(opened: Session, decision_id: int, now: float, by: DecidedBy) -> DedupeDecision:
+    db.write_lock(opened)
     row = opened.get(DedupeDecision, decision_id)
     if row is None:
         raise LookupError("no such dedupe decision")

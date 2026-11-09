@@ -49,7 +49,7 @@ def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Resp
         body = validate.json_object(request.body, limit=64 * 1024)
         account_id = validate.whole_number(body, "account_id", minimum=1)
         kind = validate.text(body, "kind", limit=40)
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             job = browser_jobs.enqueue(opened, account_id, kind, None, now())
             reply = browser_jobs.as_dict(job, request.settings)
     except validate.Invalid as error:

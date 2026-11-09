@@ -529,7 +529,7 @@ def unmatched_by_person(opened: Session) -> dict[str, int]:
         run = opened.execute(
             select(ImportRun).join(Export, Export.id == ImportRun.export_id)
             .where(Export.account_id == account_id, ImportRun.status == "done", ImportRun.unmatched_by_person.is_not(None))
-            .order_by(ImportRun.finished.desc(), ImportRun.id.desc()).limit(1)
+            .order_by(ImportRun.finished.desc().nulls_last(), ImportRun.id.desc()).limit(1)
         ).scalar_one_or_none()
         counts = json.loads(run.unmatched_by_person) if run is not None and run.unmatched_by_person else {}
         for slug, count in counts.items():

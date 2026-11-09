@@ -63,7 +63,7 @@ def answer(request: Request, work: Callable[[Session, float], BrowserJob | None]
 def reply_with(request: Request, work: Callable[[Session, float], dict[str, object]]) -> Response:
     moment = now()
     try:
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             browser_jobs.worker_seen(opened, moment)
             body = work(opened, moment)
     except validate.Invalid as error:

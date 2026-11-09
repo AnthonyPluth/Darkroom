@@ -44,7 +44,7 @@ def imported_at(opened: Session, export: Export) -> float | None:
 
 def latest_done_run(opened: Session, export: Export) -> ImportRun | None:
     return opened.execute(
-        select(ImportRun).where(ImportRun.export_id == export.id, ImportRun.status == "done").order_by(ImportRun.finished.desc(), ImportRun.id.desc()).limit(1)
+        select(ImportRun).where(ImportRun.export_id == export.id, ImportRun.status == "done").order_by(ImportRun.finished.desc().nulls_last(), ImportRun.id.desc()).limit(1)
     ).scalar_one_or_none()
 
 

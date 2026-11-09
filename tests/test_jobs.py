@@ -69,6 +69,25 @@ class SchedulerTests(unittest.TestCase):
         scheduler.jobs["slow"].worker.join(5)
         self.assertEqual([entry for entry in ran if entry[0] == "slow"], [("slow", 0), ("slow", 30)])
 
+    def test_a_job_that_cannot_get_the_write_lock_is_postponed_and_runs_again_on_the_next_tick(self):
+        from unittest import mock
+
+        from sqlalchemy.exc import OperationalError
+
+        scheduler = jobs.Scheduler()
+        calls = []
+
+        def locked_out(now):
+            calls.append(now)
+            raise OperationalError("SELECT", {}, type("LockNotAvailable", (Exception,), {"sqlstate": "55P03"})("lock timeout"))
+
+        scheduler.every("locked", 10, locked_out)
+        with mock.patch.object(jobs.monitoring, "log") as logged:
+            self.assertEqual(scheduler.run_due(0), ["locked"])
+            self.assertEqual(scheduler.run_due(10), ["locked"])
+        self.assertEqual(calls, [0, 10])
+        logged.assert_called_with("job postponed: the database was busy", job="locked")
+
     def test_a_job_with_its_own_thread_that_fails_is_logged_and_runs_again(self):
         from unittest import mock
 

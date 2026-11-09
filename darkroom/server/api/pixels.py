@@ -34,7 +34,7 @@ def create_pixel(request: Annotated[Request, contract.PixelCreateBody]) -> Annot
         account_id = validate.whole_number(body, "google_account_id", minimum=1)
         device_id = syncthing_id(body)
         people_ids = validate.whole_numbers(body, "people_ids") if validate.present(body, "people_ids") else None
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             pixel = pixels.create(opened, name, device_id, account_id, people_ids, now())
             reply = pixels.as_dict(opened, pixel)
     except validate.Invalid as error:

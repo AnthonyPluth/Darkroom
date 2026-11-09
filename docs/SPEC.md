@@ -227,7 +227,7 @@ The web UI is dark mode only: one theme, with no light theme and no theme switch
 
 ## Data model
 
-A single SQLite database is enough. Photos never enter it, only their index and the decisions made about them.
+A single database is enough: SQLite by default, in the data folder, or PostgreSQL when `DATABASE_URL` says so ([docs/deploy/postgres.md](deploy/postgres.md)). Photos never enter it, only their index and the decisions made about them.
 
 | Entity | Key fields |
 | --- | --- |
@@ -258,7 +258,7 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 **Stack**
 
-- Backend: Python 3.14, Poetry, SQLAlchemy + Alembic on SQLite, in-app OIDC sign-in with Pocket ID (as Waypoint does). A web session lasts until sign-out, an admin revoke (`run.py revoke-sessions`) or loss of access, which a daily background check against the provider's refresh token detects; a session the provider gave no refresh token for ends after 30 days.
+- Backend: Python 3.14, Poetry, SQLAlchemy + Alembic on SQLite (the default) or PostgreSQL, in-app OIDC sign-in with Pocket ID (as Waypoint does). A web session lasts until sign-out, an admin revoke (`run.py revoke-sessions`) or loss of access, which a daily background check against the provider's refresh token detects; a session the provider gave no refresh token for ends after 30 days.
 - Frontend: Svelte 5, Vite, Tailwind 4, bits-ui.
 - Browser: Playwright for Python.
 - Media: exiftool for EXIF and XMP sidecars, Pillow + imagehash for perceptual hashes, a GPS-to-time-zone lookup library.
@@ -313,7 +313,7 @@ Order of the first imports: Takeout first, then the legacy library, then the Imm
 - A phone original is deleted only when nothing depends on it: no dedupe decision matches it, no Pixel copy of it was placed or pruned, it is not confirmed, and every Pixel of the person uploads to the Google account whose Takeout the copy came from (that account already has the better copy). Otherwise both stay. A deleted phone original is not sent to a Pixel and its queued copies are dropped; a kept one is sent as before (decision 5) and keeps its `confirmed_in_google`. Only phone items carry that flag, so deleting a Takeout copy loses no confirmation.
 - Before a Takeout copy goes, its Google metadata (location, description) fills the kept original's XMP sidecar where the original has no value of its own, through the same sidecar writer as a tier 1 or 2 match. If that can't be written or checked, nothing is deleted. When the phone original goes, the kept Takeout copy keeps its own sidecar.
 
-The kept copy must be present, a regular file in the same person's library and have the SHA-1 Darkroom recorded before anything is deleted. Each removal is recorded (`duplicate_removals`) before anything is written or deleted, and every condition above is checked again under the database's write lock right before the delete, so a crash is finished on the next run, and a removal whose keeper or conditions changed is refused with an event, never leaving zero copies. Each deletion is a `duplicate_removed` event; a failed or refused one has its own event and is counted in the `immich_reconciled` event. Re-running changes nothing, and a retried import never places a removed Takeout copy again.
+The kept copy must be present, a regular file in the same person's library and have the SHA-1 Darkroom recorded before anything is deleted. Each removal is recorded (`duplicate_removals`) before anything is written or deleted, and every condition above is checked again under the database's write lock right before the delete (on PostgreSQL the same guarantee: every write transaction takes one database-wide advisory lock at its first write, so an import cannot commit between the check and the delete; see [docs/deploy/postgres.md](deploy/postgres.md)), so a crash is finished on the next run, and a removal whose keeper or conditions changed is refused with an event, never leaving zero copies. Each deletion is a `duplicate_removed` event; a failed or refused one has its own event and is counted in the `immich_reconciled` event. Re-running changes nothing, and a retried import never places a removed Takeout copy again.
 
 ## Open questions
 

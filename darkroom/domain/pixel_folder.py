@@ -7,7 +7,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -87,6 +87,7 @@ def in_originals(opened: Session, item: MediaItem) -> Person:
 
 
 def queue(opened: Session, item: MediaItem, now: float, always_send: bool = False) -> int:
+    db.write_lock(opened)
     in_originals(opened, item)
     queued = 0
     for pixel in pixels_serving(opened, item.person_id):
@@ -161,6 +162,7 @@ def prune_copy(photos: Photos, row: PixelCopy, slug: str) -> bool:
 
 def lock_copy(opened: Session, copy_id: int) -> None:
     opened.commit()
+    db.write_lock(opened)
     opened.execute(sql_update(PixelCopy).where(PixelCopy.id == copy_id).values(id=PixelCopy.id))
 
 
@@ -204,6 +206,7 @@ def revive(opened: Session, row: PixelCopy, now: float) -> None:
 
 
 def requeue(opened: Session, item_id: int, now: float) -> int:
+    db.write_lock(opened)
     rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item_id, PixelCopy.state == "pruned")).scalars().all()
     requeued = 0
     for row in rows:
@@ -217,6 +220,7 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
 
 
 def requeue_unconfirmed(opened: Session, pixel: Pixel, people: set[int] | None, now: float) -> int:
+    db.write_lock(opened)
     query = select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "pruned").order_by(PixelCopy.id)
     if people is not None:
         query = query.where(PixelCopy.person_id.in_(people))

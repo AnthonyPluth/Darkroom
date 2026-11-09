@@ -185,7 +185,7 @@ def listing(opened: Session, status: str | None, now: float, after: int | None =
         query = query.where(ReviewItem.status == status)
     if after is not None:
         query = query.where(ReviewItem.id > after)
-    order = (ReviewItem.id,) if status == "pending" else (ReviewItem.resolved_at.desc(), ReviewItem.id.desc())
+    order = (ReviewItem.id,) if status == "pending" else (ReviewItem.resolved_at.desc().nulls_last(), ReviewItem.id.desc())
     limit = LIST_LIMIT if status == "pending" else max(LIST_LIMIT, undoable_count(opened, status, now))
     rows = opened.execute(query.order_by(*order).limit(limit)).all()
     return [summary(opened, review, decision) for review, decision in rows]

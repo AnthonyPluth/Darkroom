@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, browser_jobs
@@ -21,8 +21,8 @@ def alert_dict(alert: Alert) -> dict[str, object]:
 def photo_counts(opened: Session) -> dict[int, tuple[int, int, int]]:
     phone = MediaItem.source == "phone"
     query = (select(MediaItem.person_id, func.count(MediaItem.id),
-                    func.sum(func.iif(MediaItem.gps_source != "none", 1, 0)),
-                    func.sum(func.iif(MediaItem.time_source == "unknown", 1, 0)))
+                    func.sum(case((MediaItem.gps_source != "none", 1), else_=0)),
+                    func.sum(case((MediaItem.time_source == "unknown", 1), else_=0)))
              .where(phone).group_by(MediaItem.person_id))
     return {person_id: (int(total), int(with_gps or 0), int(unknown or 0)) for person_id, total, with_gps, unknown in opened.execute(query).all()}
 

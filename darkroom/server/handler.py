@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 
 from darkroom import monitoring
 from darkroom.config import Settings
@@ -47,6 +48,9 @@ def dispatch(request: Request) -> Response:
     return response
 
 
+BUSY_MESSAGE = "Darkroom is busy with another change; try again in a moment"
+
+
 def sets_session_cookie(response: Response) -> bool:
     return any(baked.startswith(auth.SESSION_COOKIE + "=") for baked in response.cookies)
 
@@ -59,6 +63,12 @@ def line_breaks_in(response: Response) -> bool:
 def safe_dispatch(request: Request) -> Response:
     try:
         response = dispatch(request)
+    except OperationalError as error:
+        if not db.is_busy(error):
+            monitoring.report()
+            return error_response("something went wrong", 500)
+        monitoring.log("request postponed: the database was busy", path=request.path)
+        return error_response(BUSY_MESSAGE, 503)
     except Exception:
         monitoring.report()
         return error_response("something went wrong", 500)

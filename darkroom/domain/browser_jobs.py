@@ -157,9 +157,10 @@ def mark_schedule_checked(opened: Session, account_id: int, now: float, found: b
 
 def lock_account(opened: Session, account_id: int) -> GoogleAccount:
     try:
+        db.write_lock(opened)
         locked = opened.execute(update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id).returning(GoogleAccount.id)).scalar_one_or_none()
     except OperationalError as error:
-        if "database is locked" not in str(error.orig):
+        if not db.is_busy(error):
             raise
         raise Busy("Darkroom is busy with another change; try again in a moment") from None
     if locked is None:
@@ -169,9 +170,10 @@ def lock_account(opened: Session, account_id: int) -> GoogleAccount:
 
 def lock_scheduled_accounts(opened: Session) -> None:
     try:
+        db.write_lock(opened)
         opened.execute(update(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).values(id=GoogleAccount.id))
     except OperationalError as error:
-        if "database is locked" not in str(error.orig):
+        if not db.is_busy(error):
             raise
         raise Busy("Darkroom is busy with another change; try again in a moment") from None
 

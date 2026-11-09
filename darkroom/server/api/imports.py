@@ -71,7 +71,7 @@ def request(request: Request) -> Annotated[Response, contract.ImportQueued]:
     if wanted is None:
         return error_response("no such export", 404)
     try:
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             export = run.request_import(opened, wanted, Photos(request.settings.photos_root))
             reply = {"export_id": export.id, "status": export.status, "stage": export.stage}
     except LookupError:

@@ -169,7 +169,7 @@ def callback(request: Request) -> Response:
 def logout(request: Request) -> Response:
     settings = request.settings
     token = cookies_of(request).get(SESSION_COOKIE)
-    with db.session(engine_of(request)) as opened:
+    with db.session(engine_of(request), writing=True) as opened:
         target = oidc.logout(opened, settings, token, now())
     monitoring.log("signed out")
     return redirect(target, (cleared(settings, SESSION_COOKIE),))

@@ -25,7 +25,7 @@ def create_account(request: Annotated[Request, contract.AccountCreateBody]) -> A
         body = validate.json_object(request.body, limit=MAX_BODY)
         email = validate.email(body, "email")
         person_id = validate.whole_number(body, "default_person_id", minimum=1)
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             account = accounts.create(opened, email, person_id, now())
             reply = accounts.as_dict(opened, account)
     except validate.Invalid as error:
@@ -103,7 +103,7 @@ def schedule_checked(request: Annotated[Request, contract.ScheduleCheckedBody]) 
     try:
         body = validate.json_object(request.body, limit=MAX_BODY) if request.body else {}
         found = validate.boolean(body, "found", required=False)
-        with db.session(engine_of(request)) as opened:
+        with db.session(engine_of(request), writing=True) as opened:
             reply = browser_jobs.as_dict(renewal.checked(opened, request.settings, account_id, found, now()), request.settings)
     except validate.Invalid as error:
         return error_response(str(error), 400)

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
@@ -54,6 +55,11 @@ class Scheduler:
     def guarded(self, job: Registered, now: float) -> None:
         try:
             job.run(now)
+        except OperationalError as error:
+            if not db.is_busy(error):
+                monitoring.log("job failed", job=job.name, error=type(error).__name__)
+                return
+            monitoring.log("job postponed: the database was busy", job=job.name)
         except Exception as error:
             monitoring.log("job failed", job=job.name, error=type(error).__name__)
 
@@ -135,7 +141,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     found_pusher = pusher if pusher is not None else pusher_of(settings)
 
     def tick_alerts(at: float) -> None:
-        with db.session(engine) as opened:
+        with db.session(engine, writing=True) as opened:
             downloads.watch_expiry(opened, settings, at)
             renewal.reword_ended(opened, settings, at)
             alerts.tick(opened, settings, at)
@@ -152,7 +158,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
     def expire_browser_leases(at: float) -> None:
-        with db.session(engine) as opened:
+        with db.session(engine, writing=True) as opened:
             expired = browser_jobs.expire_leases(opened, settings, at)
             downloads.jobs_failed(opened, expired, at)
             renewal.jobs_failed(opened, settings, expired, at)
@@ -170,7 +176,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             monitoring.log("export status checks queued", count=queued)
 
     def watch_expiry(at: float) -> None:
-        with db.session(engine) as opened:
+        with db.session(engine, writing=True) as opened:
             opened_now = downloads.watch_expiry(opened, settings, at)
         if opened_now:
             monitoring.log("export expiry alerts opened", count=opened_now)

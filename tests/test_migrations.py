@@ -5,11 +5,12 @@ from pathlib import Path
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.schema import metadata
+from tests.shared import on_postgres, own_database_url
 
 
 class MigrationTests(unittest.TestCase):
@@ -197,7 +198,7 @@ class MigrationTests(unittest.TestCase):
             config.attributes["connection"] = connection
             command.upgrade(config, "0008")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
-            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, FALSE)")
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0023")
@@ -423,7 +424,7 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'Pixel', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'phone', 'jo/originals/a.jpg', 'ab', 3, 1.0)")
-            connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, state, bytes, sha1, queued_at, placed_at, always_send) VALUES (1, 1, 1, 'placed', 3, 'ab', 2.0, 3.0, 1)")
+            connection.exec_driver_sql("INSERT INTO pixel_copies (pixel_id, item_id, person_id, state, bytes, sha1, queued_at, placed_at, always_send) VALUES (1, 1, 1, 'placed', 3, 'ab', 2.0, 3.0, TRUE)")
         db.migrate(self.engine)
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT state, placed_at, seen_again_at FROM pixel_copies").all(), [("placed", 3.0, None)])
@@ -574,7 +575,8 @@ class MigrationTests(unittest.TestCase):
             for key, kind, subject in [("sign-in:2", "sign_in_needed", "a@x.test"), ("unmatched:1", "originals_unmatched", "jo"),
                                        ("immich:failed:3:1", "failure", "jo"), ("expiring:3", "export_expiring", "export 3"),
                                        ("browser:failed:4", "failure", "4"), ("other", "failure", "nobody")]:
-                connection.exec_driver_sql("INSERT INTO alerts (key, kind, subject, message, opened, sent_count) VALUES (?, ?, ?, 'm', 1.0, 1)", (key, kind, subject))
+                connection.execute(text("INSERT INTO alerts (key, kind, subject, message, opened, sent_count) VALUES (:key, :kind, :subject, 'm', 1.0, 1)"),
+                                   {"key": key, "kind": kind, "subject": subject})
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0023")
@@ -595,8 +597,8 @@ class MigrationTests(unittest.TestCase):
             config.attributes["connection"] = connection
             command.upgrade(config, "0011")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
-            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, 1)")
-            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (2, 1, 'Old', 'h2', 1.0, 0)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (1, 1, 'iPhone', 'h', 1.0, TRUE)")
+            connection.exec_driver_sql("INSERT INTO devices (id, person_id, name, token_hash, created, cleanup_enabled) VALUES (2, 1, 'Old', 'h2', 1.0, FALSE)")
             connection.exec_driver_sql("INSERT INTO phone_assets (device_id, photokit_id, created) VALUES (1, 'A', 1.0)")
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
@@ -617,6 +619,86 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT name, cleanup_enabled FROM devices ORDER BY id").all(), [("iPhone", 1), ("Old", 0)])
             self.assertEqual(connection.exec_driver_sql("SELECT photokit_id FROM phone_assets").scalars().all(), ["A"])
+
+
+if on_postgres():
+
+    class PostgresMigrationTests(MigrationTests):
+        def setUp(self):
+            self.engine = db.make_engine(own_database_url(self))
+            self.addCleanup(self.engine.dispose)
+
+        def pixels_sequence(self):
+            with self.engine.connect() as connection:
+                return connection.exec_driver_sql("SELECT COALESCE(pg_sequence_last_value('pixels_id_seq'), 0)").scalars().all()
+
+        def test_0022_pixel_ids_never_reused_keeps_every_pixels_people_and_copies_and_can_be_undone(self):
+            config = db.alembic_config(self.engine)
+            with self.engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.upgrade(config, "0021")
+                connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+                connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+                connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'One', 1, 1.0), (2, 'Two', 1, 1.0)")
+                connection.exec_driver_sql("INSERT INTO pixel_people (pixel_id, person_id) VALUES (1, 1), (2, 1)")
+                connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'phone', 'jo/originals/a.jpg', 'ab', 3, 1.0)")
+                connection.exec_driver_sql("INSERT INTO pixel_copies (id, pixel_id, item_id, person_id, state, name, bytes, sha1, queued_at, placed_at, always_send, seen_again_at) "
+                                           "VALUES (7, 2, 1, 1, 'placed', 'a.jpg', 3, 'ab', 2.0, 3.0, true, 4.0), (9, 1, 1, 1, 'queued', NULL, 3, 'ab', 2.0, NULL, false, NULL)")
+                connection.exec_driver_sql("INSERT INTO events (time, type, subject) VALUES (1.0, 'pixel_created', '3'), (2.0, 'pixel_deleted', '3'), (3.0, 'import', '40')")
+            kept = ("SELECT id, pixel_id, item_id, person_id, state, name, bytes, sha1, queued_at, placed_at, pruned_at, requeued, always_send, seen_again_at "
+                    "FROM pixel_copies ORDER BY id")
+            with self.engine.connect() as connection:
+                copies = connection.exec_driver_sql(kept).all()
+            db.migrate(self.engine)
+            self.assertEqual(self.pixels_sequence(), [3])
+            with self.engine.begin() as connection:
+                self.assertEqual(connection.exec_driver_sql("SELECT id, name, google_account_id FROM pixels ORDER BY id").all(), [(1, "One", 1), (2, "Two", 1)])
+                self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, person_id FROM pixel_people ORDER BY pixel_id").all(), [(1, 1), (2, 1)])
+                self.assertEqual(connection.exec_driver_sql(kept).all(), copies)
+                self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+                connection.exec_driver_sql("DELETE FROM pixels WHERE id = 2")
+                self.assertEqual(connection.exec_driver_sql("SELECT COUNT(*) FROM pixel_copies WHERE pixel_id = 2").scalar_one(), 0)
+                connection.exec_driver_sql("INSERT INTO pixels (name, google_account_id, created) VALUES ('New', 1, 5.0)")
+                self.assertEqual(connection.exec_driver_sql("SELECT id FROM pixels WHERE name = 'New'").scalar_one(), 4)
+            with self.engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.downgrade(config, "0021")
+            with self.engine.connect() as connection:
+                self.assertEqual(connection.exec_driver_sql("SELECT id, name FROM pixels ORDER BY id").all(), [(1, "One"), (4, "New")])
+                self.assertEqual(connection.exec_driver_sql(kept).all(), copies[1:])
+                self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, person_id FROM pixel_people").all(), [(1, 1)])
+
+        def test_the_deleted_pixel_of_a_database_with_no_pixel_left_is_not_reused_after_migrating(self):
+            config = db.alembic_config(self.engine)
+            with self.engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.upgrade(config, "0021")
+                connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+                connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+                connection.exec_driver_sql("INSERT INTO events (time, type, subject) VALUES (1.0, 'pixel_created', '7'), (2.0, 'pixel_deleted', '7')")
+            db.migrate(self.engine)
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql("INSERT INTO pixels (name, google_account_id, created) VALUES ('New', 1, 5.0)")
+                self.assertEqual(connection.exec_driver_sql("SELECT id FROM pixels").scalar_one(), 8)
+
+        def test_byte_counts_above_two_gibibytes_fit_after_migrating(self):
+            db.migrate(self.engine)
+            big = 5 * 1024**3
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+                connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+                connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+                connection.exec_driver_sql(f"INSERT INTO export_parts (export_id, number, bytes, bytes_done) VALUES (1, 1, {big}, {big})")
+                connection.exec_driver_sql(f"INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'phone', 'jo/originals/a.jpg', 'ab', {big}, 1.0)")
+                connection.exec_driver_sql(f"INSERT INTO legacy_files (person_id, path, bytes, mtime, sha1, status, seen_at) VALUES (1, 'p', {big}, 1.0, 'ab', 'unmatched', 1.0)")
+                connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'One', 1, 1.0)")
+                connection.exec_driver_sql(f"INSERT INTO pixel_copies (pixel_id, item_id, person_id, bytes, sha1, queued_at) VALUES (1, 1, 1, {big}, 'ab', 1.0)")
+
+        def test_migrating_a_second_database_in_the_same_server_leaves_the_first_alone(self):
+            other = db.make_engine(own_database_url(self))
+            self.addCleanup(other.dispose)
+            db.migrate(self.engine)
+            self.assertEqual(inspect(other).get_table_names(), [])
 
 
 if __name__ == "__main__":

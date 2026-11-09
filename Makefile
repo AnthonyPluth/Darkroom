@@ -14,7 +14,7 @@ SEMGREP ?= semgrep
 FLEET ?= tools/fleet
 NPM ?= npm
 
-.PHONY: setup check lint python-lint semgrep test test-parallel fix fleet-checks fleet-sync feature-map feature-map-check \
+.PHONY: setup check lint python-lint semgrep test test-parallel test-pg fix fleet-checks fleet-sync feature-map feature-map-check \
 	api-contract api-contract-check frontend-install frontend-check frontend-typecheck frontend-lint frontend-test frontend-build \
 	verify verify-skill verify-skill-print user-feature-map control-smoke
 
@@ -39,6 +39,12 @@ test-parallel:
 	$(UNITTEST_PARALLEL) --coverage --coverage-rcfile pyproject.toml
 	poetry run coverage json -q -o coverage.json
 	$(FLEET) coverage-floor coverage.json
+
+# The suite against PostgreSQL: TEST_DATABASE_URL is a server (and a role allowed to create databases); every test makes and drops its own database there.
+TEST_DATABASE_URL ?= postgresql://postgres:postgres@localhost:5432/postgres
+
+test-pg:
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) $(UNITTEST_PARALLEL_BASE) -j 4
 
 fix:
 	$(RUFF) check --fix .

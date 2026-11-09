@@ -8,13 +8,13 @@ from unittest import mock
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import takeout_copies
+from darkroom.domain import dedupe, takeout_copies
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import (
     DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, MediaItem, Person, Pixel, PixelCopy, PixelPerson, ReviewItem,
 )
-from tests.shared import add_person, own_database
+from tests.shared import add_person, own_database, try_elsewhere, write_elsewhere
 
 MOMENT = 1_615_000_000.0
 GOOGLE = json.dumps({"description": "A made-up canal", "geoData": {"latitude": 45.4, "longitude": 12.3}})
@@ -99,6 +99,17 @@ class CopiesCase(unittest.TestCase):
 
     def resolve(self, at=2.0):
         return takeout_copies.resolve_person(self.opened, self.photos, self.jo, at, takeout_copies.Tools(self.exif.read, self.exif.write))
+
+    def pending(self, phone_loses=False):
+        if phone_loses:
+            takeout, phone = self.takeout_wins()
+        else:
+            takeout, _ = self.takeout(b"same bytes")
+            phone = self.phone(b"same bytes")
+        (pair,) = takeout_copies.pairs(self.opened, self.jo)
+        with mock.patch.object(takeout_copies, "finish"):
+            takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
+        return takeout, phone
 
     def files(self):
         return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
@@ -293,15 +304,47 @@ class ResolveTests(CopiesCase):
         self.assertEqual([takeout_copies.resolve_person(self.opened, self.photos, who, 2.0).removed for who in (self.jo, sam)], [0, 0])
 
 
-class CrashTests(CopiesCase):
-    def pending(self):
-        takeout, _ = self.takeout(b"same bytes")
-        phone = self.phone(b"same bytes")
-        (pair,) = takeout_copies.pairs(self.opened, self.jo)
-        with mock.patch.object(takeout_copies, "finish"):
-            takeout_copies.resolve(self.opened, self.photos, self.jo, pair, 2.0, takeout_copies.Resolved(), takeout_copies.Tools())
-        return takeout, phone
+class WriterSerialisationTests(CopiesCase):
+    def import_depending_on(self, phone_id):
+        def work(elsewhere):
+            elsewhere.add(DedupeDecision(export_id=self.export.id, account_id=self.account, source_path="Takeout/later.jpg", person_id=self.jo.id, matched_item_id=phone_id,
+                                         tier=1, reason="same SHA-1", decided_by="auto", decided_at=2.5))
+            elsewhere.flush()
+            dedupe.confirm_served_matches(elsewhere, self.account, {self.jo.id})
 
+        return work
+
+    def test_an_import_waits_for_a_removal_that_has_rechecked_and_goes_ahead_once_it_commits(self):
+        takeout, phone = self.pending(phone_loses=True)
+        phone_id, takeout_path, phone_path = phone.id, takeout.path, phone.path
+        self.opened.commit()
+        engine = self.opened.get_bind().engine
+        real, outcome = paths.remove_losing_copy, []
+
+        def imported_meanwhile(*args, **kwargs):
+            outcome.append(try_elsewhere(self, engine, self.import_depending_on(phone_id)))
+            return real(*args, **kwargs)
+
+        with mock.patch.object(paths, "remove_losing_copy", imported_meanwhile):
+            self.assertEqual(self.resolve(at=3.0).removed, 1)
+        self.assertEqual(outcome, ["locked"])
+        self.assertTrue((self.root / takeout_path).is_file())
+        self.assertFalse((self.root / phone_path).exists())
+        self.assertEqual([r.state for r in self.removals()], ["removed"])
+        self.assertEqual(write_elsewhere(self, engine, "UPDATE google_accounts SET session_state = 'ok' WHERE id = :account", account=self.account), "committed")
+        self.assertEqual(self.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path == "Takeout/later.jpg")).scalars().all(), [])
+
+    def test_an_import_that_commits_before_the_removal_rechecks_keeps_the_phone_original(self):
+        takeout, phone = self.pending(phone_loses=True)
+        self.opened.commit()
+        self.assertEqual(try_elsewhere(self, self.opened.get_bind().engine, self.import_depending_on(phone.id)), "committed")
+        resolved = self.resolve(at=3.0)
+        self.assertEqual((resolved.removed, resolved.refused), (0, 1))
+        self.assertTrue((self.root / takeout.path).is_file())
+        self.assertTrue((self.root / phone.path).is_file())
+
+
+class CrashTests(CopiesCase):
     def test_a_removal_recorded_before_a_crash_is_finished_on_the_next_run_even_with_the_losers_folder_gone(self):
         for gone in ("file", "folder"):
             with self.subTest(gone=gone):
