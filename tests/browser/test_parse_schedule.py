@@ -9,6 +9,9 @@ CONFIRMED = """<!doctype html><html><head><title>Google Takeout</title><script>v
 
 CONFIRMED_SCHEDULED = "<html><body><h2>Your export has been scheduled</h2><p>Frequency: Export every month for 12 months</p></body></html>"
 
+STARTED_MONTHLY = """<html><body><h2>You have 11 more scheduled exports</h2><a>Cancel scheduled exports</a>
+<div>Google is creating a copy of data from Google Photos</div><div>Your files are currently being prepared</div></body></html>"""
+
 ONE_OFF = "<html><body><h1>Export created</h1><p>We've started creating a copy of your Google Photos data. This can take a long time.</p></body></html>"
 
 
@@ -29,6 +32,13 @@ class ParseScheduleConfirmationTests(unittest.TestCase):
     def test_a_recurring_confirmation_names_its_frequency(self):
         self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED), takeout.ScheduleConfirmation("every month for 1 year"))
         self.assertEqual(takeout.parse_schedule_confirmation(CONFIRMED_SCHEDULED), takeout.ScheduleConfirmation("every month for 12 months"))
+
+    def test_a_started_export_with_scheduled_exports_left_is_a_schedule(self):
+        found = takeout.parse_schedule_confirmation(STARTED_MONTHLY)
+        self.assertEqual(found, takeout.ScheduleConfirmation("you have 11 more scheduled exports"))
+
+    def test_scheduled_exports_left_without_a_started_export_is_not_a_confirmation(self):
+        self.assertIsNone(takeout.parse_schedule_confirmation("<html><body><h2>You have 11 more scheduled exports</h2></body></html>"))
 
     def test_a_one_off_export_is_not_a_schedule(self):
         self.assertIsNone(takeout.parse_schedule_confirmation(ONE_OFF))

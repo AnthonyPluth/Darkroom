@@ -11,15 +11,15 @@ from tests.snapshots import snapshot_pending
 
 RECORDED_CLICKS = [
     "button:has-text('Deselect all')",
-    ":is(input[type='checkbox'], [role='checkbox']):is([aria-label='Google Photos' i], [aria-label$=' Google Photos' i])",
+    "input[type='checkbox'][name='Google Photos']",
     "button:has-text('Next step')",
-    "[aria-label='Delivery method']",
-    "[role='option']:has-text('Send download link via email')",
-    ":is(input[type='radio'], [role='radio']):is([aria-label*='every month' i], [aria-label*='every 1 month' i], [aria-label*='monthly' i])",
-    "[aria-label='File type']",
-    "[role='option']:has-text('.zip')",
-    "[aria-label='File size']",
-    "[role='option']:has-text('50 GB')",
+    "[role='combobox'][aria-labelledby]",
+    "[role='option'][data-value='TEMP']",
+    "label:text-is('Export every month for 1 year')",
+    "[role='combobox'][aria-label='File type select']",
+    "[role='option'][data-value='ZIP']",
+    "[role='combobox'][aria-label='File size select']",
+    "[role='option'][data-value='53687091200']",
     "button:has-text('Create export')",
 ]
 CREATED = datetime(2026, 11, 4, 9, 30, tzinfo=UTC).timestamp()
