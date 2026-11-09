@@ -201,6 +201,14 @@ class ExistingScheduleTests(unittest.TestCase):
         self.assertEqual(result["schedule_created"], datetime(2026, 11, 9, 8, 0, tzinfo=UTC).timestamp())
         self.assertEqual(result["schedule_end"], datetime(2027, 11, 9, 8, 0, tzinfo=UTC).timestamp())
 
+    def test_the_adopted_end_is_the_same_local_date_a_year_later_across_a_daylight_saving_change(self):
+        browser = ScriptedBrowser([banner_page("<h3>You have 12 more scheduled exports</h3><p>Export 1 of 12 will start on March 10, 2026</p>")])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            result = schedule.create_schedule(ctx)
+        self.assertEqual(result["schedule_created"], datetime(2026, 3, 10, 4, 0, tzinfo=UTC).timestamp())
+        self.assertEqual(result["schedule_end"], datetime(2027, 3, 10, 5, 0, tzinfo=UTC).timestamp())
+
     def test_an_existing_monthly_schedule_is_recorded_without_touching_the_page(self):
         browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
         ctx, _, reporter = context_for(browser, wall=CREATED)

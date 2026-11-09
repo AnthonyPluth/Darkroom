@@ -60,7 +60,7 @@ def local_zone() -> ZoneInfo:
 def adopt(ctx: JobContext, existing: takeout.ExistingSchedule) -> dict[str, object]:
     ctx.progress("Takeout already has a schedule; recording it")
     first = shift_months(existing.next_start.replace(tzinfo=local_zone()), 1 - existing.next_number)
-    return {"schedule_created": first.timestamp(), "schedule_end": one_year_after(first.timestamp())}
+    return {"schedule_created": first.timestamp(), "schedule_end": shift_months(first, 12).timestamp()}
 
 
 def drive(ctx: JobContext, browser: Browser) -> None:
