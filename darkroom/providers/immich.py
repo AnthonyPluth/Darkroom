@@ -9,9 +9,10 @@ import re
 import urllib.error
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, BinaryIO
 from urllib.parse import quote, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from darkroom import config, tls
 
@@ -58,6 +59,133 @@ class NotConfigured(ImmichFailed):
 
 class ChecksumMismatch(ImmichFailed):
     pass
+
+
+@dataclass(frozen=True)
+class UploadSource:
+    reader: BinaryIO = field(repr=False)
+    size: int
+    sha1: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (type(self.size) is not int or self.size <= 0 or not isinstance(self.sha1, str) or not re.fullmatch(r"[a-f0-9]{40}", self.sha1)
+                or not callable(getattr(self.reader, "read", None))):
+            raise ImmichFailed("an upload source needs a positive size and recorded checksum")
+
+
+def upload_timestamp(value: str) -> bytes:
+    if (not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})", value)
+            or value.endswith("-00:00")):
+        raise ImmichFailed("upload timestamps require an explicit known UTC offset")
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        raise ImmichFailed("the upload timestamp is not valid") from None
+    return value.encode("ascii")
+
+
+def upload_filename(value: str) -> tuple[bytes, str]:
+    if not isinstance(value, str) or any(char in value for char in "\r\n\x00/\\"):
+        raise ImmichFailed("the upload filename is not a supported basename")
+    stem, dot, suffix = value.rpartition(".")
+    if not stem or not dot or not re.fullmatch(r"[A-Za-z0-9]{1,10}", suffix):
+        raise ImmichFailed("the upload filename is not a supported basename")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeError:
+        raise ImmichFailed("the upload filename is not valid UTF-8") from None
+    if len(encoded) > 4096:
+        raise ImmichFailed("the upload filename is too long")
+    return encoded, suffix
+
+
+def upload_source_chunks(source: UploadSource) -> Iterator[bytes]:
+    remaining = source.size
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    try:
+        while remaining:
+            chunk = source.reader.read(min(DOWNLOAD_CHUNK, remaining))
+            if not isinstance(chunk, bytes) or not chunk or len(chunk) > min(DOWNLOAD_CHUNK, remaining):
+                raise ImmichFailed("the upload source does not match its recorded size")
+            remaining -= len(chunk)
+            digest.update(chunk)
+            yield chunk
+        if source.reader.read(1) != b"":
+            raise ImmichFailed("the upload source does not match its recorded size")
+    except (OSError, ValueError):
+        raise ImmichFailed("the upload source could not be read") from None
+    if digest.hexdigest() != source.sha1:
+        raise ChecksumMismatch("the upload source does not match its recorded checksum")
+
+
+def is_upload_id(value: object) -> bool:
+    return is_canonical_id(value) and UUID(str(value)).version == 4
+
+
+class MultipartUpload:
+    def __init__(self, original: UploadSource, filename: str, file_created_at: str, file_modified_at: str,
+                 sidecar: UploadSource | None = None, live_video_id: str | None = None) -> None:
+        if not isinstance(original, UploadSource) or (sidecar is not None and not isinstance(sidecar, UploadSource)):
+            raise ImmichFailed("an upload body requires recorded binary sources")
+        encoded_name, suffix = upload_filename(filename)
+        created, modified = upload_timestamp(file_created_at), upload_timestamp(file_modified_at)
+        if live_video_id is not None and not is_upload_id(live_video_id):
+            raise ImmichFailed("not a Live Photo video id")
+        if sidecar is not None and sidecar.reader is original.reader:
+            raise ImmichFailed("the original and sidecar need independent upload sources")
+        boundary = f"darkroom-{uuid4().hex}"
+        self._content_type = f"multipart/form-data; boundary={boundary}"
+        marker = boundary.encode("ascii")
+        parts: list[bytes | UploadSource] = []
+        for name, value in (("fileCreatedAt", created), ("fileModifiedAt", modified), ("filename", encoded_name)):
+            parts.append(b"--" + marker + b'\r\nContent-Disposition: form-data; name="' + name.encode("ascii") + b'"\r\n\r\n' + value + b"\r\n")
+        if live_video_id is not None:
+            parts.append(b"--" + marker + b'\r\nContent-Disposition: form-data; name="livePhotoVideoId"\r\n\r\n' + live_video_id.encode("ascii") + b"\r\n")
+        files = [("assetData", f"original.{suffix}", original)]
+        if sidecar is not None:
+            files.append(("sidecarData", "sidecar.xmp", sidecar))
+        for name, header_filename, source in files:
+            parts.extend((b"--" + marker + b'\r\nContent-Disposition: form-data; name="' + name.encode("ascii") + b'"; filename="'
+                          + header_filename.encode("ascii") + b'"\r\nContent-Type: application/octet-stream\r\n\r\n', source, b"\r\n"))
+        parts.append(b"--" + marker + b"--\r\n")
+        self._parts = tuple(parts)
+        self._length = sum(len(part) if isinstance(part, bytes) else part.size for part in self._parts)
+        self._used = False
+        self._complete = False
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {"Content-Type": self._content_type, "Content-Length": str(self._length)}
+
+    @property
+    def complete(self) -> bool:
+        return self._complete
+
+    def __iter__(self) -> Iterator[bytes]:
+        if self._used:
+            raise ImmichFailed("an upload body can only be consumed once")
+        self._used = True
+        for part in self._parts:
+            if isinstance(part, bytes):
+                yield part
+            else:
+                yield from upload_source_chunks(part)
+        self._complete = True
+
+
+@dataclass(frozen=True)
+class UploadResult:
+    asset_id: str = field(repr=False)
+    status: str
+
+
+def upload_result(http_status: int, found: object) -> UploadResult:
+    if not isinstance(found, dict) or not is_upload_id(found.get("id")):
+        raise ImmichFailed("the upload response has no valid asset id")
+    status = found.get("status")
+    if type(http_status) is not int or (http_status, status) not in ((201, "created"), (200, "duplicate")):
+        raise ImmichFailed("the upload response has an unrecognized outcome")
+    return UploadResult(found["id"], status)
 
 
 @dataclass(frozen=True)
