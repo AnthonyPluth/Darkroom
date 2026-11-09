@@ -155,13 +155,19 @@ Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<per
 | missing | `ENOENT` | The share is not mounted, or `PHOTOS_ROOT` points at a folder that does not exist. |
 | see the server log | anything else | Read the `errno` in the log line. |
 
-`docker compose` creates a missing bind-mount source such as `_inbox` as root, so create these folders yourself before the first `docker compose up`. To fix the ownership on the host:
+`docker compose` creates a missing bind-mount source such as `_inbox` as root, so create these folders yourself before the first `docker compose up`. `PHOTOS_ROOT` is usually set only in Compose's `.env`, which your shell does not read, so set it in the shell first; the block stops instead of touching `/` when it is empty or not a folder. To fix the group and mode on the host:
 
 ```
+set -eu
+export PHOTOS_ROOT=/path/to/the/photo/share
+PHOTOS_ROOT="${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}"
+test -d "$PHOTOS_ROOT"
 mkdir -p "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
-chown 10001:10010 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
+chgrp 10010 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
 chmod 2770 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
 ```
+
+`chgrp` keeps the current owner, which suits a share another host or an SMB account owns. Only when nothing else grants group 10010 access, also run `chown 10001 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"` to make Darkroom's user the owner. Mode `2770` on the share root gives everyone outside the owner and group no access, so skip the root in the `chmod` line if other accounts need to read it.
 
 Then add the person again. Shared-group details are in `docs/deploy/browser.md`.
 
