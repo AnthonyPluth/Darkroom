@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import UTC, datetime
 
 from darkroom_browser import selectors
@@ -14,6 +15,7 @@ CLICK_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("open the delivery menu", selectors.EXPORT_DELIVERY_MENU),
     ("send the download link by email", selectors.EXPORT_DELIVERY_EMAIL),
     ("export every month for 1 year", selectors.EXPORT_FREQUENCY_MONTHLY),
+    ("export only new and updated items after the first", selectors.EXPORT_ONLY_NEW_AND_UPDATED),
     ("open the file type menu", selectors.EXPORT_TYPE_MENU),
     ("choose .zip", selectors.EXPORT_TYPE_ZIP),
     ("open the file size menu", selectors.EXPORT_SIZE_MENU),
@@ -37,6 +39,19 @@ def one_year_after(created: float) -> float:
     except ValueError:
         later = moment.replace(year=moment.year + 1, day=28)
     return later.timestamp()
+
+
+def shift_months(moment: datetime, months: int) -> datetime:
+    index = moment.year * 12 + moment.month - 1 + months
+    year, month = divmod(index, 12)
+    month += 1
+    return moment.replace(year=year, month=month, day=min(moment.day, calendar.monthrange(year, month)[1]))
+
+
+def adopt(ctx: JobContext, existing: takeout.ExistingSchedule) -> dict[str, object]:
+    ctx.progress("Takeout already has a schedule; recording it")
+    first = shift_months(existing.next_start, -(existing.next_number - 1) * existing.interval_months)
+    return {"schedule_created": first.timestamp(), "schedule_end": one_year_after(first.timestamp())}
 
 
 def drive(ctx: JobContext, browser: Browser) -> None:
@@ -65,9 +80,16 @@ def await_confirmation(ctx: JobContext, browser: Browser) -> None:
     raise ScheduleNotConfirmed("Takeout did not confirm a recurring export; check Takeout before trying again")
 
 
-def create_schedule(ctx: JobContext) -> dict[str, object]:
+def create_schedule(ctx: JobContext, adopt_existing: bool = True) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
+    if adopt_existing:
+        page = browser.content()
+        existing = takeout.parse_existing_schedule(page)
+        if existing is not None:
+            return adopt(ctx, existing)
+        if takeout.has_schedule_banner(page):
+            raise ScheduleNotConfirmed("Takeout shows scheduled exports that Darkroom could not read; check Takeout before trying again")
     drive(ctx, browser)
     try:
         await_confirmation(ctx, browser)

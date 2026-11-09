@@ -398,7 +398,7 @@ describe("the Exports page", () => {
     expect(within(region("ended.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeEnabled();
     expect(within(region("family.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeDisabled();
     expect(within(region("live.photos@example.com")).getByRole("button", { name: "Create schedule" })).toBeDisabled();
-    expect(within(region("live.photos@example.com")).getByText("The schedule exports Google Photos every month for 1 year.")).toBeInTheDocument();
+    expect(within(region("live.photos@example.com")).getByText("The schedule exports Google Photos every month for 1 year, with only new and updated items after the first export.")).toBeInTheDocument();
   });
 
   it("shows why a check failed, with its capture", async () => {

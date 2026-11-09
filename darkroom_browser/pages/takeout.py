@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
@@ -72,6 +72,43 @@ def parse_schedule_confirmation(page: str) -> ScheduleConfirmation | None:
         return None
     recurring = RECURRING.search(text)
     return ScheduleConfirmation(recurring.group(0)) if recurring is not None else None
+
+
+SCHEDULE_BANNER = "more scheduled exports"
+EXISTING_SCHEDULE = re.compile(r"export (\d+) of (\d+) will start on ([a-z]+ \d{1,2}, \d{4})")
+MONTHS_IN_SCHEDULE = 12
+
+
+@dataclass(frozen=True)
+class ExistingSchedule:
+    next_number: int
+    total: int
+    next_start: datetime
+
+    @property
+    def interval_months(self) -> int:
+        return MONTHS_IN_SCHEDULE // self.total
+
+
+def has_schedule_banner(page: str) -> bool:
+    return SCHEDULE_BANNER in visible_text(page)
+
+
+def parse_existing_schedule(page: str) -> ExistingSchedule | None:
+    text = visible_text(page)
+    if SCHEDULE_BANNER not in text:
+        return None
+    found = EXISTING_SCHEDULE.search(text)
+    if found is None:
+        return None
+    number, total = int(found.group(1)), int(found.group(2))
+    if not 1 <= number <= total or MONTHS_IN_SCHEDULE % total != 0:
+        return None
+    try:
+        start = datetime.strptime(found.group(3), "%B %d, %Y").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return ExistingSchedule(number, total, start)
 
 
 ACCOUNT_LABEL = re.compile(r"""aria-label\s*=\s*["']""" + re.escape(selectors.SIGNED_IN_ACCOUNT_LABEL_PREFIX) + r"""[^"']*?\(([^()"'\s]+@[^()"'\s]+)\)""", re.IGNORECASE)

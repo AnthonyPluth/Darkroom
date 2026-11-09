@@ -59,7 +59,7 @@ A job waits 48 hours for the sign-in and then fails ("Darkroom needs a look" nam
 Takeout keeps an export for about a week. The alert "A Takeout export is about to expire" means Darkroom has not finished downloading it; an export marked expired on the Exports page is gone.
 
 - If it is only about to expire, check that the worker is running and has not hit a failure alert (above and below). The daily check (or "Check exports now") re-queues a download that failed, up to 3 download jobs that failed after starting a part, per export; it only runs for an account that is signed in. If Darkroom will not get there in time, download the parts by hand from Takeout's export list while the alert is still open, then hand-drop them (below).
-- If it expired, Takeout no longer has the files, so nothing can be downloaded, by Darkroom or by hand. The only recovery is a new export: request one in Takeout (Darkroom itself only creates the schedule), download it, and hand-drop the parts. The scheduled exports keep coming every month until the schedule ends.
+- If it expired, Takeout no longer has the files, so nothing can be downloaded, by Darkroom or by hand. The only recovery is a new export: request one in Takeout (Darkroom itself only creates the schedule), download it, and hand-drop the parts. The scheduled exports keep coming every month until the schedule ends, each after the first with only new and updated items.
 
 ### Google changed a page
 

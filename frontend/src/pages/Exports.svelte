@@ -197,9 +197,9 @@
           <p id="renew-note-{account.id}" class="text-ink-muted">{renewal.sentence}</p>
         {/if}
         {#if scheduleLive(account, data.now)}
-          <p class="text-ink-muted">The schedule exports Google Photos every month for 1 year.</p>
+          <p class="text-ink-muted">The schedule exports Google Photos every month for 1 year, with only new and updated items after the first export.</p>
         {:else}
-          <p class="text-ink-muted">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every month for 1 year.</p>
+          <p class="text-ink-muted">Create schedule exports only Google Photos as .zip parts of 50 GB, with a download link by email, every month for 1 year, only new and updated items after the first export. If Takeout already has a schedule, Darkroom records it instead.</p>
         {/if}
         {#if refusal !== null && refusal.accountId === account.id}
           <p role="alert" class="rounded-md border border-danger bg-danger-bg px-3 py-2.5 text-danger">{refusal.text}</p>

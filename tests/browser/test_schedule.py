@@ -3,10 +3,10 @@ from datetime import UTC, datetime
 
 from darkroom_browser import selectors
 from darkroom_browser.context import Cancelled
-from darkroom_browser.jobs import REGISTRY, schedule, session
+from darkroom_browser.jobs import REGISTRY, renew, schedule, session
 from tests.browser.scripted import ScriptedBrowser, context_for
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN
-from tests.browser.test_parse_schedule import CONFIRMED, ONE_OFF
+from tests.browser.test_parse_schedule import CONFIRMED, ONE_OFF, STARTED_MONTHLY
 from tests.snapshots import snapshot_pending
 
 RECORDED_CLICKS = [
@@ -16,6 +16,7 @@ RECORDED_CLICKS = [
     "[role='combobox'][aria-labelledby]",
     "[role='option'][data-value='TEMP']",
     "label:text-is('Export every month for 1 year')",
+    "label:text-is('Only new and updated items')",
     "[role='combobox'][aria-label='File type select']",
     "[role='option'][data-value='ZIP']",
     "[role='combobox'][aria-label='File size select']",
@@ -38,7 +39,7 @@ class ScheduleJobTests(unittest.TestCase):
         self.assertEqual(browser.clicks, RECORDED_CLICKS)
         self.assertEqual(browser.waited, RECORDED_CLICKS)
         self.assertEqual(result, {"schedule_created": CREATED, "schedule_end": datetime(2027, 11, 4, 9, 30, tzinfo=UTC).timestamp()})
-        self.assertEqual(len(reporter.kinds("progress")), 11)
+        self.assertEqual(len(reporter.kinds("progress")), 12)
         self.assertEqual(reporter.kinds("waiting"), [])
         self.assertEqual(browser.typed, [])
 
@@ -48,7 +49,7 @@ class ScheduleJobTests(unittest.TestCase):
         ctx, _, _ = context_for(browser, wall=CREATED)
         with self.assertRaises(TimeoutError):
             schedule.create_schedule(ctx)
-        self.assertEqual(browser.clicks, RECORDED_CLICKS[:9])
+        self.assertEqual(browser.clicks, RECORDED_CLICKS[:10])
         self.assertNotIn(selectors.EXPORT_CREATE, browser.clicks)
 
     def test_a_one_off_confirmation_is_not_a_schedule(self):
@@ -171,6 +172,56 @@ class ScheduleJobTests(unittest.TestCase):
 
     def test_the_job_is_registered(self):
         self.assertIs(REGISTRY["schedule"], schedule.create_schedule)
+
+
+def banner_page(text: str) -> str:
+    return SIGNED_IN.replace("</main>", f"<section><h2>Your exports</h2>{text}</section></main>")
+
+
+MONTHLY_BANNER = "<h3>You have 11 more scheduled exports</h3><p>Export 2 of 12 will start on December 9, 2026</p>"
+BIMONTHLY_BANNER = "<h3>You have 5 more scheduled exports</h3><p>Export 2 of 6 will start on January 9, 2027</p>"
+FIRST = datetime(2026, 11, 9, tzinfo=UTC).timestamp()
+LAST = datetime(2027, 11, 9, tzinfo=UTC).timestamp()
+
+
+@snapshot_pending
+class ExistingScheduleTests(unittest.TestCase):
+    def test_an_existing_monthly_schedule_is_recorded_without_touching_the_page(self):
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)])
+        ctx, _, reporter = context_for(browser, wall=CREATED)
+        result = schedule.create_schedule(ctx)
+        self.assertEqual(result, {"schedule_created": FIRST, "schedule_end": LAST})
+        self.assertEqual(browser.clicks, [])
+        self.assertEqual(browser.waited, [])
+        self.assertEqual(len(reporter.kinds("progress")), 1)
+
+    def test_an_existing_every_two_months_schedule_ends_a_year_after_its_first_export(self):
+        browser = ScriptedBrowser([banner_page(BIMONTHLY_BANNER)])
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        self.assertEqual(schedule.create_schedule(ctx), {"schedule_created": FIRST, "schedule_end": LAST})
+        self.assertEqual(browser.clicks, [])
+
+    def test_a_schedule_banner_that_cannot_be_read_creates_nothing(self):
+        for text in ("<h3>You have 7 more scheduled exports</h3><p>Export 2 of 7 will start on December 9, 2026</p>", "<h3>You have 3 more scheduled exports</h3>"):
+            with self.subTest(text=text):
+                browser = ScriptedBrowser([banner_page(text)])
+                ctx, _, _ = context_for(browser, wall=CREATED)
+                with self.assertRaises(schedule.ScheduleNotConfirmed):
+                    schedule.create_schedule(ctx)
+                self.assertEqual(browser.clicks, [])
+
+    def test_renewing_creates_a_new_schedule_even_while_one_is_running(self):
+        browser = ScriptedBrowser([banner_page(MONTHLY_BANNER)], after_click={selectors.EXPORT_CREATE: [STARTED_MONTHLY]})
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        result = renew.renew_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
+        self.assertEqual(result["schedule_created"], CREATED)
+
+    def test_the_schedule_job_creates_when_there_is_no_banner(self):
+        browser = export_page()
+        ctx, _, _ = context_for(browser, wall=CREATED)
+        schedule.create_schedule(ctx)
+        self.assertEqual(browser.clicks, RECORDED_CLICKS)
 
 
 if __name__ == "__main__":
