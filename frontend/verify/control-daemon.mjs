@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ACTING_COMMANDS, ARTIFACTS, UNREACHABLE_ARGS, ControlError, isGuardedPath, PROG, ROOT, VERIFY_PY, closest, errorResult, jsExpression, lastShotNumber, parseTarget, readState, rel, removeState, routeUrl, scrollsToTop, scrubText, scrubUrl, shotName, socketPath, writeState } from "./control.mjs";
 import { startServer } from "./control-server.mjs";
 import { commitSwap, replaceServer, rollbackSwap, setUpContext } from "./control-reset.mjs";
-import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn, signedInNow, signedOutConsoleAllowed } from "./verify.mjs";
+import { LOADING, SESSION_FILE, blockWebSockets, SIGNED_OUT_PAGES, VIEWPORTS, allowedRequest, checksAfter, contextOptions, launchOptions, loadedWhen, prepareBrowserPreview, prepareContext, readFlows, recheck, routeOf, runStep, sameServer, screenshotFile, sessionCookie, settlePage, signIn, signedInNow, signedOutConsoleAllowed } from "./verify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUFFER = 500;
@@ -401,6 +401,7 @@ async function main() {
       files.push(rel(target));
     };
     await openPage(vp);
+    if (flow.page === "browser") await prepareBrowserPreview(ctx, base, opt.now);
     flowSignedOut = SIGNED_OUT_PAGES.includes(flow.page);
     if (flowSignedOut) { await ctx.clearCookies(); signedIn = false; }
     await page.goto(`${base}${routeOf(flow.page ?? "status")}`, { waitUntil: loadedWhen(signedIn) });

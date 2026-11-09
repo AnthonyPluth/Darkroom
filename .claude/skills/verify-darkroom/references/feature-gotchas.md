@@ -31,4 +31,4 @@ Hand-edited. `tools/user_feature_map.py` merges these into [feature-map.md](feat
 - The demo has one pending pair, the recorded one (IMG_0101); with the import (make verify, `start --with-import`) it has three, the other two being the likely re-encodes the import held back (IMG_0001(1) and IMG_0102(1)). Each pair is a library copy beside a slightly different held copy. Keep both, skip and undo change demo data; `reset` puts it back.
 
 ## browser
-- The remote browser view needs a VNC address the demo doesn't have, so the page shows its not-set-up state.
+- A plain demo visit has no VNC address and shows the not-set-up state. `make verify PAGES="browser"` and the `browser-fullscreen` flow use a synthetic viewer served from the session's own loopback address, labelled as made-up demo data. This checks viewer sizing and full-screen controls without opening Google or a real VNC server.

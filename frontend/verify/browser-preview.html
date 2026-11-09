@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Remote browser preview</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #272727; font: 18px system-ui, sans-serif; color: #202124; }
+    #desktop { position: absolute; width: 1280px; height: 900px; background: #fff; transform-origin: top left; }
+    header { padding: 18px 28px; background: #e8eef8; }
+    main { max-width: 880px; margin: 72px auto; }
+    h1 { font-size: 32px; }
+    section { padding: 28px; margin-top: 24px; border: 1px solid #dadce0; border-radius: 12px; }
+    .muted { color: #5f6368; }
+  </style>
+</head>
+<body>
+  <div id="desktop">
+    <header>Remote browser preview · made-up demo data</header>
+    <main>
+      <h1>Google Takeout</h1>
+      <p class="muted">Create a copy of your Google data.</p>
+      <section><h2>Select data to include</h2><p>Google Photos</p><p class="muted">All photo albums included</p></section>
+      <section><h2>Choose file type, frequency and destination</h2><p>Export every 2 months for 1 year</p></section>
+    </main>
+  </div>
+  <script>
+    const desktop = document.getElementById("desktop");
+    function fit() {
+      const scale = Math.min(innerWidth / 1280, innerHeight / 900);
+      desktop.style.transform = `scale(${scale})`;
+      desktop.style.left = `${(innerWidth - 1280 * scale) / 2}px`;
+    }
+    addEventListener("resize", fit);
+    fit();
+  </script>
+</body>
+</html>

@@ -114,4 +114,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Reach it:** the navigation's Browser, at `/browser`; control `tools/control goto browser`.
 - **Drive it:** `tools/control goto browser`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="browser"`.
 - **What usually breaks:**
-  - The remote browser view needs a VNC address the demo doesn't have, so the page shows its not-set-up state.
+  - A plain demo visit has no VNC address and shows the not-set-up state. `make verify PAGES="browser"` and the `browser-fullscreen` flow use a synthetic viewer served from the session's own loopback address, labelled as made-up demo data. This checks viewer sizing and full-screen controls without opening Google or a real VNC server.
+
+### Flows on Browser
+
+#### `browser-fullscreen`
+
+- **Starts at:** `browser`.
+- **Widths:** phone, desktop, wide.
+- **Touches:** `button:has-text('Full screen')`, `button:has-text('Exit full screen')`.
+- **Expects to see:** `Remote browser`, `Exit full screen`, `Full screen`.
+- **Drive it:** `tools/control flow browser-fullscreen`; or `poetry run python tools/verify.py run --flow browser-fullscreen`.
