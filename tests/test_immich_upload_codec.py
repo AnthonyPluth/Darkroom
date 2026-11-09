@@ -188,7 +188,7 @@ class UploadResultTests(unittest.TestCase):
     def test_malformed_ids_statuses_and_conflicting_http_codes_are_refused(self):
         for found in (None, [], {}, {"id": "bad", "status": "created"}, {"id": ASSET_ID.upper(), "status": "created"},
                       {"id": str(UUID(int=0)), "status": "created"}, {"id": ASSET_ID}, {"id": ASSET_ID, "status": "accepted"},
-                      {"id": ASSET_ID, "status": ["created"]}):
+                      {"id": ASSET_ID, "status": ["created"]}, {"id": ASSET_ID, "status": None}, {"id": ASSET_ID, "status": 201}):
             with self.subTest(found=found), self.assertRaises(immich.ImmichFailed):
                 immich.upload_result(201, found)
         for code, status in ((200, "created"), (201, "duplicate"), (202, "created"), (500, "created"), (201.0, "created"), (True, "created")):

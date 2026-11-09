@@ -184,7 +184,7 @@ def upload_result(http_status: int, found: object) -> UploadResult:
     if not isinstance(found, dict) or not is_upload_id(found.get("id")):
         raise ImmichFailed("the upload response has no valid asset id")
     status = found.get("status")
-    if type(http_status) is not int or (http_status, status) not in ((201, "created"), (200, "duplicate")):
+    if not isinstance(status, str) or type(http_status) is not int or (http_status, status) not in ((201, "created"), (200, "duplicate")):
         raise ImmichFailed("the upload response has an unrecognized outcome")
     return UploadResult(found["id"], status)
 
