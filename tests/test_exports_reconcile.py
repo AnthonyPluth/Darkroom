@@ -191,6 +191,11 @@ class NextExportTests(unittest.TestCase):
         self.assertEqual(exports.next_export_at(account, at(2027, 8, 1)), at(2027, 8, 2, 3, 0))
         self.assertEqual(exports.next_export_at(account, at(2027, 9, 3)), at(2027, 10, 2, 3, 0))
 
+    def test_the_next_export_keeps_the_local_wall_clock_across_a_daylight_saving_change(self):
+        account = self.account(at(2026, 3, 10, 4, 0), at(2027, 3, 10, 5, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 10, 11), ZoneInfo("America/New_York")), at(2026, 11, 10, 5, 0))
+        self.assertEqual(exports.next_export_at(account, at(2026, 10, 11)), at(2026, 11, 10, 4, 0))
+
     def test_there_is_none_after_the_last_scheduled_export_or_without_a_schedule(self):
         account = self.account(at(2026, 11, 2, 3, 0), at(2027, 11, 2, 3, 0))
         self.assertIsNone(exports.next_export_at(account, at(2027, 10, 3)))

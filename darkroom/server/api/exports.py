@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from darkroom.domain import browser_jobs, exports
 from darkroom.server import contract
@@ -13,7 +14,7 @@ NO_EXPORT = "no such export"
 def list_exports(request: Request) -> Annotated[Response, contract.Exports]:
     with db.session(engine_of(request)) as opened:
         listed = [exports.as_dict(opened, export) for export in exports.listing(opened)]
-        schedules = exports.schedule_dicts(opened, now())
+        schedules = exports.schedule_dicts(opened, now(), ZoneInfo(request.settings.timezone))
     return json_response({"exports": listed, "schedules": schedules})
 
 
