@@ -137,7 +137,7 @@ class MultipartUpload:
         self._content_type = f"multipart/form-data; boundary={boundary}"
         marker = boundary.encode("ascii")
         parts: list[bytes | UploadSource] = []
-        for name, value in (("fileCreatedAt", created), ("fileModifiedAt", modified), ("filename", encoded_name)):
+        for name, value in (("fileCreatedAt", created), ("fileModifiedAt", modified)):
             parts.append(b"--" + marker + b'\r\nContent-Disposition: form-data; name="' + name.encode("ascii") + b'"\r\n\r\n' + value + b"\r\n")
         if live_video_id is not None:
             parts.append(b"--" + marker + b'\r\nContent-Disposition: form-data; name="livePhotoVideoId"\r\n\r\n' + live_video_id.encode("ascii") + b"\r\n")
@@ -147,6 +147,7 @@ class MultipartUpload:
         for name, header_filename, source in files:
             parts.extend((b"--" + marker + b'\r\nContent-Disposition: form-data; name="' + name.encode("ascii") + b'"; filename="'
                           + header_filename.encode("ascii") + b'"\r\nContent-Type: application/octet-stream\r\n\r\n', source, b"\r\n"))
+        parts.append(b"--" + marker + b'\r\nContent-Disposition: form-data; name="filename"\r\n\r\n' + encoded_name + b"\r\n")
         parts.append(b"--" + marker + b"--\r\n")
         self._parts = tuple(parts)
         self._length = sum(len(part) if isinstance(part, bytes) else part.size for part in self._parts)

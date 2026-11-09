@@ -46,7 +46,10 @@ class UploadBodyTests(unittest.TestCase):
         self.assertEqual(len(encoded), int(upload.headers["Content-Length"]))
         message = BytesParser(policy=policy.default).parsebytes(("Content-Type: " + upload.headers["Content-Type"] + "\r\nMIME-Version: 1.0\r\n\r\n").encode() + encoded)
         self.assertFalse(message.defects)
-        parts = {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
+        ordered = list(message.iter_parts())
+        names = [part.get_param("name", header="content-disposition") for part in ordered]
+        self.assertEqual(names, ["fileCreatedAt", "fileModifiedAt", "livePhotoVideoId", "assetData", "sidecarData", "filename"])
+        parts = dict(zip(names, ordered, strict=True))
         self.assertEqual(set(parts), {"fileCreatedAt", "fileModifiedAt", "filename", "livePhotoVideoId", "assetData", "sidecarData"})
         self.assertEqual(parts["assetData"].get_payload(decode=True), DATA)
         self.assertEqual(parts["sidecarData"].get_payload(decode=True), SIDECAR)
