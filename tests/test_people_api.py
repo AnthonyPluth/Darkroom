@@ -249,6 +249,25 @@ class FolderFailureTests(ApiCase):
         self.assertEqual(self.folder_line(err.getvalue())["folder"], "_inbox/cpn1")
         self.assertFalse((self.photos / "cpn1").exists())
 
+    def test_a_failure_deeper_than_the_persons_folder_logs_only_the_persons_folder(self):
+        real = Path.mkdir
+        cases = {"originals": "cpn1", "google-only": "cpn1", "manual": "_inbox/cpn1"}
+        for leaf, expected in cases.items():
+            def failing(path, *args, _leaf=leaf, **kwargs):
+                if path.name == _leaf:
+                    raise PermissionError(errno.EACCES, "denied", str(path))
+                return real(path, *args, **kwargs)
+
+            err = io.StringIO()
+            with mock.patch.object(Path, "mkdir", failing), contextlib.redirect_stderr(err):
+                status, _ = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
+            self.assertEqual(status, 500)
+            line = self.folder_line(err.getvalue())
+            self.assertEqual(line["folder"], expected)
+            for deeper in ("originals", "google-only", "manual"):
+                self.assertNotIn(deeper, json.dumps(line))
+            self.assertFalse((self.photos / "cpn1").exists())
+
     def test_an_error_without_a_path_logs_an_unknown_folder(self):
         with mock.patch("darkroom.domain.people.Photos.ensure_person_tree", side_effect=OSError(errno.EACCES, "denied")):
             err = io.StringIO()

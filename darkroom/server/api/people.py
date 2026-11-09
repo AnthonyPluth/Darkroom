@@ -33,7 +33,8 @@ def folder_failure(error: OSError, root: Path) -> Response:
     folder = "unknown"
     if isinstance(error.filename, str):
         with contextlib.suppress(ValueError):
-            folder = Path(error.filename).relative_to(root).as_posix()
+            parts = Path(error.filename).relative_to(root).parts
+            folder = "/".join(parts[:2] if parts[:1] == ("_inbox",) else parts[:1]) or "unknown"
     monitoring.log("person folders could not be created", operation="create person", errno=name, folder=folder)
     return error_response(f"{NO_FOLDERS}: {FOLDER_CAUSES.get(name, OTHER_CAUSE)}", 500)
 
