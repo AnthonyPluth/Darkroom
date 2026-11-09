@@ -73,6 +73,8 @@ class State:
     page_size: int = 250
     searches: int = 0
     on_search: Callable[[int], None] | None = None
+    version: str = VERSION
+    permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -173,7 +175,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 self.reply(200, {"res": "pong"})
                 return
             if self.command == "GET" and path == "/api/server/about":
-                self.reply(200, {"version": VERSION})
+                self.reply(200, {"version": state.version})
                 return
             role, person = self.who()
             if not role:
@@ -181,6 +183,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 return
             if self.command == "GET" and path == "/api/users/me":
                 self.users_me(role, person)
+            elif self.command == "GET" and path == "/api/api-keys/me" and person is not None:
+                self.reply(200, {"permissions": list(state.permissions)})
             elif self.command == "GET" and path == "/api/libraries":
                 visible = state.people if person is None else [person]
                 self.reply(200, [library_json(p) for p in visible])

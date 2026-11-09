@@ -5,11 +5,13 @@ import binascii
 import contextlib
 import hashlib
 import json
+import re
 import urllib.error
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlsplit
+from uuid import UUID
 
 from darkroom import config, tls
 
@@ -19,6 +21,29 @@ PAGE_SIZE = 250
 MAX_PASSES = 5
 DOWNLOAD_CHUNK = 1024 * 1024
 PHONE_KEY = "mobile-app"
+MANAGED_VERSION = "v3.3.6"
+MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
+READ_ROUTES = frozenset({("GET", "/api/server/ping"), ("GET", "/api/server/about"), ("GET", "/api/users/me"),
+                         ("GET", "/api/api-keys/me"), ("GET", "/api/libraries"), ("POST", "/api/search/metadata")})
+
+
+def require_allowed_request(method: str, path: str) -> None:
+    if (method, path) in READ_ROUTES:
+        return
+    if method == "GET" and re.fullmatch(r"/api/assets/[A-Za-z0-9_-]+(?:/metadata|/original(?:\?edited=false)?)?", path):
+        return
+    if method == "POST" and re.fullmatch(r"/api/libraries/[A-Za-z0-9_-]+/scan", path):
+        return
+    raise ImmichFailed("the Immich operation is not allowed")
+
+
+def is_canonical_id(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
 
 
 class ImmichFailed(RuntimeError):
@@ -83,7 +108,7 @@ class Library:
 @dataclass(frozen=True)
 class Client:
     url: str
-    admin_key: str
+    admin_key: str = field(repr=False)
     timeout: float = TIMEOUT
 
     @classmethod
@@ -99,6 +124,7 @@ class Client:
         return cls(settings.immich_url, settings.immich_admin_key)
 
     def open(self, method: str, path: str, key: str, body: object | None = None) -> contextlib.AbstractContextManager[Any]:
+        require_allowed_request(method, path)
         host = urlsplit(self.url).hostname or ""
         headers = {"Accept": "application/json"}
         if key:
@@ -201,7 +227,7 @@ class Client:
         digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         total = 0
         try:
-            with self.open("GET", f"{asset_path(asset.id)}/original", key) as response:
+            with self.open("GET", f"{asset_path(asset.id)}/original?edited=false", key) as response:
                 expected = response.headers.get("Content-Length")
                 while chunk := response.read(DOWNLOAD_CHUNK):
                     digest.update(chunk)
@@ -216,3 +242,57 @@ class Client:
             raise ImmichFailed(f"Immich download broke off ({type(error).__name__})") from None
         if (expected is not None and expected.isdigit() and int(expected) != total) or digest.hexdigest() != asset.sha1:
             raise ChecksumMismatch("the downloaded original does not match Immich's checksum")
+
+
+@dataclass(frozen=True)
+class ManagedReader:
+    client: Client = field(repr=False)
+    key: str = field(repr=False)
+    owner_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.key, str) or not self.key or any(not 33 <= ord(c) <= 126 for c in self.key)
+                or self.key == self.client.admin_key or not is_canonical_id(self.owner_id)):
+            raise ImmichFailed("managed Immich access requires a person key and owner")
+        try:
+            address = urlsplit(self.client.url)
+            valid = (address.hostname and address.username is None and address.password is None
+                     and "?" not in self.client.url and "#" not in self.client.url)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ImmichFailed("the managed Immich address is not valid")
+
+    def check_access(self) -> None:
+        identity = self.client.call("GET", "/api/users/me", key=self.key)
+        if not isinstance(identity, dict) or identity.get("id") != self.owner_id:
+            raise ImmichFailed("the Immich key does not belong to the expected person")
+        about = self.client.call("GET", "/api/server/about", key=self.key)
+        if not isinstance(about, dict) or about.get("version") != MANAGED_VERSION:
+            raise ImmichFailed("this Immich version is not supported for managed access")
+        found = self.client.call("GET", "/api/api-keys/me", key=self.key)
+        permissions = found.get("permissions") if isinstance(found, dict) else None
+        if (not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions)
+                or frozenset(permissions) != MANAGED_READ_PERMISSIONS):
+            raise ImmichFailed("managed Immich reads require only the approved read permissions")
+
+    def get_asset(self, asset_id: str) -> Asset:
+        if not is_canonical_id(asset_id):
+            raise ImmichFailed("not a managed asset id")
+        self.check_access()
+        found = self.client.call("GET", asset_path(asset_id), key=self.key)
+        if (not isinstance(found, dict) or found.get("id") != asset_id or found.get("ownerId") != self.owner_id
+                or "libraryId" not in found or found["libraryId"] is not None
+                or found.get("isTrashed") is not False or found.get("isOffline") is not False
+                or found.get("type") not in ("IMAGE", "VIDEO")
+                or (found.get("livePhotoVideoId") is not None and not is_canonical_id(found["livePhotoVideoId"]))):
+            raise ImmichFailed("the asset is not an available managed original of this person")
+        return asset_of(found)
+
+    def original_chunks(self, asset_id: str, expected_sha1: str) -> Iterator[bytes]:
+        if not re.fullmatch(r"[a-f0-9]{40}", expected_sha1):
+            raise ImmichFailed("not an original checksum")
+        asset = self.get_asset(asset_id)
+        if asset.sha1 != expected_sha1:
+            raise ChecksumMismatch("the managed original changed since it was recorded")
+        yield from self.client.original_chunks(self.key, asset)
