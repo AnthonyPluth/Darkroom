@@ -151,7 +151,7 @@ Adding a person makes `<person>/originals`, `<person>/google-only`, `_inbox/<per
 
 | Reply says | `errno` | Cause |
 | --- | --- | --- |
-| permission denied | `EACCES`, `EPERM` | The share, `_inbox` or `_browser` is not writable by uid 10001 or group 10010 (wrong owner or group, or mode bits without group write and search), `docker compose` created `_inbox` or `_browser` as root, or something else refuses the write: an ACL, SELinux, or NFS root or user squashing. |
+| permission denied | `EACCES`, `EPERM` | The share, `_inbox` or `_browser` is not writable by uid 99 or group 100 (wrong owner or group, or mode bits without group write and search), `docker compose` created `_inbox` or `_browser` as root, or something else refuses the write: an ACL, SELinux, or NFS root or user squashing. |
 | read-only | `EROFS` | The share is mounted read-only. |
 | out of space | `ENOSPC`, `EDQUOT` | The disk or quota is full. |
 | missing | `ENOENT` | The share is not mounted, or `PHOTOS_ROOT` points at a folder that does not exist. |
@@ -165,11 +165,11 @@ export PHOTOS_ROOT=/path/to/the/photo/share
 PHOTOS_ROOT="${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}"
 test -d "$PHOTOS_ROOT"
 mkdir -p "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
-chgrp 10010 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
+chgrp 100 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
 chmod 2770 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"
 ```
 
-`chgrp` keeps the current owner, which suits a share another host or an SMB account owns. Only when nothing else grants group 10010 access, also run `chown 10001 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"` to make Darkroom's user the owner. Mode `2770` on the share root gives everyone outside the owner and group no access, so skip the root in the `chmod` line if other accounts need to read it.
+`chgrp` keeps the current owner, which suits a share another host or an SMB account owns. Only when nothing else grants group 100 access, also run `chown 99 "$PHOTOS_ROOT" "$PHOTOS_ROOT/_inbox" "$PHOTOS_ROOT/_browser"` to make Darkroom's user the owner. Mode `2770` on the share root gives everyone outside the owner and group no access, so skip the root in the `chmod` line if other accounts need to read it.
 
 Then add the person again. Shared-group details are in `docs/deploy/browser.md`.
 

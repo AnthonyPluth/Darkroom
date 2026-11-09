@@ -34,8 +34,10 @@ COPY darkroom ./darkroom
 COPY --from=web /src/darkroom/static/app ./darkroom/static/app
 COPY run.py ./
 
-RUN groupadd --system --gid 10010 darkroom-share \
-    && useradd --system --uid 10001 --gid 10010 --home-dir /app darkroom \
+ARG PUID=99
+ARG PGID=100
+RUN if ! getent group "$PGID" >/dev/null; then groupadd --system --gid "$PGID" darkroom-share; fi \
+    && useradd --system --uid "$PUID" --gid "$PGID" --home-dir /app darkroom \
     && mkdir -p /data /photos && chown darkroom /data
 USER darkroom
 

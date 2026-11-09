@@ -8,7 +8,7 @@
   "syscalls": [
     {
       "names": [
-        "accept", "accept4", "access", "alarm", "arch_prctl", "bind", "brk", "capget", "capset", "chdir", "chmod", "chown",
+        "accept", "accept4", "access", "alarm", "arch_prctl", "bind", "brk", "capget", "capset", "chdir", "chmod", "chown", "chroot",
         "clock_getres", "clock_gettime", "clock_nanosleep", "clone", "clone3", "close", "close_range", "connect", "copy_file_range",
         "creat", "dup", "dup2", "dup3", "epoll_create", "epoll_create1", "epoll_ctl", "epoll_pwait", "epoll_pwait2", "epoll_wait",
         "eventfd", "eventfd2", "execve", "execveat", "exit", "exit_group", "faccessat", "faccessat2", "fadvise64", "fallocate",
@@ -28,7 +28,7 @@
         "rt_sigtimedwait", "rt_tgsigqueueinfo", "sched_get_priority_max", "sched_get_priority_min", "sched_getaffinity",
         "sched_getattr", "sched_getparam", "sched_getscheduler", "sched_setaffinity", "sched_setattr", "sched_setparam",
         "sched_setscheduler", "sched_yield", "seccomp", "select", "sendfile", "sendmmsg", "sendmsg", "sendto", "set_robust_list",
-        "set_tid_address", "setgid", "setgroups", "setitimer", "setpgid", "setpriority", "setregid", "setresgid", "setresuid",
+        "set_tid_address", "setgid", "setgroups", "setitimer", "setns", "setpgid", "setpriority", "setregid", "setresgid", "setresuid",
         "setreuid", "setrlimit", "setsid", "setsockopt", "setuid", "shmat", "shmctl", "shmdt", "shmget", "shutdown", "sigaltstack",
         "socket", "socketpair", "splice", "stat", "statfs", "statx", "symlink", "symlinkat", "sync", "sync_file_range", "syncfs",
         "sysinfo", "tee", "tgkill", "time", "timer_create", "timer_delete", "timer_getoverrun", "timer_gettime", "timer_settime",
