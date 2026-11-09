@@ -180,12 +180,19 @@ export async function settlePage(page, name, where, notes, scrollToTop = true) {
   await page.waitForTimeout(SETTLE_MS);
 }
 
-export async function visit(env, label, viewport, work, { audit = true, reducedMotion = "no-preference", allowConsole = [], signedIn = true } = {}) {
+export async function prepareBrowserPreview(ctx, base, now) {
+  const viewer = new URL("/__verify/browser-preview", base).href;
+  await ctx.route(`${base}/api/browser/view`, (route) => route.fulfill({ json: { vnc_url: viewer, worker_last_seen: new Date(now).getTime() / 1000 } }));
+  await ctx.route(viewer, (route) => route.fulfill({ contentType: "text/html", body: readFileSync(new URL("./browser-preview.html", import.meta.url), "utf8") }));
+}
+
+export async function visit(env, label, viewport, work, { audit = true, reducedMotion = "no-preference", allowConsole = [], signedIn = true, browserPreview = false } = {}) {
   const { browser, now, images, out, base, cookie } = env;
   const ctx = await browser.newContext(contextOptions(viewport, { reducedMotion }));
   try {
     await prepareContext(ctx, now);
     const blocked = await blockOtherHosts(ctx, base);
+    if (browserPreview) await prepareBrowserPreview(ctx, base, now);
     if (signedIn && cookie) await signIn(ctx, base, cookie);
     const page = await ctx.newPage();
     const where = `${label} @ ${viewport}`;
@@ -252,19 +259,19 @@ export function runVisit(env, v) {
         checks = checksAfter(checks, step);
       }
       await shotChecked(`flow-${flow.name}`);
-    }, { allowConsole: flow.allow_console, signedIn: !SIGNED_OUT_PAGES.includes(flow.page) });
+    }, { allowConsole: flow.allow_console, signedIn: !SIGNED_OUT_PAGES.includes(flow.page), browserPreview: flow.page === "browser" });
   }
   if (v.kind === "reduced") {
     return visit(env, `reduced motion ${v.name}`, v.viewport, async (page) => {
       await page.goto(`${base}${routeOf(v.name)}`, { waitUntil: loadedWhen(!SIGNED_OUT_PAGES.includes(v.name)) });
       const moving = await animationsRunning(page);
       if (moving.length) throw new Error(`animations still run under prefers-reduced-motion: ${moving.slice(0, 5).join(", ")}`);
-    }, { audit: false, reducedMotion: "reduce", signedIn: !SIGNED_OUT_PAGES.includes(v.name) });
+    }, { audit: false, reducedMotion: "reduce", signedIn: !SIGNED_OUT_PAGES.includes(v.name), browserPreview: v.name === "browser" });
   }
   return visit(env, v.name, v.viewport, async (page, shot) => {
     await page.goto(`${base}${routeOf(v.name)}`, { waitUntil: loadedWhen(!SIGNED_OUT_PAGES.includes(v.name)) });
     await shot(v.name, env.images);
-  }, { signedIn: !SIGNED_OUT_PAGES.includes(v.name) });
+  }, { signedIn: !SIGNED_OUT_PAGES.includes(v.name), browserPreview: v.name === "browser" });
 }
 
 export function readFlows(flowsDir) {

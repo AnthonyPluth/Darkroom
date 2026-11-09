@@ -48,6 +48,18 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(takeout.classify(page), takeout.SIGNED_IN)
         self.assertEqual(takeout.visible_text("<p>A&amp;B</p>\n<p> c </p>"), " a&b c ")
 
+    def test_signed_in_takeout_ignores_sign_in_urls_in_scripts_and_links(self):
+        for address in ("https://accounts.google.com/signin", "https://accounts.google.com/v3/signin/identifier", "https://accounts.google.com/AccountChooser"):
+            with self.subTest(address=address):
+                page = SIGNED_IN.replace("</head>", f'<script>const accountChooser = "{address}"; const identifierId = null;</script></head>')
+                page = page.replace("</nav>", f'<a href="{address}">Switch account</a></nav>')
+                self.assertEqual(takeout.classify(page), takeout.SIGNED_IN)
+
+    def test_actual_sign_in_forms_still_win_over_takeout_return_links(self):
+        for form in ('<form action="https://accounts.google.com/v3/signin/identifier"></form>', '<input TYPE="email">', '<input id="identifierId">'):
+            with self.subTest(form=form):
+                self.assertEqual(takeout.classify(SIGNED_IN + form), takeout.SIGN_IN_NEEDED)
+
 
 if __name__ == "__main__":
     unittest.main()

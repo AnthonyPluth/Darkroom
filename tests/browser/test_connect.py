@@ -32,6 +32,20 @@ class ConnectStateMachineTests(unittest.TestCase):
         self.assertEqual(reporter.events, [])
         self.assertEqual(clock.slept, [])
 
+    def test_connect_finishes_after_sign_in_when_takeout_contains_account_chooser_links(self):
+        page = SIGNED_IN.replace("</nav>", '<a href="https://accounts.google.com/AccountChooser?continue=https://takeout.google.com">Switch account</a></nav>')
+        ctx, clock, reporter = context_for(ScriptedBrowser([SIGN_IN_NEEDED, page]))
+        self.assertEqual(connect(ctx), {"session_state": "ok"})
+        self.assertEqual(reporter.kinds("waiting"), ["sign_in"])
+        self.assertEqual(reporter.kinds("progress"), ["signed in"])
+        self.assertEqual(clock.slept, [30.0])
+
+    def test_account_chooser_links_do_not_bypass_the_wrong_account_check(self):
+        page = OTHER_ACCOUNT.replace("</nav>", '<a href="https://accounts.google.com/AccountChooser">Switch account</a></nav>')
+        ctx, _, reporter = context_for(ScriptedBrowser([page, SIGNED_IN]))
+        self.assertEqual(connect(ctx), {"session_state": "ok"})
+        self.assertEqual(reporter.kinds("waiting"), ["wrong_account"])
+
     def test_verify_first_is_one_waiting_report_too(self):
         ctx, _, reporter = context_for(ScriptedBrowser([VERIFY, SIGN_IN_NEEDED, SIGNED_IN]))
         connect(ctx)

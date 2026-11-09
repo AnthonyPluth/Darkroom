@@ -1,0 +1,13 @@
+{
+  "name": "browser-fullscreen",
+  "page": "browser",
+  "viewports": ["phone", "desktop", "wide"],
+  "steps": [
+    { "expect_text": { "selector": "h1", "text": "Remote browser" } },
+    { "click": "button:has-text('Full screen')" },
+    { "expect_text": { "selector": "button[aria-pressed=true]", "text": "Exit full screen" } },
+    { "screenshot": "expanded" },
+    { "click": "button:has-text('Exit full screen')" },
+    { "expect_text": { "selector": "button[aria-pressed=false]", "text": "Full screen" } }
+  ]
+}
