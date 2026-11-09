@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import errno
+from pathlib import Path
 from typing import Annotated
 
-from darkroom import validate
+from darkroom import monitoring, validate
 from darkroom.domain import people
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
@@ -14,6 +17,26 @@ MAX_KEY = 500
 NO_SECRET = "Darkroom has no DARKROOM_SECRET_KEY, so it cannot keep an Immich key"
 NO_PERSON = "no such person"
 NO_FOLDERS = "Darkroom could not create the person's folders"
+FOLDER_CAUSES = {
+    "EACCES": "Darkroom cannot write to its photo share (permission denied): check the share's ownership and permissions, because Darkroom runs as uid 10001 with group 10010 and the share and its _inbox and _browser folders must be writable by that user or group, for example group 10010 with mode 2770",
+    "EPERM": "Darkroom cannot write to its photo share (permission denied): check the share's ownership and permissions, because Darkroom runs as uid 10001 with group 10010 and the share and its _inbox and _browser folders must be writable by that user or group, for example group 10010 with mode 2770",
+    "EROFS": "Darkroom's photo share is read-only: mount it read-write",
+    "ENOSPC": "Darkroom's photo share is out of space: free some space on it",
+    "EDQUOT": "Darkroom's photo share is out of space: free some space on it",
+    "ENOENT": "Darkroom's photo share or one of its folders is missing: check that the share is mounted",
+}
+OTHER_CAUSE = "see the Darkroom server log for the cause"
+
+
+def folder_failure(error: OSError, root: Path) -> Response:
+    name = errno.errorcode.get(error.errno or 0, "UNKNOWN")
+    folder = "unknown"
+    if isinstance(error.filename, str):
+        with contextlib.suppress(ValueError):
+            parts = Path(error.filename).relative_to(root).parts
+            folder = "/".join(parts[:2] if parts[:1] == ("_inbox",) else parts[:1]) or "unknown"
+    monitoring.log("person folders could not be created", operation="create person", errno=name, folder=folder)
+    return error_response(f"{NO_FOLDERS}: {FOLDER_CAUSES.get(name, OTHER_CAUSE)}", 500)
 
 
 def key_of(request: Request, body: dict[str, object]) -> str | None:
@@ -53,8 +76,8 @@ def create_person(request: Annotated[Request, contract.PersonCreateBody]) -> Ann
         return error_response(str(error), 409)
     except secretbox.Unreadable:
         return error_response(NO_SECRET, 503)
-    except OSError:
-        return error_response(NO_FOLDERS, 500)
+    except OSError as error:
+        return folder_failure(error, Photos(request.settings.photos_root).root)
     return json_response({"person": reply}, 201)
 
 
