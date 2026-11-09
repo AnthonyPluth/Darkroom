@@ -29,6 +29,7 @@ def launch_options(profile_dir: Path, downloads: Path, channel: str | None) -> d
         "headless": False,
         "viewport": dict(VIEWPORT),
         "accept_downloads": True,
+        "chromium_sandbox": True,
         "downloads_path": str(downloads),
         "ignore_default_args": list(IGNORED_DEFAULT_ARGS),
         "args": list(ARGS),

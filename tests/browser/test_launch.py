@@ -48,6 +48,7 @@ class OptionTests(unittest.TestCase):
             "headless": False,
             "viewport": {"width": 1280, "height": 900},
             "accept_downloads": True,
+            "chromium_sandbox": True,
             "downloads_path": str(DOWNLOADS),
             "ignore_default_args": ["--enable-automation"],
             "args": ["--disable-blink-features=AutomationControlled"],
@@ -60,9 +61,12 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(options["ignore_default_args"], ["--enable-automation"])
         self.assertEqual(options["args"], ["--disable-blink-features=AutomationControlled"])
 
-    def test_the_worker_adds_no_sandbox_switch_of_its_own(self):
-        options = launch_options(PROFILE, DOWNLOADS, "chrome")
-        self.assertFalse([arg for arg in options["args"] if "sandbox" in arg])
+    def test_the_sandbox_is_enabled_explicitly(self):
+        for channel in ("chrome", None):
+            with self.subTest(channel=channel):
+                options = launch_options(PROFILE, DOWNLOADS, channel)
+                self.assertIs(options["chromium_sandbox"], True)
+                self.assertFalse([arg for arg in options["args"] if "sandbox" in arg])
 
     def test_nothing_is_shared_between_calls(self):
         first = launch_options(PROFILE, DOWNLOADS, None)
