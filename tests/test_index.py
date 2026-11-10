@@ -10,7 +10,7 @@ from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder
 from darkroom.domain.ingest import run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person, Pixel, PixelCopy
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -699,6 +699,27 @@ class ConfirmationTests(unittest.TestCase):
                 opened.flush()
                 self.assertEqual(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1], since=100.0), expected)
                 self.assertTrue(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1]))
+
+    def test_a_corrupt_export_time_imported_after_placing_never_confirms_or_prunes_an_always_send_copy(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        account_id, person_id, item_id = self.confirm()
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="placed", bytes=1, sha1="a" * 40, queued_at=90.0,
+                                 placed_at=100.0, always_send=True))
+            opened.query(DedupeDecision).one().decided_at = 200.0
+        for created, confirms in ((float("inf"), False), (float("-inf"), False), (1e300, False), (0.0, False), (50.0, False), (150.0, True), (None, True)):
+            with self.subTest(created=created), db.session(self.engine) as opened:
+                export = opened.query(Export).one()
+                export.created_at = created
+                opened.flush()
+                copy = opened.query(PixelCopy).one()
+                self.assertEqual(pixel_folder.confirmed_for(opened, account_id, item_id, person_id, since=100.0), confirms)
+                self.assertEqual(pixel_folder.confirms_copy(opened, opened.get(Pixel, copy.pixel_id), copy), confirms)
+                self.assertEqual(run.seen_at(export, 300.0), {float("inf"): None, float("-inf"): None, 1e300: None, 0.0: None, 50.0: 50.0, 150.0: 150.0, None: 300.0}[created])
 
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
