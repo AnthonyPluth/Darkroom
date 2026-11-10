@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from darkroom import dates
 from darkroom.domain import accounts, browser_jobs, index
 from darkroom.domain.ingest import run
 from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
@@ -38,7 +37,7 @@ def last_import(opened: Session, account_ids: set[int]) -> float | None:
 
 def account_state(account: GoogleAccount) -> dict[str, object]:
     return {"id": account.id, "email": account.email, "session_state": account.session_state, "session_checked": account.session_checked,
-            "schedule_end": dates.instant_or_none(account.schedule_end)}
+            "schedule_end": browser_jobs.schedule_end_of(account)}
 
 
 def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None],

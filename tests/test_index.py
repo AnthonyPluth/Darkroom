@@ -689,6 +689,17 @@ class ConfirmationTests(unittest.TestCase):
             with self.assertRaises(pixel_folder.NotInOriginals):
                 pixel_folder.queue(opened, opened.query(MediaItem).one(), 2.0)
 
+    def test_an_export_time_that_is_not_an_instant_never_counts_as_seen_after_a_pixel_copy_was_placed(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        for created, expected in ((float("inf"), False), (1e300, False), (float("-inf"), False), (150.0, True)):
+            with self.subTest(created=created), db.session(self.engine) as opened:
+                opened.query(Export).one().created_at = created
+                opened.flush()
+                self.assertEqual(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1], since=100.0), expected)
+                self.assertTrue(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1]))
+
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
         original = photo.read_bytes()

@@ -132,12 +132,33 @@ def is_unchecked(opened: Session, job: BrowserJob) -> bool:
     return stuck is not None and stuck.id == job.id
 
 
+def schedule_of(account: GoogleAccount) -> tuple[float, float | None] | None:
+    created = dates.instant_or_none(account.schedule_created)
+    if created is None:
+        return None
+    if account.schedule_end is None:
+        return created, None
+    end = dates.instant_or_none(account.schedule_end)
+    return None if end is None else (created, end)
+
+
+def schedule_end_of(account: GoogleAccount) -> float | None:
+    found = schedule_of(account)
+    return None if found is None else found[1]
+
+
+def schedule_unusable(account: GoogleAccount) -> bool:
+    return (account.schedule_created is not None or account.schedule_end is not None) and schedule_of(account) is None
+
+
 def schedule_live(account: GoogleAccount, now: float) -> bool:
-    return account.schedule_created is not None and (account.schedule_end is None or account.schedule_end > now)
+    found = schedule_of(account)
+    return found is not None and (found[1] is None or found[1] > now)
 
 
 def extends(account: GoogleAccount, times: tuple[float, float]) -> tuple[float, float]:
-    if account.schedule_end is not None and times[1] <= account.schedule_end:
+    end = schedule_end_of(account)
+    if end is not None and times[1] <= end:
         raise NotExtended("a renewal must end after the schedule it renews")
     return times
 
@@ -184,7 +205,8 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
         raise AlreadyOpen("this account already has an export schedule")
     if kind == "schedule" and unchecked_schedule(opened, account_id) is not None:
         raise AlreadyOpen("the last schedule attempt may have created an export; check Takeout and say so before trying again")
-    ended = account.schedule_end is not None and account.schedule_end <= now
+    end = schedule_end_of(account)
+    ended = schedule_unusable(account) or (end is not None and end <= now)
     statuses = QUEUED_STATUSES if kind != "schedule" or ended else (*QUEUED_STATUSES, "done")
     kinds = SCHEDULE_KINDS if kind == "schedule" else (kind,)
     busy = opened.execute(select(BrowserJob.id).where(BrowserJob.account_id == account_id, BrowserJob.kind.in_(kinds), BrowserJob.status.in_(statuses)).limit(1)).first()

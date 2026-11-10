@@ -132,7 +132,8 @@ def add_months(moment: float, months: int, zone: tzinfo = UTC) -> float:
 
 
 def next_export_at(account: GoogleAccount, now: float, zone: tzinfo = UTC) -> float | None:
-    created, end = dates.instant_or_none(account.schedule_created), dates.instant_or_none(account.schedule_end)
+    schedule = browser_jobs.schedule_of(account)
+    created, end = (None, None) if schedule is None else schedule
     if created is None or end is None:
         return None
     for step in range(1, 13):
@@ -150,12 +151,13 @@ def last_export_at(opened: Session, account_id: int) -> float | None:
 
 
 def kind_for(opened: Session, account: GoogleAccount, created_at: float) -> Literal["initial", "incremental", "manual"]:
-    since = account.schedule_created
+    schedule = browser_jobs.schedule_of(account)
+    since = None if schedule is None else schedule[0]
     if since is not None and created_at < since - SCHEDULE_SLACK:
         return "manual"
     earlier = select(func.count(Export.id)).where(Export.account_id == account.id, Export.kind != "manual")
     if since is not None:
-        earlier = earlier.where(Export.created_at >= since - SCHEDULE_SLACK)
+        earlier = earlier.where(Export.created_at >= since - SCHEDULE_SLACK, Export.created_at <= dates.LATEST_INSTANT)
     return "incremental" if opened.execute(earlier).scalar_one() else "initial"
 
 

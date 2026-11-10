@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.domain import accounts, events
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1, known_contents
@@ -35,7 +36,7 @@ class Tended:
 
 def confirming_matches(opened: Session, account_id: int, item_id: int, person_id: int) -> list[float]:
     return list(opened.execute(
-        select(func.coalesce(Export.created_at, DedupeDecision.decided_at)).select_from(DedupeDecision).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id)
+        select(case((Export.created_at.between(1, dates.LATEST_INSTANT), Export.created_at), else_=DedupeDecision.decided_at)).select_from(DedupeDecision).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id)
         .join(Export, Export.id == DedupeDecision.export_id).where(
             DedupeDecision.matched_item_id == item_id, DedupeDecision.account_id == account_id, DedupeDecision.person_id == person_id,
             DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(accounts.CONFIRMING_TIERS),
