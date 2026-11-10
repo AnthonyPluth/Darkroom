@@ -188,9 +188,27 @@ class ListingFromResultTests(unittest.TestCase):
             for name in ("created_at", "expires_at"):
                 with self.subTest(name=name, value=value), self.assertRaises(exports.UnreadableListing):
                     exports.listing_from_result({"exports": [{**good, name: value}]})
-            with self.subTest(part=value), self.assertRaises(exports.UnreadableListing):
-                exports.listing_from_result({"exports": [{**good, "parts": [{"number": 1, "bytes": value}]}]})
         self.assertEqual(exports.listing_from_result({"exports": [{**good, "created_at": dates.LATEST_INSTANT}]})[0].created_at, dates.LATEST_INSTANT)
+
+
+    def test_part_numbers_and_sizes_stay_exact_integers_or_are_refused(self):
+        good = {"google_id": "a", "created_at": 5, "state": "ready", "expires_at": 9}
+
+        def part(number=1, size=3):
+            return exports.listing_from_result({"exports": [{**good, "parts": [{"number": number, "bytes": size}]}]})[0].parts[0]
+
+        for size in (2**63 - 1, 2**53 + 1, 2**53 - 1, 0):
+            with self.subTest(size=size):
+                found = part(size=size)
+                self.assertEqual(found.bytes, size)
+                self.assertIs(type(found.bytes), int)
+        self.assertEqual(part(number=2.0, size=3.0), exports.ListedPart(2, 3))
+        for size in (2**63, 10**400, float(2**63 - 1), float(2**53 + 2), 1e300, float("inf"), float("nan"), -1, 1.5, True, "3"):
+            with self.subTest(size=size), self.assertRaises(exports.UnreadableListing):
+                part(size=size)
+        for number in (2**31, 0, 1.5, float(2**53 + 2)):
+            with self.subTest(number=number), self.assertRaises(exports.UnreadableListing):
+                part(number=number)
 
 
 class NextExportTests(unittest.TestCase):

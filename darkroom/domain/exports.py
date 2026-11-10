@@ -33,6 +33,7 @@ STILL_WAITING = ("announced", "downloading")
 MAX_DOWNLOAD_JOBS = 3
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
+EXACT_FLOAT_LIMIT = 2**53
 
 
 class UnreadableListing(ValueError):
@@ -76,14 +77,18 @@ def instant_of(value: object, name: str) -> float:
     return number_of(value, name, 1, dates.LATEST_INSTANT)
 
 
+def whole_of(value: object, name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, float) and value.is_integer() and abs(value) <= EXACT_FLOAT_LIMIT:
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise UnreadableListing(f"the export listing has a bad {name}")
+    return value
+
+
 def part_of(raw: object) -> ListedPart:
     if not isinstance(raw, dict):
         raise UnreadableListing("the export listing has a bad part")
-    number = number_of(raw.get("number"), "part number", 1, MAX_PART_NUMBER)
-    size = number_of(raw.get("bytes"), "part size", 0, MAX_PART_BYTES)
-    if number != int(number) or size != int(size):
-        raise UnreadableListing("the export listing has a bad part")
-    return ListedPart(int(number), int(size))
+    return ListedPart(whole_of(raw.get("number"), "part number", 1, MAX_PART_NUMBER), whole_of(raw.get("bytes"), "part size", 0, MAX_PART_BYTES))
 
 
 def listed_of(raw: object) -> Listed:

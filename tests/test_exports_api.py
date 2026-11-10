@@ -7,7 +7,7 @@ from sqlalchemy import select
 from darkroom.dates import utc_now
 from darkroom.domain import browser_jobs
 from darkroom.storage import db
-from darkroom.storage.models import BrowserJob, Export, GoogleAccount
+from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount
 from tests.api_world import ApiCase
 from tests.shared import fetch
 
@@ -69,6 +69,34 @@ class ExportsApiTests(ApiCase):
         status, reply = self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": self.listing(self.ready())})
         self.assertEqual(status, 200, reply)
         self.assertEqual([each["created_at"] for each in self.call("GET", "/api/exports")[1]["exports"]], [self.now - 3600])
+
+    def claimed_status_job(self):
+        status, reply = self.call("POST", "/api/exports/check-now")
+        self.assertIn(status, (200, 201), reply)
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        while job["kind"] != "status":
+            job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        return job["id"]
+
+    def test_the_largest_part_size_is_stored_exactly_and_a_larger_one_is_refused(self):
+        job_id = self.claimed_status_job()
+        too_big = self.listing({**self.ready(), "parts": [{"number": 1, "bytes": 2**63}]})
+        status, reply = self.worker(f"/internal/browser/jobs/{job_id}/done", {"result": too_big})
+        self.assertEqual(status, 400, reply)
+        largest = self.listing({**self.ready(), "parts": [{"number": 1, "bytes": 2**63 - 1}, {"number": 2, "bytes": 2**53 + 1}]})
+        status, reply = self.worker(f"/internal/browser/jobs/{job_id}/done", {"result": largest})
+        self.assertEqual(status, 200, reply)
+        with db.session(self.engine) as opened:
+            self.assertEqual(sorted(part.bytes for part in opened.execute(select(ExportPart)).scalars()), [2**53 + 1, 2**63 - 1])
+
+    def test_a_number_too_long_to_parse_is_refused_cleanly(self):
+        job_id = self.claimed_status_job()
+        body = json.dumps({"result": self.listing({**self.ready(), "parts": [{"number": 1, "bytes": 123456789}]})}).replace("123456789", "1" + "0" * 5000)
+        headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+        status, _, reply = fetch(self.base, "POST", f"/internal/browser/jobs/{job_id}/done", headers, body.encode())
+        self.assertEqual(status, 400, reply)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(ExportPart)).scalars().all(), [])
 
     def test_a_bad_time_already_stored_is_listed_as_unknown_and_the_page_still_loads(self):
         with db.session(self.engine) as opened:
