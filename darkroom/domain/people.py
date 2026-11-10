@@ -100,7 +100,16 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
                     immich_api_key_sealed=sealed_key, originals_path=f"{slug}/originals", google_only_path=f"{slug}/google-only", created=now)
     opened.add(person)
     opened.flush()
-    photos.ensure_person_tree(slug)
+    try:
+        photos.ensure_person_tree(slug)
+    except OutsideRoot as error:
+        raise LinkedInbox(LINKED_INBOX) from error
+    except FileExistsError as error:
+        try:
+            photos.manual_inbox(slug)
+        except OutsideRoot:
+            raise LinkedInbox(LINKED_INBOX) from error
+        raise FolderInUse(f"the folder name {slug} appeared on disk while the person was being added; choose another folder name") from error
     events.record(opened, now, "person_created", slug)
     if sealed_key:
         events.record(opened, now, "immich_key_set", slug)

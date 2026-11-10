@@ -913,6 +913,26 @@ class InboxLinkTests(unittest.TestCase):
         with self.assertRaises(paths.LinkRefused):
             self.photos.manual_inbox("jo")
 
+    def test_a_cyclic_inbox_link_is_refused(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        for cycle in ("self", "pair"):
+            with self.subTest(cycle=cycle):
+                root = Path(folder.name).resolve() / cycle
+                root.mkdir()
+                photos = paths.Photos(root)
+                if cycle == "self":
+                    (root / "_inbox").symlink_to(root / "_inbox")
+                else:
+                    (root / "_inbox").symlink_to(root / "loop")
+                    (root / "loop").symlink_to(root / "_inbox")
+                for call, args in ((photos.manual_inbox, ("jo",)), (photos.staging, ("jo", "export-1")),
+                                   (photos.review_hold, ("jo", "export-1")), (photos.thumbs, ("jo",))):
+                    with self.assertRaises(paths.LinkRefused):
+                        call(*args)
+                self.assertTrue(paths.linked_on_the_way(root, ("_inbox", "jo")))
+                self.assertFalse(paths.linked_on_the_way(root, ("missing", "jo")))
+
     def test_a_folder_without_links_is_its_own_path(self):
         self.assertEqual(self.photos.staging("jo", "export-1"), self.export / "staging")
         self.assertEqual(self.photos.in_the_inbox("jo", "manual"), self.root / "_inbox/jo/manual")

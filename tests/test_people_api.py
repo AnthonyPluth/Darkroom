@@ -340,6 +340,48 @@ class LinkedInboxTests(ApiCase):
                 self.assertEqual(list(target.iterdir()), [])
                 self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
 
+    def cleared_inbox(self):
+        import shutil
+
+        inbox = self.photos / "_inbox"
+        if inbox.is_symlink():
+            inbox.unlink()
+        elif inbox.exists():
+            shutil.rmtree(inbox)
+        return inbox
+
+    def test_a_person_is_not_added_through_a_cyclic_inbox_link(self):
+        for cycle in ("self", "pair"):
+            with self.subTest(cycle=cycle):
+                inbox = self.cleared_inbox()
+                (self.photos / "loop").unlink(missing_ok=True)
+                if cycle == "self":
+                    inbox.symlink_to(inbox)
+                else:
+                    inbox.symlink_to(self.photos / "loop")
+                    (self.photos / "loop").symlink_to(inbox)
+                status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+                self.assertEqual(status, 409)
+                self.assertIn("_inbox folder is a link", reply["error"])
+                self.assertFalse((self.photos / "sam").exists())
+                self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
+    def test_a_link_or_folder_that_appears_while_the_person_is_added_answers_409(self):
+        for linked in (True, False):
+            with self.subTest(linked=linked):
+                inbox = self.cleared_inbox()
+
+                def racing(photos, slug, linked=linked, inbox=inbox):
+                    if linked:
+                        inbox.symlink_to(inbox)
+                    raise FileExistsError(errno.EEXIST, "exists", str(inbox))
+
+                with mock.patch("darkroom.domain.people.Photos.ensure_person_tree", autospec=True, side_effect=racing):
+                    status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+                self.assertEqual(status, 409)
+                self.assertIn("_inbox folder is a link" if linked else "appeared on disk", reply["error"])
+                self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
 
 if __name__ == "__main__":
     unittest.main()

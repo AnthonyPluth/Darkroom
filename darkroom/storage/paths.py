@@ -121,7 +121,7 @@ class Photos:
 
     def in_the_inbox(self, *parts: str) -> Path:
         expected = self.root.joinpath(INBOX, *parts)
-        if self.inside(INBOX, *parts) != expected:
+        if linked_on_the_way(self.root, (INBOX, *parts)) or self.inside(INBOX, *parts) != expected:
             raise LinkRefused("a link is on the way into the inbox")
         return expected
 
@@ -277,6 +277,19 @@ class Photos:
                     path.rmdir()
             raise
         return folders
+
+
+def linked_on_the_way(top: Path, parts: Iterable[str]) -> bool:
+    current = top
+    for part in parts:
+        current = current / part
+        try:
+            found = current.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        if stat.S_ISLNK(found.st_mode):
+            return True
+    return False
 
 
 def share_folder(path: Path) -> None:
@@ -1527,9 +1540,7 @@ def open_import_part(photos: Photos, path: Path) -> BinaryIO:
     spelled = Path(os.path.abspath(path))
     if spelled.is_relative_to(inbox):
         return open_inbox_file(photos, spelled)
-    if path.resolve().is_relative_to(inbox):
-        raise LinkRefused("a link leads into the inbox")
-    return open_plain_file(path)
+    return open_plain_file(spelled)
 
 
 def plain_sha1(path: Path) -> str:

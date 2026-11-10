@@ -170,7 +170,7 @@ def listed_zips(folder: Path) -> list[Path]:
 
 
 def plain_zip(folder: Path, path: Path) -> bool:
-    return path.resolve() == folder.resolve() / path.relative_to(folder) and paths.plain_file(path.lstat())
+    return not paths.linked_on_the_way(folder, path.relative_to(folder).parts) and paths.plain_file(path.lstat())
 
 
 def skipped_zips(folder: Path) -> int:
