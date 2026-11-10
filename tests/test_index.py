@@ -6,11 +6,12 @@ from unittest import mock
 
 from sqlalchemy import delete
 
+from darkroom import dates
 from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder, review, takeout_copies
 from darkroom.domain.ingest import run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person, Pixel, PixelCopy
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -718,11 +719,11 @@ class ConfirmationTests(unittest.TestCase):
         fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
         self.run_index()
         ids = self.confirm()
-        for created, expected in ((float("inf"), False), (1e300, False), (float("-inf"), False), (150.0, True)):
+        for created, expected in ((float("inf"), False), (1e300, False), (float("-inf"), False), (5e9, False), (55.0, True)):
             with self.subTest(created=created), db.session(self.engine) as opened:
                 opened.query(Export).one().created_at = created
                 opened.flush()
-                self.assertEqual(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1], since=100.0), expected)
+                self.assertEqual(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1], since=40.0), expected)
                 self.assertTrue(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1]))
 
     def test_a_corrupt_export_time_imported_after_placing_never_confirms_or_prunes_an_always_send_copy(self):
@@ -736,7 +737,10 @@ class ConfirmationTests(unittest.TestCase):
             opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="placed", bytes=1, sha1="a" * 40, queued_at=90.0,
                                  placed_at=100.0, always_send=True))
             opened.query(DedupeDecision).one().decided_at = 200.0
-        for created, confirms in ((float("inf"), False), (float("-inf"), False), (1e300, False), (0.0, False), (50.0, False), (150.0, True), (None, True)):
+        seen = {float("inf"): None, float("-inf"): None, 1e300: None, 0.0: None, 5e9: None, dates.LATEST_INSTANT + 1: None, 250.0: 250.0, 400.0: None,
+                50.0: 50.0, 150.0: 150.0, None: 300.0}
+        for created, confirms in ((float("inf"), False), (float("-inf"), False), (1e300, False), (0.0, False), (5e9, False), (dates.LATEST_INSTANT + 1, False),
+                                  (250.0, False), (400.0, False), (50.0, False), (150.0, True), (None, True)):
             with self.subTest(created=created), db.session(self.engine) as opened:
                 export = opened.query(Export).one()
                 export.created_at = created
@@ -744,7 +748,56 @@ class ConfirmationTests(unittest.TestCase):
                 copy = opened.query(PixelCopy).one()
                 self.assertEqual(pixel_folder.confirmed_for(opened, account_id, item_id, person_id, since=100.0), confirms)
                 self.assertEqual(pixel_folder.confirms_copy(opened, opened.get(Pixel, copy.pixel_id), copy), confirms)
-                self.assertEqual(run.seen_at(export, 300.0), {float("inf"): None, float("-inf"): None, 1e300: None, 0.0: None, 50.0: 50.0, 150.0: 150.0, None: 300.0}[created])
+                self.assertEqual(run.seen_at(export, 300.0), seen[created])
+
+    def pruned_copy(self, account_id, person_id, item_id):
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=person_id))
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="pruned", bytes=item.bytes, sha1=item.sha1, queued_at=90.0,
+                                 placed_at=None, pruned_at=95.0))
+
+    def copy_state(self):
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            item = opened.get(MediaItem, copy.item_id)
+            return copy.state, copy.sha1 == item.sha1 and copy.bytes == item.bytes
+
+    def test_a_pruned_pixel_copy_is_sent_again_when_its_original_gets_new_contents(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        with db.session(self.engine) as opened:
+            old_sha1 = opened.query(PixelCopy).one().sha1
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.assertEqual(self.copy_state(), ("queued", True))
+        with db.session(self.engine) as opened:
+            self.assertNotEqual(opened.query(PixelCopy).one().sha1, old_sha1)
+
+    def test_a_pruned_copy_stays_pruned_while_its_original_is_set_aside_and_is_sent_again_on_recovery(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(PixelCopy).one().state, "pruned")
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        self.run_index(now=300.0)
+        self.assertEqual(self.copy_state(), ("queued", True))
+
+    def test_a_pruned_copy_of_an_original_whose_contents_did_not_change_stays_pruned(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.assertEqual(self.copy_state(), ("pruned", True))
 
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")

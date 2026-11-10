@@ -261,7 +261,7 @@ def pixels_serving(opened: Session, account_id: int, person_id: int) -> list[Pix
 def seen_at(export: Export, now: float) -> float | None:
     if export.created_at is None:
         return now
-    return dates.instant_or_none(export.created_at)
+    return export.created_at if dates.plausibly_created(export.created_at, now) else None
 
 
 def unmatched_count(opened: Session, person_id: int, cutoff: float) -> int:

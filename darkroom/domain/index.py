@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, events, media
+from darkroom.domain import dedupe, events, media, pixel_folder
 from darkroom.providers import exiftool
 from darkroom.storage import db, models
 from darkroom.storage.models import IndexSkip, MediaItem, Person
@@ -295,11 +295,15 @@ def record(opened: Session, person: Person, file: Pending, print_: media.Fingerp
         item = MediaItem(person_id=person.id, source="phone", path=file.key, sha1="", bytes=0, indexed_at=now)
         opened.add(item)
         report.new += 1
+        apply(item, print_, file.mtime, now)
     else:
         report.changed += 1
-        if item.sha1 != print_.sha1:
+        contents_changed = item.sha1 != print_.sha1
+        if contents_changed:
             dedupe.forget_confirmation(opened, item)
-    apply(item, print_, file.mtime, now)
+        apply(item, print_, file.mtime, now)
+        if contents_changed:
+            pixel_folder.requeue_new_contents(opened, item, now)
     forget_skip(opened, person, file.key)
 
 

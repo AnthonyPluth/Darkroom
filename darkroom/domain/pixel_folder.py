@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, case, func, literal, select
+from sqlalchemy import ColumnElement, and_, case, func, literal, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
@@ -37,10 +37,14 @@ class Tended:
 NEVER_AFTER_PLACING = 0.0
 
 
+def plausibly_created(created: ColumnElement[float | None], observed_by: ColumnElement[float]) -> ColumnElement[bool]:
+    return and_(created.between(1, dates.LATEST_INSTANT), created <= observed_by)
+
+
 def observed_at() -> ColumnElement[float]:
     return case(
         (Export.created_at.is_(None), DedupeDecision.decided_at),
-        (Export.created_at.between(1, dates.LATEST_STORED), Export.created_at),
+        (plausibly_created(Export.created_at, DedupeDecision.decided_at), Export.created_at),
         else_=literal(NEVER_AFTER_PLACING),
     )
 
@@ -227,6 +231,24 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
             continue
         revive(opened, row, now)
         requeued += 1
+    opened.flush()
+    return requeued
+
+
+def requeue_new_contents(opened: Session, item: MediaItem, now: float) -> int:
+    db.write_lock(opened)
+    if item.sha1 == UNKNOWN_SHA1:
+        return 0
+    requeued = 0
+    rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item.id, PixelCopy.state.in_(("queued", "pruned")))).scalars().all()
+    for row in rows:
+        if row.state == "pruned":
+            pixel = opened.get(Pixel, row.pixel_id)
+            if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+                continue
+            revive(opened, row, now)
+            requeued += 1
+        row.sha1, row.bytes = item.sha1, item.bytes
     opened.flush()
     return requeued
 

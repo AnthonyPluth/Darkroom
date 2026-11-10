@@ -30,6 +30,10 @@ def is_instant(value: object) -> bool:
     return 0 < value <= LATEST_INSTANT
 
 
+def plausibly_created(value: object, observed_by: float) -> bool:
+    return is_instant(value) and isinstance(value, int | float) and value <= observed_by
+
+
 def usable_stored(value: object) -> bool:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return False
