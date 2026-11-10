@@ -60,6 +60,41 @@ class LocalHostTests(unittest.TestCase):
             self.assertFalse(config.local_host(host), host)
 
 
+class NoAuthHostTests(unittest.TestCase):
+    def test_the_default_hosts_are_addresses_localhost_and_the_configured_ones(self):
+        settings = settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_HOST="192.168.1.4", DARKROOM_PUBLIC_URL="http://Tower.Local:8000/")
+        self.assertEqual(config.no_auth_hosts(settings), {"localhost", "192.168.1.4", "tower.local"})
+        for host in ("localhost", "localhost:8000", "LOCALHOST.", "127.0.0.1", "127.0.0.1:8000", "[::1]:8000", "::1", "10.1.2.3", "tower.local:8000", "TOWER.LOCAL."):
+            self.assertTrue(config.no_auth_host_allowed(settings, host), host)
+        for host in ("", " ", "evil.example", "evil.example:8000", "tower.local.evil.example", "localhost.evil.example", "127.0.0.1.evil.example",
+                     "evil.example@127.0.0.1", "127.0.0.1/evil", "127.0.0.1\\evil", "127.0.0.1 evil", "nas", "darkroom.example"):
+            self.assertFalse(config.no_auth_host_allowed(settings, host), host)
+
+    def test_the_bind_host_counts_as_a_name(self):
+        self.assertTrue(config.no_auth_host_allowed(settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_HOST="nas"), "NAS:8000"))
+        self.assertEqual(config.no_auth_hosts(settings_from(DARKROOM_HOST="::1")), {"localhost", "::1"})
+
+    def test_more_host_names_are_configurable(self):
+        settings = settings_from(DARKROOM_ALLOWED_HOSTS=" nas , Photos.Home.Arpa:8000,,")
+        self.assertEqual(settings.allowed_hosts, ("nas", "Photos.Home.Arpa:8000"))
+        self.assertEqual(config.no_auth_hosts(settings), {"localhost", "127.0.0.1", "nas", "photos.home.arpa"})
+        for host in ("nas", "nas:8000", "photos.home.arpa", "PHOTOS.home.arpa:9000"):
+            self.assertTrue(config.no_auth_host_allowed(settings, host), host)
+        for host in ("nas.evil.example", "home.arpa", "evil.example"):
+            self.assertFalse(config.no_auth_host_allowed(settings, host), host)
+        self.assertEqual(config.allowed_hosts_problems(settings), [])
+
+    def test_an_unusable_allowed_host_is_reported(self):
+        for value in ("https://nas", "*.lan", "nas/photos", "jo@nas", "nas, ,https://tower.local"):
+            with self.subTest(value=value):
+                settings = settings_from(DARKROOM_ALLOWED_HOSTS=value)
+                found = config.allowed_hosts_problems(settings)
+                self.assertEqual(len(found), 1)
+                self.assertIn("DARKROOM_ALLOWED_HOSTS", found[0])
+                self.assertIn(found[0], config.problems(settings))
+                self.assertFalse(config.no_auth_host_allowed(settings, value))
+
+
 class AuthProblemTests(unittest.TestCase):
     def test_oidc_needs_a_public_url_and_someone_allowed(self):
         found = config.auth_problems(settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID="x", OIDC_ALLOWED_GROUPS="", DARKROOM_PUBLIC_URL="darkroom.example"))

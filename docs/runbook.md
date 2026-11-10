@@ -29,6 +29,19 @@ What else the workflows need, set once:
 
 A push straight to `main` is refused by the ruleset; every change lands through a pull request, and merging one releases (`.github/workflows/docker.yml` on `main` works out the next version from the pull request's title, builds the images and publishes the release).
 
+## Running without sign-in
+
+`DARKROOM_ALLOW_NO_AUTH=1` signs every request in as the local owner, with no sign-in provider. It works only without OIDC, without `DARKROOM_DEMO=1` and with `DARKROOM_HOST` a local address (a loopback or LAN address, or a LAN name); otherwise Darkroom refuses to start. The image sets `DARKROOM_HOST=0.0.0.0`, which is not a local address, so this mode is meant for `python run.py serve` on a loopback or LAN address.
+
+Because nothing asks who you are, Darkroom also checks which address the browser used, so a web page that points its own domain name at your machine (DNS rebinding) gets nothing. In this mode a session route (the whole `/api/` the web app uses, and sign-out) answers only when the request's `Host` is one of these, with any port:
+
+- an IP address (`127.0.0.1`, `[::1]`, `192.168.1.20`): a rebound domain always arrives under its own name, never as an address;
+- `localhost`;
+- the host of `DARKROOM_HOST` and of `DARKROOM_PUBLIC_URL`;
+- each name in `DARKROOM_ALLOWED_HOSTS`, a comma-separated list of host names without a scheme, path or wildcard (for example `DARKROOM_ALLOWED_HOSTS=tower.local,photos.home.arpa`).
+
+A state-changing request (anything but `GET`) that carries an `Origin` must also come from one of those hosts. Any other request gets 403 with "this address is not one Darkroom answers on without sign-in; add its host name to DARKROOM_ALLOWED_HOSTS", and the log has `request refused without sign-in` with `reason=host not allowed` (never the host itself). If you open Darkroom by a LAN name such as `http://tower.local:8000` and see that error, add the name to `DARKROOM_ALLOWED_HOSTS` (or put it in `DARKROOM_PUBLIC_URL`) and restart; `python run.py check-config` reports an entry it can't use. The worker's routes and the public ones (`/healthz`, the sign-in pages) are not checked, and nothing changes with OIDC sign-in or the demo, whose session cookies already belong to their own host.
+
 ## Takeout import: when it needs a person
 
 The browser worker is the fragile part; everything after the inbox works without it. Each alert below names the account or export it is about, and the Exports page shows the same jobs.
