@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import struct
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,8 @@ PHASH_SIZE = 8
 DHASH_SIZE = 8
 MAX_PIXELS = 120_000_000
 MAX_STORED_INT = 2**31 - 1
+UNDECODABLE: tuple[type[Exception], ...] = (ValueError, ArithmeticError, LookupError, TypeError, RuntimeError, SyntaxError, struct.error,
+                                            Image.DecompressionBombError)
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
 
 

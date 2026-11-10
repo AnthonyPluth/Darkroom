@@ -55,7 +55,7 @@ class ReadTests(unittest.TestCase):
 
         with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", slow):
             for count in (1, 3, exiftool.BATCH):
-                with self.subTest(count=count), self.assertRaises(exiftool.Unreadable):
+                with self.subTest(count=count), self.assertRaises(exiftool.TimedOut):
                     exiftool.read([self.folder / f"{n}.jpg" for n in range(count)])
         self.assertEqual(timeouts, [exiftool.FILE_TIMEOUT, 3 * exiftool.FILE_TIMEOUT, exiftool.TIMEOUT])
 

@@ -240,7 +240,9 @@ class PoisonAssetTests(ReconcileCase):
         self.assertEqual((report.stored, report.failed), (1, 1))
         self.assertEqual((self.rows()[poison.id].status, self.rows()[after.id].status), ("failed", "stored"))
         self.assertEqual(self.jo.immich_reconciled_until, NOW - reconcile.MARGIN_SECONDS)
-        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "CopyMismatch")
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "SetAside")
+        retried = self.run_it(at=NOW + 3600)
+        self.assertEqual((retried.stored, retried.failed, self.rows()[poison.id].status), (1, 0, "stored"))
 
 
 class OrderTests(ReconcileCase):

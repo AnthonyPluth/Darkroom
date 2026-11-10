@@ -29,6 +29,10 @@ class Unreadable(RuntimeError):
     pass
 
 
+class TimedOut(Unreadable):
+    pass
+
+
 class WriteFailed(RuntimeError):
     pass
 
@@ -83,7 +87,7 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
         try:
             done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)], min(TIMEOUT, FILE_TIMEOUT * len(group)))
         except subprocess.TimeoutExpired as error:
-            raise Unreadable("exiftool took too long to read the files") from error
+            raise TimedOut("exiftool took too long to read the files") from error
         if not done.stdout.strip():
             if done.returncode != 0:
                 raise Unreadable(done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "exiftool failed")

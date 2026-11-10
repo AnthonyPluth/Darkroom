@@ -38,6 +38,10 @@ class CopyMismatch(RuntimeError):
     pass
 
 
+class SetAside(CopyMismatch):
+    pass
+
+
 class PixelQueue(Protocol):
     def offer(self, opened: Session, person: Person, original: MediaItem, now: float) -> bool: ...
 
@@ -150,6 +154,8 @@ class Run:
         if media.sha1_of(destination)[0] != asset.sha1:
             raise CopyMismatch("a different file is already at the copy's name")
         report = index.index_file(self.opened, self.photos, self.person, destination, self.now, self.read)
+        if report.skipped or report.set_aside:
+            raise SetAside("the index set the copy in originals aside; it is tried again in a day")
         item = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.path == index.relative(self.photos, destination))).scalar_one_or_none()
         if item is None or report.failed or item.sha1 != asset.sha1:
             raise CopyMismatch("the copy in originals could not be checked against the Immich asset")

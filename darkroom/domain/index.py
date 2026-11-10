@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events, media
@@ -20,7 +20,9 @@ UNREADABLE = "exiftool could not read it"
 NO_METADATA = "exiftool found no metadata"
 NOT_MEDIA = "not a photo or video"
 UNUSABLE = "its metadata could not be used"
-SKIP_NOTE = "skipped until the file changes"
+SKIP_NOTE = "set aside and tried again in a day or when the file changes"
+RETRY_SET_ASIDE_SECONDS = 86400.0
+UNKNOWN_SHA1 = ""
 
 
 class Unusable(ValueError):
@@ -34,6 +36,7 @@ class IndexReport:
     changed: int = 0
     failed: int = 0
     skipped: int = 0
+    set_aside: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,33 +82,57 @@ def skips_of(opened: Session, person: Person) -> dict[str, IndexSkip]:
     return {skip.path: skip for skip in opened.execute(select(IndexSkip).where(IndexSkip.person_id == person.id)).scalars()}
 
 
-def skip(opened: Session, person: Person, skips: dict[str, IndexSkip], file: Pending, reason: str, now: float, report: IndexReport) -> None:
-    row = skips.get(file.key)
-    if row is None:
-        row = IndexSkip(person_id=person.id, path=file.key, bytes=file.size, mtime=file.mtime, reason=reason, skipped_at=now)
-        opened.add(row)
-        skips[file.key] = row
-    row.bytes, row.mtime, row.reason, row.skipped_at = file.size, file.mtime, reason, now
+def forget_skip(opened: Session, person: Person, path: str) -> None:
+    opened.execute(delete(IndexSkip).where(IndexSkip.person_id == person.id, IndexSkip.path == path))
+
+
+def still_set_aside(known: IndexSkip | None, size: int, mtime: float, now: float) -> bool:
+    return known is not None and known.bytes == size and known.mtime == mtime and now - known.skipped_at < RETRY_SET_ASIDE_SECONDS
+
+
+def unknown_contents(item: MediaItem, size: int, now: float) -> None:
+    item.sha1, item.bytes, item.mtime, item.phash, item.dhash = UNKNOWN_SHA1, size, None, None, None
+    item.width = item.height = item.duration_ms = None
+    item.make = item.model = None
+    item.captured_utc, item.captured_local, item.offset_minutes, item.time_source = None, None, None, "unknown"
+    item.lat, item.lon, item.gps_source = None, None, "none"
+    item.indexed_at = now
+
+
+def set_aside(opened: Session, person: Person, file: Pending, reason: str, now: float, report: IndexReport) -> None:
+    if file.item is not None:
+        unknown_contents(file.item, file.size, now)
+    forget_skip(opened, person, file.key)
+    opened.execute(insert(IndexSkip).values(person_id=person.id, path=file.key, bytes=file.size, mtime=file.mtime, reason=reason, skipped_at=now))
     report.failed += 1
+    report.set_aside += 1
     events.record(opened, now, "index_failed", person.slug, f"{reason}, {SKIP_NOTE}")
 
 
-def read_each(read: Reader, paths: list[Path]) -> tuple[dict[Path, dict[str, object]], set[Path]]:
+def failed(opened: Session, person: Person, detail: str, now: float, report: IndexReport) -> None:
+    report.failed += 1
+    events.record(opened, now, "index_failed", person.slug, detail)
+
+
+def read_each(read: Reader, paths: list[Path]) -> tuple[dict[Path, dict[str, object]], set[Path], set[Path]]:
     try:
-        return read(paths), set()
+        return read(paths), set(), set()
     except exiftool.Unreadable:
         if len(paths) == 1:
             raise
     tags: dict[Path, dict[str, object]] = {}
     unreadable: set[Path] = set()
+    slow: set[Path] = set()
     for path in paths:
         try:
             tags.update(read([path]))
+        except exiftool.TimedOut:
+            slow.add(path)
         except exiftool.Unreadable:
             unreadable.add(path)
-    if len(unreadable) == len(paths):
+    if len(unreadable) + len(slow) == len(paths):
         raise exiftool.Unreadable("exiftool could not read any of the files")
-    return tags, unreadable
+    return tags, unreadable, slow
 
 
 def usable(entry: dict[str, object] | None) -> dict[str, object]:
@@ -133,34 +160,35 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
         if item is not None and item.bytes == stat.st_size and item.mtime == stat.st_mtime:
             report.unchanged += 1
             continue
-        known = skips.get(key)
-        if known is not None and known.bytes == stat.st_size and known.mtime == stat.st_mtime:
+        if still_set_aside(skips.get(key), stat.st_size, stat.st_mtime, now):
             report.skipped += 1
             continue
         pending.append(Pending(path, key, item, stat.st_size, stat.st_mtime))
     if not pending:
         return
     try:
-        tags, unreadable = read_each(read, [file.path for file in pending])
+        tags, unreadable, slow = read_each(read, [file.path for file in pending])
     except exiftool.Unreadable as error:
         report.failed += len(pending)
         events.record(opened, now, "index_failed", person.slug, str(error)[:200])
         return
     for file in pending:
+        if file.path in slow:
+            failed(opened, person, "exiftool took too long, tried again next run", now, report)
+            continue
         if file.path in unreadable:
-            skip(opened, person, skips, file, UNREADABLE, now, report)
+            set_aside(opened, person, file, UNREADABLE, now, report)
             continue
         try:
             print_ = media.fingerprint(file.path, usable(tags.get(file.path)))
-        except OSError as error:
-            report.failed += 1
-            events.record(opened, now, "index_failed", person.slug, type(error).__name__)
-            continue
         except Unusable as error:
-            skip(opened, person, skips, file, str(error), now, report)
+            set_aside(opened, person, file, str(error), now, report)
             continue
-        except Exception:
-            skip(opened, person, skips, file, UNUSABLE, now, report)
+        except media.UNDECODABLE:
+            set_aside(opened, person, file, UNUSABLE, now, report)
+            continue
+        except Exception as error:
+            failed(opened, person, type(error).__name__, now, report)
             continue
         item = file.item
         if item is None:
@@ -170,9 +198,8 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
         else:
             report.changed += 1
         apply(item, print_, file.mtime, now)
-        known = skips.pop(file.key, None)
-        if known is not None:
-            opened.delete(known)
+        if file.key in skips:
+            forget_skip(opened, person, file.key)
 
 
 def forget_gone_skips(opened: Session, photos: Photos, person: Person, files: list[Path]) -> None:
@@ -180,9 +207,9 @@ def forget_gone_skips(opened: Session, photos: Photos, person: Person, files: li
     if not skips:
         return
     present = {relative(photos, path) for path in files}
-    for path, row in skips.items():
+    for path in skips:
         if path not in present:
-            opened.delete(row)
+            forget_skip(opened, person, path)
 
 
 def backfill_dhash(opened: Session, photos: Photos, person: Person) -> int:
@@ -216,7 +243,7 @@ def skipped_by_person(opened: Session) -> dict[int, int]:
 
 
 def counts_by_person(opened: Session) -> list[tuple[str, str, int]]:
-    phone_items = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone")
+    phone_items = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & (MediaItem.sha1 != UNKNOWN_SHA1)
     query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone_items)
              .group_by(Person.id, Person.slug, Person.name).order_by(Person.id))
     return [(slug, name, int(count)) for slug, name, count in opened.execute(query).all()]

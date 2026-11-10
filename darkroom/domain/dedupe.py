@@ -161,7 +161,7 @@ class PersonIndex:
         if owner_person_id is not None:
             people = people | {owner_person_id}
         phone = opened.execute(
-            select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people)).order_by(MediaItem.id)
+            select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people), MediaItem.sha1 != "").order_by(MediaItem.id)
         ).scalars()
         takeout = opened.execute(
             select(MediaItem).join(Export, Export.id == MediaItem.export_id)

@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from darkroom.domain import events, index, media
+from darkroom.domain import dedupe, events, index, media
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import IndexSkip, MediaItem, Person
+from darkroom.storage.models import GoogleAccount, IndexSkip, MediaItem, Person
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -284,7 +284,7 @@ class PoisonFileTests(unittest.TestCase):
         def chokes(paths):
             calls.append([path.name for path in paths])
             if poison in paths:
-                raise exiftool.Unreadable("exiftool took too long to read the files")
+                raise exiftool.Unreadable("exiftool crashed on this file")
             return described(paths)
 
         report = self.run_index(read=chokes)
@@ -306,6 +306,68 @@ class PoisonFileTests(unittest.TestCase):
         self.assertEqual((report.new, report.skipped), (1, 0))
         self.assertIn("jo/originals/poison.jpg", self.items())
         self.assertEqual(self.skips(), {})
+
+    def test_a_file_exiftool_times_out_on_is_not_set_aside_and_is_indexed_next_run_unchanged(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        slow = fixtures.make_jpeg(self.originals / "slow.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+
+        def times_out(paths):
+            if slow in paths:
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            return described(paths)
+
+        report = self.run_index(read=times_out)
+        self.assertEqual((report.new, report.failed, report.set_aside), (2, 1, 0))
+        self.assertEqual(self.skips(), {})
+        report = self.run_index(now=200.0, read=described)
+        self.assertEqual((report.new, report.unchanged, report.skipped), (1, 2, 0))
+        self.assertIn("jo/originals/slow.jpg", self.items())
+
+    def test_running_out_of_memory_on_a_file_is_not_set_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        with mock.patch.object(media, "fingerprint", side_effect=MemoryError()):
+            report = self.run_index(read=described)
+        self.assertEqual((report.failed, report.set_aside), (1, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 1)
+
+    def test_a_set_aside_file_is_tried_again_after_a_day_even_unchanged(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        self.assertEqual(self.run_index(now=100.0 + index.RETRY_SET_ASIDE_SECONDS - 1, read=lambda paths: self.fail("read again too soon")).skipped, 1)
+        report = self.run_index(now=100.0 + index.RETRY_SET_ASIDE_SECONDS, read=described)
+        self.assertEqual((report.new, report.skipped), (1, 0))
+        self.assertEqual(self.skips(), {})
+
+    def test_an_original_replaced_by_unreadable_bytes_leaves_no_stale_fingerprint_for_dedupe_or_status(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            account = GoogleAccount(email="jo.photos@example.test", default_person_id=person.id, created=1.0)
+            opened.add(account)
+            opened.flush()
+            account_id, old = account.id, opened.query(MediaItem).one()
+            old_id, old_sha1, old_phash = old.id, old.sha1, old.phash
+            self.assertIn(old_sha1, dedupe.PersonIndex.load(opened, account_id).hashes)
+        photo.write_bytes(b"not a picture any more")
+        report = self.run_index(now=200.0)
+        self.assertEqual((report.changed, report.set_aside), (0, 1))
+        with db.session(self.engine) as opened:
+            loaded = dedupe.PersonIndex.load(opened, account_id)
+            self.assertNotIn(old_sha1, loaded.hashes)
+            self.assertNotIn(old_id, loaded.by_id)
+            self.assertNotIn(old_phash, [shot.phash for shot in loaded.phone])
+            item = opened.get(MediaItem, old_id)
+            self.assertEqual((item.sha1, item.phash, item.dhash, item.captured_utc, item.mtime), (index.UNKNOWN_SHA1, None, None, None, None))
+            self.assertEqual(index.counts_by_person(opened), [("jo", person.name, 0)])
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        report = self.run_index(now=300.0)
+        self.assertEqual((report.changed, report.skipped), (1, 0))
+        self.assertEqual(self.skips(), {})
+        with db.session(self.engine) as opened:
+            self.assertIn(old_id, dedupe.PersonIndex.load(opened, account_id).by_id)
 
     def test_exiftool_failing_on_every_file_sets_nothing_aside(self):
         fixtures.make_jpeg(self.originals / "a.jpg")

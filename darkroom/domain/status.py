@@ -20,7 +20,7 @@ def alert_dict(alert: Alert) -> dict[str, object]:
 
 
 def photo_counts(opened: Session) -> dict[int, tuple[int, int, int]]:
-    phone = MediaItem.source == "phone"
+    phone = (MediaItem.source == "phone") & (MediaItem.sha1 != index.UNKNOWN_SHA1)
     query = (select(MediaItem.person_id, func.count(MediaItem.id),
                     func.sum(case((MediaItem.gps_source != "none", 1), else_=0)),
                     func.sum(case((MediaItem.time_source == "unknown", 1), else_=0)))
