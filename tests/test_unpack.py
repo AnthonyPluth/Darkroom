@@ -498,6 +498,41 @@ class UnpackTests(unittest.TestCase):
         self.assertEqual(unpack.skipped_zips(self.inbox), 2)
         self.assertEqual(unpack.skipped_zips(self.root / "missing"), 0)
 
+    def test_a_manual_inbox_swapped_for_a_link_after_it_was_checked_registers_nothing(self):
+        from unittest import mock
+
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        standard_export(elsewhere)
+        before = self.originals_tree()
+        real = self.photos.manual_inbox
+
+        def checked_then_swapped(slug):
+            folder = real(slug)
+            folder.rmdir()
+            folder.symlink_to(elsewhere, target_is_directory=True)
+            return folder
+
+        with mock.patch.object(self.photos, "manual_inbox", side_effect=checked_then_swapped), \
+                db.session(self.engine) as opened, self.assertRaises(unpack.UnpackFailed):
+            unpack.inspect_manual_inbox(opened, self.photos, self.person(opened), 1.0)
+        self.assertEqual(self.export_state(), [])
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_zips_in_a_folder_inside_the_manual_inbox_are_registered_where_they_are(self):
+        folder = self.inbox / "sub"
+        standard_export(folder)
+        ((_, report),) = self.run_inbox()
+        self.assertEqual((report.parts_unpacked, report.problems), (2, []))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Export).one().inbox_dir, str(folder))
+
+    def test_a_link_recorded_on_the_way_to_the_manual_inbox_is_refused(self):
+        (self.inbox / "hop").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(unpack.UnpackFailed):
+            unpack.recorded_folder(self.photos, self.inbox / "hop")
+        self.assertEqual(unpack.recorded_folder(self.photos, self.inbox), str(self.inbox))
+
     def test_person_without_an_account_cannot_register(self):
         with db.session(self.engine) as opened:
             add_person(opened, "al")

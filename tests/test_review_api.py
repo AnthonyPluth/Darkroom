@@ -15,7 +15,8 @@ from darkroom.server.common import Principal
 from darkroom.server.api import review as review_api
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem, Person, ReviewItem, User
-from tests.import_world import NOW, sha1_of
+from tests.fixtures import media as fixtures
+from tests.import_world import NOW, sha1_of, tree
 from tests.privacy import no_leaks
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
 
@@ -1138,6 +1139,71 @@ class PrivacyTests(ReviewCase):
         details = " ".join(f"{row.subject} {row.detail}" for row in self.opened.execute(select(Event)).scalars())
         for canary in (PAIR_NAME, GOOGLE_ONLY_NAME, root):
             self.assertNotIn(canary, details)
+
+
+class LinkedHoldTests(ReviewCase):
+    def setUp(self):
+        super().setUp()
+        self.secret = fixtures.make_jpeg(self.world.root / "jo" / "originals" / "secret.jpg", make="SecretMake", model="SecretModel")
+
+    def outside_the_inbox(self):
+        return tree(self.world.root, "_inbox")
+
+    def rows(self):
+        opened = self.opened
+        return ([(row.id, row.person_id, row.path, row.sha1) for row in opened.execute(select(MediaItem).order_by(MediaItem.id)).scalars()],
+                [(row.id, row.status, row.hold_path) for row in opened.execute(select(ReviewItem).order_by(ReviewItem.id)).scalars()],
+                [(row.id, row.takeout_item_id, row.reversed_at) for row in opened.execute(select(DedupeDecision).order_by(DedupeDecision.id)).scalars()])
+
+    def swapped_after_the_check(self):
+        real = cleanup.hold_file
+
+        def checked_then_swapped(photos, export, review_row):
+            found = real(photos, export, review_row)
+            if found is not None and not found.is_symlink():
+                found.unlink()
+                found.symlink_to(self.secret)
+            return found
+
+        return mock.patch.object(cleanup, "hold_file", side_effect=checked_then_swapped)
+
+    def assert_shown_unheld(self, status, body):
+        self.assertEqual(status, 200)
+        self.assertEqual((body["export"]["held"], body["export"]["make"], body["export"]["bytes"]), (False, None, None))
+        self.assertNotIn(b"SecretMake", self.replies[-1])
+        self.assertNotIn(b"SecretModel", self.replies[-1])
+
+    def test_a_hold_replaced_by_a_hard_link_to_an_original_shows_unheld(self):
+        hold = self.hold()
+        hold.unlink()
+        os.link(self.secret, hold)
+        self.assert_shown_unheld(*self.call("GET", f"/api/review/{self.pending().id}"))
+
+    def test_a_hold_swapped_for_a_link_after_it_was_checked_shows_unheld(self):
+        review_id = self.pending().id
+        with self.swapped_after_the_check():
+            self.assert_shown_unheld(*self.call("GET", f"/api/review/{review_id}"))
+
+    def test_keep_both_refuses_a_hold_swapped_for_a_link_after_it_was_checked(self):
+        review_id = self.pending().id
+        before, rows = self.outside_the_inbox(), self.rows()
+        with self.swapped_after_the_check():
+            reply = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual(reply, (409, {"error": "the held copy is a link or not a plain file, so it was not kept"}))
+        self.assertEqual(self.outside_the_inbox(), before)
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.pending().status, "pending")
+
+    def test_cleanup_never_trusts_a_hold_that_is_a_hard_link(self):
+        review_row = self.pending()
+        decision = self.opened.get(DedupeDecision, review_row.decision_id)
+        hold = self.hold()
+        self.assertTrue(cleanup.hold_is_safe(self.opened, self.world.photos, self.export, review_row, decision))
+        self.assertIn(str(review_row.id), cleanup.verified_hashes(self.opened, self.world.photos, self.export))
+        hold.unlink()
+        os.link(self.secret, hold)
+        self.assertFalse(cleanup.hold_is_safe(self.opened, self.world.photos, self.export, review_row, decision))
+        self.assertNotIn(str(review_row.id), cleanup.verified_hashes(self.opened, self.world.photos, self.export))
 
 
 class StagedTextTests(unittest.TestCase):

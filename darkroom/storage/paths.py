@@ -1655,3 +1655,28 @@ def pinned_inbox_files(photos: Photos, sources: Iterable[Path]) -> Iterator[dict
 
 def pinned_fds(names: Iterable[Path]) -> tuple[int, ...]:
     return tuple(int(name.name) for name in names if name.parent == OPEN_FILES and name.name.isdigit())
+
+
+def inbox_files(photos: Photos, folder: Path, suffix: str) -> list[Path]:
+    found: list[Path] = []
+    try:
+        with inbox_folder(photos, folder, create=False) as top:
+            walk_inbox(top, folder, suffix, found)
+    except FileNotFoundError:
+        return []
+    return sorted(found)
+
+
+def walk_inbox(folder: int, spelled: Path, suffix: str, found: list[Path]) -> None:
+    with os.scandir(folder) as listing:
+        entries = sorted(listing, key=lambda entry: entry.name)
+    for entry in entries:
+        seen = entry.stat(follow_symlinks=False)
+        if stat.S_ISDIR(seen.st_mode):
+            child = inbox_child(entry.name, folder, False)
+            try:
+                walk_inbox(child, spelled / entry.name, suffix, found)
+            finally:
+                os.close(child)
+        elif entry.name.endswith(suffix) and plain_file(seen):
+            found.append(spelled / entry.name)

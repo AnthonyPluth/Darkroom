@@ -181,11 +181,10 @@ def skipped_zips(folder: Path) -> int:
     return sum(1 for path in listed_zips(folder) if not plain_zip(folder, path))
 
 
-def group_manual_zips(folder: Path) -> dict[tuple[Path, str], dict[int, Path]]:
+def group_manual_zips(folder: Path, photos: Photos | None = None) -> dict[tuple[Path, str], dict[int, Path]]:
     groups: dict[tuple[Path, str], dict[int, Path]] = {}
-    for path in listed_zips(folder):
-        if not plain_zip(folder, path):
-            continue
+    found_zips = [path for path in listed_zips(folder) if plain_zip(folder, path)] if photos is None else paths.inbox_files(photos, folder, ".zip")
+    for path in found_zips:
         found = PART_NAME.match(path.name)
         stamp, number = (found.group("stamp"), int(found.group("number"))) if found else (path.stem, 1)
         groups.setdefault((path.parent, stamp), {})[number] = path
@@ -209,11 +208,24 @@ def chosen_account(opened: Session, person: Person, email: str | None) -> Google
     return found[0]
 
 
-def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None) -> list[Export]:
+def recorded_folder(photos: Photos | None, inbox: Path) -> str:
+    if photos is None:
+        return str(inbox.resolve())
+    if paths.linked_on_the_way(photos.root, inbox.relative_to(photos.root).parts):
+        raise UnpackFailed("a link is in the manual inbox folder, so nothing in it is imported")
+    return str(inbox)
+
+
+def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None,
+                  photos: Photos | None = None) -> list[Export]:
     account = chosen_account(opened, person, account_email)
     registered = []
-    for (inbox, stamp), numbered in group_manual_zips(folder).items():
-        canonical = str(inbox.resolve())
+    try:
+        groups = group_manual_zips(folder, photos)
+    except paths.LinkRefused as error:
+        raise UnpackFailed("a link is in the manual inbox folder, so nothing in it is imported") from error
+    for (inbox, stamp), numbered in groups.items():
+        canonical = recorded_folder(photos, inbox)
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp,
                                                      Export.inbox_dir.in_([canonical, str(inbox)]))).scalars().first()
         if export is None:
@@ -225,7 +237,7 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
         known = {part.number for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id)).scalars()}
         for number, path in sorted(numbered.items()):
             if number not in known:
-                opened.add(ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.stat().st_size, status="done"))
+                opened.add(ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.lstat().st_size, status="done"))
         registered.append(export)
     opened.flush()
     return registered
@@ -236,4 +248,4 @@ def inspect_manual_inbox(opened: Session, photos: Photos, person: Person, now: f
         folder = photos.manual_inbox(person.slug)
     except paths.LinkRefused as error:
         raise UnpackFailed(f"{person.slug}'s manual inbox folder is a link, so nothing in it is imported") from error
-    return register_zips(opened, person, folder, now, account_email)
+    return register_zips(opened, person, folder, now, account_email, photos)
