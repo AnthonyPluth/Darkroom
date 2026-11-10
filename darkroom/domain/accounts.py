@@ -5,6 +5,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.domain import alerts, browser_jobs, events, exports, renewal
 from darkroom.storage import db
 from darkroom.storage.paths import Photos
@@ -106,15 +107,16 @@ def listing(opened: Session) -> list[GoogleAccount]:
 
 
 def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
+    end = dates.instant_or_none(account.schedule_end)
     return {
         "id": account.id,
         "email": account.email,
         "default_person_id": account.default_person_id,
         "session_state": account.session_state,
         "session_checked": account.session_checked,
-        "schedule_created": account.schedule_created,
-        "schedule_end": account.schedule_end,
-        "renew_from": None if account.schedule_end is None else account.schedule_end - renewal.NOTICE,
+        "schedule_created": dates.instant_or_none(account.schedule_created),
+        "schedule_end": end,
+        "renew_from": None if end is None else end - renewal.NOTICE,
         "served_people": sorted(served_people(opened, account.id)),
         "created": account.created,
     }

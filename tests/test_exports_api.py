@@ -56,6 +56,34 @@ class ExportsApiTests(ApiCase):
         self.assertEqual([(each["account_id"], each["last_export_at"]) for each in reply["schedules"]], [(self.account_id, None)])
         self.assertGreater(reply["schedules"][0]["next_export_at"], self.now)
 
+    def test_a_worker_listing_with_an_infinite_time_is_refused_and_nothing_is_stored(self):
+        status, reply = self.call("POST", "/api/exports/check-now")
+        self.assertIn(status, (200, 201), reply)
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        while job["kind"] != "status":
+            job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        status, reply = self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": self.listing({**self.ready(), "created_at": float("inf")})})
+        self.assertEqual(status, 400, reply)
+        status, reply = self.call("GET", "/api/exports")
+        self.assertEqual((status, reply["exports"]), (200, []))
+        status, reply = self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": self.listing(self.ready())})
+        self.assertEqual(status, 200, reply)
+        self.assertEqual([each["created_at"] for each in self.call("GET", "/api/exports")[1]["exports"]], [self.now - 3600])
+
+    def test_a_bad_time_already_stored_is_listed_as_unknown_and_the_page_still_loads(self):
+        with db.session(self.engine) as opened:
+            opened.add(Export(account_id=self.account_id, kind="manual", google_id="g-bad", created_at=float("inf"), ready_at=float("-inf"), expires_at=1e300, status="announced"))
+            opened.add(Export(account_id=self.account_id, kind="manual", google_id="g-good", created_at=self.now - DAY, status="announced"))
+        self.set_account(self.account_id, schedule_created=float("inf"))
+        status, reply = self.call("GET", "/api/exports")
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn(b"Infinity", self.replies[-1])
+        self.assertCountEqual([(each["created_at"], each["ready_at"], each["expires_at"]) for each in reply["exports"]], [(None, None, None), (self.now - DAY, None, None)])
+        self.assertEqual([(each["last_export_at"], each["next_export_at"]) for each in reply["schedules"]], [(self.now - DAY, None)])
+        status, one = self.call("GET", f"/api/exports/{reply['exports'][0]['id']}")
+        self.assertEqual(status, 200, one)
+        self.assertNotIn(b"Infinity", self.replies[-1])
+
     def test_check_now_queues_a_status_job_for_each_connected_account_and_not_twice(self):
         other = self.account(self.person_id, "other@example.test")["id"]
         status, reply = self.call("POST", "/api/exports/check-now")

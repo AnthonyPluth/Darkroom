@@ -261,6 +261,8 @@ def schedule_times(result: dict[str, object]) -> tuple[float, float]:
     created, end = result.get("schedule_created"), result.get("schedule_end")
     if isinstance(created, bool) or isinstance(end, bool) or not isinstance(created, int | float) or not isinstance(end, int | float):
         raise ValueError("a schedule job's result needs schedule_created and schedule_end as numbers")
+    if not dates.is_instant(created) or not dates.is_instant(end):
+        raise ValueError("schedule_created and schedule_end must be times between 1970 and 2100")
     if not 0 < created < end:
         raise ValueError("schedule_end must be after schedule_created")
     return float(created), float(end)

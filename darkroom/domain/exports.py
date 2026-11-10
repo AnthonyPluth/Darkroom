@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.domain import browser_jobs, events
 from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person
 
@@ -30,6 +31,8 @@ CHECK_STEP_MINUTES = 37
 LIST_LIMIT = 200
 STILL_WAITING = ("announced", "downloading")
 MAX_DOWNLOAD_JOBS = 3
+MAX_PART_NUMBER = 2**31 - 1
+MAX_PART_BYTES = 2**63 - 1
 
 
 class UnreadableListing(ValueError):
@@ -63,17 +66,21 @@ class Reconciled:
     requeued: int = 0
 
 
-def number_of(value: object, name: str, minimum: float = 0) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or value < minimum:
+def number_of(value: object, name: str, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not minimum <= value <= maximum:
         raise UnreadableListing(f"the export listing has a bad {name}")
     return float(value)
+
+
+def instant_of(value: object, name: str) -> float:
+    return number_of(value, name, 1, dates.LATEST_INSTANT)
 
 
 def part_of(raw: object) -> ListedPart:
     if not isinstance(raw, dict):
         raise UnreadableListing("the export listing has a bad part")
-    number = number_of(raw.get("number"), "part number", 1)
-    size = number_of(raw.get("bytes"), "part size")
+    number = number_of(raw.get("number"), "part number", 1, MAX_PART_NUMBER)
+    size = number_of(raw.get("bytes"), "part size", 0, MAX_PART_BYTES)
     if number != int(number) or size != int(size):
         raise UnreadableListing("the export listing has a bad part")
     return ListedPart(int(number), int(size))
@@ -87,9 +94,9 @@ def listed_of(raw: object) -> Listed:
         raise UnreadableListing("the export listing has a bad export id")
     if state not in STATES:
         raise UnreadableListing("the export listing has a bad state")
-    created = number_of(raw.get("created_at"), "creation time", 1)
+    created = instant_of(raw.get("created_at"), "creation time")
     expires = raw.get("expires_at")
-    expires_at = None if expires is None else number_of(expires, "expiry time", 1)
+    expires_at = None if expires is None else instant_of(expires, "expiry time")
     parts_raw = raw.get("parts", [])
     if not isinstance(parts_raw, list) or len(parts_raw) > MAX_PARTS:
         raise UnreadableListing("the export listing has bad parts")
@@ -120,7 +127,7 @@ def add_months(moment: float, months: int, zone: tzinfo = UTC) -> float:
 
 
 def next_export_at(account: GoogleAccount, now: float, zone: tzinfo = UTC) -> float | None:
-    created, end = account.schedule_created, account.schedule_end
+    created, end = dates.instant_or_none(account.schedule_created), dates.instant_or_none(account.schedule_end)
     if created is None or end is None:
         return None
     for step in range(1, 13):
@@ -133,7 +140,8 @@ def next_export_at(account: GoogleAccount, now: float, zone: tzinfo = UTC) -> fl
 
 
 def last_export_at(opened: Session, account_id: int) -> float | None:
-    return opened.execute(select(func.max(Export.created_at)).where(Export.account_id == account_id)).scalar_one()
+    found = opened.execute(select(Export.created_at).where(Export.account_id == account_id, Export.created_at.is_not(None))).scalars()
+    return max((moment for moment in map(dates.instant_or_none, found) if moment is not None), default=None)
 
 
 def kind_for(opened: Session, account: GoogleAccount, created_at: float) -> Literal["initial", "incremental", "manual"]:
@@ -348,8 +356,8 @@ def parts_of(opened: Session, export_id: int) -> Sequence[ExportPart]:
 
 def as_dict(opened: Session, export: Export) -> dict[str, object]:
     return {
-        "id": export.id, "account_id": export.account_id, "kind": export.kind, "created_at": export.created_at, "ready_at": export.ready_at,
-        "expires_at": export.expires_at, "part_count": export.part_count, "status": export.status, "stage": export.stage,
+        "id": export.id, "account_id": export.account_id, "kind": export.kind, "created_at": dates.instant_or_none(export.created_at),
+        "ready_at": dates.instant_or_none(export.ready_at), "expires_at": dates.instant_or_none(export.expires_at), "part_count": export.part_count, "status": export.status, "stage": export.stage,
         "parts": [part_dict(part) for part in parts_of(opened, export.id)],
     }
 

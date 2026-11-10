@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
+from darkroom import dates
 from darkroom.domain import browser_jobs, exports
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount
@@ -180,6 +181,18 @@ class ListingFromResultTests(unittest.TestCase):
                 exports.listing_from_result(result)
 
 
+    def test_times_that_are_not_finite_or_out_of_range_are_refused(self):
+        good = {"google_id": "a", "created_at": 5, "state": "ready", "expires_at": 9, "parts": [{"number": 1, "bytes": 3}]}
+        odd = (float("inf"), float("-inf"), float("nan"), 1e300, 10**400, dates.LATEST_INSTANT + 1)
+        for value in odd:
+            for name in ("created_at", "expires_at"):
+                with self.subTest(name=name, value=value), self.assertRaises(exports.UnreadableListing):
+                    exports.listing_from_result({"exports": [{**good, name: value}]})
+            with self.subTest(part=value), self.assertRaises(exports.UnreadableListing):
+                exports.listing_from_result({"exports": [{**good, "parts": [{"number": 1, "bytes": value}]}]})
+        self.assertEqual(exports.listing_from_result({"exports": [{**good, "created_at": dates.LATEST_INSTANT}]})[0].created_at, dates.LATEST_INSTANT)
+
+
 class NextExportTests(unittest.TestCase):
     def account(self, created, end):
         return GoogleAccount(email="a@example.test", default_person_id=1, created=1.0, schedule_created=created, schedule_end=end)
@@ -201,6 +214,11 @@ class NextExportTests(unittest.TestCase):
         self.assertIsNone(exports.next_export_at(account, at(2027, 10, 3)))
         self.assertIsNone(exports.next_export_at(self.account(None, None), 1.0))
         self.assertIsNone(exports.next_export_at(self.account(at(2026, 1, 1), None), 1.0))
+
+    def test_a_stored_schedule_time_that_is_not_finite_means_no_next_export(self):
+        for created, end in ((float("inf"), at(2027, 11, 2)), (at(2026, 11, 2), float("inf")), (float("-inf"), at(2027, 11, 2)), (1e300, 2e300)):
+            with self.subTest(created=created, end=end):
+                self.assertIsNone(exports.next_export_at(self.account(created, end), at(2026, 11, 3)))
 
     def test_a_month_that_is_too_short_uses_its_last_days(self):
         account = self.account(at(2026, 12, 31, 3, 0), at(2027, 12, 31, 3, 0))

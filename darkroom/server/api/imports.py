@@ -6,6 +6,7 @@ from typing import Annotated
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.domain.ingest import run
 from darkroom.server import contract
 from darkroom.server.api.browser_internal import engine_of
@@ -38,7 +39,7 @@ def view(opened: Session, row: ImportRun) -> dict[str, object]:
     parts = opened.execute(select(ExportPart).where(ExportPart.export_id == row.export_id).order_by(ExportPart.number)).scalars()
     return {
         "id": row.id, "export_id": row.export_id, "account_id": None if export is None else export.account_id,
-        "export_kind": None if export is None else export.kind, "export_created_at": None if export is None else export.created_at,
+        "export_kind": None if export is None else export.kind, "export_created_at": None if export is None else dates.instant_or_none(export.created_at),
         "part_count": None if export is None else export.part_count, "parts": [{"number": part.number, "status": part.status} for part in parts],
         "started": row.started, "finished": row.finished, "stage": row.stage, "status": row.status,
         "added": row.added, "skipped_t1": row.skipped_t1, "skipped_t2": row.skipped_t2, "skipped_t3": row.skipped_t3,
