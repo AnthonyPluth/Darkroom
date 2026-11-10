@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 LATEST_INSTANT = datetime(2100, 1, 1, tzinfo=UTC).timestamp()
-LATEST_STORED = datetime(9000, 1, 1, tzinfo=UTC).timestamp()
 
 
 def utc_now() -> datetime:
@@ -34,11 +33,5 @@ def plausibly_created(value: object, observed_by: float) -> bool:
     return is_instant(value) and isinstance(value, int | float) and value <= observed_by
 
 
-def usable_stored(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return False
-    return 0 < value <= LATEST_STORED
-
-
 def instant_or_none(value: float | None) -> float | None:
-    return float(value) if value is not None and usable_stored(value) else None
+    return float(value) if value is not None and is_instant(value) else None

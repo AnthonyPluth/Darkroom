@@ -64,7 +64,14 @@ def confirmed_for(opened: Session, account_id: int, item_id: int, person_id: int
     return any(since is None or observed_at >= since for observed_at in confirming_matches(opened, account_id, item_id, person_id))
 
 
+def holds_current_contents(opened: Session, row: PixelCopy) -> bool:
+    item = opened.get(MediaItem, row.item_id, populate_existing=True)
+    return item is not None and item.sha1 != UNKNOWN_SHA1 and item.sha1 == row.sha1
+
+
 def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
+    if row.state == "placed" and not holds_current_contents(opened, row):
+        return False
     if not confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
         return False
     if not row.always_send or row.placed_at is None:

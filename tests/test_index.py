@@ -799,6 +799,36 @@ class ConfirmationTests(unittest.TestCase):
         self.run_index(now=200.0)
         self.assertEqual(self.copy_state(), ("pruned", True))
 
+    def test_a_placed_copy_of_the_old_contents_is_never_pruned_on_a_match_for_the_new_contents(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        account_id, person_id, item_id = self.confirm()
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            pixel_id = pixel.id
+            opened.add(PixelPerson(pixel_id=pixel_id, person_id=person_id))
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel_id, item_id=item_id, person_id=person_id, state="placed", name="a.jpg", bytes=item.bytes, sha1=item.sha1,
+                                 queued_at=10.0, placed_at=20.0))
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            self.assertTrue(pixel_folder.confirms_copy(opened, opened.get(Pixel, pixel_id), copy))
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.confirm("IMG_1 (1).JPG")
+        before = listing(self.root)
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            self.assertFalse(pixel_folder.confirms_copy(opened, opened.get(Pixel, pixel_id), copy))
+            tended = pixel_folder.prune(opened, self.photos, opened.get(Pixel, pixel_id), 300.0)
+            self.assertEqual(tended.refused, 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(PixelCopy).one().state, "placed")
+        self.assertEqual(listing(self.root), before)
+
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
         original = photo.read_bytes()
