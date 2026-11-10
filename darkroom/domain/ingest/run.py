@@ -27,6 +27,7 @@ IMPORTABLE = frozenset({"downloaded", "unpacking", "importing", "failed"})
 EARLY_STAGES = frozenset({None, "unpack", "queued", "unpacked"})
 WAITING = frozenset({"queued", "running"})
 UNPLACED = "unplaced"
+PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
 LOCKS_GUARD = threading.Lock()
 
@@ -141,15 +142,21 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
     prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path)).items)
-    tags = tools.read([item.path for item in prepared.items]) if prepared.items else {}
-    for item in prepared.items:
-        try:
-            raw = staged_text(photos, item.sidecar) if item.sidecar is not None else None
-            parsed = sidecar.parse(raw) if raw else None
-            prepared.fields[item.path] = metadata.candidate(item, tags.get(item.path, {}), parsed, person.id, UNPLACED, now, export.id)
-        except Exception as error:
-            if report:
-                item_failed(opened, export, "metadata", error, now)
+    for start in range(0, len(prepared.items), PINNED_AT_ONCE):
+        group = prepared.items[start:start + PINNED_AT_ONCE]
+        with paths.pinned_inbox_files(photos, [item.path for item in group]) as pinned:
+            tags = tools.read(list(pinned.values())) if pinned else {}
+            for item in group:
+                try:
+                    source = pinned.get(item.path)
+                    if source is None:
+                        raise paths.LinkRefused("the staged file is a link or not a plain file")
+                    raw = staged_text(photos, item.sidecar) if item.sidecar is not None else None
+                    parsed = sidecar.parse(raw) if raw else None
+                    prepared.fields[item.path] = metadata.candidate(item, tags.get(source, {}), parsed, person.id, UNPLACED, now, export.id, source)
+                except Exception as error:
+                    if report:
+                        item_failed(opened, export, "metadata", error, now)
     return prepared
 
 

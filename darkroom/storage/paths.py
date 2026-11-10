@@ -45,6 +45,7 @@ PIXEL_COPY_MODE = 0o644
 PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
 INBOX = "_inbox"
+OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
 
 
 class OutsideRoot(ValueError):
@@ -1472,6 +1473,8 @@ def inbox_subfolder(folder: int, parts: Sequence[str], create: bool) -> Iterator
 @contextlib.contextmanager
 def inbox_folder(photos: Photos, path: Path, create: bool) -> Iterator[int]:
     parts = inbox_parts(photos, path)
+    if create:
+        photos.root.mkdir(parents=True, exist_ok=True)
     root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with inbox_subfolder(root, parts, create) as folder:
@@ -1635,3 +1638,20 @@ def copy_entry(source: str, target: str, folder: int) -> None:
             os.unlink(target, dir_fd=folder)
         raise
     os.close(out)
+
+
+@contextlib.contextmanager
+def pinned_inbox_files(photos: Photos, sources: Iterable[Path]) -> Iterator[dict[Path, Path]]:
+    with contextlib.ExitStack() as stack:
+        pinned: dict[Path, Path] = {}
+        for source in sources:
+            try:
+                handle = stack.enter_context(open_inbox_file(photos, source))
+            except (OutsideRoot, FileNotFoundError):
+                continue
+            pinned[source] = OPEN_FILES / str(handle.fileno())
+        yield pinned
+
+
+def pinned_fds(names: Iterable[Path]) -> tuple[int, ...]:
+    return tuple(int(name.name) for name in names if name.parent == OPEN_FILES and name.name.isdigit())

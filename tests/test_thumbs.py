@@ -13,6 +13,7 @@ from darkroom.providers import exiftool
 from darkroom.storage.models import DedupeDecision, MediaItem
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
+from tests.import_world import tree
 from tests.review_world import ReviewCase
 
 
@@ -203,6 +204,38 @@ class ThumbRouteTests(ReviewCase):
         opened.get(MediaItem, self.decision_of("IMG_1005.JPG").matched_item_id).path = "jo/originals/linked/IMG_1001.JPG"
         opened.commit()
         self.assertEqual(self.call("GET", f"/api/review/{row.id}/thumb/library"), (404, {"error": "no such picture"}))
+
+    def secret_jpeg(self):
+        secret = fixtures.make_jpeg(self.world.root / "jo" / "originals" / "secret.jpg", size=(37, 23))
+        return secret, tree(self.world.root, "_inbox")
+
+    def assert_no_picture_and_originals_kept(self, row, before):
+        status, reply = self.call("GET", f"/api/review/{row.id}/thumb/export")
+        self.assertEqual((status, reply), (404, {"error": "no such picture"}))
+        self.assertEqual(tree(self.world.root, "_inbox"), before)
+
+    def test_a_hold_replaced_by_a_hard_link_is_404(self):
+        row = self.pending()
+        secret, before = self.secret_jpeg()
+        hold = self.hold()
+        hold.unlink()
+        os.link(secret, hold)
+        self.assert_no_picture_and_originals_kept(row, before)
+
+    def test_a_hold_swapped_for_a_link_after_it_was_checked_is_never_rendered(self):
+        row = self.pending()
+        secret, before = self.secret_jpeg()
+        real = thumbs.checked
+
+        def checked_then_swapped(photos, source):
+            found = real(photos, source)
+            if "review" in source.parts:
+                source.unlink()
+                source.symlink_to(secret)
+            return found
+
+        with mock.patch.object(thumbs, "checked", side_effect=checked_then_swapped):
+            self.assert_no_picture_and_originals_kept(row, before)
 
     def test_a_missing_hold_or_side_is_404(self):
         row = self.pending()

@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from darkroom.storage import paths
+from darkroom.storage.paths import pinned_fds
 
 BATCH = 100
 TIMEOUT = 300
@@ -39,14 +40,14 @@ def executable() -> str:
     return path
 
 
-def run(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess[str]:
-    done = run_binary(command, timeout)
+def run(command: list[str], timeout: float = TIMEOUT, keep: tuple[int, ...] = ()) -> subprocess.CompletedProcess[str]:
+    done = run_binary(command, timeout, keep)
     return subprocess.CompletedProcess(command, done.returncode, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace"))
 
 
-def run_binary(command: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess[bytes]:
+def run_binary(command: list[str], timeout: float = TIMEOUT, keep: tuple[int, ...] = ()) -> subprocess.CompletedProcess[bytes]:
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, pass_fds=keep)
         deadline = time.monotonic() + timeout
         try:
             while process.poll() is None:
@@ -79,7 +80,7 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
     found: dict[Path, dict[str, object]] = {}
     program = executable()
     for group in batches(paths):
-        done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)])
+        done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)], TIMEOUT, pinned_fds(group))
         if not done.stdout.strip():
             if done.returncode != 0:
                 raise Unreadable(done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "exiftool failed")
@@ -93,7 +94,7 @@ def embedded_preview(path: Path) -> bytes | None:
     program = executable()
     for name in PREVIEW_TAGS:
         try:
-            done = run_binary([program, "-b", f"-{name}", "-api", "largefilesupport=1", str(path)], PREVIEW_TIMEOUT)
+            done = run_binary([program, "-b", f"-{name}", "-api", "largefilesupport=1", str(path)], PREVIEW_TIMEOUT, pinned_fds([path]))
         except subprocess.TimeoutExpired as error:
             raise Unreadable("exiftool took too long to read the preview") from error
         if done.returncode == 0 and done.stdout.startswith(IMAGE_MAGIC):

@@ -36,8 +36,9 @@ def moment_of(sidecar: Sidecar | None) -> datetime | None:
         return None
 
 
-def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | None, person_id: int, relative: str, now: float, export_id: int | None = None) -> MediaItem:
-    print_ = media.fingerprint(item.path, tags)
+def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | None, person_id: int, relative: str, now: float, export_id: int | None = None,
+              opened: Path | None = None) -> MediaItem:
+    print_ = media.fingerprint(opened or item.path, tags, item.path)
     lat, lon, gps_source = print_.lat, print_.lon, print_.gps_source
     if gps_source == "none" and sidecar is not None and sidecar.lat is not None and sidecar.lon is not None:
         lat, lon, gps_source = sidecar.lat, sidecar.lon, "google"

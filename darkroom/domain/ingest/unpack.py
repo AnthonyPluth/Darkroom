@@ -84,18 +84,19 @@ def check_parts(photos: Photos, export: Export, parts: list[ExportPart]) -> list
     return checked
 
 
-def safe_target(staging: Path, name: str) -> Path:
+def plain_entry(name: str) -> PurePosixPath:
     pure = PurePosixPath(name.replace("\\", "/"))
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
         raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
+    return pure
+
+
+def safe_target(staging: Path, name: str) -> Path:
+    pure = plain_entry(name)
     target = (staging / pure).resolve()
     if not target.is_relative_to(staging.resolve()):
         raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
     return target
-
-
-def entry_parts(name: str) -> tuple[str, ...]:
-    return PurePosixPath(name.replace("\\", "/")).parts
 
 
 def extract(photos: Photos, path: Path, staging: Path, staged: int) -> int:
@@ -104,8 +105,11 @@ def extract(photos: Photos, path: Path, staging: Path, staged: int) -> int:
         for info in archive.infolist():
             if (info.external_attr >> 16) & 0o170000 == SYMLINK_MODE:
                 raise UnpackFailed(f"an entry is a symbolic link: {PurePosixPath(info.filename).name}", "an entry is a symbolic link")
-            safe_target(staging, info.filename)
-            parts = entry_parts(info.filename)
+            parts = plain_entry(info.filename).parts
+            try:
+                safe_target(staging, info.filename)
+            except UnpackFailed as error:
+                raise paths.LinkRefused("a link is inside the staging folder") from error
             if info.is_dir():
                 with paths.inbox_subfolder(staged, parts, create=True):
                     continue

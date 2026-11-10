@@ -41,9 +41,9 @@ def scaled(image: Image.Image) -> bytes:
     return jpeg(upright)
 
 
-def render(source: Path, preview: Preview) -> bytes:
+def render(source: Path, preview: Preview, named: Path | None = None) -> bytes:
     try:
-        if source.suffix.lower() in media.VIDEO_SUFFIXES:
+        if (named or source).suffix.lower() in media.VIDEO_SUFFIXES:
             data = preview(source)
             if not data:
                 return placeholder()
@@ -64,21 +64,30 @@ def checked(photos: Photos, source: Path) -> Path:
     return resolved
 
 
-def cache_name(photos: Photos, source: Path) -> str:
-    stat = source.stat()
+def cache_name(photos: Photos, source: Path, opened: Path | None = None) -> str:
+    stat = (opened or source).stat()
     key = f"{source.relative_to(photos.root)}:{stat.st_mtime_ns}:{stat.st_size}:{SIZE}"
     return f"{hashlib.sha256(key.encode()).hexdigest()[:40]}.jpg"
 
 
 def thumbnail(photos: Photos, slug: str, source: Path, preview: Preview = exiftool.embedded_preview) -> bytes:
     found = checked(photos, source)
+    if not found.is_relative_to(photos.root / paths.INBOX):
+        return cached_thumbnail(photos, slug, found, found, preview)
+    with paths.pinned_inbox_files(photos, [found]) as pinned:
+        if found not in pinned:
+            raise NotAPhoto("the held copy is a link or not a plain file")
+        return cached_thumbnail(photos, slug, found, pinned[found], preview)
+
+
+def cached_thumbnail(photos: Photos, slug: str, found: Path, opened: Path, preview: Preview) -> bytes:
     try:
-        cached = photos.thumbs(slug) / cache_name(photos, found)
+        cached = photos.thumbs(slug) / cache_name(photos, found, opened)
     except paths.OutsideRoot:
-        return render(found, preview)
+        return render(opened, preview, found)
     with contextlib.suppress(OSError, paths.OutsideRoot), paths.open_inbox_file(photos, cached) as handle:
         return handle.read()
-    data = render(found, preview)
+    data = render(opened, preview, found)
     with contextlib.suppress(OSError, paths.OutsideRoot):
         paths.write_inbox_once(photos, cached, [data])
     return data

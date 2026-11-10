@@ -119,21 +119,24 @@ def staged_chunks(photos: Photos, source: Path) -> Iterator[bytes]:
 
 
 def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None,
-              read: Read = chunks, write: Write = paths.write_once, adopts: Holds = holds) -> Placed:
+              read: Read | None = None, write: Write | None = None, adopts: Holds | None = None) -> Placed:
+    reading = chunks if read is None else read
+    writing = paths.write_once if write is None else write
+    holding = holds if adopts is None else adopts
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
         if destination.exists() or destination.is_symlink():
-            if adopts(destination, sha1):
+            if holding(destination, sha1):
                 return adopted(destination, marking)
             continue
         if marking is not None:
             marking(destination, True)
         try:
-            written = write(destination, read(source))
+            written = writing(destination, reading(source))
         except paths.AlreadyExists:
-            if adopts(destination, sha1):
+            if holding(destination, sha1):
                 return adopted(destination, marking)
             continue
         except paths.ChangedWhileCopied as error:

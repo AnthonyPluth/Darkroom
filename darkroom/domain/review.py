@@ -227,7 +227,10 @@ def export_view(photos: Photos, hit: Found, read: xmp.Reader) -> tuple[dict[str,
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         return base, None
-    shot = media.fingerprint(hold, read_tags(read, hold))
+    with paths.pinned_inbox_files(photos, [hold]) as pinned:
+        if hold not in pinned:
+            return base, None
+        shot = media.fingerprint(pinned[hold], read_tags(read, pinned[hold]), hold)
     base.update(
         held=True, bytes=shot.bytes, captured_utc=shot.captured_utc, captured_local=shot.captured_local, offset_minutes=shot.offset_minutes,
         make=shot.make, model=shot.model, width=shot.width, height=shot.height, duration_ms=shot.duration_ms,
@@ -309,7 +312,10 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     raw = hit.review.sidecar_json if text is None else text
     parsed = sidecar.parse(raw) if raw else None
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
-    fields = metadata.candidate(item, read_tags(read, hold), parsed, person_id, UNPLACED, now, hit.export.id)
+    with paths.pinned_inbox_files(photos, [hold]) as pinned:
+        if hold not in pinned:
+            raise WrongState("the held copy is a link or not a plain file, so it was not kept")
+        fields = metadata.candidate(item, read_tags(read, pinned[hold]), parsed, person_id, UNPLACED, now, hit.export.id, pinned[hold])
     expected = cleanup.inbox_sha1(photos, staged) if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
     if expected is None:
         raise WrongState("the held copy can no longer be checked against the export, so it was not kept")

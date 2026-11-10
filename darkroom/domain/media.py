@@ -151,8 +151,8 @@ def location(tags: dict[str, object]) -> tuple[float | None, float | None, str]:
     return lat, lon, "exif"
 
 
-def perceptual_hashes(path: Path) -> PerceptualHashes:
-    if path.suffix.lower() in VIDEO_SUFFIXES:
+def perceptual_hashes(path: Path, named: Path | None = None) -> PerceptualHashes:
+    if (named or path).suffix.lower() in VIDEO_SUFFIXES:
         return PerceptualHashes(None, None)
     try:
         with Image.open(path) as image:
@@ -166,11 +166,11 @@ def dimension(tags: dict[str, object], *names: str) -> int | None:
     return None if value is None else int(value)
 
 
-def fingerprint(path: Path, tags: dict[str, object]) -> Fingerprint:
+def fingerprint(path: Path, tags: dict[str, object], named: Path | None = None) -> Fingerprint:
     digest, size = sha1_of(path)
     lat, lon, gps_source = location(tags)
     utc, local, offset, time_source = capture(tags, lat, lon)
-    hashes = perceptual_hashes(path)
+    hashes = perceptual_hashes(path, named)
     duration = number(tag(tags, "Duration", "MediaDuration"))
     return Fingerprint(
         sha1=digest, bytes=size, phash=hashes.phash, dhash=hashes.dhash,

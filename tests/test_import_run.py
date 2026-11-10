@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import shutil
 import unittest
@@ -6,8 +7,8 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import alerts, dedupe
-from darkroom.domain.ingest import cleanup, metadata, place, run
+from darkroom.domain import alerts, dedupe, media
+from darkroom.domain.ingest import cleanup, metadata, pairing, place, run
 from darkroom.storage import locks
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
@@ -516,6 +517,64 @@ class HandDroppedAndDownloadedTests(unittest.TestCase):
         for world in (dropped, downloaded):
             held = world.root / "_inbox/jo/review/export-1/IMG_1005.JPG"
             self.assertEqual(sha1_of(held), sha1_of(world.root / "_inbox/jo/export-1/staging/Takeout/Google Photos/Photos from 2019/IMG_1005.JPG"))
+
+
+
+class PinnedMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        self.secret = self.world.original("jo", "secret.jpg", self.world.scratch_jpeg("secret.jpg", make="SecretMake", size=(37, 23)))
+        self.export = self.world.hand_dropped()
+        self.before = tree(self.world.root / "jo/originals")
+        self.seen = []
+        self.found = {}
+        real = self.world.tools.read
+
+        def reading(names):
+            self.seen.extend(names)
+            self.while_reading()
+            answer = real(names)
+            self.found.update(answer)
+            return answer
+
+        self.world.tools = dataclasses.replace(self.world.tools, read=reading)
+
+    def while_reading(self):
+        pass
+
+    def swap(self):
+        for path in (self.world.root / "_inbox").rglob("IMG_2001.JPG"):
+            if "staging" in path.parts and not path.is_symlink():
+                path.unlink()
+                path.symlink_to(self.secret)
+
+    def assert_nothing_outside_the_inbox_was_read(self):
+        inbox = self.world.root / "_inbox"
+        self.assertFalse([name for name in self.seen if name.is_relative_to(inbox)])
+        self.assertTrue(self.seen)
+        self.assertFalse([tags for tags in self.found.values() if media.tag(tags, "Make") == "SecretMake"])
+        self.assertEqual(tree(self.world.root / "jo/originals"), self.before)
+        secret = sha1_of(self.secret)
+        self.assertFalse(self.world.opened.execute(select(MediaItem).where(MediaItem.sha1 == secret, MediaItem.source == "takeout")).scalars().all())
+
+    def test_a_staged_file_swapped_for_a_link_while_exiftool_reads_is_never_read(self):
+        self.while_reading = self.swap
+        self.world.run_import(self.export)
+        self.assert_nothing_outside_the_inbox_was_read()
+
+    def test_a_staged_file_swapped_for_a_link_after_it_was_hashed_is_never_read(self):
+        real = pairing.pair
+
+        def pairing_then_swapping(root, *rest):
+            report = real(root, *rest)
+            self.swap()
+            return report
+
+        with mock.patch.object(pairing, "pair", side_effect=pairing_then_swapping):
+            self.world.run_import(self.export)
+        self.assert_nothing_outside_the_inbox_was_read()
+        failures = self.world.opened.execute(select(Event.detail).where(Event.type == "import_item_failed")).scalars().all()
+        self.assertTrue([detail for detail in failures if detail.startswith("metadata:")])
 
 
 if __name__ == "__main__":
