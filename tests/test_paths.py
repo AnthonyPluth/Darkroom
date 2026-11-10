@@ -879,3 +879,163 @@ class RemoveLosingCopyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InboxLinkTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.photos.ensure_person_tree("jo")
+        self.originals = self.root / "jo/originals"
+        self.kept = self.originals / "IMG_1.JPG"
+        self.kept.write_bytes(b"an original")
+        self.export = self.root / "_inbox/jo/export-1"
+        self.export.mkdir()
+
+    def originals_tree(self):
+        return {str(p.relative_to(self.originals)): p.read_bytes() for p in self.originals.rglob("*") if p.is_file()}
+
+    def test_a_link_on_the_way_to_an_inbox_folder_is_refused(self):
+        (self.export / "staging").symlink_to(self.originals, target_is_directory=True)
+        (self.root / "_inbox/jo/review").symlink_to(self.originals, target_is_directory=True)
+        (self.root / "_inbox/jo/.thumbs").symlink_to(self.originals, target_is_directory=True)
+        for call in (lambda: self.photos.staging("jo", "export-1"), lambda: self.photos.review_hold("jo", "export-1"),
+                     lambda: self.photos.thumbs("jo")):
+            with self.subTest(call=call), self.assertRaises(paths.LinkRefused):
+                call()
+        self.assertTrue(issubclass(paths.LinkRefused, paths.OutsideRoot))
+
+    def test_a_linked_export_or_manual_folder_is_refused(self):
+        (self.root / "_inbox/jo/export-2").symlink_to(self.root / "jo", target_is_directory=True)
+        (self.root / "jo/staging").mkdir()
+        with self.assertRaises(paths.LinkRefused):
+            self.photos.staging("jo", "export-2")
+        (self.root / "_inbox/jo/manual").rmdir()
+        (self.root / "_inbox/jo/manual").symlink_to(self.originals, target_is_directory=True)
+        with self.assertRaises(paths.LinkRefused):
+            self.photos.manual_inbox("jo")
+
+    def test_a_folder_without_links_is_its_own_path(self):
+        self.assertEqual(self.photos.staging("jo", "export-1"), self.export / "staging")
+        self.assertEqual(self.photos.in_the_inbox("jo", "manual"), self.root / "_inbox/jo/manual")
+
+    def test_only_places_inside_the_inbox_are_opened(self):
+        for path in (Path("_inbox/jo/a"), self.originals / "IMG_1.JPG", self.root / "_inbox/../jo/originals/IMG_1.JPG", self.root.parent / "x"):
+            with self.subTest(path=path), self.assertRaises(paths.OutsideRoot):
+                paths.open_inbox_file(self.photos, path)
+
+    def test_an_inbox_file_is_read_without_following_a_link(self):
+        plain = self.export / "a.txt"
+        plain.write_bytes(b"plain")
+        with paths.open_inbox_file(self.photos, plain) as handle:
+            self.assertEqual(handle.read(), b"plain")
+        self.assertEqual(b"".join(paths.inbox_chunks(self.photos, plain)), b"plain")
+        (self.export / "link.txt").symlink_to(self.kept)
+        (self.export / "hop").symlink_to(self.originals, target_is_directory=True)
+        (self.export / "folder").mkdir()
+        os.mkfifo(self.export / "pipe")
+        for path in (self.export / "link.txt", self.export / "hop/IMG_1.JPG", self.export / "folder", self.export / "pipe"):
+            with self.subTest(path=path), self.assertRaises(paths.LinkRefused):
+                paths.inbox_sha1(self.photos, path)
+
+    def test_an_import_part_outside_the_inbox_is_read_but_never_through_a_link(self):
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        elsewhere = Path(other.name).resolve()
+        (elsewhere / "part.zip").write_bytes(b"zip")
+        with paths.open_import_part(self.photos, elsewhere / "part.zip") as handle:
+            self.assertEqual(handle.read(), b"zip")
+        (elsewhere / "linked.zip").symlink_to(elsewhere / "part.zip")
+        (elsewhere / "into").symlink_to(self.export, target_is_directory=True)
+        (self.export / "part.zip").write_bytes(b"zip")
+        for path in (elsewhere / "linked.zip", elsewhere / "into/part.zip"):
+            with self.subTest(path=path), self.assertRaises(paths.LinkRefused):
+                paths.open_import_part(self.photos, path)
+        with paths.open_import_part(self.photos, self.export / "part.zip") as handle:
+            self.assertEqual(handle.read(), b"zip")
+        self.assertEqual(paths.plain_sha1(elsewhere / "part.zip"), paths.inbox_sha1(self.photos, self.export / "part.zip"))
+
+    def test_a_listing_keeps_only_plain_files(self):
+        (self.export / "a.jpg").write_bytes(b"a")
+        (self.export / "b.jpg").symlink_to(self.kept)
+        (self.export / "c").mkdir()
+        self.assertEqual(paths.plain_entries(str(self.export), ["b.jpg", "a.jpg", "c", "gone.jpg"]), ["a.jpg"])
+
+    def test_an_entry_is_written_in_a_pinned_folder_and_never_through_a_link(self):
+        with paths.inbox_folder(self.photos, self.export / "staging", create=True) as staged:
+            with paths.inbox_subfolder(staged, ["Takeout", "Photos"], create=True) as folder:
+                out = paths.open_inbox_entry("a.jpg", folder, 3)
+                assert out is not None
+                with out:
+                    out.write(b"abc")
+                self.assertIsNone(paths.open_inbox_entry("a.jpg", folder, 3))
+                out = paths.open_inbox_entry("a.jpg", folder, 2)
+                assert out is not None
+                with out:
+                    out.write(b"xy")
+                os.symlink(self.kept, "link.jpg", dir_fd=folder)
+                os.link(self.kept, self.export / "staging/Takeout/Photos/hard.jpg")
+                for name in ("link.jpg", "hard.jpg"):
+                    with self.subTest(name=name), self.assertRaises(paths.LinkRefused):
+                        paths.open_inbox_entry(name, folder, 1)
+            (self.export / "staging/Takeout/hop").symlink_to(self.originals, target_is_directory=True)
+            with self.assertRaises(paths.LinkRefused), paths.inbox_subfolder(staged, ["Takeout", "hop"], create=True):
+                pass
+            (self.export / "staging/Takeout/file").write_bytes(b"")
+            with self.assertRaises(paths.LinkRefused), paths.inbox_subfolder(staged, ["Takeout", "file"], create=False):
+                pass
+        self.assertEqual((self.export / "staging/Takeout/Photos/a.jpg").read_bytes(), b"xy")
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+
+    def test_a_folder_swapped_for_a_link_after_the_check_is_never_entered(self):
+        staging = self.photos.staging("jo", "export-1")
+        staging.symlink_to(self.originals, target_is_directory=True)
+        with self.assertRaises(paths.LinkRefused), paths.inbox_folder(self.photos, staging, create=True):
+            pass
+        with self.assertRaises(paths.LinkRefused):
+            paths.write_inbox_once(self.photos, staging / "IMG_2.JPG", [b"new"])
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+
+    def test_a_marker_is_set_once_and_a_linked_marker_is_refused(self):
+        with paths.inbox_folder(self.photos, self.export / ".markers", create=True) as markers:
+            self.assertFalse(paths.inbox_marker_set("0001", markers))
+            paths.set_inbox_marker("0001", markers)
+            self.assertTrue(paths.inbox_marker_set("0001", markers))
+            os.symlink(self.kept, "0002", dir_fd=markers)
+            with self.assertRaises(paths.LinkRefused):
+                paths.inbox_marker_set("0002", markers)
+            with self.assertRaises(FileExistsError):
+                paths.set_inbox_marker("0002", markers)
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+
+    def test_write_inbox_once_writes_a_new_file_and_never_replaces_one(self):
+        hold = self.root / "_inbox/jo/review/export-1/a.jpg"
+        digest = paths.write_inbox_once(self.photos, hold, [b"he", b"ld"])
+        self.assertEqual((hold.read_bytes(), digest), (b"held", paths.file_sha1(hold)))
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_inbox_once(self.photos, hold, [b"other"])
+        self.assertEqual(hold.read_bytes(), b"held")
+        self.assertEqual([p.name for p in hold.parent.iterdir()], ["a.jpg"])
+
+    def test_write_inbox_once_refuses_a_file_that_changed_while_it_was_copied(self):
+        hold = self.root / "_inbox/jo/review/export-1/a.jpg"
+        with self.assertRaises(paths.ChangedWhileCopied):
+            paths.write_inbox_once(self.photos, hold, [b"swapped"], "0" * 40)
+        self.assertEqual(list(hold.parent.iterdir()), [])
+
+    def test_write_inbox_once_copies_where_hard_links_are_not_possible(self):
+        hold = self.root / "_inbox/jo/review/export-1/a.jpg"
+        with mock.patch.object(paths.os, "link", side_effect=PermissionError("no hard links")):
+            paths.write_inbox_once(self.photos, hold, [b"held"])
+        self.assertEqual(hold.read_bytes(), b"held")
+        self.assertEqual([p.name for p in hold.parent.iterdir()], ["a.jpg"])
+        with mock.patch.object(paths.os, "link", side_effect=PermissionError("no hard links")), \
+                mock.patch.object(paths, "copy_fd", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            paths.write_inbox_once(self.photos, hold.with_name("b.jpg"), [b"held"])
+        self.assertEqual([p.name for p in hold.parent.iterdir()], ["a.jpg"])
+        (hold.parent / "c.jpg").symlink_to(self.kept)
+        with paths.inbox_folder(self.photos, hold.parent, create=False) as folder, self.assertRaises(paths.AlreadyExists):
+            paths.copy_entry("a.jpg", "c.jpg", folder)
+        self.assertEqual(self.kept.read_bytes(), b"an original")

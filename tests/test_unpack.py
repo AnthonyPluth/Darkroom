@@ -258,6 +258,146 @@ class UnpackTests(unittest.TestCase):
         self.assertEqual(groups[(folder, "photos")], {1: folder / "photos.zip"})
         self.assertEqual(unpack.group_manual_zips(self.root / "missing"), {})
 
+    def registered(self):
+        with db.session(self.engine) as opened:
+            (export,) = unpack.inspect_manual_inbox(opened, self.photos, self.person(opened), 1.0)
+            return self.photos.root / "_inbox/jo" / unpack.staging_name(export)
+
+    def unpack_again(self, now=2.0):
+        with db.session(self.engine) as opened:
+            return unpack.unpack(opened, self.photos, self.person(opened), opened.query(Export).one(), now)
+
+    def originals(self):
+        folder = self.photos.root / "jo/originals"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def originals_tree(self):
+        return {str(p.relative_to(self.originals())): p.read_bytes() for p in self.originals().rglob("*") if p.is_file()}
+
+    def one_zip(self, entries):
+        with zipfile.ZipFile(self.inbox / "takeout-20260101T000000Z-001.zip", "w") as archive:
+            for name, data in entries:
+                archive.writestr(name, data)
+
+    def assert_refused_and_originals_kept(self, report, before):
+        self.assertEqual(report.problems, [unpack.LINK_IN_THE_INBOX])
+        self.assertEqual(self.export_state(), [("failed", "unpack")])
+        self.assertEqual(self.events(), ["unpack_failed"])
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_linked_staging_folder_is_refused_and_nothing_lands_in_originals(self):
+        standard_export(self.inbox)
+        export = self.registered()
+        export.mkdir()
+        (export / "staging").symlink_to(self.originals(), target_is_directory=True)
+        self.assert_refused_and_originals_kept(self.unpack_again(), {})
+        self.assertFalse((self.photos.root / "jo" / unpack.UNPACKED_MARKER_FOLDER).exists())
+
+    def test_a_linked_export_folder_is_refused(self):
+        standard_export(self.inbox)
+        export = self.registered()
+        (self.photos.root / "jo/staging").mkdir(parents=True)
+        export.symlink_to(self.photos.root / "jo", target_is_directory=True)
+        self.assert_refused_and_originals_kept(self.unpack_again(), {})
+        self.assertEqual(list((self.photos.root / "jo/staging").iterdir()), [])
+
+    def test_a_linked_folder_inside_staging_is_never_written_through(self):
+        self.one_zip([("Takeout/a.txt", b"a")])
+        staging = self.registered() / "staging"
+        staging.mkdir(parents=True)
+        (staging / "Takeout").symlink_to(self.originals(), target_is_directory=True)
+        self.assert_refused_and_originals_kept(self.unpack_again(), {})
+
+    def planted(self, plant):
+        kept = self.originals() / "keep.jpg"
+        kept.write_bytes(b"an original")
+        before = self.originals_tree()
+        self.one_zip([("Takeout/a.txt", b"longer than the original")])
+        staging = self.registered() / "staging"
+        (staging / "Takeout").mkdir(parents=True)
+        plant(kept, staging / "Takeout/a.txt")
+        self.assert_refused_and_originals_kept(self.unpack_again(), before)
+
+    def test_a_linked_file_inside_staging_is_never_written_through(self):
+        self.planted(lambda kept, place: place.symlink_to(kept))
+
+    def test_a_hard_linked_file_inside_staging_is_never_written_through(self):
+        self.planted(lambda kept, place: os.link(kept, place))
+
+    def test_a_folder_swapped_for_a_link_between_check_and_use_is_never_written_through(self):
+        from unittest import mock
+
+        self.one_zip([("Takeout/a.txt", b"a"), ("Takeout/b.txt", b"b")])
+        staging = self.registered() / "staging"
+        real = unpack.safe_target
+
+        def swapping(folder, name):
+            checked = real(folder, name)
+            if name == "Takeout/b.txt":
+                (staging / "Takeout/a.txt").unlink()
+                (staging / "Takeout").rmdir()
+                (staging / "Takeout").symlink_to(self.originals(), target_is_directory=True)
+            return checked
+
+        with mock.patch.object(unpack, "safe_target", swapping):
+            report = self.unpack_again()
+        self.assert_refused_and_originals_kept(report, {})
+
+    def test_a_part_swapped_for_a_link_is_refused(self):
+        standard_export(self.inbox)
+        self.registered()
+        part = self.inbox / "takeout-20260101T000000Z-002.zip"
+        moved = self.root / "elsewhere.zip"
+        part.rename(moved)
+        part.symlink_to(moved)
+        report = self.unpack_again()
+        self.assertEqual(report.public, ["part 2 is a link or not a plain file"])
+        self.assertEqual(self.export_state(), [("failed", "unpack")])
+        self.assertFalse(self.staging().exists())
+
+    def test_a_linked_zip_in_the_manual_inbox_is_not_registered(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        manifest = standard_export(elsewhere)
+        for part in manifest.parts:
+            (self.inbox / part.name).symlink_to(part)
+        (self.inbox / "linked").symlink_to(elsewhere, target_is_directory=True)
+        self.assertEqual(unpack.group_manual_zips(self.inbox), {})
+        self.assertEqual(self.run_inbox(), [])
+
+    def test_a_linked_manual_inbox_is_refused(self):
+        self.inbox.rmdir()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        standard_export(elsewhere)
+        self.inbox.symlink_to(elsewhere, target_is_directory=True)
+        with db.session(self.engine) as opened, self.assertRaises(unpack.UnpackFailed):
+            unpack.inspect_manual_inbox(opened, self.photos, self.person(opened), 1.0)
+        self.assertEqual(self.export_state(), [])
+
+    def test_a_folder_outside_the_inbox_still_unpacks(self):
+        folder = self.root / "data/drop"
+        folder.mkdir(parents=True)
+        manifest = standard_export(folder)
+        with db.session(self.engine) as opened:
+            person = self.person(opened)
+            (export,) = unpack.register_zips(opened, person, folder, 1.0)
+            report = unpack.unpack(opened, self.photos, person, export, 2.0)
+        self.assertEqual((report.parts_unpacked, report.problems), (2, []))
+        for name in manifest.media:
+            self.assertTrue((self.staging() / name).is_file(), name)
+
+    def test_a_staging_folder_outside_the_inbox_is_refused(self):
+        from unittest import mock
+
+        standard_export(self.inbox)
+        self.registered()
+        with mock.patch.object(unpack, "staging_dir", return_value=self.originals() / "staging"):
+            report = self.unpack_again()
+        self.assertEqual(report.problems, [unpack.OUTSIDE_THE_INBOX])
+        self.assertEqual(self.originals_tree(), {})
+
     def test_person_without_an_account_cannot_register(self):
         with db.session(self.engine) as opened:
             add_person(opened, "al")

@@ -72,10 +72,13 @@ def cache_name(photos: Photos, source: Path) -> str:
 
 def thumbnail(photos: Photos, slug: str, source: Path, preview: Preview = exiftool.embedded_preview) -> bytes:
     found = checked(photos, source)
-    cached = photos.thumbs(slug) / cache_name(photos, found)
-    if cached.is_file() and not cached.is_symlink():
-        return cached.read_bytes()
+    try:
+        cached = photos.thumbs(slug) / cache_name(photos, found)
+    except paths.OutsideRoot:
+        return render(found, preview)
+    with contextlib.suppress(OSError, paths.OutsideRoot), paths.open_inbox_file(photos, cached) as handle:
+        return handle.read()
     data = render(found, preview)
-    with contextlib.suppress(OSError):
-        paths.write_once(cached, [data])
+    with contextlib.suppress(OSError, paths.OutsideRoot):
+        paths.write_inbox_once(photos, cached, [data])
     return data

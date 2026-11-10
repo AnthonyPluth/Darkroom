@@ -205,6 +205,39 @@ class PairingTests(unittest.TestCase):
         report = pairing.pair(self.root / "nowhere")
         self.assertEqual((report.items, report.orphan_sidecars, report.unpaired_media), ([], [], []))
 
+    def test_links_in_the_staging_folder_are_left_out(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.jpg").write_bytes(b"not part of the export")
+        (outside / "secret.jpg.json").write_text("{}")
+        staging = self.root / "stage-links" / YEAR
+        staging.mkdir(parents=True)
+        (staging / "IMG_1.JPG").write_bytes(b"a staged photo")
+        (staging / "IMG_2.JPG").symlink_to(outside / "secret.jpg")
+        (staging / "IMG_1.JPG.json").symlink_to(outside / "secret.jpg.json")
+        (staging / "hop").symlink_to(outside, target_is_directory=True)
+        report = pairing.pair(self.root / "stage-links")
+        self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
+        self.assertIsNone(report.items[0].sidecar)
+        self.assertEqual(report.orphan_sidecars, [])
+        (self.root / "linked-stage").symlink_to(self.root / "stage-links", target_is_directory=True)
+        self.assertEqual(pairing.pair(self.root / "linked-stage").items, [])
+
+    def test_a_file_that_becomes_a_link_before_it_is_hashed_is_left_out(self):
+        staging = self.root / "stage-swap" / YEAR
+        staging.mkdir(parents=True)
+        (staging / "IMG_1.JPG").write_bytes(b"one")
+        (staging / "IMG_2.JPG").write_bytes(b"two")
+
+        def hashing(path):
+            if path.name == "IMG_2.JPG":
+                path.unlink()
+                path.symlink_to(staging / "IMG_1.JPG")
+            return pairing.paths.plain_sha1(path)
+
+        report = pairing.pair(self.root / "stage-swap", hashing)
+        self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
+
 
 if __name__ == "__main__":
     unittest.main()

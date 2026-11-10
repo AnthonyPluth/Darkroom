@@ -140,17 +140,22 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
-    prepared = Prepared(staging, pairing.pair(staging).items)
+    prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path)).items)
     tags = tools.read([item.path for item in prepared.items]) if prepared.items else {}
     for item in prepared.items:
         try:
-            raw = item.sidecar.read_text(encoding="utf-8") if item.sidecar is not None else None
+            raw = staged_text(photos, item.sidecar) if item.sidecar is not None else None
             parsed = sidecar.parse(raw) if raw else None
             prepared.fields[item.path] = metadata.candidate(item, tags.get(item.path, {}), parsed, person.id, UNPLACED, now, export.id)
         except Exception as error:
             if report:
                 item_failed(opened, export, "metadata", error, now)
     return prepared
+
+
+def staged_text(photos: Photos, path: Path) -> str:
+    with paths.open_inbox_file(photos, path) as handle:
+        return handle.read().decode("utf-8")
 
 
 def stored_decisions(opened: Session, export: Export) -> dict[str, DedupeDecision]:

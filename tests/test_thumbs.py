@@ -88,8 +88,33 @@ class ThumbnailTests(unittest.TestCase):
 
     def test_a_cache_that_cannot_be_written_still_answers(self):
         source = fixtures.make_jpeg(self.originals / "a.jpg")
-        with mock.patch.object(thumbs.paths, "write_once", side_effect=PermissionError("read-only")):
+        with mock.patch.object(thumbs.paths, "write_inbox_once", side_effect=PermissionError("read-only")):
             self.assertEqual(decoded(thumbs.thumbnail(self.photos, "jo", source, no_preview)).size, (64, 48))
+
+    def test_a_linked_thumbs_folder_is_never_read_or_written_through(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        folder = self.root / "_inbox" / "jo" / ".thumbs"
+        (name,) = [p.name for p in folder.iterdir()]
+        planted = self.originals / name
+        planted.write_bytes(b"not a thumbnail")
+        for path in folder.iterdir():
+            path.unlink()
+        folder.rmdir()
+        folder.symlink_to(self.originals, target_is_directory=True)
+        before = sorted((p.name, p.read_bytes()) for p in self.originals.iterdir())
+        self.assertEqual(decoded(thumbs.thumbnail(self.photos, "jo", source, no_preview)).size, (64, 48))
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.originals.iterdir()), before)
+
+    def test_a_cache_swapped_for_a_link_is_not_read(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        (cached,) = (self.root / "_inbox" / "jo" / ".thumbs").iterdir()
+        secret = self.root / "secret.jpg"
+        secret.write_bytes(b"not for the viewer")
+        cached.unlink()
+        cached.symlink_to(secret)
+        self.assertNotEqual(thumbs.thumbnail(self.photos, "jo", source, no_preview), b"not for the viewer")
 
     def test_files_outside_the_photo_root_or_links_are_refused(self):
         outside = fixtures.make_jpeg(self.root.parent / "outside.jpg")
