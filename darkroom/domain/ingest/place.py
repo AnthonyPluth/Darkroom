@@ -122,13 +122,13 @@ def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bo
               read: Read | None = None, write: Write | None = None, adopts: Holds | None = None) -> Placed:
     reading = chunks if read is None else read
     writing = paths.write_once if write is None else write
-    holding = holds if adopts is None else adopts
+    adopting = holds if adopts is None else adopts
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
         if destination.exists() or destination.is_symlink():
-            if holding(destination, sha1):
+            if adopting(destination, sha1):
                 return adopted(destination, marking)
             continue
         if marking is not None:
@@ -136,7 +136,7 @@ def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bo
         try:
             written = writing(destination, reading(source))
         except paths.AlreadyExists:
-            if holding(destination, sha1):
+            if adopting(destination, sha1):
                 return adopted(destination, marking)
             continue
         except paths.ChangedWhileCopied as error:
