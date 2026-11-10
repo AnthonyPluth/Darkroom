@@ -158,7 +158,9 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
                 found = []
                 code = 1
             if not found and not code:
-                print("no Takeout zip files found to import", file=sys.stderr)
+                skipped = unpack.skipped_zips(Path(folder) if folder else photos.manual_inbox(person.slug))
+                print(f"{skipped} zip files were skipped because they are links or hard links; copy them in as plain files" if skipped
+                      else "no Takeout zip files found to import", file=sys.stderr)
                 code = 1
             for export in found:
                 code = max(code, unpack_only_export(opened, photos, person, export, now) if unpack_only else import_one(opened, settings, export, now))

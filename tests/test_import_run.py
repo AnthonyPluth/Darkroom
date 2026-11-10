@@ -215,10 +215,10 @@ class FailureTests(unittest.TestCase):
         export = self.world.hand_dropped()
         real = place.copy_into
 
-        def failing(folder, source, sha1):
+        def failing(folder, source, sha1, **options):
             if source.name == "IMG_2001.JPG":
                 raise place.PlaceFailed("both names are taken by other files")
-            return real(folder, source, sha1)
+            return real(folder, source, sha1, **options)
 
         with mock.patch.object(place, "copy_into", failing):
             done = self.world.run_import(export)
@@ -289,10 +289,10 @@ class RetryTests(unittest.TestCase):
     def one_item_failing(self):
         real = place.copy_into
 
-        def failing(folder, source, sha1):
+        def failing(folder, source, sha1, **options):
             if source.name == "IMG_2001.JPG":
                 raise place.PlaceFailed("both names are taken by other files")
-            return real(folder, source, sha1)
+            return real(folder, source, sha1, **options)
 
         return mock.patch.object(place, "copy_into", failing)
 

@@ -136,11 +136,11 @@ class ImportTakeoutTests(CliCase):
         real = place.copy_into
         refused = {"left": 1}
 
-        def failing(folder, source, sha1):
+        def failing(folder, source, sha1, **options):
             if refused["left"]:
                 refused["left"] -= 1
                 raise place.PlaceFailed("taken")
-            return real(folder, source, sha1)
+            return real(folder, source, sha1, **options)
 
         with mock.patch.object(place, "copy_into", failing):
             code, out, _ = self.call("--person", "jo")
@@ -196,6 +196,20 @@ class ImportTakeoutTests(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("no Takeout zip files", err)
         self.assertNotIn("Unpacked", out)
+
+    def test_a_folder_of_linked_zips_says_they_were_skipped(self):
+        real = self.root / "real"
+        first, second = standard_export(real).parts
+        linked = self.root / "linked"
+        linked.mkdir()
+        (linked / first.name).symlink_to(first)
+        os.link(second, linked / second.name)
+        code, _, err = self.call("--person", "jo", "--dir", str(linked))
+        self.assertEqual(code, 1)
+        self.assertIn("2 zip files were skipped because they are links or hard links; copy them in as plain files", err)
+        self.assertNotIn("no Takeout zip files", err)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Export).count(), 0)
 
     def test_account_option_picks_between_several(self):
         with db.session(self.engine) as opened:

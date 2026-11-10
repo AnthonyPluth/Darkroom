@@ -950,6 +950,18 @@ class InboxLinkTests(unittest.TestCase):
         self.assertEqual(paths.plain_entries(str(self.export), ["hard.jpg"]), [])
         self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
 
+    def test_a_file_outside_the_inbox_is_never_read_through_a_linked_folder(self):
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        real = Path(other.name).resolve() / "real"
+        real.mkdir()
+        (real / "part.zip").write_bytes(b"zip")
+        (Path(other.name).resolve() / "linked").symlink_to(real, target_is_directory=True)
+        with paths.open_plain_file(real / "part.zip") as handle:
+            self.assertEqual(handle.read(), b"zip")
+        with self.assertRaises(paths.LinkRefused):
+            paths.open_plain_file(Path(other.name).resolve() / "linked/part.zip")
+
     def test_an_import_part_outside_the_inbox_is_read_but_never_through_a_link(self):
         other = tempfile.TemporaryDirectory()
         self.addCleanup(other.cleanup)

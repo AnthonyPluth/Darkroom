@@ -165,11 +165,22 @@ def unpack(opened: Session, photos: Photos, person: Person, export: Export, now:
     return report
 
 
+def listed_zips(folder: Path) -> list[Path]:
+    return sorted(folder.rglob("*.zip")) if folder.is_dir() else []
+
+
+def plain_zip(folder: Path, path: Path) -> bool:
+    return path.resolve() == folder.resolve() / path.relative_to(folder) and paths.plain_file(path.lstat())
+
+
+def skipped_zips(folder: Path) -> int:
+    return sum(1 for path in listed_zips(folder) if not plain_zip(folder, path))
+
+
 def group_manual_zips(folder: Path) -> dict[tuple[Path, str], dict[int, Path]]:
     groups: dict[tuple[Path, str], dict[int, Path]] = {}
-    real = folder.resolve()
-    for path in sorted(folder.rglob("*.zip")) if folder.is_dir() and not folder.is_symlink() else []:
-        if path.resolve() != real / path.relative_to(folder) or not paths.plain_file(path.lstat()):
+    for path in listed_zips(folder):
+        if not plain_zip(folder, path):
             continue
         found = PART_NAME.match(path.name)
         stamp, number = (found.group("stamp"), int(found.group("number"))) if found else (path.stem, 1)
@@ -198,12 +209,15 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
     account = chosen_account(opened, person, account_email)
     registered = []
     for (inbox, stamp), numbered in group_manual_zips(folder).items():
-        export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp, Export.inbox_dir == str(inbox))).scalars().first()
+        canonical = str(inbox.resolve())
+        export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp,
+                                                     Export.inbox_dir.in_([canonical, str(inbox)]))).scalars().first()
         if export is None:
             export = Export(account_id=account.id, kind="manual", google_id=stamp, created_at=now, ready_at=now, status="downloaded",
-                            inbox_dir=str(inbox), part_count=max(numbered), owner_person_id=person.id)
+                            inbox_dir=canonical, part_count=max(numbered), owner_person_id=person.id)
             opened.add(export)
             opened.flush()
+        export.inbox_dir = canonical
         known = {part.number for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id)).scalars()}
         for number, path in sorted(numbered.items()):
             if number not in known:

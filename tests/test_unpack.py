@@ -451,6 +451,53 @@ class UnpackTests(unittest.TestCase):
         report = self.registered_from(Path("_inbox/jo/manual"))
         self.assertEqual((report.parts_unpacked, report.problems), (2, []))
 
+    def test_a_folder_reached_through_a_link_is_registered_by_its_real_path(self):
+        real = self.root / "data/drop"
+        real.mkdir(parents=True)
+        standard_export(real)
+        (self.root / "drop-link").symlink_to(real, target_is_directory=True)
+        report = self.registered_from(self.root / "drop-link")
+        self.assertEqual((report.parts_unpacked, report.problems), (2, []))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Export).one().inbox_dir, str(real))
+
+    def test_a_registered_folder_swapped_for_a_link_is_refused(self):
+        drop = self.root / "data/drop"
+        drop.mkdir(parents=True)
+        standard_export(drop)
+        other = self.root / "data/other"
+        other.mkdir()
+        standard_export(other, seed=7)
+        with db.session(self.engine) as opened:
+            unpack.register_zips(opened, self.person(opened), drop, 1.0)
+        drop.rename(self.root / "data/old")
+        drop.symlink_to(other, target_is_directory=True)
+        report = self.unpack_again()
+        self.assertEqual(report.public, ["part 1 is a link or not a plain file"])
+        self.assertFalse(self.staging().exists())
+        self.assertEqual(self.originals_tree(), {})
+
+    def test_an_ancestor_swapped_for_a_link_is_refused(self):
+        drop = self.root / "data/drop"
+        drop.mkdir(parents=True)
+        standard_export(drop)
+        with db.session(self.engine) as opened:
+            unpack.register_zips(opened, self.person(opened), drop, 1.0)
+        (self.root / "data").rename(self.root / "moved")
+        (self.root / "data").symlink_to(self.root / "moved", target_is_directory=True)
+        report = self.unpack_again()
+        self.assertEqual(report.public, ["part 1 is a link or not a plain file"])
+        self.assertFalse(self.staging().exists())
+
+    def test_skipped_zips_are_counted(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        first, second = standard_export(elsewhere).parts
+        (self.inbox / first.name).symlink_to(first)
+        os.link(second, self.inbox / second.name)
+        self.assertEqual(unpack.skipped_zips(self.inbox), 2)
+        self.assertEqual(unpack.skipped_zips(self.root / "missing"), 0)
+
     def test_person_without_an_account_cannot_register(self):
         with db.session(self.engine) as opened:
             add_person(opened, "al")

@@ -1502,13 +1502,20 @@ def inbox_sha1(photos: Photos, path: Path) -> str:
     return digest.hexdigest()
 
 
-def open_plain_file(path: Path) -> BinaryIO:
+@contextlib.contextmanager
+def pinned_path(path: Path) -> Iterator[int]:
+    top = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError as error:
-        if error.errno == errno.ELOOP:
-            raise LinkRefused("the file is a link") from error
-        raise
+        with inbox_subfolder(top, Path(os.path.abspath(path)).parts[1:], create=False) as folder:
+            yield folder
+    finally:
+        os.close(top)
+
+
+def open_plain_file(path: Path) -> BinaryIO:
+    spelled = Path(os.path.abspath(path))
+    with pinned_path(spelled.parent) as folder:
+        fd = open_entry(spelled.name, folder, os.O_RDONLY)
     if not plain_file(os.fstat(fd)):
         os.close(fd)
         raise LinkRefused("not a plain file")

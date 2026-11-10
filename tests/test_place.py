@@ -371,6 +371,38 @@ class LinkedInboxTests(Household):
         self.assertEqual(tree(self.root / "jo/google-only"), {})
         self.assertEqual(self.originals_tree(), before)
 
+    def hard_link_at_the_hold_name(self, target_of):
+        _, mine = self.phone("sam", self.sam)
+        staged = self.staged()
+        entry = self.entry(staged, tier=4, person=self.sam, matched=mine)
+        target = target_of(staged)
+        before = self.originals_tree()
+        folder = self.root / "_inbox/sam/review" / f"export-{self.export.id}"
+        folder.mkdir(parents=True)
+        os.link(target, folder / "IMG_0001.JPG")
+        expected = staged.read_bytes()
+        try:
+            self.place(entry)
+        finally:
+            self.assertEqual(self.originals_tree(), before)
+        review = self.opened.execute(select(ReviewItem)).scalar_one()
+        held = self.root / review.hold_path
+        self.assertNotEqual(held.name, "IMG_0001.JPG")
+        self.assertEqual((held.read_bytes(), held.stat().st_nlink), (expected, 1))
+
+    def test_a_hard_link_to_the_staged_file_at_the_hold_name_is_never_adopted(self):
+        with self.assertRaises(place.PlaceFailed):
+            self.hard_link_at_the_hold_name(lambda staged: staged)
+        self.assertIsNone(self.opened.execute(select(ReviewItem)).scalar_one().hold_path)
+
+    def test_a_hard_link_to_another_file_at_the_hold_name_is_never_adopted(self):
+        def identical_original(staged):
+            original = self.root / "sam/originals/same.jpg"
+            original.write_bytes(staged.read_bytes())
+            return original
+
+        self.hard_link_at_the_hold_name(identical_original)
+
     def test_a_staged_file_that_changed_while_it_was_copied_is_never_held(self):
         _, mine = self.phone("sam", self.sam)
         entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)

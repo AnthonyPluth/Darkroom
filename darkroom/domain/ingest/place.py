@@ -21,6 +21,7 @@ ANOTHER_FILE = "~"
 
 Read = Callable[[Path], Iterable[bytes]]
 Write = Callable[[Path, Iterable[bytes]], str]
+Holds = Callable[[Path, str], bool]
 
 
 class PlaceFailed(RuntimeError):
@@ -97,6 +98,13 @@ def holds(destination: Path, sha1: str) -> bool:
     return destination.is_file() and not destination.is_symlink() and media.sha1_of(destination)[0] == sha1
 
 
+def holds_in_the_inbox(photos: Photos, destination: Path, sha1: str) -> bool:
+    try:
+        return paths.inbox_sha1(photos, destination) == sha1
+    except (paths.OutsideRoot, FileNotFoundError):
+        return False
+
+
 def adopted(destination: Path, marking: Callable[[Path, bool], None] | None) -> Placed:
     if marking is not None:
         marking(destination, False)
@@ -111,13 +119,13 @@ def staged_chunks(photos: Photos, source: Path) -> Iterator[bytes]:
 
 
 def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None,
-              read: Read = chunks, write: Write = paths.write_once) -> Placed:
+              read: Read = chunks, write: Write = paths.write_once, adopts: Holds = holds) -> Placed:
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
         if destination.exists() or destination.is_symlink():
-            if holds(destination, sha1):
+            if adopts(destination, sha1):
                 return adopted(destination, marking)
             continue
         if marking is not None:
@@ -125,7 +133,7 @@ def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bo
         try:
             written = write(destination, read(source))
         except paths.AlreadyExists:
-            if holds(destination, sha1):
+            if adopts(destination, sha1):
                 return adopted(destination, marking)
             continue
         except paths.ChangedWhileCopied as error:
@@ -199,7 +207,8 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
         raise PlaceFailed("a link is on the way to the review hold") from error
     sha1 = entry.fields.sha1
     placed = copy_into(folder, entry.item.path, sha1, read=lambda source: staged_chunks(photos, source),
-                       write=lambda destination, data: paths.write_inbox_once(photos, destination, data, sha1))
+                       write=lambda destination, data: paths.write_inbox_once(photos, destination, data, sha1),
+                       adopts=lambda destination, expected: holds_in_the_inbox(photos, destination, expected))
     report.held += 1
     review.hold_path, review.sidecar_json, review.hold_sha1 = relative(photos, placed.path), entry.fields.sidecar_json, entry.fields.sha1
     return review
