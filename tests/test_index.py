@@ -734,7 +734,8 @@ class ConfirmationTests(unittest.TestCase):
             pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
             opened.add(pixel)
             opened.flush()
-            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="placed", bytes=1, sha1="a" * 40, queued_at=90.0,
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="placed", bytes=item.bytes, sha1=item.sha1, queued_at=90.0,
                                  placed_at=100.0, always_send=True))
             opened.query(DedupeDecision).one().decided_at = 200.0
         seen = {float("inf"): None, float("-inf"): None, 1e300: None, 0.0: None, 5e9: None, dates.LATEST_INSTANT + 1: None, 250.0: 250.0, 400.0: None,
