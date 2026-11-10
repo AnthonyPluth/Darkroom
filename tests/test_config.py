@@ -93,6 +93,11 @@ class NoAuthHostTests(unittest.TestCase):
                 self.assertIn("DARKROOM_ALLOWED_HOSTS", found[0])
                 self.assertIn(found[0], config.problems(settings))
                 self.assertFalse(config.no_auth_host_allowed(settings, value))
+                self.assertNotIn(value.strip(), config.no_auth_hosts(settings))
+        wildcard = settings_from(DARKROOM_ALLOWED_HOSTS="*.lan")
+        self.assertEqual(config.no_auth_hosts(wildcard), {"localhost", "127.0.0.1"})
+        for host in ("*.lan", "*.lan:8000", "nas.lan", "lan"):
+            self.assertFalse(config.no_auth_host_allowed(wildcard, host), host)
 
 
 class AuthProblemTests(unittest.TestCase):

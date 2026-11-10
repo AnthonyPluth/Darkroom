@@ -150,6 +150,7 @@ def ip_literal(host: str) -> bool:
 
 
 NOT_IN_A_HOST = frozenset("@/?#\\")
+HOST_NAME = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*")
 
 
 def host_name(value: str) -> str:
@@ -159,10 +160,10 @@ def host_name(value: str) -> str:
     if ip_literal(value.strip("[]")):
         return value.strip("[]").lower()
     try:
-        name = urlsplit("//" + value).hostname or ""
+        name = (urlsplit("//" + value).hostname or "").rstrip(".")
     except ValueError:
         return ""
-    return name.rstrip(".")
+    return name if ip_literal(name) or HOST_NAME.fullmatch(name) else ""
 
 
 def public_host(settings: Settings) -> str:
@@ -183,7 +184,7 @@ def no_auth_host_allowed(settings: Settings, host: str) -> bool:
 
 
 def allowed_hosts_problems(settings: Settings) -> list[str]:
-    unusable = [value for value in settings.allowed_hosts if "/" in value or "*" in value or not host_name(value)]
+    unusable = [value for value in settings.allowed_hosts if not host_name(value)]
     if not unusable:
         return []
     return ["DARKROOM_ALLOWED_HOSTS is a comma-separated list of host names, like tower.local, without a scheme, path or wildcard"]
