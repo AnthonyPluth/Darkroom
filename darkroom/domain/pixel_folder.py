@@ -37,14 +37,14 @@ class Tended:
 NEVER_AFTER_PLACING = 0.0
 
 
-def plausibly_created(created: ColumnElement[float | None], observed_by: ColumnElement[float]) -> ColumnElement[bool]:
-    return and_(created.between(1, dates.LATEST_INSTANT), created <= observed_by)
+def export_plausibly_created() -> ColumnElement[bool]:
+    return and_(Export.created_at.between(1, dates.LATEST_INSTANT), Export.created_at <= DedupeDecision.decided_at)
 
 
 def observed_at() -> ColumnElement[float]:
     return case(
         (Export.created_at.is_(None), DedupeDecision.decided_at),
-        (plausibly_created(Export.created_at, DedupeDecision.decided_at), Export.created_at),
+        (export_plausibly_created(), Export.created_at),
         else_=literal(NEVER_AFTER_PLACING),
     )
 
