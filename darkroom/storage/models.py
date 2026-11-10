@@ -290,6 +290,18 @@ class LegacyFile(Base):
     queued_at: Mapped[float | None] = mapped_column(Float)
 
 
+class IndexSkip(Base):
+    __tablename__ = "index_skips"
+    __table_args__ = (UniqueConstraint("person_id", "path", name="uq_index_skips_person_path"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+    mtime: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    skipped_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 class ImmichAsset(Base):
     __tablename__ = "immich_assets"
     __table_args__ = (

@@ -11,6 +11,7 @@ from darkroom.providers import exiftool, immich
 from darkroom.storage import secretbox
 from darkroom.storage.models import Alert, Event, Export, ImmichAsset, ImportRun, MediaItem, Person, PixelCopy
 from tests.fakes.immich import FakeAsset
+from tests.fixtures import media as fixtures
 from tests.import_world import NOW, World, tree
 
 OLD = "2020-01-01T00:00:00.000Z"
@@ -213,6 +214,33 @@ class FailureTests(ReconcileCase):
             self.run_it()
         self.assertEqual(caught.exception.status, 401)
         self.assertEqual((self.jo.immich_reconciled_until, self.stored()), (None, []))
+
+
+class PoisonAssetTests(ReconcileCase):
+    def test_a_photo_claiming_billions_of_pixels_is_stored_without_being_decoded_and_the_run_finishes(self):
+        bomb = self.world.fake.add_asset(FakeAsset(id="bomb", owner_id="u-jo", data=fixtures.pixel_bomb_png(), name="IMG_9000.PNG"))
+        after = self.photo()
+        report = self.run_it()
+        self.assertEqual((report.stored, report.failed), (2, 0))
+        self.assertEqual({self.rows()[bomb.id].status, self.rows()[after.id].status}, {"stored"})
+        self.assertEqual(self.jo.immich_reconciled_until, NOW - reconcile.MARGIN_SECONDS)
+
+    def test_a_photo_that_breaks_the_index_fails_alone_and_the_rest_are_stored(self):
+        poison = self.photo()
+        after = self.photo()
+        real = media.fingerprint
+
+        def fingerprint(path, tags):
+            if path.read_bytes() == poison.data:
+                raise OverflowError("a crafted value")
+            return real(path, tags)
+
+        with mock.patch.object(media, "fingerprint", fingerprint):
+            report = self.run_it()
+        self.assertEqual((report.stored, report.failed), (1, 1))
+        self.assertEqual((self.rows()[poison.id].status, self.rows()[after.id].status), ("failed", "stored"))
+        self.assertEqual(self.jo.immich_reconciled_until, NOW - reconcile.MARGIN_SECONDS)
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "CopyMismatch")
 
 
 class OrderTests(ReconcileCase):

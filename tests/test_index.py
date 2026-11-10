@@ -2,11 +2,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from darkroom.domain import events, index
+from darkroom.domain import events, index, media
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import MediaItem, Person
+from darkroom.storage.models import IndexSkip, MediaItem, Person
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -227,6 +228,163 @@ class IndexTests(unittest.TestCase):
                 index.index_person(opened, self.photos, person, 1.0)
         with db.session(self.engine) as opened:
             self.assertEqual(sorted((i.person_id, i.path) for i in opened.query(MediaItem)), [(1, "jo/originals/a.jpg"), (2, "sam/originals/a.jpg")])
+
+
+
+def described(paths, extra=None):
+    return {path: {"SourceFile": str(path), "File:MIMEType": "image/jpeg", **(extra or {}).get(path.name, {})} for path in paths}
+
+
+class PoisonFileTests(unittest.TestCase):
+    setUp = IndexTests.setUp
+    run_index = IndexTests.run_index
+    items = IndexTests.items
+
+    def skips(self):
+        with db.session(self.engine) as opened:
+            return {row.path: row.reason for row in opened.query(IndexSkip)}
+
+    def failure_details(self):
+        with db.session(self.engine) as opened:
+            return [event.detail for event in events.recent(opened, type="index_failed")]
+
+    def test_a_header_claiming_billions_of_pixels_is_indexed_without_decoding_and_the_rest_still_are(self):
+        fixtures.make_jpeg(self.originals / "a.jpg", taken="2019:07:04 12:30:15")
+        fixtures.make_pixel_bomb(self.originals / "bomb.png")
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(9, 9, 9))
+        report = self.run_index()
+        self.assertEqual((report.new, report.failed), (3, 0))
+        items = self.items()
+        self.assertEqual((items["jo/originals/bomb.png"].phash, items["jo/originals/bomb.png"].dhash), (None, None))
+        self.assertEqual(len(items["jo/originals/a.jpg"].phash), 16)
+        self.assertEqual(len(items["jo/originals/z.jpg"].phash), 16)
+
+    def test_metadata_numbers_that_overflow_do_not_stop_the_run(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        poison = {"poison.jpg": {"IFD0:ImageWidth": float("inf"), "IFD0:ImageHeight": 1e300, "QuickTime:Duration": 1e308,
+                                 "ExifIFD:DateTimeOriginal": "0001:01:01 00:00:00", "ExifIFD:OffsetTimeOriginal": "+05:00",
+                                 "Composite:GPSLatitude": float("nan"), "Composite:GPSLongitude": 10.0},
+                  "z.jpg": {"ExifIFD:DateTimeOriginal": "9999:12:31 23:00:00", "ExifIFD:OffsetTimeOriginal": "-05:00", "IFD0:ImageWidth": -4}}
+        report = self.run_index(read=lambda paths: described(paths, poison))
+        self.assertEqual((report.new, report.failed), (3, 0))
+        bad, late = self.items()["jo/originals/poison.jpg"], self.items()["jo/originals/z.jpg"]
+        self.assertEqual((bad.width, bad.height, bad.duration_ms, bad.captured_utc, bad.time_source, bad.lat, bad.gps_source),
+                         (None, None, None, None, "unknown", None, "none"))
+        self.assertEqual(bad.captured_local, "0001-01-01T00:00:00")
+        self.assertEqual((late.captured_utc, late.time_source, late.width), (None, "unknown", None))
+
+    def test_a_file_that_makes_exiftool_fail_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        poison = fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        calls = []
+
+        def chokes(paths):
+            calls.append([path.name for path in paths])
+            if poison in paths:
+                raise exiftool.Unreadable("exiftool took too long to read the files")
+            return described(paths)
+
+        report = self.run_index(read=chokes)
+        self.assertEqual((report.new, report.failed, report.skipped), (2, 1, 0))
+        self.assertEqual(sorted(self.items()), ["jo/originals/a.jpg", "jo/originals/z.jpg"])
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNREADABLE})
+        self.assertEqual(self.failure_details(), [f"{index.UNREADABLE}, {index.SKIP_NOTE}"])
+        self.assertEqual(calls, [["a.jpg", "poison.jpg", "z.jpg"], ["a.jpg"], ["poison.jpg"], ["z.jpg"]])
+
+        fixtures.make_jpeg(self.originals / "b.jpg", colour=(1, 1, 90))
+        calls.clear()
+        report = self.run_index(now=200.0, read=chokes)
+        self.assertEqual((report.new, report.unchanged, report.failed, report.skipped), (1, 2, 0, 1))
+        self.assertEqual(calls, [["b.jpg"]])
+        self.assertEqual(len(self.failure_details()), 1)
+
+        os.utime(poison, (1_900_000_000, 1_900_000_000))
+        report = self.run_index(now=300.0, read=described)
+        self.assertEqual((report.new, report.skipped), (1, 0))
+        self.assertIn("jo/originals/poison.jpg", self.items())
+        self.assertEqual(self.skips(), {})
+
+    def test_exiftool_failing_on_every_file_sets_nothing_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "b.jpg", colour=(9, 9, 9))
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed")
+
+        report = self.run_index(read=dies)
+        self.assertEqual((report.new, report.failed, report.skipped), (0, 2, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 2)
+
+    def test_a_file_whose_decoding_raises_anything_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        real = media.fingerprint
+
+        def fingerprint(path, tags):
+            if path.name == "poison.jpg":
+                raise RuntimeError("the decoder gave up")
+            return real(path, tags)
+
+        with mock.patch.object(media, "fingerprint", fingerprint):
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.failed), (2, 1))
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNUSABLE})
+        with mock.patch.object(media, "fingerprint", side_effect=AssertionError("a set-aside file was read again")):
+            self.assertEqual(self.run_index(now=200.0, read=described).skipped, 1)
+
+    def test_a_file_that_is_not_media_is_set_aside_until_it_changes(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        report = self.run_index()
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {"jo/originals/notes.jpg": index.NOT_MEDIA})
+        report = self.run_index(now=200.0, read=lambda paths: self.fail("exiftool was run for a set-aside file that did not change"))
+        self.assertEqual((report.failed, report.skipped), (0, 1))
+
+    def test_a_file_exiftool_says_nothing_about_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "silent.jpg", colour=(9, 9, 9))
+        report = self.run_index(read=lambda paths: described([path for path in paths if path.name != "silent.jpg"]))
+        self.assertEqual((report.new, report.failed), (1, 1))
+        self.assertEqual(self.skips(), {"jo/originals/silent.jpg": index.NO_METADATA})
+
+    def test_a_set_aside_file_that_is_gone_is_forgotten(self):
+        notes = self.originals / "notes.jpg"
+        notes.write_bytes(b"not a picture")
+        self.run_index()
+        notes.unlink()
+        self.run_index(now=200.0)
+        self.assertEqual(self.skips(), {})
+
+    def test_a_file_that_vanishes_while_it_is_read_is_retried_next_time_not_set_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        with mock.patch.object(media, "sha1_of", side_effect=FileNotFoundError("gone")):
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 1)
+
+    def test_setting_files_aside_never_writes_under_originals(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_pixel_bomb(self.originals / "bomb.png")
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        before = listing(self.root / "jo")
+        self.run_index()
+        self.run_index(now=200.0)
+        self.assertEqual(listing(self.root / "jo"), before)
+
+    def test_index_file_sets_a_poison_file_aside_too(self):
+        poison = fixtures.make_jpeg(self.originals / "poison.jpg")
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            with mock.patch.object(media, "fingerprint", side_effect=OverflowError("too big")):
+                report = index.index_file(opened, self.photos, person, poison, 1.0, described)
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNUSABLE})
 
 
 if __name__ == "__main__":

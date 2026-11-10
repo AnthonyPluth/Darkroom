@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
@@ -19,6 +20,8 @@ DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)
 OFFSET = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
 PHASH_SIZE = 8
 DHASH_SIZE = 8
+MAX_PIXELS = 120_000_000
+MAX_STORED_INT = 2**31 - 1
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
 
 
@@ -69,7 +72,11 @@ def tag(tags: dict[str, object], *names: str) -> object | None:
 def number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value)
+    try:
+        found = float(value)
+    except OverflowError:
+        return None
+    return found if math.isfinite(found) else None
 
 
 def text(value: object) -> str | None:
@@ -121,16 +128,27 @@ def capture(tags: dict[str, object], lat: float | None, lon: float | None) -> tu
         separate = tag(tags, "OffsetTimeOriginal", "OffsetTimeDigitized", "OffsetTime")
         offset = parse_offset(str(separate)) if separate is not None else None
     if offset is not None:
-        return local_to_utc(local, offset) + seconds_fraction(tags), local_text, offset, "exif_offset"
+        utc = utc_or_none(local, offset)
+        if utc is not None:
+            return utc + seconds_fraction(tags), local_text, offset, "exif_offset"
+        return None, local_text, None, "unknown"
     if lat is not None and lon is not None:
         looked_up = timezones.offset_minutes(lat, lon, local)
-        if looked_up is not None:
-            return local_to_utc(local, looked_up) + seconds_fraction(tags), local_text, looked_up, "gps_lookup"
+        utc = None if looked_up is None else utc_or_none(local, looked_up)
+        if utc is not None:
+            return utc + seconds_fraction(tags), local_text, looked_up, "gps_lookup"
     return None, local_text, None, "unknown"
 
 
 def local_to_utc(local: datetime, offset_minutes: int) -> float:
     return local.replace(tzinfo=timezone(timedelta(minutes=offset_minutes))).astimezone(UTC).timestamp()
+
+
+def utc_or_none(local: datetime, offset_minutes: int) -> float | None:
+    try:
+        return local_to_utc(local, offset_minutes)
+    except (OverflowError, ValueError):
+        return None
 
 
 def signed(tags: dict[str, object], name: str, negative: str) -> float | None:
@@ -156,14 +174,22 @@ def perceptual_hashes(path: Path) -> PerceptualHashes:
         return PerceptualHashes(None, None)
     try:
         with Image.open(path) as image:
+            width, height = image.size
+            if width * height > MAX_PIXELS:
+                return PerceptualHashes(None, None)
             return PerceptualHashes(str(imagehash.phash(image, hash_size=PHASH_SIZE)), str(imagehash.dhash(image, hash_size=DHASH_SIZE)))
-    except (UnidentifiedImageError, OSError, ValueError):
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         return PerceptualHashes(None, None)
 
 
+def stored_int(value: float | None) -> int | None:
+    if value is None or not 0 <= value <= MAX_STORED_INT:
+        return None
+    return round(value)
+
+
 def dimension(tags: dict[str, object], *names: str) -> int | None:
-    value = number(tag(tags, *names))
-    return None if value is None else int(value)
+    return stored_int(number(tag(tags, *names)))
 
 
 def fingerprint(path: Path, tags: dict[str, object]) -> Fingerprint:
@@ -176,7 +202,7 @@ def fingerprint(path: Path, tags: dict[str, object]) -> Fingerprint:
         sha1=digest, bytes=size, phash=hashes.phash, dhash=hashes.dhash,
         width=dimension(tags, "ImageWidth", "ExifImageWidth", "SourceImageWidth"),
         height=dimension(tags, "ImageHeight", "ExifImageHeight", "SourceImageHeight"),
-        duration_ms=None if duration is None else round(duration * 1000),
+        duration_ms=None if duration is None else stored_int(duration * 1000),
         make=text(tag(tags, "Make")), model=text(tag(tags, "Model")),
         captured_utc=utc, captured_local=local, offset_minutes=offset, time_source=time_source,
         lat=lat, lon=lon, gps_source=gps_source,

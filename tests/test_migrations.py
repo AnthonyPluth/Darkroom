@@ -214,6 +214,33 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(inspect(connection).get_indexes(table), before_indexes[table])
         db.migrate(self.engine)
 
+    def test_0029_index_skips_adds_an_empty_table_keeps_media_items_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0028")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 'phone', 'jo/originals/generated.jpg', 'ab', 7, 1.0)")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all() for table in ("people", "media_items")}
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM index_skips").scalar(), 0)
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            connection.execute(text("INSERT INTO index_skips (person_id, path, bytes, mtime, reason, skipped_at) VALUES (1, 'jo/originals/x.jpg', :bytes, 2.5, 'r', 3.0)"),
+                               {"bytes": 5 * 1024 ** 4})
+            self.assertEqual(connection.exec_driver_sql("SELECT bytes FROM index_skips").scalar(), 5 * 1024 ** 4)
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO index_skips (person_id, path, bytes, mtime, reason, skipped_at) VALUES (1, 'jo/originals/x.jpg', 1, 2.5, 'r', 3.0)")
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0028")
+        self.assertNotIn("index_skips", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+        db.migrate(self.engine)
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)
