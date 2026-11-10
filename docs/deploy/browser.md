@@ -4,7 +4,7 @@ The `darkroom-browser` container is a stateless executor: `darkroom` owns the jo
 
 ## What runs inside
 
-`deploy/browser/entrypoint.sh` starts, in order: Xvfb on `DISPLAY` (`:99`), x11vnc on `VNC_PORT` (5900) with no password, websockify + noVNC on `NOVNC_PORT` (6080), then `python -m darkroom_browser`. Chromium is launched by Playwright only while a job runs and exits with it, so the container idles between jobs. The image is `mcr.microsoft.com/playwright/python` pinned to one Playwright release; that image carries the browsers and their system libraries, not the Python package, so the build installs `playwright` (with `greenlet` and `pyee`) from `deploy/browser/requirements.txt`, pinned to the same release with `--require-hashes` (x86_64 and aarch64 wheels), and then imports it and checks the version. `tests/browser/test_image.py` fails when the image tag and the pip pin drift apart. To move to a new Playwright release, change both, refresh the hashes from PyPI, and re-run the noop job: its result carries the installed `playwright` version. The container runs as the non-root user `darkroom-browser` (uid 99, gid 100 by default), drops every capability and sets `no-new-privileges`.
+`deploy/browser/entrypoint.sh` starts, in order: Xvfb on `DISPLAY` (`:99`), x11vnc on `VNC_PORT` (5900) on the container's loopback only (`-localhost`, no VNC password), websockify + noVNC on `NOVNC_PORT` (6080), which answers every request, the noVNC page and the WebSocket alike, only with the viewer secret (below), then `python -m darkroom_browser`. Chromium is launched by Playwright only while a job runs and exits with it, so the container idles between jobs. The image is `mcr.microsoft.com/playwright/python` pinned to one Playwright release; that image carries the browsers and their system libraries, not the Python package, so the build installs `playwright` (with `greenlet` and `pyee`) from `deploy/browser/requirements.txt`, pinned to the same release with `--require-hashes` (x86_64 and aarch64 wheels), and then imports it and checks the version. `tests/browser/test_image.py` fails when the image tag and the pip pin drift apart. To move to a new Playwright release, change both, refresh the hashes from PyPI, and re-run the noop job: its result carries the installed `playwright` version. The container runs as the non-root user `darkroom-browser` (uid 99, gid 100 by default), drops every capability and sets `no-new-privileges`.
 
 ## Google Chrome, and what it does and does not fix
 
@@ -31,6 +31,7 @@ Chrome makes the amd64 image larger (a few hundred MB; not measured here, so che
 | `POLL_SECONDS` | browser | How often an idle worker asks for a job (15). |
 | `BROWSER_CHANNEL` | browser | `chrome` (default): Google Chrome when the image has it; `chromium`: always the bundled Chromium. |
 | `DISPLAY` | browser | The Xvfb display (`:99`). |
+| `DARKROOM_VNC_SECRET` | browser | The viewer secret, at least 32 printable ASCII characters (`openssl rand -hex 32`). websockify on 6080 accepts a request only with `Authorization: Basic` for `darkroom:<secret>`, which the Traefik route adds (Network, below); the person signing in never types it. Unset, short or not printable, the worker logs `viewer locked` and the viewer refuses everyone with a secret generated at each start and kept nowhere, while jobs still run. The worker itself never sees it (the entrypoint unsets it before starting Python). Rotate it like the browser token: change `.env` and the Traefik label, then recreate the container. |
 | `VNC_URL` | darkroom | The address a person opens to see the browser (the Traefik route below). It goes into the "Google sign-in needed" alert. |
 
 ## Chromium sandbox: seccomp instead of `--no-sandbox`
@@ -53,7 +54,9 @@ For `profile_in_use`, stop every worker that can open that account's profile. Ba
 
 ## Network
 
-Neither 5900 nor 6080 is published to the host. The worker and the VNC endpoints are reachable only on the compose network (`darkroom`, Traefik). Point a Traefik router at `darkroom-browser:6080` behind the same Pocket ID (OIDC) forward-auth middleware the `darkroom` service uses, on a hostname such as `browser.<your-domain>`, and set `VNC_URL=https://browser.<your-domain>/vnc.html?autoconnect=1&resize=scale`. As a Docker label on the browser service:
+Neither 5900 nor 6080 is published to the host. x11vnc listens on the browser container's own loopback, so 5900 is reachable only from inside that container (websockify reaches it at `127.0.0.1:5900`); the image and compose expose only 6080. 6080 is on the compose network (`darkroom`, Traefik), and any container there can connect to it, so websockify refuses a request without the viewer secret: only the Traefik route, which adds it after the forward-auth sign-in, gets through. A container that reaches `darkroom-browser:6080` directly, without going through the sign-in, gets a 401.
+
+Point a Traefik router at `darkroom-browser:6080` behind the same Pocket ID (OIDC) forward-auth middleware the `darkroom` service uses, on a hostname such as `browser.<your-domain>`, followed by a `headers` middleware that adds the viewer secret, and set `VNC_URL=https://browser.<your-domain>/vnc.html?autoconnect=1&resize=scale`. Traefik runs the middlewares in the order listed, so the secret is added only to a request that has passed the sign-in. Work out the header's value once with `printf 'darkroom:%s' "$DARKROOM_VNC_SECRET" | base64 -w0` and put it after `Basic `. As Docker labels on the browser service:
 
 ```yaml
 labels:
@@ -61,11 +64,16 @@ labels:
   traefik.http.routers.darkroom-browser.rule: Host(`browser.example.internal`)
   traefik.http.routers.darkroom-browser.entrypoints: websecure
   traefik.http.routers.darkroom-browser.tls: "true"
-  traefik.http.routers.darkroom-browser.middlewares: pocket-id-auth@file
+  traefik.http.routers.darkroom-browser.middlewares: pocket-id-auth@file,darkroom-viewer-secret
+  traefik.http.middlewares.darkroom-viewer-secret.headers.customrequestheaders.Authorization: "Basic <base64 of darkroom:secret>"
   traefik.http.services.darkroom-browser.loadbalancer.server.port: "6080"
 ```
 
-The route is internal-only (reached over the LAN or Tailscale, like `darkroom` itself). Anyone who gets through the middleware can drive the browser, which is signed in to the household's Google accounts: do not relax the middleware for this route, and do not expose the VNC port.
+The label holds the secret, so anyone who can read the container's labels can reach the viewer; that is anyone with access to the Docker socket, who can already control both containers. If the browser asks for a username and password on the viewer, the `headers` middleware is missing or its value is wrong: fix the label rather than typing the secret.
+
+The route is internal-only (reached over the LAN or Tailscale, like `darkroom` itself). Anyone who gets through the middleware can drive the browser, which is signed in to the household's Google accounts: do not relax the middleware for this route, do not expose either port, and do not put the secret in `VNC_URL` (it goes into alerts).
+
+Why a secret the route sends rather than a socket: in the two-container layout Traefik reaches the viewer over the compose network, so 6080 cannot be loopback-only or a Unix socket, and a secret generated at each start could not be given to Traefik. x11vnc, which only websockify needs, is loopback-only already. The proposed single-container design (#285, step C7a) moves these listeners to Unix sockets behind the app's own viewer relay; nothing here stands in its way (websockify can already connect to x11vnc over a Unix socket with `--unix-target`).
 
 ## Volumes
 

@@ -37,7 +37,7 @@ The browser worker is the fragile part; everything after the inbox works without
 
 Alert "Google sign-in needed" (or "Wrong Google account"). The worker never types a password or a 2FA code; it stops and waits.
 
-1. Open the link in the alert (the `VNC_URL` browser view, behind the same sign-in as Darkroom).
+1. Open the link in the alert (the `VNC_URL` browser view, behind the same sign-in as Darkroom). If the viewer asks for a username and password, or shows 401, the route is not sending the viewer secret: `docker logs darkroom-browser` shows `viewer locked` when `DARKROOM_VNC_SECRET` is unset or too short; otherwise check the Traefik `headers` label (see "Network" in [deploy/browser.md](deploy/browser.md)). Don't type the secret into the prompt.
 2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page (a page the worker does not recognise for more than 5 minutes fails the job).
 3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes.
 
