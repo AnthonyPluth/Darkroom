@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events, media, pixel_folder
@@ -379,6 +379,13 @@ def confirming(opened: Session, item_id: int, person_id: int) -> bool:
     ).scalars())
     serving = accounts.served_people_of(opened, accounts_found)
     return any(person_id in people for people in serving.values())
+
+
+def forget_confirmation(opened: Session, item: MediaItem) -> None:
+    db.write_lock(opened)
+    opened.execute(update(DedupeDecision).where(DedupeDecision.matched_item_id == item.id).values(matched_item_id=None))
+    item.confirmed_in_google = item.source == "phone" and confirming(opened, item.id, item.person_id)
+    opened.flush()
 
 
 def confirm_newly_served(opened: Session, account_id: int, before: set[int]) -> None:

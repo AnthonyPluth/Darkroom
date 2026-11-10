@@ -658,6 +658,17 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(self.run_index(now=200.0).changed, 1)
         self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
 
+    def test_dedupe_forget_confirmation_detaches_the_matches_and_keeps_the_decisions(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        with db.session(self.engine) as opened:
+            dedupe.forget_confirmation(opened, opened.get(MediaItem, ids[2]))
+        self.assertEqual(self.state(*ids)[:3], (False, set(), False))
+        self.assertEqual(self.linked(ids[2]), 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual([(row.tier, row.reversed_at) for row in opened.query(DedupeDecision)], [(1, None)])
+
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
         original = photo.read_bytes()
