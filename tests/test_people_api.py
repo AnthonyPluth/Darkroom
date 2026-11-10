@@ -372,6 +372,58 @@ class LinkedInboxTests(ApiCase):
                 self.assertFalse((self.photos / "sam").exists())
                 self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
 
+    def planted_while_made(self, plant, message):
+        self.cleared_inbox()
+        target = self.photos / "jo-example" / "originals"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "keep.jpg").write_bytes(b"photo")
+        real = paths.make_inbox_folder
+
+        def planting(name, folder, spelled):
+            if spelled.name == "sam" and spelled.parent.name == "_inbox":
+                plant(spelled, target)
+            return real(name, folder, spelled)
+
+        with mock.patch.object(paths, "make_inbox_folder", planting):
+            status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+        self.assertEqual(status, 409)
+        self.assertIn(message, reply["error"])
+        self.assertEqual(sorted(p.name for p in target.iterdir()), ["keep.jpg"])
+        self.assertEqual((target / "keep.jpg").read_bytes(), b"photo")
+        self.assertFalse((self.photos / "sam").exists())
+        self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
+    def test_a_folder_that_appears_where_the_persons_inbox_goes_is_never_reused(self):
+        def folder(spelled, target):
+            spelled.mkdir()
+            (spelled / "theirs.txt").write_bytes(b"theirs")
+
+        self.planted_while_made(folder, "appeared on disk")
+        self.assertEqual([p.name for p in (self.photos / "_inbox/sam").iterdir()], ["theirs.txt"])
+
+    def test_a_file_that_appears_where_the_persons_inbox_goes_answers_409(self):
+        self.planted_while_made(lambda spelled, target: spelled.write_bytes(b"theirs"), "appeared on disk")
+        self.assertEqual((self.photos / "_inbox/sam").read_bytes(), b"theirs")
+
+    def test_a_link_that_appears_where_the_persons_inbox_goes_answers_409(self):
+        self.planted_while_made(lambda spelled, target: spelled.symlink_to(target, target_is_directory=True), "_inbox folder is a link")
+
+    def test_a_folder_that_appears_after_the_check_and_before_any_folder_is_made_is_never_reused(self):
+        self.cleared_inbox()
+        real = paths.make_inbox_tree
+
+        def appearing(photos, path, made, fresh=False):
+            (photos.root / "_inbox/sam").mkdir(parents=True, exist_ok=True)
+            return real(photos, path, made, fresh)
+
+        with mock.patch.object(paths, "make_inbox_tree", appearing):
+            status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+        self.assertEqual(status, 409)
+        self.assertIn("appeared on disk", reply["error"])
+        self.assertEqual(list((self.photos / "_inbox/sam").iterdir()), [])
+        self.assertFalse((self.photos / "sam").exists())
+        self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
     def test_a_person_folder_swapped_for_a_link_while_it_is_made_answers_409(self):
         self.cleared_inbox()
         target = self.photos / "jo-example" / "originals"
@@ -399,7 +451,7 @@ class LinkedInboxTests(ApiCase):
             with self.subTest(linked=linked):
                 inbox = self.cleared_inbox()
 
-                def racing(photos, slug, linked=linked, inbox=inbox):
+                def racing(photos, slug, fresh=False, linked=linked, inbox=inbox):
                     if linked:
                         inbox.symlink_to(inbox)
                     raise FileExistsError(errno.EEXIST, "exists", str(inbox))

@@ -257,7 +257,7 @@ class Photos:
                 raise NotInTheInbox("originals and google-only folders are never removed")
         return resolved
 
-    def ensure_person_tree(self, person: str) -> list[Path]:
+    def ensure_person_tree(self, person: str, fresh: bool = False) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
         made: list[Path] = []
         try:
@@ -271,7 +271,7 @@ class Photos:
                     path.mkdir()
                     made.append(path)
             for folder in folders[2:]:
-                make_inbox_tree(self, folder, made)
+                make_inbox_tree(self, folder, made, fresh)
         except (OSError, OutsideRoot):
             for path in reversed(made):
                 with contextlib.suppress(OSError, OutsideRoot):
@@ -1723,15 +1723,27 @@ def share_open_folder(folder: int) -> None:
         os.fchmod(folder, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the configured shared inbox group needs rwx, others get nothing
 
 
-def make_inbox_tree(photos: Photos, path: Path, made: list[Path]) -> None:
+def taken(spelled: Path) -> FileExistsError:
+    return FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(spelled))
+
+
+def make_inbox_tree(photos: Photos, path: Path, made: list[Path], fresh: bool = False) -> None:
     parts = inbox_parts(photos, path)
     with contextlib.ExitStack() as stack:
         folder = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
         stack.callback(os.close, folder)
         spelled = photos.root
-        for part in parts:
+        for index, part in enumerate(parts):
             spelled = spelled / part
-            new = make_inbox_folder(part, folder, spelled)
+            shared_top = index == 0
+            if entry_at(part, folder) is None:
+                new = make_inbox_folder(part, folder, spelled)
+                if not new and not shared_top:
+                    raise taken(spelled)
+            elif fresh and not shared_top and spelled not in made:
+                raise taken(spelled)
+            else:
+                new = False
             if new:
                 made.append(spelled)
             folder = open_made_folder(part, folder, spelled)

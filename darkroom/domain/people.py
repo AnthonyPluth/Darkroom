@@ -101,7 +101,7 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
     opened.add(person)
     opened.flush()
     try:
-        photos.ensure_person_tree(slug)
+        photos.ensure_person_tree(slug, fresh=True)
     except OutsideRoot as error:
         raise LinkedInbox(LINKED_INBOX) from error
     except FileExistsError as error:
