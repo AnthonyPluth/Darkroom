@@ -318,6 +318,15 @@ The #259 replacement promises are compatible: this design gives Syncthing no acc
 | 11 | Deep scan #54 | Let it finish; scoped re-scans after the browser phase and after the Syncthing phase, each before that phase is deployed; an open HIGH or CRITICAL blocks that deploy | Section 5 |
 | 12 | How long does the separate browser container stay supported, and does it get the zero-config pairing file? | One minor release after the one container is the default, configured as today, with no pairing file built unless S1 fails | It keeps a working rollback without building something meant to be thrown away |
 
+### Known gaps
+
+Raised in review of this document and recorded here rather than designed; each is settled in the issue for the step it names, before that step starts.
+
+| Gap | Recommendation |
+| --- | --- |
+| Step order of C3 and C3a: as listed, the reconciler (C3) could share a restored folder before the placed-copy check (C3a) exists | Make C3a a prerequisite: land it before C3, or in the same step, so no build can share a folder without the check |
+| Adopting an unaccounted file that matches a `queued` row (section 9) sets no placement time, and `confirms_copy` reads a missing `placed_at` as "any earlier Takeout match counts", so an adopted always-send copy could be pruned on a match from before it was placed | On adoption record the time of adoption as the placement cutoff (the conservative choice), and add the always-send, older-database test to C3a |
+
 ## 12. Spikes
 
 Each is a `manual` or `spike` issue whose result is written up under `docs/spikes/` with versions, commands and observations, and no credential, real device ID, address or file name.
