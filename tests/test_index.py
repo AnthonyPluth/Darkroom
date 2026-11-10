@@ -6,11 +6,11 @@ from unittest import mock
 
 from sqlalchemy import delete
 
-from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder
+from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder, review, takeout_copies
 from darkroom.domain.ingest import run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, IndexSkip, MediaItem, Person
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -668,6 +668,26 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(self.linked(ids[2]), 0)
         with db.session(self.engine) as opened:
             self.assertEqual([(row.tier, row.reversed_at) for row in opened.query(DedupeDecision)], [(1, None)])
+
+    def test_a_set_aside_original_is_not_listed_as_missing_gps_queued_for_a_pixel_or_paired(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "immich" / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            item = opened.query(MediaItem).one()
+            opened.add(ImmichAsset(person_id=person.id, asset_id="asset-a", kind="photo", status="stored", sha1=item.sha1, seen_at=1.0, original_item_id=item.id))
+            opened.flush()
+            self.assertEqual(review.missing_gps(opened, None, None, None, 0)[1], 1)
+            self.assertEqual(set(takeout_copies.immich_originals(opened, person)), {item.id})
+            pixel_folder.queue(opened, item, 1.0)
+        photo.write_bytes(b"not a picture any more")
+        self.assertEqual(self.run_index(now=200.0).set_aside, 1)
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            self.assertEqual(review.missing_gps(opened, None, None, None, 0), ([], 0))
+            self.assertEqual(takeout_copies.immich_originals(opened, person), {})
+            with self.assertRaises(pixel_folder.NotInOriginals):
+                pixel_folder.queue(opened, opened.query(MediaItem).one(), 2.0)
 
     def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
         photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")

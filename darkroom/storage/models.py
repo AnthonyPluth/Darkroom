@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ColumnElement, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -267,6 +267,13 @@ class MediaItem(Base):
     sidecar_json: Mapped[str | None] = mapped_column(Text)
     export_id: Mapped[int | None] = mapped_column(ForeignKey("exports.id", ondelete="SET NULL"))
     indexed_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+UNKNOWN_SHA1 = ""
+
+
+def known_contents() -> ColumnElement[bool]:
+    return MediaItem.sha1 != UNKNOWN_SHA1
 
 
 class LegacyFile(Base):

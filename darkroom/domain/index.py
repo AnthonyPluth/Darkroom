@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import dedupe, events, media
 from darkroom.providers import exiftool
-from darkroom.storage import db
+from darkroom.storage import db, models
 from darkroom.storage.models import IndexSkip, MediaItem, Person
 from darkroom.storage.paths import OutsideRoot, Photos
 
@@ -26,7 +26,7 @@ NOT_MEDIA = "not a photo or video"
 UNUSABLE = "its metadata could not be used"
 SKIP_NOTE = "set aside and tried again in a day or when the file changes"
 RETRY_SET_ASIDE_SECONDS = 86400.0
-UNKNOWN_SHA1 = ""
+UNKNOWN_SHA1 = models.UNKNOWN_SHA1
 ISOLATION_SECONDS = 300.0
 
 
@@ -358,7 +358,7 @@ def skipped_by_person(opened: Session) -> dict[int, int]:
 
 
 def counts_by_person(opened: Session) -> list[tuple[str, str, int]]:
-    phone = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & (MediaItem.sha1 != UNKNOWN_SHA1)
+    phone = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & models.known_contents()
     query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone)
              .group_by(Person.id, Person.slug, Person.name).order_by(Person.id))
     return [(slug, name, int(count)) for slug, name, count in opened.execute(query).all()]
