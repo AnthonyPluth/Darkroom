@@ -92,20 +92,50 @@ class FailedTreeTests(unittest.TestCase):
         self.assertFalse((self.root / "jo" / "google-only").exists())
 
     def test_it_never_removes_a_folder_that_holds_something(self):
-        real = Path.mkdir
+        real = paths.make_inbox_folder
         calls = []
 
-        def failing(path, *args, **kwargs):
-            calls.append(path)
-            if path.name == "manual":
+        def failing(name, folder, spelled):
+            calls.append(spelled)
+            if spelled.name == "manual":
                 (self.root / "jo" / "google-only" / "late.txt").write_bytes(b"x")
                 raise PermissionError("no")
-            return real(path, *args, **kwargs)
+            return real(name, folder, spelled)
 
-        with mock.patch.object(Path, "mkdir", failing), self.assertRaises(PermissionError):
+        with mock.patch.object(paths, "make_inbox_folder", failing), self.assertRaises(PermissionError):
             self.photos.ensure_person_tree("jo")
         self.assertEqual((self.root / "jo" / "google-only" / "late.txt").read_bytes(), b"x")
         self.assertFalse((self.root / "jo" / "originals").exists())
+
+    def test_the_inbox_folders_made_before_a_failure_are_removed_too(self):
+        real = paths.make_inbox_folder
+
+        def failing(name, folder, spelled):
+            if spelled.name == "manual":
+                raise PermissionError(13, "denied", str(spelled))
+            return real(name, folder, spelled)
+
+        with mock.patch.object(paths, "make_inbox_folder", failing), self.assertRaises(PermissionError):
+            self.photos.ensure_person_tree("jo")
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), [])
+
+    def test_a_person_folder_in_the_inbox_swapped_for_a_link_while_it_is_made_is_never_entered(self):
+        outside = self.root / "sam" / "originals"
+        outside.mkdir(parents=True)
+        (outside / "keep.jpg").write_bytes(b"photo")
+        real = paths.make_inbox_folder
+
+        def swapping(name, folder, spelled):
+            made = real(name, folder, spelled)
+            if spelled.name == "jo" and spelled.parent.name == "_inbox":
+                os.rmdir(name, dir_fd=folder)
+                os.symlink(outside, name, dir_fd=folder)
+            return made
+
+        with mock.patch.object(paths, "make_inbox_folder", swapping), self.assertRaises(paths.LinkRefused):
+            self.photos.ensure_person_tree("jo")
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["keep.jpg"])
+        self.assertFalse((self.root / "jo").exists())
 
     def test_a_retry_after_the_blocker_is_gone_works(self):
         (self.root / "_inbox").write_bytes(b"in the way")
@@ -998,6 +1028,23 @@ class InboxLinkTests(unittest.TestCase):
         with paths.open_import_part(self.photos, self.export / "part.zip") as handle:
             self.assertEqual(handle.read(), b"zip")
         self.assertEqual(paths.plain_sha1(elsewhere / "part.zip"), paths.inbox_sha1(self.photos, self.export / "part.zip"))
+
+    def test_a_listing_skips_what_vanishes_while_it_runs(self):
+        manual = self.root / "_inbox/jo/manual"
+        (manual / "kept").mkdir()
+        (manual / "kept/a.zip").write_bytes(b"zip")
+        (manual / "gone").mkdir()
+        (manual / "b.zip").write_bytes(b"zip")
+        real = paths.inbox_child
+
+        def vanishing(name, folder, create):
+            if name == "gone":
+                raise FileNotFoundError(2, "gone")
+            return real(name, folder, create)
+
+        with mock.patch.object(paths, "inbox_child", vanishing):
+            self.assertEqual(paths.inbox_files(self.photos, manual, ".zip"), [manual / "b.zip", manual / "kept/a.zip"])
+        self.assertEqual(paths.inbox_files(self.photos, self.root / "_inbox/jo/missing", ".zip"), [])
 
     def test_a_listing_keeps_only_plain_files(self):
         (self.export / "a.jpg").write_bytes(b"a")

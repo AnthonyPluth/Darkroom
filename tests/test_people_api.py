@@ -9,7 +9,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.storage import db, secretbox
+from darkroom.storage import db, paths, secretbox
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person
 from tests.api_world import SECRET_KEY, ApiCase
 from tests.privacy import no_leaks
@@ -188,15 +188,15 @@ class FolderFailureTests(ApiCase):
     NAME = "Canary Person Name"
 
     def fail_with(self, code):
-        real = Path.mkdir
+        real = paths.make_inbox_folder
 
-        def failing(path, *args, **kwargs):
-            if path.name == "manual":
-                raise OSError(code, os.strerror(code), str(path.parent.parent))
-            return real(path, *args, **kwargs)
+        def failing(name, folder, spelled):
+            if spelled.name == "manual":
+                raise OSError(code, os.strerror(code), str(spelled.parent.parent))
+            return real(name, folder, spelled)
 
         before = sorted(str(p.relative_to(self.photos)) for p in self.photos.rglob("*"))
-        with mock.patch.object(Path, "mkdir", failing), no_leaks(self, self.NAME, str(self.photos), database=self.engine, replies=self.replies) as watched:
+        with mock.patch.object(paths, "make_inbox_folder", failing), no_leaks(self, self.NAME, str(self.photos), database=self.engine, replies=self.replies) as watched:
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 status, reply = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
@@ -238,22 +238,22 @@ class FolderFailureTests(ApiCase):
         self.check(errno.EIO, "EIO", "see the Darkroom server log for the cause")
 
     def test_the_log_holds_the_folder_relative_to_the_share(self):
-        real = Path.mkdir
+        real = paths.make_inbox_folder
 
-        def failing(path, *args, **kwargs):
-            if path.name == "cpn1" and path.parent.name == "_inbox":
-                raise PermissionError(errno.EACCES, "denied", str(path))
-            return real(path, *args, **kwargs)
+        def failing(name, folder, spelled):
+            if spelled.name == "cpn1" and spelled.parent.name == "_inbox":
+                raise PermissionError(errno.EACCES, "denied", str(spelled))
+            return real(name, folder, spelled)
 
         err = io.StringIO()
-        with mock.patch.object(Path, "mkdir", failing), contextlib.redirect_stderr(err):
+        with mock.patch.object(paths, "make_inbox_folder", failing), contextlib.redirect_stderr(err):
             status, _ = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
         self.assertEqual(status, 500)
         self.assertEqual(self.folder_line(err.getvalue())["folder"], "_inbox/cpn1")
         self.assertFalse((self.photos / "cpn1").exists())
 
     def test_a_failure_deeper_than_the_persons_folder_logs_only_the_persons_folder(self):
-        real = Path.mkdir
+        real, real_inbox = Path.mkdir, paths.make_inbox_folder
         cases = {"originals": "cpn1", "google-only": "cpn1", "manual": "_inbox/cpn1"}
         for leaf, expected in cases.items():
             def failing(path, *args, _leaf=leaf, **kwargs):
@@ -261,8 +261,14 @@ class FolderFailureTests(ApiCase):
                     raise PermissionError(errno.EACCES, "denied", str(path))
                 return real(path, *args, **kwargs)
 
+            def failing_inbox(name, folder, spelled, _leaf=leaf):
+                if spelled.name == _leaf:
+                    raise PermissionError(errno.EACCES, "denied", str(spelled))
+                return real_inbox(name, folder, spelled)
+
             err = io.StringIO()
-            with mock.patch.object(Path, "mkdir", failing), contextlib.redirect_stderr(err):
+            with mock.patch.object(Path, "mkdir", failing), mock.patch.object(paths, "make_inbox_folder", failing_inbox), \
+                    contextlib.redirect_stderr(err):
                 status, _ = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
             self.assertEqual(status, 500)
             line = self.folder_line(err.getvalue())
@@ -272,18 +278,18 @@ class FolderFailureTests(ApiCase):
             self.assertFalse((self.photos / "cpn1").exists())
 
     def test_a_failed_rollback_leaves_the_folder_and_a_retry_is_refused_as_in_use(self):
-        real = Path.mkdir
+        real = paths.make_inbox_folder
 
-        def failing(path, *args, **kwargs):
-            if path.name == "manual":
-                raise PermissionError(errno.EACCES, "denied", str(path))
-            return real(path, *args, **kwargs)
+        def failing(name, folder, spelled):
+            if spelled.name == "manual":
+                raise PermissionError(errno.EACCES, "denied", str(spelled))
+            return real(name, folder, spelled)
 
         def stuck(path):
             raise OSError(errno.EROFS, "read-only", str(path))
 
         err = io.StringIO()
-        with mock.patch.object(Path, "mkdir", failing), mock.patch.object(Path, "rmdir", stuck), contextlib.redirect_stderr(err):
+        with mock.patch.object(paths, "make_inbox_folder", failing), mock.patch.object(Path, "rmdir", stuck), contextlib.redirect_stderr(err):
             status, reply = self.call("POST", "/api/people", {"name": self.NAME, "slug": "cpn1"})
         self.assertEqual(status, 500)
         self.assertTrue(reply["error"].startswith("Darkroom could not create the person's folders: Darkroom cannot write to its photo share (permission denied)"))
@@ -365,6 +371,28 @@ class LinkedInboxTests(ApiCase):
                 self.assertIn("_inbox folder is a link", reply["error"])
                 self.assertFalse((self.photos / "sam").exists())
                 self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
+    def test_a_person_folder_swapped_for_a_link_while_it_is_made_answers_409(self):
+        self.cleared_inbox()
+        target = self.photos / "jo-example" / "originals"
+        target.mkdir(parents=True)
+        (target / "keep.jpg").write_bytes(b"photo")
+        real = paths.make_inbox_folder
+
+        def swapping(name, folder, spelled):
+            made = real(name, folder, spelled)
+            if spelled.name == "sam" and spelled.parent.name == "_inbox":
+                os.rmdir(name, dir_fd=folder)
+                os.symlink(target, name, dir_fd=folder)
+            return made
+
+        with mock.patch.object(paths, "make_inbox_folder", swapping):
+            status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+        self.assertEqual(status, 409)
+        self.assertIn("_inbox folder is a link", reply["error"])
+        self.assertEqual(sorted(p.name for p in target.iterdir()), ["keep.jpg"])
+        self.assertFalse((self.photos / "sam").exists())
+        self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
 
     def test_a_link_or_folder_that_appears_while_the_person_is_added_answers_409(self):
         for linked in (True, False):

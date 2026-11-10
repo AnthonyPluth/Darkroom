@@ -261,7 +261,7 @@ class Photos:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
         made: list[Path] = []
         try:
-            for folder in folders:
+            for folder in folders[:2]:
                 missing: list[Path] = []
                 ancestor = folder
                 while ancestor != self.root and not ancestor.exists():
@@ -270,12 +270,12 @@ class Photos:
                 for path in reversed(missing):
                     path.mkdir()
                     made.append(path)
-                    if path.is_relative_to(self.root / "_inbox"):
-                        share_folder(path)
-        except OSError:
+            for folder in folders[2:]:
+                make_inbox_tree(self, folder, made)
+        except (OSError, OutsideRoot):
             for path in reversed(made):
-                with contextlib.suppress(OSError):
-                    path.rmdir()
+                with contextlib.suppress(OSError, OutsideRoot):
+                    remove_made_folder(self, path)
             raise
         return folders
 
@@ -1671,12 +1671,82 @@ def walk_inbox(folder: int, spelled: Path, suffix: str, found: list[Path]) -> No
     with os.scandir(folder) as listing:
         entries = sorted(listing, key=lambda entry: entry.name)
     for entry in entries:
-        seen = entry.stat(follow_symlinks=False)
+        try:
+            seen = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
         if stat.S_ISDIR(seen.st_mode):
-            child = inbox_child(entry.name, folder, False)
+            try:
+                child = inbox_child(entry.name, folder, False)
+            except FileNotFoundError:
+                continue
             try:
                 walk_inbox(child, spelled / entry.name, suffix, found)
             finally:
                 os.close(child)
         elif entry.name.endswith(suffix) and plain_file(seen):
             found.append(spelled / entry.name)
+
+
+def make_inbox_folder(name: str, folder: int, spelled: Path) -> bool:
+    try:
+        os.mkdir(name, dir_fd=folder)
+    except FileExistsError:
+        return False
+    except OSError as error:
+        error.filename = str(spelled)
+        raise
+    return True
+
+
+def open_made_folder(name: str, folder: int, spelled: Path) -> int:
+    found = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    if stat.S_ISLNK(found.st_mode):
+        raise LinkRefused("a link is on the way into the inbox")
+    if not stat.S_ISDIR(found.st_mode):
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(spelled))
+    try:
+        return os.open(name, NO_FOLLOW_FOLDER, dir_fd=folder)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise LinkRefused("a link is on the way into the inbox") from error
+        raise
+
+
+def share_open_folder(folder: int) -> None:
+    found = os.fstat(folder)
+    if found.st_uid != os.geteuid():
+        return
+    if found.st_gid != os.getegid():
+        os.fchown(folder, -1, os.getegid())
+    if stat.S_IMODE(os.fstat(folder).st_mode) != SHARED_FOLDER_MODE:
+        os.fchmod(folder, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the configured shared inbox group needs rwx, others get nothing
+
+
+def make_inbox_tree(photos: Photos, path: Path, made: list[Path]) -> None:
+    parts = inbox_parts(photos, path)
+    with contextlib.ExitStack() as stack:
+        folder = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
+        stack.callback(os.close, folder)
+        spelled = photos.root
+        for part in parts:
+            spelled = spelled / part
+            new = make_inbox_folder(part, folder, spelled)
+            if new:
+                made.append(spelled)
+            folder = open_made_folder(part, folder, spelled)
+            stack.callback(os.close, folder)
+            if new:
+                share_open_folder(folder)
+
+
+def remove_made_folder(photos: Photos, path: Path) -> None:
+    if not path.is_relative_to(photos.root / INBOX):
+        path.rmdir()
+        return
+    root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with inbox_subfolder(root, path.parent.relative_to(photos.root).parts, create=False) as folder:
+            os.rmdir(path.name, dir_fd=folder)
+    finally:
+        os.close(root)
