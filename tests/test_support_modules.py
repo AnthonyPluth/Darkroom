@@ -13,6 +13,12 @@ class ValidateTests(unittest.TestCase):
             with self.assertRaises(validate.Invalid):
                 validate.json_object(bad, limit=10)
 
+    def test_json_object_refuses_numbers_that_are_not_finite(self):
+        self.assertEqual(validate.json_object(b'{"a": 1.5, "b": -2e3}'), {"a": 1.5, "b": -2000.0})
+        for bad in (b'{"a": Infinity}', b'{"a": -Infinity}', b'{"a": NaN}', b'{"a": 1e999}', b'{"a": [{"b": -1e400}]}'):
+            with self.subTest(bad=bad), self.assertRaises(validate.Invalid):
+                validate.json_object(bad)
+
     def test_text(self):
         self.assertEqual(validate.text({"n": " Jo "}, "n"), "Jo")
         self.assertEqual(validate.text({}, "n", required=False), "")

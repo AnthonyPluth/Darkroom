@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 from darkroom.domain import media
 from darkroom.providers import exiftool
@@ -96,6 +97,32 @@ class FingerprintTests(unittest.TestCase):
         broken.write_bytes(b"not a picture")
         self.assertEqual(media.perceptual_hashes(broken), media.PerceptualHashes(None, None))
         self.assertEqual(media.perceptual_hashes(self.folder / "missing.jpg"), media.PerceptualHashes(None, None))
+
+    def test_an_image_with_too_many_pixels_is_never_decoded_and_has_no_hashes(self):
+        bomb = fixtures.make_pixel_bomb(self.folder / "bomb.png")
+        self.assertEqual(media.perceptual_hashes(bomb), media.PerceptualHashes(None, None))
+        large = fixtures.make_pixel_bomb(self.folder / "large.png", width=12_000, height=11_000)
+        with mock.patch("imagehash.phash", side_effect=AssertionError("an oversized image was decoded")):
+            self.assertEqual(media.perceptual_hashes(large), media.PerceptualHashes(None, None))
+        small = fixtures.save_jpeg(fixtures.scene(1), self.folder / "small.jpg")
+        with mock.patch.object(media, "MAX_PIXELS", 320 * 240 - 1):
+            self.assertEqual(media.perceptual_hashes(small), media.PerceptualHashes(None, None))
+        self.assertIsNotNone(media.perceptual_hashes(small).phash)
+
+    def test_numbers_that_are_not_finite_or_do_not_fit_are_left_out(self):
+        tags = {"File:MIMEType": "image/jpeg", "IFD0:ImageWidth": float("inf"), "IFD0:ImageHeight": 2**40, "QuickTime:Duration": 1e308,
+                "Composite:GPSLatitude": float("nan"), "Composite:GPSLongitude": 10.0}
+        found = media.fingerprint(fixtures.make_jpeg(self.folder / "a.jpg"), tags)
+        self.assertEqual((found.width, found.height, found.duration_ms, found.lat, found.lon, found.gps_source), (None, None, None, None, None, "none"))
+        self.assertIsNone(media.number(float("-inf")))
+        self.assertIsNone(media.number(10**400))
+        self.assertEqual(media.stored_int(1234.0), 1234)
+
+    def test_a_capture_time_whose_instant_is_out_of_range_is_unknown(self):
+        for taken, offset in (("0001:01:01 00:00:00", "+05:00"), ("9999:12:31 23:00:00", "-05:00"), ("2020:01:01 00:00:00", "+99:00")):
+            with self.subTest(taken=taken, offset=offset):
+                self.assertEqual(media.capture({"DateTimeOriginal": taken, "OffsetTimeOriginal": offset}, None, None)[::3], (None, "unknown"))
+        self.assertEqual(media.capture({"DateTimeOriginal": "2020:01:01 00:00:00", "OffsetTimeOriginal": "+01:00"}, None, None)[0], utc(2019, 12, 31, 23))
 
     def test_a_video_has_a_duration_and_no_perceptual_hash(self):
         found = self.prints(fixtures.make_video(self.folder / "v.mov"))

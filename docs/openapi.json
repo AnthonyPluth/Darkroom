@@ -1950,6 +1950,9 @@
           "id": {
             "type": "integer"
           },
+          "index_skipped": {
+            "type": "integer"
+          },
           "indexed": {
             "type": "integer"
           },
@@ -1996,6 +1999,7 @@
           "accounts",
           "alerts",
           "id",
+          "index_skipped",
           "indexed",
           "last_import",
           "name",

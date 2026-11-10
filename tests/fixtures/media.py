@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import random
 import shutil
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 
 import pillow_heif
@@ -54,6 +56,21 @@ def make_heic(path: Path, taken: str | None = None, offset: str | None = None, g
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", size, (30, 60, 200)).save(path, format="HEIF")
     set_tags(path, exif_tags(taken, offset, gps, make, model))
+    return path
+
+
+def png_chunk(kind: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+def pixel_bomb_png(width: int = 40_000, height: int = 40_000) -> bytes:
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", header) + png_chunk(b"IDAT", zlib.compress(b"")) + png_chunk(b"IEND", b"")
+
+
+def make_pixel_bomb(path: Path, width: int = 40_000, height: int = 40_000) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pixel_bomb_png(width, height))
     return path
 
 

@@ -5,9 +5,9 @@ from collections.abc import Mapping
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, browser_jobs
+from darkroom.domain import accounts, browser_jobs, index
 from darkroom.domain.ingest import run
-from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 
 
 def open_alerts(opened: Session) -> list[Alert]:
@@ -19,7 +19,7 @@ def alert_dict(alert: Alert) -> dict[str, object]:
 
 
 def photo_counts(opened: Session) -> dict[int, tuple[int, int, int]]:
-    phone = MediaItem.source == "phone"
+    phone = (MediaItem.source == "phone") & known_contents()
     query = (select(MediaItem.person_id, func.count(MediaItem.id),
                     func.sum(case((MediaItem.gps_source != "none", 1), else_=0)),
                     func.sum(case((MediaItem.time_source == "unknown", 1), else_=0)))
@@ -37,11 +37,11 @@ def last_import(opened: Session, account_ids: set[int]) -> float | None:
 
 def account_state(account: GoogleAccount) -> dict[str, object]:
     return {"id": account.id, "email": account.email, "session_state": account.session_state, "session_checked": account.session_checked,
-            "schedule_end": account.schedule_end}
+            "schedule_end": browser_jobs.schedule_end_of(account)}
 
 
-def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None]
-                  ) -> dict[str, object]:
+def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None],
+                  skipped: int) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
     emails = {account.email for account in people_accounts}
@@ -54,6 +54,7 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "indexed": counts[0],
         "with_gps": counts[1],
         "unknown_time": counts[2],
+        "index_skipped": skipped,
         "accounts": [account_state(account) for account in people_accounts],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
         "last_import": last_import(opened, serving),
@@ -66,5 +67,7 @@ def overview(opened: Session) -> dict[str, object]:
     counts = photo_counts(opened)
     alerts_open = open_alerts(opened)
     unmatched = run.unmatched_by_person(opened)
-    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched) for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
+    skipped = index.skipped_by_person(opened)
+    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched, skipped.get(person.id, 0))
+              for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
     return {"worker_last_seen": browser_jobs.worker_last_seen(opened), "people": people, "alerts": [alert_dict(alert) for alert in alerts_open]}

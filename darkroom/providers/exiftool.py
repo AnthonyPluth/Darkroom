@@ -14,6 +14,7 @@ from darkroom.storage import paths
 
 BATCH = 100
 TIMEOUT = 300
+FILE_TIMEOUT = 60
 PREVIEW_TIMEOUT = 30
 PREVIEW_TAGS = ("PreviewImage", "ThumbnailImage", "CoverArt")
 IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG")
@@ -25,6 +26,10 @@ class Missing(RuntimeError):
 
 
 class Unreadable(RuntimeError):
+    pass
+
+
+class TimedOut(Unreadable):
     pass
 
 
@@ -79,13 +84,23 @@ def read(paths: list[Path]) -> dict[Path, dict[str, object]]:
     found: dict[Path, dict[str, object]] = {}
     program = executable()
     for group in batches(paths):
-        done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)])
+        try:
+            done = run([program, "-j", "-n", "-G1", "-api", "largefilesupport=1", "-fast2", *map(str, group)], min(TIMEOUT, FILE_TIMEOUT * len(group)))
+        except subprocess.TimeoutExpired as error:
+            raise TimedOut("exiftool took too long to read the files") from error
         if not done.stdout.strip():
             if done.returncode != 0:
                 raise Unreadable(done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "exiftool failed")
             continue
-        for entry in json.loads(done.stdout):
-            found[Path(entry["SourceFile"])] = entry
+        try:
+            entries = json.loads(done.stdout)
+        except ValueError as error:
+            raise Unreadable("exiftool wrote output that is not JSON") from error
+        if not isinstance(entries, list):
+            raise Unreadable("exiftool wrote output that is not a list")
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("SourceFile"), str):
+                found[Path(entry["SourceFile"])] = entry
     return found
 
 

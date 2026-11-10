@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import alerts, browser_jobs, events, exports, renewal
 from darkroom.storage import db
 from darkroom.storage.paths import Photos
-from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, known_contents
 
 CONFIRMING_TIERS = (1, 2)
 
@@ -66,7 +66,7 @@ def confirmed_people(opened: Session, account_id: int) -> set[int]:
     rows = opened.execute(
         select(DedupeDecision.person_id, MediaItem.person_id).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id).where(
             DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
-            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone",
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", known_contents(),
         )
     ).all()
     return {person_id for row in rows for person_id in row}
@@ -106,15 +106,17 @@ def listing(opened: Session) -> list[GoogleAccount]:
 
 
 def as_dict(opened: Session, account: GoogleAccount) -> dict[str, object]:
+    schedule = browser_jobs.schedule_of(account)
+    created, end = (None, None) if schedule is None else schedule
     return {
         "id": account.id,
         "email": account.email,
         "default_person_id": account.default_person_id,
         "session_state": account.session_state,
         "session_checked": account.session_checked,
-        "schedule_created": account.schedule_created,
-        "schedule_end": account.schedule_end,
-        "renew_from": None if account.schedule_end is None else account.schedule_end - renewal.NOTICE,
+        "schedule_created": created,
+        "schedule_end": end,
+        "renew_from": None if end is None else end - renewal.NOTICE,
         "served_people": sorted(served_people(opened, account.id)),
         "created": account.created,
     }

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import run
@@ -254,9 +255,8 @@ def watch_expiry(opened: Session, settings: Settings, now: float) -> int:
     waiting = opened.execute(select(Export).where(Export.status.in_(exports.STILL_WAITING), Export.ready_at.is_not(None), Export.expires_at.is_not(None))).scalars()
     still_open: set[int] = set()
     for export in waiting:
-        expires_at = export.expires_at
-        assert expires_at is not None
-        if now >= expires_at or expires_at - now > EXPIRY_NOTICE:
+        expires_at = dates.instant_or_none(export.expires_at)
+        if expires_at is None or now >= expires_at or expires_at - now > EXPIRY_NOTICE:
             continue
         still_open.add(export.id)
         key = expiry_key(export.id)
