@@ -255,7 +255,15 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
     report.skipped += skipped
     still = {file.key: file for file in current}
     examined = {outcome.key for outcome in outcomes}
-    unread = [key for key in still if key in deferred or key not in examined]
+    known = skips_of(opened, person)
+    unread: list[str] = []
+    for key in still:
+        if key not in deferred and key in examined:
+            continue
+        if still_known_poison(known.get(key), still[key]):
+            keep_set_aside(opened, known[key], now, report)
+        else:
+            unread.append(key)
     if unread:
         report.failed += len(unread)
         detail = f"exiftool could not read {len(unread)} file(s) now, tried again next run"
@@ -270,6 +278,15 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
             failed(opened, person, outcome.failure or UNUSABLE, now, report)
         else:
             record(opened, person, file, outcome.print_, now, report)
+
+
+def still_known_poison(known: IndexSkip | None, file: Pending) -> bool:
+    return known is not None and known.bytes == file.size and known.mtime == file.mtime
+
+
+def keep_set_aside(opened: Session, known: IndexSkip, now: float, report: IndexReport) -> None:
+    opened.execute(update(IndexSkip).where(IndexSkip.id == known.id, IndexSkip.bytes == known.bytes, IndexSkip.mtime == known.mtime).values(skipped_at=now))
+    report.skipped += 1
 
 
 def record(opened: Session, person: Person, file: Pending, print_: media.Fingerprint, now: float, report: IndexReport) -> None:

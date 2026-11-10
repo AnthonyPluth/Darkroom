@@ -550,6 +550,31 @@ class PoisonFileTests(unittest.TestCase):
         self.assertEqual((report.new, report.failed), (1, 1))
         self.assertEqual(self.skips(), {"jo/originals/silent.jpg": index.NO_METADATA})
 
+    def test_a_set_aside_file_that_still_fails_alone_at_its_retry_waits_another_day(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        retry_at = 100.0 + index.RETRY_SET_ASIDE_SECONDS
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed on this file")
+
+        report = self.run_index(now=retry_at, read=dies)
+        self.assertEqual((report.failed, report.skipped), (0, 1))
+        with db.session(self.engine) as opened:
+            self.assertEqual([(row.reason, row.skipped_at) for row in opened.query(IndexSkip)], [(index.NOT_MEDIA, retry_at)])
+        later = self.run_index(now=retry_at + 3600, read=lambda paths: self.fail("read again within a day"))
+        self.assertEqual(later.skipped, 1)
+
+    def test_a_new_file_that_fails_alone_is_still_only_deferred(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed on this file")
+
+        report = self.run_index(read=dies)
+        self.assertEqual((report.failed, report.skipped, report.set_aside), (1, 0, 0))
+        self.assertEqual(self.skips(), {})
+
     def test_a_set_aside_file_that_is_gone_is_forgotten(self):
         notes = self.originals / "notes.jpg"
         notes.write_bytes(b"not a picture")
