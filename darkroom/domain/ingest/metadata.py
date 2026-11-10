@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from darkroom.domain import media, timezones
 from darkroom.domain.ingest.pairing import PairingReport, TakeoutItem
