@@ -6,10 +6,10 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import immich_reconcile as reconcile
-from darkroom.domain import media, pixel_folder
+from darkroom.domain import index, media, pixel_folder
 from darkroom.providers import exiftool, immich
 from darkroom.storage import secretbox
-from darkroom.storage.models import Alert, Event, Export, ImmichAsset, ImportRun, MediaItem, Person, PixelCopy
+from darkroom.storage.models import Alert, Event, Export, ImmichAsset, ImportRun, IndexSkip, MediaItem, Person, PixelCopy
 from tests.fakes.immich import FakeAsset
 from tests.fixtures import media as fixtures
 from tests.import_world import NOW, World, tree
@@ -232,7 +232,7 @@ class PoisonAssetTests(ReconcileCase):
 
         def fingerprint(path, tags):
             if path.read_bytes() == poison.data:
-                raise OverflowError("a crafted value")
+                raise MemoryError()
             return real(path, tags)
 
         with mock.patch.object(media, "fingerprint", fingerprint):
@@ -240,9 +240,39 @@ class PoisonAssetTests(ReconcileCase):
         self.assertEqual((report.stored, report.failed), (1, 1))
         self.assertEqual((self.rows()[poison.id].status, self.rows()[after.id].status), ("failed", "stored"))
         self.assertEqual(self.jo.immich_reconciled_until, NOW - reconcile.MARGIN_SECONDS)
-        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "SetAside")
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars().one().detail, "CopyMismatch")
+        self.assertEqual(self.world.opened.execute(select(IndexSkip)).scalars().all(), [])
         retried = self.run_it(at=NOW + 3600)
         self.assertEqual((retried.stored, retried.failed, self.rows()[poison.id].status), (1, 0, "stored"))
+
+    def test_a_poisoned_photo_stays_set_aside_counted_and_unread_until_its_retry_is_due(self):
+        poison = self.photo()
+        after = self.photo()
+        real = media.fingerprint
+        reads = []
+
+        def fingerprint(path, tags):
+            if path.read_bytes() == poison.data:
+                reads.append(path.name)
+                raise OverflowError("a crafted value")
+            return real(path, tags)
+
+        with mock.patch.object(media, "fingerprint", fingerprint):
+            report = self.run_it()
+            self.assertEqual((report.stored, report.failed), (1, 1))
+            self.assertEqual(index.skipped_by_person(self.world.opened), {self.jo.id: 1})
+            again = self.run_it(at=NOW + 3600)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual((again.stored, again.failed, self.rows()[poison.id].status, self.rows()[after.id].status), (0, 1, "failed", "stored"))
+        self.assertEqual({event.detail for event in self.world.opened.execute(select(Event).where(Event.type == "immich_asset_failed")).scalars()}, {"SetAside"})
+        (row,) = self.world.opened.execute(select(IndexSkip)).scalars().all()
+        self.assertEqual(row.reason, index.UNUSABLE)
+        stale = self.world.opened.execute(select(MediaItem).where(MediaItem.path == row.path)).scalars().all()
+        self.assertEqual([item for item in stale if item.sha1 != index.UNKNOWN_SHA1], [])
+        self.assertIsNone(self.world.opened.execute(select(MediaItem).where(MediaItem.sha1 == sha1(poison.data))).scalar_one_or_none())
+        later = self.run_it(at=NOW + index.RETRY_SET_ASIDE_SECONDS + 7200)
+        self.assertEqual((later.stored, later.failed, self.rows()[poison.id].status), (1, 0, "stored"))
+        self.assertEqual(index.skipped_by_person(self.world.opened), {})
 
 
 class OrderTests(ReconcileCase):

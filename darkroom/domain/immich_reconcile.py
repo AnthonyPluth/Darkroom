@@ -186,6 +186,10 @@ class Run:
             self.handled.add(video.id)
         try:
             stored = [(half, kind, linked, *self.store(half)) for half, kind, linked in halves]
+        except SetAside:
+            self.opened.commit()
+            self.fail(asset, "photo", SetAside.__name__)
+            return
         except (immich.ImmichFailed, CopyMismatch, OSError) as error:
             if isinstance(error, immich.ImmichFailed) and error.status in (401, 403):
                 raise
