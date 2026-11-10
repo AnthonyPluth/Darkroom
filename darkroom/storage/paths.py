@@ -270,12 +270,11 @@ class Photos:
                 for path in reversed(missing):
                     path.mkdir()
                     made.append(path)
-            for folder in folders[2:]:
-                make_inbox_tree(self, folder, made, fresh)
+            make_inbox_tree(self, folders[3], fresh)
         except (OSError, OutsideRoot):
             for path in reversed(made):
-                with contextlib.suppress(OSError, OutsideRoot):
-                    remove_made_folder(self, path)
+                with contextlib.suppress(OSError):
+                    path.rmdir()
             raise
         return folders
 
@@ -1727,38 +1726,75 @@ def taken(spelled: Path) -> FileExistsError:
     return FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(spelled))
 
 
-def make_inbox_tree(photos: Photos, path: Path, made: list[Path], fresh: bool = False) -> None:
+@dataclass(frozen=True)
+class MadeFolder:
+    parent: int
+    name: str
+    identity: tuple[int, int]
+
+
+def identity_of(found: os.stat_result) -> tuple[int, int]:
+    return found.st_dev, found.st_ino
+
+
+def make_inbox_tree(photos: Photos, path: Path, fresh: bool = False) -> None:
     parts = inbox_parts(photos, path)
+    made: list[MadeFolder] = []
     with contextlib.ExitStack() as stack:
-        folder = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
-        stack.callback(os.close, folder)
-        spelled = photos.root
-        for index, part in enumerate(parts):
-            spelled = spelled / part
-            shared_top = index == 0
-            if entry_at(part, folder) is None:
-                new = make_inbox_folder(part, folder, spelled)
-                if not new and not shared_top:
+        root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
+        stack.callback(os.close, root)
+        held = [root]
+        try:
+            spelled = photos.root
+            for index, part in enumerate(parts):
+                spelled = spelled / part
+                parent, shared_top = held[-1], index == 0
+                if entry_at(part, parent) is None:
+                    new = make_inbox_folder(part, parent, spelled)
+                    if not new and not shared_top:
+                        raise taken(spelled)
+                elif fresh and not shared_top:
                     raise taken(spelled)
-            elif fresh and not shared_top and spelled not in made:
-                raise taken(spelled)
-            else:
-                new = False
-            if new:
-                made.append(spelled)
-            folder = open_made_folder(part, folder, spelled)
-            stack.callback(os.close, folder)
-            if new:
-                share_open_folder(folder)
+                else:
+                    new = False
+                folder = open_made_folder(part, parent, spelled)
+                stack.callback(os.close, folder)
+                held.append(folder)
+                if new:
+                    if os.listdir(folder):
+                        raise taken(spelled)
+                    made.append(MadeFolder(parent, part, identity_of(os.fstat(folder))))
+                    share_open_folder(folder)
+            still_held(root, parts, held[1:], spelled)
+        except BaseException:
+            remove_made(made)
+            raise
 
 
-def remove_made_folder(photos: Photos, path: Path) -> None:
-    if not path.is_relative_to(photos.root / INBOX):
-        path.rmdir()
-        return
-    root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        with inbox_subfolder(root, path.parent.relative_to(photos.root).parts, create=False) as folder:
-            os.rmdir(path.name, dir_fd=folder)
-    finally:
-        os.close(root)
+def still_held(root: int, parts: Sequence[str], held: list[int], spelled: Path) -> None:
+    current = root
+    for part, folder in zip(parts, held, strict=True):
+        seen = entry_at(part, current)
+        if seen is None or stat.S_ISLNK(seen.st_mode) or identity_of(seen) != identity_of(os.fstat(folder)):
+            raise taken(spelled)
+        current = folder
+
+
+def remove_made(made: list[MadeFolder]) -> None:
+    for folder in reversed(made):
+        with contextlib.suppress(OSError):
+            name = name_of(folder)
+            if name is not None:
+                os.rmdir(name, dir_fd=folder.parent)
+
+
+def name_of(folder: MadeFolder) -> str | None:
+    seen = entry_at(folder.name, folder.parent)
+    if seen is not None and stat.S_ISDIR(seen.st_mode) and identity_of(seen) == folder.identity:
+        return folder.name
+    with os.scandir(folder.parent) as listing:
+        for entry in listing:
+            found = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(found.st_mode) and identity_of(found) == folder.identity:
+                return entry.name
+    return None

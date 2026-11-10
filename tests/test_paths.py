@@ -137,6 +137,31 @@ class FailedTreeTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in outside.iterdir()), ["keep.jpg"])
         self.assertFalse((self.root / "jo").exists())
 
+    def test_a_made_folder_renamed_away_is_still_removed_and_its_replacement_kept(self):
+        real = paths.make_inbox_folder
+
+        def replacing(name, folder, spelled):
+            if spelled.name == "manual":
+                inbox = spelled.parent.parent
+                (inbox / "jo").rename(inbox / "moved")
+                (inbox / "jo").mkdir()
+                (inbox / "jo" / "theirs.txt").write_bytes(b"theirs")
+            return real(name, folder, spelled)
+
+        with mock.patch.object(paths, "make_inbox_folder", replacing), self.assertRaises(FileExistsError):
+            self.photos.ensure_person_tree("jo", fresh=True)
+        inbox = self.root / "_inbox"
+        self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["jo"])
+        self.assertEqual((inbox / "jo" / "theirs.txt").read_bytes(), b"theirs")
+        self.assertFalse((self.root / "jo").exists())
+
+    def test_an_existing_tree_is_reused_unless_the_person_is_new(self):
+        self.photos.ensure_person_tree("jo")
+        self.assertTrue(all(folder.is_dir() for folder in self.photos.ensure_person_tree("jo")))
+        with self.assertRaises(FileExistsError):
+            self.photos.ensure_person_tree("jo", fresh=True)
+        self.assertTrue((self.root / "_inbox/jo/manual").is_dir())
+
     def test_a_retry_after_the_blocker_is_gone_works(self):
         (self.root / "_inbox").write_bytes(b"in the way")
         with self.assertRaises(OSError):

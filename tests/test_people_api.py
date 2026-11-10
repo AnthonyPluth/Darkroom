@@ -412,15 +412,38 @@ class LinkedInboxTests(ApiCase):
         self.cleared_inbox()
         real = paths.make_inbox_tree
 
-        def appearing(photos, path, made, fresh=False):
+        def appearing(photos, path, fresh=False):
             (photos.root / "_inbox/sam").mkdir(parents=True, exist_ok=True)
-            return real(photos, path, made, fresh)
+            return real(photos, path, fresh)
 
         with mock.patch.object(paths, "make_inbox_tree", appearing):
             status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
         self.assertEqual(status, 409)
         self.assertIn("appeared on disk", reply["error"])
         self.assertEqual(list((self.photos / "_inbox/sam").iterdir()), [])
+        self.assertFalse((self.photos / "sam").exists())
+        self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
+    def test_a_person_folder_renamed_and_replaced_before_its_manual_folder_is_made_answers_409(self):
+        self.cleared_inbox()
+        real = paths.make_inbox_folder
+
+        def replacing(name, folder, spelled):
+            if spelled.name == "manual":
+                inbox = spelled.parent.parent
+                (inbox / "sam").rename(inbox / "moved")
+                (inbox / "sam").mkdir()
+                (inbox / "sam" / "theirs.txt").write_bytes(b"theirs")
+            return real(name, folder, spelled)
+
+        with mock.patch.object(paths, "make_inbox_folder", replacing):
+            status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+        self.assertEqual(status, 409)
+        self.assertIn("appeared on disk", reply["error"])
+        inbox = self.photos / "_inbox"
+        self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["sam"])
+        self.assertEqual([p.name for p in (inbox / "sam").iterdir()], ["theirs.txt"])
+        self.assertEqual((inbox / "sam" / "theirs.txt").read_bytes(), b"theirs")
         self.assertFalse((self.photos / "sam").exists())
         self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
 
