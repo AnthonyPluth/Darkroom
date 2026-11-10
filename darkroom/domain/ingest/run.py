@@ -261,7 +261,8 @@ def pixels_serving(opened: Session, account_id: int, person_id: int) -> list[Pix
 def unmatched_count(opened: Session, person_id: int, cutoff: float) -> int:
     return int(opened.execute(
         select(func.count(MediaItem.id)).where(
-            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False))
+            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False),
+            MediaItem.sha1 != "")
     ).scalar_one())
 
 

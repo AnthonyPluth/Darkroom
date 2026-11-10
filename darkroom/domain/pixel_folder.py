@@ -39,7 +39,7 @@ def confirming_matches(opened: Session, account_id: int, item_id: int, person_id
         .join(Export, Export.id == DedupeDecision.export_id).where(
             DedupeDecision.matched_item_id == item_id, DedupeDecision.account_id == account_id, DedupeDecision.person_id == person_id,
             DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(accounts.CONFIRMING_TIERS),
-            MediaItem.person_id == person_id,
+            MediaItem.person_id == person_id, MediaItem.sha1 != "",
         )
     ).scalars())
 

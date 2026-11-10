@@ -6,10 +6,11 @@ from unittest import mock
 
 from sqlalchemy import delete
 
-from darkroom.domain import dedupe, events, index, media
+from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder
+from darkroom.domain.ingest import run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import GoogleAccount, IndexSkip, MediaItem, Person
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, IndexSkip, MediaItem, Person
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -582,6 +583,94 @@ class PoisonFileTests(unittest.TestCase):
                 report = index.index_file(opened, self.photos, person, poison, 1.0, described)
         self.assertEqual((report.new, report.failed), (0, 1))
         self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNUSABLE})
+
+
+
+class ConfirmationTests(unittest.TestCase):
+    setUp = IndexTests.setUp
+    run_index = IndexTests.run_index
+
+    def confirm(self, name="IMG_1.JPG"):
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            account = opened.query(GoogleAccount).one_or_none()
+            if account is None:
+                account = GoogleAccount(email="jo.photos@example.test", default_person_id=person.id, created=1.0)
+                opened.add(account)
+                opened.flush()
+            export = Export(account_id=account.id, kind="manual", created_at=50.0)
+            opened.add(export)
+            opened.flush()
+            item = opened.query(MediaItem).one()
+            opened.add(DedupeDecision(export_id=export.id, account_id=account.id, source_path=f"Takeout/{name}", person_id=person.id, matched_item_id=item.id,
+                                      tier=1, reason="identical", decided_by="auto", decided_at=60.0))
+            opened.flush()
+            dedupe.confirm_served_matches(opened, account.id, {person.id})
+            return account.id, person.id, item.id
+
+    def state(self, account_id, person_id, item_id):
+        with db.session(self.engine) as opened:
+            item = opened.get(MediaItem, item_id)
+            return (item.confirmed_in_google, accounts.confirmed_people(opened, account_id), pixel_folder.confirmed_for(opened, account_id, item_id, person_id),
+                    run.unmatched_count(opened, person_id, 10**9))
+
+    def linked(self, item_id):
+        with db.session(self.engine) as opened:
+            return opened.query(DedupeDecision).filter(DedupeDecision.matched_item_id == item_id).count()
+
+    def test_a_confirmed_original_replaced_by_unreadable_bytes_is_no_longer_confirmed_or_counted(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
+        photo.write_bytes(b"not a picture any more")
+        self.assertEqual(self.run_index(now=200.0).set_aside, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 0))
+        self.assertEqual(self.linked(ids[2]), 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(DedupeDecision).count(), 1)
+
+    def test_a_path_that_recovers_with_different_contents_does_not_inherit_the_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        self.assertEqual(self.run_index(now=300.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+
+    def test_an_original_replaced_by_other_readable_contents_loses_its_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=200.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+        self.assertEqual(self.linked(ids[2]), 0)
+
+    def test_the_same_contents_with_a_new_mtime_keep_the_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=200.0).changed, 1)
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
+
+    def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        original = photo.read_bytes()
+        self.run_index()
+        ids = self.confirm()
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        photo.write_bytes(original)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=300.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+        self.confirm("IMG_1 (1).JPG")
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
 
 
 if __name__ == "__main__":

@@ -67,7 +67,7 @@ def confirmed_people(opened: Session, account_id: int) -> set[int]:
     rows = opened.execute(
         select(DedupeDecision.person_id, MediaItem.person_id).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id).where(
             DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
-            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone",
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.sha1 != "",
         )
     ).all()
     return {person_id for row in rows for person_id in row}

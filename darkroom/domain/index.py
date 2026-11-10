@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import events, media
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import IndexSkip, MediaItem, Person
+from darkroom.storage.models import DedupeDecision, IndexSkip, MediaItem, Person
 from darkroom.storage.paths import OutsideRoot, Photos
 
 MEDIA_TYPES = ("image/", "video/")
@@ -96,7 +96,13 @@ def still_set_aside(known: IndexSkip | None, size: int, mtime: float, now: float
     return known is not None and known.bytes == size and known.mtime == mtime and now - known.skipped_at < RETRY_SET_ASIDE_SECONDS
 
 
-def unknown_contents(item: MediaItem, size: int, now: float) -> None:
+def forget_confirmation(opened: Session, item: MediaItem) -> None:
+    item.confirmed_in_google = False
+    opened.execute(update(DedupeDecision).where(DedupeDecision.matched_item_id == item.id).values(matched_item_id=None))
+
+
+def unknown_contents(opened: Session, item: MediaItem, size: int, now: float) -> None:
+    forget_confirmation(opened, item)
     item.sha1, item.bytes, item.mtime, item.phash, item.dhash = UNKNOWN_SHA1, size, None, None, None
     item.width = item.height = item.duration_ms = None
     item.make = item.model = None
@@ -107,7 +113,7 @@ def unknown_contents(item: MediaItem, size: int, now: float) -> None:
 
 def set_aside(opened: Session, person: Person, file: Pending, reason: str, now: float, report: IndexReport) -> None:
     if file.item is not None:
-        unknown_contents(file.item, file.size, now)
+        unknown_contents(opened, file.item, file.size, now)
     forget_skip(opened, person, file.key)
     opened.execute(insert(IndexSkip).values(person_id=person.id, path=file.key, bytes=file.size, mtime=file.mtime, reason=reason, skipped_at=now))
     report.failed += 1
@@ -279,6 +285,8 @@ def record(opened: Session, person: Person, file: Pending, print_: media.Fingerp
         report.new += 1
     else:
         report.changed += 1
+        if item.sha1 != print_.sha1:
+            forget_confirmation(opened, item)
     apply(item, print_, file.mtime, now)
     forget_skip(opened, person, file.key)
 

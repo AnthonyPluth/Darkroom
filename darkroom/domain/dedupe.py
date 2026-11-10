@@ -392,7 +392,7 @@ def confirm_served_matches(opened: Session, account_id: int, served: set[int]) -
     items = opened.execute(
         select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id).where(
             DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
-            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.confirmed_in_google.is_(False),
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.confirmed_in_google.is_(False), MediaItem.sha1 != "",
             MediaItem.person_id.in_(served), MediaItem.person_id == DedupeDecision.person_id,
         )
     ).scalars().unique()

@@ -190,7 +190,7 @@ def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
     )
     matched_original = (
         select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id)
-        .where(MediaItem.person_id == person.id, MediaItem.source == "phone", DedupeDecision.account_id.in_(served),
+        .where(MediaItem.person_id == person.id, MediaItem.source == "phone", MediaItem.sha1 != "", DedupeDecision.account_id.in_(served),
                DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(dedupe.CONFIRMING_TIERS))
     )
     found = {item.id: item for query in (in_takeout, matched_original) for item in opened.execute(query).scalars()}
