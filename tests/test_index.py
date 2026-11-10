@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from sqlalchemy import delete
+
 from darkroom.domain import dedupe, events, index, media
 from darkroom.providers import exiftool
 from darkroom.storage import db
@@ -410,6 +412,52 @@ class PoisonFileTests(unittest.TestCase):
         self.assertEqual((report.new, report.skipped, report.failed), (0, 1, 0))
         self.assertEqual(self.items(), {})
         self.assertEqual(self.skips(), {"jo/originals/a.jpg": index.UNREADABLE})
+
+    def test_a_path_set_aside_again_while_the_cleanup_waits_for_the_lock_keeps_its_new_skip(self):
+        notes = self.originals / "notes.jpg"
+        notes.write_bytes(b"not a picture")
+        self.run_index()
+        notes.unlink()
+        real_lock = index.db.write_lock
+
+        def the_reconcile_sets_it_aside_first(opened):
+            notes.write_bytes(b"not a picture either")
+            with db.session(self.engine) as other:
+                other.execute(delete(IndexSkip))
+                other.add(IndexSkip(person_id=1, path="jo/originals/notes.jpg", bytes=notes.stat().st_size, mtime=notes.stat().st_mtime,
+                                    reason=index.NOT_MEDIA, skipped_at=150.0))
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", the_reconcile_sets_it_aside_first):
+            self.run_index(now=200.0, read=lambda paths: self.fail("the walk ran before the file came back"))
+        self.assertEqual(self.skips(), {"jo/originals/notes.jpg": index.NOT_MEDIA})
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(IndexSkip).one().skipped_at, 150.0)
+
+    def test_nothing_to_forget_takes_no_lock(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        with mock.patch.object(index.db, "write_lock", side_effect=AssertionError("locked with nothing to write")):
+            self.assertEqual(self.run_index(now=200.0, read=lambda paths: self.fail("read again")).skipped, 1)
+
+    def test_the_dhash_backfill_writes_nothing_for_an_item_reindexed_while_it_hashed(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            item = opened.query(MediaItem).one()
+            item.dhash = None
+            item_id = item.id
+        real_lock = index.db.write_lock
+
+        def reindexed_meanwhile(opened):
+            with db.session(self.engine) as other:
+                other.get(MediaItem, item_id).sha1 = "f" * 40
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", reindexed_meanwhile), db.session(self.engine) as opened:
+            self.assertEqual(index.backfill_dhash(opened, self.photos, opened.query(Person).one()), 0)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(MediaItem, item_id).dhash)
 
     def test_running_out_of_memory_on_a_file_is_not_set_aside(self):
         fixtures.make_jpeg(self.originals / "a.jpg")

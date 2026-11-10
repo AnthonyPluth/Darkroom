@@ -5,8 +5,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
+from typing import Any, cast
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events, media
@@ -281,28 +283,59 @@ def record(opened: Session, person: Person, file: Pending, print_: media.Fingerp
     forget_skip(opened, person, file.key)
 
 
+def gone(photos: Photos, present: set[str], path: str) -> bool:
+    if path in present:
+        return False
+    try:
+        return not photos.inside(*Path(path).parts).exists()
+    except OutsideRoot:
+        return True
+
+
 def forget_gone_skips(opened: Session, photos: Photos, person: Person, files: list[Path]) -> None:
     skips = skips_of(opened, person)
     if not skips:
         return
     present = {relative(photos, path) for path in files}
-    for path in skips:
-        if path not in present:
-            forget_skip(opened, person, path)
+    if not any(gone(photos, present, path) for path in skips):
+        return
+    db.write_lock(opened)
+    for path, row in skips_of(opened, person).items():
+        if gone(photos, present, path):
+            opened.execute(delete(IndexSkip).where(IndexSkip.id == row.id, IndexSkip.path == path, IndexSkip.bytes == row.bytes, IndexSkip.mtime == row.mtime,
+                                                   IndexSkip.skipped_at == row.skipped_at))
+
+
+@dataclass(frozen=True)
+class Backfill:
+    item_id: int
+    sha1: str
+    mtime: float | None
+    dhash: str
 
 
 def backfill_dhash(opened: Session, photos: Photos, person: Person) -> int:
     missing = opened.execute(
         select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", MediaItem.phash.is_not(None), MediaItem.dhash.is_(None))
     ).scalars().all()
-    filled = 0
+    computed: list[Backfill] = []
     for item in missing:
         try:
             path = photos.inside(*Path(item.path).parts)
         except OutsideRoot:
             continue
-        item.dhash = media.perceptual_hashes(path).dhash
-        filled += item.dhash is not None
+        dhash = media.perceptual_hashes(path).dhash
+        if dhash is not None:
+            computed.append(Backfill(item.id, item.sha1, item.mtime, dhash))
+    if not computed:
+        return 0
+    db.write_lock(opened)
+    filled = 0
+    for each in computed:
+        same_mtime = MediaItem.mtime.is_(None) if each.mtime is None else MediaItem.mtime == each.mtime
+        result = opened.execute(update(MediaItem).where(MediaItem.id == each.item_id, MediaItem.sha1 == each.sha1, same_mtime, MediaItem.dhash.is_(None))
+                                .values(dhash=each.dhash))
+        filled += cast("CursorResult[Any]", result).rowcount
     return filled
 
 
