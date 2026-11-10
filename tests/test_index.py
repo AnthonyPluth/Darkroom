@@ -324,6 +324,84 @@ class PoisonFileTests(unittest.TestCase):
         self.assertEqual((report.new, report.unchanged, report.skipped), (1, 2, 0))
         self.assertIn("jo/originals/slow.jpg", self.items())
 
+    def test_several_slow_files_share_one_time_budget_and_none_is_set_aside(self):
+        fixtures.make_jpeg(self.originals / "good.jpg")
+        for n in range(6):
+            fixtures.make_jpeg(self.originals / f"slow{n}.jpg", colour=(n, 9, 9))
+        clock = [1000.0]
+        calls = []
+
+        def slow_reader(paths):
+            calls.append([path.name for path in paths])
+            if len(paths) > 1:
+                clock[0] += exiftool.TIMEOUT
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            if paths[0].name.startswith("slow"):
+                clock[0] += exiftool.FILE_TIMEOUT
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            clock[0] += 1
+            return described(paths)
+
+        with mock.patch.object(index, "monotonic", lambda: clock[0]):
+            report = self.run_index(read=slow_reader)
+        self.assertLessEqual(clock[0] - 1000.0, exiftool.TIMEOUT + index.ISOLATION_SECONDS + exiftool.FILE_TIMEOUT)
+        self.assertEqual(len(calls), 1 + 1 + 5)
+        self.assertEqual((report.new, report.failed, report.set_aside), (1, 6, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 6)
+
+    def test_only_the_batch_that_failed_is_read_again_file_by_file(self):
+        for name in ("a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "poison.jpg"):
+            fixtures.make_jpeg(self.originals / name, colour=(len(name), ord(name[0]) % 200, 9))
+        calls = []
+
+        def chokes(paths):
+            calls.append([path.name for path in paths])
+            if any(path.name == "poison.jpg" for path in paths):
+                raise exiftool.Unreadable("exiftool crashed on this file")
+            return described(paths)
+
+        with mock.patch.object(exiftool, "BATCH", 3):
+            report = self.run_index(read=chokes)
+        self.assertEqual(calls, [["a.jpg", "b.jpg", "c.jpg"], ["d.jpg", "e.jpg", "poison.jpg"], ["d.jpg"], ["e.jpg"], ["poison.jpg"]])
+        self.assertEqual((report.new, report.set_aside), (5, 1))
+
+    def test_the_write_lock_is_taken_before_the_state_that_decides_the_writes_is_read(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        order = []
+        real_items, real_skips = index.phone_items, index.skips_of
+
+        def items(opened, person):
+            order.append("items")
+            return real_items(opened, person)
+
+        def skips(opened, person):
+            order.append("skips")
+            return real_skips(opened, person)
+
+        with mock.patch.object(index, "phone_items", items), mock.patch.object(index, "skips_of", skips), \
+                mock.patch.object(index.db, "write_lock", lambda opened: order.append("lock")):
+            self.run_index(read=described)
+            self.assertEqual(order[:5], ["items", "skips", "lock", "items", "skips"])
+            order.clear()
+            self.run_index(now=200.0, read=described)
+            self.assertNotIn("lock", order)
+
+    def test_what_another_run_recorded_just_before_the_lock_decides_what_this_run_does(self):
+        photo = fixtures.make_jpeg(self.originals / "a.jpg")
+        real_lock = index.db.write_lock
+
+        def another_run_finishes_first(opened):
+            with db.session(self.engine) as other:
+                other.add(IndexSkip(person_id=1, path="jo/originals/a.jpg", bytes=photo.stat().st_size, mtime=photo.stat().st_mtime,
+                                    reason=index.UNREADABLE, skipped_at=100.0))
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", another_run_finishes_first):
+            report = self.run_index(read=lambda paths: self.fail("a file another run set aside was read again"))
+        self.assertEqual((report.new, report.skipped), (0, 1))
+        self.assertEqual(self.skips(), {"jo/originals/a.jpg": index.UNREADABLE})
+
     def test_running_out_of_memory_on_a_file_is_not_set_aside(self):
         fixtures.make_jpeg(self.originals / "a.jpg")
         with mock.patch.object(media, "fingerprint", side_effect=MemoryError()):

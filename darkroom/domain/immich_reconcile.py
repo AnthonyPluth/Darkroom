@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring
 from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, takeout_copies
 from darkroom.providers import exiftool, immich
-from darkroom.storage import locks, paths, secretbox
+from darkroom.storage import db, locks, paths, secretbox
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -143,6 +143,7 @@ class Run:
         return row
 
     def store(self, asset: immich.Asset) -> tuple[MediaItem, bool]:
+        db.write_lock(self.opened)
         present = self.opened.execute(
             select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1).order_by(MediaItem.id).limit(1)
         ).scalar_one_or_none()
