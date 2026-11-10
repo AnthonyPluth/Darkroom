@@ -132,14 +132,11 @@ def is_unchecked(opened: Session, job: BrowserJob) -> bool:
     return stuck is not None and stuck.id == job.id
 
 
-def schedule_of(account: GoogleAccount) -> tuple[float, float | None] | None:
-    created = dates.instant_or_none(account.schedule_created)
-    if created is None:
+def schedule_of(account: GoogleAccount) -> tuple[float | None, float | None] | None:
+    created, end = dates.instant_or_none(account.schedule_created), dates.instant_or_none(account.schedule_end)
+    if (account.schedule_created is not None and created is None) or (account.schedule_end is not None and end is None):
         return None
-    if account.schedule_end is None:
-        return created, None
-    end = dates.instant_or_none(account.schedule_end)
-    return None if end is None else (created, end)
+    return created, end
 
 
 def schedule_end_of(account: GoogleAccount) -> float | None:
@@ -148,12 +145,12 @@ def schedule_end_of(account: GoogleAccount) -> float | None:
 
 
 def schedule_unusable(account: GoogleAccount) -> bool:
-    return (account.schedule_created is not None or account.schedule_end is not None) and schedule_of(account) is None
+    return schedule_of(account) is None
 
 
 def schedule_live(account: GoogleAccount, now: float) -> bool:
     found = schedule_of(account)
-    return found is not None and (found[1] is None or found[1] > now)
+    return found is not None and found[0] is not None and (found[1] is None or found[1] > now)
 
 
 def extends(account: GoogleAccount, times: tuple[float, float]) -> tuple[float, float]:

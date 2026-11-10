@@ -40,7 +40,7 @@ NEVER_AFTER_PLACING = 0.0
 def observed_at() -> ColumnElement[float]:
     return case(
         (Export.created_at.is_(None), DedupeDecision.decided_at),
-        (Export.created_at.between(1, dates.LATEST_INSTANT), Export.created_at),
+        (Export.created_at.between(1, dates.LATEST_STORED), Export.created_at),
         else_=literal(NEVER_AFTER_PLACING),
     )
 

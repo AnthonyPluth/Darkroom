@@ -25,4 +25,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("index_skips")
+    if "index_skips" in sa.inspect(op.get_bind()).get_table_names():
+        op.drop_table("index_skips")

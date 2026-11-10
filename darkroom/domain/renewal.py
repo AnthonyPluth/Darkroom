@@ -78,8 +78,9 @@ def queue_renewal(opened: Session, account: GoogleAccount, end: float, now: floa
 
 def renew_now(opened: Session, settings: Settings, account_id: int, now: float) -> BrowserJob:
     account = browser_jobs.lock_account(opened, account_id)
-    end = browser_jobs.schedule_end_of(account)
-    if browser_jobs.schedule_of(account) is None or end is None:
+    schedule = browser_jobs.schedule_of(account)
+    end = None if schedule is None or schedule[0] is None else schedule[1]
+    if end is None:
         raise NoSchedule("this account has no export schedule to renew")
     if now < end - NOTICE:
         raise NotDue(f"this schedule is not due for renewal until {on_date(end - NOTICE, settings.timezone)}, three weeks before it ends")

@@ -76,7 +76,7 @@ class RenewalCase(unittest.TestCase):
             renewal.renewed(opened, self.settings, job, now)
 
 
-BAD_TIMES = (float("inf"), float("-inf"), float("nan"), 1e300, dates.LATEST_INSTANT + 1, 0.0, -5.0)
+BAD_TIMES = (float("inf"), float("-inf"), float("nan"), 1e300, dates.LATEST_STORED + 1, 0.0, -5.0)
 
 
 class StoredBadScheduleTests(RenewalCase):

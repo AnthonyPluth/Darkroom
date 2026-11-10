@@ -157,7 +157,7 @@ def kind_for(opened: Session, account: GoogleAccount, created_at: float) -> Lite
         return "manual"
     earlier = select(func.count(Export.id)).where(Export.account_id == account.id, Export.kind != "manual")
     if since is not None:
-        earlier = earlier.where(Export.created_at >= since - SCHEDULE_SLACK, Export.created_at <= dates.LATEST_INSTANT)
+        earlier = earlier.where(Export.created_at >= since - SCHEDULE_SLACK, Export.created_at <= dates.LATEST_STORED)
     return "incremental" if opened.execute(earlier).scalar_one() else "initial"
 
 
