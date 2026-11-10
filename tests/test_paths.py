@@ -877,10 +877,6 @@ class RemoveLosingCopyTests(unittest.TestCase):
             self.fail("a keeper that is not the recorded file is never yielded")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class InboxLinkTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -939,6 +935,20 @@ class InboxLinkTests(unittest.TestCase):
         for path in (self.export / "link.txt", self.export / "hop/IMG_1.JPG", self.export / "folder", self.export / "pipe"):
             with self.subTest(path=path), self.assertRaises(paths.LinkRefused):
                 paths.inbox_sha1(self.photos, path)
+
+    def test_a_hard_linked_file_is_never_read(self):
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        outside = Path(other.name).resolve() / "part.zip"
+        outside.write_bytes(b"zip")
+        os.link(self.kept, self.export / "hard.jpg")
+        os.link(outside, Path(other.name).resolve() / "twin.zip")
+        for read in (lambda: paths.inbox_sha1(self.photos, self.export / "hard.jpg"), lambda: paths.open_import_part(self.photos, self.export / "hard.jpg"),
+                     lambda: paths.plain_sha1(outside)):
+            with self.subTest(read=read), self.assertRaises(paths.LinkRefused):
+                read()
+        self.assertEqual(paths.plain_entries(str(self.export), ["hard.jpg"]), [])
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
 
     def test_an_import_part_outside_the_inbox_is_read_but_never_through_a_link(self):
         other = tempfile.TemporaryDirectory()
@@ -1039,3 +1049,7 @@ class InboxLinkTests(unittest.TestCase):
         with paths.inbox_folder(self.photos, hold.parent, create=False) as folder, self.assertRaises(paths.AlreadyExists):
             paths.copy_entry("a.jpg", "c.jpg", folder)
         self.assertEqual(self.kept.read_bytes(), b"an original")
+
+
+if __name__ == "__main__":
+    unittest.main()

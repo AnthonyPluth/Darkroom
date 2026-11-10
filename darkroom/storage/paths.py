@@ -1483,7 +1483,7 @@ def open_entry(name: str, folder: int, flags: int, mode: int = 0o666) -> int:
 def open_inbox_file(photos: Photos, path: Path) -> BinaryIO:
     with inbox_folder(photos, path.parent, create=False) as folder:
         fd = open_entry(path.name, folder, os.O_RDONLY)
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
+    if not plain_file(os.fstat(fd)):
         os.close(fd)
         raise LinkRefused("not a plain file in the inbox")
     return os.fdopen(fd, "rb")
@@ -1509,7 +1509,7 @@ def open_plain_file(path: Path) -> BinaryIO:
         if error.errno == errno.ELOOP:
             raise LinkRefused("the file is a link") from error
         raise
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
+    if not plain_file(os.fstat(fd)):
         os.close(fd)
         raise LinkRefused("not a plain file")
     return os.fdopen(fd, "rb")
@@ -1517,8 +1517,9 @@ def open_plain_file(path: Path) -> BinaryIO:
 
 def open_import_part(photos: Photos, path: Path) -> BinaryIO:
     inbox = photos.root / INBOX
-    if path.is_relative_to(inbox):
-        return open_inbox_file(photos, path)
+    spelled = Path(os.path.abspath(path))
+    if spelled.is_relative_to(inbox):
+        return open_inbox_file(photos, spelled)
     if path.resolve().is_relative_to(inbox):
         raise LinkRefused("a link leads into the inbox")
     return open_plain_file(path)
@@ -1536,7 +1537,7 @@ def plain_entries(folder: str, names: Iterable[str]) -> list[str]:
     found = []
     for name in names:
         try:
-            if stat.S_ISREG(os.lstat(os.path.join(folder, name)).st_mode):
+            if plain_file(os.lstat(os.path.join(folder, name))):
                 found.append(name)
         except FileNotFoundError:
             continue

@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import tempfile
 import unittest
@@ -104,6 +105,18 @@ class ThumbnailTests(unittest.TestCase):
         folder.symlink_to(self.originals, target_is_directory=True)
         before = sorted((p.name, p.read_bytes()) for p in self.originals.iterdir())
         self.assertEqual(decoded(thumbs.thumbnail(self.photos, "jo", source, no_preview)).size, (64, 48))
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.originals.iterdir()), before)
+
+    def test_a_cache_file_swapped_for_a_hard_link_is_not_read(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        (cached,) = (self.root / "_inbox" / "jo" / ".thumbs").iterdir()
+        secret = self.originals / "secret.jpg"
+        secret.write_bytes(b"not for the viewer")
+        before = sorted((p.name, p.read_bytes()) for p in self.originals.iterdir())
+        cached.unlink()
+        os.link(secret, cached)
+        self.assertNotEqual(thumbs.thumbnail(self.photos, "jo", source, no_preview), b"not for the viewer")
         self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.originals.iterdir()), before)
 
     def test_a_cache_swapped_for_a_link_is_not_read(self):

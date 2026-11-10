@@ -1140,6 +1140,26 @@ class PrivacyTests(ReviewCase):
             self.assertNotIn(canary, details)
 
 
+class StagedTextTests(unittest.TestCase):
+    def test_a_staged_sidecar_is_read_only_when_it_is_a_plain_file(self):
+        import tempfile
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name).resolve()
+        photos = paths.Photos(root)
+        staging = root / "_inbox/jo/export-1/staging"
+        staging.mkdir(parents=True)
+        (staging / "a.json").write_bytes(b'{"title": "a"}')
+        secret = root / "secret.json"
+        secret.write_bytes(b'{"title": "secret"}')
+        (staging / "b.json").symlink_to(secret)
+        os.link(secret, staging / "c.json")
+        self.assertEqual(review.staged_text(photos, staging / "a.json"), '{"title": "a"}')
+        self.assertIsNone(review.staged_text(photos, staging / "b.json"))
+        self.assertIsNone(review.staged_text(photos, staging / "c.json"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

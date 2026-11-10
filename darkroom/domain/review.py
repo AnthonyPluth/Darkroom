@@ -295,13 +295,22 @@ def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path:
     return staged, None
 
 
+def staged_text(photos: Photos, path: Path) -> str | None:
+    try:
+        with paths.open_inbox_file(photos, path) as handle:
+            return handle.read().decode("utf-8", errors="replace")
+    except paths.OutsideRoot:
+        return None
+
+
 def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_id: int, now: float, read: xmp.Reader) -> tuple[TakeoutItem, MediaItem]:
     staged, found_sidecar = (None, None) if hit.decision.source_path is None else staged_sidecar(opened, photos, hit.export, hit.decision.source_path)
-    raw = hit.review.sidecar_json if found_sidecar is None else found_sidecar.read_text(encoding="utf-8", errors="replace")
+    text = None if found_sidecar is None else staged_text(photos, found_sidecar)
+    raw = hit.review.sidecar_json if text is None else text
     parsed = sidecar.parse(raw) if raw else None
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
     fields = metadata.candidate(item, read_tags(read, hold), parsed, person_id, UNPLACED, now, hit.export.id)
-    expected = media.sha1_of(staged)[0] if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
+    expected = cleanup.inbox_sha1(photos, staged) if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
     if expected is None:
         raise WrongState("the held copy can no longer be checked against the export, so it was not kept")
     if expected != fields.sha1:

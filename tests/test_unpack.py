@@ -398,6 +398,59 @@ class UnpackTests(unittest.TestCase):
         self.assertEqual(report.problems, [unpack.OUTSIDE_THE_INBOX])
         self.assertEqual(self.originals_tree(), {})
 
+    def test_a_hard_linked_zip_in_the_manual_inbox_is_not_registered(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        for part in standard_export(elsewhere).parts:
+            os.link(part, self.inbox / part.name)
+        before = self.originals_tree()
+        self.assertEqual(unpack.group_manual_zips(self.inbox), {})
+        self.assertEqual(self.run_inbox(), [])
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_part_swapped_for_a_hard_link_is_refused(self):
+        standard_export(self.inbox)
+        self.registered()
+        part = self.inbox / "takeout-20260101T000000Z-001.zip"
+        moved = self.root / "elsewhere.zip"
+        part.rename(moved)
+        os.link(moved, part)
+        report = self.unpack_again()
+        self.assertEqual(report.public, ["part 1 is a link or not a plain file"])
+        self.assertFalse(self.staging().exists())
+        self.assertEqual(self.originals_tree(), {})
+
+    def in_folder(self, folder):
+        before = os.getcwd()
+        os.chdir(folder)
+        self.addCleanup(os.chdir, before)
+
+    def registered_from(self, folder):
+        with db.session(self.engine) as opened:
+            person = self.person(opened)
+            (export,) = unpack.register_zips(opened, person, folder, 1.0)
+            return unpack.unpack(opened, self.photos, person, export, 2.0)
+
+    def test_a_relative_folder_registers_and_unpacks_its_zips(self):
+        for spelled in ("data/drop", "data/elsewhere/../drop"):
+            with self.subTest(spelled=spelled):
+                with db.session(self.engine) as opened:
+                    opened.query(ExportPart).delete()
+                    opened.query(Export).delete()
+                (self.root / "data/elsewhere").mkdir(parents=True, exist_ok=True)
+                (self.root / "data/drop").mkdir(parents=True, exist_ok=True)
+                standard_export(self.root / "data/drop")
+                self.in_folder(self.root)
+                self.assertEqual(len(next(iter(unpack.group_manual_zips(Path(spelled)).values()))), 2)
+                report = self.registered_from(Path(spelled))
+                self.assertEqual((report.parts_unpacked + report.parts_skipped, report.problems), (2, []))
+
+    def test_a_relative_folder_inside_the_inbox_still_unpacks(self):
+        standard_export(self.inbox)
+        self.in_folder(self.photos.root)
+        report = self.registered_from(Path("_inbox/jo/manual"))
+        self.assertEqual((report.parts_unpacked, report.problems), (2, []))
+
     def test_person_without_an_account_cannot_register(self):
         with db.session(self.engine) as opened:
             add_person(opened, "al")

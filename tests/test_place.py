@@ -1,6 +1,7 @@
 import hashlib
 import itertools
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -353,6 +354,21 @@ class LinkedInboxTests(Household):
 
         with mock.patch.object(self.photos, "review_hold", side_effect=swapping), self.assertRaises(place.PlaceFailed):
             self.place(entry)
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_staged_file_swapped_for_a_hard_link_is_never_held_or_placed(self):
+        secret, mine = self.phone("sam", self.sam)
+        before = self.originals_tree()
+        for tier in (4, 5):
+            with self.subTest(tier=tier):
+                entry = self.entry(self.staged(f"IMG_{tier}.JPG"), tier=tier, person=self.sam, matched=mine if tier == 4 else None)
+                entry.item.path.unlink()
+                os.link(secret, entry.item.path)
+                entry.fields.sha1 = sha1_of(secret)
+                with self.assertRaises(place.PlaceFailed):
+                    self.place(entry)
+        self.assertEqual(self.held(), [])
+        self.assertEqual(tree(self.root / "jo/google-only"), {})
         self.assertEqual(self.originals_tree(), before)
 
     def test_a_staged_file_that_changed_while_it_was_copied_is_never_held(self):

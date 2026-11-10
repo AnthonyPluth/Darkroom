@@ -167,8 +167,9 @@ def unpack(opened: Session, photos: Photos, person: Person, export: Export, now:
 
 def group_manual_zips(folder: Path) -> dict[tuple[Path, str], dict[int, Path]]:
     groups: dict[tuple[Path, str], dict[int, Path]] = {}
+    real = folder.resolve()
     for path in sorted(folder.rglob("*.zip")) if folder.is_dir() and not folder.is_symlink() else []:
-        if path.is_symlink() or path.resolve() != path:
+        if path.resolve() != real / path.relative_to(folder) or not paths.plain_file(path.lstat()):
             continue
         found = PART_NAME.match(path.name)
         stamp, number = (found.group("stamp"), int(found.group("number"))) if found else (path.stem, 1)

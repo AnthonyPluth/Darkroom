@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 import zipfile
@@ -222,6 +223,17 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(report.orphan_sidecars, [])
         (self.root / "linked-stage").symlink_to(self.root / "stage-links", target_is_directory=True)
         self.assertEqual(pairing.pair(self.root / "linked-stage").items, [])
+
+    def test_a_hard_linked_file_in_the_staging_folder_is_left_out(self):
+        outside = self.root / "outside-hard"
+        outside.mkdir()
+        (outside / "secret.jpg").write_bytes(b"not part of the export")
+        staging = self.root / "stage-hard" / YEAR
+        staging.mkdir(parents=True)
+        (staging / "IMG_1.JPG").write_bytes(b"a staged photo")
+        os.link(outside / "secret.jpg", staging / "IMG_2.JPG")
+        report = pairing.pair(self.root / "stage-hard")
+        self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
 
     def test_a_file_that_becomes_a_link_before_it_is_hashed_is_left_out(self):
         staging = self.root / "stage-swap" / YEAR

@@ -318,5 +318,28 @@ class NoSecretKeyTests(ApiCase):
             self.assertEqual([p.slug for p in opened.execute(select(Person)).scalars()], ["jo"])
 
 
+class LinkedInboxTests(ApiCase):
+    def test_a_person_is_not_added_through_a_linked_inbox(self):
+        import shutil
+        import tempfile
+
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        inbox = self.photos / "_inbox"
+        if inbox.exists():
+            shutil.rmtree(inbox)
+        for target in (Path(elsewhere.name), self.photos / "elsewhere"):
+            with self.subTest(target=target):
+                target.mkdir(exist_ok=True)
+                inbox.unlink(missing_ok=True)
+                inbox.symlink_to(target, target_is_directory=True)
+                status, reply = self.call("POST", "/api/people", {"name": "Sam", "slug": "sam"})
+                self.assertEqual(status, 409)
+                self.assertIn("_inbox folder is a link", reply["error"])
+                self.assertFalse((self.photos / "sam").exists())
+                self.assertEqual(list(target.iterdir()), [])
+                self.assertEqual(self.call("GET", "/api/people")[1], {"people": []})
+
+
 if __name__ == "__main__":
     unittest.main()
