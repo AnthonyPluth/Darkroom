@@ -49,6 +49,7 @@ class Settings:
     resend_api_key: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""
+    allowed_hosts: tuple[str, ...] = ()
 
 
 def load() -> Settings:
@@ -76,6 +77,7 @@ def load() -> Settings:
         resend_api_key=env("RESEND_API_KEY"),
         alert_email_from=env("ALERT_EMAIL_FROM"),
         alert_email_to=env("ALERT_EMAIL_TO"),
+        allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
     )
 
 
@@ -139,6 +141,55 @@ def no_auth_allowed(settings: Settings) -> bool:
     return settings.allow_no_auth and no_auth_misused(settings) is None
 
 
+def ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+NOT_IN_A_HOST = frozenset("@/?#\\")
+HOST_NAME = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*")
+
+
+def host_name(value: str) -> str:
+    value = value.strip()
+    if not value or any(character in NOT_IN_A_HOST or character.isspace() for character in value):
+        return ""
+    if ip_literal(value.strip("[]")):
+        return value.strip("[]").lower()
+    try:
+        name = (urlsplit("//" + value).hostname or "").rstrip(".")
+    except ValueError:
+        return ""
+    return name if ip_literal(name) or HOST_NAME.fullmatch(name) else ""
+
+
+def public_host(settings: Settings) -> str:
+    try:
+        return urlsplit(settings.public_url).hostname or ""
+    except ValueError:
+        return ""
+
+
+def no_auth_hosts(settings: Settings) -> frozenset[str]:
+    named = ("localhost", settings.host, public_host(settings), *settings.allowed_hosts)
+    return frozenset(name for name in (host_name(value) for value in named) if name)
+
+
+def no_auth_host_allowed(settings: Settings, host: str) -> bool:
+    name = host_name(host)
+    return bool(name) and (ip_literal(name) or name in no_auth_hosts(settings))
+
+
+def allowed_hosts_problems(settings: Settings) -> list[str]:
+    unusable = [value for value in settings.allowed_hosts if not host_name(value)]
+    if not unusable:
+        return []
+    return ["DARKROOM_ALLOWED_HOSTS is a comma-separated list of host names, like tower.local, without a scheme, path or wildcard"]
+
+
 def demo_misused(settings: Settings) -> str | None:
     if not settings.demo:
         return None
@@ -187,7 +238,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings)
+    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
