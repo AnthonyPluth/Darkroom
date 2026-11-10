@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import Protocol
 
 from sqlalchemy import exists, select
@@ -142,25 +142,38 @@ class Run:
         self.opened.flush()
         return row
 
-    def store(self, asset: immich.Asset) -> tuple[MediaItem, bool]:
-        db.write_lock(self.opened)
-        present = self.opened.execute(
-            select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1).order_by(MediaItem.id).limit(1)
-        ).scalar_one_or_none()
-        if present is not None:
-            return present, False
+    def present(self, sha1: str, fresh: bool = False) -> MediaItem | None:
+        query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == sha1).order_by(MediaItem.id).limit(1)
+        return self.opened.execute(query.execution_options(populate_existing=fresh)).scalar_one_or_none()
+
+    def fetch(self, asset: immich.Asset) -> Path | None:
+        if self.present(asset.sha1) is not None:
+            return None
         destination = self.photos.originals(self.person.slug) / IMMICH_FOLDER / copy_name(asset)
         with suppress(paths.AlreadyExists):
             paths.write_once(destination, self.client.original_chunks(self.key, asset))
         if media.sha1_of(destination)[0] != asset.sha1:
             raise CopyMismatch("a different file is already at the copy's name")
-        report = index.index_file(self.opened, self.photos, self.person, destination, self.now, self.read)
+        return destination
+
+    def store(self, assets: list[immich.Asset]) -> list[tuple[MediaItem, bool]]:
+        fetched = [self.fetch(asset) for asset in assets]
+        copies = [destination for destination in fetched if destination is not None]
+        report = index.index_paths(self.opened, self.photos, self.person, copies, self.now, self.read) if copies else index.IndexReport()
         if report.skipped or report.set_aside:
             raise SetAside("the index set the copy in originals aside; it is tried again in a day")
-        item = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.path == index.relative(self.photos, destination))).scalar_one_or_none()
-        if item is None or report.failed or item.sha1 != asset.sha1:
-            raise CopyMismatch("the copy in originals could not be checked against the Immich asset")
-        return item, True
+        db.write_lock(self.opened)
+        stored: list[tuple[MediaItem, bool]] = []
+        for asset, destination in zip(assets, fetched, strict=True):
+            if destination is None:
+                item = self.present(asset.sha1, fresh=True)
+            else:
+                query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.path == index.relative(self.photos, destination))
+                item = self.opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
+            if item is None or report.failed or item.sha1 != asset.sha1:
+                raise CopyMismatch("the copy in originals could not be checked against the Immich asset")
+            stored.append((item, destination is not None))
+        return stored
 
     def offer(self, row: ImmichAsset) -> None:
         item = None if row.original_item_id is None else self.opened.get(MediaItem, row.original_item_id)
@@ -186,7 +199,8 @@ class Run:
             halves.append((video, "live_video", asset.id))
             self.handled.add(video.id)
         try:
-            stored = [(half, kind, linked, *self.store(half)) for half, kind, linked in halves]
+            results = self.store([half for half, _, _ in halves])
+            stored = [(half, kind, linked, item, copied) for (half, kind, linked), (item, copied) in zip(halves, results, strict=True)]
         except SetAside:
             self.opened.commit()
             self.fail(asset, "photo", SetAside.__name__)

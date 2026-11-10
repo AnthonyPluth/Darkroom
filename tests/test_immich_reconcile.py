@@ -154,6 +154,28 @@ class LivePhotoTests(ReconcileCase):
         self.assertEqual((rows[still.id].kind, rows[video.id].kind), ("photo", "live_video"))
         self.assertEqual(len(self.copies()), 2)
 
+    def test_both_halves_are_downloaded_and_read_before_the_write_lock_is_taken(self):
+        self.live()
+        order = []
+        real_write, real_lock = reconcile.paths.write_once, reconcile.db.write_lock
+
+        def write_once(destination, chunks):
+            order.append("download")
+            return real_write(destination, chunks)
+
+        def read(found):
+            order.append("exiftool")
+            return exiftool.read(found)
+
+        def lock(opened):
+            order.append("lock")
+            real_lock(opened)
+
+        with mock.patch.object(reconcile.paths, "write_once", write_once), mock.patch.object(reconcile.db, "write_lock", lock):
+            report = reconcile.reconcile_person(self.world.opened, self.settings, self.jo, NOW, read=read)
+        self.assertEqual(report.stored, 2)
+        self.assertEqual(order[:4], ["download", "download", "exiftool", "lock"])
+
     def test_a_hidden_video_without_its_still_waits_and_is_never_stored_alone(self):
         self.world.fake.add_asset(FakeAsset(id="vid", owner_id="u-jo", data=b"v", kind="VIDEO", visibility="hidden", metadata=()))
         report = self.run_it()

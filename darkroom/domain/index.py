@@ -203,6 +203,34 @@ def to_index(opened: Session, person: Person, seen: list[Seen], now: float) -> t
     return pending, unchanged, skipped
 
 
+@dataclass(frozen=True)
+class Outcome:
+    key: str
+    print_: media.Fingerprint | None = None
+    set_aside: str | None = None
+    failure: str | None = None
+
+
+def examine(read: Reader, pending: list[Pending]) -> tuple[list[Outcome], set[str], str]:
+    tags = read_all(read, [file.path for file in pending])
+    outcomes: list[Outcome] = []
+    for file in pending:
+        if file.path in tags.deferred:
+            continue
+        if file.path in tags.unreadable:
+            outcomes.append(Outcome(file.key, set_aside=UNREADABLE))
+            continue
+        try:
+            outcomes.append(Outcome(file.key, print_=media.fingerprint(file.path, usable(tags.found.get(file.path)))))
+        except Unusable as error:
+            outcomes.append(Outcome(file.key, set_aside=str(error)))
+        except media.UNDECODABLE:
+            outcomes.append(Outcome(file.key, set_aside=UNUSABLE))
+        except Exception as error:
+            outcomes.append(Outcome(file.key, failure=type(error).__name__))
+    return outcomes, {file.key for file in pending if file.path in tags.deferred}, tags.error
+
+
 def index_files(opened: Session, photos: Photos, person: Person, files: list[Path], now: float, report: IndexReport, read: Reader) -> None:
     seen: list[Seen] = []
     for path in files:
@@ -213,44 +241,44 @@ def index_files(opened: Session, photos: Photos, person: Person, files: list[Pat
             continue
         seen.append(Seen(path, relative(photos, path), stat.st_size, stat.st_mtime))
     pending, unchanged, skipped = to_index(opened, person, seen, now)
-    if pending:
-        db.write_lock(opened)
-        pending, unchanged, skipped = to_index(opened, person, seen, now)
+    if not pending:
+        report.unchanged += unchanged
+        report.skipped += skipped
+        return
+    outcomes, deferred, error = examine(read, pending)
+    db.write_lock(opened)
+    current, unchanged, skipped = to_index(opened, person, seen, now)
     report.unchanged += unchanged
     report.skipped += skipped
-    if not pending:
-        return
-    tags = read_all(read, [file.path for file in pending])
-    if tags.deferred:
-        report.failed += len(tags.deferred)
-        detail = f"exiftool could not read {len(tags.deferred)} file(s) now, tried again next run"
-        events.record(opened, now, "index_failed", person.slug, f"{detail}: {tags.error}" if tags.error else detail)
-    for file in pending:
-        if file.path in tags.deferred:
+    still = {file.key: file for file in current}
+    examined = {outcome.key for outcome in outcomes}
+    unread = [key for key in still if key in deferred or key not in examined]
+    if unread:
+        report.failed += len(unread)
+        detail = f"exiftool could not read {len(unread)} file(s) now, tried again next run"
+        events.record(opened, now, "index_failed", person.slug, f"{detail}: {error}" if error else detail)
+    for outcome in outcomes:
+        file = still.get(outcome.key)
+        if file is None:
             continue
-        if file.path in tags.unreadable:
-            set_aside(opened, person, file, UNREADABLE, now, report)
-            continue
-        try:
-            print_ = media.fingerprint(file.path, usable(tags.found.get(file.path)))
-        except Unusable as error:
-            set_aside(opened, person, file, str(error), now, report)
-            continue
-        except media.UNDECODABLE:
-            set_aside(opened, person, file, UNUSABLE, now, report)
-            continue
-        except Exception as error:
-            failed(opened, person, type(error).__name__, now, report)
-            continue
-        item = file.item
-        if item is None:
-            item = MediaItem(person_id=person.id, source="phone", path=file.key, sha1="", bytes=0, indexed_at=now)
-            opened.add(item)
-            report.new += 1
+        if outcome.set_aside is not None:
+            set_aside(opened, person, file, outcome.set_aside, now, report)
+        elif outcome.failure is not None or outcome.print_ is None:
+            failed(opened, person, outcome.failure or UNUSABLE, now, report)
         else:
-            report.changed += 1
-        apply(item, print_, file.mtime, now)
-        forget_skip(opened, person, file.key)
+            record(opened, person, file, outcome.print_, now, report)
+
+
+def record(opened: Session, person: Person, file: Pending, print_: media.Fingerprint, now: float, report: IndexReport) -> None:
+    item = file.item
+    if item is None:
+        item = MediaItem(person_id=person.id, source="phone", path=file.key, sha1="", bytes=0, indexed_at=now)
+        opened.add(item)
+        report.new += 1
+    else:
+        report.changed += 1
+    apply(item, print_, file.mtime, now)
+    forget_skip(opened, person, file.key)
 
 
 def forget_gone_skips(opened: Session, photos: Photos, person: Person, files: list[Path]) -> None:
@@ -294,17 +322,21 @@ def skipped_by_person(opened: Session) -> dict[int, int]:
 
 
 def counts_by_person(opened: Session) -> list[tuple[str, str, int]]:
-    phone_items = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & (MediaItem.sha1 != UNKNOWN_SHA1)
-    query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone_items)
+    phone = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & (MediaItem.sha1 != UNKNOWN_SHA1)
+    query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone)
              .group_by(Person.id, Person.slug, Person.name).order_by(Person.id))
     return [(slug, name, int(count)) for slug, name, count in opened.execute(query).all()]
 
 
-def index_file(opened: Session, photos: Photos, person: Person, path: Path, now: float, read: Reader = exiftool.read) -> IndexReport:
+def index_paths(opened: Session, photos: Photos, person: Person, paths: list[Path], now: float, read: Reader = exiftool.read) -> IndexReport:
     report = IndexReport()
-    resolved = path.resolve()
     root = photos.originals(person.slug)
-    if resolved.is_file() and resolved.is_relative_to(root) and wanted(root, resolved):
-        index_files(opened, photos, person, [resolved], now, report, read)
+    wanted_paths = [resolved for resolved in (path.resolve() for path in paths) if resolved.is_file() and resolved.is_relative_to(root) and wanted(root, resolved)]
+    if wanted_paths:
+        index_files(opened, photos, person, wanted_paths, now, report, read)
     opened.flush()
     return report
+
+
+def index_file(opened: Session, photos: Photos, person: Person, path: Path, now: float, read: Reader = exiftool.read) -> IndexReport:
+    return index_paths(opened, photos, person, [path], now, read)

@@ -366,10 +366,10 @@ class PoisonFileTests(unittest.TestCase):
         self.assertEqual(calls, [["a.jpg", "b.jpg", "c.jpg"], ["d.jpg", "e.jpg", "poison.jpg"], ["d.jpg"], ["e.jpg"], ["poison.jpg"]])
         self.assertEqual((report.new, report.set_aside), (5, 1))
 
-    def test_the_write_lock_is_taken_before_the_state_that_decides_the_writes_is_read(self):
+    def test_exiftool_and_hashing_run_without_the_write_lock_which_is_taken_before_the_deciding_reads(self):
         fixtures.make_jpeg(self.originals / "a.jpg")
         order = []
-        real_items, real_skips = index.phone_items, index.skips_of
+        real_items, real_skips, real_fingerprint = index.phone_items, index.skips_of, media.fingerprint
 
         def items(opened, person):
             order.append("items")
@@ -379,15 +379,23 @@ class PoisonFileTests(unittest.TestCase):
             order.append("skips")
             return real_skips(opened, person)
 
+        def reader(paths):
+            order.append("exiftool")
+            return described(paths)
+
+        def fingerprint(path, tags):
+            order.append("fingerprint")
+            return real_fingerprint(path, tags)
+
         with mock.patch.object(index, "phone_items", items), mock.patch.object(index, "skips_of", skips), \
-                mock.patch.object(index.db, "write_lock", lambda opened: order.append("lock")):
-            self.run_index(read=described)
-            self.assertEqual(order[:5], ["items", "skips", "lock", "items", "skips"])
+                mock.patch.object(media, "fingerprint", fingerprint), mock.patch.object(index.db, "write_lock", lambda opened: order.append("lock")):
+            self.assertEqual(self.run_index(read=reader).new, 1)
+            self.assertEqual(order[:7], ["items", "skips", "exiftool", "fingerprint", "lock", "items", "skips"])
             order.clear()
-            self.run_index(now=200.0, read=described)
+            self.run_index(now=200.0, read=reader)
             self.assertNotIn("lock", order)
 
-    def test_what_another_run_recorded_just_before_the_lock_decides_what_this_run_does(self):
+    def test_what_another_run_recorded_before_the_lock_decides_what_this_run_writes(self):
         photo = fixtures.make_jpeg(self.originals / "a.jpg")
         real_lock = index.db.write_lock
 
@@ -398,8 +406,9 @@ class PoisonFileTests(unittest.TestCase):
             real_lock(opened)
 
         with mock.patch.object(index.db, "write_lock", another_run_finishes_first):
-            report = self.run_index(read=lambda paths: self.fail("a file another run set aside was read again"))
-        self.assertEqual((report.new, report.skipped), (0, 1))
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.skipped, report.failed), (0, 1, 0))
+        self.assertEqual(self.items(), {})
         self.assertEqual(self.skips(), {"jo/originals/a.jpg": index.UNREADABLE})
 
     def test_running_out_of_memory_on_a_file_is_not_set_aside(self):
