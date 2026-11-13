@@ -9,10 +9,10 @@ from pathlib import Path
 from sqlalchemy import select
 
 from darkroom import dates
-from darkroom.domain import accounts, alerts, browser_jobs, renewal
+from darkroom.domain import accounts, alerts, browser_jobs, downloads, renewal
 from darkroom.server import jobs
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, Event, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, GoogleAccount
 from tests.shared import add_person, own_database, settings_from
 
 HOUR = 3600.0
@@ -74,6 +74,63 @@ class RenewalCase(unittest.TestCase):
         with db.session(self.engine) as opened:
             job = browser_jobs.done(opened, job_id, {"schedule_created": created, "schedule_end": created + 365 * DAY if end is None else end}, now)
             renewal.renewed(opened, self.settings, job, now)
+
+
+BAD_TIMES = (float("inf"), float("-inf"), float("nan"), 1e300, 5e9, dates.LATEST_INSTANT + 1, 0.0, -5.0)
+
+
+class StoredBadScheduleTests(RenewalCase):
+    def set_schedule(self, created, end):
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account)
+            account.schedule_created, account.schedule_end = created, end
+
+    def test_a_schedule_with_a_time_that_is_not_an_instant_is_no_schedule(self):
+        good = GoogleAccount(email="a@example.test", default_person_id=1, created=1.0, schedule_created=CREATED, schedule_end=END)
+        self.assertTrue(browser_jobs.schedule_live(good, CREATED + DAY))
+        self.assertEqual(browser_jobs.schedule_of(good), (CREATED, END))
+        for bad in BAD_TIMES:
+            for created, end in ((CREATED, bad), (bad, END), (bad, None)):
+                account = GoogleAccount(email="a@example.test", default_person_id=1, created=1.0, schedule_created=created, schedule_end=end)
+                with self.subTest(created=created, end=end):
+                    self.assertIsNone(browser_jobs.schedule_of(account))
+                    self.assertFalse(browser_jobs.schedule_live(account, CREATED + DAY))
+                    self.assertTrue(browser_jobs.schedule_unusable(account))
+
+    def test_a_stored_infinite_end_lets_a_replacement_schedule_be_created_and_shows_as_no_schedule(self):
+        for end in (float("inf"), float("-inf"), 1e300):
+            with self.subTest(end=end):
+                self.set_schedule(CREATED, end)
+                with db.session(self.engine) as opened:
+                    for job in opened.execute(select(BrowserJob)).scalars():
+                        opened.delete(job)
+                    done = browser_jobs.queue(opened, self.account, "schedule", {}, CREATED)
+                    done.status = "done"
+                with db.session(self.engine) as opened:
+                    job = browser_jobs.enqueue_once(opened, self.account, "schedule", CREATED + DAY)
+                    self.assertEqual(job.kind, "schedule")
+                    shown = accounts.as_dict(opened, opened.get(GoogleAccount, self.account))
+                    self.assertEqual((shown["schedule_created"], shown["schedule_end"], shown["renew_from"]), (None, None, None))
+                    with self.assertRaises(renewal.NoSchedule):
+                        renewal.renew_now(opened, self.settings, self.account, CREATED + DAY)
+
+    def test_renewal_watching_neither_crashes_nor_waits_on_a_bad_stored_end(self):
+        for end in (float("inf"), float("-inf"), 1e300, 0.0):
+            with self.subTest(end=end):
+                self.set_schedule(CREATED, end)
+                for now in (NOTICE_AT, END + DAY):
+                    self.assertEqual(self.watch(now), 0)
+                    with db.session(self.engine) as opened:
+                        self.assertEqual(renewal.reword_ended(opened, self.settings, now), 0)
+                self.assertEqual(self.alerts_of("schedule_ending"), [])
+                self.assertEqual(self.renew_jobs(), [])
+
+    def test_the_export_expiry_watch_skips_a_stored_expiry_that_is_not_an_instant(self):
+        with db.session(self.engine) as opened:
+            for n, expires in enumerate((float("nan"), float("inf"), float("-inf"), 1e300)):
+                opened.add(Export(account_id=self.account, kind="manual", google_id=f"g-{n}", created_at=CREATED, ready_at=CREATED, expires_at=expires, status="announced"))
+        with db.session(self.engine) as opened:
+            self.assertEqual(downloads.watch_expiry(opened, self.settings, CREATED + DAY), 0)
 
 
 class RenewalTimingTests(RenewalCase):

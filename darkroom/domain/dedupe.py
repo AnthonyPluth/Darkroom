@@ -8,14 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events, media, pixel_folder
 from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, ReviewItem, Setting
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, ReviewItem, Setting, known_contents
 from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
 
 PHASH_MAX_DISTANCE = 8
@@ -161,7 +161,7 @@ class PersonIndex:
         if owner_person_id is not None:
             people = people | {owner_person_id}
         phone = opened.execute(
-            select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people)).order_by(MediaItem.id)
+            select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people), known_contents()).order_by(MediaItem.id)
         ).scalars()
         takeout = opened.execute(
             select(MediaItem).join(Export, Export.id == MediaItem.export_id)
@@ -381,6 +381,13 @@ def confirming(opened: Session, item_id: int, person_id: int) -> bool:
     return any(person_id in people for people in serving.values())
 
 
+def forget_confirmation(opened: Session, item: MediaItem) -> None:
+    db.write_lock(opened)
+    opened.execute(update(DedupeDecision).where(DedupeDecision.matched_item_id == item.id).values(matched_item_id=None))
+    item.confirmed_in_google = item.source == "phone" and confirming(opened, item.id, item.person_id)
+    opened.flush()
+
+
 def confirm_newly_served(opened: Session, account_id: int, before: set[int]) -> None:
     served = accounts.served_people(opened, account_id)
     if served <= before:
@@ -392,7 +399,7 @@ def confirm_served_matches(opened: Session, account_id: int, served: set[int]) -
     items = opened.execute(
         select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id).where(
             DedupeDecision.account_id == account_id, DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto",
-            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.confirmed_in_google.is_(False),
+            DedupeDecision.tier.in_(CONFIRMING_TIERS), MediaItem.source == "phone", MediaItem.confirmed_in_google.is_(False), known_contents(),
             MediaItem.person_id.in_(served), MediaItem.person_id == DedupeDecision.person_id,
         )
     ).scalars().unique()

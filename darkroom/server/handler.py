@@ -9,7 +9,7 @@ from sqlalchemy import Engine
 from sqlalchemy.exc import OperationalError
 
 from darkroom import monitoring
-from darkroom.config import Settings
+from darkroom.config import Settings, no_auth_allowed
 from darkroom.server import auth, routes, static
 from darkroom.server.common import CSP, Principal, Request, Response, error_response
 from darkroom.storage import db
@@ -34,6 +34,9 @@ def dispatch(request: Request) -> Response:
         return error_response("not found", 404)
     route, params = found
     request = replace(request, params=params)
+    if route.auth == "session" and no_auth_allowed(request.settings) and not auth.no_auth_address_allowed(request):
+        monitoring.log("request refused without sign-in", reason="host not allowed")
+        return error_response(auth.HOST_REFUSED, 403)
     if route.auth == "session" and request.method != "GET" and not auth.same_origin(request):
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":

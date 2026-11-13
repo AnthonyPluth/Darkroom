@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from darkroom.providers import exiftool
 from darkroom.storage.models import DedupeDecision, MediaItem
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
+from tests.import_world import tree
 from tests.review_world import ReviewCase
 
 
@@ -88,8 +90,45 @@ class ThumbnailTests(unittest.TestCase):
 
     def test_a_cache_that_cannot_be_written_still_answers(self):
         source = fixtures.make_jpeg(self.originals / "a.jpg")
-        with mock.patch.object(thumbs.paths, "write_once", side_effect=PermissionError("read-only")):
+        with mock.patch.object(thumbs.paths, "write_inbox_once", side_effect=PermissionError("read-only")):
             self.assertEqual(decoded(thumbs.thumbnail(self.photos, "jo", source, no_preview)).size, (64, 48))
+
+    def test_a_linked_thumbs_folder_is_never_read_or_written_through(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        folder = self.root / "_inbox" / "jo" / ".thumbs"
+        (name,) = [p.name for p in folder.iterdir()]
+        planted = self.originals / name
+        planted.write_bytes(b"not a thumbnail")
+        for path in folder.iterdir():
+            path.unlink()
+        folder.rmdir()
+        folder.symlink_to(self.originals, target_is_directory=True)
+        before = sorted((p.name, p.read_bytes()) for p in self.originals.iterdir())
+        self.assertEqual(decoded(thumbs.thumbnail(self.photos, "jo", source, no_preview)).size, (64, 48))
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.originals.iterdir()), before)
+
+    def test_a_cache_file_swapped_for_a_hard_link_is_not_read(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        (cached,) = (self.root / "_inbox" / "jo" / ".thumbs").iterdir()
+        secret = self.originals / "secret.jpg"
+        secret.write_bytes(b"not for the viewer")
+        before = sorted((p.name, p.read_bytes()) for p in self.originals.iterdir())
+        cached.unlink()
+        os.link(secret, cached)
+        self.assertNotEqual(thumbs.thumbnail(self.photos, "jo", source, no_preview), b"not for the viewer")
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.originals.iterdir()), before)
+
+    def test_a_cache_swapped_for_a_link_is_not_read(self):
+        source = fixtures.make_jpeg(self.originals / "a.jpg")
+        thumbs.thumbnail(self.photos, "jo", source, no_preview)
+        (cached,) = (self.root / "_inbox" / "jo" / ".thumbs").iterdir()
+        secret = self.root / "secret.jpg"
+        secret.write_bytes(b"not for the viewer")
+        cached.unlink()
+        cached.symlink_to(secret)
+        self.assertNotEqual(thumbs.thumbnail(self.photos, "jo", source, no_preview), b"not for the viewer")
 
     def test_files_outside_the_photo_root_or_links_are_refused(self):
         outside = fixtures.make_jpeg(self.root.parent / "outside.jpg")
@@ -165,6 +204,38 @@ class ThumbRouteTests(ReviewCase):
         opened.get(MediaItem, self.decision_of("IMG_1005.JPG").matched_item_id).path = "jo/originals/linked/IMG_1001.JPG"
         opened.commit()
         self.assertEqual(self.call("GET", f"/api/review/{row.id}/thumb/library"), (404, {"error": "no such picture"}))
+
+    def secret_jpeg(self):
+        secret = fixtures.make_jpeg(self.world.root / "jo" / "originals" / "secret.jpg", size=(37, 23))
+        return secret, tree(self.world.root, "_inbox")
+
+    def assert_no_picture_and_originals_kept(self, row, before):
+        status, reply = self.call("GET", f"/api/review/{row.id}/thumb/export")
+        self.assertEqual((status, reply), (404, {"error": "no such picture"}))
+        self.assertEqual(tree(self.world.root, "_inbox"), before)
+
+    def test_a_hold_replaced_by_a_hard_link_is_404(self):
+        row = self.pending()
+        secret, before = self.secret_jpeg()
+        hold = self.hold()
+        hold.unlink()
+        os.link(secret, hold)
+        self.assert_no_picture_and_originals_kept(row, before)
+
+    def test_a_hold_swapped_for_a_link_after_it_was_checked_is_never_rendered(self):
+        row = self.pending()
+        secret, before = self.secret_jpeg()
+        real = thumbs.checked
+
+        def checked_then_swapped(photos, source):
+            found = real(photos, source)
+            if "review" in source.parts:
+                source.unlink()
+                source.symlink_to(secret)
+            return found
+
+        with mock.patch.object(thumbs, "checked", side_effect=checked_then_swapped):
+            self.assert_no_picture_and_originals_kept(row, before)
 
     def test_a_missing_hold_or_side_is_404(self):
         row = self.pending()

@@ -60,7 +60,6 @@ services:
       - darkroom
     expose:
       - "6080"
-      - "5900"
     volumes:
       - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}/_inbox:/photos/_inbox
       - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}/_browser:/photos/_browser
@@ -70,6 +69,7 @@ services:
     environment:
       DARKROOM_URL: http://darkroom:8000
       DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
+      DARKROOM_VNC_SECRET: ${DARKROOM_VNC_SECRET:-}
       PHOTOS_ROOT: /photos
       POLL_SECONDS: ${POLL_SECONDS:-15}
       BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}

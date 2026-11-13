@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest import mock
 
-from darkroom.server import routes
+from darkroom.server import auth, routes
 from tests.shared import fetch, own_database, settings_from, start_server
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
@@ -157,6 +157,29 @@ class NoAuthModeTests(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_BROWSER_TOKEN=WORKER_TOKEN))
+
+    def test_every_session_route_refuses_a_host_name_it_does_not_answer_on(self):
+        found = [route for route in routes.ROUTES if route.auth == "session"]
+        self.assertTrue(found)
+        for route in found:
+            for headers in ({"Host": "rebound.example"}, {"Host": "rebound.example:8000", "Origin": "http://rebound.example:8000"}):
+                with self.subTest(route=f"{route.method} {route.path}", headers=headers):
+                    status, _, body = fetch(self.base, route.method, route.path, headers, None if route.method == "GET" else b"{}")
+                    self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
+
+    def test_every_state_changing_session_route_refuses_an_origin_it_does_not_answer_on(self):
+        found = [route for route in routes.ROUTES if route.auth == "session" and route.method != "GET"]
+        self.assertTrue(found)
+        for route in found:
+            with self.subTest(route=f"{route.method} {route.path}"):
+                status, _, body = fetch(self.base, route.method, route.path, {"Origin": "http://rebound.example"}, b"{}")
+                self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
+
+    def test_the_host_check_leaves_worker_routes_to_their_token(self):
+        for route in (route for route in routes.ROUTES if route.auth == "worker"):
+            with self.subTest(route=f"{route.method} {route.path}"):
+                status, _, _ = fetch(self.base, route.method, route.path, {"Host": "rebound.example"}, b"{}")
+                self.assertEqual(status, 401)
 
     def test_the_local_owner_shortcut_never_opens_worker_or_device_routes(self):
         for route in (route for route in routes.ROUTES if route.auth == "worker"):

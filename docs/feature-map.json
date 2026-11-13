@@ -6,6 +6,7 @@
       "handler": "darkroom.server.api.status.healthz",
       "frontend": [],
       "tests": [
+        "tests/test_auth_routes.py",
         "tests/test_every_route.py",
         "tests/test_healthz.py",
         "tests/test_routes_table.py",

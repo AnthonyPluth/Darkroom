@@ -16,7 +16,7 @@ from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -227,7 +227,10 @@ def export_view(photos: Photos, hit: Found, read: xmp.Reader) -> tuple[dict[str,
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         return base, None
-    shot = media.fingerprint(hold, read_tags(read, hold))
+    with paths.pinned_inbox_files(photos, [hold]) as pinned:
+        if hold not in pinned:
+            return base, None
+        shot = media.fingerprint(pinned[hold], read_tags(read, pinned[hold]), hold)
     base.update(
         held=True, bytes=shot.bytes, captured_utc=shot.captured_utc, captured_local=shot.captured_local, offset_minutes=shot.offset_minutes,
         make=shot.make, model=shot.model, width=shot.width, height=shot.height, duration_ms=shot.duration_ms,
@@ -295,13 +298,25 @@ def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path:
     return staged, None
 
 
+def staged_text(photos: Photos, path: Path) -> str | None:
+    try:
+        with paths.open_inbox_file(photos, path) as handle:
+            return handle.read().decode("utf-8", errors="replace")
+    except paths.OutsideRoot:
+        return None
+
+
 def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_id: int, now: float, read: xmp.Reader) -> tuple[TakeoutItem, MediaItem]:
     staged, found_sidecar = (None, None) if hit.decision.source_path is None else staged_sidecar(opened, photos, hit.export, hit.decision.source_path)
-    raw = hit.review.sidecar_json if found_sidecar is None else found_sidecar.read_text(encoding="utf-8", errors="replace")
+    text = None if found_sidecar is None else staged_text(photos, found_sidecar)
+    raw = hit.review.sidecar_json if text is None else text
     parsed = sidecar.parse(raw) if raw else None
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
-    fields = metadata.candidate(item, read_tags(read, hold), parsed, person_id, UNPLACED, now, hit.export.id)
-    expected = media.sha1_of(staged)[0] if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
+    with paths.pinned_inbox_files(photos, [hold]) as pinned:
+        if hold not in pinned:
+            raise WrongState("the held copy is a link or not a plain file, so it was not kept")
+        fields = metadata.candidate(item, read_tags(read, pinned[hold]), parsed, person_id, UNPLACED, now, hit.export.id, pinned[hold])
+    expected = cleanup.inbox_sha1(photos, staged) if staged is not None else hit.review.hold_sha1 or (cleanup.saved_hashes(opened, hit.export) or {}).get(str(hit.review.id))
     if expected is None:
         raise WrongState("the held copy can no longer be checked against the export, so it was not kept")
     if expected != fields.sha1:
@@ -648,7 +663,7 @@ def media_view(item: MediaItem) -> dict[str, object]:
 
 
 def missing_gps(opened: Session, person_id: int | None, start: float | None, end: float | None, page: int) -> tuple[list[dict[str, object]], int]:
-    query: Select[MediaItem] = select(MediaItem).where(or_(MediaItem.lat.is_(None), MediaItem.lon.is_(None)))
+    query: Select[MediaItem] = select(MediaItem).where(or_(MediaItem.lat.is_(None), MediaItem.lon.is_(None)), known_contents())
     if person_id is not None:
         query = query.where(MediaItem.person_id == person_id)
     if start is not None:

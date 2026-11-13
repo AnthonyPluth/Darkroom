@@ -15,7 +15,7 @@ def run_migrations_online() -> None:
         with context.begin_transaction():
             context.run_migrations()
         return
-    engine = engine_from_config(config.get_section(config.config_ini_section) or {}, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    engine = config.attributes.get("engine") or engine_from_config(config.get_section(config.config_ini_section) or {}, prefix="sqlalchemy.", poolclass=pool.NullPool)
     with engine.connect() as opened:
         context.configure(connection=opened, target_metadata=metadata, render_as_batch=True)
         with context.begin_transaction():

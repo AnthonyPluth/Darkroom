@@ -2,11 +2,16 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from darkroom.domain import events, index
+from sqlalchemy import delete
+
+from darkroom import dates
+from darkroom.domain import accounts, dedupe, events, index, media, pixel_folder, review, takeout_copies
+from darkroom.domain.ingest import run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import MediaItem, Person
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, IndexSkip, MediaItem, Person, Pixel, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database
@@ -227,6 +232,617 @@ class IndexTests(unittest.TestCase):
                 index.index_person(opened, self.photos, person, 1.0)
         with db.session(self.engine) as opened:
             self.assertEqual(sorted((i.person_id, i.path) for i in opened.query(MediaItem)), [(1, "jo/originals/a.jpg"), (2, "sam/originals/a.jpg")])
+
+
+
+def described(paths, extra=None):
+    return {path: {"SourceFile": str(path), "File:MIMEType": "image/jpeg", **(extra or {}).get(path.name, {})} for path in paths}
+
+
+class PoisonFileTests(unittest.TestCase):
+    setUp = IndexTests.setUp
+    run_index = IndexTests.run_index
+    items = IndexTests.items
+
+    def skips(self):
+        with db.session(self.engine) as opened:
+            return {row.path: row.reason for row in opened.query(IndexSkip)}
+
+    def failure_details(self):
+        with db.session(self.engine) as opened:
+            return [event.detail for event in events.recent(opened, type="index_failed")]
+
+    def test_a_header_claiming_billions_of_pixels_is_indexed_without_decoding_and_the_rest_still_are(self):
+        fixtures.make_jpeg(self.originals / "a.jpg", taken="2019:07:04 12:30:15")
+        fixtures.make_pixel_bomb(self.originals / "bomb.png")
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(9, 9, 9))
+        report = self.run_index()
+        self.assertEqual((report.new, report.failed), (3, 0))
+        items = self.items()
+        self.assertEqual((items["jo/originals/bomb.png"].phash, items["jo/originals/bomb.png"].dhash), (None, None))
+        self.assertEqual(len(items["jo/originals/a.jpg"].phash), 16)
+        self.assertEqual(len(items["jo/originals/z.jpg"].phash), 16)
+
+    def test_metadata_numbers_that_overflow_do_not_stop_the_run(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        poison = {"poison.jpg": {"IFD0:ImageWidth": float("inf"), "IFD0:ImageHeight": 1e300, "QuickTime:Duration": 1e308,
+                                 "ExifIFD:DateTimeOriginal": "0001:01:01 00:00:00", "ExifIFD:OffsetTimeOriginal": "+05:00",
+                                 "Composite:GPSLatitude": float("nan"), "Composite:GPSLongitude": 10.0},
+                  "z.jpg": {"ExifIFD:DateTimeOriginal": "9999:12:31 23:00:00", "ExifIFD:OffsetTimeOriginal": "-05:00", "IFD0:ImageWidth": -4}}
+        report = self.run_index(read=lambda paths: described(paths, poison))
+        self.assertEqual((report.new, report.failed), (3, 0))
+        bad, late = self.items()["jo/originals/poison.jpg"], self.items()["jo/originals/z.jpg"]
+        self.assertEqual((bad.width, bad.height, bad.duration_ms, bad.captured_utc, bad.time_source, bad.lat, bad.gps_source),
+                         (None, None, None, None, "unknown", None, "none"))
+        self.assertEqual(bad.captured_local, "0001-01-01T00:00:00")
+        self.assertEqual((late.captured_utc, late.time_source, late.width), (None, "unknown", None))
+
+    def test_a_file_that_makes_exiftool_fail_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        poison = fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        calls = []
+
+        def chokes(paths):
+            calls.append([path.name for path in paths])
+            if poison in paths:
+                raise exiftool.Unreadable("exiftool crashed on this file")
+            return described(paths)
+
+        report = self.run_index(read=chokes)
+        self.assertEqual((report.new, report.failed, report.skipped), (2, 1, 0))
+        self.assertEqual(sorted(self.items()), ["jo/originals/a.jpg", "jo/originals/z.jpg"])
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNREADABLE})
+        self.assertEqual(self.failure_details(), [f"{index.UNREADABLE}, {index.SKIP_NOTE}"])
+        self.assertEqual(calls, [["a.jpg", "poison.jpg", "z.jpg"], ["a.jpg"], ["poison.jpg"], ["z.jpg"]])
+
+        fixtures.make_jpeg(self.originals / "b.jpg", colour=(1, 1, 90))
+        calls.clear()
+        report = self.run_index(now=200.0, read=chokes)
+        self.assertEqual((report.new, report.unchanged, report.failed, report.skipped), (1, 2, 0, 1))
+        self.assertEqual(calls, [["b.jpg"]])
+        self.assertEqual(len(self.failure_details()), 1)
+
+        os.utime(poison, (1_900_000_000, 1_900_000_000))
+        report = self.run_index(now=300.0, read=described)
+        self.assertEqual((report.new, report.skipped), (1, 0))
+        self.assertIn("jo/originals/poison.jpg", self.items())
+        self.assertEqual(self.skips(), {})
+
+    def test_a_file_exiftool_times_out_on_is_not_set_aside_and_is_indexed_next_run_unchanged(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        slow = fixtures.make_jpeg(self.originals / "slow.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+
+        def times_out(paths):
+            if slow in paths:
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            return described(paths)
+
+        report = self.run_index(read=times_out)
+        self.assertEqual((report.new, report.failed, report.set_aside), (2, 1, 0))
+        self.assertEqual(self.skips(), {})
+        report = self.run_index(now=200.0, read=described)
+        self.assertEqual((report.new, report.unchanged, report.skipped), (1, 2, 0))
+        self.assertIn("jo/originals/slow.jpg", self.items())
+
+    def test_several_slow_files_share_one_time_budget_and_none_is_set_aside(self):
+        fixtures.make_jpeg(self.originals / "good.jpg")
+        for n in range(6):
+            fixtures.make_jpeg(self.originals / f"slow{n}.jpg", colour=(n, 9, 9))
+        clock = [1000.0]
+        calls = []
+
+        def slow_reader(paths):
+            calls.append([path.name for path in paths])
+            if len(paths) > 1:
+                clock[0] += exiftool.TIMEOUT
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            if paths[0].name.startswith("slow"):
+                clock[0] += exiftool.FILE_TIMEOUT
+                raise exiftool.TimedOut("exiftool took too long to read the files")
+            clock[0] += 1
+            return described(paths)
+
+        with mock.patch.object(index, "monotonic", lambda: clock[0]):
+            report = self.run_index(read=slow_reader)
+        self.assertLessEqual(clock[0] - 1000.0, exiftool.TIMEOUT + index.ISOLATION_SECONDS + exiftool.FILE_TIMEOUT)
+        self.assertEqual(len(calls), 1 + 1 + 5)
+        self.assertEqual((report.new, report.failed, report.set_aside), (1, 6, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 6)
+
+    def test_only_the_batch_that_failed_is_read_again_file_by_file(self):
+        for name in ("a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "poison.jpg"):
+            fixtures.make_jpeg(self.originals / name, colour=(len(name), ord(name[0]) % 200, 9))
+        calls = []
+
+        def chokes(paths):
+            calls.append([path.name for path in paths])
+            if any(path.name == "poison.jpg" for path in paths):
+                raise exiftool.Unreadable("exiftool crashed on this file")
+            return described(paths)
+
+        with mock.patch.object(exiftool, "BATCH", 3):
+            report = self.run_index(read=chokes)
+        self.assertEqual(calls, [["a.jpg", "b.jpg", "c.jpg"], ["d.jpg", "e.jpg", "poison.jpg"], ["d.jpg"], ["e.jpg"], ["poison.jpg"]])
+        self.assertEqual((report.new, report.set_aside), (5, 1))
+
+    def test_exiftool_and_hashing_run_without_the_write_lock_which_is_taken_before_the_deciding_reads(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        order = []
+        real_items, real_skips, real_fingerprint = index.phone_items, index.skips_of, media.fingerprint
+
+        def items(opened, person):
+            order.append("items")
+            return real_items(opened, person)
+
+        def skips(opened, person):
+            order.append("skips")
+            return real_skips(opened, person)
+
+        def reader(paths):
+            order.append("exiftool")
+            return described(paths)
+
+        def fingerprint(path, tags):
+            order.append("fingerprint")
+            return real_fingerprint(path, tags)
+
+        with mock.patch.object(index, "phone_items", items), mock.patch.object(index, "skips_of", skips), \
+                mock.patch.object(media, "fingerprint", fingerprint), mock.patch.object(index.db, "write_lock", lambda opened: order.append("lock")):
+            self.assertEqual(self.run_index(read=reader).new, 1)
+            self.assertEqual(order[:7], ["items", "skips", "exiftool", "fingerprint", "lock", "items", "skips"])
+            order.clear()
+            self.run_index(now=200.0, read=reader)
+            self.assertNotIn("lock", order)
+
+    def test_what_another_run_recorded_before_the_lock_decides_what_this_run_writes(self):
+        photo = fixtures.make_jpeg(self.originals / "a.jpg")
+        real_lock = index.db.write_lock
+
+        def another_run_finishes_first(opened):
+            with db.session(self.engine) as other:
+                other.add(IndexSkip(person_id=1, path="jo/originals/a.jpg", bytes=photo.stat().st_size, mtime=photo.stat().st_mtime,
+                                    reason=index.UNREADABLE, skipped_at=100.0))
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", another_run_finishes_first):
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.skipped, report.failed), (0, 1, 0))
+        self.assertEqual(self.items(), {})
+        self.assertEqual(self.skips(), {"jo/originals/a.jpg": index.UNREADABLE})
+
+    def test_a_path_set_aside_again_while_the_cleanup_waits_for_the_lock_keeps_its_new_skip(self):
+        notes = self.originals / "notes.jpg"
+        notes.write_bytes(b"not a picture")
+        self.run_index()
+        notes.unlink()
+        real_lock = index.db.write_lock
+
+        def the_reconcile_sets_it_aside_first(opened):
+            notes.write_bytes(b"not a picture either")
+            with db.session(self.engine) as other:
+                other.execute(delete(IndexSkip))
+                other.add(IndexSkip(person_id=1, path="jo/originals/notes.jpg", bytes=notes.stat().st_size, mtime=notes.stat().st_mtime,
+                                    reason=index.NOT_MEDIA, skipped_at=150.0))
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", the_reconcile_sets_it_aside_first):
+            self.run_index(now=200.0, read=lambda paths: self.fail("the walk ran before the file came back"))
+        self.assertEqual(self.skips(), {"jo/originals/notes.jpg": index.NOT_MEDIA})
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(IndexSkip).one().skipped_at, 150.0)
+
+    def test_nothing_to_forget_takes_no_lock(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        with mock.patch.object(index.db, "write_lock", side_effect=AssertionError("locked with nothing to write")):
+            self.assertEqual(self.run_index(now=200.0, read=lambda paths: self.fail("read again")).skipped, 1)
+
+    def test_the_dhash_backfill_writes_nothing_for_an_item_reindexed_while_it_hashed(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            item = opened.query(MediaItem).one()
+            item.dhash = None
+            item_id = item.id
+        real_lock = index.db.write_lock
+
+        def reindexed_meanwhile(opened):
+            with db.session(self.engine) as other:
+                other.get(MediaItem, item_id).sha1 = "f" * 40
+            real_lock(opened)
+
+        with mock.patch.object(index.db, "write_lock", reindexed_meanwhile), db.session(self.engine) as opened:
+            self.assertEqual(index.backfill_dhash(opened, self.photos, opened.query(Person).one()), 0)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(MediaItem, item_id).dhash)
+
+    def test_running_out_of_memory_on_a_file_is_not_set_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        with mock.patch.object(media, "fingerprint", side_effect=MemoryError()):
+            report = self.run_index(read=described)
+        self.assertEqual((report.failed, report.set_aside), (1, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 1)
+
+    def test_a_set_aside_file_is_tried_again_after_a_day_even_unchanged(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        self.assertEqual(self.run_index(now=100.0 + index.RETRY_SET_ASIDE_SECONDS - 1, read=lambda paths: self.fail("read again too soon")).skipped, 1)
+        report = self.run_index(now=100.0 + index.RETRY_SET_ASIDE_SECONDS, read=described)
+        self.assertEqual((report.new, report.skipped), (1, 0))
+        self.assertEqual(self.skips(), {})
+
+    def test_an_original_replaced_by_unreadable_bytes_leaves_no_stale_fingerprint_for_dedupe_or_status(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            account = GoogleAccount(email="jo.photos@example.test", default_person_id=person.id, created=1.0)
+            opened.add(account)
+            opened.flush()
+            account_id, old = account.id, opened.query(MediaItem).one()
+            old_id, old_sha1, old_phash = old.id, old.sha1, old.phash
+            self.assertIn(old_sha1, dedupe.PersonIndex.load(opened, account_id).hashes)
+        photo.write_bytes(b"not a picture any more")
+        report = self.run_index(now=200.0)
+        self.assertEqual((report.changed, report.set_aside), (0, 1))
+        with db.session(self.engine) as opened:
+            loaded = dedupe.PersonIndex.load(opened, account_id)
+            self.assertNotIn(old_sha1, loaded.hashes)
+            self.assertNotIn(old_id, loaded.by_id)
+            self.assertNotIn(old_phash, [shot.phash for shot in loaded.phone])
+            item = opened.get(MediaItem, old_id)
+            self.assertEqual((item.sha1, item.phash, item.dhash, item.captured_utc, item.mtime), (index.UNKNOWN_SHA1, None, None, None, None))
+            self.assertEqual(index.counts_by_person(opened), [("jo", person.name, 0)])
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        report = self.run_index(now=300.0)
+        self.assertEqual((report.changed, report.skipped), (1, 0))
+        self.assertEqual(self.skips(), {})
+        with db.session(self.engine) as opened:
+            self.assertIn(old_id, dedupe.PersonIndex.load(opened, account_id).by_id)
+
+    def test_exiftool_failing_on_every_file_sets_nothing_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "b.jpg", colour=(9, 9, 9))
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed")
+
+        report = self.run_index(read=dies)
+        self.assertEqual((report.new, report.failed, report.skipped), (0, 2, 0))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 2)
+
+    def test_a_file_whose_decoding_raises_anything_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "poison.jpg", colour=(9, 9, 9))
+        fixtures.make_jpeg(self.originals / "z.jpg", colour=(5, 50, 5))
+        real = media.fingerprint
+
+        def fingerprint(path, tags):
+            if path.name == "poison.jpg":
+                raise RuntimeError("the decoder gave up")
+            return real(path, tags)
+
+        with mock.patch.object(media, "fingerprint", fingerprint):
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.failed), (2, 1))
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNUSABLE})
+        with mock.patch.object(media, "fingerprint", side_effect=AssertionError("a set-aside file was read again")):
+            self.assertEqual(self.run_index(now=200.0, read=described).skipped, 1)
+
+    def test_a_file_that_is_not_media_is_set_aside_until_it_changes(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        report = self.run_index()
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {"jo/originals/notes.jpg": index.NOT_MEDIA})
+        report = self.run_index(now=200.0, read=lambda paths: self.fail("exiftool was run for a set-aside file that did not change"))
+        self.assertEqual((report.failed, report.skipped), (0, 1))
+
+    def test_a_file_exiftool_says_nothing_about_is_set_aside_and_the_others_are_indexed(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_jpeg(self.originals / "silent.jpg", colour=(9, 9, 9))
+        report = self.run_index(read=lambda paths: described([path for path in paths if path.name != "silent.jpg"]))
+        self.assertEqual((report.new, report.failed), (1, 1))
+        self.assertEqual(self.skips(), {"jo/originals/silent.jpg": index.NO_METADATA})
+
+    def test_a_set_aside_file_that_still_fails_alone_at_its_retry_waits_another_day(self):
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        self.run_index()
+        retry_at = 100.0 + index.RETRY_SET_ASIDE_SECONDS
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed on this file")
+
+        report = self.run_index(now=retry_at, read=dies)
+        self.assertEqual((report.failed, report.skipped), (0, 1))
+        with db.session(self.engine) as opened:
+            self.assertEqual([(row.reason, row.skipped_at) for row in opened.query(IndexSkip)], [(index.NOT_MEDIA, retry_at)])
+        later = self.run_index(now=retry_at + 3600, read=lambda paths: self.fail("read again within a day"))
+        self.assertEqual(later.skipped, 1)
+
+    def test_a_new_file_that_fails_alone_is_still_only_deferred(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+
+        def dies(paths):
+            raise exiftool.Unreadable("exiftool crashed on this file")
+
+        report = self.run_index(read=dies)
+        self.assertEqual((report.failed, report.skipped, report.set_aside), (1, 0, 0))
+        self.assertEqual(self.skips(), {})
+
+    def test_a_set_aside_file_that_is_gone_is_forgotten(self):
+        notes = self.originals / "notes.jpg"
+        notes.write_bytes(b"not a picture")
+        self.run_index()
+        notes.unlink()
+        self.run_index(now=200.0)
+        self.assertEqual(self.skips(), {})
+
+    def test_a_file_that_vanishes_while_it_is_read_is_retried_next_time_not_set_aside(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        with mock.patch.object(media, "sha1_of", side_effect=FileNotFoundError("gone")):
+            report = self.run_index(read=described)
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {})
+        self.assertEqual(self.run_index(now=200.0, read=described).new, 1)
+
+    def test_setting_files_aside_never_writes_under_originals(self):
+        fixtures.make_jpeg(self.originals / "a.jpg")
+        fixtures.make_pixel_bomb(self.originals / "bomb.png")
+        (self.originals / "notes.jpg").write_bytes(b"not a picture")
+        before = listing(self.root / "jo")
+        self.run_index()
+        self.run_index(now=200.0)
+        self.assertEqual(listing(self.root / "jo"), before)
+
+    def test_index_file_sets_a_poison_file_aside_too(self):
+        poison = fixtures.make_jpeg(self.originals / "poison.jpg")
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            with mock.patch.object(media, "fingerprint", side_effect=OverflowError("too big")):
+                report = index.index_file(opened, self.photos, person, poison, 1.0, described)
+        self.assertEqual((report.new, report.failed), (0, 1))
+        self.assertEqual(self.skips(), {"jo/originals/poison.jpg": index.UNUSABLE})
+
+
+
+class ConfirmationTests(unittest.TestCase):
+    setUp = IndexTests.setUp
+    run_index = IndexTests.run_index
+
+    def confirm(self, name="IMG_1.JPG"):
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            account = opened.query(GoogleAccount).one_or_none()
+            if account is None:
+                account = GoogleAccount(email="jo.photos@example.test", default_person_id=person.id, created=1.0)
+                opened.add(account)
+                opened.flush()
+            export = Export(account_id=account.id, kind="manual", created_at=50.0)
+            opened.add(export)
+            opened.flush()
+            item = opened.query(MediaItem).one()
+            opened.add(DedupeDecision(export_id=export.id, account_id=account.id, source_path=f"Takeout/{name}", person_id=person.id, matched_item_id=item.id,
+                                      tier=1, reason="identical", decided_by="auto", decided_at=60.0))
+            opened.flush()
+            dedupe.confirm_served_matches(opened, account.id, {person.id})
+            return account.id, person.id, item.id
+
+    def state(self, account_id, person_id, item_id):
+        with db.session(self.engine) as opened:
+            item = opened.get(MediaItem, item_id)
+            return (item.confirmed_in_google, accounts.confirmed_people(opened, account_id), pixel_folder.confirmed_for(opened, account_id, item_id, person_id),
+                    run.unmatched_count(opened, person_id, 10**9))
+
+    def linked(self, item_id):
+        with db.session(self.engine) as opened:
+            return opened.query(DedupeDecision).filter(DedupeDecision.matched_item_id == item_id).count()
+
+    def test_a_confirmed_original_replaced_by_unreadable_bytes_is_no_longer_confirmed_or_counted(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
+        photo.write_bytes(b"not a picture any more")
+        self.assertEqual(self.run_index(now=200.0).set_aside, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 0))
+        self.assertEqual(self.linked(ids[2]), 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(DedupeDecision).count(), 1)
+
+    def test_a_path_that_recovers_with_different_contents_does_not_inherit_the_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        self.assertEqual(self.run_index(now=300.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+
+    def test_an_original_replaced_by_other_readable_contents_loses_its_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=200.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+        self.assertEqual(self.linked(ids[2]), 0)
+
+    def test_the_same_contents_with_a_new_mtime_keep_the_confirmation(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=200.0).changed, 1)
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
+
+    def test_dedupe_forget_confirmation_detaches_the_matches_and_keeps_the_decisions(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        with db.session(self.engine) as opened:
+            dedupe.forget_confirmation(opened, opened.get(MediaItem, ids[2]))
+        self.assertEqual(self.state(*ids)[:3], (False, set(), False))
+        self.assertEqual(self.linked(ids[2]), 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual([(row.tier, row.reversed_at) for row in opened.query(DedupeDecision)], [(1, None)])
+
+    def test_a_set_aside_original_is_not_listed_as_missing_gps_queued_for_a_pixel_or_paired(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "immich" / "a.jpg")
+        self.run_index()
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            item = opened.query(MediaItem).one()
+            opened.add(ImmichAsset(person_id=person.id, asset_id="asset-a", kind="photo", status="stored", sha1=item.sha1, seen_at=1.0, original_item_id=item.id))
+            opened.flush()
+            self.assertEqual(review.missing_gps(opened, None, None, None, 0)[1], 1)
+            self.assertEqual(set(takeout_copies.immich_originals(opened, person)), {item.id})
+            pixel_folder.queue(opened, item, 1.0)
+        photo.write_bytes(b"not a picture any more")
+        self.assertEqual(self.run_index(now=200.0).set_aside, 1)
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            self.assertEqual(review.missing_gps(opened, None, None, None, 0), ([], 0))
+            self.assertEqual(takeout_copies.immich_originals(opened, person), {})
+            with self.assertRaises(pixel_folder.NotInOriginals):
+                pixel_folder.queue(opened, opened.query(MediaItem).one(), 2.0)
+
+    def test_an_export_time_that_is_not_an_instant_never_counts_as_seen_after_a_pixel_copy_was_placed(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        ids = self.confirm()
+        for created, expected in ((float("inf"), False), (1e300, False), (float("-inf"), False), (5e9, False), (55.0, True)):
+            with self.subTest(created=created), db.session(self.engine) as opened:
+                opened.query(Export).one().created_at = created
+                opened.flush()
+                self.assertEqual(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1], since=40.0), expected)
+                self.assertTrue(pixel_folder.confirmed_for(opened, ids[0], ids[2], ids[1]))
+
+    def test_a_corrupt_export_time_imported_after_placing_never_confirms_or_prunes_an_always_send_copy(self):
+        fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        account_id, person_id, item_id = self.confirm()
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="placed", bytes=item.bytes, sha1=item.sha1, queued_at=90.0,
+                                 placed_at=100.0, always_send=True))
+            opened.query(DedupeDecision).one().decided_at = 200.0
+        seen = {float("inf"): None, float("-inf"): None, 1e300: None, 0.0: None, 5e9: None, dates.LATEST_INSTANT + 1: None, 250.0: 250.0, 400.0: None,
+                50.0: 50.0, 150.0: 150.0, None: 300.0}
+        for created, confirms in ((float("inf"), False), (float("-inf"), False), (1e300, False), (0.0, False), (5e9, False), (dates.LATEST_INSTANT + 1, False),
+                                  (250.0, False), (400.0, False), (50.0, False), (150.0, True), (None, True)):
+            with self.subTest(created=created), db.session(self.engine) as opened:
+                export = opened.query(Export).one()
+                export.created_at = created
+                opened.flush()
+                copy = opened.query(PixelCopy).one()
+                self.assertEqual(pixel_folder.confirmed_for(opened, account_id, item_id, person_id, since=100.0), confirms)
+                self.assertEqual(pixel_folder.confirms_copy(opened, opened.get(Pixel, copy.pixel_id), copy), confirms)
+                self.assertEqual(run.seen_at(export, 300.0), seen[created])
+
+    def pruned_copy(self, account_id, person_id, item_id):
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            opened.add(PixelPerson(pixel_id=pixel.id, person_id=person_id))
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel.id, item_id=item_id, person_id=person_id, state="pruned", bytes=item.bytes, sha1=item.sha1, queued_at=90.0,
+                                 placed_at=None, pruned_at=95.0))
+
+    def copy_state(self):
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            item = opened.get(MediaItem, copy.item_id)
+            return copy.state, copy.sha1 == item.sha1 and copy.bytes == item.bytes
+
+    def test_a_pruned_pixel_copy_is_sent_again_when_its_original_gets_new_contents(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        with db.session(self.engine) as opened:
+            old_sha1 = opened.query(PixelCopy).one().sha1
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.assertEqual(self.copy_state(), ("queued", True))
+        with db.session(self.engine) as opened:
+            self.assertNotEqual(opened.query(PixelCopy).one().sha1, old_sha1)
+
+    def test_a_pruned_copy_stays_pruned_while_its_original_is_set_aside_and_is_sent_again_on_recovery(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(PixelCopy).one().state, "pruned")
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        self.run_index(now=300.0)
+        self.assertEqual(self.copy_state(), ("queued", True))
+
+    def test_a_pruned_copy_of_an_original_whose_contents_did_not_change_stays_pruned(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        self.pruned_copy(*self.confirm())
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.assertEqual(self.copy_state(), ("pruned", True))
+
+    def test_a_placed_copy_of_the_old_contents_is_never_pruned_on_a_match_for_the_new_contents(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        self.run_index()
+        account_id, person_id, item_id = self.confirm()
+        with db.session(self.engine) as opened:
+            pixel = Pixel(name="Pixel", google_account_id=account_id, created=1.0)
+            opened.add(pixel)
+            opened.flush()
+            pixel_id = pixel.id
+            opened.add(PixelPerson(pixel_id=pixel_id, person_id=person_id))
+            item = opened.get(MediaItem, item_id)
+            opened.add(PixelCopy(pixel_id=pixel_id, item_id=item_id, person_id=person_id, state="placed", name="a.jpg", bytes=item.bytes, sha1=item.sha1,
+                                 queued_at=10.0, placed_at=20.0))
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            self.assertTrue(pixel_folder.confirms_copy(opened, opened.get(Pixel, pixel_id), copy))
+        fixtures.save_jpeg(fixtures.scene(2), photo)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.run_index(now=200.0)
+        self.confirm("IMG_1 (1).JPG")
+        before = listing(self.root)
+        with db.session(self.engine) as opened:
+            copy = opened.query(PixelCopy).one()
+            self.assertFalse(pixel_folder.confirms_copy(opened, opened.get(Pixel, pixel_id), copy))
+            tended = pixel_folder.prune(opened, self.photos, opened.get(Pixel, pixel_id), 300.0)
+            self.assertEqual(tended.refused, 0)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(PixelCopy).one().state, "placed")
+        self.assertEqual(listing(self.root), before)
+
+    def test_the_same_bytes_coming_back_are_confirmed_again_only_by_a_new_match(self):
+        photo = fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
+        original = photo.read_bytes()
+        self.run_index()
+        ids = self.confirm()
+        photo.write_bytes(b"not a picture any more")
+        self.run_index(now=200.0)
+        photo.write_bytes(original)
+        os.utime(photo, (1_900_000_000, 1_900_000_000))
+        self.assertEqual(self.run_index(now=300.0).changed, 1)
+        self.assertEqual(self.state(*ids), (False, set(), False, 1))
+        self.confirm("IMG_1 (1).JPG")
+        self.assertEqual(self.state(*ids), (True, {ids[1]}, True, 0))
 
 
 if __name__ == "__main__":

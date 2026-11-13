@@ -45,6 +45,7 @@ class PersonStatus(TypedDict):
     indexed: int
     with_gps: int
     unknown_time: int
+    index_skipped: int
     accounts: list[AccountState]
     pixels: list[PixelState]
     last_import: float | None

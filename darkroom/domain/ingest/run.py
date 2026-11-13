@@ -10,14 +10,14 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom import config, monitoring
+from darkroom import config, dates, monitoring
 from darkroom.dates import utc_now
 from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, takeout_copies, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -27,6 +27,7 @@ IMPORTABLE = frozenset({"downloaded", "unpacking", "importing", "failed"})
 EARLY_STAGES = frozenset({None, "unpack", "queued", "unpacked"})
 WAITING = frozenset({"queued", "running"})
 UNPLACED = "unplaced"
+PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
 LOCKS_GUARD = threading.Lock()
 
@@ -140,17 +141,28 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
-    prepared = Prepared(staging, pairing.pair(staging).items)
-    tags = tools.read([item.path for item in prepared.items]) if prepared.items else {}
-    for item in prepared.items:
-        try:
-            raw = item.sidecar.read_text(encoding="utf-8") if item.sidecar is not None else None
-            parsed = sidecar.parse(raw) if raw else None
-            prepared.fields[item.path] = metadata.candidate(item, tags.get(item.path, {}), parsed, person.id, UNPLACED, now, export.id)
-        except Exception as error:
-            if report:
-                item_failed(opened, export, "metadata", error, now)
+    prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path)).items)
+    for start in range(0, len(prepared.items), PINNED_AT_ONCE):
+        group = prepared.items[start:start + PINNED_AT_ONCE]
+        with paths.pinned_inbox_files(photos, [item.path for item in group]) as pinned:
+            tags = tools.read(list(pinned.values())) if pinned else {}
+            for item in group:
+                try:
+                    source = pinned.get(item.path)
+                    if source is None:
+                        raise paths.LinkRefused("the staged file is a link or not a plain file")
+                    raw = staged_text(photos, item.sidecar) if item.sidecar is not None else None
+                    parsed = sidecar.parse(raw) if raw else None
+                    prepared.fields[item.path] = metadata.candidate(item, tags.get(source, {}), parsed, person.id, UNPLACED, now, export.id, source)
+                except Exception as error:
+                    if report:
+                        item_failed(opened, export, "metadata", error, now)
     return prepared
+
+
+def staged_text(photos: Photos, path: Path) -> str:
+    with paths.open_inbox_file(photos, path) as handle:
+        return handle.read().decode("utf-8")
 
 
 def stored_decisions(opened: Session, export: Export) -> dict[str, DedupeDecision]:
@@ -167,9 +179,9 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
             if decision.source_path in known:
                 continue
             if dedupe.repeated(opened, decision, export.id):
-                if decision.matched_item_id is not None:
-                    pixel_folder.seen_again(opened, export.account_id, decision.matched_item_id, decision.person_id,
-                                            export.created_at if export.created_at is not None else now)
+                seen = seen_at(export, now)
+                if decision.matched_item_id is not None and seen is not None:
+                    pixel_folder.seen_again(opened, export.account_id, decision.matched_item_id, decision.person_id, seen)
                     opened.commit()
                 continue
             try:
@@ -258,10 +270,17 @@ def pixels_serving(opened: Session, account_id: int, person_id: int) -> list[Pix
     ).scalars())
 
 
+def seen_at(export: Export, now: float) -> float | None:
+    if export.created_at is None:
+        return now
+    return export.created_at if dates.plausibly_created(export.created_at, now) else None
+
+
 def unmatched_count(opened: Session, person_id: int, cutoff: float) -> int:
     return int(opened.execute(
         select(func.count(MediaItem.id)).where(
-            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False))
+            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False),
+            known_contents())
     ).scalar_one())
 
 

@@ -19,6 +19,10 @@ from darkroom.storage.paths import Photos
 CHUNK = 1024 * 1024
 ANOTHER_FILE = "~"
 
+Read = Callable[[Path], Iterable[bytes]]
+Write = Callable[[Path, Iterable[bytes]], str]
+Holds = Callable[[Path, str], bool]
+
 
 class PlaceFailed(RuntimeError):
     pass
@@ -94,29 +98,51 @@ def holds(destination: Path, sha1: str) -> bool:
     return destination.is_file() and not destination.is_symlink() and media.sha1_of(destination)[0] == sha1
 
 
+def holds_in_the_inbox(photos: Photos, destination: Path, sha1: str) -> bool:
+    try:
+        return paths.inbox_sha1(photos, destination) == sha1
+    except (paths.OutsideRoot, FileNotFoundError):
+        return False
+
+
 def adopted(destination: Path, marking: Callable[[Path, bool], None] | None) -> Placed:
     if marking is not None:
         marking(destination, False)
     return Placed(destination, False)
 
 
-def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None) -> Placed:
+def staged_chunks(photos: Photos, source: Path) -> Iterator[bytes]:
+    try:
+        yield from paths.inbox_chunks(photos, source)
+    except paths.OutsideRoot as error:
+        raise PlaceFailed("the staged file is a link or not a plain file in the inbox") from error
+
+
+def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None,
+              read: Read | None = None, write: Write | None = None, adopts: Holds | None = None) -> Placed:
+    reading = chunks if read is None else read
+    writing = paths.write_once if write is None else write
+    adopting = holds if adopts is None else adopts
     for name in names(source, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
         if destination.exists() or destination.is_symlink():
-            if holds(destination, sha1):
+            if adopting(destination, sha1):
                 return adopted(destination, marking)
             continue
         if marking is not None:
             marking(destination, True)
         try:
-            written = paths.write_once(destination, chunks(source))
+            written = writing(destination, reading(source))
         except paths.AlreadyExists:
-            if holds(destination, sha1):
+            if adopting(destination, sha1):
                 return adopted(destination, marking)
             continue
+        except paths.ChangedWhileCopied as error:
+            raise PlaceFailed("the staged file changed while it was copied") from error
+        except paths.OutsideRoot as error:
+            raise PlaceFailed("a link is on the way to where the copy goes") from error
         if written != sha1:
             destination.unlink(missing_ok=True)
             raise PlaceFailed("the staged file changed while it was copied")
@@ -156,7 +182,7 @@ def place_google_only(opened: Session, photos: Photos, export: Export, entry: En
     if person is None:
         raise PlaceFailed("the export's account has no default person")
     folder = google_only_folder(photos, person.slug, entry.fields)
-    placed = copy_into(folder, entry.item.path, entry.fields.sha1)
+    placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=lambda source: staged_chunks(photos, source))
     copied(placed)
     counted(report, placed)
     path = relative(photos, placed.path)
@@ -178,8 +204,14 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
     if review is None or review.status != "pending" or person is None:
         report.skipped += 1
         return None
-    folder = photos.review_hold(person.slug, unpack.staging_name(export))
-    placed = copy_into(folder, entry.item.path, entry.fields.sha1)
+    try:
+        folder = photos.review_hold(person.slug, unpack.staging_name(export))
+    except paths.LinkRefused as error:
+        raise PlaceFailed("a link is on the way to the review hold") from error
+    sha1 = entry.fields.sha1
+    placed = copy_into(folder, entry.item.path, sha1, read=lambda source: staged_chunks(photos, source),
+                       write=lambda destination, data: paths.write_inbox_once(photos, destination, data, sha1),
+                       adopts=lambda destination, expected: holds_in_the_inbox(photos, destination, expected))
     report.held += 1
     review.hold_path, review.sidecar_json, review.hold_sha1 = relative(photos, placed.path), entry.fields.sidecar_json, entry.fields.sha1
     return review

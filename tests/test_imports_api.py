@@ -107,10 +107,10 @@ class ImportsApiTests(unittest.TestCase):
 
         real = place.copy_into
 
-        def failing(folder, source, sha1):
+        def failing(folder, source, sha1, **options):
             if source.name == "IMG_2001.JPG":
                 raise place.PlaceFailed("taken")
-            return real(folder, source, sha1)
+            return real(folder, source, sha1, **options)
 
         self.call("POST", f"/api/exports/{self.export_id}/import")
         opened = self.world.reopen()

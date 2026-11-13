@@ -1,17 +1,29 @@
 from __future__ import annotations
 
 import json
+import math
 
 
 class Invalid(ValueError):
     pass
 
 
+def no_constant(name: str) -> object:
+    raise Invalid(f"{name} is not a JSON number")
+
+
+def finite(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise Invalid("a number in the request is too large")
+    return value
+
+
 def json_object(raw: bytes, *, limit: int = 1_000_000) -> dict[str, object]:
     if len(raw) > limit:
         raise Invalid("the request is too large")
     try:
-        value = json.loads(raw or b"{}")
+        value = json.loads(raw or b"{}", parse_constant=no_constant, parse_float=finite)
     except ValueError as error:
         raise Invalid("the request is not valid JSON") from error
     if not isinstance(value, dict):
