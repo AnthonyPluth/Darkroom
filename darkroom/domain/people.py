@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from darkroom.domain import events
 from darkroom.storage import db, secretbox
 from darkroom.storage.models import Export, GoogleAccount, ImmichAsset, MediaItem, Person, PixelPerson
-from darkroom.storage.paths import SLUG, Photos
+from darkroom.storage.paths import SLUG, OutsideRoot, Photos
 
 
 class NoPerson(LookupError):
@@ -32,6 +32,13 @@ class SlugTaken(ValueError):
 
 class FolderInUse(ValueError):
     pass
+
+
+class LinkedInbox(FolderInUse):
+    pass
+
+
+LINKED_INBOX = "the photo share's _inbox folder is a link, so Darkroom makes no person's folders through it; make _inbox a real folder on the share"
 
 
 class BadSlug(ValueError):
@@ -83,13 +90,26 @@ def create(opened: Session, photos: Photos, name: str, slug: str, email: str | N
         raise BadSlug("slug must be lower-case letters, numbers and dashes, starting with a letter or number")
     if opened.execute(select(Person.id).where(Person.slug == slug)).first() is not None:
         raise SlugTaken(f"there is already a person with the folder name {slug}")
+    try:
+        photos.manual_inbox(slug)
+    except OutsideRoot as error:
+        raise LinkedInbox(LINKED_INBOX) from error
     if any(os.path.lexists(folder) for folder in (photos.inside(photos.person_part(slug)), photos.inbox(slug))):
         raise FolderInUse(f"the folder name {slug} is already in use on disk; a person's folders are never reused or deleted automatically, so choose another folder name")
     person = Person(name=name, slug=slug, email=email, immich_user_id=immich_user_id, immich_library_id=immich_library_id,
                     immich_api_key_sealed=sealed_key, originals_path=f"{slug}/originals", google_only_path=f"{slug}/google-only", created=now)
     opened.add(person)
     opened.flush()
-    photos.ensure_person_tree(slug)
+    try:
+        photos.ensure_person_tree(slug, fresh=True)
+    except OutsideRoot as error:
+        raise LinkedInbox(LINKED_INBOX) from error
+    except FileExistsError as error:
+        try:
+            photos.manual_inbox(slug)
+        except OutsideRoot:
+            raise LinkedInbox(LINKED_INBOX) from error
+        raise FolderInUse(f"the folder name {slug} appeared on disk while the person was being added; choose another folder name") from error
     events.record(opened, now, "person_created", slug)
     if sealed_key:
         events.record(opened, now, "immich_key_set", slug)

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from darkroom.providers import exiftool
+from darkroom.storage import paths
 from tests.fixtures import media as fixtures
 from tools import verify
 
@@ -24,6 +25,18 @@ class ReadTests(unittest.TestCase):
         tags = found[photo]
         self.assertEqual(tags["IFD0:Make"], "Apple")
         self.assertEqual(tags["ExifIFD:DateTimeOriginal"], "2019:07:04 12:30:15")
+
+    def test_an_open_file_is_read_through_its_descriptor_even_after_its_name_changes(self):
+        photo = fixtures.make_jpeg(self.folder / "a.jpg", make="Apple")
+        other = fixtures.make_jpeg(self.folder / "b.jpg", make="Other")
+        with photo.open("rb") as handle:
+            pinned = paths.OPEN_FILES / str(handle.fileno())
+            photo.unlink()
+            photo.symlink_to(other)
+            self.assertEqual(paths.pinned_fds([pinned, photo]), (handle.fileno(),))
+            self.assertEqual(exiftool.read([pinned])[pinned]["IFD0:Make"], "Apple")
+            preview = exiftool.embedded_preview(pinned)
+        self.assertTrue(preview is None or preview.startswith(exiftool.IMAGE_MAGIC))
 
     def test_a_file_that_is_not_a_picture_is_still_described_so_the_caller_can_judge(self):
         broken = self.folder / "bad.jpg"
@@ -49,7 +62,7 @@ class ReadTests(unittest.TestCase):
     def test_exiftool_taking_too_long_is_unreadable_and_the_time_allowed_grows_with_the_batch(self):
         timeouts = []
 
-        def slow(command, timeout=exiftool.TIMEOUT):
+        def slow(command, timeout=exiftool.TIMEOUT, keep=()):
             timeouts.append(timeout)
             raise subprocess.TimeoutExpired(command, timeout)
 

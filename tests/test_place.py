@@ -1,6 +1,7 @@
 import hashlib
 import itertools
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -297,6 +298,123 @@ class ReviewHoldTests(Household):
         report = self.place(entry)
         self.assertEqual((report.held, report.skipped), (0, 1))
         self.assertFalse((self.root / "_inbox/sam/review").exists())
+
+
+class LinkedInboxTests(Household):
+    def originals_tree(self):
+        return tree(self.root / "sam/originals")
+
+    def swapped_for_a_link(self, entry, secret):
+        entry.item.path.unlink()
+        entry.item.path.symlink_to(secret)
+        entry.fields.sha1 = sha1_of(secret)
+
+    def held(self):
+        folder = self.root / "_inbox/sam/review" / f"export-{self.export.id}"
+        return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+
+    def test_a_staged_file_swapped_for_a_link_is_never_held(self):
+        secret, mine = self.phone("sam", self.sam)
+        entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        before = self.originals_tree()
+        self.swapped_for_a_link(entry, secret)
+        with self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual(self.held(), [])
+        self.assertIsNone(self.opened.execute(select(ReviewItem)).scalar_one().hold_path)
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_staged_file_swapped_for_a_link_is_never_placed_in_google_only(self):
+        secret, _ = self.phone("sam", self.sam)
+        entry = self.entry(self.staged())
+        self.swapped_for_a_link(entry, secret)
+        with self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual(tree(self.root / "jo/google-only"), {})
+
+    def test_a_linked_review_folder_is_never_written_through(self):
+        _, mine = self.phone("sam", self.sam)
+        entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        before = self.originals_tree()
+        (self.root / "_inbox/sam/review").symlink_to(self.root / "sam/originals", target_is_directory=True)
+        with self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_review_folder_swapped_for_a_link_after_the_check_is_never_written_through(self):
+        _, mine = self.phone("sam", self.sam)
+        entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        before = self.originals_tree()
+        real = self.photos.review_hold
+
+        def swapping(person, export):
+            checked = real(person, export)
+            (self.root / "_inbox/sam/review").symlink_to(self.root / "sam/originals", target_is_directory=True)
+            return checked
+
+        with mock.patch.object(self.photos, "review_hold", side_effect=swapping), self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual(self.originals_tree(), before)
+
+    def test_a_staged_file_swapped_for_a_hard_link_is_never_held_or_placed(self):
+        secret, mine = self.phone("sam", self.sam)
+        before = self.originals_tree()
+        for tier in (4, 5):
+            with self.subTest(tier=tier):
+                entry = self.entry(self.staged(f"IMG_{tier}.JPG"), tier=tier, person=self.sam, matched=mine if tier == 4 else None)
+                entry.item.path.unlink()
+                os.link(secret, entry.item.path)
+                entry.fields.sha1 = sha1_of(secret)
+                with self.assertRaises(place.PlaceFailed):
+                    self.place(entry)
+        self.assertEqual(self.held(), [])
+        self.assertEqual(tree(self.root / "jo/google-only"), {})
+        self.assertEqual(self.originals_tree(), before)
+
+    def hard_link_at_the_hold_name(self, target_of):
+        _, mine = self.phone("sam", self.sam)
+        staged = self.staged()
+        entry = self.entry(staged, tier=4, person=self.sam, matched=mine)
+        target = target_of(staged)
+        before = self.originals_tree()
+        folder = self.root / "_inbox/sam/review" / f"export-{self.export.id}"
+        folder.mkdir(parents=True)
+        os.link(target, folder / "IMG_0001.JPG")
+        expected = staged.read_bytes()
+        try:
+            self.place(entry)
+        finally:
+            self.assertEqual(self.originals_tree(), before)
+        review = self.opened.execute(select(ReviewItem)).scalar_one()
+        held = self.root / review.hold_path
+        self.assertNotEqual(held.name, "IMG_0001.JPG")
+        self.assertEqual((held.read_bytes(), held.stat().st_nlink), (expected, 1))
+
+    def test_a_hard_link_to_the_staged_file_at_the_hold_name_is_never_adopted(self):
+        with self.assertRaises(place.PlaceFailed):
+            self.hard_link_at_the_hold_name(lambda staged: staged)
+        self.assertIsNone(self.opened.execute(select(ReviewItem)).scalar_one().hold_path)
+
+    def test_a_hard_link_to_another_file_at_the_hold_name_is_never_adopted(self):
+        def identical_original(staged):
+            original = self.root / "sam/originals/same.jpg"
+            original.write_bytes(staged.read_bytes())
+            return original
+
+        self.hard_link_at_the_hold_name(identical_original)
+
+    def test_a_staged_file_that_changed_while_it_was_copied_is_never_held(self):
+        _, mine = self.phone("sam", self.sam)
+        entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        entry.fields.sha1 = "0" * 40
+        with self.assertRaises(place.PlaceFailed):
+            self.place(entry)
+        self.assertEqual(self.held(), [])
+
+    def test_a_plain_staged_file_is_still_held(self):
+        _, mine = self.phone("sam", self.sam)
+        self.place(self.entry(self.staged(), tier=4, person=self.sam, matched=mine))
+        self.assertEqual(self.held(), ["IMG_0001.JPG"])
 
 
 class OriginalSidecarTests(Household):

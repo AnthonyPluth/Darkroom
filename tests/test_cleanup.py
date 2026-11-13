@@ -585,5 +585,28 @@ class RemovableTests(unittest.TestCase):
         self.assertEqual((self.root / "jo/originals/a.jpg").read_bytes(), b"original")
 
 
+class InboxHashTests(unittest.TestCase):
+    def test_a_link_or_hard_link_in_the_inbox_has_no_hash(self):
+        import tempfile
+        from pathlib import Path
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name).resolve()
+        photos = paths.Photos(root)
+        photos.ensure_person_tree("jo")
+        kept = root / "jo/originals/a.jpg"
+        kept.write_bytes(b"original")
+        hold = root / "_inbox/jo/review/export-1"
+        hold.mkdir(parents=True)
+        (hold / "plain.jpg").write_bytes(b"held")
+        (hold / "link.jpg").symlink_to(kept)
+        os.link(kept, hold / "hard.jpg")
+        self.assertEqual(cleanup.inbox_sha1(photos, hold / "plain.jpg"), paths.file_sha1(hold / "plain.jpg"))
+        self.assertIsNone(cleanup.inbox_sha1(photos, hold / "link.jpg"))
+        self.assertIsNone(cleanup.inbox_sha1(photos, hold / "hard.jpg"))
+        self.assertEqual(kept.read_bytes(), b"original")
+
+
 if __name__ == "__main__":
     unittest.main()

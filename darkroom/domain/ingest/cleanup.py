@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events, media
+from darkroom.domain import events
 from darkroom.domain.ingest import unpack
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
@@ -85,12 +85,22 @@ def hold_file(photos: Photos, export: Export, review: ReviewItem) -> Path | None
     return hold
 
 
+def inbox_sha1(photos: Photos, path: Path) -> str | None:
+    try:
+        return paths.inbox_sha1(photos, path)
+    except paths.OutsideRoot:
+        return None
+
+
 def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision) -> bool:
     hold = hold_file(photos, export, review)
     if hold is None or decision.source_path is None:
         return False
     staged = staged_copy(opened, photos, export, decision.source_path)
-    return staged is not None and media.sha1_of(hold)[0] == media.sha1_of(staged)[0]
+    if staged is None:
+        return False
+    held = inbox_sha1(photos, hold)
+    return held is not None and held == inbox_sha1(photos, staged)
 
 
 def pending_reviews(opened: Session, export: Export) -> list[ReviewItem]:
@@ -104,8 +114,9 @@ def verified_hashes(opened: Session, photos: Photos, export: Export) -> dict[str
     found = {}
     for review in pending_reviews(opened, export):
         hold = hold_file(photos, export, review)
-        if hold is not None:
-            found[str(review.id)] = media.sha1_of(hold)[0]
+        digest = None if hold is None else inbox_sha1(photos, hold)
+        if digest is not None:
+            found[str(review.id)] = digest
     return found
 
 
@@ -126,7 +137,8 @@ def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
         return False
     for review in pending_reviews(opened, export):
         hold = hold_file(photos, export, review)
-        if hold is None or expected.get(str(review.id)) != media.sha1_of(hold)[0]:
+        digest = None if hold is None else inbox_sha1(photos, hold)
+        if digest is None or expected.get(str(review.id)) != digest:
             return False
     return True
 

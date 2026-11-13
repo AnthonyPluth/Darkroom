@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from darkroom.domain import media
+from darkroom.storage import paths
 
 SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
@@ -19,6 +20,7 @@ NON_MEDIA_JSON = {"metadata.json", "print-subscriptions.json", "user-generated-m
 
 Sidecars = dict[str, Path]
 Rule = Callable[[Path, Sidecars], Path | None]
+Digest = Callable[[Path], str]
 
 
 @dataclass
@@ -122,13 +124,15 @@ def album_of(folder: Path) -> str | None:
 
 def scan(root: Path) -> dict[Path, list[str]]:
     folders: dict[Path, list[str]] = {}
+    if os.path.islink(root):
+        return folders
     for folder, names, files in os.walk(root):
         names[:] = sorted(name for name in names if not name.startswith("."))
-        folders[Path(folder)] = sorted(files)
+        folders[Path(folder)] = paths.plain_entries(folder, files)
     return folders
 
 
-def pair(staging_root: Path) -> PairingReport:
+def pair(staging_root: Path, hashing: Digest = paths.plain_sha1) -> PairingReport:
     folders = scan(staging_root)
     report = PairingReport()
     found_copies: dict[str, list[tuple[Path, Path | None]]] = {}
@@ -141,10 +145,14 @@ def pair(staging_root: Path) -> PairingReport:
             path = folder / name
             if path.suffix.lower() not in MEDIA_SUFFIXES:
                 continue
+            try:
+                sha1 = hashing(path)
+            except paths.OutsideRoot:
+                continue
             found = sidecar_for(path, sidecars)
             if found is not None:
                 used.add(found)
-            found_copies.setdefault(media.sha1_of(path)[0], []).append((path, found))
+            found_copies.setdefault(sha1, []).append((path, found))
     by_copy: dict[Path, TakeoutItem] = {}
     for digest, copies in sorted((digest, slot) for digest, found in found_copies.items() for slot in slots_of(found)):
         copies.sort(key=lambda c: (album_of(c[0].parent) is not None, str(c[0])))

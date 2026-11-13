@@ -13,9 +13,10 @@ import shutil
 import stat
 import sys
 import tempfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
@@ -43,9 +44,19 @@ INCOMING = ".incoming"
 PIXEL_COPY_MODE = 0o644
 PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
+INBOX = "_inbox"
+OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
 
 
 class OutsideRoot(ValueError):
+    pass
+
+
+class LinkRefused(OutsideRoot):
+    pass
+
+
+class ChangedWhileCopied(OSError):
     pass
 
 
@@ -109,20 +120,26 @@ class Photos:
     def inbox(self, person: str) -> Path:
         return self.inside("_inbox", self.person_part(person))
 
+    def in_the_inbox(self, *parts: str) -> Path:
+        expected = self.root.joinpath(INBOX, *parts)
+        if linked_on_the_way(self.root, (INBOX, *parts)) or self.inside(INBOX, *parts) != expected:
+            raise LinkRefused("a link is on the way into the inbox")
+        return expected
+
     def manual_inbox(self, person: str) -> Path:
-        return self.inside("_inbox", self.person_part(person), "manual")
+        return self.in_the_inbox(self.person_part(person), "manual")
 
     def staging(self, person: str, export: str) -> Path:
-        return self.inside("_inbox", self.person_part(person), self.name_part(export), "staging")
+        return self.in_the_inbox(self.person_part(person), self.name_part(export), "staging")
 
     def review_hold(self, person: str, export: str) -> Path:
-        return self.inside("_inbox", self.person_part(person), "review", self.name_part(export))
+        return self.in_the_inbox(self.person_part(person), "review", self.name_part(export))
 
     def uploads_tmp(self, person: str) -> Path:
         return self.inside(self.person_part(person), "originals", UPLOADS_TMP)
 
     def thumbs(self, person: str) -> Path:
-        return self.inside("_inbox", self.person_part(person), ".thumbs")
+        return self.in_the_inbox(self.person_part(person), ".thumbs")
 
     def pixel_folder(self, pixel_id: int, person: str) -> Path:
         if type(pixel_id) is not int or pixel_id <= 0:
@@ -240,11 +257,11 @@ class Photos:
                 raise NotInTheInbox("originals and google-only folders are never removed")
         return resolved
 
-    def ensure_person_tree(self, person: str) -> list[Path]:
+    def ensure_person_tree(self, person: str, fresh: bool = False) -> list[Path]:
         folders = [self.originals(person), self.inside(self.person_part(person), "google-only"), self.inbox(person), self.manual_inbox(person)]
         made: list[Path] = []
         try:
-            for folder in folders:
+            for folder in folders[:2]:
                 missing: list[Path] = []
                 ancestor = folder
                 while ancestor != self.root and not ancestor.exists():
@@ -253,14 +270,26 @@ class Photos:
                 for path in reversed(missing):
                     path.mkdir()
                     made.append(path)
-                    if path.is_relative_to(self.root / "_inbox"):
-                        share_folder(path)
-        except OSError:
+            make_inbox_tree(self, folders[3], fresh)
+        except (OSError, OutsideRoot):
             for path in reversed(made):
                 with contextlib.suppress(OSError):
                     path.rmdir()
             raise
         return folders
+
+
+def linked_on_the_way(top: Path, parts: Iterable[str]) -> bool:
+    current = top
+    for part in parts:
+        current = current / part
+        try:
+            found = current.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        if stat.S_ISLNK(found.st_mode):
+            return True
+    return False
 
 
 def share_folder(path: Path) -> None:
@@ -1403,3 +1432,369 @@ def drop_losing_sidecar(folder: int, name: str, private: int) -> None:
             unlink_claimed(private, CLAIMED_SIDECAR, seen)
         except NotALosingCopy:
             put_claim_back(private, CLAIMED_SIDECAR, folder, sidecar)
+
+
+def inbox_parts(photos: Photos, path: Path) -> tuple[str, ...]:
+    if not path.is_absolute() or not path.is_relative_to(photos.root):
+        raise OutsideRoot("not a place inside the inbox")
+    parts = path.relative_to(photos.root).parts
+    if parts[:1] != (INBOX,) or any(part in {".", ".."} for part in parts):
+        raise OutsideRoot("not a place inside the inbox")
+    return parts
+
+
+def inbox_child(name: str, folder: int, create: bool) -> int:
+    if create:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(name, dir_fd=folder)
+    try:
+        return os.open(name, NO_FOLLOW_FOLDER, dir_fd=folder)
+    except NotADirectoryError as error:
+        raise LinkRefused("a link or a file is on the way into the inbox") from error
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise LinkRefused("a link is on the way into the inbox") from error
+        raise
+
+
+@contextlib.contextmanager
+def inbox_subfolder(folder: int, parts: Sequence[str], create: bool) -> Iterator[int]:
+    fds: list[int] = []
+    try:
+        for part in parts:
+            fds.append(inbox_child(part, fds[-1] if fds else folder, create))
+        yield fds[-1] if fds else folder
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+@contextlib.contextmanager
+def inbox_folder(photos: Photos, path: Path, create: bool) -> Iterator[int]:
+    parts = inbox_parts(photos, path)
+    if create:
+        photos.root.mkdir(parents=True, exist_ok=True)
+    root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with inbox_subfolder(root, parts, create) as folder:
+            yield folder
+    finally:
+        os.close(root)
+
+
+def plain_file(found: os.stat_result) -> bool:
+    return stat.S_ISREG(found.st_mode) and found.st_nlink == 1
+
+
+def open_entry(name: str, folder: int, flags: int, mode: int = 0o666) -> int:
+    try:
+        return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=folder)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise LinkRefused("a link is where a file in the inbox should be") from error
+        raise
+
+
+def open_inbox_file(photos: Photos, path: Path) -> BinaryIO:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        fd = open_entry(path.name, folder, os.O_RDONLY)
+    if not plain_file(os.fstat(fd)):
+        os.close(fd)
+        raise LinkRefused("not a plain file in the inbox")
+    return os.fdopen(fd, "rb")
+
+
+def inbox_chunks(photos: Photos, path: Path) -> Iterator[bytes]:
+    with open_inbox_file(photos, path) as handle:
+        while chunk := handle.read(CHUNK):
+            yield chunk
+
+
+def inbox_sha1(photos: Photos, path: Path) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    for chunk in inbox_chunks(photos, path):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+@contextlib.contextmanager
+def pinned_path(path: Path) -> Iterator[int]:
+    top = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with inbox_subfolder(top, Path(os.path.abspath(path)).parts[1:], create=False) as folder:
+            yield folder
+    finally:
+        os.close(top)
+
+
+def open_plain_file(path: Path) -> BinaryIO:
+    spelled = Path(os.path.abspath(path))
+    with pinned_path(spelled.parent) as folder:
+        fd = open_entry(spelled.name, folder, os.O_RDONLY)
+    if not plain_file(os.fstat(fd)):
+        os.close(fd)
+        raise LinkRefused("not a plain file")
+    return os.fdopen(fd, "rb")
+
+
+def open_import_part(photos: Photos, path: Path) -> BinaryIO:
+    inbox = photos.root / INBOX
+    spelled = Path(os.path.abspath(path))
+    if spelled.is_relative_to(inbox):
+        return open_inbox_file(photos, spelled)
+    return open_plain_file(spelled)
+
+
+def plain_sha1(path: Path) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    with open_plain_file(path) as handle:
+        while chunk := handle.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def plain_entries(folder: str, names: Iterable[str]) -> list[str]:
+    found = []
+    for name in names:
+        try:
+            if plain_file(os.lstat(os.path.join(folder, name))):
+                found.append(name)
+        except FileNotFoundError:
+            continue
+    return sorted(found)
+
+
+def open_inbox_entry(name: str, folder: int, size: int) -> BinaryIO | None:
+    found = entry_at(name, folder)
+    if found is not None:
+        if not plain_file(found):
+            raise LinkRefused("something other than a plain file is where a file in the inbox goes")
+        if found.st_size == size:
+            return None
+    fd = open_entry(name, folder, os.O_WRONLY | os.O_CREAT)
+    if not plain_file(os.fstat(fd)):
+        os.close(fd)
+        raise LinkRefused("something other than a plain file is where a file in the inbox goes")
+    os.ftruncate(fd, 0)
+    return os.fdopen(fd, "wb")
+
+
+def inbox_marker_set(name: str, folder: int) -> bool:
+    found = entry_at(name, folder)
+    if found is None:
+        return False
+    if not plain_file(found):
+        raise LinkRefused("something other than a plain file is where a marker in the inbox goes")
+    return True
+
+
+def set_inbox_marker(name: str, folder: int) -> None:
+    with os.fdopen(open_entry(name, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "wb") as out:
+        out.write(b"done")
+
+
+def write_inbox_once(photos: Photos, destination: Path, chunks: Iterable[bytes], sha1: str | None = None) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    with inbox_folder(photos, destination.parent, create=True) as folder:
+        temp = f".write-once-{secrets.token_hex(8)}"
+        try:
+            with os.fdopen(open_entry(temp, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+                for chunk in chunks:
+                    digest.update(chunk)
+                    out.write(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+            if sha1 is not None and digest.hexdigest() != sha1:
+                raise ChangedWhileCopied("the file changed while it was copied")
+            if entry_at(destination.name, folder) is not None:
+                raise AlreadyExists(destination.name)
+            try:
+                os.link(temp, destination.name, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
+            except FileExistsError as error:
+                raise AlreadyExists(destination.name) from error
+            except OSError:
+                copy_entry(temp, destination.name, folder)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=folder)
+    return digest.hexdigest()
+
+
+def copy_entry(source: str, target: str, folder: int) -> None:
+    try:
+        out = open_entry(target, folder, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError as error:
+        raise AlreadyExists(target) from error
+    try:
+        origin = open_entry(source, folder, os.O_RDONLY)
+        try:
+            copy_fd(origin, out)
+        finally:
+            os.close(origin)
+    except BaseException:
+        os.close(out)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(target, dir_fd=folder)
+        raise
+    os.close(out)
+
+
+@contextlib.contextmanager
+def pinned_inbox_files(photos: Photos, sources: Iterable[Path]) -> Iterator[dict[Path, Path]]:
+    with contextlib.ExitStack() as stack:
+        pinned: dict[Path, Path] = {}
+        for source in sources:
+            try:
+                handle = stack.enter_context(open_inbox_file(photos, source))
+            except (OutsideRoot, FileNotFoundError):
+                continue
+            pinned[source] = OPEN_FILES / str(handle.fileno())
+        yield pinned
+
+
+def pinned_fds(names: Iterable[Path]) -> tuple[int, ...]:
+    return tuple(int(name.name) for name in names if name.parent == OPEN_FILES and name.name.isdigit())
+
+
+def inbox_files(photos: Photos, folder: Path, suffix: str) -> list[Path]:
+    found: list[Path] = []
+    try:
+        with inbox_folder(photos, folder, create=False) as top:
+            walk_inbox(top, folder, suffix, found)
+    except FileNotFoundError:
+        return []
+    return sorted(found)
+
+
+def walk_inbox(folder: int, spelled: Path, suffix: str, found: list[Path]) -> None:
+    with os.scandir(folder) as listing:
+        entries = sorted(listing, key=lambda entry: entry.name)
+    for entry in entries:
+        try:
+            seen = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(seen.st_mode):
+            try:
+                child = inbox_child(entry.name, folder, False)
+            except FileNotFoundError:
+                continue
+            try:
+                walk_inbox(child, spelled / entry.name, suffix, found)
+            finally:
+                os.close(child)
+        elif entry.name.endswith(suffix) and plain_file(seen):
+            found.append(spelled / entry.name)
+
+
+def make_inbox_folder(name: str, folder: int, spelled: Path) -> bool:
+    try:
+        os.mkdir(name, dir_fd=folder)
+    except FileExistsError:
+        return False
+    except OSError as error:
+        error.filename = str(spelled)
+        raise
+    return True
+
+
+def open_made_folder(name: str, folder: int, spelled: Path) -> int:
+    found = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    if stat.S_ISLNK(found.st_mode):
+        raise LinkRefused("a link is on the way into the inbox")
+    if not stat.S_ISDIR(found.st_mode):
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(spelled))
+    try:
+        return os.open(name, NO_FOLLOW_FOLDER, dir_fd=folder)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise LinkRefused("a link is on the way into the inbox") from error
+        raise
+
+
+def share_open_folder(folder: int) -> None:
+    found = os.fstat(folder)
+    if found.st_uid != os.geteuid():
+        return
+    if found.st_gid != os.getegid():
+        os.fchown(folder, -1, os.getegid())
+    if stat.S_IMODE(os.fstat(folder).st_mode) != SHARED_FOLDER_MODE:
+        os.fchmod(folder, SHARED_FOLDER_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the configured shared inbox group needs rwx, others get nothing
+
+
+def taken(spelled: Path) -> FileExistsError:
+    return FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(spelled))
+
+
+@dataclass(frozen=True)
+class MadeFolder:
+    parent: int
+    name: str
+    identity: tuple[int, int]
+
+
+def identity_of(found: os.stat_result) -> tuple[int, int]:
+    return found.st_dev, found.st_ino
+
+
+def make_inbox_tree(photos: Photos, path: Path, fresh: bool = False) -> None:
+    parts = inbox_parts(photos, path)
+    made: list[MadeFolder] = []
+    with contextlib.ExitStack() as stack:
+        root = os.open(photos.root, os.O_RDONLY | os.O_DIRECTORY)
+        stack.callback(os.close, root)
+        held = [root]
+        try:
+            spelled = photos.root
+            for index, part in enumerate(parts):
+                spelled = spelled / part
+                parent, shared_top = held[-1], index == 0
+                if entry_at(part, parent) is None:
+                    new = make_inbox_folder(part, parent, spelled)
+                    if not new and not shared_top:
+                        raise taken(spelled)
+                elif fresh and not shared_top:
+                    raise taken(spelled)
+                else:
+                    new = False
+                folder = open_made_folder(part, parent, spelled)
+                stack.callback(os.close, folder)
+                held.append(folder)
+                if new:
+                    if os.listdir(folder):
+                        raise taken(spelled)
+                    made.append(MadeFolder(parent, part, identity_of(os.fstat(folder))))
+                    share_open_folder(folder)
+            still_held(root, parts, held[1:], spelled)
+        except BaseException:
+            remove_made(made)
+            raise
+
+
+def still_held(root: int, parts: Sequence[str], held: list[int], spelled: Path) -> None:
+    current = root
+    for part, folder in zip(parts, held, strict=True):
+        seen = entry_at(part, current)
+        if seen is None or stat.S_ISLNK(seen.st_mode) or identity_of(seen) != identity_of(os.fstat(folder)):
+            raise taken(spelled)
+        current = folder
+
+
+def remove_made(made: list[MadeFolder]) -> None:
+    for folder in reversed(made):
+        with contextlib.suppress(OSError):
+            name = name_of(folder)
+            if name is not None:
+                os.rmdir(name, dir_fd=folder.parent)
+
+
+def name_of(folder: MadeFolder) -> str | None:
+    seen = entry_at(folder.name, folder.parent)
+    if seen is not None and stat.S_ISDIR(seen.st_mode) and identity_of(seen) == folder.identity:
+        return folder.name
+    with os.scandir(folder.parent) as listing:
+        for entry in listing:
+            found = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(found.st_mode) and identity_of(found) == folder.identity:
+                return entry.name
+    return None
