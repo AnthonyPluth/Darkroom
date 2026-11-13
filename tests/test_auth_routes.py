@@ -302,6 +302,44 @@ class NoProviderTests(unittest.TestCase):
         self.assertEqual((status, headers["Location"]), (303, "/auth/signed-out"))
         self.assertEqual(fetch(base, "POST", "/auth/logout", {"Origin": "https://evil.example"}, b"")[0], 403)
 
+    def test_no_auth_answers_only_on_the_hosts_it_expects(self):
+        base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_HOST="nas", DARKROOM_PUBLIC_URL="http://darkroom.lan:8000",
+                                                   DARKROOM_ALLOWED_HOSTS="tower.local, Photos.Home.Arpa"))
+        for host in ("127.0.0.1", "127.0.0.1:8000", "localhost", "LOCALHOST:8000", "[::1]:8000", "192.168.1.20:8000", "nas:8000", "darkroom.lan:8000",
+                     "tower.local", "photos.home.arpa:8000"):
+            with self.subTest(host=host):
+                self.assertEqual(fetch(base, "GET", "/api/me", {"Host": host})[0], 200)
+                status, headers, _ = fetch(base, "POST", "/auth/logout", {"Host": host, "Origin": f"http://{host}"}, b"")
+                self.assertEqual((status, headers["Location"]), (303, "/auth/signed-out"))
+
+    def test_no_auth_refuses_a_rebound_host_name(self):
+        base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1"))
+        for host in ("rebound.example", "rebound.example:8000", "localhost.rebound.example", "127.0.0.1.rebound.example", "rebound.example@127.0.0.1",
+                     "127.0.0.1/rebound", ""):
+            with self.subTest(host=host):
+                status, _, body = fetch(base, "GET", "/api/me", {"Host": host})
+                self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
+                status, _, body = fetch(base, "POST", "/auth/logout", {"Host": host, "Origin": f"http://{host}"}, b"")
+                self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
+        self.assertEqual(fetch(base, "GET", "/healthz", {"Host": "rebound.example"})[0], 200)
+
+    def test_no_auth_refuses_a_state_change_from_another_host_on_an_allowed_one(self):
+        base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1"))
+        for origin in ("http://rebound.example", "http://127.0.0.1.rebound.example:8000", "https://localhost.rebound.example", "http://[::1"):
+            with self.subTest(origin=origin):
+                status, _, body = fetch(base, "POST", "/auth/logout", {"Origin": origin}, b"")
+                self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
+        status, _, body = fetch(base, "POST", "/auth/logout", {"Origin": "null"}, b"")
+        self.assertEqual((status, json.loads(body)), (403, {"error": "cross-site requests are refused"}))
+        self.assertEqual(fetch(base, "GET", "/api/me", {"Origin": "http://rebound.example"})[0], 200)
+        self.assertEqual(fetch(base, "POST", "/auth/logout", {}, b"")[0], 303)
+
+    def test_the_host_is_not_checked_with_sign_in(self):
+        base, _ = start_server(self, settings_from())
+        self.assertEqual(fetch(base, "GET", "/api/me", {"Host": "rebound.example"})[0], 401)
+        misused, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_HOST="0.0.0.0"))
+        self.assertEqual(fetch(misused, "GET", "/api/me", {"Host": "rebound.example"})[0], 401)
+
     def test_no_auth_is_ignored_when_misused(self):
         base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_HOST="0.0.0.0"))
         self.assertEqual(fetch(base, "GET", "/api/me")[0], 401)

@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import Engine
 
 from darkroom import monitoring, oidc
-from darkroom.config import Settings, browser_token_usable, demo_allowed, no_auth_allowed
+from darkroom.config import Settings, browser_token_usable, demo_allowed, no_auth_allowed, no_auth_host_allowed
 from darkroom.dates import utc_now
 from darkroom.server import contract
 from darkroom.server.common import Principal, Request, Response, error_response, first_query, header, json_response, page, redirect
@@ -74,6 +74,26 @@ def same_origin(request: Request) -> bool:
     if origin.strip().lower() == "null" or not parts.scheme or not parts.netloc:
         return False
     return f"{parts.scheme.lower()}://{parts.netloc.lower()}" in expected_origins(request)
+
+
+HOST_REFUSED = "this address is not one Darkroom answers on without sign-in; add its host name to DARKROOM_ALLOWED_HOSTS"
+
+
+def origin_host(origin: str) -> str:
+    try:
+        return urlsplit(origin.strip()).netloc
+    except ValueError:
+        return ""
+
+
+def no_auth_address_allowed(request: Request) -> bool:
+    settings = request.settings
+    if not no_auth_host_allowed(settings, header(request, "Host") or ""):
+        return False
+    origin = header(request, "Origin")
+    if request.method == "GET" or origin is None or origin.strip().lower() == "null":
+        return True
+    return no_auth_host_allowed(settings, origin_host(origin))
 
 
 def session_principal(request: Request) -> Principal | None:

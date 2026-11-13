@@ -10,14 +10,14 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom import config, monitoring
+from darkroom import config, dates, monitoring
 from darkroom.dates import utc_now
 from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, takeout_copies, xmp
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson
+from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -179,9 +179,9 @@ def stage_dedupe(opened: Session, export: Export, run: ImportRun, prepared: Prep
             if decision.source_path in known:
                 continue
             if dedupe.repeated(opened, decision, export.id):
-                if decision.matched_item_id is not None:
-                    pixel_folder.seen_again(opened, export.account_id, decision.matched_item_id, decision.person_id,
-                                            export.created_at if export.created_at is not None else now)
+                seen = seen_at(export, now)
+                if decision.matched_item_id is not None and seen is not None:
+                    pixel_folder.seen_again(opened, export.account_id, decision.matched_item_id, decision.person_id, seen)
                     opened.commit()
                 continue
             try:
@@ -270,10 +270,17 @@ def pixels_serving(opened: Session, account_id: int, person_id: int) -> list[Pix
     ).scalars())
 
 
+def seen_at(export: Export, now: float) -> float | None:
+    if export.created_at is None:
+        return now
+    return export.created_at if dates.plausibly_created(export.created_at, now) else None
+
+
 def unmatched_count(opened: Session, person_id: int, cutoff: float) -> int:
     return int(opened.execute(
         select(func.count(MediaItem.id)).where(
-            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False))
+            MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False),
+            known_contents())
     ).scalar_one())
 
 

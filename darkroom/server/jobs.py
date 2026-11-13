@@ -154,8 +154,9 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     def index_originals(at: float) -> None:
         photos = Photos(settings.photos_root)
         with db.session(engine) as opened:
-            for person in opened.query(Person).order_by(Person.id):
+            for person in opened.query(Person).order_by(Person.id).all():
                 index.index_person(opened, photos, person, at)
+                opened.commit()
 
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)

@@ -1,17 +1,21 @@
+import logging
 import sqlite3
 import tempfile
+import traceback
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
-from sqlalchemy import event, inspect, select, text
+from sqlalchemy import URL, event, inspect, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom import config
+from darkroom import config, monitoring
 from darkroom.domain import exports
 from darkroom.storage import db
 from darkroom.storage.models import Export, ExportPart, GoogleAccount, MediaItem, Person, Setting
+from tests.privacy import no_leaks
 from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, on_postgres, own_database, own_sqlite_database
 
 
@@ -89,6 +93,40 @@ class UrlTests(unittest.TestCase):
         with self.assertRaises(db.UnsupportedDatabase):
             db.upsert(opened, Setting, {"key": "k", "value": "1"}, ("key",))
         opened.execute.assert_not_called()
+
+
+FAKE_PASSWORD = "not/a=real@pw%:canary-5e2b"
+PASSWORD_CANARY = "canary-5e2b"
+
+
+class PasswordInErrorsTests(unittest.TestCase):
+    def unreachable_url(self):
+        return URL.create("postgresql", username="darkroom", password=FAKE_PASSWORD, host="127.0.0.1", port=1, database="darkroom").render_as_string(hide_password=False)
+
+    def test_a_password_with_url_characters_is_in_no_error_traceback_or_log_when_migrating_fails(self):
+        with no_leaks(self, FAKE_PASSWORD, PASSWORD_CANARY, quote(FAKE_PASSWORD, safe="")):
+            engine = db.make_engine(self.unreachable_url())
+            self.addCleanup(engine.dispose)
+            with self.assertRaises(OperationalError) as failed:
+                db.migrate(engine)
+            monitoring.report(failed.exception, values=True)
+            monitoring.report(failed.exception)
+            logging.getLogger("darkroom").error("migrating failed", exc_info=failed.exception)
+            shown = "".join(traceback.format_exception(failed.exception))
+        self.assertNotIn(PASSWORD_CANARY, shown)
+
+    def test_the_migration_config_holds_no_password(self):
+        engine = db.make_engine(self.unreachable_url())
+        self.addCleanup(engine.dispose)
+        config = db.alembic_config(engine)
+        self.assertIsNone(config.get_main_option("sqlalchemy.url"))
+        self.assertIs(config.attributes["engine"], engine)
+
+    def test_an_unreadable_url_is_refused_without_its_password(self):
+        with no_leaks(self, PASSWORD_CANARY), self.assertRaises(db.UnsupportedDatabase) as refused:
+            db.make_engine(f"postgresql:/darkroom:{FAKE_PASSWORD}@127.0.0.1/darkroom")
+        self.assertIn("DATABASE_URL", str(refused.exception))
+        self.assertNotIn(PASSWORD_CANARY, "".join(traceback.format_exception(refused.exception)))
 
 
 class BusyTests(unittest.TestCase):

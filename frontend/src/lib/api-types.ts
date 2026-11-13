@@ -374,6 +374,7 @@ export interface PersonStatus {
   indexed: number;
   with_gps: number;
   unknown_time: number;
+  index_skipped: number;
   accounts: AccountState[];
   pixels: PixelState[];
   last_import: number | null;

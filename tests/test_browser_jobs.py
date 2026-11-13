@@ -212,7 +212,9 @@ class BrowserJobTests(unittest.TestCase):
     def test_a_schedule_job_without_proper_dates_is_refused_and_stays_open(self):
         job_id = self.enqueue("schedule")
         bad = ({}, {"schedule_created": 100.0}, {"schedule_created": "x", "schedule_end": 200.0}, {"schedule_created": True, "schedule_end": 200.0},
-               {"schedule_created": 300.0, "schedule_end": 200.0})
+               {"schedule_created": 300.0, "schedule_end": 200.0}, {"schedule_created": 100.0, "schedule_end": float("inf")},
+               {"schedule_created": float("nan"), "schedule_end": 200.0}, {"schedule_created": float("-inf"), "schedule_end": 200.0},
+               {"schedule_created": 100.0, "schedule_end": 1e300})
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 5.0)
             for result in bad:

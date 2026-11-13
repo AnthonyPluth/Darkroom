@@ -16,7 +16,7 @@ from darkroom.domain import dedupe, events, pixel_folder, xmp
 from darkroom.domain.ingest import pairing
 from darkroom.providers import exiftool
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, DuplicateRemoval, Export, ImmichAsset, MediaItem, Person, PixelCopy
+from darkroom.storage.models import DedupeDecision, DuplicateRemoval, Export, ImmichAsset, MediaItem, Person, PixelCopy, known_contents
 from darkroom.storage.paths import Photos
 
 IMMICH_FOLDER = "immich"
@@ -97,7 +97,7 @@ def decisions_of(opened: Session, item: MediaItem) -> list[DedupeDecision]:
 
 def immich_originals(opened: Session, person: Person, item_id: int | None = None) -> dict[int, MediaItem]:
     query = select(MediaItem).join(ImmichAsset, ImmichAsset.original_item_id == MediaItem.id).where(
-        ImmichAsset.person_id == person.id, ImmichAsset.status == "stored", MediaItem.person_id == person.id, MediaItem.source == "phone",
+        ImmichAsset.person_id == person.id, ImmichAsset.status == "stored", MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents(),
         MediaItem.path.startswith(f"{person.slug}/originals/{IMMICH_FOLDER}/"),
     )
     found = opened.execute(query if item_id is None else query.where(MediaItem.id == item_id)).scalars().unique()
@@ -123,7 +123,7 @@ def pairs(opened: Session, person: Person) -> list[Pair]:
     originals = {item_id: item for item_id, item in immich_originals(opened, person).items() if item_id not in held}
     if not takeouts or not originals:
         return []
-    phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone").order_by(MediaItem.id)).scalars()
+    phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents()).order_by(MediaItem.id)).scalars()
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(item) for item in phone))
     by_path = {item.path: (item, decision) for item, decision in takeouts}
     decided = dedupe.decide_all(index, [candidate_of(opened, item) for item in placed_takeouts(opened, person)], dedupe.DedupeSettings())

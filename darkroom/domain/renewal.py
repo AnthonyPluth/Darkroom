@@ -78,8 +78,9 @@ def queue_renewal(opened: Session, account: GoogleAccount, end: float, now: floa
 
 def renew_now(opened: Session, settings: Settings, account_id: int, now: float) -> BrowserJob:
     account = browser_jobs.lock_account(opened, account_id)
-    end = account.schedule_end
-    if account.schedule_created is None or end is None:
+    schedule = browser_jobs.schedule_of(account)
+    end = None if schedule is None or schedule[0] is None else schedule[1]
+    if end is None:
         raise NoSchedule("this account has no export schedule to renew")
     if now < end - NOTICE:
         raise NotDue(f"this schedule is not due for renewal until {on_date(end - NOTICE, settings.timezone)}, three weeks before it ends")
@@ -100,9 +101,8 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
     browser_jobs.lock_scheduled_accounts(opened)
     ending = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).order_by(GoogleAccount.id)
     for account in opened.execute(ending).scalars().all():
-        end = account.schedule_end
-        assert end is not None
-        if now < end - NOTICE:
+        end = browser_jobs.schedule_end_of(account)
+        if end is None or now < end - NOTICE:
             continue
         asked = latest_renewal(opened, account, end - NOTICE)
         if asked is not None and asked.status == "failed":
@@ -123,10 +123,12 @@ def watch_schedules(opened: Session, settings: Settings, now: float) -> int:
 
 def reword_ended(opened: Session, settings: Settings, now: float) -> int:
     reworded = 0
-    ended = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None), GoogleAccount.schedule_end <= now).order_by(GoogleAccount.id)
-    for account in opened.execute(ended).scalars().all():
-        assert account.schedule_end is not None
-        day = on_date(account.schedule_end, settings.timezone)
+    ending = select(GoogleAccount).where(GoogleAccount.schedule_end.is_not(None)).order_by(GoogleAccount.id)
+    for account in opened.execute(ending).scalars().all():
+        end = browser_jobs.schedule_end_of(account)
+        if end is None or end > now:
+            continue
+        day = on_date(end, settings.timezone)
         for key, kind, wording in (
             (ending_key(account.id), ENDING, alerts.schedule_ending(account.email, day, True)),
             (failed_key(account.id), RENEWAL_FAILED, alerts.schedule_renewal_failed(account.email, day, True)),
@@ -142,11 +144,12 @@ def job_failed(opened: Session, settings: Settings, job: BrowserJob, now: float)
     if job.kind != browser_jobs.RENEW_KIND:
         return
     account = browser_jobs.account_of(opened, job.account_id)
-    if account.schedule_end is None:
+    end = browser_jobs.schedule_end_of(account)
+    if end is None:
         return
-    open_failed(opened, settings, account, account.schedule_end, job, now)
+    open_failed(opened, settings, account, end, job, now)
     kind = "schedule_renewal_unconfirmed" if browser_jobs.left_uncertain(job) else "schedule_renewal_failed"
-    events.record(opened, now, kind, f"account {account.id}", f"the schedule still ends {on_date(account.schedule_end, settings.timezone)}")
+    events.record(opened, now, kind, f"account {account.id}", f"the schedule still ends {on_date(end, settings.timezone)}")
 
 
 def jobs_failed(opened: Session, settings: Settings, jobs: Sequence[BrowserJob], now: float) -> None:
@@ -172,17 +175,19 @@ def checked(opened: Session, settings: Settings, account_id: int, found: bool, n
         schedule_recorded(opened, settings, job, now)
         return job
     account = browser_jobs.account_of(opened, account_id)
-    if job.kind == browser_jobs.RENEW_KIND and account.schedule_end is not None:
-        open_failed(opened, settings, account, account.schedule_end, job, now)
-        events.record(opened, now, "schedule_renewal_failed", f"account {account.id}", f"not found in Takeout; the schedule still ends {on_date(account.schedule_end, settings.timezone)}")
+    end = browser_jobs.schedule_end_of(account)
+    if job.kind == browser_jobs.RENEW_KIND and end is not None:
+        open_failed(opened, settings, account, end, job, now)
+        events.record(opened, now, "schedule_renewal_failed", f"account {account.id}", f"not found in Takeout; the schedule still ends {on_date(end, settings.timezone)}")
     return job
 
 
 def renewed(opened: Session, settings: Settings, job: BrowserJob, now: float) -> None:
     account = browser_jobs.account_of(opened, job.account_id)
-    end = account.schedule_end
-    assert end is not None
+    end = browser_jobs.schedule_end_of(account)
     settle(opened, account.id, now)
+    if end is None:
+        return
     wording = alerts.schedule_renewed(account.email, on_date(end, settings.timezone))
     alerts.open_alert(opened, settings, renewed_key(account.id, end), RENEWED, account.email, wording, None, now, about=alerts.account(account.id))
     events.record(opened, now, "schedule_renewed", f"account {account.id}", f"the schedule now runs until {on_date(end, settings.timezone)}")

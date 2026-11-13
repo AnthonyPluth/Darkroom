@@ -16,7 +16,7 @@ from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -663,7 +663,7 @@ def media_view(item: MediaItem) -> dict[str, object]:
 
 
 def missing_gps(opened: Session, person_id: int | None, start: float | None, end: float | None, page: int) -> tuple[list[dict[str, object]], int]:
-    query: Select[MediaItem] = select(MediaItem).where(or_(MediaItem.lat.is_(None), MediaItem.lon.is_(None)))
+    query: Select[MediaItem] = select(MediaItem).where(or_(MediaItem.lat.is_(None), MediaItem.lon.is_(None)), known_contents())
     if person_id is not None:
         query = query.where(MediaItem.person_id == person_id)
     if start is not None:

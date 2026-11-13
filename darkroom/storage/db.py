@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import Insert as SqliteInsert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import ArgumentError, OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
@@ -65,15 +65,22 @@ def unsupported(name: str) -> UnsupportedDatabase:
     return UnsupportedDatabase(f"Darkroom supports SQLite (sqlite:///path) and PostgreSQL (postgresql://user:password@host/database), not {name!r}")
 
 
+def unreadable() -> UnsupportedDatabase:
+    return UnsupportedDatabase("DATABASE_URL could not be read: write it as postgresql://user:password@host/database, with any of : / @ % = ? # in the user or password percent-encoded")
+
+
 def make_engine(url: str) -> Engine:
-    url = normalise_url(url)
-    name = make_url(url).get_backend_name()
+    try:
+        parsed = make_url(normalise_url(url))
+    except (ArgumentError, ValueError, TypeError):
+        raise unreadable() from None
+    name = parsed.get_backend_name()
     if name == "sqlite":
-        engine = create_engine(url, connect_args={"timeout": 30})
+        engine = create_engine(parsed, connect_args={"timeout": 30})
         event.listen(engine, "connect", set_sqlite_pragmas)
         return engine
     if name == "postgresql":
-        engine = create_engine(url, pool_pre_ping=True, pool_recycle=RECYCLE_SECONDS, connect_args={"options": f"-c lock_timeout={LOCK_WAIT_MS}"})
+        engine = create_engine(parsed, pool_pre_ping=True, pool_recycle=RECYCLE_SECONDS, connect_args={"options": f"-c lock_timeout={LOCK_WAIT_MS}"})
         serialise_writes(engine)
         return engine
     raise unsupported(name)
@@ -157,7 +164,7 @@ def alembic_config(engine: Engine | None = None) -> Config:
     config = Config()
     config.set_main_option("script_location", str(MIGRATIONS))
     if engine is not None:
-        config.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
+        config.attributes["engine"] = engine
     return config
 
 

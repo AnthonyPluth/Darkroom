@@ -119,11 +119,11 @@ class AccountJobsApiTests(ApiCase):
     def test_a_found_renewal_that_would_not_extend_the_schedule_is_refused_with_409(self):
         job_id = self.unconfirmed_renewal(dates.utc_now().timestamp() + 20 * 86400)
         with db.session(self.engine) as opened:
-            opened.get(GoogleAccount, self.account_id).schedule_end = 9_000_000_000.0
+            opened.get(GoogleAccount, self.account_id).schedule_end = 4_000_000_000.0
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
         self.assertEqual(status, 409)
         self.assertIn("must end after", reply["error"])
-        self.assertEqual(self.account_view()["schedule_end"], 9_000_000_000.0)
+        self.assertEqual(self.account_view()["schedule_end"], 4_000_000_000.0)
         self.assertTrue(next(entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"] if entry["id"] == job_id)["needs_check"])
 
     def unconfirmed_schedule(self, message="ScheduleNotConfirmed: check Takeout before trying again"):
@@ -155,12 +155,12 @@ class AccountJobsApiTests(ApiCase):
         job_id, _ = self.unconfirmed_schedule()
         with db.session(self.engine) as opened:
             account = opened.get(GoogleAccount, self.account_id)
-            account.schedule_created, account.schedule_end = 1.0, 9_000_000_000.0
+            account.schedule_created, account.schedule_end = 1.0, 4_000_000_000.0
         status, reply = self.call("POST", f"/api/accounts/{self.account_id}/schedule/checked", {"found": True})
         self.assertEqual(status, 409)
         self.assertIn("must end after", reply["error"])
         view = self.account_view()
-        self.assertEqual((view["schedule_created"], view["schedule_end"]), (1.0, 9_000_000_000.0))
+        self.assertEqual((view["schedule_created"], view["schedule_end"]), (1.0, 4_000_000_000.0))
         self.assertTrue(next(entry for entry in self.call("GET", "/api/browser/jobs")[1]["jobs"] if entry["id"] == job_id)["needs_check"])
 
     def test_a_plainly_failed_first_schedule_has_nothing_to_record(self):

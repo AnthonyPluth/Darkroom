@@ -46,13 +46,13 @@ export const seededStatus: Status = {
   alerts: [signInAlert, unmatchedAlert],
   people: [
     {
-      id: 1, slug: "jo-example", name: "Jo Example", indexed: 120, with_gps: 100, unknown_time: 3,
+      id: 1, slug: "jo-example", name: "Jo Example", indexed: 120, with_gps: 100, unknown_time: 3, index_skipped: 0,
       accounts: [{ id: 10, email: "jo.photos@example.com", session_state: "ok", session_checked: 1000, schedule_end: null }],
       pixels: [{ id: 20, name: "Pixel 9a", google_account_id: 10 }],
       last_import: 700, unmatched: null, alerts: [],
     },
     {
-      id: 2, slug: "sam-example", name: "Sam Example", indexed: 0, with_gps: 0, unknown_time: 0,
+      id: 2, slug: "sam-example", name: "Sam Example", indexed: 0, with_gps: 0, unknown_time: 0, index_skipped: 0,
       accounts: [{ id: 11, email: "family.photos@example.com", session_state: "needs_sign_in", session_checked: 1000, schedule_end: 5_000_000 }],
       pixels: [],
       last_import: null, unmatched: null, alerts: [signInAlert, unmatchedAlert],

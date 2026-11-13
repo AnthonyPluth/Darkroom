@@ -10,7 +10,7 @@ from darkroom.dates import utc_now
 from darkroom.domain import alerts, browser_jobs, demo
 from darkroom.server import auth
 from darkroom.storage import db
-from darkroom.storage.models import Export, ImportRun, MediaItem
+from darkroom.storage.models import Export, ImportRun, IndexSkip, MediaItem
 from darkroom.storage.paths import Photos
 from tests.api_world import ApiCase
 from tests.shared import fetch, settings_from, start_server
@@ -24,8 +24,18 @@ class StatusApiTests(ApiCase):
     def test_a_person_with_nothing_yet_has_zeros_and_nulls(self):
         jo = self.person("Jo")
         (card,) = self.call("GET", "/api/status")[1]["people"]
-        self.assertEqual(card, {"id": jo["id"], "slug": "jo", "name": "Jo", "indexed": 0, "with_gps": 0, "unknown_time": 0, "accounts": [], "pixels": [],
+        self.assertEqual(card, {"id": jo["id"], "slug": "jo", "name": "Jo", "indexed": 0, "with_gps": 0, "unknown_time": 0, "index_skipped": 0, "accounts": [], "pixels": [],
                                 "last_import": None, "unmatched": None, "alerts": []})
+
+    def test_the_card_counts_the_files_the_index_set_aside_for_each_person(self):
+        jo = self.person("Jo")
+        self.person("Sam")
+        with db.session(self.engine) as opened:
+            for name in ("a.jpg", "b.png"):
+                opened.add(IndexSkip(person_id=jo["id"], path=f"jo/originals/{name}", bytes=1, mtime=1.0, reason="not a photo or video", skipped_at=2.0))
+        people = {card["slug"]: card["index_skipped"] for card in self.call("GET", "/api/status")[1]["people"]}
+        self.assertEqual(people, {"jo": 2, "sam": 0})
+        self.assertNotIn(b"a.jpg", self.replies[-1])
 
     def seed_media(self, person_id):
         rows = (("a.jpg", "exif", "exif_offset"), ("b.jpg", "none", "unknown"), ("c.jpg", "exif", "unknown"), ("d.jpg", "none", "gps_lookup"))

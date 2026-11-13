@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, case, func, literal, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
+from darkroom import dates
 from darkroom.domain import accounts, events
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson
+from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1, known_contents
 from darkroom.storage.paths import Photos
 
 GIGABYTE = 1024**3
@@ -33,13 +34,28 @@ class Tended:
             setattr(self, name, getattr(self, name) + getattr(other, name))
 
 
+NEVER_AFTER_PLACING = 0.0
+
+
+def export_plausibly_created() -> ColumnElement[bool]:
+    return and_(Export.created_at.between(1, dates.LATEST_INSTANT), Export.created_at <= DedupeDecision.decided_at)
+
+
+def observed_at() -> ColumnElement[float]:
+    return case(
+        (Export.created_at.is_(None), DedupeDecision.decided_at),
+        (export_plausibly_created(), Export.created_at),
+        else_=literal(NEVER_AFTER_PLACING),
+    )
+
+
 def confirming_matches(opened: Session, account_id: int, item_id: int, person_id: int) -> list[float]:
     return list(opened.execute(
-        select(func.coalesce(Export.created_at, DedupeDecision.decided_at)).select_from(DedupeDecision).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id)
+        select(observed_at()).select_from(DedupeDecision).join(MediaItem, MediaItem.id == DedupeDecision.matched_item_id)
         .join(Export, Export.id == DedupeDecision.export_id).where(
             DedupeDecision.matched_item_id == item_id, DedupeDecision.account_id == account_id, DedupeDecision.person_id == person_id,
             DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(accounts.CONFIRMING_TIERS),
-            MediaItem.person_id == person_id,
+            MediaItem.person_id == person_id, known_contents(),
         )
     ).scalars())
 
@@ -48,7 +64,14 @@ def confirmed_for(opened: Session, account_id: int, item_id: int, person_id: int
     return any(since is None or observed_at >= since for observed_at in confirming_matches(opened, account_id, item_id, person_id))
 
 
+def holds_current_contents(opened: Session, row: PixelCopy) -> bool:
+    item = opened.get(MediaItem, row.item_id, populate_existing=True)
+    return item is not None and item.sha1 != UNKNOWN_SHA1 and item.sha1 == row.sha1
+
+
 def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
+    if row.state == "placed" and not holds_current_contents(opened, row):
+        return False
     if not confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id):
         return False
     if not row.always_send or row.placed_at is None:
@@ -81,7 +104,7 @@ def serves(opened: Session, pixel_id: int, person_id: int) -> bool:
 
 def in_originals(opened: Session, item: MediaItem) -> Person:
     person = opened.get(Person, item.person_id)
-    if person is None or item.source != "phone" or not item.path.startswith(f"{person.slug}/originals/"):
+    if person is None or item.source != "phone" or item.sha1 == UNKNOWN_SHA1 or not item.path.startswith(f"{person.slug}/originals/"):
         raise NotInOriginals("only a photo in the person's originals folder goes to a Pixel")
     return person
 
@@ -215,6 +238,24 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
             continue
         revive(opened, row, now)
         requeued += 1
+    opened.flush()
+    return requeued
+
+
+def requeue_new_contents(opened: Session, item: MediaItem, now: float) -> int:
+    db.write_lock(opened)
+    if item.sha1 == UNKNOWN_SHA1:
+        return 0
+    requeued = 0
+    rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item.id, PixelCopy.state.in_(("queued", "pruned")))).scalars().all()
+    for row in rows:
+        if row.state == "pruned":
+            pixel = opened.get(Pixel, row.pixel_id)
+            if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+                continue
+            revive(opened, row, now)
+            requeued += 1
+        row.sha1, row.bytes = item.sha1, item.bytes
     opened.flush()
     return requeued
 

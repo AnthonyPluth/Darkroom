@@ -59,6 +59,29 @@ class ReadTests(unittest.TestCase):
                 self.assertRaises(exiftool.Unreadable):
             exiftool.read([self.folder / "x.jpg"])
 
+    def test_exiftool_taking_too_long_is_unreadable_and_the_time_allowed_grows_with_the_batch(self):
+        timeouts = []
+
+        def slow(command, timeout=exiftool.TIMEOUT, keep=()):
+            timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(command, timeout)
+
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", slow):
+            for count in (1, 3, exiftool.BATCH):
+                with self.subTest(count=count), self.assertRaises(exiftool.TimedOut):
+                    exiftool.read([self.folder / f"{n}.jpg" for n in range(count)])
+        self.assertEqual(timeouts, [exiftool.FILE_TIMEOUT, 3 * exiftool.FILE_TIMEOUT, exiftool.TIMEOUT])
+
+    def test_output_that_is_not_a_list_of_entries_is_unreadable_or_ignored(self):
+        with mock.patch("shutil.which", return_value="/usr/bin/exiftool"):
+            for stdout in ("[{", "{\"SourceFile\": \"x\"}"):
+                with self.subTest(stdout=stdout), mock.patch.object(exiftool, "run", return_value=mock.Mock(stdout=stdout, stderr="", returncode=0)), \
+                        self.assertRaises(exiftool.Unreadable):
+                    exiftool.read([self.folder / "x.jpg"])
+            odd = mock.Mock(stdout='[1, {"no": "source"}, {"SourceFile": "/a.jpg", "File:MIMEType": "image/jpeg"}]', stderr="", returncode=0)
+            with mock.patch.object(exiftool, "run", return_value=odd):
+                self.assertEqual(exiftool.read([Path("/a.jpg")]), {Path("/a.jpg"): {"SourceFile": "/a.jpg", "File:MIMEType": "image/jpeg"}})
+
     def test_an_empty_answer_with_success_means_nothing_found(self):
         done = mock.Mock(stdout="", stderr="", returncode=0)
         with mock.patch("shutil.which", return_value="/usr/bin/exiftool"), mock.patch.object(exiftool, "run", return_value=done):

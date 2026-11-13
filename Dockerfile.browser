@@ -30,5 +30,5 @@ RUN if ! getent group "$PGID" >/dev/null; then groupadd --system --gid "$PGID" d
     && chown -R darkroom-browser /app /home/darkroom-browser
 
 USER darkroom-browser
-EXPOSE 6080 5900
+EXPOSE 6080
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
