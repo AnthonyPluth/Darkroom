@@ -18,12 +18,12 @@ class RunTests(unittest.TestCase):
         self.assertEqual(db.database_url(settings), f"sqlite:///{folder}/data/darkroom.db")
 
     def test_check_config_reports_problems_and_a_missing_exiftool(self):
-        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err:
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()) as out:
             values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder}
             with mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", side_effect=exiftool.Missing("exiftool is not installed")):
                 code = run.main(["check-config"])
         self.assertEqual(code, 1)
-        self.assertIn("DARKROOM_SECRET_KEY", err.getvalue())
+        self.assertIn("DARKROOM_SECRET_KEY", out.getvalue())
         self.assertIn("exiftool is not installed", err.getvalue())
 
     def test_check_config_passes_when_complete(self):
@@ -85,8 +85,9 @@ class RunTests(unittest.TestCase):
         server.serve_forever.side_effect = KeyboardInterrupt
         with mock.patch.object(run.handler, "make_server", return_value=server) as made, mock.patch.object(run, "migrate", return_value=0) as migrated, \
                 mock.patch.object(run.jobs, "build") as built, mock.patch.object(run.db, "make_engine") as engine, \
-                contextlib.redirect_stderr(io.StringIO()):
+                mock.patch.object(run.secret_key, "ensure", side_effect=lambda settings, engine: settings) as keyed, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(run.main(["serve"]), 0)
+        keyed.assert_called_once()
         server.server_close.assert_called_once()
         migrated.assert_called_once()
         built.return_value.stop.assert_called_once()

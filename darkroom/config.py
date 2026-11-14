@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 
@@ -22,6 +23,9 @@ def whole_number(raw: str) -> int:
 
 def env_flag(name: str) -> bool:
     return env(name) == "1"
+
+
+SecretKeySource = Literal["environment", "file", "none"]
 
 
 @dataclass(frozen=True)
@@ -50,16 +54,41 @@ class Settings:
     alert_email_from: str = ""
     alert_email_to: str = ""
     allowed_hosts: tuple[str, ...] = ()
+    secret_key_source: SecretKeySource = "none"
+
+
+SECRET_KEY_FILE = "secret-key"
+
+
+def secret_key_file(data_dir: Path) -> Path:
+    return data_dir / SECRET_KEY_FILE
+
+
+def stored_secret_key(data_dir: Path) -> str:
+    try:
+        return secret_key_file(data_dir).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def secret_key_of(data_dir: Path) -> tuple[str, SecretKeySource]:
+    given = env("DARKROOM_SECRET_KEY")
+    if given:
+        return given, "environment"
+    stored = stored_secret_key(data_dir)
+    return stored, "file" if stored else "none"
 
 
 def load() -> Settings:
+    data_dir = Path(env("DARKROOM_DATA_DIR", "/data"))
+    secret_key, secret_key_source = secret_key_of(data_dir)
     return Settings(
         host=env("DARKROOM_HOST", "127.0.0.1"),
         port=int(env("DARKROOM_PORT", "8000")),
         photos_root=Path(env("DARKROOM_PHOTOS_ROOT", "/photos")),
-        data_dir=Path(env("DARKROOM_DATA_DIR", "/data")),
+        data_dir=data_dir,
         public_url=env("DARKROOM_PUBLIC_URL").rstrip("/"),
-        secret_key=env("DARKROOM_SECRET_KEY"),
+        secret_key=secret_key,
         database_url=env("DATABASE_URL"),
         oidc_issuer=env("OIDC_ISSUER").rstrip("/"),
         oidc_client_id=env("OIDC_CLIENT_ID"),
@@ -78,6 +107,7 @@ def load() -> Settings:
         alert_email_from=env("ALERT_EMAIL_FROM"),
         alert_email_to=env("ALERT_EMAIL_TO"),
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
+        secret_key_source=secret_key_source,
     )
 
 
@@ -232,8 +262,6 @@ def problems(settings: Settings) -> list[str]:
         found.append(f"DARKROOM_PHOTOS_ROOT is not a directory: {settings.photos_root}")
     if not settings.data_dir.is_dir():
         found.append(f"DARKROOM_DATA_DIR is not a directory: {settings.data_dir}")
-    if not settings.secret_key:
-        found.append("DARKROOM_SECRET_KEY is not set")
     if not settings.public_url:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
