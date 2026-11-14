@@ -148,7 +148,12 @@ class DemoSessionTests(DemoSessionCase):
                 self.assertEqual((status, json.loads(reply)), (200, {"handled": True}))
                 if route.method != "GET":
                     self.assertEqual(fetch(base, route.method, route.path, {**self.cookie, "Origin": "https://evil.example"}, body)[0], 403)
-        for route in [r for r in routes.ROUTES if r.auth != "session" and r.auth != "public"]:
+        for route in [r for r in routes.ROUTES if r.auth in routes.SETUP_KINDS]:
+            with self.subTest(route=f"{route.method} {route.path}"):
+                origin = {"Origin": base, "Content-Type": "application/json"}
+                self.assertEqual(fetch(base, route.method, route.path, origin, b"{}")[0], 401)
+                self.assertEqual(fetch(base, route.method, route.path, {**self.cookie, **origin}, b"{}")[0], 404 if route.auth == "setup" else 401)
+        for route in [r for r in routes.ROUTES if r.auth not in ("session", "public", *routes.SETUP_KINDS)]:
             with self.subTest(route=f"{route.method} {route.path}"):
                 for headers in (self.cookie, {"Authorization": f"Bearer {self.token}"}):
                     self.assertEqual(fetch(base, route.method, route.path, headers, b"{}")[0], 401)

@@ -31,12 +31,13 @@
     {
       "route": "GET /auth/callback",
       "auth": "public",
-      "handler": "darkroom.server.auth.callback",
+      "handler": "darkroom.server.wizard.callback",
       "frontend": [],
       "tests": [
         "tests/test_auth_routes.py",
         "tests/test_every_route.py",
-        "tests/test_oidc.py"
+        "tests/test_oidc.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
@@ -566,6 +567,76 @@
       "tests": [
         "tests/test_every_route.py",
         "tests/test_review_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/setup",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.setup_state",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/claim",
+      "auth": "setup-claim",
+      "handler": "darkroom.server.api.wizard.claim_setup",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/address",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.set_address",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/immich",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.set_immich",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/alerts",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.set_alerts",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/sign-in",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.propose_sign_in",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/sign-in/test",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.test_sign_in",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {

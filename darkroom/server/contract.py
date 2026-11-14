@@ -490,3 +490,50 @@ class MediaReply(TypedDict):
 
 class ReassignBody(TypedDict):
     person_id: int
+
+
+class SetupSetting(TypedDict):
+    variable: str
+    source: Literal["environment", "stored", "default"]
+    set: bool
+    value: str | None
+
+
+class SetupProposal(TypedDict):
+    oidc_issuer: str
+    oidc_client_id: str
+    has_client_secret: bool
+    oidc_allowed_groups: list[str]
+    oidc_allowed_emails: list[str]
+
+
+class SetupState(TypedDict):
+    settings: list[SetupSetting]
+    redirect_uri: str | None
+    proposal: SetupProposal | None
+
+
+class SetupAddressBody(TypedDict):
+    public_url: str
+
+
+class SetupImmichBody(TypedDict):
+    immich_url: str
+
+
+class SetupAlertsBody(TypedDict):
+    resend_api_key: NotRequired[str]
+    alert_email_from: str
+    alert_email_to: str
+
+
+class SetupSignInBody(TypedDict):
+    oidc_issuer: str
+    oidc_client_id: str
+    oidc_client_secret: NotRequired[str]
+    oidc_allowed_groups: list[str]
+    oidc_allowed_emails: list[str]
+
+
+class SetupTestStart(TypedDict):
+    location: str

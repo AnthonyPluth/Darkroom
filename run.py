@@ -16,7 +16,7 @@ from darkroom.dates import utc_now
 from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
-from darkroom.server import auth, handler, jobs
+from darkroom.server import auth, handler, jobs, wizard
 from darkroom.storage import db, secret_key, secretbox, stored_settings
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
@@ -272,6 +272,19 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     return 0
 
 
+REOPENED = "the setup wizard is reopened: the next visitor from a private address may claim it, unless someone has already signed in to this Darkroom"
+
+
+def reopen_setup() -> int:
+    engine = db.make_engine(db.database_url(config.load()))
+    with db.session(engine, writing=True) as opened:
+        wizard.reopen(opened)
+    engine.dispose()
+    monitoring.log("setup wizard reopened")
+    print(REOPENED)
+    return 0
+
+
 def demo_settings(folder: str) -> config.Settings:
     root = Path(folder)
     return dataclasses.replace(config.load(), data_dir=root / "data", photos_root=root / "photos", database_url="", demo=True)
@@ -383,7 +396,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret", "reopen-setup"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -398,6 +411,8 @@ def main(argv: list[str]) -> int:
         return run_demo(args.data)
     if args.command == "seal-secret":
         return seal_secret()
+    if args.command == "reopen-setup":
+        return reopen_setup()
     if args.command == "revoke-sessions":
         return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":
