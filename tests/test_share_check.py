@@ -172,6 +172,26 @@ class ShareCheckTests(ShareWorld):
         self.assertTrue(self.copy_path(self.jo_pixel, later).is_file())
         self.assertEqual(self.events(share_check.PASSED), [None])
 
+    def test_a_symlinked_root_retargeted_while_running_is_never_tended_at_the_new_place(self):
+        prunable, missing, queued = self.busy_share()
+        self.bind()
+        holder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, holder)
+        link, elsewhere = holder / "photos", holder / "elsewhere"
+        elsewhere.mkdir()
+        link.symlink_to(self.root)
+        self.settings = config.Settings(**{**self.settings.__dict__, "photos_root": link})
+        scheduler = self.scheduler()
+        self.assertEqual(scheduler.share.root, self.root)
+        link.unlink()
+        link.symlink_to(elsewhere)
+        scheduler.run_one("pixels.tend", NOW + HOUR)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertEqual(self.states(), ["pruned", "placed", "placed"])
+        self.assertFalse(self.copy_path(self.jo_pixel, prunable).exists())
+        self.assertTrue(self.copy_path(self.jo_pixel, missing).is_file())
+        self.assertTrue(self.copy_path(self.jo_pixel, queued).is_file())
+
     def test_a_failure_is_recorded_once_until_it_changes_or_passes_and_logs_no_path(self):
         self.bind()
         scheduler = self.scheduler()

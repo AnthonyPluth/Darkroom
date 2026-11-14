@@ -146,7 +146,8 @@ def pusher_of(settings: Settings) -> Pusher | None:
 
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
-    share = scheduler.share = share_check.ShareCheck.at_startup(Photos(settings.photos_root).root)
+    share_photos = Photos(settings.photos_root)
+    share = scheduler.share = share_check.ShareCheck.at_startup(share_photos.root)
     found_pusher = pusher if pusher is not None else pusher_of(settings)
 
     def tick_alerts(at: float) -> None:
@@ -207,7 +208,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
 
     def tend_pixels(at: float) -> None:
-        photos = Photos(settings.photos_root)
+        photos = share_photos
         with db.session(engine) as opened:
             refused = share.refusal(opened, at)
             if refused is not None:
