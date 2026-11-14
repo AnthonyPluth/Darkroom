@@ -336,6 +336,62 @@ class BindShareTests(ShareWorld):
                 self.assert_refused(self.run_bind(answers), "not confirmed; nothing was written")
         self.assertIsNone(self.recorded())
 
+    def test_a_share_replaced_and_bound_between_two_cycles_is_checked_for_missing_copies_again(self):
+        _prunable, missing, queued = self.busy_share()
+        self.assertEqual(self.run_bind()[0], 0)
+        scheduler = self.scheduler()
+        scheduler.run_one("pixels.tend", NOW + HOUR)
+        self.assertEqual(self.states(), ["pruned", "placed", "placed"])
+        shutil.rmtree(self.root / "_pixels")
+        (self.root / share.SHARE_SENTINEL_FILE).unlink()
+        self.assertEqual(self.run_bind()[0], 0)
+        with mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
+            scheduler.run_one("pixels.tend", NOW + 2 * HOUR)
+        log.assert_any_call("placed copies checked", checked=2, intact=0, requeued=2, adopted=0, unaccounted=0, held=1)
+        log.assert_any_call("pixel folders tended", placed=2, pruned=0, skipped=0, deferred=0, failed=0, refused=0, held=0)
+        self.assertTrue(self.copy_path(self.jo_pixel, missing).is_file())
+        self.assertTrue(self.copy_path(self.jo_pixel, queued).is_file())
+        self.assertEqual(self.events(share_check.FAILED), [])
+        with mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
+            scheduler.run_one("pixels.tend", NOW + 3 * HOUR)
+        self.assertNotIn("placed copies checked", [call.args[0] for call in log.call_args_list])
+
+    def test_a_sentinel_whose_contents_cannot_be_written_is_removed_so_the_bind_can_run_again(self):
+        self.busy_share()
+        with mock.patch.object(share.os, "write", side_effect=OSError(28, "No space left on device")):
+            self.assert_refused(self.run_bind(), "the sentinel could not be written (OSError)")
+        self.assertFalse(os.path.lexists(self.root / share.SHARE_SENTINEL_FILE))
+        code, _, err = self.run_bind()
+        self.assertEqual((code, err), (0, '{"event": "share bound"}\n'))
+        self.assertEqual((self.root / share.SHARE_SENTINEL_FILE).read_bytes(), share.sentinel_content(self.recorded()))
+        self.assertIsNone(share_check.sentinel_problem(self.root, self.recorded()))
+
+    def test_a_failed_write_never_removes_a_sentinel_that_was_put_in_its_place(self):
+        sentinel = self.root / share.SHARE_SENTINEL_FILE
+        aside = self.root.parent / f"{self.root.name}-aside"
+        self.addCleanup(aside.unlink, missing_ok=True)
+
+        def substitute(fd):
+            sentinel.rename(aside)
+            sentinel.write_bytes(b"someone else's")
+            raise OSError(5, "I/O error")
+
+        with mock.patch.object(share.os, "fsync", side_effect=substitute), self.assertRaises(OSError):
+            share.write_sentinel(self.root, share.sentinel_content("e" * 32))
+        self.assertEqual(sentinel.read_bytes(), b"someone else's")
+        sentinel.unlink()
+        with mock.patch.object(share.os, "fsync", side_effect=OSError(5, "I/O error")), self.assertRaises(OSError):
+            share.write_sentinel(self.root, share.sentinel_content("e" * 32))
+        self.assertFalse(os.path.lexists(sentinel))
+
+        def vanish(fd):
+            sentinel.unlink()
+            raise OSError(5, "I/O error")
+
+        with mock.patch.object(share.os, "fsync", side_effect=vanish), self.assertRaises(OSError):
+            share.write_sentinel(self.root, share.sentinel_content("e" * 32))
+        self.assertFalse(os.path.lexists(sentinel))
+
     def test_the_bind_is_refused_when_another_sentinel_is_present(self):
         for make in (lambda path: path.write_bytes(b"anything"), lambda path: path.symlink_to("/nowhere"), lambda path: path.mkdir()):
             sentinel = self.root / share.SHARE_SENTINEL_FILE

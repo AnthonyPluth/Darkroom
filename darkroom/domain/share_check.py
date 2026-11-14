@@ -55,21 +55,27 @@ def report(opened: Session, problem: str | None, now: float) -> None:
     opened.commit()
 
 
-@dataclass(frozen=True)
+@dataclass
 class ShareCheck:
     root: Path
     device: int | None
+    passed: str | None = None
+    rebound: bool = False
 
     @classmethod
     def at_startup(cls, root: Path) -> ShareCheck:
         return cls(root, share.device_of(root))
 
-    def problem(self, opened: Session) -> str | None:
+    def problem(self, opened: Session, token: str | None = None) -> str | None:
         if self.device is None or share.device_of(self.root) != self.device:
             return MOVED
-        return sentinel_problem(self.root, stored_settings.recorded_share(opened))
+        return sentinel_problem(self.root, token if token is not None else stored_settings.recorded_share(opened))
 
     def refusal(self, opened: Session, now: float) -> str | None:
-        found = self.problem(opened)
+        token = stored_settings.recorded_share(opened)
+        found = self.problem(opened, token)
         report(opened, found, now)
+        self.rebound = found is None and token != self.passed
+        if found is None:
+            self.passed = token
         return found

@@ -214,6 +214,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 scheduler.placed_copies = pixel_check.PlacedCopyCheck()
                 monitoring.log("pixel folders not tended: the share check failed", reason=refused)
                 return
+            if share.rebound:
+                scheduler.placed_copies = pixel_check.PlacedCopyCheck()
             if scheduler.placed_copies.due(opened):
                 checked = scheduler.placed_copies.run(opened, photos, at)
                 monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,

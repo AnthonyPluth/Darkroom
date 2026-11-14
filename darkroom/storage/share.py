@@ -87,6 +87,15 @@ def read_sentinel(root: Path) -> bytes | None:
         os.close(fd)
 
 
+def remove_own(folder: int, created: os.stat_result) -> None:
+    try:
+        found = os.stat(SHARE_SENTINEL_FILE, dir_fd=folder, follow_symlinks=False)
+    except OSError:
+        return
+    if os.path.samestat(found, created):
+        os.unlink(SHARE_SENTINEL_FILE, dir_fd=folder)
+
+
 def write_sentinel(root: Path, content: bytes) -> None:
     folder = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -96,6 +105,9 @@ def write_sentinel(root: Path, content: bytes) -> None:
             while written < len(content):
                 written += os.write(fd, content[written:])
             os.fsync(fd)
+        except BaseException:
+            remove_own(folder, os.fstat(fd))
+            raise
         finally:
             os.close(fd)
         os.fsync(folder)

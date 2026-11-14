@@ -27,7 +27,7 @@ Otherwise it shows what it found (the root, what it is mounted from, how many en
 - `paused`: that the outside Syncthing is paused for every folder under `_pixels/`, because an empty replacement would otherwise reach each Pixel as deletions;
 - `bind`: to write a new sentinel and record it.
 
-Any other answer writes nothing. On `bind` it records a new random identity in the `stored_settings` table (as `share_sentinel`, which no environment variable sets), writes it to `.darkroom-share` at the share root (create-only, mode 0600), and records a `share_bound` event. If the file cannot be written the command says so; placing and pruning stay stopped and the command can be run again.
+Any other answer writes nothing. On `bind` it records a new random identity in the `stored_settings` table (as `share_sentinel`, which no environment variable sets), writes it to `.darkroom-share` at the share root (create-only, mode 0600), and records a `share_bound` event. If the file cannot be written the command says so and removes the file it had just created (never one that was put in its place); placing and pruning stay stopped and the command can be run again.
 
 ## A lost and replaced share
 
