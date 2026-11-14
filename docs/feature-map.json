@@ -10,6 +10,7 @@
         "tests/test_every_route.py",
         "tests/test_healthz.py",
         "tests/test_routes_table.py",
+        "tests/test_secretbox.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
       ]
@@ -74,6 +75,7 @@
         "tests/test_every_route.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py",
+        "tests/test_secretbox.py",
         "tests/test_static.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
@@ -93,6 +95,7 @@
         "tests/test_every_route.py",
         "tests/test_imports_api.py",
         "tests/test_pixels_api.py",
+        "tests/test_secretbox.py",
         "tests/test_status_api.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
@@ -108,6 +111,7 @@
       "tests": [
         "tests/test_every_route.py",
         "tests/test_people_api.py",
+        "tests/test_secretbox.py",
         "tests/test_status_api.py"
       ]
     },
@@ -126,6 +130,7 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
+        "tests/test_secretbox.py",
         "tests/test_static.py"
       ]
     },
@@ -142,6 +147,7 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
+        "tests/test_secretbox.py",
         "tests/test_static.py"
       ]
     },

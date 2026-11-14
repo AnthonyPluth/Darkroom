@@ -34,7 +34,8 @@ class ConfigTests(unittest.TestCase):
             values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "OIDC_ISSUER": "https://id.example"}
             with mock.patch.dict(os.environ, values, clear=True):
                 found = config.problems(config.load())
-        self.assertEqual(len(found), 4)
+        self.assertEqual(len(found), 3)
+        self.assertFalse(any("SECRET_KEY" in line for line in found))
         self.assertTrue(any("OIDC_ISSUER" in line for line in found))
         self.assertTrue(any("sign-in is not set up" in line for line in found))
 

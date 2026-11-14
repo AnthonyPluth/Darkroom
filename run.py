@@ -17,7 +17,7 @@ from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
-from darkroom.storage import db, secretbox
+from darkroom.storage import db, secret_key, secretbox
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
 
@@ -33,11 +33,15 @@ def check_config() -> int:
         found.append(str(error))
     found += oidc.recheck_problems(settings, utc_now().timestamp())
     found += resend.problems(settings)
+    missing_key = secret_key.missing_key_problem(settings)
+    if missing_key:
+        found.append(missing_key)
     for line in found:
         print(f"config: {line}", file=sys.stderr)
     if config.ignored_alert_variables():
         print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
     print(alert_channel(settings))
+    print(key_origin_line(settings, missing_key))
     if not found:
         print("Configuration looks complete.")
     return 1 if found else 0
@@ -51,10 +55,22 @@ def alert_channel(settings: config.Settings) -> str:
     return "Alerts: emailed to the owner through Resend, from the sender address you set."
 
 
+KEY_ORIGIN_LINES = {
+    "environment": "Secret key: from DARKROOM_SECRET_KEY.",
+    "file": "Secret key: from the secret-key file in DARKROOM_DATA_DIR.",
+    "none": "Secret key: none yet; `python run.py serve` generates one in DARKROOM_DATA_DIR on first start (or set DARKROOM_SECRET_KEY).",
+}
+NO_KEY_TO_GENERATE = "Secret key: none, and `python run.py serve` will not generate one until the problem above is fixed."
+
+
+def key_origin_line(settings: config.Settings, missing_key: str | None) -> str:
+    return NO_KEY_TO_GENERATE if missing_key else KEY_ORIGIN_LINES[settings.key_origin]
+
+
 def seal_secret() -> int:
     settings = config.load()
     if not settings.secret_key:
-        print("seal-secret needs DARKROOM_SECRET_KEY, the same one the service runs with", file=sys.stderr)
+        print("seal-secret needs DARKROOM_SECRET_KEY or the secret-key file the service generates in DARKROOM_DATA_DIR on first start, the same key the service runs with", file=sys.stderr)
         return 1
     plain = sys.stdin.readline().strip()
     if not plain:
@@ -329,6 +345,12 @@ def serve() -> int:
     except (OSError, NotInTheInbox) as error:
         monitoring.log("inbox folders not shared with the browser worker", error=type(error).__name__)
     engine = db.make_engine(db.database_url(settings))
+    try:
+        settings = secret_key.ensure(settings, engine)
+    except secret_key.Refused as refused:
+        engine.dispose()
+        print(f"config: {refused}", file=sys.stderr)
+        return 1
     scheduler = jobs.build(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
