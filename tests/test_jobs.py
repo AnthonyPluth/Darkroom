@@ -306,6 +306,60 @@ class BuildTests(unittest.TestCase):
             with db.session(engine) as opened:
                 self.assertEqual([row.state for row in opened.query(PixelCopy)], ["placed"])
 
+    def test_the_placed_copy_check_runs_before_the_first_tend_and_again_only_while_a_pixel_is_held(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from darkroom import monitoring
+        from darkroom.domain import pixel_check
+        from darkroom.storage.models import MediaItem, Pixel, PixelCopy, PixelPerson
+
+        engine = own_database(self)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            settings = config.Settings(**{**config.load().__dict__, "photos_root": root, "pixel_folder_cap_gb": 1})
+            (root / "jo/originals").mkdir(parents=True)
+            (root / "jo/originals/a.jpg").write_bytes(b"photo")
+            with db.session(engine) as opened:
+                person = add_person(opened, "jo")
+                account = GoogleAccount(email="jo@x.test", default_person_id=person, created=1.0)
+                opened.add(account)
+                opened.flush()
+                pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+                opened.add(pixel)
+                opened.flush()
+                opened.add(PixelPerson(pixel_id=pixel.id, person_id=person))
+                item = MediaItem(person_id=person, source="phone", path="jo/originals/a.jpg", sha1=hashlib.sha1(b"photo", usedforsecurity=False).hexdigest(),
+                                 bytes=5, indexed_at=1.0)
+                opened.add(item)
+                opened.flush()
+                opened.add(PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=person, state="placed", name="a.jpg", bytes=5, sha1=item.sha1,
+                                     queued_at=1.0, placed_at=2.0))
+            scheduler = jobs.build(settings, engine)
+            with db.session(engine) as opened:
+                self.assertTrue(scheduler.placed_copies.held(opened, pixel.id))
+            (root / "jo/originals/a.jpg").rename(root / "jo/originals/b.jpg")
+            order = []
+            real_check, real_tend = pixel_check.check, jobs.pixel_folder.tend
+            with mock.patch.object(pixel_check, "check", side_effect=lambda *a: order.append("check") or real_check(*a)), \
+                    mock.patch.object(jobs.pixel_folder, "tend", side_effect=lambda *a: order.append("tend") or real_tend(*a)), \
+                    mock.patch.object(monitoring, "log") as log:
+                scheduler.run_one("pixels.tend", 5.0)
+                self.assertEqual(order, ["check", "tend"])
+                log.assert_any_call("placed copies checked", checked=1, intact=0, requeued=1, held=1)
+                scheduler.run_one("pixels.tend", 6.0)
+                self.assertEqual(order, ["check", "tend", "check", "tend"])
+                (root / "jo/originals/b.jpg").rename(root / "jo/originals/a.jpg")
+                scheduler.run_one("pixels.tend", 7.0)
+                scheduler.run_one("pixels.tend", 8.0)
+                self.assertEqual(order, ["check", "tend", "check", "tend", "check", "tend", "tend"])
+            self.assertEqual((root / f"_pixels/{pixel.id}/jo/a.jpg").read_bytes(), b"photo")
+            with db.session(engine) as opened:
+                self.assertEqual([(row.state, row.placed_at) for row in opened.query(PixelCopy)], [("placed", 2.0)])
+                self.assertFalse(scheduler.placed_copies.held(opened, pixel.id))
+
     def test_the_reconcile_job_does_nothing_without_an_immich_address_and_runs_every_quarter_hour(self):
         import tempfile
         from unittest import mock

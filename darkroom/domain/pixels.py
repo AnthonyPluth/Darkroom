@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -127,7 +127,7 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
 
 
 def require_no_placed_copies(opened: Session, pixel: Pixel, people: set[int] | None) -> None:
-    query = select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, PixelCopy.state == "placed")
+    query = select(PixelCopy.id).where(PixelCopy.pixel_id == pixel.id, or_(PixelCopy.state == "placed", pixel_folder.replacing()))
     if people is not None:
         if not people:
             return
