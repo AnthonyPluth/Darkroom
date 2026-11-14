@@ -241,6 +241,31 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
         db.migrate(self.engine)
 
+    def test_0030_stored_settings_adds_an_empty_table_keeps_the_old_settings_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0029")
+            connection.exec_driver_sql("INSERT INTO settings (key, value) VALUES ('keep_edited_copies', '1')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM stored_settings").scalar(), 0)
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            connection.exec_driver_sql("INSERT INTO stored_settings (name, value, updated) VALUES ('IMMICH_URL', 'http://immich.local', 1.0)")
+            connection.exec_driver_sql("INSERT INTO stored_settings (name, value_sealed, updated) VALUES ('OIDC_CLIENT_SECRET', 'enc:v1:x', 1.0)")
+            for both_or_neither in ("'x', 'enc:v1:x'", "NULL, NULL"):
+                with self.subTest(values=both_or_neither), self.assertRaises(IntegrityError), connection.begin_nested():
+                    connection.exec_driver_sql(f"INSERT INTO stored_settings (name, value, value_sealed, updated) VALUES ('IMMICH_URL_2', {both_or_neither}, 1.0)")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO stored_settings (name, value, updated) VALUES ('IMMICH_URL', 'http://other.local', 1.0)")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0029")
+        self.assertNotIn("stored_settings", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT key, value FROM settings").all(), [("keep_edited_copies", "1")])
+        db.migrate(self.engine)
+        self.assertIn("stored_settings", inspect(self.engine).get_table_names())
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

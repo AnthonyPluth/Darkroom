@@ -17,7 +17,7 @@ from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
-from darkroom.storage import db, secret_key, secretbox
+from darkroom.storage import db, secret_key, secretbox, stored_settings
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
 
@@ -25,8 +25,9 @@ DEMO_SESSION_FILE = "demo-session.json"
 
 
 def check_config() -> int:
-    settings = config.load()
-    found = config.problems(settings)
+    loaded = stored_settings.for_check(config.load())
+    settings = loaded.settings
+    found = [*loaded.problems, *config.problems(settings)]
     try:
         exiftool.version()
     except (exiftool.Missing, OSError) as error:
@@ -42,6 +43,8 @@ def check_config() -> int:
         print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
     print(alert_channel(settings))
     print(key_origin_line(settings, missing_key))
+    for line in source_lines(loaded):
+        print(line)
     if not found:
         print("Configuration looks complete.")
     return 1 if found else 0
@@ -65,6 +68,13 @@ NO_KEY_TO_GENERATE = "Secret key: none, and `python run.py serve` will not gener
 
 def key_origin_line(settings: config.Settings, missing_key: str | None) -> str:
     return NO_KEY_TO_GENERATE if missing_key else KEY_ORIGIN_LINES[settings.key_origin]
+
+
+def source_lines(loaded: stored_settings.Effective) -> list[str]:
+    return [SOURCES_HEADING, *(f"  {variable}: {source}" for variable, source in loaded.sources.items())]
+
+
+SOURCES_HEADING = "Where each setting comes from (the environment, then a stored value, then the default; secret values are never shown):"
 
 
 def seal_secret() -> int:
@@ -350,6 +360,14 @@ def serve() -> int:
     except secret_key.Refused as refused:
         engine.dispose()
         print(f"config: {refused}", file=sys.stderr)
+        return 1
+    loaded = stored_settings.effective(settings, engine)
+    settings = loaded.settings
+    unusable = [*loaded.problems, *config.refuses_to_start(settings)]
+    if unusable:
+        engine.dispose()
+        for line in unusable:
+            print(f"config: {line}", file=sys.stderr)
         return 1
     scheduler = jobs.build(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
