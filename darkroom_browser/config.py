@@ -12,6 +12,21 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def read_handed(fd: int) -> str:
+    try:
+        with os.fdopen(fd, "rb") as pipe:
+            return pipe.read().decode("ascii", "replace").strip()
+    except OSError:
+        return ""
+
+
+def browser_token() -> str:
+    raw = env("DARKROOM_BROWSER_TOKEN_FD")
+    if not raw:
+        return env("DARKROOM_BROWSER_TOKEN")
+    return read_handed(int(raw)) if raw.isascii() and raw.isdigit() and int(raw) >= 3 else ""
+
+
 @dataclass(frozen=True)
 class Settings:
     darkroom_url: str
@@ -25,7 +40,7 @@ class Settings:
 def load() -> Settings:
     return Settings(
         darkroom_url=env("DARKROOM_URL", "http://darkroom:8000").rstrip("/"),
-        token=env("DARKROOM_BROWSER_TOKEN"),
+        token=browser_token(),
         photos_root=Path(env("PHOTOS_ROOT", "/photos")),
         display=env("DISPLAY", ":99"),
         poll_seconds=float(env("POLL_SECONDS", "15")),
