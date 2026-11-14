@@ -348,7 +348,7 @@ class BuildTests(unittest.TestCase):
                     mock.patch.object(monitoring, "log") as log:
                 scheduler.run_one("pixels.tend", 5.0)
                 self.assertEqual(order, ["check", "tend"])
-                log.assert_any_call("placed copies checked", checked=1, intact=0, requeued=1, held=1)
+                log.assert_any_call("placed copies checked", checked=1, intact=0, requeued=1, adopted=0, unaccounted=0, held=1)
                 scheduler.run_one("pixels.tend", 6.0)
                 self.assertEqual(order, ["check", "tend", "check", "tend"])
                 (root / "jo/originals/b.jpg").rename(root / "jo/originals/a.jpg")
@@ -359,6 +359,41 @@ class BuildTests(unittest.TestCase):
             with db.session(engine) as opened:
                 self.assertEqual([(row.state, row.placed_at) for row in opened.query(PixelCopy)], [("placed", 2.0)])
                 self.assertFalse(scheduler.placed_copies.held(opened, pixel.id))
+
+    def test_the_placed_copy_check_logs_only_counts_for_files_it_cannot_account_for(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from darkroom import monitoring
+        from darkroom.storage.models import Pixel, PixelPerson
+        from tests.privacy import no_leaks
+
+        canary = "canary-unaccounted-3c9f1b.HEIC"
+        engine = own_database(self)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            settings = config.Settings(**{**config.load().__dict__, "photos_root": root, "pixel_folder_cap_gb": 1})
+            with db.session(engine) as opened:
+                person = add_person(opened, "jo")
+                account = GoogleAccount(email="jo@x.test", default_person_id=person, created=1.0)
+                opened.add(account)
+                opened.flush()
+                pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
+                opened.add(pixel)
+                opened.flush()
+                opened.add(PixelPerson(pixel_id=pixel.id, person_id=person))
+            (root / f"_pixels/{pixel.id}/jo").mkdir(parents=True)
+            (root / f"_pixels/{pixel.id}/jo/{canary}").write_bytes(b"made up")
+            scheduler = jobs.build(settings, engine)
+            with no_leaks(self, canary, database=engine), mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
+                scheduler.run_one("pixels.tend", 5.0)
+                scheduler.run_one("pixels.tend", 6.0)
+            log.assert_any_call("placed copies checked", checked=0, intact=0, requeued=0, adopted=0, unaccounted=1, held=1)
+            self.assertEqual([call.args[0] for call in log.call_args_list].count("placed copies checked"), 2)
+            self.assertEqual((root / f"_pixels/{pixel.id}/jo/{canary}").read_bytes(), b"made up")
+            with db.session(engine) as opened:
+                self.assertTrue(scheduler.placed_copies.held(opened, pixel.id))
 
     def test_the_reconcile_job_does_nothing_without_an_immich_address_and_runs_every_quarter_hour(self):
         import tempfile
