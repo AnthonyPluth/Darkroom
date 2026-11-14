@@ -101,8 +101,39 @@ class GeneratedKeyTests(unittest.TestCase):
                 self.key_file.write_bytes(content)
                 with self.assertRaises(secret_key.Refused) as refused:
                     self.ensure(self.settings(), self.engine)
-                self.assertIn("will not replace it", str(refused.exception))
+                self.assertEqual(str(refused.exception), secret_key.UNREADABLE_FILE_NOTHING_SEALED)
                 self.assertEqual(self.key_file.read_bytes(), content)
+
+    def test_an_unreadable_key_file_is_only_called_deletable_when_nothing_sealed_is_stored(self):
+        self.key_file.write_bytes(b"")
+        self.store_sealed_immich_key()
+        with self.assertRaises(secret_key.Refused) as refused:
+            self.ensure(self.settings(), self.engine)
+        self.assertEqual(str(refused.exception), secret_key.UNREADABLE_FILE)
+        self.assertNotIn("delete", str(refused.exception))
+        self.assertEqual(self.key_file.read_bytes(), b"")
+        with self.assertRaises(secret_key.Refused) as refused:
+            self.ensure(self.settings(RESEND_API_KEY=secretbox.seal("re_x", "the-lost-key")), own_database(self))
+        self.assertEqual(str(refused.exception), secret_key.UNREADABLE_FILE)
+        self.assertEqual(self.key_file.read_bytes(), b"")
+
+    def test_an_empty_key_file_left_by_an_interrupted_first_start_can_be_deleted_and_a_key_made(self):
+        def killed_after_creating_the_file(path, key):
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            raise KeyboardInterrupt
+
+        refused = OSError(errno.EPERM, "hard links are not allowed here")
+        with mock.patch.object(secret_key.os, "link", side_effect=refused), \
+                mock.patch.object(secret_key, "write_in_place", side_effect=killed_after_creating_the_file), self.assertRaises(KeyboardInterrupt):
+            self.ensure(self.settings(), self.engine)
+        self.assertEqual(self.key_file.read_bytes(), b"")
+        with self.assertRaises(secret_key.Refused) as refused:
+            self.ensure(self.settings(), self.engine)
+        self.assertIn("delete the file and start again", str(refused.exception))
+        self.assertEqual(self.key_file.read_bytes(), b"")
+        self.key_file.unlink()
+        settings = self.ensure(self.settings(), self.engine)
+        self.assertEqual(self.key_file.read_text(), settings.secret_key + "\n")
 
     def test_a_key_another_start_wrote_first_is_used_instead_of_a_new_one(self):
         def written_by_another_start(path):
@@ -241,10 +272,39 @@ class ServeAndCheckConfigTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("will not make a new key", err)
         (self.data / config.SECRET_KEY_FILE).write_text("")
+        code, out, err = self.check_config()
+        self.assertEqual(code, 1)
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE_NOTHING_SEALED}", err)
+        self.assertIn("will not generate one until the problem above is fixed", out)
+        self.assertFalse((self.data / "darkroom.db").exists())
+        code, _, err = self.check_config(RESEND_API_KEY=sealed, ALERT_EMAIL_FROM="a@example.test", ALERT_EMAIL_TO="b@example.test")
+        self.assertEqual(code, 1)
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE}", err)
+        self.assertNotIn("delete the file", err)
+
+    def test_check_config_calls_an_unreadable_key_file_deletable_only_when_the_database_holds_nothing_sealed(self):
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(io.StringIO()):
+            run.migrate()
+        (self.data / config.SECRET_KEY_FILE).write_text("")
         code, _, err = self.check_config()
         self.assertEqual(code, 1)
-        self.assertIn("will not replace it", err)
-        self.assertFalse((self.data / "darkroom.db").exists())
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE_NOTHING_SEALED}", err)
+        engine = db.make_engine(db.database_url(settings_from(**self.env)))
+        self.addCleanup(engine.dispose)
+        with db.session(engine) as opened:
+            opened.get(Person, add_person(opened, "jo")).immich_api_key_sealed = secretbox.seal("immich-key", "the-lost-key")
+            opened.commit()
+        code, _, err = self.check_config()
+        self.assertEqual(code, 1)
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE}", err)
+        self.assertNotIn("delete the file", err)
+        code, _, err = self.serve()
+        self.assertEqual(code, 1)
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE}", err)
+        with mock.patch.object(secret_key, "sealed_in_database", side_effect=OperationalError("SELECT", {}, Exception("down"))):
+            code, _, err = self.check_config()
+        self.assertIn(f"config: {secret_key.UNREADABLE_FILE}", err)
+        self.assertEqual((self.data / config.SECRET_KEY_FILE).read_text(), "")
 
     def test_check_config_says_when_the_database_cannot_be_reached(self):
         with mock.patch.object(secret_key, "sealed_in_database", side_effect=OperationalError("SELECT", {}, Exception("down"))):
