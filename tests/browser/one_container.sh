@@ -36,7 +36,8 @@ python3 -c 'import json,sys; old, now = json.loads(sys.argv[1]), json.loads(sys.
 [ "$(field "$after" workers)" != "[$(field "$killed" worker)]" ] && [ "$(field "$after" workers)" != "[]" ] || fail "the worker was not restarted: $after"
 echo "worker restarted, none of the killed worker's browser processes left and every browser under the new worker: $after"
 
-second=$(probe enqueue noop)
-wait_for 120 "job_done $second"
-echo "noop job $second done by the restarted worker, so it has the same token"
+probe enqueue noop >/dev/null
+wait_for 120 '[ "$(probe claimed-since "$(field "$killed" at)")" -gt 0 ]'
+! docker logs "$name" 2>&1 | grep -F '"method": "POST", "status": "401"' || fail "the app refused a worker request"
+echo "the restarted worker claimed a job on the internal API, so the app accepts its token: the same one"
 probe scan || fail "a secret-shaped value is in a process's environment or command line after the restart"
