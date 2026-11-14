@@ -92,7 +92,7 @@ Both images default to uid 99 and gid 100, matching Unraid's `nobody:users`. Com
 - The worker runs with umask `007` and makes `.downloads/<account id>/`, any missing export folder and `.partial/` with mode `2770` too, and sets each finished part to `0660`, so Darkroom can read the parts, unpack them and remove the export folder, and deleting an account can remove `.downloads/<account id>/`.
 - A folder in the chain that is a link is refused on both sides, as before.
 
-When upgrading from uid 10001/10002 and gid 10010, stop both services and back up the database and browser profiles first. On the host, change the ownership of Darkroom's data directory and its working folders, using the actual host data path in place of `./data`:
+When upgrading from uid 10001/10002 and gid 10010, stop both services and back up the database, the `secret-key` file beside it in the data directory and the browser profiles first. On the host, change the ownership of Darkroom's data directory and its working folders, using the actual host data path in place of `./data`:
 
 ```sh
 docker compose --profile browser down
