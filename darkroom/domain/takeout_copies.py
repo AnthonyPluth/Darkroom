@@ -135,7 +135,7 @@ def pairs(opened: Session, person: Person) -> list[Pair]:
 
 def phone_may_go(opened: Session, person: Person, phone: MediaItem, takeout: MediaItem) -> bool:
     matched = opened.execute(select(DedupeDecision.id).where(DedupeDecision.matched_item_id == phone.id).limit(1)).first()
-    sent = opened.execute(select(PixelCopy.id).where(PixelCopy.item_id == phone.id, PixelCopy.state != "queued").limit(1)).first()
+    sent = opened.execute(select(PixelCopy.id).where(PixelCopy.item_id == phone.id, pixel_folder.ever_sent()).limit(1)).first()
     export = None if takeout.export_id is None else opened.get(Export, takeout.export_id)
     accounts = {pixel.google_account_id for pixel in pixel_folder.pixels_serving(opened, person.id)}
     return matched is None and sent is None and not phone.confirmed_in_google and export is not None and accounts <= {export.account_id}

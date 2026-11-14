@@ -470,5 +470,88 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(other.stat().st_mode), 0o600)
         self.assert_kept_unchanged()
 
+    def intact(self, name: str = "2024/IMG_0001.HEIC", digest: str | None = None, size: int | None = None) -> bool:
+        return paths.pixel_copy_intact(self.photos, 1, "jo", name, digest or sha1(self.data), len(self.data) if size is None else size)
+
+    def test_the_placed_copy_check_reads_without_touching_anything(self):
+        self.assertFalse(self.intact())
+        self.assertFalse((self.root / "_pixels").exists())
+        self.place()
+        before = tree(self.root)
+        self.assertTrue(self.intact())
+        self.assertFalse(self.intact(size=len(self.data) + 1))
+        self.assertFalse(self.intact(digest=sha1(b"other")))
+        self.assertFalse(self.intact("2024/IMG_0002.HEIC"))
+        self.assertFalse(self.intact("2025/IMG_0001.HEIC"))
+        self.assertFalse((self.root / "_pixels/1/jo/2025").exists())
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact("../../jo/originals/2024/IMG_0001.HEIC")
+        self.assertEqual(tree(self.root), before)
+        self.assert_kept_unchanged()
+
+    def test_the_placed_copy_check_never_follows_a_link_or_waits_on_a_pipe(self):
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        copy.parent.mkdir(parents=True)
+        copy.symlink_to(self.root / "jo/originals/2024/IMG_0001.HEIC")
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact()
+        copy.unlink()
+        os.mkfifo(copy)
+        self.assertFalse(self.intact())
+        copy.unlink()
+        copy.mkdir()
+        self.assertFalse(self.intact())
+        copy.rmdir()
+        copy.parent.rmdir()
+        copy.parent.symlink_to(self.root / "jo/originals/2024")
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact()
+        copy.parent.unlink()
+        copy.parent.write_bytes(b"a file on the way")
+        self.assertFalse(self.intact())
+        self.assert_kept_unchanged()
+
+
+    def swapped_while_hashed(self, swap) -> bool:
+        real = paths.fd_sha1
+
+        def hashed_then_swapped(fd: int) -> str:
+            digest = real(fd)
+            swap(self.root / "_pixels/1/jo/2024/IMG_0001.HEIC")
+            return digest
+        with mock.patch.object(paths, "fd_sha1", side_effect=hashed_then_swapped):
+            return self.intact()
+
+    def test_the_placed_copy_check_refuses_a_copy_removed_or_replaced_while_it_was_hashed(self):
+        def other_file(path: Path) -> None:
+            path.unlink()
+            path.write_bytes(self.data)
+
+        def link(path: Path) -> None:
+            path.unlink()
+            path.symlink_to(self.root / "jo/originals/2024/IMG_0001.HEIC")
+        for name, swap in (("removed", Path.unlink), ("other file", other_file), ("link", link)):
+            with self.subTest(name):
+                with contextlib.suppress(FileNotFoundError):
+                    (self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").unlink()
+                self.place()
+                self.assertTrue(self.intact())
+                self.assertFalse(self.swapped_while_hashed(swap))
+        self.assert_kept_unchanged()
+
+    def test_a_copy_already_in_place_that_is_replaced_while_it_is_hashed_is_refused(self):
+        self.place()
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        real = paths.fd_sha1
+
+        def hashed_then_removed(fd: int) -> str:
+            digest = real(fd)
+            copy.unlink()
+            return digest
+        with mock.patch.object(paths, "fd_sha1", side_effect=hashed_then_removed), self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertFalse(copy.exists())
+        self.assert_kept_unchanged()
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -570,6 +571,37 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual(self.tend().failed, 2)
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["queued", "queued"])
         self.assertFalse((self.root / "_pixels" / str(self.jo_pixel) / "jo").exists())
+
+    def awaiting_replacement(self) -> MediaItem:
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend()
+        self.copy_path(self.jo_pixel, item).unlink()
+        self.opened.execute(sql_update(PixelCopy).values(state="queued"))
+        self.opened.commit()
+        return item
+
+    def test_a_copy_awaiting_replacement_counts_as_placed_for_a_pixel_change(self):
+        self.awaiting_replacement()
+        self.opened.add(PixelPerson(pixel_id=self.jo_pixel, person_id=self.sam))
+        self.opened.commit()
+        with self.assertRaises(pixels.StillHasCopies):
+            pixels.update(self.opened, self.jo_pixel, {"people_ids": [self.sam]}, NOW + 1)
+        self.opened.rollback()
+        with self.assertRaises(pixels.StillHasCopies):
+            pixels.update(self.opened, self.jo_pixel, {"google_account_id": self.sam_account}, NOW + 1)
+        self.opened.rollback()
+        self.assertEqual([(c.state, c.placed_at) for c in self.copies(self.jo_pixel)], [("queued", NOW)])
+
+    def test_new_contents_leave_a_copy_awaiting_replacement_as_recorded(self):
+        item = self.awaiting_replacement()
+        recorded = item.sha1
+        (self.root / item.path).write_bytes(b"new contents")
+        item.sha1, item.bytes = sha1(b"new contents"), 12
+        self.assertEqual(pixel_folder.requeue_new_contents(self.opened, item, NOW + 1), 0)
+        self.assertEqual([(c.sha1, c.bytes) for c in self.copies(self.jo_pixel)], [(recorded, 100)])
+        self.assertEqual(self.tend(at=NOW + 2).failed, 1)
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["queued"])
 
 
 if __name__ == "__main__":

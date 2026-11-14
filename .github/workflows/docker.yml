@@ -68,6 +68,34 @@ jobs:
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --entrypoint bash darkroom-browser:smoke /app/smoke.sh
 
+  single:
+    runs-on: ubuntu-latest   # hosted: small repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+      - name: Build the one-container image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.single
+          load: true
+          tags: darkroom-single:smoke
+          cache-from: type=gha
+      - name: Check the one-container image answers /healthz with the deployment sandbox
+        run: |
+          docker run -d --name single --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json -p 8765:8000 darkroom-single:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/healthz; then docker rm -f single; exit 0; fi
+            sleep 1
+          done
+          docker logs single; exit 1
+      - name: Launch Chrome and Chromium in the one-container image with the deployment sandbox
+        run: |
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin darkroom-single:smoke bash -c 'test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh'
+
   publish:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.build.outputs.skip != 'true'
