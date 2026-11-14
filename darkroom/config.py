@@ -13,8 +13,12 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def comma_list(raw: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def env_list(name: str, default: str = "") -> tuple[str, ...]:
-    return tuple(part.strip() for part in env(name, default).split(",") if part.strip())
+    return comma_list(env(name, default))
 
 
 def whole_number(raw: str) -> int:
@@ -26,6 +30,32 @@ def env_flag(name: str) -> bool:
 
 
 KeyOrigin = Literal["environment", "file", "none"]
+StoredKind = Literal["text", "address", "list", "secret", "sealed"]
+
+
+@dataclass(frozen=True)
+class Storable:
+    variable: str
+    field: str
+    kind: StoredKind = "text"
+
+    @property
+    def secret(self) -> bool:
+        return self.kind in ("secret", "sealed")
+
+
+STORABLE = (
+    Storable("DARKROOM_PUBLIC_URL", "public_url", "address"),
+    Storable("OIDC_ISSUER", "oidc_issuer", "address"),
+    Storable("OIDC_CLIENT_ID", "oidc_client_id"),
+    Storable("OIDC_CLIENT_SECRET", "oidc_client_secret", "secret"),
+    Storable("OIDC_ALLOWED_GROUPS", "oidc_allowed_groups", "list"),
+    Storable("OIDC_ALLOWED_EMAILS", "oidc_allowed_emails", "list"),
+    Storable("IMMICH_URL", "immich_url", "address"),
+    Storable("RESEND_API_KEY", "resend_api_key", "sealed"),
+    Storable("ALERT_EMAIL_FROM", "alert_email_from"),
+    Storable("ALERT_EMAIL_TO", "alert_email_to"),
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +85,7 @@ class Settings:
     alert_email_to: str = ""
     allowed_hosts: tuple[str, ...] = ()
     key_origin: KeyOrigin = "none"
+    from_environment: frozenset[str] = frozenset()
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -108,6 +139,7 @@ def load() -> Settings:
         alert_email_to=env("ALERT_EMAIL_TO"),
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
         key_origin=key_origin,
+        from_environment=frozenset(entry.variable for entry in STORABLE if env(entry.variable)),
     )
 
 
