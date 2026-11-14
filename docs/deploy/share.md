@@ -35,4 +35,4 @@ When the share really has been lost and replaced (restored from a backup, or a n
 
 ## Rollback
 
-Revert to the previous version: the older guard (a mount at or below `_pixels/` stops placing and pruning) remains. A sentinel left on the share is harmless, and the `share_sentinel` row is ignored. No migration is involved.
+The share check itself adds no migration, but the release that brings it also brings the `stored_settings` table (migration 0030, #309), and an older image cannot start on a database this version has migrated. So go back to the previous version only by restoring the backup taken just before the upgrade, as "Stored settings" in [the runbook](../runbook.md) says. The older guard (a mount at or below `_pixels/` stops placing and pruning) then applies again. A sentinel left on the share is harmless.
