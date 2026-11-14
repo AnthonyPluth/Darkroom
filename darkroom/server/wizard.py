@@ -4,6 +4,7 @@ import dataclasses
 import ipaddress
 import json
 import secrets
+from urllib.parse import urlsplit
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -74,9 +75,6 @@ def visitor(request: Request) -> str:
 
 
 def principal(request: Request) -> Principal | None:
-    found = auth.session_principal(request)
-    if found is not None:
-        return found
     return FIRST_VISITOR if visitor(request) == CLAIMANT else None
 
 
@@ -111,6 +109,15 @@ def proposed_settings(live: config.Settings, fields: dict[str, str]) -> config.S
                                oidc_allowed_groups=groups, oidc_allowed_emails=config.comma_list(fields["OIDC_ALLOWED_EMAILS"]))
 
 
+def same_address(request: Request, public_url: str) -> bool:
+    try:
+        public = urlsplit(public_url)
+    except ValueError:
+        return False
+    host = (header(request, "Host") or "").strip().lower()
+    return public.scheme in ("http", "https") and bool(host) and public.netloc.lower() == host
+
+
 def test_page(status: int, title: str, message: str, request: Request) -> Response:
     return page(status, title, message, cookies=(auth.cleared(request.settings, TEST_COOKIE, "/auth"),))
 
@@ -124,7 +131,7 @@ def callback(request: Request) -> Response:
 
 def finish_test(request: Request, state: str) -> Response:
     settings = request.settings
-    if not settings.wizard or principal(request) is None:
+    if principal(request) is None:
         return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
     live = live_settings(request)
     with db.session(engine_of(request)) as opened:

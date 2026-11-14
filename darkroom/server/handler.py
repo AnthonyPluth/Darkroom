@@ -46,8 +46,6 @@ def dispatch(request: Request) -> Response:
     principal = authenticate(route, request)
     if principal is None:
         return error_response("sign in required", 401)
-    if route.auth in routes.SETUP_KINDS and not request.settings.wizard:
-        return error_response(WIZARD_OFF, 404)
     response = route.handler(replace(request, user=principal))
     if principal.renewed and not sets_session_cookie(response):
         token = auth.cookies_of(request).get(auth.SESSION_COOKIE, "")
@@ -55,7 +53,6 @@ def dispatch(request: Request) -> Response:
     return response
 
 
-WIZARD_OFF = "the setup wizard is off; set DARKROOM_WIZARD=1 to use it"
 BUSY_MESSAGE = "Darkroom is busy with another change; try again in a moment"
 
 

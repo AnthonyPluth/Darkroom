@@ -152,7 +152,7 @@ class DemoSessionTests(DemoSessionCase):
             with self.subTest(route=f"{route.method} {route.path}"):
                 origin = {"Origin": base, "Content-Type": "application/json"}
                 self.assertEqual(fetch(base, route.method, route.path, origin, b"{}")[0], 401)
-                self.assertEqual(fetch(base, route.method, route.path, {**self.cookie, **origin}, b"{}")[0], 404 if route.auth == "setup" else 401)
+                self.assertEqual(fetch(base, route.method, route.path, {**self.cookie, **origin}, b"{}")[0], 401)
         for route in [r for r in routes.ROUTES if r.auth not in ("session", "public", *routes.SETUP_KINDS)]:
             with self.subTest(route=f"{route.method} {route.path}"):
                 for headers in (self.cookie, {"Authorization": f"Bearer {self.token}"}):

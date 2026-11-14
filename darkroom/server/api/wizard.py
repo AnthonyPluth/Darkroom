@@ -16,6 +16,8 @@ MOST_ENTRIES = 20
 CLAIMED_ELSEWHERE = "the setup wizard is already open in another browser; to start again there, run `python run.py reopen-setup` on the server"
 NO_KEY = "Darkroom has no secret key to seal settings with; check the secret-key file in DARKROOM_DATA_DIR"
 NO_PROPOSAL = "there are no proposed sign-in settings to test; send them first"
+ELSEWHERE = ("the test sign-in comes back to DARKROOM_PUBLIC_URL, which is not the address this browser is using, so the wizard could not see it finish; "
+             "open the wizard at the address you confirmed, or confirm the address you are using now")
 NO_ADDRESS = "confirm the address Darkroom is opened at first, so the sign-in can come back to it"
 
 
@@ -204,6 +206,8 @@ def propose_sign_in(request: Annotated[Request, contract.SetupSignInBody]) -> An
 
 def test_sign_in(request: Request) -> Annotated[Response, contract.SetupTestStart]:
     live = wizard.live_settings(request)
+    if not wizard.same_address(request, live.public_url):
+        return error_response(ELSEWHERE, 409)
     with db.session(engine_of(request), writing=True) as opened:
         fields = wizard.load_proposal(opened, request.settings.secret_key)
         if fields is None:

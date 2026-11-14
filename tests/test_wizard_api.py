@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import run
 from darkroom import oidc
-from darkroom.server import handler, wizard
+from darkroom.server import common, handler, routes, wizard
 from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request
 from darkroom.storage import db, stored_settings
@@ -210,11 +210,31 @@ class WizardOffTests(WizardCase):
         self.assertFalse(wizard.open_by_settings(self.settings))
         self.assertFalse(wizard.open_by_settings(settings_from(DARKROOM_SECRET_KEY=KEY)))
 
-    def test_a_signed_in_member_is_told_the_wizard_is_off(self):
-        local = settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_SECRET_KEY=KEY)
+    def test_the_local_owner_without_sign_in_gets_no_wizard(self):
+        local = settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_SECRET_KEY=KEY, DARKROOM_WIZARD="1")
         request = Request("GET", "/api/setup", {}, {"Host": "127.0.0.1"}, b"", local, self.engine, client="127.0.0.1")
         response = handler.dispatch(request)
-        self.assertEqual((response.status, json.loads(response.body)), (404, {"error": handler.WIZARD_OFF}))
+        self.assertEqual((response.status, json.loads(response.body)), (401, {"error": "sign in required"}))
+
+
+class MemberTests(WizardCase):
+    env = {"DARKROOM_WIZARD": "1", "OIDC_ISSUER": "https://id.example", "OIDC_CLIENT_ID": "darkroom"}
+
+    def test_a_signed_in_member_cannot_use_any_setup_route(self):
+        with db.session(self.engine) as opened:
+            oidc.remember_user(opened, oidc.Identity("user-1", "jo@example.test", "Jo Example", ("parents",), True), 1.0)
+            token = oidc.new_session(opened, self.settings, "user-1", common.now())
+        jar = {"darkroom_session": token}
+        self.assertEqual(self.json_call("GET", "/api/me", cookies=jar)[0], 200)
+        bodies = {"/api/setup/address": {"public_url": "https://evil.example.com"}, "/api/setup/immich": {"immich_url": "https://evil.example.com"},
+                  "/api/setup/sign-in": {"oidc_issuer": "https://evil.example.com", "oidc_client_id": "x"}}
+        found = [route for route in routes.ROUTES if route.auth in routes.SETUP_KINDS]
+        self.assertEqual(len(found), 7)
+        for route in found:
+            with self.subTest(route=f"{route.method} {route.path}"):
+                status, reply = self.json_call(route.method, route.path, bodies.get(route.path, {}), cookies=jar)
+                self.assertEqual((status, reply), (401, {"error": "sign in required"}))
+        self.assertEqual(self.stored(), {})
 
 
 class TestSignInTests(WizardCase):
@@ -282,6 +302,18 @@ class TestSignInTests(WizardCase):
         self.assertEqual(status, 403)
         self.assertIn("did not start here", body.decode())
         self.assertEqual(self.call("GET", f"/auth/callback?code=x&state={query['state']}", cookies={})[0], 404)
+
+    def test_the_test_sign_in_runs_only_from_the_confirmed_address(self):
+        self.claim()
+        self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": "https://photos.example.com"})[0], 200)
+        self.propose()
+        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test"), (409, {"error": setup.ELSEWHERE}))
+        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com"})[0], 401)
+        self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": self.base})[0], 200)
+        self.assertEqual(self.try_sign_in()[0], 200)
+        self.assertEqual(self.restarted().public_url, self.base)
+        self.assertFalse(wizard.same_address(Request("GET", "/", {}, {}, b"", self.settings), self.base))
+        self.assertFalse(wizard.same_address(Request("GET", "/", {}, {"Host": "127.0.0.1"}, b"", self.settings), "http://[::1"))
 
     def test_an_unreachable_provider_is_a_fixed_message(self):
         self.claim()
