@@ -932,7 +932,7 @@ def drop_staged_twin(incoming: int, found: os.stat_result) -> bool:
 
 def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result, incoming: int) -> os.stat_result | bool:
     try:
-        fd = open_no_follow(name, folder)
+        fd = open_no_follow(name, folder, os.O_RDONLY | os.O_NONBLOCK)
     except FileNotFoundError:
         return False
     try:
@@ -967,8 +967,10 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
     with PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=True) as destination, \
             PinnedFolders(photos, [PIXELS, INCOMING], create=True) as incoming:
         sweep_staging(incoming.fd, now - STALE_STAGING_SECONDS)
-        source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
+        source = os.open(original, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
+            if not stat.S_ISREG(os.fstat(source).st_mode):
+                raise NotAPixelCopy("the original is not a file")
             found = existing_copy(leaf, destination.fd, sha1, os.fstat(source), incoming.fd)
             if found is True:
                 return name
@@ -1066,7 +1068,7 @@ def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha
         return False
     with pinned:
         try:
-            copy = open_no_follow(leaf, pinned.fd)
+            copy = open_no_follow(leaf, pinned.fd, os.O_RDONLY | os.O_NONBLOCK)
         except FileNotFoundError:
             return False
         try:

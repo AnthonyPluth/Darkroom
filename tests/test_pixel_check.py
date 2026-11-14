@@ -1,6 +1,8 @@
+import contextlib
 import hashlib
 import os
 import shutil
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -208,6 +210,53 @@ class PlacedCopyCheckTests(unittest.TestCase):
         self.assertEqual((tended.placed, tended.deferred), (1, 1))
         self.assertTrue(self.copy_path(self.jo_pixel, first).is_file())
         self.assertFalse(self.held())
+
+    def test_a_copy_awaiting_replacement_keeps_its_room_under_the_cap(self):
+        first, second = self.placed(2, cap=200)
+        original = self.root / first.path
+        data = original.read_bytes()
+        self.copy_path(self.jo_pixel, first).unlink()
+        original.unlink()
+        self.check()
+        self.assertEqual(self.tend(cap=200, at=NOW + 200).failed, 1)
+        later = self.item(self.jo)
+        pixel_folder.queue(self.opened, later, NOW + 250)
+        self.assertEqual(self.tend(cap=200, at=NOW + 300).deferred, 1)
+        self.assertFalse(self.copy_path(self.jo_pixel, later).exists())
+        original.write_bytes(data)
+        tended = self.tend(cap=200, at=NOW + 400)
+        self.assertEqual((tended.placed, tended.deferred), (1, 1))
+        self.assertEqual(pixel_folder.used_bytes(self.opened, self.jo_pixel), 200)
+        self.assertEqual(self.tend(cap=200, at=NOW + 500).deferred, 1)
+        self.assertFalse(self.copy_path(self.jo_pixel, later).exists())
+        self.assertTrue(self.copy_path(self.jo_pixel, second).is_file())
+
+    def test_a_pipe_in_place_of_the_copy_never_blocks_the_check_or_the_tend(self):
+        (item,) = self.placed()
+        copy = self.copy_path(self.jo_pixel, item)
+        copy.unlink()
+        os.mkfifo(copy)
+        before = share_tree(self.root)
+        done = threading.Event()
+        found = {}
+
+        def check_then_tend() -> None:
+            found["checked"] = self.check()
+            found["tended"] = self.tend(at=NOW + 200)
+            done.set()
+        worker = threading.Thread(target=check_then_tend, daemon=True)
+        worker.start()
+        finished = done.wait(20)
+        if not finished:
+            with contextlib.suppress(OSError):
+                os.close(os.open(copy, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(20)
+        self.assertTrue(finished)
+        self.assertEqual(found["checked"].requeued, 1)
+        self.assertEqual(found["tended"].failed, 1)
+        self.assertEqual(share_tree(self.root), before)
+        self.assertTrue(self.held())
+        self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 1)
 
     def test_a_copy_that_changed_state_before_its_lock_is_left_alone(self):
         (item,) = self.placed()

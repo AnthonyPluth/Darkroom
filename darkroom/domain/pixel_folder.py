@@ -132,12 +132,15 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
     return queued
 
 
-def used_bytes(opened: Session, pixel_id: int) -> int:
-    return int(opened.execute(select(func.coalesce(func.sum(PixelCopy.bytes), 0)).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "placed")).scalar_one())
 
 
 def replacing() -> ColumnElement[bool]:
     return and_(PixelCopy.state == "queued", PixelCopy.placed_at.is_not(None))
+
+
+def used_bytes(opened: Session, pixel_id: int) -> int:
+    counted = or_(PixelCopy.state == "placed", replacing())
+    return int(opened.execute(select(func.coalesce(func.sum(PixelCopy.bytes), 0)).where(PixelCopy.pixel_id == pixel_id, counted)).scalar_one())
 
 
 def ever_sent() -> ColumnElement[bool]:
@@ -197,7 +200,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         if again:
             events.record(opened, now, "pixel_copy_replaced", f"pixel {pixel_id}", f"copy {row.id}")
         row.state, row.placed_at, row.pruned_at = "placed", row.placed_at if again else now, None
-        used += row.bytes
+        used += 0 if again else row.bytes
         tended.placed += 1
         opened.commit()
     return tended
