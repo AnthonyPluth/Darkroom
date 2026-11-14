@@ -41,7 +41,7 @@ def check_config() -> int:
     if config.ignored_alert_variables():
         print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
     print(alert_channel(settings))
-    print(secret_key_source(settings, missing_key))
+    print(key_origin_line(settings, missing_key))
     if not found:
         print("Configuration looks complete.")
     return 1 if found else 0
@@ -55,7 +55,7 @@ def alert_channel(settings: config.Settings) -> str:
     return "Alerts: emailed to the owner through Resend, from the sender address you set."
 
 
-SECRET_KEY_SOURCES = {
+KEY_ORIGIN_LINES = {
     "environment": "Secret key: from DARKROOM_SECRET_KEY.",
     "file": "Secret key: from the secret-key file in DARKROOM_DATA_DIR.",
     "none": "Secret key: none yet; `python run.py serve` generates one in DARKROOM_DATA_DIR on first start (or set DARKROOM_SECRET_KEY).",
@@ -63,8 +63,8 @@ SECRET_KEY_SOURCES = {
 NO_KEY_TO_GENERATE = "Secret key: none, and `python run.py serve` will not generate one until the problem above is fixed."
 
 
-def secret_key_source(settings: config.Settings, missing_key: str | None) -> str:
-    return NO_KEY_TO_GENERATE if missing_key else SECRET_KEY_SOURCES[settings.secret_key_source]
+def key_origin_line(settings: config.Settings, missing_key: str | None) -> str:
+    return NO_KEY_TO_GENERATE if missing_key else KEY_ORIGIN_LINES[settings.key_origin]
 
 
 def seal_secret() -> int:

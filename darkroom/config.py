@@ -25,7 +25,7 @@ def env_flag(name: str) -> bool:
     return env(name) == "1"
 
 
-SecretKeySource = Literal["environment", "file", "none"]
+KeyOrigin = Literal["environment", "file", "none"]
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class Settings:
     alert_email_from: str = ""
     alert_email_to: str = ""
     allowed_hosts: tuple[str, ...] = ()
-    secret_key_source: SecretKeySource = "none"
+    key_origin: KeyOrigin = "none"
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -71,7 +71,7 @@ def stored_secret_key(data_dir: Path) -> str:
         return ""
 
 
-def secret_key_of(data_dir: Path) -> tuple[str, SecretKeySource]:
+def secret_key_of(data_dir: Path) -> tuple[str, KeyOrigin]:
     given = env("DARKROOM_SECRET_KEY")
     if given:
         return given, "environment"
@@ -81,7 +81,7 @@ def secret_key_of(data_dir: Path) -> tuple[str, SecretKeySource]:
 
 def load() -> Settings:
     data_dir = Path(env("DARKROOM_DATA_DIR", "/data"))
-    secret_key, secret_key_source = secret_key_of(data_dir)
+    secret_key, key_origin = secret_key_of(data_dir)
     return Settings(
         host=env("DARKROOM_HOST", "127.0.0.1"),
         port=int(env("DARKROOM_PORT", "8000")),
@@ -107,7 +107,7 @@ def load() -> Settings:
         alert_email_from=env("ALERT_EMAIL_FROM"),
         alert_email_to=env("ALERT_EMAIL_TO"),
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
-        secret_key_source=secret_key_source,
+        key_origin=key_origin,
     )
 
 

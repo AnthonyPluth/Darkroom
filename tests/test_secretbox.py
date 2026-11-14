@@ -78,12 +78,12 @@ class GeneratedKeyTests(unittest.TestCase):
         finally:
             os.umask(previous)
         self.assertEqual(stat.S_IMODE(self.key_file.stat().st_mode), 0o600)
-        self.assertEqual(settings.secret_key_source, "file")
+        self.assertEqual(settings.key_origin, "file")
         self.assertGreaterEqual(len(settings.secret_key), 40)
         self.assertEqual(self.key_file.read_text(), settings.secret_key + "\n")
         self.assertEqual(sorted(path.name for path in self.data.iterdir()), [config.SECRET_KEY_FILE])
         again = self.settings()
-        self.assertEqual((again.secret_key, again.secret_key_source), (settings.secret_key, "file"))
+        self.assertEqual((again.secret_key, again.key_origin), (settings.secret_key, "file"))
         self.assertEqual(secretbox.unseal(secretbox.seal("x", settings.secret_key), again.secret_key), "x")
 
     def test_an_existing_key_is_never_regenerated(self):
@@ -133,13 +133,13 @@ class GeneratedKeyTests(unittest.TestCase):
 
     def test_the_environment_variable_still_overrides_the_file(self):
         settings = self.settings(DARKROOM_SECRET_KEY="the-environment-key")
-        self.assertEqual((settings.secret_key, settings.secret_key_source), ("the-environment-key", "environment"))
+        self.assertEqual((settings.secret_key, settings.key_origin), ("the-environment-key", "environment"))
         self.assertIs(self.ensure(settings, self.engine), settings)
         self.assertFalse(self.key_file.exists())
         self.key_file.write_text("the-file-key\n")
         self.store_sealed_immich_key()
         settings = self.settings(DARKROOM_SECRET_KEY="the-environment-key")
-        self.assertEqual((settings.secret_key, settings.secret_key_source), ("the-environment-key", "environment"))
+        self.assertEqual((settings.secret_key, settings.key_origin), ("the-environment-key", "environment"))
         self.assertEqual(self.ensure(settings, self.engine).secret_key, "the-environment-key")
         self.assertEqual(self.key_file.read_text(), "the-file-key\n")
 
@@ -222,7 +222,7 @@ class ServeAndCheckConfigTests(unittest.TestCase):
             code, _, err = self.serve()
             self.assertEqual(code, 0, err)
             settings = settings_from(**self.env)
-            self.assertEqual(settings.secret_key_source, "file")
+            self.assertEqual(settings.key_origin, "file")
             watched.add(settings.secret_key)
             print(err, file=sys.stderr)
             base, _ = start_server(self, settings, engine)

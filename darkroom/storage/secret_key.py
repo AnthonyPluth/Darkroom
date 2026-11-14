@@ -108,4 +108,4 @@ def ensure(settings: config.Settings, engine: Engine) -> config.Settings:
             raise Refused(UNREADABLE_FILE) from None
     else:
         monitoring.log("secret key generated")
-    return dataclasses.replace(settings, secret_key=key, secret_key_source="file")
+    return dataclasses.replace(settings, secret_key=key, key_origin="file")
