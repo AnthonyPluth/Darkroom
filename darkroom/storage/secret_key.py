@@ -12,13 +12,13 @@ from sqlalchemy.exc import ArgumentError, OperationalError
 
 from darkroom import config, monitoring
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import AuthSession, Person
+from darkroom.storage.models import AuthSession, Person, StoredSetting
 
 KEY_BYTES = 32
-SEALED_COLUMNS = ((Person, Person.immich_api_key_sealed), (AuthSession, AuthSession.refresh_token_sealed))
+SEALED_COLUMNS = ((Person, Person.immich_api_key_sealed), (AuthSession, AuthSession.refresh_token_sealed), (StoredSetting, StoredSetting.value_sealed))
 UNREADABLE_FILE = ("the secret-key file in DARKROOM_DATA_DIR is there but holds no key Darkroom can read, and Darkroom will not replace it; "
                    "put the key back in it, or set DARKROOM_SECRET_KEY to the key the stored values were sealed with")
-SEALED_WITHOUT_KEY = ("there is no secret key, but sealed values are already stored (an Immich key, a sign-in session or RESEND_API_KEY), "
+SEALED_WITHOUT_KEY = ("there is no secret key, but sealed values are already stored (an Immich key, a sign-in session, a stored setting or RESEND_API_KEY), "
                       "and Darkroom will not make a new key that could never read them; set DARKROOM_SECRET_KEY to the key they were sealed with, "
                       "or put the secret-key file back in DARKROOM_DATA_DIR")
 DATABASE_UNREACHABLE = "the database could not be reached to check for sealed values, so whether a secret key can be generated is not known"
