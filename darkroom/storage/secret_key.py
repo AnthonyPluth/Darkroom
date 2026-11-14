@@ -73,6 +73,19 @@ def key_file_present(settings: config.Settings) -> bool:
     return path.exists() or path.is_symlink()
 
 
+def write_in_place(path: Path, key: str) -> None:
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(handle, 0o600)
+        with os.fdopen(handle, "w", encoding="ascii") as out:
+            out.write(key + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        os.unlink(path)
+        raise
+
+
 def write_new_key(path: Path) -> str:
     key = secrets.token_urlsafe(KEY_BYTES)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
@@ -82,7 +95,12 @@ def write_new_key(path: Path) -> str:
             out.write(key + "\n")
             out.flush()
             os.fsync(out.fileno())
-        os.link(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            write_in_place(path, key)
     finally:
         os.unlink(temporary)
     directory = os.open(path.parent, os.O_RDONLY)

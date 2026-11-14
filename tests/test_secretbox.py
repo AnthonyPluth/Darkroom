@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import os
 import stat
@@ -14,7 +15,7 @@ import run
 from darkroom import config
 from darkroom.providers import exiftool
 from darkroom.storage import db, secret_key, secretbox
-from darkroom.storage.models import AuthSession, Person, User
+from darkroom.storage.models import AuthSession, Base, Person, User
 from tests.privacy import no_leaks
 from tests.shared import add_person, fetch, own_database, settings_from, start_server
 
@@ -119,6 +120,38 @@ class GeneratedKeyTests(unittest.TestCase):
         settings = self.ensure(loaded_before_the_key_existed, self.engine)
         self.assertEqual((settings.secret_key, settings.key_origin), ("the-other-start-key", "file"))
         self.assertEqual(self.key_file.read_text(), "the-other-start-key\n")
+
+    def test_a_data_folder_that_refuses_hard_links_still_gets_its_key(self):
+        refused = OSError(errno.EPERM, "hard links are not allowed here")
+        with mock.patch.object(secret_key.os, "link", side_effect=refused):
+            settings = self.ensure(self.settings(), self.engine)
+        self.assertEqual(stat.S_IMODE(self.key_file.stat().st_mode), 0o600)
+        self.assertEqual(self.key_file.read_text(), settings.secret_key + "\n")
+        self.assertEqual(sorted(path.name for path in self.data.iterdir()), [config.SECRET_KEY_FILE])
+
+    def test_a_key_is_never_written_over_an_existing_file_or_link(self):
+        refused = OSError(errno.EPERM, "hard links are not allowed here")
+        for name, link in (("with hard links", None), ("without hard links", refused)):
+            for kind in ("file", "dangling link"):
+                with self.subTest(name=name, kind=kind):
+                    target = self.data / "nowhere"
+                    if kind == "file":
+                        self.key_file.write_bytes(b"keep")
+                    else:
+                        self.key_file.symlink_to(target)
+                    patch = mock.patch.object(secret_key.os, "link", side_effect=link) if link else contextlib.nullcontext()
+                    with patch, self.assertRaises(FileExistsError):
+                        secret_key.write_new_key(self.key_file)
+                    self.assertFalse(target.exists())
+                    if kind == "file":
+                        self.assertEqual(self.key_file.read_bytes(), b"keep")
+                    self.key_file.unlink()
+                    self.assertEqual([path.name for path in self.data.iterdir() if path.name.startswith(".")], [])
+
+    def test_every_sealed_column_is_checked_before_a_key_is_made(self):
+        stored = {(table.name, column.name) for table in Base.metadata.tables.values() for column in table.columns if column.name.endswith("_sealed")}
+        checked = {(model.__tablename__, column.key) for model, column in secret_key.SEALED_COLUMNS}
+        self.assertEqual(stored, checked)
 
     def test_no_key_is_made_while_sealed_values_are_stored(self):
         for store in (self.store_sealed_immich_key, self.store_sealed_refresh_token):
