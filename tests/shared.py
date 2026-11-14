@@ -176,3 +176,11 @@ def cookies_set(headers: Message) -> dict[str, str]:
         name, _, value = line.split(";")[0].partition("=")
         found[name.strip()] = value
     return found
+
+
+def bound_share(engine: Engine, root: Path, token: str = "a" * 32) -> None:
+    from darkroom.storage import share, stored_settings
+
+    with db.session(engine) as opened:
+        stored_settings.record_share(opened, token, 1.0)
+    share.write_sentinel(root, share.sentinel_content(token))

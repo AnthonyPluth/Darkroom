@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import immich, resend
 from darkroom.providers.push_note import Pusher
@@ -39,6 +39,7 @@ class Scheduler:
         self.jobs: dict[str, Registered] = {}
         self.stopping = threading.Event()
         self.placed_copies = pixel_check.PlacedCopyCheck()
+        self.share: share_check.ShareCheck | None = None
 
     def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
         self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
@@ -111,6 +112,10 @@ IMMICH_RECONCILE_SECONDS = 900.0
 SCHEDULE_WATCH_HOUR = 5
 
 
+def tend_checks_placed_copies(scheduler: Scheduler) -> bool:
+    return "pixels.tend" in scheduler.jobs and isinstance(scheduler.placed_copies, pixel_check.PlacedCopyCheck)
+
+
 def recheck_sessions(settings: Settings, engine: Engine, at: float) -> oidc.RecheckSummary:
     with db.session(engine) as opened:
         summary = oidc.recheck_due(opened, settings, at)
@@ -141,6 +146,7 @@ def pusher_of(settings: Settings) -> Pusher | None:
 
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
+    share = scheduler.share = share_check.ShareCheck.at_startup(Photos(settings.photos_root).root)
     found_pusher = pusher if pusher is not None else pusher_of(settings)
 
     def tick_alerts(at: float) -> None:
@@ -203,13 +209,19 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     def tend_pixels(at: float) -> None:
         photos = Photos(settings.photos_root)
         with db.session(engine) as opened:
+            refused = share.refusal(opened, at)
+            if refused is not None:
+                scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+                monitoring.log("pixel folders not tended: the share check failed", reason=refused)
+                return
             if scheduler.placed_copies.due(opened):
                 checked = scheduler.placed_copies.run(opened, photos, at)
                 monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,
                                unaccounted=sum(checked.unaccounted.values()), held=len(scheduler.placed_copies.held_pixels(opened)))
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
+            held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
-                       failed=tended.failed, refused=tended.refused)
+                       failed=tended.failed, refused=tended.refused, held=held)
 
     def reconcile_immich(at: float) -> None:
         try:

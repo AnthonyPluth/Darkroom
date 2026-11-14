@@ -7,7 +7,7 @@ from darkroom.server import jobs
 from darkroom.domain import renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, GoogleAccount
-from tests.shared import add_person, own_database
+from tests.shared import add_person, bound_share, own_database
 
 
 def at(day, hour, minute=0):
@@ -299,6 +299,7 @@ class BuildTests(unittest.TestCase):
                 opened.add(item)
                 opened.flush()
                 pixel_folder.queue(opened, item, 2.0)
+            bound_share(engine, root)
             scheduler = jobs.build(settings, engine)
             self.assertEqual((scheduler.jobs["pixels.tend"].interval, scheduler.jobs["pixels.tend"].own_thread), (3600.0, True))
             scheduler.run_one("pixels.tend", 5.0)
@@ -337,6 +338,7 @@ class BuildTests(unittest.TestCase):
                 opened.flush()
                 opened.add(PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=person, state="placed", name="a.jpg", bytes=5, sha1=item.sha1,
                                      queued_at=1.0, placed_at=2.0))
+            bound_share(engine, root)
             scheduler = jobs.build(settings, engine)
             with db.session(engine) as opened:
                 self.assertTrue(scheduler.placed_copies.held(opened, pixel.id))
@@ -385,6 +387,7 @@ class BuildTests(unittest.TestCase):
                 opened.add(PixelPerson(pixel_id=pixel.id, person_id=person))
             (root / f"_pixels/{pixel.id}/jo").mkdir(parents=True)
             (root / f"_pixels/{pixel.id}/jo/{canary}").write_bytes(b"made up")
+            bound_share(engine, root)
             scheduler = jobs.build(settings, engine)
             with no_leaks(self, canary, database=engine), mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
                 scheduler.run_one("pixels.tend", 5.0)
