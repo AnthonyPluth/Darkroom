@@ -14,6 +14,7 @@ from sqlalchemy import update as sql_update
 from darkroom.domain import pixel_check, pixel_folder
 from darkroom.storage.models import Event, PixelCopy
 from tests import test_pixel_folder
+from tests.privacy import no_leaks
 
 NOW = test_pixel_folder.NOW
 
@@ -368,6 +369,179 @@ class PlacedCopyCheckTests(unittest.TestCase):
         with mock.patch.object(pixel_folder, "lock_copy", side_effect=pruned_meanwhile):
             self.assertEqual(self.check().checked, 0)
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["pruned"])
+
+    def restored_older(self, count: int = 1, always_send: bool = False) -> list:
+        items = self.placed(count, always_send=always_send)
+        self.opened.execute(sql_update(PixelCopy).values(state="queued", placed_at=None, name=None))
+        self.opened.commit()
+        return items
+
+    def pixel_folder(self, pixel_id: int | None = None) -> Path:
+        return self.root / "_pixels" / str(self.jo_pixel if pixel_id is None else pixel_id)
+
+    def test_a_file_matching_a_queued_copy_is_adopted_with_the_adoption_time_as_its_cutoff(self):
+        (item,) = self.restored_older(always_send=True)
+        self.match(item, self.jo_account, at=NOW - 100)
+        before = share_tree(self.root)
+        placed_copies = pixel_check.PlacedCopyCheck()
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 100), pixel_check.Checked(adopted=1))
+        self.assertEqual(share_tree(self.root), before)
+        self.assertEqual([(c.state, c.placed_at, c.name) for c in self.copies(self.jo_pixel)], [("placed", NOW + 100, f"2024/{Path(item.path).name}")])
+        self.assertEqual(self.events("pixel_copy_adopted"), [f"copy {self.copies(self.jo_pixel)[0].id}"])
+        self.assertEqual(self.events(pixel_check.UNACCOUNTED), [])
+        self.assertFalse(placed_copies.held(self.opened, self.jo_pixel))
+        self.assertFalse(placed_copies.due(self.opened))
+        tended = self.tend(at=NOW + 200)
+        self.assertEqual((tended.placed, tended.skipped, tended.pruned), (0, 0, 0))
+        self.assertEqual(share_tree(self.root), before)
+        self.assertEqual(self.check(NOW + 300), pixel_check.Checked(checked=1, intact=1))
+        self.match(item, self.jo_account, at=NOW + 400)
+        self.assertEqual(self.tend(at=NOW + 500).pruned, 1)
+        self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
+
+    def test_an_adopted_copy_counts_under_the_cap(self):
+        self.restored_older(2)
+        self.assertEqual(self.check().adopted, 2)
+        self.assertEqual(pixel_folder.used_bytes(self.opened, self.jo_pixel), 200)
+        later = self.item(self.jo)
+        pixel_folder.queue(self.opened, later, NOW + 150)
+        self.assertEqual(self.tend(cap=250, at=NOW + 200).deferred, 1)
+
+    def strays(self) -> list[Path]:
+        folder = self.pixel_folder()
+        made = [folder / "notes.txt", folder / "jo" / "2024" / "stray.HEIC", folder / "jo" / ".stignore", folder / "elsewhere" / "deep" / "x.jpg"]
+        for each in made:
+            each.parent.mkdir(parents=True, exist_ok=True)
+            each.write_bytes(b"not a copy Darkroom knows")
+        return made
+
+    def test_a_file_matching_nothing_holds_the_pixel_untouched_until_it_is_removed_by_hand(self):
+        self.placed()
+        made = self.strays()
+        before = share_tree(self.root)
+        placed_copies = pixel_check.PlacedCopyCheck()
+        for at in (NOW + 100, NOW + 200):
+            self.assertEqual(placed_copies.run(self.opened, self.photos, at), pixel_check.Checked(checked=1, intact=1, unaccounted={self.jo_pixel: 4}))
+            self.assertEqual(share_tree(self.root), before)
+            self.assertTrue(placed_copies.held(self.opened, self.jo_pixel))
+            self.assertFalse(placed_copies.held(self.opened, self.sam_pixel))
+            self.assertTrue(placed_copies.due(self.opened))
+            self.assertEqual(placed_copies.held_pixels(self.opened), [self.jo_pixel])
+        self.assertEqual(self.events(pixel_check.UNACCOUNTED), ["files 4"])
+        for each in made:
+            each.unlink()
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 300), pixel_check.Checked(checked=1, intact=1))
+        self.assertFalse(placed_copies.held(self.opened, self.jo_pixel))
+        self.assertFalse(placed_copies.due(self.opened))
+        self.assertEqual(self.events(pixel_check.UNACCOUNTED), ["files 4", "files 0"])
+
+    def test_the_control_entries_are_never_counted(self):
+        self.placed()
+        folder = self.pixel_folder()
+        (folder / ".stignore").write_text("#include .stignore\n")
+        (folder / ".stfolder").mkdir()
+        (folder / ".stfolder" / "syncthing-folder-1a2b.txt").write_text("marker")
+        self.assertEqual(self.check(), pixel_check.Checked(checked=1, intact=1))
+        self.assertFalse(pixel_check.PlacedCopyCheck(ran=True).held(self.opened, self.jo_pixel))
+
+    def test_a_changed_file_at_a_queued_copys_name_is_not_adopted_and_holds_the_pixel(self):
+        def changed(path: Path) -> None:
+            path.write_bytes(b"changed")
+
+        def hard_linked(path: Path) -> None:
+            os.link(path, self.root / "jo" / "elsewhere")
+
+        def linked(path: Path) -> None:
+            path.unlink()
+            path.symlink_to(self.root / "jo" / "originals" / "2024" / "IMG_0001.HEIC")
+
+        def piped(path: Path) -> None:
+            path.unlink()
+            os.mkfifo(path)
+        for name, damage in (("changed", changed), ("hard link", hard_linked), ("link", linked), ("pipe", piped)):
+            with self.subTest(name):
+                (item,) = self.restored_older()
+                damage(self.copy_path(self.jo_pixel, item))
+                before = share_tree(self.root)
+                self.assertEqual(self.check(), pixel_check.Checked(unaccounted={self.jo_pixel: 1}))
+                self.assertEqual(share_tree(self.root), before)
+                self.assertEqual(self.state()[-1][:2], ("queued", None))
+                self.assertEqual(self.events("pixel_copy_adopted"), [])
+                shutil.rmtree(self.pixel_folder())
+                with contextlib.suppress(FileNotFoundError):
+                    (self.root / "jo" / "elsewhere").unlink()
+                self.opened.execute(sql_update(PixelCopy).values(state="pruned"))
+                self.opened.commit()
+
+    def test_a_file_swapped_while_it_is_hashed_is_not_adopted(self):
+        (item,) = self.restored_older()
+        copy = self.copy_path(self.jo_pixel, item)
+        real = pixel_folder.paths.fd_sha1
+
+        def swapped(fd: int) -> str:
+            digest = real(fd)
+            data = copy.read_bytes()
+            copy.unlink()
+            copy.write_bytes(data)
+            return digest
+        with mock.patch.object(pixel_folder.paths, "fd_sha1", side_effect=swapped):
+            self.assertEqual(self.check(), pixel_check.Checked(unaccounted={self.jo_pixel: 1}))
+        self.assertEqual(self.state(), [("queued", None, NOW)])
+        self.assertEqual(self.check().adopted, 1)
+
+    def test_a_copy_that_changed_before_its_adoption_lock_is_left_alone(self):
+        self.restored_older()
+        real = pixel_folder.lock_copy
+
+        def placed_meanwhile(opened, copy_id):
+            opened.execute(sql_update(PixelCopy).where(PixelCopy.id == copy_id).values(sha1="0" * 40))
+            opened.commit()
+            real(opened, copy_id)
+        with mock.patch.object(pixel_folder, "lock_copy", side_effect=placed_meanwhile):
+            self.assertEqual(self.check(), pixel_check.Checked(unaccounted={self.jo_pixel: 1}))
+        self.assertEqual(self.state(), [("queued", None, NOW)])
+
+    def test_a_copy_whose_item_moved_or_whose_pixel_no_longer_serves_the_person_is_not_adopted(self):
+        (item,) = self.restored_older()
+        with mock.patch.object(pixel_folder, "serves", return_value=False):
+            self.assertEqual(self.check().unaccounted, {self.jo_pixel: 1})
+        item.sha1 = "0" * 40
+        self.opened.commit()
+        self.assertEqual(self.check().unaccounted, {self.jo_pixel: 1})
+        self.assertEqual(self.state(), [("queued", None, NOW)])
+
+    def test_a_file_that_cannot_be_read_stays_unaccounted_and_the_others_are_still_adopted(self):
+        first, _ = self.restored_older(2)
+        leaf = self.copy_path(self.jo_pixel, first).name
+        real = pixel_folder.paths.open_no_follow
+
+        def open_refused(name: str, folder: int, flags: int = os.O_RDONLY, mode: int = 0o644) -> int:
+            if name == leaf:
+                raise PermissionError(errno.EACCES, "refused")
+            return real(name, folder, flags, mode)
+        with mock.patch.object(pixel_folder.paths, "open_no_follow", side_effect=open_refused):
+            self.assertEqual(self.check(), pixel_check.Checked(adopted=1, unaccounted={self.jo_pixel: 1}))
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["queued", "placed"])
+
+    def test_an_unreadable_or_linked_pixel_folder_holds_the_pixel(self):
+        self.placed()
+        sams = self.pixel_folder(self.sam_pixel)
+        sams.symlink_to(self.root / "jo" / "originals")
+        with mock.patch.object(pixel_folder.paths.os, "listdir", side_effect=OSError(errno.EIO, "input/output error")):
+            self.assertEqual(self.check().unaccounted, {self.jo_pixel: 1, self.sam_pixel: 1})
+        self.assertEqual(self.check().unaccounted, {self.sam_pixel: 1})
+
+    def test_no_name_of_an_unaccounted_file_reaches_an_event_or_the_database(self):
+        canary = "canary-stray-HEIC-5d2e9a71"
+        self.placed()
+        (self.pixel_folder() / "jo" / "2024" / f"{canary}.HEIC").write_bytes(b"made up")
+        (self.pixel_folder() / canary).mkdir()
+        (self.pixel_folder() / canary / "a.jpg").write_bytes(b"made up too")
+        with no_leaks(self, canary, database=self.opened.get_bind()):
+            checked = self.check()
+        self.assertEqual(checked.unaccounted, {self.jo_pixel: 2})
+        self.assertEqual(self.events(pixel_check.UNACCOUNTED), ["files 2"])
+
 
     def test_the_check_object_holds_every_pixel_until_it_has_run(self):
         self.placed()

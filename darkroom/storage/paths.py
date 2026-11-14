@@ -1080,7 +1080,7 @@ def drop_claim(leaf: str, folder: int, claimed: os.stat_result) -> None:
             os.unlink(leaf, dir_fd=folder)
 
 
-def pixel_copy_intact(photos: Photos, pixel_id: int, person: str, name: str, sha1: str, size: int) -> bool:
+def pixel_copy_intact(photos: Photos, pixel_id: int, person: str, name: str, sha1: str, size: int, single_name: bool = False) -> bool:
     photos.pixel_copy(pixel_id, person, name)
     *folders, leaf = name.split("/")
     try:
@@ -1094,9 +1094,68 @@ def pixel_copy_intact(photos: Photos, pixel_id: int, person: str, name: str, sha
             return False
         try:
             found = os.fstat(copy)
-            return stat.S_ISREG(found.st_mode) and found.st_size == size and fd_sha1(copy) == sha1 and still_at(leaf, pinned.fd, found)
+            if not stat.S_ISREG(found.st_mode) or found.st_size != size or (single_name and found.st_nlink != 1):
+                return False
+            return fd_sha1(copy) == sha1 and still_at(leaf, pinned.fd, found)
         finally:
             os.close(copy)
+
+
+PIXEL_CONTROL_ENTRIES = frozenset({".stignore", ".stfolder"})
+DEEPEST_PIXEL_FOLDER = 32
+
+
+def pixel_folder_entries(photos: Photos, pixel_id: int) -> list[tuple[str, ...]]:
+    if type(pixel_id) is not int or pixel_id <= 0:
+        raise OutsideRoot("not a valid Pixel")
+    try:
+        pinned = PinnedFolders(photos, [PIXELS, str(pixel_id)], create=False)
+    except FileNotFoundError:
+        return []
+    except (NotAPixelCopy, OSError):
+        return [()]
+    found: list[tuple[str, ...]] = []
+    with pinned:
+        try:
+            listed = os.listdir(pinned.fd)
+        except OSError:
+            return [()]
+        walk_entries(pinned.fd, (), [name for name in listed if name not in PIXEL_CONTROL_ENTRIES], pinned.device, found)
+    return found
+
+
+def walk_entries(folder: int, spelled: tuple[str, ...], names: list[str], device: int, found: list[tuple[str, ...]]) -> None:
+    for name in sorted(names):
+        here = (*spelled, name)
+        try:
+            entry = os.stat(name, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            found.append(here)
+            continue
+        if not stat.S_ISDIR(entry.st_mode):
+            found.append(here)
+            continue
+        if entry.st_dev != device or len(here) > DEEPEST_PIXEL_FOLDER:
+            found.append(here)
+            continue
+        try:
+            inner = os.open(name, NO_FOLLOW_FOLDER | os.O_NONBLOCK, dir_fd=folder)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            found.append(here)
+            continue
+        try:
+            if not os.path.samestat(os.fstat(inner), entry):
+                found.append(here)
+                continue
+            walk_entries(inner, here, os.listdir(inner), device, found)
+        except OSError:
+            found.append(here)
+        finally:
+            os.close(inner)
 
 
 def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha1: str) -> bool:
