@@ -112,6 +112,14 @@ class GeneratedKeyTests(unittest.TestCase):
             settings = self.ensure(self.settings(), self.engine)
         self.assertEqual(settings.secret_key, "the-other-start-key")
 
+    def test_a_key_that_appears_between_loading_the_settings_and_ensuring_is_used(self):
+        loaded_before_the_key_existed = self.settings()
+        self.assertEqual(loaded_before_the_key_existed.secret_key, "")
+        self.key_file.write_text("the-other-start-key\n")
+        settings = self.ensure(loaded_before_the_key_existed, self.engine)
+        self.assertEqual((settings.secret_key, settings.key_origin), ("the-other-start-key", "file"))
+        self.assertEqual(self.key_file.read_text(), "the-other-start-key\n")
+
     def test_no_key_is_made_while_sealed_values_are_stored(self):
         for store in (self.store_sealed_immich_key, self.store_sealed_refresh_token):
             with self.subTest(store=store.__name__):

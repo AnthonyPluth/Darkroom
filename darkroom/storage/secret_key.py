@@ -93,19 +93,23 @@ def write_new_key(path: Path) -> str:
     return key
 
 
+def adopt_stored_key(settings: config.Settings) -> config.Settings:
+    key = config.stored_secret_key(settings.data_dir)
+    if not key:
+        raise Refused(UNREADABLE_FILE)
+    return dataclasses.replace(settings, secret_key=key, key_origin="file")
+
+
 def ensure(settings: config.Settings, engine: Engine) -> config.Settings:
     if settings.secret_key:
         return settings
     if key_file_present(settings):
-        raise Refused(UNREADABLE_FILE)
+        return adopt_stored_key(settings)
     if sealed_values_exist(settings, engine):
         raise Refused(SEALED_WITHOUT_KEY)
     try:
         key = write_new_key(config.secret_key_file(settings.data_dir))
     except FileExistsError:
-        key = config.stored_secret_key(settings.data_dir)
-        if not key:
-            raise Refused(UNREADABLE_FILE) from None
-    else:
-        monitoring.log("secret key generated")
+        return adopt_stored_key(settings)
+    monitoring.log("secret key generated")
     return dataclasses.replace(settings, secret_key=key, key_origin="file")
