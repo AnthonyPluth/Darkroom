@@ -13,7 +13,10 @@ SANDBOX = "--cap-drop=ALL --security-opt no-new-privileges:true --security-opt s
 
 def requirement_blocks(requirements):
     blocks = [block for block in requirements.replace("\\\n", " ").splitlines() if block.strip()]
-    return {block.split()[0].split("==")[0]: block for block in blocks}
+    names = [block.split()[0].split("==")[0] for block in blocks]
+    if len(names) != len(set(names)):
+        raise AssertionError("a requirement is listed twice")
+    return dict(zip(names, blocks, strict=True))
 
 
 def locked_package(name):
@@ -24,6 +27,10 @@ def locked_package(name):
 
 
 class BrowserImageTests(unittest.TestCase):
+    def test_a_requirement_listed_twice_is_not_hidden_from_the_hash_test(self):
+        with self.assertRaises(AssertionError):
+            requirement_blocks("pkg==1.0 --hash=sha256:aa\npkg==2.0\n")
+
     def test_both_images_and_compose_default_to_the_unraid_user_and_group(self):
         for name in ("Dockerfile", "Dockerfile.browser"):
             contents = (ROOT / name).read_text()
