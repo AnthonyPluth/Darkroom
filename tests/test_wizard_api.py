@@ -80,6 +80,9 @@ class WizardCase(unittest.TestCase):
     def stored(self):
         return stored_settings.stored_values(self.engine)
 
+    def restarted(self):
+        return stored_settings.effective(settings_from(DARKROOM_SECRET_KEY=KEY, **self.env), self.engine).settings
+
 
 class WindowTests(WizardCase):
     def test_the_first_visitor_claims_the_window_and_a_second_browser_is_refused(self):
@@ -250,7 +253,7 @@ class TestSignInTests(WizardCase):
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["family"], email="kim@example.com", email_verified=False)[0], 403)
         self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 200)
-        self.assertEqual(stored_settings.effective(self.settings, self.engine).settings.oidc_allowed_groups, ("parents",))
+        self.assertEqual(self.restarted().oidc_allowed_groups, ("parents",))
 
     def test_a_proposal_changed_during_the_test_saves_nothing(self):
         self.claim()
@@ -284,6 +287,23 @@ class TestSignInTests(WizardCase):
         self.claim()
         self.propose(oidc_issuer="http://127.0.0.1:9")
         self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test"), (502, {"error": "the test sign-in could not start: the provider could not be reached"}))
+
+
+class BlankGroupsTests(WizardCase):
+    env = {"DARKROOM_WIZARD": "1", "OIDC_ALLOWED_GROUPS": ""}
+
+    def test_a_blank_groups_variable_is_tested_as_no_groups_as_after_a_restart(self):
+        self.claim()
+        status, reply = self.json_call("POST", "/api/setup/sign-in", {"oidc_issuer": self.provider.base, "oidc_client_id": CLIENT_ID})
+        self.assertEqual((status, reply["error"]), (400, "set OIDC_ALLOWED_GROUPS or OIDC_ALLOWED_EMAILS so someone can sign in"))
+        self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
+        self.assertEqual(self.try_sign_in(groups=["parents"])[0], 403)
+        self.assertEqual(self.stored(), {})
+        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 200)
+        restarted = self.restarted()
+        self.assertEqual((restarted.oidc_allowed_groups, restarted.oidc_allowed_emails), ((), ("kim@example.com",)))
+        self.assertTrue(oidc.allowed(restarted, "kim@example.com", True, ()))
+        self.assertFalse(oidc.allowed(restarted, "jo@example.test", True, ("parents",)))
 
 
 class NoKeyTests(WizardCase):

@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
@@ -100,9 +101,20 @@ def migrate(settings: config.Settings | None = None) -> int:
     return 0
 
 
+def with_stored(settings: config.Settings, engine: Engine) -> config.Settings | None:
+    loaded = stored_settings.effective(settings, engine)
+    for line in loaded.problems:
+        print(f"config: {line}", file=sys.stderr)
+    return None if loaded.problems else loaded.settings
+
+
 def run_job(name: str) -> int:
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     scheduler = jobs.build(settings, engine)
     if name not in scheduler.jobs:
         print(f"no job called {name}; known jobs: {', '.join(sorted(scheduler.jobs))}", file=sys.stderr)
@@ -166,8 +178,12 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
     if not slug:
         print("import-takeout needs --person", file=sys.stderr)
         return 1
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     photos = Photos(settings.photos_root)
     code = 0
     with db.session(engine) as opened:
@@ -198,8 +214,12 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
     if not slug:
         print("import-legacy needs --person", file=sys.stderr)
         return 1
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     code = 0
     with db.session(engine) as opened:
         person = opened.query(Person).filter(Person.slug == slug).one_or_none()
@@ -225,8 +245,12 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
 
 
 def run_reconcile_immich(slug: str | None) -> int:
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     code = 0
     with db.session(engine) as opened:
         people = opened.query(Person).order_by(Person.id)

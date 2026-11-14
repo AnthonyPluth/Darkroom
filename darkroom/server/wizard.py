@@ -106,7 +106,7 @@ def live_settings(request: Request) -> config.Settings:
 
 
 def proposed_settings(live: config.Settings, fields: dict[str, str]) -> config.Settings:
-    groups = config.comma_list(fields["OIDC_ALLOWED_GROUPS"]) or config.comma_list(config.DEFAULT_ALLOWED_GROUPS)
+    groups = config.comma_list(fields["OIDC_ALLOWED_GROUPS"]) or config.groups_without_a_value(live)
     return dataclasses.replace(live, oidc_issuer=fields["OIDC_ISSUER"], oidc_client_id=fields["OIDC_CLIENT_ID"], oidc_client_secret=fields["OIDC_CLIENT_SECRET"],
                                oidc_allowed_groups=groups, oidc_allowed_emails=config.comma_list(fields["OIDC_ALLOWED_EMAILS"]))
 

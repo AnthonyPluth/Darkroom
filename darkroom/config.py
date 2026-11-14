@@ -87,6 +87,7 @@ class Settings:
     key_origin: KeyOrigin = "none"
     from_environment: frozenset[str] = frozenset()
     wizard: bool = False
+    blank_in_environment: frozenset[str] = frozenset()
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -143,7 +144,12 @@ def load() -> Settings:
         key_origin=key_origin,
         from_environment=frozenset(entry.variable for entry in STORABLE if env(entry.variable)),
         wizard=env_flag("DARKROOM_WIZARD"),
+        blank_in_environment=frozenset(entry.variable for entry in STORABLE if entry.variable in os.environ and not env(entry.variable)),
     )
+
+
+def groups_without_a_value(settings: Settings) -> tuple[str, ...]:
+    return () if "OIDC_ALLOWED_GROUPS" in settings.blank_in_environment else comma_list(DEFAULT_ALLOWED_GROUPS)
 
 
 def local_host(host: str) -> bool:
