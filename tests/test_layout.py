@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("darkroom", "darkroom_browser")
+PACKAGES = ("darkroom", "darkroom_browser", "darkroom_init")
 
 
 class LayoutTests(unittest.TestCase):
