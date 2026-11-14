@@ -61,3 +61,33 @@ An `Idempotency-Key` header is remembered in `fake.sent`: the same key with the 
 ### What it does not cover
 
 Domain verification, API key permissions, rate limits, the 24 hour expiry of an idempotency key, a request still in progress under the same key (Resend's other `409`), validation of the addresses or the body, and delivery to an inbox. Any path answers like `/emails`.
+
+## Fake Syncthing (`tests/fakes/syncthing.py`)
+
+A loopback stand-in for the parts of Syncthing's REST API that `providers/syncthing.py` calls. It binds only to `127.0.0.1`. Its behaviour follows what spike S3 observed on Syncthing v2.1.7 (`docs/spikes/syncthing-api.md`); it was not run against a real Syncthing.
+
+Run in a test:
+
+```python
+fake = FakeSyncthing(self, "api-key", own_device_id)
+client = syncthing.Client(fake.url, "api-key")
+fake.folders, fake.devices, fake.ignores, fake.scans, fake.requests
+```
+
+### What it covers
+
+| Request | Answer |
+| --- | --- |
+| `GET /rest/system/status`, `GET /rest/system/version` | the own device ID (`myID`); `v2.1.7` with `isRelease` |
+| `GET /rest/config` | folders, devices, options and `gui`, with `gui.apiKey` as Syncthing sends it |
+| `GET`/`POST /rest/config/folders`, `GET`/`PATCH`/`DELETE /rest/config/folders/<id>` | the folder table; an unknown `type` is stored as `sendreceive` with a 200, and the own device is added to every folder's devices |
+| `POST /rest/config/devices`, `PATCH`/`DELETE /rest/config/devices/<id>` | the device table; a device ID with a wrong check character gets `400` |
+| `PATCH /rest/config/options`, `GET`/`PATCH /rest/config/gui` | the options; the GUI settings with `apiKey` (a new `apiKey` replaces the key at once) |
+| `GET`/`POST /rest/db/ignores`, `POST /rest/db/scan`, `GET /rest/db/completion` | per folder (`404` for an unknown one); a scan of a folder in `fake.errors` gets `500`; completion from `fake.completions` |
+| `GET /rest/system/connections`, `GET /rest/stats/device`, `GET /rest/cluster/pending/devices` | `fake.connections`, `fake.stats`, `fake.pending` |
+
+A missing or wrong key gets `403` with `CSRF Error` (`X-API-Key` or `Authorization: Bearer`, as S3 found). `fake.forgetful` answers every write with a 200 and keeps nothing, `fake.forced_type` stores every folder with that type, `fake.status` answers everything with that status and `fake.raw` replaces a 200's body. Anything else gets `404`.
+
+### What it does not cover
+
+`PUT /rest/config`, override, revert, shutdown, events, `/rest/db/status` and `/rest/db/need`, pending folders, the Unix socket, restarts, or any syncing: nothing is scanned, connected or sent.
