@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import hashlib
 import os
 import shutil
@@ -166,7 +167,7 @@ class PlacedCopyCheckTests(unittest.TestCase):
         original.unlink()
         self.assertEqual(self.tend(at=NOW + 300).failed, 1)
         self.assertTrue(self.held())
-        self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 2)
+        self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 1)
         self.assertEqual(self.state(), [("queued", NOW + 10, NOW)])
         original.write_bytes(data)
         self.assertEqual(self.tend(at=NOW + 400).placed, 1)
@@ -257,6 +258,103 @@ class PlacedCopyCheckTests(unittest.TestCase):
         self.assertEqual(share_tree(self.root), before)
         self.assertTrue(self.held())
         self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 1)
+
+    def test_a_replacement_removed_or_swapped_while_it_is_read_back_keeps_the_hold(self):
+        def other_file(path: Path) -> None:
+            path.unlink()
+            path.write_bytes(b"swapped in")
+
+        def link(path: Path) -> None:
+            path.unlink()
+            path.symlink_to(self.root / "jo" / "originals" / "2024" / "IMG_0001.HEIC")
+        (item,) = self.placed()
+        copy = self.copy_path(self.jo_pixel, item)
+        real = pixel_folder.paths.fd_sha1
+        for name, swap in (("removed", Path.unlink), ("other file", other_file), ("link", link)):
+            with self.subTest(name):
+                with contextlib.suppress(FileNotFoundError):
+                    copy.unlink()
+                self.opened.execute(sql_update(PixelCopy).values(state="queued"))
+                self.opened.commit()
+                calls: list[int] = []
+
+                def swapped_on_read_back(fd: int, calls: list[int] = calls, swap=swap) -> str:
+                    digest = real(fd)
+                    calls.append(fd)
+                    if len(calls) == 2:
+                        swap(copy)
+                    return digest
+                with mock.patch.object(pixel_folder.paths, "fd_sha1", side_effect=swapped_on_read_back):
+                    self.assertEqual(self.tend(at=NOW + 200).failed, 1)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(self.state(), [("queued", NOW + 10, NOW)])
+                self.assertTrue(self.held())
+
+    def assert_one_unreadable_copy_holds_only_its_pixel(self, unreadable):
+        first, _ = self.placed(2)
+        sams = self.item(self.sam)
+        pixel_folder.queue(self.opened, sams, NOW)
+        self.tend(at=NOW + 10)
+        before = share_tree(self.root)
+        with unreadable(self.copy_path(self.jo_pixel, first).name):
+            self.assertEqual(self.check(), pixel_check.Checked(checked=3, intact=2, requeued=1))
+        self.assertEqual(share_tree(self.root), before)
+        self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["queued", "placed"])
+        self.assertTrue(self.held())
+        self.assertFalse(pixel_check.held(self.opened, self.sam_pixel, True))
+        later = self.item(self.sam)
+        pixel_folder.queue(self.opened, later, NOW + 150)
+        tended = self.tend(at=NOW + 200)
+        self.assertEqual(tended.placed, 2)
+        self.assertTrue(self.copy_path(self.sam_pixel, later).is_file())
+        self.assertFalse(self.held())
+
+    def test_a_copy_whose_open_is_refused_is_queued_again_and_the_others_carry_on(self):
+        real = pixel_folder.paths.open_no_follow
+
+        @contextlib.contextmanager
+        def refused(leaf: str):
+            def open_refused(name: str, folder: int, flags: int = os.O_RDONLY, mode: int = 0o644) -> int:
+                if name == leaf:
+                    raise PermissionError(errno.EACCES, "refused")
+                return real(name, folder, flags, mode)
+            with mock.patch.object(pixel_folder.paths, "open_no_follow", side_effect=open_refused):
+                yield
+        self.assert_one_unreadable_copy_holds_only_its_pixel(refused)
+
+    def test_a_copy_that_fails_to_read_is_queued_again_and_the_others_carry_on(self):
+        real = pixel_folder.paths.fd_sha1
+
+        @contextlib.contextmanager
+        def failing(leaf: str):
+            calls = []
+
+            def read_fails_once(fd: int) -> str:
+                calls.append(fd)
+                if len(calls) == 1:
+                    raise OSError(errno.EIO, "input/output error")
+                return real(fd)
+            with mock.patch.object(pixel_folder.paths, "fd_sha1", side_effect=read_fails_once):
+                yield
+        self.assert_one_unreadable_copy_holds_only_its_pixel(failing)
+
+    def test_a_copy_that_cannot_be_written_back_records_one_pending_event_until_it_is_requeued_again(self):
+        (item,) = self.placed()
+        original = self.root / item.path
+        data = original.read_bytes()
+        self.copy_path(self.jo_pixel, item).unlink()
+        original.unlink()
+        self.check()
+        for at in (NOW + 200, NOW + 300, NOW + 400):
+            self.assertEqual(self.tend(at=at).failed, 1)
+        self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 1)
+        original.write_bytes(data)
+        self.tend(at=NOW + 500)
+        self.copy_path(self.jo_pixel, item).unlink()
+        original.unlink()
+        self.check(at=NOW + 600)
+        self.assertEqual(self.tend(at=NOW + 700).failed, 1)
+        self.assertEqual(len(self.events("pixel_copy_replacement_pending")), 2)
 
     def test_a_copy_that_changed_state_before_its_lock_is_left_alone(self):
         (item,) = self.placed()

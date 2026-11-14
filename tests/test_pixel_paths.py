@@ -512,5 +512,46 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assert_kept_unchanged()
 
 
+    def swapped_while_hashed(self, swap) -> bool:
+        real = paths.fd_sha1
+
+        def hashed_then_swapped(fd: int) -> str:
+            digest = real(fd)
+            swap(self.root / "_pixels/1/jo/2024/IMG_0001.HEIC")
+            return digest
+        with mock.patch.object(paths, "fd_sha1", side_effect=hashed_then_swapped):
+            return self.intact()
+
+    def test_the_placed_copy_check_refuses_a_copy_removed_or_replaced_while_it_was_hashed(self):
+        def other_file(path: Path) -> None:
+            path.unlink()
+            path.write_bytes(self.data)
+
+        def link(path: Path) -> None:
+            path.unlink()
+            path.symlink_to(self.root / "jo/originals/2024/IMG_0001.HEIC")
+        for name, swap in (("removed", Path.unlink), ("other file", other_file), ("link", link)):
+            with self.subTest(name):
+                with contextlib.suppress(FileNotFoundError):
+                    (self.root / "_pixels/1/jo/2024/IMG_0001.HEIC").unlink()
+                self.place()
+                self.assertTrue(self.intact())
+                self.assertFalse(self.swapped_while_hashed(swap))
+        self.assert_kept_unchanged()
+
+    def test_a_copy_already_in_place_that_is_replaced_while_it_is_hashed_is_refused(self):
+        self.place()
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        real = paths.fd_sha1
+
+        def hashed_then_removed(fd: int) -> str:
+            digest = real(fd)
+            copy.unlink()
+            return digest
+        with mock.patch.object(paths, "fd_sha1", side_effect=hashed_then_removed), self.assertRaises(paths.NotAPixelCopy):
+            self.place()
+        self.assertFalse(copy.exists())
+        self.assert_kept_unchanged()
+
 if __name__ == "__main__":
     unittest.main()

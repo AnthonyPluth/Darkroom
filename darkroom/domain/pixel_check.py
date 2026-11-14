@@ -18,12 +18,12 @@ class Checked:
     requeued: int = 0
 
 
-def intact(photos: Photos, row: PixelCopy, person: Person | None) -> bool:
-    if person is None or row.name is None:
+def intact(photos: Photos, pixel_id: int, slug: str | None, name: str | None, sha1: str, size: int) -> bool:
+    if slug is None or name is None:
         return False
     try:
-        return paths.pixel_copy_intact(photos, row.pixel_id, person.slug, row.name, row.sha1, row.bytes)
-    except paths.OutsideRoot:
+        return paths.pixel_copy_intact(photos, pixel_id, slug, name, sha1, size)
+    except (paths.OutsideRoot, OSError):
         return False
 
 
@@ -32,22 +32,34 @@ def mark_for_replacement(opened: Session, row: PixelCopy, now: float) -> None:
     events.record(opened, now, "pixel_copy_missing", f"pixel {row.pixel_id}", f"copy {row.id}")
 
 
+def recorded(row: PixelCopy) -> tuple[str, str | None, str, int]:
+    return row.state, row.name, row.sha1, row.bytes
+
+
 def check(opened: Session, photos: Photos, now: float) -> Checked:
     checked = Checked()
     placed = opened.execute(select(PixelCopy.id).where(PixelCopy.state == "placed").order_by(PixelCopy.pixel_id, PixelCopy.id)).scalars().all()
     for copy_id in placed:
-        pixel_folder.lock_copy(opened, copy_id)
         row = opened.get(PixelCopy, copy_id, populate_existing=True)
         if row is None or row.state != "placed":
+            continue
+        person = opened.get(Person, row.person_id)
+        hashed, pixel_id, slug = recorded(row), row.pixel_id, None if person is None else person.slug
+        opened.commit()
+        verdict = intact(photos, pixel_id, slug, hashed[1], hashed[2], hashed[3])
+        pixel_folder.lock_copy(opened, copy_id)
+        row = opened.get(PixelCopy, copy_id, populate_existing=True)
+        if row is None or recorded(row) != hashed:
             opened.commit()
             continue
         checked.checked += 1
-        if intact(photos, row, opened.get(Person, row.person_id)):
+        if verdict:
             checked.intact += 1
         else:
             mark_for_replacement(opened, row, now)
             checked.requeued += 1
         opened.commit()
+    opened.commit()
     return checked
 
 

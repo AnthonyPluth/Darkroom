@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from darkroom import dates
 from darkroom.domain import accounts, events
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1, known_contents
+from darkroom.storage.models import DedupeDecision, Event, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1, known_contents
 from darkroom.storage.paths import Photos
 
 GIGABYTE = 1024**3
@@ -132,8 +132,6 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
     return queued
 
 
-
-
 def replacing() -> ColumnElement[bool]:
     return and_(PixelCopy.state == "queued", PixelCopy.placed_at.is_not(None))
 
@@ -148,8 +146,15 @@ def ever_sent() -> ColumnElement[bool]:
 
 
 def still_pending(opened: Session, row: PixelCopy, now: float) -> None:
-    if row.placed_at is not None:
-        events.record(opened, now, "pixel_copy_replacement_pending", f"pixel {row.pixel_id}", f"copy {row.id}")
+    if row.placed_at is None:
+        return
+    subject, detail = f"pixel {row.pixel_id}", f"copy {row.id}"
+    last = opened.execute(
+        select(Event.type).where(Event.subject == subject, Event.detail == detail, Event.type.in_(("pixel_copy_missing", "pixel_copy_replacement_pending")))
+        .order_by(Event.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if last != "pixel_copy_replacement_pending":
+        events.record(opened, now, "pixel_copy_replacement_pending", subject, detail)
 
 
 def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float) -> Tended:

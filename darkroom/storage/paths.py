@@ -930,6 +930,14 @@ def drop_staged_twin(incoming: int, found: os.stat_result) -> bool:
     return False
 
 
+def still_at(name: str, folder: int, found: os.stat_result) -> bool:
+    try:
+        now = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return os.path.samestat(now, found) and now.st_size == found.st_size
+
+
 def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result, incoming: int) -> os.stat_result | bool:
     try:
         fd = open_no_follow(name, folder, os.O_RDONLY | os.O_NONBLOCK)
@@ -942,6 +950,8 @@ def existing_copy(name: str, folder: int, sha1: str, original: os.stat_result, i
         if os.path.samestat(found, original):
             raise NotAPixelCopy("the original itself is in the copy's place")
         matches = fd_sha1(fd) == sha1
+        if not still_at(name, folder, found):
+            raise NotAPixelCopy("the file in the copy's place changed while it was read")
         if found.st_nlink != 1:
             if not (matches and found.st_nlink == 2 and drop_staged_twin(incoming, found)):
                 raise NotAPixelCopy("the file in the copy's place has another name, so it is not touched")
@@ -1050,7 +1060,7 @@ def pixel_copy_intact(photos: Photos, pixel_id: int, person: str, name: str, sha
             return False
         try:
             found = os.fstat(copy)
-            return stat.S_ISREG(found.st_mode) and found.st_size == size and fd_sha1(copy) == sha1
+            return stat.S_ISREG(found.st_mode) and found.st_size == size and fd_sha1(copy) == sha1 and still_at(leaf, pinned.fd, found)
         finally:
             os.close(copy)
 
