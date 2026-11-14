@@ -62,12 +62,16 @@ class JobContext:
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
     wall: Callable[[], float] = time.time
+    browser_root: Path | None = None
+
+    def state_root(self) -> Path:
+        return self.photos_root / "_browser" if self.browser_root is None else self.browser_root
 
     def profile_dir(self) -> Path:
-        return self.photos_root / "_browser" / self.account / "profile"
+        return self.state_root() / self.account / "profile"
 
     def failure_dir(self) -> Path:
-        return self.photos_root / "_browser" / self.account / "failures" / str(self.job_id)
+        return self.state_root() / self.account / "failures" / str(self.job_id)
 
     def failure_folder_name(self) -> str:
         return f"_browser/{self.account}/failures/{self.job_id}"

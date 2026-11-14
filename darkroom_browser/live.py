@@ -139,10 +139,10 @@ def launch_context(playwright: Any, profile_dir: Path, downloads: Path, channel:
     raise AssertionError("no browser launch attempted")
 
 
-def open_context(profile_dir: Path) -> Live:
+def open_context(profile_dir: Path, working_root: Path) -> Live:
     from playwright.sync_api import sync_playwright
 
-    downloads = downloads_folder(profile_dir)
+    downloads = downloads_folder(profile_dir, working_root)
     sweep_downloads(downloads)
     profile_dir.mkdir(parents=True, exist_ok=True)
     playwright = sync_playwright().start()

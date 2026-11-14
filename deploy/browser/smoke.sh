@@ -24,7 +24,7 @@ from darkroom_browser.live import open_context
 
 assert os.geteuid() != 0
 with tempfile.TemporaryDirectory() as directory:
-    browser = open_context(Path(directory) / "_browser" / "1" / "profile")
+    browser = open_context(Path(directory) / "_browser" / "1" / "profile", Path(directory))
     try:
         browser.goto("data:text/html,<title>Darkroom browser smoke</title><p>renderer ready</p>")
         assert "renderer ready" in browser.content()

@@ -25,6 +25,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.oidc_allowed_groups, ("parents",))
         self.assertFalse(settings.allow_no_auth)
 
+    def test_the_browser_root_is_unset_unless_given_and_must_be_absolute(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(config.load().browser_root)
+        with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_ROOT": "/data/browser"}, clear=True):
+            self.assertEqual(config.load().browser_root, Path("/data/browser"))
+        with tempfile.TemporaryDirectory() as folder:
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_BROWSER_ROOT": "browser"}
+            with mock.patch.dict(os.environ, values, clear=True):
+                self.assertIn("DARKROOM_BROWSER_ROOT must be an absolute path: browser", config.problems(config.load()))
+
     def test_lists_are_split_and_trimmed(self):
         with mock.patch.dict(os.environ, {"OIDC_ALLOWED_GROUPS": " a , b ,,c"}, clear=True):
             self.assertEqual(config.load().oidc_allowed_groups, ("a", "b", "c"))

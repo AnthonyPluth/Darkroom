@@ -35,6 +35,9 @@ after=$(probe)
 [ "$(field "$after" browsers)" = "[]" ] || fail "browser processes left behind: $after"
 [ "$(field "$after" workers)" != "[$(field "$killed" worker)]" ] && [ "$(field "$after" workers)" != "[]" ] || fail "the worker was not restarted: $after"
 echo "worker restarted, no browser left behind: $after"
+docker exec "$name" test -d /data/browser/1/profile || fail "the browser profile is not under the browser-state root in appdata"
+docker exec "$name" test ! -e /photos/_browser || fail "the worker wrote browser state onto the working share"
+echo "the browser profile is in appdata, not on the share"
 
 second=$(probe enqueue noop)
 wait_for 120 "job_done $second"

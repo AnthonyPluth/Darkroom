@@ -12,7 +12,7 @@ VIEWER_PLUGIN = "darkroom_init.viewer_auth.SecretOnPipe"
 INIT_HOME = str(Path(__file__).resolve().parent.parent)
 
 APP_SETTINGS = (
-    "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO", "DARKROOM_ALLOWED_HOSTS", "DARKROOM_ALLOW_NO_AUTH", "DARKROOM_DATA_DIR", "DARKROOM_DEMO", "DARKROOM_HOST",
+    "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO", "DARKROOM_ALLOWED_HOSTS", "DARKROOM_ALLOW_NO_AUTH", "DARKROOM_BROWSER_ROOT", "DARKROOM_DATA_DIR", "DARKROOM_DEMO", "DARKROOM_HOST",
     "DARKROOM_PHOTOS_ROOT", "DARKROOM_PORT", "DARKROOM_PUBLIC_URL", "DARKROOM_SECRET_KEY", "DATABASE_URL", "IMMICH_ADMIN_KEY", "IMMICH_URL",
     "OIDC_ALLOWED_EMAILS", "OIDC_ALLOWED_GROUPS", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ISSUER", "PIXEL_FOLDER_CAP_GB", "RESEND_API_KEY", "TZ", "VNC_URL",
 )
@@ -43,10 +43,12 @@ def app_env(given: Mapping[str, str]) -> dict[str, str]:
 
 
 def worker_env(given: Mapping[str, str]) -> dict[str, str]:
+    photos = given.get("DARKROOM_PHOTOS_ROOT", "/photos")
     fixed = {
         "PATH": f"/opt/worker/bin:{SYSTEM_PATH}",
         "DARKROOM_URL": f"http://127.0.0.1:{given.get('DARKROOM_PORT', '8000')}",
-        "PHOTOS_ROOT": given.get("DARKROOM_PHOTOS_ROOT", "/photos"),
+        "PHOTOS_ROOT": photos,
+        "BROWSER_ROOT": given.get("DARKROOM_BROWSER_ROOT") or f"{photos.rstrip('/')}/_browser",
         "DISPLAY": given.get("DISPLAY", ":99"),
         TOKEN_FD: FD,
     }

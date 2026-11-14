@@ -180,8 +180,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("file: Dockerfile.single", job)
         self.assertIn("tags: darkroom-single:smoke", job)
         run_lines = [line.strip() for line in job.splitlines() if line.strip().startswith("docker run")]
-        self.assertEqual(len(run_lines), 3)
-        healthz, smoke, init = run_lines
+        self.assertEqual(len(run_lines), 4)
+        healthz, smoke, copy, init = run_lines
+        self.assertIn(SANDBOX, copy)
+        self.assertIn("--tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100", copy)
+        self.assertTrue(copy.endswith("-w /app darkroom-single:smoke bash /probe.sh"))
+        self.assertIn('-v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro"', copy)
         self.assertIn(SANDBOX, healthz)
         self.assertIn("-p 8765:8000 darkroom-single:smoke", healthz)
         self.assertIn("curl -fsS http://127.0.0.1:8765/healthz", job)

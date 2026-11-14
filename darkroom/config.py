@@ -74,6 +74,7 @@ class Settings:
     alert_email_to: str = ""
     allowed_hosts: tuple[str, ...] = ()
     key_origin: KeyOrigin = "none"
+    browser_root: Path | None = None
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -127,6 +128,7 @@ def load() -> Settings:
         alert_email_to=env("ALERT_EMAIL_TO"),
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
         key_origin=key_origin,
+        browser_root=Path(env("DARKROOM_BROWSER_ROOT")) if env("DARKROOM_BROWSER_ROOT") else None,
     )
 
 
@@ -281,6 +283,8 @@ def problems(settings: Settings) -> list[str]:
         found.append(f"DARKROOM_PHOTOS_ROOT is not a directory: {settings.photos_root}")
     if not settings.data_dir.is_dir():
         found.append(f"DARKROOM_DATA_DIR is not a directory: {settings.data_dir}")
+    if settings.browser_root is not None and not settings.browser_root.is_absolute():
+        found.append(f"DARKROOM_BROWSER_ROOT must be an absolute path: {settings.browser_root}")
     if not settings.public_url:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):

@@ -61,7 +61,7 @@ RUN if ! getent group "$PGID" >/dev/null; then groupadd --system --gid "$PGID" d
     && chown darkroom /data /home/darkroom
 USER darkroom
 
-ENV DARKROOM_HOST=0.0.0.0 DARKROOM_PORT=8000 DARKROOM_DATA_DIR=/data DARKROOM_PHOTOS_ROOT=/photos
+ENV DARKROOM_HOST=0.0.0.0 DARKROOM_PORT=8000 DARKROOM_DATA_DIR=/data DARKROOM_PHOTOS_ROOT=/photos DARKROOM_BROWSER_ROOT=/data/browser
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"
 ENTRYPOINT ["/usr/bin/tini", "--"]

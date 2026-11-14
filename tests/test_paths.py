@@ -1155,5 +1155,74 @@ class InboxLinkTests(unittest.TestCase):
         self.assertEqual(self.kept.read_bytes(), b"an original")
 
 
+class BrowserStateTests(unittest.TestCase):
+    def setUp(self):
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        share = tempfile.TemporaryDirectory()
+        self.addCleanup(share.cleanup)
+        self.root = Path(appdata.name).resolve() / "browser"
+        self.root.mkdir()
+        self.share = Path(share.name).resolve()
+        self.state = paths.BrowserState(self.root)
+
+    def test_profiles_and_failures_are_under_the_browser_root_and_never_on_the_share(self):
+        self.assertEqual(self.state.profile("7"), self.root / "7/profile")
+        self.assertEqual(self.state.failures("7", "12"), self.root / "7/failures/12")
+        apart = paths.browser_state(self.share, self.root)
+        self.assertEqual((apart.profile("7"), apart.failures("7", "12")), (self.root / "7/profile", self.root / "7/failures/12"))
+
+    def test_with_no_browser_root_both_roots_are_the_share(self):
+        shared = paths.browser_state(self.share, None)
+        self.assertEqual((shared.profile("7"), shared.failures("7", "12")), (self.share / "_browser/7/profile", self.share / "_browser/7/failures/12"))
+        self.assertEqual(paths.Photos(self.share).browser_profile("7"), shared.profile("7"))
+
+    def test_traversal_and_bad_names_are_refused(self):
+        for bad in ("..", ".hidden", "a/b", "../../x", ""):
+            with self.subTest(name=bad), self.assertRaises(paths.OutsideRoot):
+                self.state.profile(bad)
+            with self.subTest(job=bad), self.assertRaises(paths.OutsideRoot):
+                self.state.failures("7", bad)
+        with self.assertRaises(paths.OutsideRoot):
+            self.state.inside()
+
+    def test_an_account_folder_linked_out_of_the_browser_root_is_refused(self):
+        (self.share / "jo").mkdir()
+        (self.root / "7").symlink_to(self.share / "jo", target_is_directory=True)
+        for call in (lambda: self.state.profile("7"), lambda: self.state.failures("7", "1")):
+            with self.assertRaises(paths.OutsideRoot):
+                call()
+
+    def test_on_the_share_a_browser_folder_linked_out_of_the_share_is_still_refused(self):
+        (self.share / "_browser").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(paths.OutsideRoot):
+            paths.Photos(self.share).browser_profile("7")
+        with self.assertRaises(paths.OutsideRoot):
+            paths.Photos(self.share).failures("7", "1")
+
+    def test_retiring_removes_only_that_accounts_folder(self):
+        for name in ("7", "8"):
+            (self.root / name / "profile").mkdir(parents=True)
+            (self.root / name / "profile" / "Cookies").write_bytes(b"session")
+        self.state.retire_account("7")
+        self.assertFalse((self.root / "7").exists())
+        self.assertEqual((self.root / "8" / "profile" / "Cookies").read_bytes(), b"session")
+        self.state.retire_account("9")
+
+    def test_retiring_refuses_a_link_at_the_root_or_the_account_folder_and_removes_nothing(self):
+        (self.share / "jo").mkdir()
+        (self.share / "jo" / "a.jpg").write_bytes(b"photo")
+        (self.root / "7").symlink_to(self.share / "jo", target_is_directory=True)
+        with self.assertRaises(paths.ProfileNotRemoved):
+            self.state.retire_account("7")
+        linked = self.root.parent / "linked"
+        linked.symlink_to(self.share, target_is_directory=True)
+        (self.share / "8" / "profile").mkdir(parents=True)
+        with self.assertRaises(paths.ProfileNotRemoved):
+            paths.BrowserState(linked).retire_account("8")
+        self.assertEqual((self.share / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertTrue((self.share / "8" / "profile").is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

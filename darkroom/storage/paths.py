@@ -45,6 +45,7 @@ PIXEL_COPY_MODE = 0o644
 PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
 INBOX = "_inbox"
+BROWSER = "_browser"
 OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
 
 
@@ -82,6 +83,48 @@ class NotALibraryCopy(ValueError):
 
 class NotAPixelCopy(ValueError):
     pass
+
+
+class BrowserState:
+    def __init__(self, root: Path, within: Path | None = None) -> None:
+        self.given = root
+        self.root = root.resolve()
+        self.within = within.resolve() if within is not None else self.root
+
+    def inside(self, *parts: str) -> Path:
+        path = self.root.joinpath(*parts).resolve()
+        if not path.is_relative_to(self.root) or not path.is_relative_to(self.within) or path == self.root:
+            raise OutsideRoot(f"{'/'.join(parts)} is outside the browser's folder")
+        return path
+
+    def name_part(self, name: str) -> str:
+        if not NAME.match(name) or name in {".", ".."} or name.startswith("."):
+            raise OutsideRoot(f"{name!r} is not a valid folder name")
+        return name
+
+    def profile(self, account: str) -> Path:
+        return self.inside(self.name_part(account), "profile")
+
+    def failures(self, account: str, job: str) -> Path:
+        return self.inside(self.name_part(account), "failures", self.name_part(job))
+
+    def retire_account(self, account: str) -> None:
+        name = self.name_part(account)
+        target = self.given / name
+        if self.given.is_symlink() or target.is_symlink():
+            raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
+        if not target.exists():
+            return
+        if target.resolve() != self.profile(name).parent:
+            raise ProfileNotRemoved("the account's browser folder is not where it should be, so it was not removed")
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise ProfileNotRemoved("the account's browser folder could not be removed") from error
+
+
+def browser_state(photos_root: Path, browser_root: Path | None) -> BrowserState:
+    return Photos(photos_root).browser_state() if browser_root is None else BrowserState(browser_root)
 
 
 class Photos:
@@ -165,11 +208,14 @@ class Photos:
             raise OutsideRoot("the Pixels' staging folder is a link")
         return expected
 
+    def browser_state(self) -> BrowserState:
+        return BrowserState(self.root / BROWSER, within=self.root)
+
     def browser_profile(self, account: str) -> Path:
-        return self.inside("_browser", self.name_part(account), "profile")
+        return self.browser_state().profile(account)
 
     def failures(self, account: str, job: str) -> Path:
-        return self.inside("_browser", self.name_part(account), "failures", self.name_part(job))
+        return self.browser_state().failures(account, job)
 
     def name_part(self, name: str) -> str:
         if not NAME.match(name) or name in {".", ".."} or name.startswith("."):
@@ -177,19 +223,7 @@ class Photos:
         return name
 
     def retire_browser_account(self, account: str) -> None:
-        name = self.name_part(account)
-        parent = self.root / "_browser"
-        target = parent / name
-        if parent.is_symlink() or target.is_symlink():
-            raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
-        if not target.exists():
-            return
-        if target.resolve() != self.browser_profile(name).parent:
-            raise ProfileNotRemoved("the account's browser folder is not where it should be, so it was not removed")
-        try:
-            shutil.rmtree(target)
-        except OSError as error:
-            raise ProfileNotRemoved("the account's browser folder could not be removed") from error
+        self.browser_state().retire_account(account)
 
     def retire_account_downloads(self, account: str) -> None:
         name = self.name_part(account)

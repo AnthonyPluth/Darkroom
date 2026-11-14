@@ -102,6 +102,25 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertIn("heartbeat", self.fake.actions())
         self.assertEqual(self.reported(), [])
 
+    def test_a_separate_browser_root_puts_the_profile_there(self):
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        profiles = []
+        settings = config.Settings(self.fake.base, TOKEN, self.photos, ":99", 0.01, "test-worker", Path(appdata.name) / "browser")
+
+        def opens(ctx):
+            ctx.browser()
+            return {"ok": True}
+
+        def open_browser(profile_dir):
+            profiles.append(profile_dir)
+            return FakeBrowser()
+
+        self.fake.enqueue(25)
+        worker = runner.Runner(settings, Client(self.fake.base, TOKEN), open_browser, {"noop": opens}, sleep=self.sleeps.append, heartbeat_seconds=0.05, abandon=self.abandoned.set)
+        self.assertEqual(worker.run_job(self.fake.queue.pop(0)), "done")
+        self.assertEqual(profiles, [Path(appdata.name) / "browser" / "1" / "profile"])
+
     def test_acknowledged_heartbeats_keep_a_long_job_alive(self):
         def long_running(ctx):
             ctx.browser()
@@ -427,6 +446,30 @@ class ConfigTests(unittest.TestCase):
             loaded = config.load()
         self.assertEqual((loaded.darkroom_url, loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), ("http://d:8000", TOKEN, "/p", ":99", 5.0, "w1"))
 
+    def test_a_separate_browser_root_is_read_and_must_be_absolute(self):
+        from unittest import mock
+
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": "/p"}, clear=True):
+            self.assertIsNone(config.load().browser_root)
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": "/p", "BROWSER_ROOT": "/data/browser"}, clear=True):
+            self.assertEqual(config.load().browser_root, Path("/data/browser"))
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
+            self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
+
+    def test_main_opens_browsers_with_the_working_root_for_downloads(self):
+        from unittest import mock
+
+        from darkroom_browser import __main__ as entry
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": folder, "BROWSER_ROOT": "/data/browser"}, clear=True), \
+                mock.patch.object(runner.Runner, "run_forever", side_effect=KeyboardInterrupt), mock.patch.object(entry.live, "open_context") as opened:
+            made = []
+            with mock.patch.object(entry, "Runner", side_effect=lambda *args: made.append(args) or runner.Runner(*args)):
+                self.assertEqual(entry.main(), 0)
+            made[0][2](Path("/data/browser/3/profile"))
+        opened.assert_called_once_with(Path("/data/browser/3/profile"), working_root=Path(folder))
+
     def test_main_refuses_to_start_on_problems(self):
         from unittest import mock
 
@@ -583,6 +626,9 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(ctx.profile_dir(), Path("/photos/_browser/2/profile"))
         self.assertEqual(ctx.failure_dir(), Path("/photos/_browser/2/failures/5"))
         self.assertEqual(ctx.failure_folder_name(), "_browser/2/failures/5")
+        apart = context.JobContext(5, "noop", "2", {}, Path("/photos"), reporter, lambda folder: FakeBrowser(), browser_root=Path("/data/browser"))
+        self.assertEqual((apart.profile_dir(), apart.failure_dir()), (Path("/data/browser/2/profile"), Path("/data/browser/2/failures/5")))
+        self.assertEqual(apart.failure_folder_name(), "_browser/2/failures/5")
         self.assertIs(ctx.browser(), ctx.browser())
         ctx.cancelled.set()
         with self.assertRaises(context.Cancelled):

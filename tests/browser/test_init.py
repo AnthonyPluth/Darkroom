@@ -74,6 +74,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((env["PHOTOS_ROOT"], env["DISPLAY"], env["TZ"], env["POLL_SECONDS"]), ("/share", ":99", "Europe/Paris", "5"))
         self.assertFalse({*APP_SECRETS, "DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "HOSTNAME", "DARKROOM_PORT"} & set(env))
 
+    def test_the_worker_and_the_app_get_the_same_browser_root(self):
+        self.assertEqual(plan.worker_env(GIVEN)["BROWSER_ROOT"], "/share/_browser")
+        given = {**GIVEN, "DARKROOM_BROWSER_ROOT": "/data/browser"}
+        self.assertEqual((plan.worker_env(given)["BROWSER_ROOT"], plan.app_env(given)["DARKROOM_BROWSER_ROOT"]), ("/data/browser", "/data/browser"))
+        self.assertEqual(plan.worker_env(given)["PHOTOS_ROOT"], "/share")
+
+    def test_the_one_container_image_keeps_the_browser_state_in_appdata(self):
+        image = (ROOT / "Dockerfile.single").read_text()
+        self.assertIn("DARKROOM_BROWSER_ROOT=/data/browser", image)
+        self.assertNotIn("BROWSER_ROOT", (ROOT / "Dockerfile").read_text() + (ROOT / "Dockerfile.browser").read_text())
+
     def test_the_display_stack_gets_almost_nothing(self):
         self.assertEqual(plan.display_env(GIVEN), {"PATH": "/usr/local/bin:/usr/bin:/bin", "DISPLAY": ":99", "HOME": "/home/darkroom", "LANG": "C.UTF-8"})
         viewer = next(spec for spec in plan.specs(GIVEN, bool, bool) if spec.name == "viewer")

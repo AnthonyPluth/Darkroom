@@ -35,6 +35,7 @@ class Settings:
     display: str
     poll_seconds: float
     worker_name: str
+    browser_root: Path | None = None
 
 
 def load() -> Settings:
@@ -45,6 +46,7 @@ def load() -> Settings:
         display=env("DISPLAY", ":99"),
         poll_seconds=float(env("POLL_SECONDS", "15")),
         worker_name=env("WORKER_NAME") or platform.node() or "browser-worker",
+        browser_root=Path(env("BROWSER_ROOT")) if env("BROWSER_ROOT") else None,
     )
 
 
@@ -62,6 +64,8 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_URL must be an http:// or https:// address")
     if not settings.photos_root.is_dir():
         found.append("PHOTOS_ROOT is not a directory")
+    if settings.browser_root is not None and not settings.browser_root.is_absolute():
+        found.append("BROWSER_ROOT must be an absolute path")
     if settings.poll_seconds < 1:
         found.append("POLL_SECONDS must be at least 1")
     return found

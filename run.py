@@ -17,7 +17,7 @@ from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs
-from darkroom.storage import db, secret_key, secretbox
+from darkroom.storage import browser_copy, db, secret_key, secretbox
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
 
@@ -77,6 +77,24 @@ def seal_secret() -> int:
         print("seal-secret reads the value to seal from standard input, for example: printf %s \"$TOPIC\" | python run.py seal-secret", file=sys.stderr)
         return 1
     print(secretbox.seal(plain, settings.secret_key))
+    return 0
+
+
+def copy_browser_state(source: str | None, target: str | None, set_aside: bool) -> int:
+    if not source or not target:
+        print("copy-browser-state needs --source and --target, for example: python run.py copy-browser-state --source /photos/_browser --target /data/browser", file=sys.stderr)
+        return 1
+    found = browser_copy.leftovers(Path(target))
+    if found:
+        print(f"copy-browser-state: {len(found)} unfinished earlier copy folder(s) next to the target, which you may remove by hand: {', '.join(str(each) for each in found)}", file=sys.stderr)
+    try:
+        copied = browser_copy.copy_browser_state(Path(source), Path(target), utc_now().strftime("%Y%m%dT%H%M%SZ"), set_aside)
+    except OSError as error:
+        print(f"copy-browser-state: {error}. The source was not changed; an unfinished copy folder next to the target, if any, can be removed by hand.", file=sys.stderr)
+        return 1
+    print(f"Copied and verified {copied.files} files in {copied.folders} folders into {target}; left out {copied.locks_left_out} browser lock links. The source was not changed.")
+    if copied.set_aside is not None:
+        print(f"The folder that was at {target} is now {copied.set_aside}.")
     return 0
 
 
@@ -365,7 +383,8 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret",
+                                            "copy-browser-state"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -375,11 +394,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--email")
     parser.add_argument("--sub")
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--source")
+    parser.add_argument("--target")
+    parser.add_argument("--set-aside", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(args.data)
     if args.command == "seal-secret":
         return seal_secret()
+    if args.command == "copy-browser-state":
+        return copy_browser_state(args.source, args.target, args.set_aside)
     if args.command == "revoke-sessions":
         return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":

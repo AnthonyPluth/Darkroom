@@ -10,7 +10,7 @@ from darkroom.server import contract
 from darkroom.server.common import Request, Response, error_response, first_query, json_response, viewer_url
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob
-from darkroom.storage.paths import OutsideRoot, Photos
+from darkroom.storage.paths import OutsideRoot, browser_state
 
 MAX_CAPTURE_BYTES = 32 * 1024 * 1024
 SNAPSHOT_CSP = "default-src 'none'; sandbox"
@@ -72,7 +72,7 @@ def capture_file(request: Request, name: str) -> Response:
             return error_response("no such capture", 404)
         account_id = job.account_id
     try:
-        folder = Photos(request.settings.photos_root).failures(str(account_id), str(job_id))
+        folder = browser_state(request.settings.photos_root, request.settings.browser_root).failures(str(account_id), str(job_id))
     except OutsideRoot:
         return error_response("no such capture", 404)
     path = folder / name

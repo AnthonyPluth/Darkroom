@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events, exports, renewal
 from darkroom.storage import db
-from darkroom.storage.paths import Photos
+from darkroom.storage.paths import BrowserState, Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, known_contents
 
 CONFIRMING_TIERS = (1, 2)
@@ -186,7 +186,7 @@ def update(opened: Session, account_id: int, email: str | None, default_person_i
     return account
 
 
-def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None:
+def delete(opened: Session, photos: Photos, account_id: int, now: float, browser: BrowserState | None = None) -> None:
     try:
         db.write_lock(opened)
         opened.execute(sql_update(GoogleAccount).where(GoogleAccount.id == account_id).values(id=GoogleAccount.id))
@@ -215,5 +215,5 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float) -> None
     for alert in opened.execute(select(Alert).where(Alert.closed.is_(None), Alert.subject == email)).scalars():
         alert.closed = now
     photos.retire_account_downloads(str(account_id))
-    photos.retire_browser_account(str(account_id))
+    (photos.browser_state() if browser is None else browser).retire_account(str(account_id))
     events.record(opened, now, "account_deleted", str(account_id))

@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select
@@ -436,6 +438,69 @@ class ViewMalformedTests(ApiCase):
 class ViewUnsetTests(ApiCase):
     def test_no_address_is_null(self):
         self.assertEqual(self.call("GET", "/api/browser/view")[1], {"vnc_url": None, "worker_last_seen": None})
+
+
+class TwoRootsTests(ApiCase):
+    def setUp(self):
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        self.browser_root = Path(appdata.name) / "browser"
+        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_BROWSER_ROOT": str(self.browser_root)}
+        super().setUp()
+        self.person_id = self.person()["id"]
+        self.account_id = self.account(self.person_id)["id"]
+
+    def worker(self, path, body=None):
+        headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        return status, json.loads(reply)
+
+    def failed_with_capture(self, root):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        folder = root / str(self.account_id) / "failures" / str(job["id"])
+        folder.mkdir(parents=True)
+        (folder / "screenshot.png").write_bytes(b"\x89PNG from the browser root")
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage", "failure_dir": f"_browser/{self.account_id}/failures/{job['id']}", "files": ["screenshot.png"]})
+        return job["id"]
+
+    def test_a_failed_jobs_capture_is_served_from_the_browser_root(self):
+        job_id = self.failed_with_capture(self.browser_root)
+        listed = self.call("GET", "/api/browser/jobs")[1]["jobs"][0]
+        self.assertEqual((listed["has_capture"], listed["capture_files"]), (True, ["screenshot.png"]))
+        status, headers, body = fetch(self.base, "GET", f"/api/browser/failures/{job_id}/screenshot.png")
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG from the browser root"))
+
+    def test_a_capture_on_the_share_is_not_served_once_the_roots_are_apart(self):
+        job_id = self.failed_with_capture(self.photos / "_browser")
+        self.assertEqual(self.call("GET", "/api/browser/jobs")[1]["jobs"][0]["capture_files"], [])
+        self.assertEqual(fetch(self.base, "GET", f"/api/browser/failures/{job_id}/screenshot.png")[0], 404)
+
+    def test_deleting_an_account_removes_its_profile_and_its_downloads_folder_and_nothing_else(self):
+        other = self.account(self.person_id, "other@example.test")["id"]
+        profile = self.browser_root / str(self.account_id) / "profile"
+        downloads = self.photos / "_inbox" / ".downloads" / str(self.account_id)
+        keep = {self.browser_root / str(other) / "profile" / "Cookies": b"other", self.photos / "_inbox" / ".downloads" / str(other) / "part": b"other part",
+                self.photos / "_browser" / str(self.account_id) / "profile" / "Cookies": b"the share's stale copy", self.photos / "jo" / "originals" / "a.jpg": b"photo"}
+        for path, content in {profile / "Cookies": b"signed in", downloads / "half.zip": b"half", **keep}.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{self.account_id}"), (200, {"ok": True}))
+        self.assertFalse((self.browser_root / str(self.account_id)).exists())
+        self.assertFalse(downloads.exists())
+        for path, content in keep.items():
+            self.assertEqual(path.read_bytes(), content, path)
+
+    def test_a_browser_root_account_folder_that_is_a_link_is_not_followed_and_the_account_stays(self):
+        (self.photos / "jo").mkdir()
+        (self.photos / "jo" / "a.jpg").write_bytes(b"photo")
+        self.browser_root.mkdir()
+        (self.browser_root / str(self.account_id)).symlink_to(self.photos / "jo")
+        status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
+        self.assertEqual(status, 500)
+        self.assertIn("is a link", reply["error"])
+        self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 
 
 if __name__ == "__main__":

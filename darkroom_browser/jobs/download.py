@@ -61,11 +61,11 @@ def share_tree(root: Path) -> int:
     return failed
 
 
-def downloads_folder(profile_dir: Path) -> Path:
+def downloads_folder(profile_dir: Path, working_root: Path) -> Path:
     account = profile_dir.parent.name
     if profile_dir.name != "profile" or not ACCOUNT.match(account):
         raise DownloadsFolderRefused("the browser profile is not an account's profile folder")
-    inbox = profile_dir.parent.parent.parent / "_inbox"
+    inbox = working_root / "_inbox"
     folder = inbox / DOWNLOADS / account
     for each in (inbox, inbox / DOWNLOADS, folder):
         if each.is_symlink():
