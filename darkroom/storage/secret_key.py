@@ -18,6 +18,9 @@ KEY_BYTES = 32
 SEALED_COLUMNS = ((Person, Person.immich_api_key_sealed), (AuthSession, AuthSession.refresh_token_sealed))
 UNREADABLE_FILE = ("the secret-key file in DARKROOM_DATA_DIR is there but holds no key Darkroom can read, and Darkroom will not replace it; "
                    "put the key back in it, or set DARKROOM_SECRET_KEY to the key the stored values were sealed with")
+UNREADABLE_FILE_NOTHING_SEALED = ("the secret-key file in DARKROOM_DATA_DIR is there but holds no key Darkroom can read, and Darkroom will not replace it; "
+                                  "no sealed values are stored in this database or in RESEND_API_KEY, so if this is the database Darkroom uses, "
+                                  "delete the file and start again to generate a new key")
 SEALED_WITHOUT_KEY = ("there is no secret key, but sealed values are already stored (an Immich key, a sign-in session or RESEND_API_KEY), "
                       "and Darkroom will not make a new key that could never read them; set DARKROOM_SECRET_KEY to the key they were sealed with, "
                       "or put the secret-key file back in DARKROOM_DATA_DIR")
@@ -46,25 +49,35 @@ def database_present(settings: config.Settings) -> bool:
     return url.get_backend_name() != "sqlite" or bool(url.database and Path(url.database).is_file())
 
 
+def stored_sealed_values(settings: config.Settings) -> bool | None:
+    if secretbox.is_sealed(settings.resend_api_key):
+        return True
+    try:
+        if not database_present(settings):
+            return False
+        engine = db.make_engine(db.database_url(settings))
+    except (ArgumentError, ValueError):
+        return None
+    try:
+        return sealed_in_database(engine)
+    except OperationalError:
+        return None
+    finally:
+        engine.dispose()
+
+
+def unreadable_file(sealed: bool | None) -> str:
+    return UNREADABLE_FILE_NOTHING_SEALED if sealed is False else UNREADABLE_FILE
+
+
 def missing_key_problem(settings: config.Settings) -> str | None:
     if settings.secret_key:
         return None
+    sealed = stored_sealed_values(settings)
     if key_file_present(settings):
-        return UNREADABLE_FILE
-    if secretbox.is_sealed(settings.resend_api_key):
-        return SEALED_WITHOUT_KEY
-    try:
-        if not database_present(settings):
-            return None
-        engine = db.make_engine(db.database_url(settings))
-    except (ArgumentError, ValueError):
+        return unreadable_file(sealed)
+    if sealed is None:
         return DATABASE_UNREACHABLE
-    try:
-        sealed = sealed_in_database(engine)
-    except OperationalError:
-        return DATABASE_UNREACHABLE
-    finally:
-        engine.dispose()
     return SEALED_WITHOUT_KEY if sealed else None
 
 
@@ -111,10 +124,10 @@ def write_new_key(path: Path) -> str:
     return key
 
 
-def adopt_stored_key(settings: config.Settings) -> config.Settings:
+def adopt_stored_key(settings: config.Settings, engine: Engine) -> config.Settings:
     key = config.stored_secret_key(settings.data_dir)
     if not key:
-        raise Refused(UNREADABLE_FILE)
+        raise Refused(unreadable_file(sealed_values_exist(settings, engine)))
     return dataclasses.replace(settings, secret_key=key, key_origin="file")
 
 
@@ -122,12 +135,12 @@ def ensure(settings: config.Settings, engine: Engine) -> config.Settings:
     if settings.secret_key:
         return settings
     if key_file_present(settings):
-        return adopt_stored_key(settings)
+        return adopt_stored_key(settings, engine)
     if sealed_values_exist(settings, engine):
         raise Refused(SEALED_WITHOUT_KEY)
     try:
         key = write_new_key(config.secret_key_file(settings.data_dir))
     except FileExistsError:
-        return adopt_stored_key(settings)
+        return adopt_stored_key(settings, engine)
     monitoring.log("secret key generated")
     return dataclasses.replace(settings, secret_key=key, key_origin="file")
