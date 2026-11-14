@@ -470,5 +470,47 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(other.stat().st_mode), 0o600)
         self.assert_kept_unchanged()
 
+    def intact(self, name: str = "2024/IMG_0001.HEIC", digest: str | None = None, size: int | None = None) -> bool:
+        return paths.pixel_copy_intact(self.photos, 1, "jo", name, digest or sha1(self.data), len(self.data) if size is None else size)
+
+    def test_the_placed_copy_check_reads_without_touching_anything(self):
+        self.assertFalse(self.intact())
+        self.assertFalse((self.root / "_pixels").exists())
+        self.place()
+        before = tree(self.root)
+        self.assertTrue(self.intact())
+        self.assertFalse(self.intact(size=len(self.data) + 1))
+        self.assertFalse(self.intact(digest=sha1(b"other")))
+        self.assertFalse(self.intact("2024/IMG_0002.HEIC"))
+        self.assertFalse(self.intact("2025/IMG_0001.HEIC"))
+        self.assertFalse((self.root / "_pixels/1/jo/2025").exists())
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact("../../jo/originals/2024/IMG_0001.HEIC")
+        self.assertEqual(tree(self.root), before)
+        self.assert_kept_unchanged()
+
+    def test_the_placed_copy_check_never_follows_a_link_or_waits_on_a_pipe(self):
+        copy = self.root / "_pixels/1/jo/2024/IMG_0001.HEIC"
+        copy.parent.mkdir(parents=True)
+        copy.symlink_to(self.root / "jo/originals/2024/IMG_0001.HEIC")
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact()
+        copy.unlink()
+        os.mkfifo(copy)
+        self.assertFalse(self.intact())
+        copy.unlink()
+        copy.mkdir()
+        self.assertFalse(self.intact())
+        copy.rmdir()
+        copy.parent.rmdir()
+        copy.parent.symlink_to(self.root / "jo/originals/2024")
+        with self.assertRaises(paths.OutsideRoot):
+            self.intact()
+        copy.parent.unlink()
+        copy.parent.write_bytes(b"a file on the way")
+        self.assertFalse(self.intact())
+        self.assert_kept_unchanged()
+
+
 if __name__ == "__main__":
     unittest.main()

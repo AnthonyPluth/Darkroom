@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, and_, case, func, literal, select
+from sqlalchemy import ColumnElement, and_, case, func, literal, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
@@ -136,41 +136,67 @@ def used_bytes(opened: Session, pixel_id: int) -> int:
     return int(opened.execute(select(func.coalesce(func.sum(PixelCopy.bytes), 0)).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "placed")).scalar_one())
 
 
+def replacing() -> ColumnElement[bool]:
+    return and_(PixelCopy.state == "queued", PixelCopy.placed_at.is_not(None))
+
+
+def ever_sent() -> ColumnElement[bool]:
+    return or_(PixelCopy.state != "queued", PixelCopy.placed_at.is_not(None))
+
+
+def still_pending(opened: Session, row: PixelCopy, now: float) -> None:
+    if row.placed_at is not None:
+        events.record(opened, now, "pixel_copy_replacement_pending", f"pixel {row.pixel_id}", f"copy {row.id}")
+
+
 def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float) -> Tended:
     tended = Tended()
     pixel_id = pixel.id
     used = used_bytes(opened, pixel_id)
     waiting = opened.execute(
-        select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "queued").order_by(PixelCopy.queued_at, PixelCopy.id)
-    ).scalars().all()
-    for position, copy_id in enumerate(waiting):
+        select(PixelCopy.id, PixelCopy.placed_at.is_not(None)).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "queued")
+        .order_by(PixelCopy.queued_at, PixelCopy.id)
+    ).all()
+    deferring = False
+    for copy_id, was_placed in waiting:
+        if deferring and not was_placed:
+            tended.deferred += 1
+            continue
         lock_copy(opened, copy_id)
         row = opened.get(PixelCopy, copy_id, populate_existing=True)
         current = opened.get(Pixel, pixel_id, populate_existing=True)
         if row is None or current is None or row.state != "queued":
             opened.commit()
             continue
-        if not row.always_send and confirms_copy(opened, current, row):
+        again = row.placed_at is not None
+        if not again and not row.always_send and confirms_copy(opened, current, row):
             row.state, row.pruned_at = "pruned", now
             tended.skipped += 1
             opened.commit()
             continue
-        if used > 0 and used + row.bytes > cap_bytes:
+        if not again and (deferring or (used > 0 and used + row.bytes > cap_bytes)):
+            deferring = True
+            tended.deferred += 1
             opened.commit()
-            tended.deferred = len(waiting) - position
-            break
+            continue
         item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)
         if item is None or person is None or item.person_id != row.person_id or item.sha1 != row.sha1 or not serves(opened, pixel_id, row.person_id):
             tended.failed += 1
+            still_pending(opened, row, now)
             opened.commit()
             continue
         try:
             row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1, now)
+            if again and not paths.pixel_copy_intact(photos, pixel_id, person.slug, row.name, row.sha1, row.bytes):
+                raise paths.NotAPixelCopy("the copy read back is not the one Darkroom recorded")
         except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
             tended.failed += 1
+            still_pending(opened, row, now)
             opened.commit()
             continue
-        row.state, row.placed_at, row.pruned_at = "placed", now, None
+        if again:
+            events.record(opened, now, "pixel_copy_replaced", f"pixel {pixel_id}", f"copy {row.id}")
+        row.state, row.placed_at, row.pruned_at = "placed", row.placed_at if again else now, None
         used += row.bytes
         tended.placed += 1
         opened.commit()
@@ -247,7 +273,7 @@ def requeue_new_contents(opened: Session, item: MediaItem, now: float) -> int:
     if item.sha1 == UNKNOWN_SHA1:
         return 0
     requeued = 0
-    rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item.id, PixelCopy.state.in_(("queued", "pruned")))).scalars().all()
+    rows = opened.execute(select(PixelCopy).where(PixelCopy.item_id == item.id, PixelCopy.state.in_(("queued", "pruned")), ~replacing())).scalars().all()
     for row in rows:
         if row.state == "pruned":
             pixel = opened.get(Pixel, row.pixel_id)

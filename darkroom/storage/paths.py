@@ -1034,6 +1034,25 @@ def drop_claim(leaf: str, folder: int, claimed: os.stat_result) -> None:
             os.unlink(leaf, dir_fd=folder)
 
 
+def pixel_copy_intact(photos: Photos, pixel_id: int, person: str, name: str, sha1: str, size: int) -> bool:
+    photos.pixel_copy(pixel_id, person, name)
+    *folders, leaf = name.split("/")
+    try:
+        pinned = PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=False)
+    except (FileNotFoundError, NotAPixelCopy):
+        return False
+    with pinned:
+        try:
+            copy = open_no_follow(leaf, pinned.fd, os.O_RDONLY | os.O_NONBLOCK)
+        except (FileNotFoundError, NotAPixelCopy):
+            return False
+        try:
+            found = os.fstat(copy)
+            return stat.S_ISREG(found.st_mode) and found.st_size == size and fd_sha1(copy) == sha1
+        finally:
+            os.close(copy)
+
+
 def remove_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, sha1: str) -> bool:
     target = photos.pixel_copy(pixel_id, person, name)
     if not present(target):

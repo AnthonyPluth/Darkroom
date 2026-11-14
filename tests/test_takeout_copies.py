@@ -200,6 +200,8 @@ class ResolveTests(CopiesCase):
                                                                              person_id=self.jo.id, matched_item_id=phone.id, tier=1, reason="same SHA-1", decided_by="auto", decided_at=1.0)),
             "placed": lambda phone, takeout: self.opened.add(PixelCopy(pixel_id=self.pixel.id, item_id=phone.id, person_id=self.jo.id, state="placed", bytes=1, sha1=phone.sha1,
                                                                        queued_at=1.0, placed_at=1.5)),
+            "awaiting_replacement": lambda phone, takeout: self.opened.add(PixelCopy(pixel_id=self.pixel.id, item_id=phone.id, person_id=self.jo.id, state="queued",
+                                                                                     bytes=1, sha1=phone.sha1, queued_at=1.0, placed_at=1.5)),
             "other_account": lambda phone, takeout: setattr(self.pixel, "google_account_id", self.other.id),
             "confirmed": lambda phone, takeout: setattr(phone, "confirmed_in_google", True),
             "export_gone": lambda phone, takeout: setattr(takeout, "export_id", None),

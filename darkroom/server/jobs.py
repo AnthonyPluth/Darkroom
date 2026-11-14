@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_folder, renewal
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import immich, resend
 from darkroom.providers.push_note import Pusher
@@ -38,6 +38,7 @@ class Scheduler:
         self.zone = ZoneInfo(zone)
         self.jobs: dict[str, Registered] = {}
         self.stopping = threading.Event()
+        self.placed_copies = pixel_check.PlacedCopyCheck()
 
     def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
         self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
@@ -200,8 +201,13 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
 
     def tend_pixels(at: float) -> None:
+        photos = Photos(settings.photos_root)
         with db.session(engine) as opened:
-            tended = pixel_folder.tend(opened, Photos(settings.photos_root), settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
+            if scheduler.placed_copies.due(opened):
+                checked = scheduler.placed_copies.run(opened, photos, at)
+                monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued,
+                               held=len(pixel_check.replacing_pixels(opened)))
+            tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused)
 
