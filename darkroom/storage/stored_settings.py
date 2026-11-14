@@ -41,7 +41,8 @@ def parsed(entry: config.Storable, value: str | None, sealed: str | None, key: s
     if entry.secret:
         if not sealed:
             return None
-        return sealed if entry.kind == "sealed" else secretbox.unseal(sealed, key)
+        plain = secretbox.unseal(sealed, key)
+        return sealed if entry.kind == "sealed" else plain
     if value is None or not value.strip():
         return None
     if entry.kind == "list":

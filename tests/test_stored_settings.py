@@ -57,6 +57,18 @@ class PrecedenceTests(unittest.TestCase):
         self.assertEqual(found.settings.oidc_allowed_groups, ("parents",))
         self.assertEqual(found.problems, ())
 
+    def test_a_stored_resend_key_is_checked_against_the_key_but_stays_sealed(self):
+        store_all(self.engine, {"RESEND_API_KEY": RESEND_KEY}, key="the-lost-key")
+        wrong = self.effective()
+        self.assertEqual(len(wrong.problems), 1)
+        self.assertIn("RESEND_API_KEY is stored sealed but cannot be read", wrong.problems[0])
+        self.assertNotIn(RESEND_KEY, wrong.problems[0])
+        store_all(self.engine, {"RESEND_API_KEY": RESEND_KEY})
+        right = self.effective()
+        self.assertEqual(right.problems, ())
+        self.assertTrue(secretbox.is_sealed(right.settings.resend_api_key))
+        self.assertEqual(secretbox.unseal(right.settings.resend_api_key, KEY), RESEND_KEY)
+
     def test_a_stored_value_is_used_only_where_the_environment_sets_nothing(self):
         store_all(self.engine, STORED)
         found = self.effective(DARKROOM_PUBLIC_URL="https://env.example.test/", OIDC_CLIENT_SECRET="env-secret", OIDC_ALLOWED_GROUPS="admins", IMMICH_URL="  ")
