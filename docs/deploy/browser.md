@@ -27,7 +27,8 @@ Chrome makes the amd64 image larger (a few hundred MB; not measured here, so che
 | `PUID` / `PGID` | both | Container UID and GID, default `99` / `100`. Compose uses them for `user` and image build arguments. For custom IDs, build both images with `docker compose --profile browser up -d --build`; changing these variables does not remap users in an already published image. |
 | `DARKROOM_BROWSER_TOKEN` | both | Shared secret, at least 32 printable ASCII characters (`openssl rand -hex 32`). The worker refuses to start without it; `darkroom` answers 401 to every worker request while it is unset or short. Rotate it by changing `.env` and recreating both containers (`docker compose up -d --force-recreate darkroom darkroom-browser`; `docker compose restart` keeps the old environment). |
 | `DARKROOM_URL` | browser | Where the worker reaches `darkroom`: `http://darkroom:8000` on the compose network. |
-| `PHOTOS_ROOT` | browser | `/photos` inside the container: `_inbox/` and `_browser/` are mounted there read-write. |
+| `PHOTOS_ROOT` | browser | `/photos` inside the container: `_inbox/` and `_browser/` are mounted there read-write. It is the working root: the downloads folder and the export folders are always under its `_inbox/`. |
+| `BROWSER_ROOT`, `DARKROOM_BROWSER_ROOT` | browser, darkroom | Where the browser profiles and failure captures live. Unset (the two-container layout): `_browser/` under the photo share, as before, so nothing changes. The one-container image sets `DARKROOM_BROWSER_ROOT=/data/browser` and its init gives the worker the same folder (below). |
 | `POLL_SECONDS` | browser | How often an idle worker asks for a job (15). |
 | `BROWSER_CHANNEL` | browser | `chrome` (default): Google Chrome when the image has it; `chromium`: always the bundled Chromium. |
 | `DISPLAY` | browser | The Xvfb display (`:99`). |
@@ -50,7 +51,7 @@ For `sandbox_unavailable`, apply the current seccomp profile when recreating the
 
 Other fixed launch reasons are `permission_denied` (check the configured UID/GID and writable browser home and share), `display_unavailable` (check Xvfb and `DISPLAY`), `browser_missing` (rebuild or pull the image), `profile_in_use` (another browser or a stale profile lock), and `browser_exited` (unrecognised startup exit; check memory limits as well). `TargetClosedError` by itself does not identify which cause applies.
 
-For `profile_in_use`, stop every worker that can open that account's profile. Back up `_browser/<account id>/profile/`, then remove only stale `SingletonLock`, `SingletonSocket` and `SingletonCookie` entries before restarting. A recreated Docker container has a different hostname, so Chrome can mistake an old lock for a browser running on another machine. Never remove locks while another worker is using the profile; do not delete the profile to diagnose a launch error.
+For `profile_in_use`, stop every worker that can open that account's profile. Back up `_browser/<account id>/profile/` (`browser/<account id>/profile/` in appdata in the one container), then remove only stale `SingletonLock`, `SingletonSocket` and `SingletonCookie` entries before restarting. A recreated Docker container has a different hostname, so Chrome can mistake an old lock for a browser running on another machine. Never remove locks while another worker is using the profile; do not delete the profile to diagnose a launch error.
 
 ## Network
 
@@ -110,6 +111,49 @@ Also check existing per-person folders and `_pixels` created by Darkroom: any en
 Chromium makes some folders inside its profile (`_browser/<id>/profile/`) with mode `0700`, whatever the umask. When a job closes its browser, the worker adds the group's read, write and search bits (`g+rwx`, never following a link and never touching others' bits) to each folder under `_browser/<id>/`, and leaves every file as Chromium made it (a folder's bits are all removing a file needs), so deleting the account can remove the folder. If the worker was killed or Chromium crashed before that ran, or the profile was last used by an earlier release, the folder keeps its `0700` folders: the delete then answers 500 and changes nothing ("the account's browser folder could not be removed"). Open the account's browser once more (any job closes it the same way), or remove the folder on the host, and delete the account again.
 
 A download that stops receiving data is cancelled after five minutes: the worker watches the size of `_inbox/.downloads/<account id>/` while it waits, and when nothing has grown for that long it cancels the download, empties that folder and reports the part as `interrupted`, which counts as one of its attempts.
+
+## The browser profiles in appdata (the one container)
+
+In the one container (`docker compose --profile single`, docs/design/single-container.md section 3) the browser's state and the working folders are two separate roots, configured apart and never worked out from each other:
+
+| Root | Setting | One container | Two containers |
+| --- | --- | --- | --- |
+| Browser state: `<account id>/profile/` and `<account id>/failures/<job id>/` | `DARKROOM_BROWSER_ROOT` (the worker's `BROWSER_ROOT`, set by the init from it) | `/data/browser`, in appdata | Unset: `_browser/` on the share |
+| Working folders: `_inbox/` (with `.downloads/<account id>/`) and `_pixels/` | `DARKROOM_PHOTOS_ROOT` (the worker's `PHOTOS_ROOT`) | `/photos` | `/photos` |
+
+Chromium's download folder stays under the working root's `_inbox/.downloads/<account id>/`, next to the export folders, so a finished part still moves into place with a rename on one filesystem, and a part never lands in appdata. Darkroom serves a failed job's capture from the browser-state root, and deleting an account removes its folder there, the copy of that account's folder still on the share from before the move (`_browser/<account id>/`, so going back to two containers never brings back a deleted account's Google session), and its `_inbox/.downloads/<account id>/`, with the same link and containment refusals as before. `DARKROOM_BROWSER_ROOT` may not be the photo share, a folder inside it other than its `_browser` folder, or a folder that holds it, links followed: `check-config`, `serve` and the worker refuse to start with one, and the remover refuses such a root itself, so an account's deletion can never reach the photo tree. The job's reported `failure_dir` keeps its `_browser/<account id>/failures/<job id>` form: it names the job's folder and is never used as a path.
+
+### Moving existing profiles into appdata
+
+The profiles of a two-container installation are on the share, which the appdata backup does not cover, and the two are different mounts. The move is therefore a copy that is checked before it is used, done with everything stopped, and it never removes the source:
+
+1. Stop Darkroom and the worker (`docker compose --profile browser down`), so no profile is open, and back up `./data` and `$PHOTOS_ROOT/_browser`.
+2. Copy and verify, inside the one-container image so it runs as Darkroom's user under the same sandbox:
+
+   ```sh
+   docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /photos/_browser --target /data/browser
+   ```
+
+   It copies `_browser/` into a new hidden folder next to `/data/browser` (`.browser.copying-<random>`), leaving out Chromium's `SingletonLock`, `SingletonSocket` and `SingletonCookie` links, then compares every entry of the copy with the source (kind, mode, size and SHA-256), lists the source again to make sure nothing changed it meanwhile, and only then renames the copy to `/data/browser`. It copies only between the photo share's own `_browser/` and a folder outside the photo share (appdata), with links resolved and the photo share taken from `DARKROOM_PHOTOS_ROOT`: any other folder on the share (a person's folder, `originals/`, `_inbox/`, `_pixels/`, the share itself) or a folder that holds the share is refused, and nothing is copied or renamed. It also refuses a source or target that is a link, any other link or special file in the profiles, any folder or file in them it cannot read (it stops with "part of the browser profiles could not be read" rather than install an incomplete profile; fix the ownership, which should be the container's user, and run it again), and a `/data/browser` that already exists. It deletes nothing: a copy that was interrupted or did not match stays as the hidden folder, is reported on the next run, and can be removed by hand before trying again.
+3. Start the one container: `docker compose --profile single up -d darkroom-single`.
+
+`cp -a`, `shutil.copy2`, `shutil.copytree` and a `shutil.move` across mounts all fail inside this container: `deploy/browser/seccomp.json` answers the extended-attribute calls they make with `EPERM` (spike S1). `copy-browser-state` reads and writes each file and sets its mode and times, which the profile allows, so the profile stays as it is. The image CI runs it under the profile, beside a `cp -a` that fails there (`tests/browser/copy_under_profile.sh`).
+
+`_browser/` on the share is left as it was. No Darkroom code deletes it, except that deleting an account also removes that one account's folder in it; remove the rest by hand once the one container has run through the fallback's support window.
+
+### Going back to two containers
+
+Right after the move, before the one container has done any browser work, going back is starting the two containers again: their profiles on the share are unchanged. Once the one container has signed in, added an account or written a failure capture, the share's copy is stale, so copy appdata back the same way with the container stopped:
+
+```sh
+docker compose --profile single stop darkroom-single
+docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
+docker compose --profile browser up -d
+```
+
+With `--set-aside` the old `_browser/` is renamed to `_browser.before-<time>` only after the copy has been verified, and the copy then takes its place; nothing is deleted in either direction.
+
+Deleting an account removes its folder in the live browser-state root and in `_browser/` on the share, and nothing else. The copies the moves leave behind still hold every account's signed-in session, including accounts deleted later: a set-aside `_browser.before-<time>/` or `browser.before-<time>/`, an unfinished `.browser.copying-<random>/`, and an older `/data/browser/` left in appdata after going back to two containers. Remove them by hand once you no longer need them, and before starting the one container again on an older `/data/browser/`, remove the folders of accounts deleted since (or the whole folder, and copy the share's `_browser/` in afresh), because SQLite can give a new account a deleted account's id.
 
 ## Running a `noop` job end to end
 

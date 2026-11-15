@@ -14,7 +14,7 @@ from darkroom.config import Settings, viewer_link
 from darkroom.domain import alerts, events
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Setting
-from darkroom.storage.paths import OutsideRoot, Photos
+from darkroom.storage.paths import OutsideRoot, browser_state
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
@@ -309,7 +309,7 @@ def captured_files(settings: Settings, job: BrowserJob, files: Sequence[str]) ->
         if name not in CAPTURE_FILES:
             raise ValueError("files may only name screenshot.png or page.html")
     try:
-        folder = Photos(settings.photos_root).failures(str(job.account_id), str(job.id))
+        folder = browser_state(settings.photos_root, settings.browser_root).failures(str(job.account_id), str(job.id))
     except OutsideRoot:
         return []
     return [name for name in CAPTURE_FILES if name in files and (folder / name).is_file()]

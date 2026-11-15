@@ -133,7 +133,7 @@ class OpenContextTests(unittest.TestCase):
               mock.patch.dict("os.environ", {"BROWSER_CHANNEL": requested}), mock.patch.object(live, "choose_channel", lambda r: "chrome" if r == "chrome" else None),
               contextlib.redirect_stderr(stderr)):
             try:
-                return live.open_context(Path(directory) / "_browser" / "3" / "profile"), stderr.getvalue()
+                return live.open_context(Path(directory) / "_browser" / "3" / "profile", Path(directory)), stderr.getvalue()
             except Exception as error:
                 return error, stderr.getvalue()
 

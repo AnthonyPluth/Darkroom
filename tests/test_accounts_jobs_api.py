@@ -1,5 +1,8 @@
+import dataclasses
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select
@@ -9,7 +12,7 @@ from darkroom.domain import browser_jobs, dedupe, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
-from tests.shared import fetch
+from tests.shared import fetch, start_server
 
 TOKEN = "accounts-jobs-worker-token-canary-0123456789abcdef"
 
@@ -436,6 +439,108 @@ class ViewMalformedTests(ApiCase):
 class ViewUnsetTests(ApiCase):
     def test_no_address_is_null(self):
         self.assertEqual(self.call("GET", "/api/browser/view")[1], {"vnc_url": None, "worker_last_seen": None})
+
+
+class TwoRootsTests(ApiCase):
+    def setUp(self):
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        self.browser_root = Path(appdata.name) / "browser"
+        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_BROWSER_ROOT": str(self.browser_root)}
+        super().setUp()
+        self.person_id = self.person()["id"]
+        self.account_id = self.account(self.person_id)["id"]
+
+    def worker(self, path, body=None):
+        headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        return status, json.loads(reply)
+
+    def failed_with_capture(self, root):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]
+        folder = root / str(self.account_id) / "failures" / str(job["id"])
+        folder.mkdir(parents=True)
+        (folder / "screenshot.png").write_bytes(b"\x89PNG from the browser root")
+        self.worker(f"/internal/browser/jobs/{job['id']}/failed", {"message": "UnexpectedPage", "failure_dir": f"_browser/{self.account_id}/failures/{job['id']}", "files": ["screenshot.png"]})
+        return job["id"]
+
+    def test_a_failed_jobs_capture_is_served_from_the_browser_root(self):
+        job_id = self.failed_with_capture(self.browser_root)
+        listed = self.call("GET", "/api/browser/jobs")[1]["jobs"][0]
+        self.assertEqual((listed["has_capture"], listed["capture_files"]), (True, ["screenshot.png"]))
+        status, headers, body = fetch(self.base, "GET", f"/api/browser/failures/{job_id}/screenshot.png")
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG from the browser root"))
+
+    def test_a_capture_on_the_share_is_not_served_once_the_roots_are_apart(self):
+        job_id = self.failed_with_capture(self.photos / "_browser")
+        self.assertEqual(self.call("GET", "/api/browser/jobs")[1]["jobs"][0]["capture_files"], [])
+        self.assertEqual(fetch(self.base, "GET", f"/api/browser/failures/{job_id}/screenshot.png")[0], 404)
+
+    def test_deleting_an_account_removes_its_profile_its_share_copy_and_its_downloads_folder_and_nothing_else(self):
+        other = self.account(self.person_id, "other@example.test")["id"]
+        profile = self.browser_root / str(self.account_id) / "profile"
+        stale = self.photos / "_browser" / str(self.account_id) / "profile"
+        downloads = self.photos / "_inbox" / ".downloads" / str(self.account_id)
+        keep = {self.browser_root / str(other) / "profile" / "Cookies": b"other", self.photos / "_inbox" / ".downloads" / str(other) / "part": b"other part",
+                self.photos / "_browser" / str(other) / "profile" / "Cookies": b"other's share copy", self.photos / "jo" / "originals" / "a.jpg": b"photo"}
+        for path, content in {profile / "Cookies": b"signed in", stale / "Cookies": b"the share's stale copy", downloads / "half.zip": b"half", **keep}.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{self.account_id}"), (200, {"ok": True}))
+        self.assertFalse((self.browser_root / str(self.account_id)).exists())
+        self.assertFalse((self.photos / "_browser" / str(self.account_id)).exists())
+        self.assertFalse(downloads.exists())
+        for path, content in keep.items():
+            self.assertEqual(path.read_bytes(), content, path)
+
+    def test_deleting_an_account_without_a_share_copy_deletes_cleanly(self):
+        (self.browser_root / str(self.account_id) / "profile").mkdir(parents=True)
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{self.account_id}"), (200, {"ok": True}))
+        self.assertFalse((self.photos / "_browser").exists())
+
+    def test_a_share_copy_that_is_a_link_is_not_followed_and_the_account_and_its_profile_stay(self):
+        (self.photos / "jo").mkdir()
+        (self.photos / "jo" / "a.jpg").write_bytes(b"photo")
+        (self.photos / "_browser").mkdir()
+        (self.photos / "_browser" / str(self.account_id)).symlink_to(self.photos / "jo")
+        (self.browser_root / str(self.account_id) / "profile").mkdir(parents=True)
+        status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
+        self.assertEqual(status, 500)
+        self.assertIn("the account's old browser folder on the photo share (_browser/, from before the move to appdata) is a link, so it was not removed", reply["error"])
+        self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertTrue((self.browser_root / str(self.account_id) / "profile").is_dir())
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+    def test_a_browser_root_account_folder_that_is_a_link_is_not_followed_and_the_account_stays(self):
+        (self.photos / "jo").mkdir()
+        (self.photos / "jo" / "a.jpg").write_bytes(b"photo")
+        self.browser_root.mkdir()
+        (self.browser_root / str(self.account_id)).symlink_to(self.photos / "jo")
+        status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
+        self.assertEqual(status, 500)
+        self.assertIn("the account's browser folder is a link, so it was not removed", reply["error"])
+        self.assertNotIn("photo share", reply["error"])
+        self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+
+class UnsafeBrowserRootTests(ApiCase):
+    def setUp(self):
+        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN}
+        super().setUp()
+
+    def test_a_server_whose_browser_root_is_the_photo_share_never_deletes_an_original(self):
+        self.base, self.settings = start_server(self, dataclasses.replace(self.settings, browser_root=self.photos, public_url=""), self.engine)
+        account = self.account(self.person()["id"])["id"]
+        original = self.photos / str(account) / "originals" / "a.jpg"
+        original.parent.mkdir(parents=True)
+        original.write_bytes(b"an original")
+        status, reply = self.call("DELETE", f"/api/accounts/{account}")
+        self.assertEqual(status, 500)
+        self.assertIn("so the account was not deleted", reply["error"])
+        self.assertEqual(original.read_bytes(), b"an original")
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 
 
 if __name__ == "__main__":

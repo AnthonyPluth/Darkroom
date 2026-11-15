@@ -122,6 +122,7 @@ class Settings:
     from_environment: frozenset[str] = frozenset()
     wizard: bool = False
     blank_in_environment: frozenset[str] = frozenset()
+    browser_root: Path | None = None
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -181,6 +182,7 @@ def load() -> Settings:
         from_environment=frozenset(entry.variable for entry in STORABLE if env(entry.variable)),
         wizard=env_flag("DARKROOM_WIZARD"),
         blank_in_environment=frozenset(entry.variable for entry in STORABLE if entry.variable in os.environ and not env(entry.variable)),
+        browser_root=Path(env("DARKROOM_BROWSER_ROOT")) if env("DARKROOM_BROWSER_ROOT") else None,
     )
 
 
@@ -333,12 +335,28 @@ def auth_problems(settings: Settings) -> list[str]:
     return found
 
 
+def browser_root_in_the_share(browser_root: Path, photos_root: Path) -> bool:
+    root, share = browser_root.resolve(), photos_root.resolve()
+    return share.is_relative_to(root) or (root.is_relative_to(share) and root != share / "_browser")
+
+
+def browser_root_problems(settings: Settings) -> list[str]:
+    if settings.browser_root is None:
+        return []
+    if not settings.browser_root.is_absolute():
+        return [f"DARKROOM_BROWSER_ROOT must be an absolute path: {settings.browser_root}"]
+    if browser_root_in_the_share(settings.browser_root, settings.photos_root):
+        return ["DARKROOM_BROWSER_ROOT must not be DARKROOM_PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it"]
+    return []
+
+
 def problems(settings: Settings) -> list[str]:
     found = []
     if not settings.photos_root.is_dir():
         found.append(f"DARKROOM_PHOTOS_ROOT is not a directory: {settings.photos_root}")
     if not settings.data_dir.is_dir():
         found.append(f"DARKROOM_DATA_DIR is not a directory: {settings.data_dir}")
+    found += browser_root_problems(settings)
     if not settings.public_url:
         found.append("DARKROOM_PUBLIC_URL is not set")
     elif port_problem(settings.public_url):
@@ -440,4 +458,4 @@ def pixel_cap_problems(settings: Settings) -> list[str]:
 
 
 def refuses_to_start(settings: Settings) -> list[str]:
-    return misused(settings) + pixel_cap_problems(settings)
+    return misused(settings) + pixel_cap_problems(settings) + browser_root_problems(settings)

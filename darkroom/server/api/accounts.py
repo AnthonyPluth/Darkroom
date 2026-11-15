@@ -7,7 +7,7 @@ from darkroom.domain import accounts, browser_jobs, dedupe, renewal
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
 from darkroom.storage import db
-from darkroom.storage.paths import Photos, ProfileNotRemoved
+from darkroom.storage.paths import Photos, ProfileNotRemoved, browser_state
 
 MAX_BODY = 16 * 1024
 NO_ACCOUNT = "no such Google account"
@@ -70,7 +70,7 @@ def delete_account(request: Request) -> Annotated[Response, contract.Ok]:
         return error_response(NO_ACCOUNT, 404)
     try:
         with db.session(engine_of(request)) as opened:
-            accounts.delete(opened, Photos(request.settings.photos_root), account_id, now())
+            accounts.delete(opened, Photos(request.settings.photos_root), account_id, now(), browser_state(request.settings.photos_root, request.settings.browser_root))
     except accounts.NoSuchAccount:
         return error_response(NO_ACCOUNT, 404)
     except accounts.InUse as error:

@@ -37,6 +37,9 @@ after=$(probe)
 python3 -c 'import json,sys; old, now = json.loads(sys.argv[1]), json.loads(sys.argv[2]); sys.exit(bool(set(old["browsers"]) & set(now["browsers"]) or now["strays"]))' "$killed" "$after" || fail "browser processes left behind: $after"
 [ "$(field "$after" workers)" != "[$(field "$killed" worker)]" ] && [ "$(field "$after" workers)" != "[]" ] || fail "the worker was not restarted: $after"
 echo "worker restarted, none of the killed worker's browser processes left and every browser under the new worker: $after"
+docker exec "$name" test -d /data/browser/1/profile || fail "the browser profile is not under the browser-state root in appdata"
+docker exec "$name" test ! -e /photos/_browser || fail "the worker wrote browser state onto the working share"
+echo "the browser profile is in appdata, not on the share"
 
 probe enqueue noop >/dev/null
 wait_for 120 '[ "$(probe claimed-since "$(field "$killed" at)")" -gt 0 ]'

@@ -287,14 +287,14 @@ class DownloadsFolderTests(unittest.TestCase):
         self.assertEqual((self.held / "IMG_1.JPG").read_bytes(), b"held")
 
     def test_the_folder_is_the_accounts_folder_under_the_inbox_and_is_made_when_missing(self):
-        folder = download.downloads_folder(self.profile)
+        folder = download.downloads_folder(self.profile, self.root)
         self.assertEqual(folder, self.staging / "7")
         self.assertTrue(folder.is_dir())
 
     def test_a_profile_that_is_not_an_accounts_profile_folder_is_refused(self):
         for profile in (self.root / "_browser" / ".." / "profile", self.root / "_browser" / "7" / "other", self.root / "_browser" / "jo" / "profile"):
             with self.assertRaises(download.DownloadsFolderRefused, msg=profile):
-                download.downloads_folder(profile)
+                download.downloads_folder(profile, self.root)
         self.assertFalse(self.staging.exists())
 
     def test_a_link_at_the_inbox_the_downloads_folder_or_the_accounts_folder_is_refused_and_nothing_is_removed(self):
@@ -310,7 +310,7 @@ class DownloadsFolderTests(unittest.TestCase):
                     self.staging.mkdir(parents=True)
                 link.symlink_to(target, target_is_directory=True)
                 with self.assertRaises(download.DownloadsFolderRefused):
-                    download.downloads_folder(self.profile)
+                    download.downloads_folder(self.profile, self.root)
                 self.assert_held_copies_survive()
                 link.unlink()
                 if link == self.staging / "7":
@@ -320,7 +320,7 @@ class DownloadsFolderTests(unittest.TestCase):
                     self.held = link / "jo" / "review" / "export-1"
 
     def test_the_sweep_removes_regular_leftovers_and_only_the_link_of_a_linked_one(self):
-        folder = download.downloads_folder(self.profile)
+        folder = download.downloads_folder(self.profile, self.root)
         (folder / "0b7c-guid").write_bytes(b"half a part")
         (folder / "held-link").symlink_to(self.held / "IMG_1.JPG")
         (folder / "folder-link").symlink_to(self.held, target_is_directory=True)
@@ -372,7 +372,7 @@ class SharedFolderTests(unittest.TestCase):
         self.assertEqual(download.SHARED_FOLDER_MODE, paths.SHARED_FOLDER_MODE)
 
     def test_the_workers_folders_are_shared_whatever_the_umask(self):
-        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile", self.root)
         folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
         partial = download.fresh_partial(folder)
         for each in (self.root / "_inbox", downloads.parent, downloads, self.root / "_inbox" / "jo", folder, partial):
@@ -395,7 +395,7 @@ class SharedFolderTests(unittest.TestCase):
         photos.share_inbox()
         photos.make_export_folder("jo", "export-1")
         gid = (self.root / "_inbox").lstat().st_gid
-        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        downloads = download.downloads_folder(self.root / "_browser" / "7" / "profile", self.root)
         (downloads / "0b7c-guid").write_bytes(b"half")
         os.chmod(downloads / "0b7c-guid", download.PART_MODE)
         folder = download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
@@ -408,7 +408,7 @@ class SharedFolderTests(unittest.TestCase):
     def test_the_worker_never_widens_a_folder_darkroom_made_to_others(self):
         Photos(self.root).make_export_folder("jo", "export-1")
         download.inbox_folder(self.root, {"person": "jo", "folder": "export-1"})
-        download.downloads_folder(self.root / "_browser" / "7" / "profile")
+        download.downloads_folder(self.root / "_browser" / "7" / "profile", self.root)
         for each in (self.root / "_inbox", self.root / "_inbox" / ".downloads", self.root / "_inbox" / "jo", self.root / "_inbox" / "jo" / "export-1"):
             self.assertEqual(mode_of(each) & stat.S_IRWXO, 0, each)
 
@@ -432,7 +432,7 @@ class SharedFolderTests(unittest.TestCase):
             photos.make_export_folder("jo", "export-1")
 
         def worker_downloads():
-            downloads = download.downloads_folder(photos_root / "_browser" / "7" / "profile")
+            downloads = download.downloads_folder(photos_root / "_browser" / "7" / "profile", photos_root)
             (downloads / "0b7c-guid").write_bytes(b"half")
             folder = download.inbox_folder(photos_root, {"person": "jo", "folder": "export-1"})
             partial = download.fresh_partial(folder)
@@ -649,6 +649,83 @@ class InboxFolderTests(unittest.TestCase):
 
     def test_a_part_link_escapes_quotes(self):
         self.assertEqual(download.part_link('https://takeout.google.com/takeout/download?j="x"\\'), 'a[href="https://takeout.google.com/takeout/download?j=\\"x\\"\\\\"]')
+
+
+class TwoRootsDownloadTests(DownloadWorld):
+    def setUp(self):
+        super().setUp()
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        self.appdata = Path(appdata.name)
+        self.browser_root = self.appdata / "browser"
+        self.opened = []
+
+    def open_browser(self, browser):
+        def opened(profile):
+            self.opened.append((profile, download.downloads_folder(profile, self.root)))
+            profile.mkdir(parents=True, exist_ok=True)
+            return browser
+        return opened
+
+    def run_apart(self, browser):
+        job_id = self.claim()
+        ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
+                         self.open_browser(browser), threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW, browser_root=self.browser_root)
+        return job_id, download.download_export(ctx)
+
+    def test_a_download_writes_its_parts_under_the_working_roots_inbox_and_never_under_appdata(self):
+        job_id, result = self.run_apart(DownloadBrowser(["ok", "ok", "ok"]))
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.opened, [(self.browser_root / str(self.account) / "profile", self.root / "_inbox" / ".downloads" / str(self.account))])
+        self.assertEqual(sorted(path.name for path in self.folder().iterdir()), [f"takeout-20261102T031000Z-00{n}.zip" for n in (1, 2, 3)])
+        self.assertEqual([path for path in self.appdata.rglob("*") if not path.is_dir()], [])
+        self.assertFalse((self.root / "_browser").exists())
+        self.assertFalse((self.appdata / "_inbox").exists())
+        self.finish(job_id)
+        self.assertEqual(self.status(), "downloaded")
+
+
+class TwoRootsDownloadsFolderTests(unittest.TestCase):
+    def setUp(self):
+        share = tempfile.TemporaryDirectory()
+        self.addCleanup(share.cleanup)
+        appdata = tempfile.TemporaryDirectory()
+        self.addCleanup(appdata.cleanup)
+        self.root = Path(share.name)
+        self.appdata = Path(appdata.name)
+        self.profile = self.appdata / "browser" / "7" / "profile"
+        self.held = self.root / "_inbox" / "jo" / "review" / "export-1"
+        self.held.mkdir(parents=True)
+        (self.held / "IMG_1.JPG").write_bytes(b"held")
+
+    def test_the_folder_is_under_the_working_roots_inbox_not_next_to_the_profile(self):
+        folder = download.downloads_folder(self.profile, self.root)
+        self.assertEqual(folder, self.root / "_inbox" / ".downloads" / "7")
+        self.assertTrue(folder.is_dir())
+        self.assertFalse((self.appdata / "_inbox").exists())
+
+    def test_a_profile_that_is_not_an_accounts_profile_folder_is_refused(self):
+        for profile in (self.appdata / "browser" / "7" / "other", self.appdata / "browser" / "jo" / "profile"):
+            with self.assertRaises(download.DownloadsFolderRefused, msg=profile):
+                download.downloads_folder(profile, self.root)
+        self.assertFalse((self.root / "_inbox" / ".downloads").exists())
+
+    def test_a_link_on_the_way_is_refused_and_the_held_copies_survive(self):
+        staging = self.root / "_inbox" / ".downloads"
+        staging.mkdir()
+        (staging / "7").symlink_to(self.held, target_is_directory=True)
+        with self.assertRaises(download.DownloadsFolderRefused):
+            download.downloads_folder(self.profile, self.root)
+        self.assertEqual((self.held / "IMG_1.JPG").read_bytes(), b"held")
+
+    def test_the_folders_are_shared_whatever_the_umask(self):
+        previous = os.umask(0o077)
+        self.addCleanup(os.umask, previous)
+        working = self.root / "working"
+        working.mkdir()
+        downloads = download.downloads_folder(self.profile, working)
+        for each in (working / "_inbox", downloads.parent, downloads):
+            self.assertEqual(mode_of(each), download.SHARED_FOLDER_MODE, each)
 
 
 class RegistryTests(unittest.TestCase):

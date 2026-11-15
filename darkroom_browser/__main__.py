@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import sys
 
@@ -18,7 +19,7 @@ def main() -> int:
     if found:
         return 1
     os.umask(WORKER_UMASK)
-    runner = Runner(settings, Client(settings.darkroom_url, settings.token), live.open_context)
+    runner = Runner(settings, Client(settings.darkroom_url, settings.token), functools.partial(live.open_context, working_root=settings.photos_root))
     try:
         runner.run_forever()
     except KeyboardInterrupt:

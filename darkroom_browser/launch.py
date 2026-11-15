@@ -17,7 +17,7 @@ ARGS = [f"{BLINK_FEATURES_FLAG}=AutomationControlled"]
 LAUNCH_FAILURES = {
     "sandbox_unavailable": "the browser sandbox could not start; apply deploy/browser/seccomp.json and allow unprivileged user namespaces on the host",
     "profile_in_use": "the browser profile is locked; stop every worker using it before checking for stale Singleton locks",
-    "permission_denied": "the browser cannot access its files; check ownership of _browser, _inbox and the browser home for the configured UID and GID",
+    "permission_denied": "the browser cannot access its files; check ownership of the browser profiles folder (_browser on the share, or browser in appdata in the one container), _inbox and the browser home for the configured UID and GID",
     "display_unavailable": "the browser cannot reach Xvfb; check DISPLAY and the browser container startup logs",
     "browser_missing": "the browser executable is missing; rebuild or pull the matching browser image",
     "browser_exited": "the browser exited during startup; check the container memory limit, sandbox, display and profile ownership",

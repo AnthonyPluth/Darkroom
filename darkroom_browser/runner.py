@@ -122,7 +122,7 @@ class Runner:
     def context_for(self, job: dict[str, Any]) -> JobContext:
         payload = job.get("payload") or {}
         return JobContext(int(job["id"]), str(job["kind"]), str(job["account"]), dict(payload) if isinstance(payload, dict) else {},
-                          self.settings.photos_root, self.client, self.open_browser)
+                          self.settings.photos_root, self.client, self.open_browser, browser_root=self.settings.browser_root)
 
     def run_job(self, job: dict[str, Any], claim_sent: float | None = None) -> str:
         ctx = self.context_for(job)
