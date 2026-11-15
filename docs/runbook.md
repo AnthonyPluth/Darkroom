@@ -1,6 +1,6 @@
 # Runbook
 
-What the owner sets up by hand around the repository, and what to do when the Takeout import needs a person. The deployment of the browser worker is in [deploy/browser.md](deploy/browser.md).
+What the owner sets up by hand around the repository, and what to do when the Takeout import needs a person. Deploying Darkroom, by default as one container, is in [deploy/one-container.md](deploy/one-container.md); the browser worker and the two-container fallback are in [deploy/browser.md](deploy/browser.md).
 
 ## Branch protection
 

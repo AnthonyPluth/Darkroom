@@ -16,4 +16,6 @@ python run.py demo --data demo   # made-up people, Pixels, iPhones and photos in
 
 `run.py demo` prints how to serve what it seeded: `DARKROOM_DEMO=1` on a loopback address, with the demo member's session cookie in `demo/data/demo-session.json`. A server with sign-in configured, or listening beyond loopback, refuses that session and refuses to start in demo mode. `tools/verify.py` runs the same seed and server under libfaketime on a frozen clock with an allowlisted environment and a dead outbound proxy, for the browser driver and `make verify` that a later issue adds. It only ever writes inside the empty folder `--data` names.
 
+Deploying it, by default as one container with an Unraid template, is in [docs/deploy/one-container.md](docs/deploy/one-container.md).
+
 `AGENTS.md` is the guide for anyone (human or agent) changing the code. Configuration is in `.env.example`.

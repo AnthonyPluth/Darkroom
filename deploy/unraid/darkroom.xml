@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>darkroom</Name>
+  <Repository>ghcr.io/anthonypluth/darkroom-single:latest</Repository>
+  <Registry>https://github.com/AnthonyPluth/Darkroom/pkgs/container/darkroom-single</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/AnthonyPluth/Darkroom/issues</Support>
+  <Project>https://github.com/AnthonyPluth/Darkroom</Project>
+  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json from the same release at /boot/config/darkroom/seccomp.json on the server, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). Local network only: never forward its port to the internet.</Overview>
+  <Category>MediaApp:Photos</Category>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/AnthonyPluth/Darkroom/main/deploy/unraid/darkroom.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams>--user=99:100 --shm-size=1g --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json --stop-timeout=30</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>The seccomp profile at /boot/config/darkroom/seccomp.json, copied by hand from deploy/browser/seccomp.json of the same release (docs/deploy/one-container.md).</Requires>
+  <Config Name="Web UI" Target="8000" Default="8000" Mode="tcp" Description="Darkroom's web UI and API, including the remote browser view. The only port the container needs." Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/darkroom" Mode="rw" Description="The database, the generated secret key and the browser profiles. Back this folder up with the container stopped." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/darkroom</Config>
+  <Config Name="Photo share" Target="/photos" Default="" Mode="rw" Description="The photo share: the people's folders, _inbox and _pixels." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="DARKROOM_PUBLIC_URL" Target="DARKROOM_PUBLIC_URL" Default="" Mode="" Description="The address people open Darkroom at, for links in alerts and the sign-in redirect." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="OIDC_ISSUER" Target="OIDC_ISSUER" Default="" Mode="" Description="The sign-in provider (Pocket ID) issuer address." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="OIDC_CLIENT_ID" Target="OIDC_CLIENT_ID" Default="" Mode="" Description="The client ID Darkroom has at the sign-in provider." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="OIDC_CLIENT_SECRET" Target="OIDC_CLIENT_SECRET" Default="" Mode="" Description="The client secret Darkroom has at the sign-in provider." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="OIDC_ALLOWED_GROUPS" Target="OIDC_ALLOWED_GROUPS" Default="parents" Mode="" Description="Groups allowed to sign in, comma-separated." Type="Variable" Display="always" Required="false" Mask="false">parents</Config>
+  <Config Name="IMMICH_URL" Target="IMMICH_URL" Default="" Mode="" Description="Immich's address." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="IMMICH_ADMIN_KEY" Target="IMMICH_ADMIN_KEY" Default="" Mode="" Description="An Immich admin API key, for the external-library rescans." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="DARKROOM_SECRET_KEY" Target="DARKROOM_SECRET_KEY" Default="" Mode="" Description="Leave empty: Darkroom generates the key into the appdata folder on first start. Set it only to keep the key apart from appdata." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="POLL_SECONDS" Target="POLL_SECONDS" Default="15" Mode="" Description="How often the idle browser worker asks for a job." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
+  <Config Name="BROWSER_CHANNEL" Target="BROWSER_CHANNEL" Default="chrome" Mode="" Description="chrome: Google Chrome; chromium: always the bundled Chromium." Type="Variable" Display="advanced" Required="false" Mask="false">chrome</Config>
+</Container>
