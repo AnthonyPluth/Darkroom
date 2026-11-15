@@ -176,6 +176,138 @@ class CopyTests(CopyWorld):
         self.assertEqual(tree(self.source), tree(self.target))
 
 
+NOBODY = 65534
+
+
+def as_nobody(work):
+    if os.geteuid() != 0:
+        return work()
+    child = os.fork()
+    if child == 0:
+        code = 1
+        try:
+            os.setgroups([])
+            os.setgid(NOBODY)
+            os.setuid(NOBODY)
+            work()
+            code = 0
+        except browser_copy.Unreadable as error:
+            code = 3 if str(error) == browser_copy.UNREADABLE else 4
+        except BaseException:
+            code = 5
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(child, 0)
+    code = os.waitstatus_to_exitcode(status)
+    if code == 3:
+        raise browser_copy.Unreadable(browser_copy.UNREADABLE)
+    if code:
+        raise AssertionError(f"the copy as an unprivileged user ended with {code}")
+    return None
+
+
+class UnreadableTests(CopyWorld):
+    def setUp(self):
+        super().setUp()
+        if os.geteuid() == 0:
+            for top in (self.share, self.appdata):
+                os.chmod(top, 0o755)
+                for path in [top, *top.rglob("*")]:
+                    os.lchown(path, NOBODY, NOBODY)
+
+    def everything_in(self, top):
+        return sorted(str(path.relative_to(top)) for path in top.rglob("*"))
+
+    def assert_refused_and_nothing_published(self, source, target, set_aside=False):
+        before = self.everything_in(target.parent)
+        with self.assertRaises(browser_copy.Unreadable) as raised:
+            as_nobody(lambda: browser_copy.copy_browser_state(source, target, STAMP, set_aside))
+        self.assertEqual(str(raised.exception), browser_copy.UNREADABLE)
+        self.assertNotIn(str(self.share), str(raised.exception))
+        self.assertEqual(self.everything_in(target.parent), before)
+
+    def test_an_unreadable_folder_in_the_profiles_stops_the_copy_and_publishes_nothing(self):
+        os.chmod(self.source / "1" / "profile" / "Default", 0o000)
+        self.addCleanup(os.chmod, self.source / "1" / "profile" / "Default", 0o700)
+        self.assert_refused_and_nothing_published(self.source, self.target)
+        self.assertFalse(self.target.exists())
+
+    def test_an_unreadable_file_in_the_profiles_stops_the_copy_and_publishes_nothing(self):
+        os.chmod(self.source / "1" / "profile" / "Default" / "Cookies", 0o000)
+        self.assert_refused_and_nothing_published(self.source, self.target)
+        self.assertFalse(self.target.exists())
+
+    def test_a_folder_that_can_be_listed_but_not_entered_stops_the_copy(self):
+        os.chmod(self.source / "1" / "profile" / "Default", 0o444)
+        self.addCleanup(os.chmod, self.source / "1" / "profile" / "Default", 0o700)
+        self.assert_refused_and_nothing_published(self.source, self.target)
+        self.assertFalse(self.target.exists())
+
+    def test_an_unreadable_folder_stops_the_copy_back_and_the_share_keeps_its_profiles(self):
+        back = self.appdata / "browser"
+        (back / "2" / "profile" / "Default").mkdir(parents=True)
+        (back / "2" / "profile" / "Default" / "Cookies").write_bytes(b"signed in")
+        if os.geteuid() == 0:
+            for path in [back, *back.rglob("*")]:
+                os.lchown(path, NOBODY, NOBODY)
+        os.chmod(back / "2" / "profile" / "Default", 0o000)
+        self.addCleanup(os.chmod, back / "2" / "profile" / "Default", 0o700)
+        self.assert_refused_and_nothing_published(back, self.source, set_aside=True)
+        self.assert_source_untouched()
+        self.assertEqual(browser_copy.leftovers(self.source), [])
+
+
+class UnreadableMidwayTests(CopyWorld):
+    def failing_on(self, folder, call):
+        real = os.scandir
+        seen = []
+
+        def scandir(path):
+            if Path(path) == folder:
+                seen.append(path)
+                if len(seen) == call:
+                    raise PermissionError(errno.EACCES, "Permission denied")
+            return real(path)
+
+        return mock.patch.object(browser_copy.os, "scandir", scandir)
+
+    def test_a_folder_unreadable_during_the_copy_leaves_only_the_reported_hidden_copy(self):
+        with self.failing_on(self.source / "1" / "profile" / "Default", 2), self.assertRaises(browser_copy.Unreadable):
+            self.copy()
+        self.assertFalse(self.target.exists())
+        found = browser_copy.leftovers(self.target)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(sorted(each.name for each in self.appdata.iterdir()), [found[0].name])
+        self.assert_source_untouched()
+
+    def test_a_folder_unreadable_when_the_source_is_listed_again_publishes_nothing(self):
+        with self.failing_on(self.source / "1" / "profile" / "Default", 3), self.assertRaises(browser_copy.Unreadable):
+            self.copy()
+        self.assertFalse(self.target.exists())
+        self.assertEqual(len(browser_copy.leftovers(self.target)), 1)
+
+    def test_a_folder_unreadable_in_the_copy_publishes_nothing(self):
+        real = os.scandir
+
+        def scandir(path):
+            if Path(path).name == "Default" and browser_copy.COPYING in str(path):
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real(path)
+
+        with mock.patch.object(browser_copy.os, "scandir", scandir), self.assertRaises(browser_copy.Unreadable):
+            self.copy()
+        self.assertFalse(self.target.exists())
+
+    def test_the_command_reports_an_unreadable_profile_without_naming_a_path(self):
+        out, err = io.StringIO(), io.StringIO()
+        with self.failing_on(self.source / "1" / "profile" / "Default", 1), redirect_stdout(out), redirect_stderr(err):
+            code = run.main(["copy-browser-state", "--source", str(self.source), "--target", str(self.target)])
+        self.assertEqual(code, 1)
+        self.assertIn(browser_copy.UNREADABLE, err.getvalue())
+        self.assertNotIn("Default", err.getvalue())
+        self.assertFalse(self.target.exists())
+
+
 class CommandTests(CopyWorld):
     def run_command(self, *args):
         out, err = io.StringIO(), io.StringIO()

@@ -35,6 +35,15 @@ class ConfigTests(unittest.TestCase):
             with mock.patch.dict(os.environ, values, clear=True):
                 self.assertIn("DARKROOM_BROWSER_ROOT must be an absolute path: browser", config.problems(config.load()))
 
+    def test_a_browser_root_inside_the_photo_share_is_a_problem_except_its_browser_folder(self):
+        inside = "DARKROOM_BROWSER_ROOT must not be inside DARKROOM_PHOTOS_ROOT, except its _browser folder"
+        with tempfile.TemporaryDirectory() as share, tempfile.TemporaryDirectory() as appdata:
+            for root, refused in ((share, True), (f"{share}/jo/originals", True), (f"{share}/_browser/x", True), (f"{share}/_inbox", True),
+                                  (f"{share}/_browser", False), (f"{appdata}/browser", False)):
+                values = {"DARKROOM_PHOTOS_ROOT": share, "DARKROOM_DATA_DIR": appdata, "DARKROOM_BROWSER_ROOT": root}
+                with self.subTest(root=root), mock.patch.dict(os.environ, values, clear=True):
+                    self.assertEqual(inside in config.problems(config.load()), refused)
+
     def test_lists_are_split_and_trimmed(self):
         with mock.patch.dict(os.environ, {"OIDC_ALLOWED_GROUPS": " a , b ,,c"}, clear=True):
             self.assertEqual(config.load().oidc_allowed_groups, ("a", "b", "c"))

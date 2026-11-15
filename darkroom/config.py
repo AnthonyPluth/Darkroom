@@ -309,6 +309,11 @@ def auth_problems(settings: Settings) -> list[str]:
     return found
 
 
+def browser_root_in_the_share(browser_root: Path, photos_root: Path) -> bool:
+    root, share = browser_root.resolve(), photos_root.resolve()
+    return root.is_relative_to(share) and root != share / "_browser"
+
+
 def problems(settings: Settings) -> list[str]:
     found = []
     if not settings.photos_root.is_dir():
@@ -317,6 +322,8 @@ def problems(settings: Settings) -> list[str]:
         found.append(f"DARKROOM_DATA_DIR is not a directory: {settings.data_dir}")
     if settings.browser_root is not None and not settings.browser_root.is_absolute():
         found.append(f"DARKROOM_BROWSER_ROOT must be an absolute path: {settings.browser_root}")
+    elif settings.browser_root is not None and browser_root_in_the_share(settings.browser_root, settings.photos_root):
+        found.append("DARKROOM_BROWSER_ROOT must not be inside DARKROOM_PHOTOS_ROOT, except its _browser folder")
     if not settings.public_url:
         found.append("DARKROOM_PUBLIC_URL is not set")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):

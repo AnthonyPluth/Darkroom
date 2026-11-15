@@ -54,6 +54,11 @@ def token_usable(token: str) -> bool:
     return len(token) >= MIN_TOKEN and token.isascii() and token.isprintable() and " " not in token
 
 
+def in_the_share(browser_root: Path, photos_root: Path) -> bool:
+    root, share = browser_root.resolve(), photos_root.resolve()
+    return root.is_relative_to(share) and root != share / "_browser"
+
+
 def problems(settings: Settings) -> list[str]:
     found = []
     if not settings.token:
@@ -66,6 +71,8 @@ def problems(settings: Settings) -> list[str]:
         found.append("PHOTOS_ROOT is not a directory")
     if settings.browser_root is not None and not settings.browser_root.is_absolute():
         found.append("BROWSER_ROOT must be an absolute path")
+    elif settings.browser_root is not None and in_the_share(settings.browser_root, settings.photos_root):
+        found.append("BROWSER_ROOT must not be inside PHOTOS_ROOT, except its _browser folder")
     if settings.poll_seconds < 1:
         found.append("POLL_SECONDS must be at least 1")
     return found

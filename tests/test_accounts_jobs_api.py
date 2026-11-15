@@ -476,20 +476,40 @@ class TwoRootsTests(ApiCase):
         self.assertEqual(self.call("GET", "/api/browser/jobs")[1]["jobs"][0]["capture_files"], [])
         self.assertEqual(fetch(self.base, "GET", f"/api/browser/failures/{job_id}/screenshot.png")[0], 404)
 
-    def test_deleting_an_account_removes_its_profile_and_its_downloads_folder_and_nothing_else(self):
+    def test_deleting_an_account_removes_its_profile_its_share_copy_and_its_downloads_folder_and_nothing_else(self):
         other = self.account(self.person_id, "other@example.test")["id"]
         profile = self.browser_root / str(self.account_id) / "profile"
+        stale = self.photos / "_browser" / str(self.account_id) / "profile"
         downloads = self.photos / "_inbox" / ".downloads" / str(self.account_id)
         keep = {self.browser_root / str(other) / "profile" / "Cookies": b"other", self.photos / "_inbox" / ".downloads" / str(other) / "part": b"other part",
-                self.photos / "_browser" / str(self.account_id) / "profile" / "Cookies": b"the share's stale copy", self.photos / "jo" / "originals" / "a.jpg": b"photo"}
-        for path, content in {profile / "Cookies": b"signed in", downloads / "half.zip": b"half", **keep}.items():
+                self.photos / "_browser" / str(other) / "profile" / "Cookies": b"other's share copy", self.photos / "jo" / "originals" / "a.jpg": b"photo"}
+        for path, content in {profile / "Cookies": b"signed in", stale / "Cookies": b"the share's stale copy", downloads / "half.zip": b"half", **keep}.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
         self.assertEqual(self.call("DELETE", f"/api/accounts/{self.account_id}"), (200, {"ok": True}))
         self.assertFalse((self.browser_root / str(self.account_id)).exists())
+        self.assertFalse((self.photos / "_browser" / str(self.account_id)).exists())
         self.assertFalse(downloads.exists())
         for path, content in keep.items():
             self.assertEqual(path.read_bytes(), content, path)
+
+    def test_deleting_an_account_without_a_share_copy_deletes_cleanly(self):
+        (self.browser_root / str(self.account_id) / "profile").mkdir(parents=True)
+        self.assertEqual(self.call("DELETE", f"/api/accounts/{self.account_id}"), (200, {"ok": True}))
+        self.assertFalse((self.photos / "_browser").exists())
+
+    def test_a_share_copy_that_is_a_link_is_not_followed_and_the_account_and_its_profile_stay(self):
+        (self.photos / "jo").mkdir()
+        (self.photos / "jo" / "a.jpg").write_bytes(b"photo")
+        (self.photos / "_browser").mkdir()
+        (self.photos / "_browser" / str(self.account_id)).symlink_to(self.photos / "jo")
+        (self.browser_root / str(self.account_id) / "profile").mkdir(parents=True)
+        status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
+        self.assertEqual(status, 500)
+        self.assertIn("is a link", reply["error"])
+        self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertTrue((self.browser_root / str(self.account_id) / "profile").is_dir())
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 
     def test_a_browser_root_account_folder_that_is_a_link_is_not_followed_and_the_account_stays(self):
         (self.photos / "jo").mkdir()

@@ -456,6 +456,10 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
             self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
+            for root, refused in ((Path(folder), True), (Path(folder) / "jo" / "originals", True), (Path(folder) / "_browser", False)):
+                with self.subTest(root=str(root)):
+                    found = config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", root))
+                    self.assertEqual(found, ["BROWSER_ROOT must not be inside PHOTOS_ROOT, except its _browser folder"] if refused else [])
 
     def test_main_opens_browsers_with_the_working_root_for_downloads(self):
         from unittest import mock

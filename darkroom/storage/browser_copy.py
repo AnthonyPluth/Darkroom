@@ -24,6 +24,14 @@ class CopyDiffers(OSError):
     pass
 
 
+class Unreadable(CopyRefused):
+    pass
+
+
+UNREADABLE = "part of the browser profiles could not be read, so nothing was copied or put in place"
+NOT_COPYABLE = "the browser profiles hold something that is neither a folder nor a regular file, so they were not copied"
+
+
 @dataclass(frozen=True)
 class Copied:
     files: int
@@ -34,18 +42,26 @@ class Copied:
 
 def digest(path: Path) -> str:
     found = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(CHUNK):
-            found.update(chunk)
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(CHUNK):
+                found.update(chunk)
+    except OSError:
+        raise Unreadable(UNREADABLE) from None
     return found.hexdigest()
 
 
 def walk(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
-    for current, folders, files in os.walk(root, followlinks=False):
-        here = Path(current)
-        for name in sorted(folders) + sorted(files):
-            path = here / name
-            yield path, path.lstat()
+    try:
+        with os.scandir(root) as listed:
+            names = sorted(entry.name for entry in listed)
+        found = [(root / name, (root / name).lstat()) for name in names]
+    except OSError:
+        raise Unreadable(UNREADABLE) from None
+    for path, info in found:
+        yield path, info
+        if stat.S_ISDIR(info.st_mode):
+            yield from walk(path)
 
 
 def is_lock(path: Path, found: os.stat_result) -> bool:
@@ -64,13 +80,17 @@ def listing(root: Path) -> dict[str, Entry]:
         elif stat.S_ISREG(found.st_mode):
             entries[relative] = ("file", mode, found.st_size, digest(path))
         else:
-            raise CopyRefused(f"{relative} is neither a folder nor a regular file, so the browser profiles were not copied")
+            raise CopyRefused(NOT_COPYABLE)
     return entries
 
 
 def copy_file(source: Path, target: Path, found: os.stat_result) -> None:
+    try:
+        reading = source.open("rb")
+    except OSError:
+        raise Unreadable(UNREADABLE) from None
     handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with source.open("rb") as reading, os.fdopen(handle, "wb") as writing:
+    with reading, os.fdopen(handle, "wb") as writing:
         while chunk := reading.read(CHUNK):
             writing.write(chunk)
         writing.flush()
@@ -94,7 +114,7 @@ def copy_tree(source: Path, into: Path) -> tuple[int, int, int]:
             copy_file(path, target, found)
             files += 1
         else:
-            raise CopyRefused(f"{path.relative_to(source)} is neither a folder nor a regular file, so the browser profiles were not copied")
+            raise CopyRefused(NOT_COPYABLE)
     for target, found in reversed(modes):
         os.chmod(target, stat.S_IMODE(found.st_mode))
         os.utime(target, ns=(found.st_atime_ns, found.st_mtime_ns))
