@@ -49,6 +49,7 @@ class Request:
     engine: Engine | None = None
     user: Principal | None = None
     params: Mapping[str, str] = field(default_factory=dict)
+    client: str = ""
 
 
 @dataclass(frozen=True)

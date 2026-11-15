@@ -67,7 +67,7 @@ def kill_worker_under_browser():
         seen = pids()
         if seen["browsers"] and len(seen["workers"]) == 1:
             os.kill(seen["workers"][0], signal.SIGKILL)
-            print(json.dumps({"worker": seen["workers"][0], "browsers": seen["browsers"]}))
+            print(json.dumps({"worker": seen["workers"][0], "browsers": seen["browsers"], "at": time.time()}))
             return 0
         time.sleep(0.05)
     return 1
@@ -110,7 +110,8 @@ def main(argv):
     from darkroom.storage.models import BrowserJob
     commands = {"scan": scan_with_control, "viewer": viewer, "kill-worker": kill_worker_under_browser,
                 "enqueue": lambda: database(lambda opened: enqueue(opened, argv[1])),
-                "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status)}
+                "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status),
+                "claimed-since": lambda: database(lambda opened: opened.query(BrowserJob).filter(BrowserJob.started >= float(argv[1])).count())}
     if argv:
         return commands[argv[0]]()
     print(json.dumps(pids()))

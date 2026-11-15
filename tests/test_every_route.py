@@ -21,6 +21,11 @@ REVIEW_AND_IMPORT_ROUTES = {
     "GET /api/review/{id}/thumb/{side}", "POST /api/review/{id}/resolve", "POST /api/review/{id}/undo", "GET /api/decisions",
     "POST /api/decisions/{id}/reverse", "GET /api/media", "POST /api/media/{id}/reassign",
 }
+SETUP_ROUTES = {
+    "GET /api/setup": "setup", "POST /api/setup/claim": "setup-claim", "POST /api/setup/address": "setup", "POST /api/setup/immich": "setup",
+    "POST /api/setup/alerts": "setup", "POST /api/setup/sign-in": "setup", "POST /api/setup/sign-in/test": "setup",
+}
+BROWSER_KINDS = {"session", "setup", "setup-claim"}
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})
 
 
@@ -32,7 +37,7 @@ class EveryRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.settings = settings_from(OIDC_ISSUER="https://id.example", OIDC_CLIENT_ID="darkroom", DARKROOM_PUBLIC_URL="https://darkroom.example",
-                                     DARKROOM_BROWSER_TOKEN=WORKER_TOKEN)
+                                     DARKROOM_BROWSER_TOKEN=WORKER_TOKEN, DARKROOM_WIZARD="1")
 
     def setUp(self):
         guarded = tuple(dataclasses.replace(route, handler=never_runs) for route in routes.ROUTES)
@@ -63,8 +68,12 @@ class EveryRouteTests(unittest.TestCase):
             with self.subTest(route=key):
                 self.assertEqual(found.get(key), "session")
 
+    def test_the_setup_routes_are_exactly_these_and_only_they_use_the_setup_kinds(self):
+        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES if route.auth in routes.SETUP_KINDS}
+        self.assertEqual(found, SETUP_ROUTES)
+
     def test_session_routes_answer_401_without_a_cookie(self):
-        found = [route for route in routes.ROUTES if route.auth == "session"]
+        found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS]
         self.assertTrue(found)
         for route in found:
             with self.subTest(route=f"{route.method} {route.path}"):
@@ -74,13 +83,13 @@ class EveryRouteTests(unittest.TestCase):
                 self.assertEqual(json.loads(body), {"error": "sign in required"})
 
     def test_a_stale_session_cookie_is_401(self):
-        for route in (route for route in routes.ROUTES if route.auth == "session" and route.method == "GET"):
+        for route in (route for route in routes.ROUTES if route.auth in BROWSER_KINDS and route.method == "GET"):
             with self.subTest(route=route.path):
                 status, _, _ = fetch(self.base, "GET", route.path, {"Cookie": "darkroom_session=not-a-real-token"})
                 self.assertEqual(status, 401)
 
     def test_state_changing_session_routes_refuse_cross_site_requests(self):
-        found = [route for route in routes.ROUTES if route.auth == "session" and route.method != "GET"]
+        found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS and route.method != "GET"]
         self.assertTrue(found)
         for route in found:
             for headers in CROSS_SITE_HEADERS:
@@ -96,7 +105,7 @@ class EveryRouteTests(unittest.TestCase):
                 self.assertEqual(status, 401)
 
     def test_the_worker_token_is_never_accepted_on_session_routes(self):
-        found = [route for route in routes.ROUTES if route.auth == "session"]
+        found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS]
         self.assertTrue(found)
         for route in found:
             for headers in ({"Authorization": f"Bearer {WORKER_TOKEN}"}, {"Cookie": f"darkroom_session={WORKER_TOKEN}"}):
@@ -120,7 +129,7 @@ class EveryRouteTests(unittest.TestCase):
     def test_every_kind_but_public_has_its_own_authenticator(self):
         from darkroom.server import handler
 
-        self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker"})
+        self.assertEqual(set(handler.AUTHENTICATORS), {"session", "worker", "setup", "setup-claim"})
 
     def test_the_retired_device_kind_opens_nothing(self):
         self.assertNotIn("device", routes.AUTH_KINDS)
@@ -159,7 +168,7 @@ class NoAuthModeTests(unittest.TestCase):
         self.base, _ = start_server(self, settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_BROWSER_TOKEN=WORKER_TOKEN))
 
     def test_every_session_route_refuses_a_host_name_it_does_not_answer_on(self):
-        found = [route for route in routes.ROUTES if route.auth == "session"]
+        found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS]
         self.assertTrue(found)
         for route in found:
             for headers in ({"Host": "rebound.example"}, {"Host": "rebound.example:8000", "Origin": "http://rebound.example:8000"}):
@@ -168,7 +177,7 @@ class NoAuthModeTests(unittest.TestCase):
                     self.assertEqual((status, json.loads(body)), (403, {"error": auth.HOST_REFUSED}))
 
     def test_every_state_changing_session_route_refuses_an_origin_it_does_not_answer_on(self):
-        found = [route for route in routes.ROUTES if route.auth == "session" and route.method != "GET"]
+        found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS and route.method != "GET"]
         self.assertTrue(found)
         for route in found:
             with self.subTest(route=f"{route.method} {route.path}"):
