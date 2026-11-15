@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import secrets
 import signal
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -11,16 +10,6 @@ from pathlib import Path
 from darkroom_init import plan, supervisor, syncthing
 
 TOKEN_BYTES = 32
-
-
-def display_ready(given: Mapping[str, str]) -> Callable[[], bool]:
-    def ready() -> bool:
-        try:
-            return subprocess.run(["xdpyinfo", "-display", plan.display_env(given)["DISPLAY"]], env=plan.display_env(given), stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-    return ready
 
 
 def app_ready(given: Mapping[str, str]) -> Callable[[], bool]:
@@ -36,7 +25,7 @@ def main(given: Mapping[str, str] | None = None) -> int:
     if plan.syncthing_on(given):
         held["syncthing"] = secrets.token_urlsafe(TOKEN_BYTES)
     ready = syncthing.key_rotated(Path(plan.syncthing_home(given)), held)
-    running = supervisor.Supervisor(plan.specs(given, app_ready(given), display_ready(given), ready), held, adopt_orphans=adopt)
+    running = supervisor.Supervisor(plan.specs(given, app_ready(given), supervisor.display_ready(given), ready), held, adopt_orphans=adopt)
     signal.signal(signal.SIGTERM, running.stop)
     signal.signal(signal.SIGINT, running.stop)
     supervisor.log("init started", orphans_adopted=int(adopt))

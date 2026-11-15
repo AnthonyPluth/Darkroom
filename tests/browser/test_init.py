@@ -52,7 +52,7 @@ def handed(value):
 
 class PlanTests(unittest.TestCase):
     def test_the_app_gets_every_setting_it_reads_except_the_browser_token(self):
-        read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text()))
+        read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text())) | set(app_config.REMOVED_ALERT_VARIABLES)
         self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_SYNCTHING_KEY_FD",
                                                          "DARKROOM_ONE_CONTAINER"})
         env = plan.app_env(GIVEN)
@@ -202,6 +202,20 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(len({entry["pid"] for entry in seen}) >= 3 and all(arg.isdigit() for entry in seen for arg in entry["argv"]))
         self.assertEqual({len(entry["fds"]) for entry in seen}, {4}, seen)
 
+    def test_only_the_pipe_variables_get_the_descriptor_and_a_secret_from_env_is_passed_through_untouched(self):
+        script = f"""
+            import json, os
+            fd = int(os.environ["DARKROOM_BROWSER_TOKEN_FD"])
+            secret = os.read(fd, 4096).decode(); os.close(fd)
+            with open({str(self.folder / 'env')!r}, "w") as out:
+                json.dump({{"read": len(secret), "key": os.environ["DARKROOM_SECRET_KEY"], "other": os.environ["OIDC_CLIENT_SECRET"]}}, out)
+            import time; time.sleep(60)
+        """
+        kept = "key-canary-{token_fd}-and-{viewer_fd}"
+        env = {plan.TOKEN_FD: plan.PIPE["token"], "DARKROOM_SECRET_KEY": kept, "OIDC_CLIENT_SECRET": "{token_fd}"}
+        self.run_for(1.0, [child("app", script, env=env, secrets=("token", "viewer"))])
+        self.assertEqual(json.loads((self.folder / "env").read_text()), {"read": len(TOKEN), "key": kept, "other": "{token_fd}"})
+
     def test_the_next_child_waits_until_the_one_before_is_ready(self):
         marker = self.folder / "ready"
         first = child("app", f"import time, pathlib; time.sleep(0.3); pathlib.Path({str(marker)!r}).touch(); time.sleep(60)", ready=marker.exists)
@@ -293,8 +307,18 @@ class InitMainTests(unittest.TestCase):
         self.assertTrue(all(len(value) == 43 and app_config.browser_token_usable(value) for value in held.values()))
         self.assertEqual([call.args for call in prctl.call_args_list], [(supervisor.PR_SET_DUMPABLE, 0), (supervisor.PR_SET_CHILD_SUBREAPER, 1)])
         with mock.patch.object(supervisor, "listening", return_value=False) as listening:
-            self.assertFalse(init_main.display_ready({"DISPLAY": ":12345"})() or init_main.app_ready({"DARKROOM_PORT": "nope"})())
+            self.assertFalse(supervisor.display_ready({"DISPLAY": ":12345"})() or init_main.app_ready({"DARKROOM_PORT": "nope"})())
         listening.assert_called_once_with(8000)
+
+    def test_the_display_is_ready_when_xdpyinfo_answers_on_its_display_with_the_display_stack_environment(self):
+        with mock.patch.object(supervisor.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)) as ran:
+            self.assertTrue(supervisor.display_ready(GIVEN)())
+        self.assertEqual(ran.call_args.args, (["xdpyinfo", "-display", ":99"],))
+        self.assertEqual((ran.call_args.kwargs["env"], ran.call_args.kwargs["timeout"]), (plan.display_env(GIVEN), 5))
+        for outcome in (types.SimpleNamespace(returncode=1), subprocess.TimeoutExpired("xdpyinfo", 5), FileNotFoundError()):
+            with self.subTest(outcome=outcome), mock.patch.object(supervisor.subprocess, "run", side_effect=[outcome] if isinstance(outcome, BaseException) else None,
+                                                                   return_value=outcome):
+                self.assertFalse(supervisor.display_ready(GIVEN)())
 
 
 class TokenOnPipeTests(unittest.TestCase):

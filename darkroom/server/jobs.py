@@ -255,7 +255,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         with db.session(engine) as opened:
             if share_stopped(opened, at):
                 return
-            if scheduler.placed_copies.due(opened):
+            if scheduler.placed_copies.due(opened, photos, at):
                 checked = scheduler.placed_copies.run(opened, photos, at)
                 monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,
                                unaccounted=sum(checked.unaccounted.values()), held=len(scheduler.placed_copies.held_pixels(opened)))

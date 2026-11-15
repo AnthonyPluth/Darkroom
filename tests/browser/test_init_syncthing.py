@@ -257,8 +257,8 @@ class SupervisedTests(Folders):
         fake = FakeSyncthing(self, OLD, OWN, str(self.socket))
         held = {"token": "t" * 43, "viewer": "v" * 43, "syncthing": NEW}
         out = self.data / "app-got"
-        app = plan.Spec("app", (sys.executable, "-c", f"import os; open({str(out)!r}, 'w').write(os.read(int(os.environ['FD']), 100).decode())"),
-                        {"PATH": "/usr/bin:/bin", "FD": plan.PIPE["syncthing"]}, secrets=("syncthing",))
+        app = plan.Spec("app", (sys.executable, "-c", f"import os; open({str(out)!r}, 'w').write(os.read(int(os.environ['DARKROOM_SYNCTHING_KEY_FD']), 100).decode())"),
+                        {"PATH": "/usr/bin:/bin", plan.SYNCTHING_KEY_FD: plan.PIPE["syncthing"]}, secrets=("syncthing",))
         st = plan.Spec("syncthing", (sys.executable, "-c", "import time; time.sleep(30)"), {"PATH": "/usr/bin:/bin"},
                        ready=syncthing.key_rotated(self.home, held, self.socket))
         running = supervisor.Supervisor([st, app], held, base=5.0, stop_seconds=1.0, tick=0.02)
@@ -283,8 +283,8 @@ class RecoveryTests(Folders):
 
     def supervise(self, syncthing_script, during):
         out = self.data / "app-got"
-        app = plan.Spec("app", (sys.executable, "-c", f"import os, time; open({str(out)!r}, 'w').write(os.read(int(os.environ['FD']), 100).decode()); time.sleep(30)"),
-                        {"PATH": "/usr/bin:/bin", "FD": plan.PIPE["syncthing"]}, secrets=("syncthing",))
+        app = plan.Spec("app", (sys.executable, "-c", f"import os, time; open({str(out)!r}, 'w').write(os.read(int(os.environ['DARKROOM_SYNCTHING_KEY_FD']), 100).decode()); time.sleep(30)"),
+                        {"PATH": "/usr/bin:/bin", plan.SYNCTHING_KEY_FD: plan.PIPE["syncthing"]}, secrets=("syncthing",))
         st = plan.Spec("syncthing", (sys.executable, "-c", syncthing_script), {"PATH": "/usr/bin:/bin"}, ready=syncthing.key_rotated(self.home, self.held, self.socket),
                        recheck=True)
         running = supervisor.Supervisor([st, app], self.held, base=0.1, cap=0.2, stop_seconds=1.0, ready_seconds=0.3, tick=0.02, recheck_seconds=0.05)
@@ -356,6 +356,7 @@ class PlanAndMainTests(unittest.TestCase):
         self.assertIs(specs[0].ready, bool)
         self.assertEqual([spec.name for spec in specs if spec.recheck], ["syncthing"])
         self.assertEqual(specs[1].env[plan.SYNCTHING_KEY_FD], plan.PIPE["syncthing"])
+        self.assertIn(plan.SYNCTHING_KEY_FD, plan.FD_VARIABLES)
         self.assertEqual(specs[1].env["DARKROOM_SYNCTHING"], "1")
         self.assertFalse({plan.SYNCTHING_KEY_FD} & {name for spec in specs[2:] for name in spec.env})
         self.assertNotIn(plan.SYNCTHING_KEY_FD, plan.app_env(GIVEN | {"DARKROOM_SYNCTHING": "0"}))

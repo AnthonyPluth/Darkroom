@@ -16,7 +16,7 @@ MAX_REPLY = 4 * 1024 * 1024
 SEND_ONLY = "sendonly"
 ON_SOCKET = "http://localhost"
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-SECRET_FIELDS = frozenset({"apiKey", "password"})
+SECRET_FIELDS = frozenset({"apiKey", "password", "encryptionPassword"})
 FOLDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 ROUTES = frozenset({
     ("GET", "/rest/system/status"), ("GET", "/rest/system/version"), ("GET", "/rest/config"),

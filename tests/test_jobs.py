@@ -368,6 +368,7 @@ class BuildTests(unittest.TestCase):
         from unittest import mock
 
         from darkroom import monitoring
+        from darkroom.domain import pixel_check
         from darkroom.storage.models import Pixel, PixelPerson
         from tests.privacy import no_leaks
 
@@ -392,6 +393,8 @@ class BuildTests(unittest.TestCase):
             with no_leaks(self, canary, database=engine), mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
                 scheduler.run_one("pixels.tend", 5.0)
                 scheduler.run_one("pixels.tend", 6.0)
+                self.assertEqual([call.args[0] for call in log.call_args_list].count("placed copies checked"), 1)
+                scheduler.run_one("pixels.tend", 5.0 + pixel_check.RECHECK_SECONDS)
             log.assert_any_call("placed copies checked", checked=0, intact=0, requeued=0, adopted=0, unaccounted=1, held=1)
             self.assertEqual([call.args[0] for call in log.call_args_list].count("placed copies checked"), 2)
             self.assertEqual((root / f"_pixels/{pixel.id}/jo/{canary}").read_bytes(), b"made up")
