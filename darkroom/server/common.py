@@ -4,24 +4,29 @@ import base64
 import hashlib
 import html
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from io import BufferedIOBase
 from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
 
-from darkroom.config import Settings, usable_viewer_url
+from darkroom.config import Settings, usable_viewer_url, viewer_link
 from darkroom.dates import utc_now
+from darkroom.tls import Stream
 
 CSP = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
 
 
-def viewer_url(vnc_url: str) -> str | None:
-    return usable_viewer_url(vnc_url)
+VIEWER_CSP = CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+
+
+def viewer_url(settings: Settings) -> str | None:
+    return usable_viewer_url(viewer_link(settings) or "")
 
 
 def app_csp(vnc_url: str = "") -> str:
-    viewer = viewer_url(vnc_url)
+    viewer = usable_viewer_url(vnc_url)
     if viewer is None:
         return CSP
     parts = urlsplit(viewer)
@@ -49,6 +54,7 @@ class Request:
     engine: Engine | None = None
     user: Principal | None = None
     params: Mapping[str, str] = field(default_factory=dict)
+    target: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,7 @@ class Response:
     content_type: str = "application/json"
     headers: Mapping[str, str] = field(default_factory=dict)
     cookies: tuple[str, ...] = ()
+    takeover: Callable[[Stream, BufferedIOBase], None] | None = None
 
 
 def header(request: Request, name: str) -> str | None:
@@ -66,6 +73,10 @@ def header(request: Request, name: str) -> str | None:
         if key.lower() == wanted:
             return value
     return None
+
+
+def asks_for_websocket(request: Request) -> bool:
+    return (header(request, "Upgrade") or "").strip().lower() == "websocket"
 
 
 def engine_of(request: Request) -> Engine:

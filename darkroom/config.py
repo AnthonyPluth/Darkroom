@@ -36,15 +36,27 @@ def read_handed(fd: int) -> str:
         return ""
 
 
+def handed_on_pipe(raw: str) -> str:
+    fd = whole_number(raw)
+    if fd >= 3 and fd not in handed_tokens:
+        handed_tokens[fd] = read_handed(fd)
+    return handed_tokens.get(fd, "")
+
+
 def browser_token() -> str:
     raw = env("DARKROOM_BROWSER_TOKEN_FD")
-    fd = whole_number(raw)
-    if raw and fd >= 3 and fd not in handed_tokens:
-        handed_tokens[fd] = read_handed(fd)
-    return handed_tokens.get(fd, "") if raw else env("DARKROOM_BROWSER_TOKEN")
+    return handed_on_pipe(raw) if raw else env("DARKROOM_BROWSER_TOKEN")
+
+
+def viewer_secret() -> str:
+    raw = env("DARKROOM_VIEWER_SECRET_FD")
+    return handed_on_pipe(raw) if raw else ""
 
 
 KeyOrigin = Literal["environment", "file", "none"]
+VIEWER_FILES = Path("/usr/share/novnc")
+VIEWER_PORT = 6080
+VIEWER_USER = "darkroom"
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,8 @@ class Settings:
     alert_email_to: str = ""
     allowed_hosts: tuple[str, ...] = ()
     key_origin: KeyOrigin = "none"
+    viewer_secret: str = ""
+    viewer_files: Path = VIEWER_FILES
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -127,6 +141,7 @@ def load() -> Settings:
         alert_email_to=env("ALERT_EMAIL_TO"),
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
         key_origin=key_origin,
+        viewer_secret=viewer_secret(),
     )
 
 
@@ -296,6 +311,18 @@ def usable_viewer_url(vnc_url: str) -> str | None:
     if parts.scheme in ("http", "https") and parts.netloc and not parts.username and not parts.password:
         return vnc_url
     return None
+
+
+def relay_viewer_url(settings: Settings) -> str | None:
+    if not browser_token_usable(settings.viewer_secret) or usable_viewer_url(settings.public_url) is None:
+        return None
+    prefix = urlsplit(settings.public_url).path.strip("/")
+    socket_path = f"{prefix}/viewer/websockify" if prefix else "viewer/websockify"
+    return f"{settings.public_url}/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000&path={socket_path}"
+
+
+def viewer_link(settings: Settings) -> str | None:
+    return settings.vnc_url if settings.vnc_url else relay_viewer_url(settings)
 
 
 def vnc_url_problems(settings: Settings) -> list[str]:

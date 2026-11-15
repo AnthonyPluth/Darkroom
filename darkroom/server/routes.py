@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from darkroom.server import auth
+from darkroom.server import auth, viewer
 from darkroom.server.api import accounts, browser, browser_internal, exports, imports, people, pixels, review, status
 from darkroom.server.common import Request, Response
 
@@ -48,6 +48,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/api/browser/view", browser.view, "session"),
     Route("GET", "/api/browser/failures/{id}/screenshot.png", browser.screenshot, "session"),
     Route("GET", "/api/browser/failures/{id}/page.html", browser.page_snapshot, "session"),
+    Route("GET", "/viewer/{path*}", viewer.relay, "session"),
     Route("GET", "/api/exports", exports.list_exports, "session"),
     Route("POST", "/api/exports/check-now", exports.check_now, "session"),
     Route("GET", "/api/exports/{id}", exports.export_one, "session"),
@@ -76,6 +77,9 @@ ROUTES: tuple[Route, ...] = (
 
 def segments_match(pattern: str, path: str) -> dict[str, str] | None:
     wanted, given = pattern.split("/"), path.split("/")
+    if wanted[-1].startswith("{") and wanted[-1].endswith("*}") and len(given) >= len(wanted):
+        given = [*given[:len(wanted) - 1], "/".join(given[len(wanted) - 1:])]
+        wanted = [*wanted[:-1], wanted[-1][:-2] + "}"]
     if len(wanted) != len(given):
         return None
     params: dict[str, str] = {}

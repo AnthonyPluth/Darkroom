@@ -21,6 +21,8 @@ REVIEW_AND_IMPORT_ROUTES = {
     "GET /api/review/{id}/thumb/{side}", "POST /api/review/{id}/resolve", "POST /api/review/{id}/undo", "GET /api/decisions",
     "POST /api/decisions/{id}/reverse", "GET /api/media", "POST /api/media/{id}/reassign",
 }
+VIEWER_ROUTES = {"GET /viewer/{path*}"}
+UPGRADE = {"Upgrade": "websocket", "Connection": "Upgrade", "Sec-WebSocket-Key": "ZXZlcnktcm91dGUta2V5MQ==", "Sec-WebSocket-Version": "13"}
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})
 
 
@@ -62,6 +64,24 @@ class EveryRouteTests(unittest.TestCase):
         for key in REVIEW_AND_IMPORT_ROUTES:
             with self.subTest(route=key):
                 self.assertEqual(found.get(key), "session")
+
+    def test_the_remote_browser_view_is_a_session_route(self):
+        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
+        for key in VIEWER_ROUTES:
+            with self.subTest(route=key):
+                self.assertEqual(found.get(key), "session")
+
+    def test_a_websocket_upgrade_on_a_session_route_needs_the_apps_own_origin(self):
+        found = [route for route in routes.ROUTES if route.auth == "session" and route.method == "GET"]
+        self.assertTrue(found)
+        for route in found:
+            for headers in (*CROSS_SITE_HEADERS, {}):
+                with self.subTest(route=route.path, headers=headers):
+                    sent = {**UPGRADE, "Cookie": "darkroom_session=some-session-token", **headers}
+                    if "Sec-Fetch-Site" in headers:
+                        sent["Origin"] = "https://darkroom.example"
+                    status, _, body = fetch(self.base, "GET", route.path, sent)
+                    self.assertEqual((status, json.loads(body)), (403, {"error": "cross-site requests are refused"}))
 
     def test_session_routes_answer_401_without_a_cookie(self):
         found = [route for route in routes.ROUTES if route.auth == "session"]

@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 from darkroom import monitoring
 from darkroom.config import Settings, no_auth_allowed
 from darkroom.server import auth, routes, static
-from darkroom.server.common import CSP, Principal, Request, Response, error_response
+from darkroom.server.common import CSP, Principal, Request, Response, asks_for_websocket, error_response, header, viewer_url
 from darkroom.storage import db
 
 Authenticator = Callable[[Request], Principal | None]
@@ -30,7 +30,7 @@ def dispatch(request: Request) -> Response:
     found = routes.match(request.method, request.path)
     if found is None:
         if request.method == "GET" and not request.path.startswith(("/api/", "/internal/")):
-            return static.serve(request.path, vnc_url=request.settings.vnc_url)
+            return static.serve(request.path, vnc_url=viewer_url(request.settings) or "")
         return error_response("not found", 404)
     route, params = found
     request = replace(request, params=params)
@@ -38,6 +38,8 @@ def dispatch(request: Request) -> Response:
         monitoring.log("request refused without sign-in", reason="host not allowed")
         return error_response(auth.HOST_REFUSED, 403)
     if route.auth == "session" and request.method != "GET" and not auth.same_origin(request):
+        return error_response("cross-site requests are refused", 403)
+    if route.auth == "session" and asks_for_websocket(request) and (header(request, "Origin") is None or not auth.same_origin(request)):
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":
         return route.handler(request)
@@ -95,10 +97,14 @@ class Handler(BaseHTTPRequestHandler):
             self.reject(400 if length < 0 else 413)
             return
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
-                          self.rfile.read(length) if length else b"", self.settings, self.engine)
+                          self.rfile.read(length) if length else b"", self.settings, self.engine, target=self.path)
         self.answer(safe_dispatch(request))
 
     def answer(self, response: Response) -> None:
+        if response.takeover is not None:
+            self.close_connection = True
+            response.takeover(self.connection, self.rfile)
+            return
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Content-Length", str(len(response.body)))

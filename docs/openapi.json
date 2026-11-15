@@ -3808,6 +3808,20 @@
         },
         "x-auth": "worker"
       }
+    },
+    "/viewer/{path*}": {
+      "get": {
+        "operationId": "relay",
+        "responses": {
+          "2XX": {
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
     }
   }
 }

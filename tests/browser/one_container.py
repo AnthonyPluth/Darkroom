@@ -1,8 +1,10 @@
+import base64
 import json
 import os
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -77,6 +79,34 @@ def viewer():
     return 0 if source.isdigit() and status == 401 and "127.0.0.1:6080" in args else 1
 
 
+def relay():
+    from darkroom import config, oidc
+    from darkroom.storage import db
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    with db.session(engine, writing=True) as opened:
+        oidc.remember_user(opened, oidc.Identity("relay-probe", "probe@example.test", "Probe", ("parents",), True), time.time())
+        session = oidc.new_session(opened, settings, "relay-probe", time.time())
+    engine.dispose()
+    cookie = f"darkroom_session={session}"
+    with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8000/viewer/vnc.html", headers={"Cookie": cookie}), timeout=10) as page:
+        status, policy = page.status, page.headers.get("Content-Security-Policy", "")
+    key = base64.b64encode(secrets.token_bytes(16)).decode()
+    with socket.create_connection(("127.0.0.1", 8000), timeout=10) as stream:
+        stream.sendall((f"GET /viewer/websockify HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nOrigin: http://127.0.0.1:8000\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nCookie: {cookie}\r\n\r\n").encode())
+        reply = b""
+        while b"\r\n\r\n" not in reply or len(reply.split(b"\r\n\r\n", 1)[1]) < 14:
+            chunk = stream.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+    head, _, frames = reply.partition(b"\r\n\r\n")
+    found = {"page": status, "framed_by_self": "frame-ancestors 'self'" in policy, "upgrade": head.split(b"\r\n")[0].decode(), "first_frame": frames[2:14].decode("latin-1")}
+    print(json.dumps(found))
+    return 0 if status == 200 and found["framed_by_self"] and found["upgrade"].startswith("HTTP/1.1 101") and found["first_frame"].startswith("RFB 003.") else 1
+
+
 def database(work):
     from darkroom import config
     from darkroom.storage import db
@@ -101,7 +131,7 @@ def enqueue(opened, kind):
 
 def main(argv):
     from darkroom.storage.models import BrowserJob
-    commands = {"scan": scan_with_control, "viewer": viewer, "kill-worker": kill_worker_under_browser,
+    commands = {"scan": scan_with_control, "viewer": viewer, "relay": relay, "kill-worker": kill_worker_under_browser,
                 "enqueue": lambda: database(lambda opened: enqueue(opened, argv[1])),
                 "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status)}
     if argv:

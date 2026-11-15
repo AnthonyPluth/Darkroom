@@ -26,8 +26,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      - name: Install exiftool
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
+      - name: Install exiftool and noVNC
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime novnc
       - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
       - name: Tests (parallel) with coverage
         run: poetry run unittest-parallel -t . -s tests -j 4 --coverage --coverage-rcfile pyproject.toml
@@ -65,8 +65,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      - name: Install exiftool
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime
+      - name: Install exiftool and noVNC
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime novnc
       - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
       - name: Tests against PostgreSQL (each test makes its own database)
         env:

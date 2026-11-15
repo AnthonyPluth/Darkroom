@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import socket
 import ssl
 import urllib.request
 from collections.abc import Mapping
@@ -7,6 +9,8 @@ from http.client import HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT = 15.0
+LOOPBACK = "127.0.0.1"
+Stream = socket.socket
 
 
 class Refused(Exception):
@@ -39,3 +43,12 @@ def urlopen(url: str, *, data: bytes | None = None, headers: Mapping[str, str] |
     assert isinstance(response, HTTPResponse)
     return response
 
+
+def loopback(port: int, timeout: float) -> Stream:
+    return socket.create_connection((LOOPBACK, port), timeout=timeout)
+
+
+def hang_up(stream: Stream) -> None:
+    with contextlib.suppress(OSError):
+        stream.shutdown(socket.SHUT_RDWR)
+    stream.close()
