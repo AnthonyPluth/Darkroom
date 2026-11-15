@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import alerts, browser_jobs, events, exports, renewal
 from darkroom.storage import db
-from darkroom.storage.paths import BrowserState, Photos
+from darkroom.storage.paths import STALE_PROFILE, BrowserState, Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, known_contents
 
 CONFIRMING_TIERS = (1, 2)
@@ -216,6 +216,6 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float, browser
         alert.closed = now
     photos.retire_account_downloads(str(account_id))
     if browser is not None and browser.root != photos.browser_state().root:
-        photos.retire_browser_account(str(account_id))
+        photos.browser_state().retire_account(str(account_id), STALE_PROFILE)
     (photos.browser_state() if browser is None else browser).retire_account(str(account_id))
     events.record(opened, now, "account_deleted", str(account_id))
