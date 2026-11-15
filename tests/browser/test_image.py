@@ -253,7 +253,7 @@ class SingleImageTests(unittest.TestCase):
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
-        for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:latest", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
+        for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:${{DARKROOM_TAG:-latest}}", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
                      "- seccomp:./deploy/browser/seccomp.json", '- "127.0.0.1:8000:8000"', "- ./data:/data"):
             self.assertIn(line, single)
         self.assertNotIn("working_dir:", single)
@@ -267,12 +267,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("docker compose --profile single up -d darkroom-single", compose[:compose.index("  darkroom-single:")])
         app = compose_service("darkroom")
         self.assertNotIn("profiles:", app, "a plain `docker compose up -d` still starts the fallback's app, as before")
-        self.assertIn("image: ghcr.io/anthonypluth/darkroom:latest", app)
+        self.assertIn("image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}", app)
         for name in ("DARKROOM_BROWSER_TOKEN", "VNC_URL"):
             self.assertIn(f"{name}: ${{{name}:-}}", app)
         browser = compose_service("darkroom-browser")
         self.assertIn("profiles: [browser]", browser)
-        self.assertIn("image: ghcr.io/anthonypluth/darkroom-browser:latest", browser)
+        self.assertIn("image: ghcr.io/anthonypluth/darkroom-browser:${DARKROOM_TAG:-latest}", browser)
         self.assertIn("DARKROOM_URL: http://darkroom:8000", browser)
 
     def test_ci_validates_both_layouts_and_publishes_all_three_images(self):
@@ -294,6 +294,24 @@ class SingleImageTests(unittest.TestCase):
 
 def template():
     return ElementTree.parse(ROOT / "deploy/unraid/darkroom.xml").getroot()
+
+
+class SecurityScanTests(unittest.TestCase):
+    def test_trivy_scans_the_one_container_image_as_it_scans_the_service_image(self):
+        workflow = (ROOT / ".github/workflows/security.yml").read_text()
+        jobs = re.split(r"\n  (?=[a-z][a-z-]*:\n)", workflow[workflow.index("\njobs:\n"):])[1:]
+        calls = [job for job in jobs if "uses: AnthonyPluth/fleet/.github/workflows/security.yml@" in job]
+        self.assertEqual(len(calls), 2)
+        service, single = calls
+        self.assertNotIn("dockerfile:", service)
+        self.assertIn("dockerfile: Dockerfile.single", single)
+        pins = {re.search(r"security\.yml@([0-9a-f]{40})", call).group(1) for call in calls}
+        self.assertEqual(len(pins), 1, "both calls run the same fleet release")
+        image_paths = re.search(r"^      image-paths: (\S+)$", single, re.M).group(1)
+        for changed in ("Dockerfile.single", "deploy/single/requirements.txt", "poetry.lock", "pyproject.toml", ".dockerignore"):
+            self.assertRegex(changed, image_paths)
+        self.assertIn("      sarif-upload: false\n", single)
+        self.assertEqual(re.search(r"^      code-paths: (\S+)$", single, re.M).group(1), "^$")
 
 
 class UnraidTemplateTests(unittest.TestCase):
@@ -337,6 +355,43 @@ class UnraidTemplateTests(unittest.TestCase):
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}
         self.assertEqual(masked, {"OIDC_CLIENT_SECRET", "IMMICH_ADMIN_KEY", "DARKROOM_SECRET_KEY"})
         self.assertFalse([config.get("Target") for config in configs if (config.text or "") != (config.get("Default") or "")])
+
+    def test_the_deploy_page_pairs_the_image_with_the_seccomp_profile_of_one_release(self):
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        self.assertIn("printf 'DARKROOM_TAG=v1.2.3\\nPHOTOS_ROOT=/path/to/the/photo/share\\n' >> .env", page)
+        self.assertIn("git checkout v1.2.3", page)
+        self.assertNotIn("export DARKROOM_TAG", page, "a tag exported in one shell is gone for the next command: it goes in .env")
+        move = page[page.index("## Moving from the two containers"):page.index("## Going back to the two containers")]
+        steps = re.findall(r"(?m)^(\d+)\. ", move)
+        self.assertEqual(steps, [str(number) for number in range(1, len(steps) + 1)])
+        first = move[move.index("1. "):move.index("2. ")]
+        self.assertIn("`git checkout v1.2.3`", first)
+        self.assertIn("`DARKROOM_TAG=v1.2.3` in `.env`", first)
+        self.assertLess(move.index("DARKROOM_TAG=v1.2.3"), move.index("cp .env .env.two-containers"))
+        self.assertLess(move.index("cp .env .env.two-containers"), move.index("copy-browser-state"))
+        self.assertIn("Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest`", page)
+        self.assertRegex((ROOT / ".env.example").read_text(), r"(?m)^# DARKROOM_TAG=$")
+        self.assertIn("set Repository to that release's tag", template().findtext("Overview"))
+
+    def test_every_service_takes_its_image_tag_from_darkroom_tag_so_the_fallback_matches_the_release(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        images = re.findall(r"^    image: (\S+)$", compose, re.M)
+        self.assertEqual(images, [f"ghcr.io/anthonypluth/{name}:${{DARKROOM_TAG:-latest}}" for name in ("darkroom-single", "darkroom", "darkroom-browser")])
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        back = page[page.index("## Going back to the two containers"):page.index("## Backup and restore")]
+        self.assertIn("check that its `DARKROOM_TAG` line names the one container's release, then `docker compose --profile browser pull && docker compose --profile browser up -d`", back)
+        later = back[back.index("**Afterwards**"):]
+        self.assertLess(later.index("cp .env.two-containers .env"), later.index("grep '^DARKROOM_TAG=' .env"))
+        self.assertLess(later.index("grep '^DARKROOM_TAG=' .env"), later.index("docker compose --profile browser pull"))
+        self.assertLess(later.index("docker compose --profile browser pull"), later.index("docker compose --profile browser up -d"))
+        self.assertIn("ghcr.io/anthonypluth/darkroom-browser:v1.2.3", back)
+
+    def test_the_deploy_page_keeps_the_first_run_setup_to_the_runbooks_conditions(self):
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        self.assertNotIn("LAN address only", page)
+        self.assertIn("every address the server has", page)
+        self.assertIn("unless `DARKROOM_WIZARD=1` is set", page)
+        self.assertNotIn("DARKROOM_WIZARD", {config.get("Target") for config in template().iter("Config")})
 
     def test_the_deploy_page_names_the_templates_seccomp_path_and_the_compose_command(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
