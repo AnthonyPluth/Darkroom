@@ -36,13 +36,20 @@ class ConfigTests(unittest.TestCase):
                 self.assertIn("DARKROOM_BROWSER_ROOT must be an absolute path: browser", config.problems(config.load()))
 
     def test_a_browser_root_inside_the_photo_share_is_a_problem_except_its_browser_folder(self):
-        inside = "DARKROOM_BROWSER_ROOT must not be inside DARKROOM_PHOTOS_ROOT, except its _browser folder"
-        with tempfile.TemporaryDirectory() as share, tempfile.TemporaryDirectory() as appdata:
-            for root, refused in ((share, True), (f"{share}/jo/originals", True), (f"{share}/_browser/x", True), (f"{share}/_inbox", True),
+        inside = "DARKROOM_BROWSER_ROOT must not be DARKROOM_PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it"
+        with tempfile.TemporaryDirectory() as top, tempfile.TemporaryDirectory() as appdata:
+            share = f"{top}/photos"
+            os.mkdir(share)
+            os.symlink(share, f"{appdata}/linked-share")
+            os.symlink(f"{share}/jo", f"{appdata}/linked-person")
+            for root, refused in ((share, True), (f"{share}/jo/originals", True), (f"{share}/_browser/x", True), (f"{share}/_inbox", True), (f"{share}/1", True),
+                                  (top, True), ("/", True), (f"{appdata}/linked-share", True), (f"{appdata}/linked-person", True),
                                   (f"{share}/_browser", False), (f"{appdata}/browser", False)):
                 values = {"DARKROOM_PHOTOS_ROOT": share, "DARKROOM_DATA_DIR": appdata, "DARKROOM_BROWSER_ROOT": root}
                 with self.subTest(root=root), mock.patch.dict(os.environ, values, clear=True):
-                    self.assertEqual(inside in config.problems(config.load()), refused)
+                    settings = config.load()
+                    self.assertEqual(inside in config.problems(settings), refused)
+                    self.assertEqual(inside in config.refuses_to_start(settings), refused)
 
     def test_lists_are_split_and_trimmed(self):
         with mock.patch.dict(os.environ, {"OIDC_ALLOWED_GROUPS": " a , b ,,c"}, clear=True):

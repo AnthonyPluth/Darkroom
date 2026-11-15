@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from darkroom.domain import browser_jobs, dedupe, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
-from tests.shared import fetch
+from tests.shared import fetch, start_server
 
 TOKEN = "accounts-jobs-worker-token-canary-0123456789abcdef"
 
@@ -520,6 +521,24 @@ class TwoRootsTests(ApiCase):
         self.assertEqual(status, 500)
         self.assertIn("is a link", reply["error"])
         self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
+        self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
+
+
+class UnsafeBrowserRootTests(ApiCase):
+    def setUp(self):
+        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN}
+        super().setUp()
+
+    def test_a_server_whose_browser_root_is_the_photo_share_never_deletes_an_original(self):
+        self.base, self.settings = start_server(self, dataclasses.replace(self.settings, browser_root=self.photos, public_url=""), self.engine)
+        account = self.account(self.person()["id"])["id"]
+        original = self.photos / str(account) / "originals" / "a.jpg"
+        original.parent.mkdir(parents=True)
+        original.write_bytes(b"an original")
+        status, reply = self.call("DELETE", f"/api/accounts/{account}")
+        self.assertEqual(status, 500)
+        self.assertIn("so the account was not deleted", reply["error"])
+        self.assertEqual(original.read_bytes(), b"an original")
         self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 
 

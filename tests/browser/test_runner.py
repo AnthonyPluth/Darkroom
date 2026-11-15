@@ -456,10 +456,23 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
             self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
-            for root, refused in ((Path(folder), True), (Path(folder) / "jo" / "originals", True), (Path(folder) / "_browser", False)):
+            share = Path(folder) / "photos"
+            share.mkdir()
+            (Path(folder) / "linked").symlink_to(share)
+            for root, refused in ((share, True), (share / "jo" / "originals", True), (Path(folder), True), (Path(folder) / "linked", True), (share / "_browser", False)):
                 with self.subTest(root=str(root)):
-                    found = config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", root))
-                    self.assertEqual(found, ["BROWSER_ROOT must not be inside PHOTOS_ROOT, except its _browser folder"] if refused else [])
+                    found = config.problems(config.Settings("http://darkroom:8000", TOKEN, share, ":99", 15.0, "w", root))
+                    self.assertEqual(found, ["BROWSER_ROOT must not be PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it"] if refused else [])
+
+    def test_the_worker_refuses_to_start_with_a_browser_root_that_is_the_photo_share(self):
+        from unittest import mock
+
+        from darkroom_browser import __main__ as entry
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": folder, "BROWSER_ROOT": folder}, clear=True), \
+                mock.patch.object(runner.Runner, "run_forever") as loop, no_leaks(self, TOKEN):
+            self.assertEqual(entry.main(), 1)
+        loop.assert_not_called()
 
     def test_main_opens_browsers_with_the_working_root_for_downloads(self):
         from unittest import mock

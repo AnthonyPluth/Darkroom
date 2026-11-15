@@ -85,13 +85,23 @@ class NotAPixelCopy(ValueError):
     pass
 
 
+UNSAFE_BROWSER_ROOT = "the browser's folder is the photo folder, inside it or holds it, so nothing was removed"
+
+
 class BrowserState:
-    def __init__(self, root: Path, within: Path | None = None) -> None:
+    def __init__(self, root: Path, share: Path, within: Path | None = None) -> None:
         self.given = root
         self.root = root.resolve()
+        self.share = share.resolve()
         self.within = within.resolve() if within is not None else self.root
 
+    def unsafe(self) -> bool:
+        root, share = self.given.resolve(), self.share
+        return share.is_relative_to(root) or (root.is_relative_to(share) and root != share / BROWSER)
+
     def inside(self, *parts: str) -> Path:
+        if self.unsafe():
+            raise OutsideRoot(UNSAFE_BROWSER_ROOT)
         path = self.root.joinpath(*parts).resolve()
         if not path.is_relative_to(self.root) or not path.is_relative_to(self.within) or path == self.root:
             raise OutsideRoot(f"{'/'.join(parts)} is outside the browser's folder")
@@ -110,6 +120,8 @@ class BrowserState:
 
     def retire_account(self, account: str) -> None:
         name = self.name_part(account)
+        if self.unsafe():
+            raise ProfileNotRemoved(UNSAFE_BROWSER_ROOT)
         target = self.given / name
         if self.given.is_symlink() or target.is_symlink():
             raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
@@ -124,7 +136,7 @@ class BrowserState:
 
 
 def browser_state(photos_root: Path, browser_root: Path | None) -> BrowserState:
-    return Photos(photos_root).browser_state() if browser_root is None else BrowserState(browser_root)
+    return Photos(photos_root).browser_state() if browser_root is None else BrowserState(browser_root, photos_root)
 
 
 class Photos:
@@ -209,7 +221,7 @@ class Photos:
         return expected
 
     def browser_state(self) -> BrowserState:
-        return BrowserState(self.root / BROWSER, within=self.root)
+        return BrowserState(self.root / BROWSER, self.root, within=self.root)
 
     def browser_profile(self, account: str) -> Path:
         return self.browser_state().profile(account)
