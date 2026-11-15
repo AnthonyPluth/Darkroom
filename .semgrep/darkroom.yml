@@ -33,8 +33,8 @@ rules:
 
   - id: darkroom-subprocess-only-exiftool
     message: >-
-      Run external programs only from darkroom/providers/exiftool.py (and the browser worker's runner), so every
-      subprocess has one place to check.
+      Run external programs only from darkroom/providers/exiftool.py (and the browser worker's runner and the one
+      container's supervisor, darkroom_init/supervisor.py), so every subprocess has one place to check.
     severity: ERROR
     languages: [python]
     pattern-either:
@@ -42,8 +42,8 @@ rules:
       - pattern: os.system(...)
       - pattern: os.popen(...)
     paths:
-      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/providers/exiftool.py", "/darkroom_browser/runner.py"]
+      include: ["/darkroom/", "/darkroom_browser/", "/darkroom_init/", "/run.py"]
+      exclude: ["/darkroom/providers/exiftool.py", "/darkroom_browser/runner.py", "/darkroom_init/supervisor.py"]
 
   - id: darkroom-no-utcnow
     message: >-

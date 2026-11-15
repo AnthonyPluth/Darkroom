@@ -109,7 +109,7 @@ jobs:
         run: |
           pipx run semgrep==1.146.0 --version
           poetry run python .semgrep/check_examples.py pipx run semgrep==1.146.0
-          pipx run semgrep==1.146.0 scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser run.py
+          pipx run semgrep==1.146.0 scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser darkroom_init run.py
 
   web:
     runs-on: ubuntu-latest   # hosted: small repository

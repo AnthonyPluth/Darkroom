@@ -3,23 +3,12 @@ from __future__ import annotations
 import os
 import secrets
 import signal
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
 
 from darkroom_init import plan, supervisor
 
 TOKEN_BYTES = 32
-
-
-def display_ready(given: Mapping[str, str]) -> Callable[[], bool]:
-    def ready() -> bool:
-        try:
-            return subprocess.run(["xdpyinfo", "-display", plan.display_env(given)["DISPLAY"]], env=plan.display_env(given), stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-    return ready
 
 
 def app_ready(given: Mapping[str, str]) -> Callable[[], bool]:
@@ -32,7 +21,7 @@ def main(given: Mapping[str, str] | None = None) -> int:
     supervisor.prctl(supervisor.PR_SET_DUMPABLE, 0)
     adopt = supervisor.prctl(supervisor.PR_SET_CHILD_SUBREAPER, 1)
     held: dict[plan.Secret, str] = {"token": secrets.token_urlsafe(TOKEN_BYTES), "viewer": secrets.token_urlsafe(TOKEN_BYTES)}
-    running = supervisor.Supervisor(plan.specs(given, app_ready(given), display_ready(given)), held, adopt_orphans=adopt)
+    running = supervisor.Supervisor(plan.specs(given, app_ready(given), supervisor.display_ready(given)), held, adopt_orphans=adopt)
     signal.signal(signal.SIGTERM, running.stop)
     signal.signal(signal.SIGINT, running.stop)
     supervisor.log("init started", orphans_adopted=int(adopt))

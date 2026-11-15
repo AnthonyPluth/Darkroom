@@ -136,6 +136,11 @@ class AuthProblemTests(unittest.TestCase):
                 self.assertNotIn("secret", found[0])
                 self.assertIn("VNC_URL", " ".join(config.problems(settings_from(VNC_URL=value))))
                 self.assertEqual(config.refuses_to_start(settings_from(VNC_URL=value)), [])
+        for value in ("https://browser.example:99999/vnc.html", "https://browser.example:port-canary/", "http://browser.example:-1/"):
+            with self.subTest(value=value):
+                self.assertIsNone(config.usable_viewer_url(value))
+                self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), ["VNC_URL has a port that is not a number from 0 to 65535"])
+                self.assertIn("VNC_URL has a port", " ".join(config.problems(settings_from(VNC_URL=value))))
         for value in ("", "https://browser.example:6080/vnc.html?autoconnect=1", "http://127.0.0.1:6080/"):
             with self.subTest(value=value):
                 self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), [])

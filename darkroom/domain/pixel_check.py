@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from darkroom.storage.models import Event, MediaItem, Person, Pixel, PixelCopy
 from darkroom.storage.paths import Photos
 
 UNACCOUNTED = "pixel_files_unaccounted"
+RECHECK_SECONDS = 24 * 3600.0
 
 
 @dataclass
@@ -164,17 +166,30 @@ def held(opened: Session, pixel_id: int, checked_since_start: bool) -> bool:
     return opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, pixel_folder.replacing()).limit(1)).first() is not None
 
 
+def listing(photos: Photos, pixel_ids: Iterable[int]) -> dict[int, tuple[tuple[str, ...], ...]]:
+    return {pixel_id: tuple(paths.pixel_folder_entries(photos, pixel_id)) for pixel_id in sorted(pixel_ids)}
+
+
 @dataclass
 class PlacedCopyCheck:
     ran: bool = False
     unaccounted: dict[int, int] = field(default_factory=dict)
+    ran_at: float = 0.0
+    listed: dict[int, tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
-    def due(self, opened: Session) -> bool:
-        return not self.ran or bool(self.unaccounted) or bool(replacing_pixels(opened))
+    def due(self, opened: Session, photos: Photos, now: float) -> bool:
+        if not self.ran or replacing_pixels(opened):
+            return True
+        if not self.unaccounted:
+            return False
+        return not self.ran_at <= now < self.ran_at + RECHECK_SECONDS or listing(photos, self.unaccounted) != self.listed
 
     def run(self, opened: Session, photos: Photos, now: float) -> Checked:
+        before = listing(photos, opened.execute(select(Pixel.id)).scalars().all())
+        opened.commit()
         checked = check(opened, photos, now)
-        self.ran, self.unaccounted = True, dict(checked.unaccounted)
+        self.ran, self.unaccounted, self.ran_at = True, dict(checked.unaccounted), now
+        self.listed = {pixel_id: before.get(pixel_id, ()) for pixel_id in sorted(self.unaccounted)}
         return checked
 
     def held(self, opened: Session, pixel_id: int) -> bool:

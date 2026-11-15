@@ -348,6 +348,14 @@ def problems(settings: Settings) -> list[str]:
     return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
 
 
+def splits(address: str) -> bool:
+    try:
+        urlsplit(address)
+    except ValueError:
+        return False
+    return True
+
+
 def port_problem(address: str) -> bool:
     try:
         port = urlsplit(address).port
@@ -398,6 +406,8 @@ def vnc_url_problems(settings: Settings) -> list[str]:
         return ["VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"]
     if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
         return []
+    if port_problem(settings.vnc_url) and splits(settings.vnc_url):
+        return ["VNC_URL has a port that is not a number from 0 to 65535"]
     return ["VNC_URL is not usable: it must be an http:// or https:// address without a username or password, so the Remote browser page shows no viewer"]
 
 
