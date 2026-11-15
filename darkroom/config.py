@@ -341,15 +341,27 @@ def problems(settings: Settings) -> list[str]:
         found.append(f"DARKROOM_DATA_DIR is not a directory: {settings.data_dir}")
     if not settings.public_url:
         found.append("DARKROOM_PUBLIC_URL is not set")
+    elif port_problem(settings.public_url):
+        found.append("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
     return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
+
+
+def port_problem(address: str) -> bool:
+    try:
+        port = urlsplit(address).port
+    except ValueError:
+        return True
+    return port is not None and not 0 <= port <= 65535
 
 
 def usable_viewer_url(vnc_url: str) -> str | None:
     try:
         parts = urlsplit(vnc_url)
     except ValueError:
+        return None
+    if port_problem(vnc_url):
         return None
     if parts.scheme in ("http", "https") and parts.netloc and not parts.username and not parts.password:
         return vnc_url
@@ -359,14 +371,21 @@ def usable_viewer_url(vnc_url: str) -> str | None:
 def relay_viewer_url(settings: Settings) -> str | None:
     if not browser_token_usable(settings.viewer_secret) or usable_viewer_url(settings.public_url) is None:
         return None
-    parts = urlsplit(settings.public_url)
+    try:
+        return relay_address(settings.public_url)
+    except ValueError:
+        return None
+
+
+def relay_address(public_url: str) -> str:
+    parts = urlsplit(public_url)
     prefix = parts.path.strip("/")
     socket_path = f"{prefix}/viewer/websockify" if prefix else "viewer/websockify"
     host = parts.hostname or ""
     shown = f"[{host}]" if ":" in host else host
     secure = parts.scheme == "https"
     port = parts.port or (443 if secure else 80)
-    return (f"{settings.public_url}/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000"
+    return (f"{public_url}/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000"
             f"&host={shown}&port={port}&encrypt={int(secure)}&path={socket_path}")
 
 

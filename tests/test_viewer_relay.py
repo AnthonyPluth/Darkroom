@@ -20,7 +20,7 @@ import run
 from darkroom import config, oidc
 from darkroom.providers import exiftool
 from darkroom.domain import browser_jobs
-from darkroom.server import routes, viewer
+from darkroom.server import routes, static, viewer
 from darkroom.server.common import CSP, VIEWER_CSP
 from darkroom.storage import db
 from darkroom.storage.models import Alert, AuthSession, User
@@ -529,6 +529,26 @@ class ViewerLinkTests(unittest.TestCase):
                         contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
                     run.main(["check-config"])
                 self.assertEqual("remove VNC_URL from .env" in err.getvalue(), expected, err.getvalue())
+
+    def test_a_public_address_with_a_malformed_port_gives_no_link_keeps_pages_working_and_is_named_by_check_config(self):
+        for public in ("https://darkroom.example:99999", "https://darkroom.example:port", "http://[fd00::20]:70000"):
+            with self.subTest(public=public):
+                settings = self.settings(DARKROOM_PUBLIC_URL=public)
+                self.assertIsNone(config.viewer_link(settings))
+                self.assertIsNone(config.relay_viewer_url(dataclasses.replace(settings, public_url=public)))
+                self.assertIn("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535", config.problems(settings))
+        self.assertRaises(ValueError, config.relay_address, "https://darkroom.example:99999")
+        self.assertIsNone(config.usable_viewer_url("https://browser.example:99999/vnc.html"))
+        engine = own_database(self)
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as site:
+            (Path(site) / "index.html").write_text("<p>home</p>")
+            settings = dataclasses.replace(settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_PHOTOS_ROOT=folder, DARKROOM_PUBLIC_URL="https://darkroom.example:99999"), viewer_secret=SECRET)
+            base, _ = start_server(self, settings, engine)
+            with mock.patch.object(static, "ROOT", Path(site)):
+                for path in ("/", "/browser", "/api/browser/view"):
+                    with self.subTest(path=path):
+                        self.assertEqual(fetch(base, "GET", path)[0], 200)
+            self.assertEqual(json.loads(fetch(base, "GET", "/api/browser/view")[2])["vnc_url"], None)
 
     def test_without_the_secret_or_a_public_address_there_is_no_link(self):
         self.assertIsNone(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", secret="")))
