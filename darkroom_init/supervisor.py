@@ -8,11 +8,11 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from darkroom_init.plan import PIPE, Secret, Spec
+from darkroom_init.plan import FD_VARIABLES, PIPE, Secret, Spec, display_env
 
 PR_SET_DUMPABLE = 4
 PR_SET_CHILD_SUBREAPER = 36
@@ -66,6 +66,16 @@ def listening(port: int, proc: Path = Path("/proc")) -> bool:
     return False
 
 
+def display_ready(given: Mapping[str, str]) -> Callable[[], bool]:
+    def ready() -> bool:
+        try:
+            return subprocess.run(["xdpyinfo", "-display", display_env(given)["DISPLAY"]], env=display_env(given), stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return ready
+
+
 def signal_group(pgid: int, signum: int) -> bool:
     try:
         os.killpg(pgid, signum)
@@ -103,7 +113,7 @@ class Supervisor:
         argv, env = list(spec.argv), dict(spec.env)
         for name, (read_end, _) in pipes.items():
             argv = [part.replace(PIPE[name], str(read_end)) for part in argv]
-            env = {key: value.replace(PIPE[name], str(read_end)) for key, value in env.items()}
+            env = {key: value.replace(PIPE[name], str(read_end)) if key in FD_VARIABLES else value for key, value in env.items()}
         output = subprocess.DEVNULL if spec.quiet else None
         child.started = time.monotonic()
         try:
