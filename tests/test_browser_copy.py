@@ -44,6 +44,7 @@ class CopyWorld(unittest.TestCase):
         appdata = tempfile.TemporaryDirectory()
         self.addCleanup(appdata.cleanup)
         self.share = Path(share.name)
+        self.share_root = self.share
         self.appdata = Path(appdata.name)
         self.source = self.share / "_browser"
         self.target = self.appdata / "browser"
@@ -63,7 +64,7 @@ class CopyWorld(unittest.TestCase):
         self.before = tree(self.source)
 
     def copy(self, set_aside=False):
-        return browser_copy.copy_browser_state(self.source, self.target, STAMP, set_aside)
+        return browser_copy.copy_browser_state(self.source, self.target, STAMP, self.share_root, set_aside)
 
     def assert_source_untouched(self):
         self.assertEqual(tree(self.source), self.before)
@@ -160,7 +161,7 @@ class CopyTests(CopyWorld):
         linked.symlink_to(self.source, target_is_directory=True)
         for source, target in ((linked, self.target), (self.source, self.source / "1" / "inside"), (self.source, self.appdata / "missing" / "browser")):
             with self.subTest(source=source.name, target=str(target)), self.assertRaises(browser_copy.CopyRefused):
-                browser_copy.copy_browser_state(source, target, STAMP)
+                browser_copy.copy_browser_state(source, target, STAMP, self.share_root)
         self.target.symlink_to(self.share, target_is_directory=True)
         with self.assertRaises(browser_copy.CopyRefused):
             self.copy(set_aside=True)
@@ -170,7 +171,7 @@ class CopyTests(CopyWorld):
         self.copy()
         (self.target / "2" / "profile").mkdir(parents=True)
         (self.target / "2" / "profile" / "Cookies").write_bytes(b"added in the one container")
-        copied = browser_copy.copy_browser_state(self.target, self.source, STAMP, set_aside=True)
+        copied = browser_copy.copy_browser_state(self.target, self.source, STAMP, self.share_root, set_aside=True)
         self.assertEqual(tree(copied.set_aside), self.before)
         self.assertEqual((self.source / "2" / "profile" / "Cookies").read_bytes(), b"added in the one container")
         self.assertEqual(tree(self.source), tree(self.target))
@@ -221,7 +222,7 @@ class UnreadableTests(CopyWorld):
     def assert_refused_and_nothing_published(self, source, target, set_aside=False):
         before = self.everything_in(target.parent)
         with self.assertRaises(browser_copy.Unreadable) as raised:
-            as_nobody(lambda: browser_copy.copy_browser_state(source, target, STAMP, set_aside))
+            as_nobody(lambda: browser_copy.copy_browser_state(source, target, STAMP, self.share_root, set_aside))
         self.assertEqual(str(raised.exception), browser_copy.UNREADABLE)
         self.assertNotIn(str(self.share), str(raised.exception))
         self.assertEqual(self.everything_in(target.parent), before)
@@ -308,11 +309,67 @@ class UnreadableMidwayTests(CopyWorld):
         self.assertFalse(self.target.exists())
 
 
+class InsideTheShareTests(CopyWorld):
+    def setUp(self):
+        super().setUp()
+        self.original = self.share / "jo" / "originals" / "a.jpg"
+        self.original.parent.mkdir(parents=True)
+        self.original.write_bytes(b"an original")
+        (self.share / "_pixels" / "1" / "jo").mkdir(parents=True)
+        self.share_tree = tree(self.share)
+        self.appdata_tree = tree(self.appdata)
+
+    def assert_nothing_changed(self):
+        self.assertEqual(tree(self.share), self.share_tree)
+        self.assertEqual(tree(self.appdata), self.appdata_tree)
+        self.assertEqual(self.original.read_bytes(), b"an original")
+
+    def refused(self, source, target, set_aside):
+        with self.assertRaises(browser_copy.CopyRefused) as raised:
+            browser_copy.copy_browser_state(source, target, STAMP, self.share, set_aside)
+        self.assertEqual(str(raised.exception), browser_copy.IN_THE_SHARE)
+        self.assertNotIn(str(self.share), str(raised.exception))
+        self.assert_nothing_changed()
+
+    def test_a_target_inside_the_photo_share_other_than_its_browser_folder_is_refused_and_nothing_moves(self):
+        linked = self.appdata / "linked-originals"
+        linked.symlink_to(self.share / "jo" / "originals", target_is_directory=True)
+        self.appdata_tree = tree(self.appdata)
+        targets = {"a person's folder": self.share / "jo", "originals": self.share / "jo" / "originals", "a new folder in originals": self.share / "jo" / "originals" / "x",
+                   "the share itself": self.share, "the Pixels' folder": self.share / "_pixels", "a Pixel's folder": self.share / "_pixels" / "1" / "jo",
+                   "the inbox": self.share / "_inbox", "a folder holding the share": self.share.parent, "a link into originals": linked,
+                   "a new folder through a link into originals": linked / "x"}
+        for name, target in targets.items():
+            for set_aside in (False, True):
+                with self.subTest(target=name, set_aside=set_aside):
+                    self.refused(self.source, target, set_aside)
+
+    def test_a_source_inside_the_photo_share_other_than_its_browser_folder_is_refused(self):
+        for source in (self.share / "jo", self.share / "jo" / "originals", self.share, self.share.parent):
+            with self.subTest(source=str(source)):
+                self.refused(source, self.target, False)
+
+    def test_the_command_takes_the_photo_share_from_the_configuration(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {"DARKROOM_PHOTOS_ROOT": str(self.share)}, clear=True), redirect_stdout(out), redirect_stderr(err):
+            code = run.main(["copy-browser-state", "--source", str(self.source), "--target", str(self.share / "jo" / "originals"), "--set-aside"])
+        self.assertEqual(code, 1)
+        self.assertIn(browser_copy.IN_THE_SHARE, err.getvalue())
+        self.assert_nothing_changed()
+
+    def test_the_shares_browser_folder_and_appdata_still_work_both_ways(self):
+        self.copy()
+        browser_copy.copy_browser_state(self.target, self.source, STAMP, self.share, set_aside=True)
+        self.assertTrue((self.share / f"_browser.before-{STAMP}" / "1" / "profile" / "Default" / "Cookies").is_file())
+        self.assertEqual(self.original.read_bytes(), b"an original")
+
+
 class CommandTests(CopyWorld):
     def run_command(self, *args):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = run.main(["copy-browser-state", *args])
+            with mock.patch.dict(os.environ, {"DARKROOM_PHOTOS_ROOT": str(self.share)}, clear=True):
+                code = run.main(["copy-browser-state", *args])
         return code, out.getvalue(), err.getvalue()
 
     def test_the_command_copies_and_says_the_source_was_not_changed(self):

@@ -29,6 +29,8 @@ class Unreadable(CopyRefused):
 
 
 UNREADABLE = "part of the browser profiles could not be read, so nothing was copied or put in place"
+IN_THE_SHARE = ("the browser profiles may only be copied from or into the photo share's own _browser folder or a folder outside the photo share, "
+                "such as appdata; nothing was copied or renamed")
 NOT_COPYABLE = "the browser profiles hold something that is neither a folder nor a regular file, so they were not copied"
 
 
@@ -127,7 +129,14 @@ def leftovers(target: Path) -> list[Path]:
     return sorted(each for each in target.parent.iterdir() if each.name.startswith(f".{target.name}{COPYING}"))
 
 
-def checked(source: Path, target: Path, set_aside: bool) -> None:
+def touches_the_share(path: Path, share: Path) -> bool:
+    real, photos = path.resolve(), share.resolve()
+    return photos.is_relative_to(real) or (real.is_relative_to(photos) and real != photos / "_browser")
+
+
+def checked(source: Path, target: Path, set_aside: bool, share: Path) -> None:
+    if touches_the_share(source, share) or touches_the_share(target.parent.resolve() / target.name, share) or touches_the_share(target, share):
+        raise CopyRefused(IN_THE_SHARE)
     if source.is_symlink() or not source.is_dir():
         raise CopyRefused("the folder to copy the browser profiles from is not a folder (or is a link)")
     if target.is_symlink() or not target.parent.is_dir() or target.parent.is_symlink():
@@ -139,8 +148,8 @@ def checked(source: Path, target: Path, set_aside: bool) -> None:
         raise CopyRefused("the folder to copy the browser profiles into already exists; nothing was copied")
 
 
-def copy_browser_state(source: Path, target: Path, stamp: str, set_aside: bool = False) -> Copied:
-    checked(source, target, set_aside)
+def copy_browser_state(source: Path, target: Path, stamp: str, share: Path, set_aside: bool = False) -> Copied:
+    checked(source, target, set_aside, share)
     expected = listing(source)
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}{COPYING}", dir=target.parent))
     files, folders, locks = copy_tree(source, temporary)

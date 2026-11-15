@@ -123,7 +123,7 @@ def copy_browser_state(source: str | None, target: str | None, set_aside: bool) 
     if found:
         print(f"copy-browser-state: {len(found)} unfinished earlier copy folder(s) next to the target, which you may remove by hand: {', '.join(str(each) for each in found)}", file=sys.stderr)
     try:
-        copied = browser_copy.copy_browser_state(Path(source), Path(target), utc_now().strftime("%Y%m%dT%H%M%SZ"), set_aside)
+        copied = browser_copy.copy_browser_state(Path(source), Path(target), utc_now().strftime("%Y%m%dT%H%M%SZ"), config.load().photos_root, set_aside)
     except OSError as error:
         print(f"copy-browser-state: {error}. The source was not changed; an unfinished copy folder next to the target, if any, can be removed by hand.", file=sys.stderr)
         return 1

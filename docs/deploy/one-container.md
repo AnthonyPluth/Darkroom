@@ -113,7 +113,7 @@ Go back to the two containers of the same release: their images are published wi
 
   `--set-aside` renames the old `_browser/` to `_browser.before-<time>` only after the copy is verified; nothing is deleted in either direction.
 
-Remove the stopped one container (`docker compose --profile single rm darkroom-single`) so it is not started again next to the two. `_browser/` on the share, and any `_browser.before-<time>`, are removed by hand once you no longer need the way back; no Darkroom code deletes them.
+Remove the stopped one container (`docker compose --profile single rm darkroom-single`) so it is not started again next to the two. `_browser/` on the share, and any `_browser.before-<time>`, are removed by hand once you no longer need the way back; no Darkroom code deletes them. Until then they still hold every account's signed-in session, including accounts deleted later, and so does an older `browser/` left in appdata after going back ([browser.md](browser.md#going-back-to-two-containers) says what to remove before using one again). `copy-browser-state` only ever copies between the share's own `_browser/` and a folder outside the share: any other folder on the share, or one that holds it, is refused before anything is copied or renamed.
 
 ## Backup and restore
 
