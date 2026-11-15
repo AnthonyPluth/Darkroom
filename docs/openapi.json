@@ -2502,6 +2502,200 @@
         "required": [],
         "type": "object"
       },
+      "SetupAddressBody": {
+        "additionalProperties": false,
+        "properties": {
+          "public_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_url"
+        ],
+        "type": "object"
+      },
+      "SetupAlertsBody": {
+        "additionalProperties": false,
+        "properties": {
+          "alert_email_from": {
+            "type": "string"
+          },
+          "alert_email_to": {
+            "type": "string"
+          },
+          "resend_api_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_email_from",
+          "alert_email_to"
+        ],
+        "type": "object"
+      },
+      "SetupImmichBody": {
+        "additionalProperties": false,
+        "properties": {
+          "immich_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "immich_url"
+        ],
+        "type": "object"
+      },
+      "SetupProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "has_client_secret": {
+            "type": "boolean"
+          },
+          "oidc_allowed_emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oidc_allowed_groups": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oidc_client_id": {
+            "type": "string"
+          },
+          "oidc_issuer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "has_client_secret",
+          "oidc_allowed_emails",
+          "oidc_allowed_groups",
+          "oidc_client_id",
+          "oidc_issuer"
+        ],
+        "type": "object"
+      },
+      "SetupSetting": {
+        "additionalProperties": false,
+        "properties": {
+          "set": {
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "environment",
+              "stored",
+              "default"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variable": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "set",
+          "source",
+          "value",
+          "variable"
+        ],
+        "type": "object"
+      },
+      "SetupSignInBody": {
+        "additionalProperties": false,
+        "properties": {
+          "oidc_allowed_emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oidc_allowed_groups": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oidc_client_id": {
+            "type": "string"
+          },
+          "oidc_client_secret": {
+            "type": "string"
+          },
+          "oidc_issuer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "oidc_allowed_emails",
+          "oidc_allowed_groups",
+          "oidc_client_id",
+          "oidc_issuer"
+        ],
+        "type": "object"
+      },
+      "SetupState": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SetupProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/SetupSetting"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposal",
+          "redirect_uri",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "SetupTestStart": {
+        "additionalProperties": false,
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "type": "object"
+      },
       "Status": {
         "additionalProperties": false,
         "properties": {
@@ -3461,6 +3655,193 @@
           }
         },
         "x-auth": "session"
+      }
+    },
+    "/api/setup": {
+      "get": {
+        "operationId": "setup_state",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
+      }
+    },
+    "/api/setup/address": {
+      "post": {
+        "operationId": "set_address",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupAddressBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
+      }
+    },
+    "/api/setup/alerts": {
+      "post": {
+        "operationId": "set_alerts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupAlertsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
+      }
+    },
+    "/api/setup/claim": {
+      "post": {
+        "operationId": "claim_setup",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup-claim"
+      }
+    },
+    "/api/setup/immich": {
+      "post": {
+        "operationId": "set_immich",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupImmichBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
+      }
+    },
+    "/api/setup/sign-in": {
+      "post": {
+        "operationId": "propose_sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupSignInBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
+      }
+    },
+    "/api/setup/sign-in/test": {
+      "post": {
+        "operationId": "test_sign_in",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupTestStart"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
       }
     },
     "/api/status": {
