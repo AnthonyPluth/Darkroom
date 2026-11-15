@@ -30,6 +30,7 @@ CHECK_SECONDS = 15.0
 CHUNK = 64 * 1024
 PING = b"\x89\x00"
 GOING_AWAY = b"\x88\x02\x03\xe9"
+SIGNED_OUT = b"\x88\x02\x03\xf0"
 CLOSE = 0x8
 NOT_HERE = "the remote browser view is not part of this setup"
 NOT_RUNNING = "the remote browser view is not running"
@@ -190,6 +191,8 @@ def pump(client: tls.Stream, upstream: tls.Stream, frames: Frames, allowed: Call
         now = time.monotonic()
         if now - checked >= CHECK_SECONDS:
             if not still(allowed):
+                if frames.at_boundary() and not frames.closing:
+                    client.sendall(SIGNED_OUT)
                 return "signed out"
             checked = now
         silent_limit = SILENT_PINGS * PING_SECONDS

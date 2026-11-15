@@ -21,6 +21,7 @@ field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]
 wait_for 60 healthy
 wait_for 60 '[ "$(field "$(probe)" workers | tr -cd , | wc -c)" = 0 ] && [ "$(field "$(probe)" workers)" != "[]" ]'
 probe viewer || fail "websockify is not locked with a secret given on a pipe"
+probe csp || fail "the shipped noVNC does not load under the viewer's policy through the relay"
 probe relay || fail "the remote browser view does not come through the app's relay with the secret handed on a pipe"
 probe scan || fail "a secret-shaped value is in a process's environment or command line"
 

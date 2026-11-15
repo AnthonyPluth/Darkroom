@@ -20,7 +20,7 @@ from darkroom.domain import browser_jobs
 from darkroom.server import routes, viewer
 from darkroom.server.common import CSP, VIEWER_CSP
 from darkroom.storage import db
-from darkroom.storage.models import Alert, AuthSession
+from darkroom.storage.models import Alert, AuthSession, User
 from darkroom_init import plan, viewer_auth
 from tests.browser.test_init import handed
 from tests.privacy import no_leaks
@@ -370,9 +370,15 @@ class RelayUpstreamTests(RelayCase):
             stream, _ = self.opened()
             stream.sendall(frame(BINARY, b"before"))
             self.assertEqual(read_frame(stream), (BINARY, b"before"))
-            with db.session(self.engine, writing=True) as opened:
-                take_away(opened)
+            if callable(take_away):
+                with db.session(self.engine, writing=True) as opened:
+                    take_away(opened)
+            else:
+                with mock.patch.object(oidc, "provider_sign_out", return_value=None):
+                    status, _, _ = fetch(self.base, "POST", "/auth/logout", {"Cookie": f"darkroom_session={self.session}", "Origin": self.origin}, b"")
+                self.assertEqual(status, 303)
             started = time.monotonic()
+            self.assertEqual(read_frame(stream), (CLOSE, (1008).to_bytes(2, "big")))
             self.assertTrue(ended(stream, 3.0))
             self.assertLess(time.monotonic() - started, 1.5)
             with contextlib.suppress(OSError):
@@ -391,9 +397,18 @@ class RelayUpstreamTests(RelayCase):
                 found.expires = time.time() - 1
         self.cut_after(expire)
 
+    def test_signing_out_after_the_upgrade_closes_both_sides(self):
+        self.cut_after("sign out")
+
+    def test_someone_dropped_from_the_allowed_groups_loses_an_open_viewer(self):
+        def drop(opened):
+            opened.get(User, "u1").groups = json.dumps(["guests"])
+        self.cut_after(drop)
+
     def test_a_failing_session_check_closes_both_sides(self):
-        with mock.patch.object(viewer.auth, "session_still_allowed", side_effect=RuntimeError("database gone")), mock.patch.object(viewer.monitoring, "report"):
+        with mock.patch.object(viewer.auth, "session_still_allowed", side_effect=RuntimeError("database gone")), mock.patch.object(viewer.monitoring, "report") as reported:
             self.cut_after(lambda opened: None)
+        reported.assert_called()
 
     def test_a_live_session_keeps_the_connection_through_several_checks(self):
         with mock.patch.object(viewer, "CHECK_SECONDS", 0.1):
@@ -488,6 +503,12 @@ class ViewerLinkTests(unittest.TestCase):
         self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example/")), relayed)
         self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://home.example/darkroom")),
                          "https://home.example/darkroom/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000&path=darkroom/viewer/websockify")
+
+    def test_check_config_names_a_leftover_vnc_url_in_the_one_container(self):
+        leftover = "VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"
+        self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html")), [leftover])
+        self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html", secret="")), [])
+        self.assertEqual(config.vnc_url_problems(self.settings()), [])
 
     def test_without_the_secret_or_a_public_address_there_is_no_link(self):
         self.assertIsNone(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", secret="")))

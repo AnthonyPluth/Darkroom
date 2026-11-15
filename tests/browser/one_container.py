@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import posixpath
 import re
 import secrets
 import signal
@@ -10,8 +11,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
+PORT = int(os.environ.get("DARKROOM_PORT", "8000"))
 SHAPE = re.compile(rb"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])|DARKROOM_BROWSER_TOKEN=|DARKROOM_VNC_SECRET=")
 
 
@@ -86,7 +89,7 @@ def viewer():
     return 0 if source.isdigit() and status == 401 and "127.0.0.1:6080" in args else 1
 
 
-def relay():
+def probe_cookie():
     from darkroom import config, oidc
     from darkroom.storage import db
     settings = config.load()
@@ -95,7 +98,77 @@ def relay():
         oidc.remember_user(opened, oidc.Identity("relay-probe", "probe@example.test", "Probe", ("parents",), True), time.time())
         session = oidc.new_session(opened, settings, "relay-probe", time.time())
     engine.dispose()
-    cookie = f"darkroom_session={session}"
+    return f"darkroom_session={session}"
+
+
+class PageParts(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.breakers, self.scripts, self.local = [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        fields = dict(attrs)
+        self.breakers += [f"{tag} {name}=" for name in fields if name.startswith("on") or name == "style"]
+        if tag in ("style", "base") or (tag == "script" and not fields.get("src")):
+            self.breakers.append(f"inline {tag}")
+        for name in ("src", "href"):
+            value = (fields.get(name) or "").strip()
+            if re.match(r"(?i)([a-z][a-z0-9+.-]*:|//)", value) and not value.startswith("data:"):
+                self.breakers.append(f"{tag} {name} off the origin")
+            elif value:
+                self.local.append(value.split("?")[0].split("#")[0])
+                if tag == "script":
+                    self.scripts.append(self.local[-1])
+
+
+IMPORTS = re.compile(r"""(?:^|[\s;])(?:import|export)\s[^'";]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*\(?\s*['"]([^'"]+)['"]""", re.MULTILINE)
+
+
+def csp():
+    cookie = probe_cookie()
+
+    def get(path):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/viewer/{path}", headers={"Cookie": cookie}), timeout=10) as reply:
+                return reply.status, reply.headers, reply.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.headers, b""
+
+    status, headers, body = get("vnc.html")
+    policy = headers.get("Content-Security-Policy", "")
+    page = PageParts()
+    page.feed(body.decode("utf-8", "replace"))
+    missing, unsafe, seen = [], [], set()
+    for reference in page.local:
+        if get(reference)[0] != 200:
+            missing.append(reference)
+    queue = list(page.scripts)
+    while queue:
+        path = posixpath.normpath(queue.pop())
+        if path in seen:
+            continue
+        seen.add(path)
+        code, kind, text = get(path)
+        if code != 200 or "javascript" not in kind.get("Content-Type", ""):
+            missing.append(path)
+            continue
+        source = text.decode("utf-8", "replace")
+        if re.search(r"\beval\(|new Function\(", source):
+            unsafe.append(path)
+        for found in IMPORTS.findall(source):
+            target = found[0] or found[1]
+            if not target.startswith((".", "/")):
+                unsafe.append(f"{path} imports {target}")
+            elif target.startswith("."):
+                queue.append(posixpath.join(posixpath.dirname(path), target))
+    result = {"page": status, "framed_by_self": "frame-ancestors 'self'" in policy, "default_self": "default-src 'self'" in policy, "breakers": page.breakers,
+              "modules": len(seen), "missing": missing, "unsafe": unsafe}
+    print(json.dumps(result))
+    return 0 if status == 200 and result["framed_by_self"] and result["default_self"] and not page.breakers and len(seen) > 5 and not missing and not unsafe else 1
+
+
+def relay():
+    cookie = probe_cookie()
     with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8000/viewer/vnc.html", headers={"Cookie": cookie}), timeout=10) as page:
         status, policy = page.status, page.headers.get("Content-Security-Policy", "")
     key = base64.b64encode(secrets.token_bytes(16)).decode()
@@ -138,7 +211,7 @@ def enqueue(opened, kind):
 
 def main(argv):
     from darkroom.storage.models import BrowserJob
-    commands = {"scan": scan_with_control, "viewer": viewer, "relay": relay, "kill-worker": kill_worker_under_browser,
+    commands = {"scan": scan_with_control, "viewer": viewer, "relay": relay, "csp": csp, "kill-worker": kill_worker_under_browser,
                 "enqueue": lambda: database(lambda opened: enqueue(opened, argv[1])),
                 "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status),
                 "claimed-since": lambda: database(lambda opened: opened.query(BrowserJob).filter(BrowserJob.started >= float(argv[1])).count())}

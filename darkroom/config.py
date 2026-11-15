@@ -367,6 +367,8 @@ def viewer_link(settings: Settings) -> str | None:
 
 
 def vnc_url_problems(settings: Settings) -> list[str]:
+    if settings.vnc_url and browser_token_usable(settings.viewer_secret):
+        return ["VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"]
     if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
         return []
     return ["VNC_URL is not usable: it must be an http:// or https:// address without a username or password, so the Remote browser page shows no viewer"]
