@@ -13,6 +13,13 @@ def page_address(relative: str) -> bool:
     return "." not in PurePosixPath(relative).name
 
 
+def content_type_of(name: str) -> str:
+    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    if content_type.startswith("text/") or content_type in ("application/javascript", "image/svg+xml"):
+        content_type += "; charset=utf-8"
+    return content_type
+
+
 def serve(path: str, root: Path | None = None, vnc_url: str = "") -> Response:
     folder = root or ROOT
     relative = path.lstrip("/") or INDEX
@@ -24,7 +31,5 @@ def serve(path: str, root: Path | None = None, vnc_url: str = "") -> Response:
         candidate = base / INDEX
         if not candidate.is_file():
             return error_response("not found", 404)
-    content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
-    if content_type.startswith("text/") or content_type in ("application/javascript", "image/svg+xml"):
-        content_type += "; charset=utf-8"
+    content_type = content_type_of(candidate.name)
     return Response(200, candidate.read_bytes(), content_type, {"Content-Security-Policy": app_csp(vnc_url) if content_type.startswith("text/html") else CSP, "X-Content-Type-Options": "nosniff"})

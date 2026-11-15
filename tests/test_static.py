@@ -1,11 +1,16 @@
+import dataclasses
+import hashlib
 import json
 import re
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
 
-from darkroom.server import static
+from darkroom import config
+from darkroom.server import static, viewer
+from darkroom.server.common import CSP, VIEWER_CSP
 from tests.shared import fetch, settings_from, start_server
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,6 +78,92 @@ class ViewerFrameTests(unittest.TestCase):
         for address in ("", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/", "https://[::1", "http://[bad"):
             with self.subTest(address=address):
                 self.assertNotIn("frame-src", self.serve("/", address))
+
+
+def directives(policy):
+    return dict(part.strip().split(" ", 1) for part in policy.split(";"))
+
+
+class PolicyBreakers(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.found, self.local, self.inside = [], [], None
+
+    def handle_starttag(self, tag, attrs):
+        fields = dict(attrs)
+        self.found += [f"{tag} {name}=" for name in fields if name.startswith("on") or name == "style"]
+        if tag in ("style", "base") or (tag == "script" and not fields.get("src")):
+            self.found.append(f"inline {tag}")
+        for name in ("src", "href", "action", "formaction"):
+            value = (fields.get(name) or "").strip()
+            if re.match(r"(?i)([a-z][a-z0-9+.-]*:|//)", value) and not value.startswith("data:"):
+                self.found.append(f"{tag} {name}={value}")
+            elif value:
+                self.local.append(value.split("?")[0].split("#")[0])
+
+
+def breakers(page):
+    parser = PolicyBreakers()
+    parser.feed(page)
+    return parser
+
+
+class ViewerPolicyTests(unittest.TestCase):
+    def test_the_viewer_page_gets_the_apps_policy_and_may_be_framed_only_by_the_app(self):
+        app, page = directives(CSP), directives(VIEWER_CSP)
+        self.assertEqual(page.pop("frame-ancestors"), "'self'")
+        self.assertEqual(app.pop("frame-ancestors"), "'none'")
+        self.assertEqual(page, app)
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "vnc.html").write_text("<p>viewer</p>")
+            self.assertEqual(viewer.viewer_file(Path(folder), "vnc.html").headers["Content-Security-Policy"], VIEWER_CSP)
+
+    def test_the_app_page_may_frame_the_relayed_viewer(self):
+        settings = dataclasses.replace(settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example"), viewer_secret="v" * 43)
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "index.html").write_text("<p>home</p>")
+            policy = static.serve("/browser", Path(folder), config.viewer_link(settings) or "").headers["Content-Security-Policy"]
+        self.assertEqual(directives(policy)["frame-src"], "'self' https://darkroom.example")
+
+    def test_a_page_the_policy_would_break_is_caught(self):
+        page = '<script>go()</script><style>p{}</style><p style="x" onclick="y"></p><script src="https://cdn.example/x.js"></script><img src="//elsewhere.example/a.png">'
+        self.assertEqual(len(breakers(page).found), 6)
+        self.assertEqual(breakers('<script type="module" src="app/ui.js"></script><img src="data:image/png;base64,AA">').found, [])
+
+    @unittest.skipUnless((config.VIEWER_FILES / "vnc.html").is_file(), "noVNC is not installed here (CI installs it)")
+    def test_novncs_page_loads_under_the_viewer_policy(self):
+        self.assert_viewer_loads(config.VIEWER_FILES)
+
+    def test_a_known_inline_start_script_is_served_as_a_module_of_its_own_and_any_other_stays_inline(self):
+        start = b"\n        import UI from './app/ui.js';\n        UI.start({});\n    "
+        page = b'<!doctype html><script type="module" src="app/error-handler.js"></script><script type="module">' + start + b"</script><p>body</p>"
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "vnc.html").write_bytes(page)
+            with mock.patch.object(viewer, "KNOWN_STARTS", frozenset({hashlib.sha256(start).hexdigest()})):
+                served = viewer.viewer_file(Path(folder), "vnc.html").body
+            self.assertEqual(served, page.replace(b'<script type="module">' + start + b"</script>", b'<script type="module" src="darkroom-start.js"></script>'))
+            self.assertEqual(breakers(served.decode()).found, [])
+            self.assertEqual(breakers(viewer.viewer_file(Path(folder), "vnc.html").body.decode()).found, ["inline script"])
+            module = viewer.viewer_file(Path(folder), viewer.START)
+        self.assertEqual((module.status, module.content_type, module.headers["Content-Security-Policy"]), (200, "text/javascript; charset=utf-8", VIEWER_CSP))
+        self.assertEqual(module.body, viewer.START_FILE.read_bytes())
+        self.assertEqual(re.findall(r"""^import[^'"]*['"]([^'"]+)['"]""", module.body.decode(), re.MULTILINE), ["./app/ui.js", "./core/util/logging.js"])
+
+    def assert_viewer_loads(self, root):
+        served = viewer.viewer_file(root, "vnc.html")
+        parsed = breakers(served.body.decode())
+        self.assertEqual(parsed.found, [])
+        self.assertTrue(parsed.local)
+        for reference in parsed.local:
+            with self.subTest(reference=reference):
+                self.assertEqual(viewer.viewer_file(root, reference).status, 200)
+        scripts = [path for folder in ("app", "core") for path in (root / folder).rglob("*.js")]
+        self.assertTrue(scripts)
+        for path in scripts:
+            with self.subTest(script=str(path.relative_to(root))):
+                text = path.read_text()
+                self.assertIsNone(re.search(r"\beval\(|new Function\(|setAttribute\(['\"](style|on)", text))
+                self.assertEqual(re.findall(r"""^import[^'"]*['"](?!\.{1,2}/)([^'"]+)['"]""", text, re.MULTILINE), [])
 
 
 class ServedAppTests(unittest.TestCase):

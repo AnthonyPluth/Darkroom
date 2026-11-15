@@ -49,7 +49,8 @@
       "tests": [
         "tests/test_auth_routes.py",
         "tests/test_demo_session.py",
-        "tests/test_routes_table.py"
+        "tests/test_routes_table.py",
+        "tests/test_viewer_relay.py"
       ]
     },
     {
@@ -372,7 +373,8 @@
       ],
       "tests": [
         "tests/test_accounts_jobs_api.py",
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_viewer_relay.py"
       ]
     },
     {
@@ -392,6 +394,16 @@
       "frontend": [],
       "tests": [
         "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
+      "route": "GET /viewer/{path*}",
+      "auth": "session",
+      "handler": "darkroom.server.viewer.relay",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_viewer_relay.py"
       ]
     },
     {

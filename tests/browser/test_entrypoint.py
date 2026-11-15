@@ -120,7 +120,7 @@ class EntrypointTests(unittest.TestCase):
         viewer, entry = list(specs["viewer"].argv), started.args("websockify")
         self.assertEqual(viewer[1:3], entry[:2])
         self.assertEqual((entry[entry.index("--auth-plugin") + 1], viewer[viewer.index("--auth-plugin") + 1]), ("BasicHTTPAuth", "darkroom_init.viewer_auth.SecretOnPipe"))
-        self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.FD)
+        self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.PIPE["viewer"])
         self.assertEqual((entry[-2:], viewer[-2:]), (["6080", "127.0.0.1:5900"], ["127.0.0.1:6080", "127.0.0.1:5900"]))
         self.assertEqual(specs["worker"].argv[1:], tuple(started.args("python")))
 

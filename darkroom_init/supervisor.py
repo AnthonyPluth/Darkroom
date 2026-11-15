@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from darkroom_init.plan import FD, Secret, Spec
+from darkroom_init.plan import PIPE, Secret, Spec
 
 PR_SET_DUMPABLE = 4
 PR_SET_CHILD_SUBREAPER = 36
@@ -99,14 +99,15 @@ class Supervisor:
 
     def start(self, child: Child) -> None:
         spec = child.spec
-        secret = self.secrets[spec.secret].encode() if spec.secret is not None else None
-        read_end, write_end = os.pipe() if secret is not None else (-1, -1)
-        argv = [part.replace(FD, str(read_end)) for part in spec.argv]
-        env = {name: value.replace(FD, str(read_end)) for name, value in spec.env.items()}
+        pipes = {name: os.pipe() for name in spec.secrets}
+        argv, env = list(spec.argv), dict(spec.env)
+        for name, (read_end, _) in pipes.items():
+            argv = [part.replace(PIPE[name], str(read_end)) for part in argv]
+            env = {key: value.replace(PIPE[name], str(read_end)) for key, value in env.items()}
         output = subprocess.DEVNULL if spec.quiet else None
         child.started = time.monotonic()
         try:
-            child.process = subprocess.Popen(argv, env=env, cwd=spec.cwd, pass_fds=(read_end,) if secret is not None else (), start_new_session=True,
+            child.process = subprocess.Popen(argv, env=env, cwd=spec.cwd, pass_fds=tuple(read_end for read_end, _ in pipes.values()), start_new_session=True,
                                              stdin=subprocess.DEVNULL, stdout=output, stderr=output)
         except OSError as error:
             child.process = None
@@ -116,10 +117,10 @@ class Supervisor:
         else:
             log("child started", child=spec.name)
         finally:
-            if secret is not None:
+            for name, (read_end, write_end) in pipes.items():
                 os.close(read_end)
                 with contextlib.suppress(OSError):
-                    os.write(write_end, secret if child.process is not None else b"")
+                    os.write(write_end, self.secrets[name].encode() if child.process is not None else b"")
                 os.close(write_end)
 
     def collected(self) -> list[tuple[int, int]]:

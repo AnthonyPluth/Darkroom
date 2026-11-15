@@ -32,7 +32,7 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # The one container, opt-in (docs/design/single-container.md, section 3): stop the two, then `docker compose --profile single up -d darkroom-single`.
+  # The one container, opt-in (docs/design/single-container.md, section 3): stop the two, remove VNC_URL from .env (the two-container token and viewer secret are ignored here), then `docker compose --profile single up -d darkroom-single`.
   darkroom-single:
     build:
       context: .
@@ -65,6 +65,7 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-15}
       BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}
       TZ: ${TZ:-UTC}
+      DARKROOM_ONE_CONTAINER: "1"
     shm_size: 1g
     stop_grace_period: 30s
     cap_drop: [ALL]

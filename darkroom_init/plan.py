@@ -5,9 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-FD = "{fd}"
 Secret = Literal["token", "viewer"]
+PIPE: dict[Secret, str] = {"token": "{token_fd}", "viewer": "{viewer_fd}"}
 TOKEN_FD = "DARKROOM_BROWSER_TOKEN_FD"
+VIEWER_FD = "DARKROOM_VIEWER_SECRET_FD"
+ONE_CONTAINER = "DARKROOM_ONE_CONTAINER"
 VIEWER_PLUGIN = "darkroom_init.viewer_auth.SecretOnPipe"
 INIT_HOME = str(Path(__file__).resolve().parent.parent)
 
@@ -28,7 +30,7 @@ class Spec:
     argv: tuple[str, ...]
     env: Mapping[str, str]
     cwd: str = "/"
-    secret: Secret | None = None
+    secrets: tuple[Secret, ...] = ()
     quiet: bool = False
     strays: bool = False
     ready: Callable[[], bool] | None = field(default=None, compare=False)
@@ -39,7 +41,7 @@ def picked(given: Mapping[str, str], names: tuple[str, ...]) -> dict[str, str]:
 
 
 def app_env(given: Mapping[str, str]) -> dict[str, str]:
-    return picked(given, COMMON + APP_SETTINGS) | PYTHON | {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", TOKEN_FD: FD}
+    return picked(given, COMMON + APP_SETTINGS) | PYTHON | {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", TOKEN_FD: PIPE["token"], VIEWER_FD: PIPE["viewer"], ONE_CONTAINER: "1"}
 
 
 def worker_env(given: Mapping[str, str]) -> dict[str, str]:
@@ -48,7 +50,7 @@ def worker_env(given: Mapping[str, str]) -> dict[str, str]:
         "DARKROOM_URL": f"http://127.0.0.1:{given.get('DARKROOM_PORT', '8000')}",
         "PHOTOS_ROOT": given.get("DARKROOM_PHOTOS_ROOT", "/photos"),
         "DISPLAY": given.get("DISPLAY", ":99"),
-        TOKEN_FD: FD,
+        TOKEN_FD: PIPE["token"],
     }
     return picked(given, COMMON + WORKER_SETTINGS) | PYTHON | fixed
 
@@ -61,10 +63,10 @@ def specs(given: Mapping[str, str], app_ready: Callable[[], bool], display_ready
     shown = given.get("DISPLAY", ":99")
     viewer = display_env(given) | {"PYTHONPATH": INIT_HOME, "PYTHONDONTWRITEBYTECODE": "1"}
     return [
-        Spec("app", ("/app/.venv/bin/python", "run.py", "serve"), app_env(given), "/app", "token", ready=app_ready),
+        Spec("app", ("/app/.venv/bin/python", "run.py", "serve"), app_env(given), "/app", ("token", "viewer"), ready=app_ready),
         Spec("display", ("Xvfb", shown, "-screen", "0", "1280x900x24", "-nolisten", "tcp", "-nolisten", "unix"), display_env(given), quiet=True, ready=display_ready),
         Spec("vnc", ("x11vnc", "-display", shown, "-localhost", "-rfbport", "5900", "-forever", "-shared", "-nopw", "-noxdamage", "-quiet"), display_env(given), quiet=True),
-        Spec("viewer", ("websockify", "--web=/usr/share/novnc", "--web-auth", "--auth-plugin", VIEWER_PLUGIN, "--auth-source", FD, "127.0.0.1:6080", "127.0.0.1:5900"),
-             viewer, secret="viewer", quiet=True),
-        Spec("worker", ("/opt/worker/bin/python", "-m", "darkroom_browser"), worker_env(given), "/opt/worker/app", "token", strays=True),
+        Spec("viewer", ("websockify", "--web=/usr/share/novnc", "--web-auth", "--auth-plugin", VIEWER_PLUGIN, "--auth-source", PIPE["viewer"], "127.0.0.1:6080", "127.0.0.1:5900"),
+             viewer, secrets=("viewer",), quiet=True),
+        Spec("worker", ("/opt/worker/bin/python", "-m", "darkroom_browser"), worker_env(given), "/opt/worker/app", ("token",), strays=True),
     ]
