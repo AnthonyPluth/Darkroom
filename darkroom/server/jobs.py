@@ -161,8 +161,7 @@ def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syn
         return syncthing_version.at_startup(opened, syncthing_client(settings), at, previous)
 
 
-def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
-    scheduler = Scheduler(settings.timezone)
+def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now: float) -> Scheduler:
     scheduler.syncthing = check_syncthing(settings, engine, now)
 
     def recheck_syncthing(at: float) -> None:
@@ -171,6 +170,15 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
 
     if settings.syncthing:
         scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
+    return scheduler
+
+
+def for_serving(settings: Settings, engine: Engine, now: float) -> Scheduler:
+    return gate_syncthing(build(settings, engine, now), settings, engine, now)
+
+
+def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
+    scheduler = Scheduler(settings.timezone)
     share_photos = Photos(settings.photos_root)
     share = scheduler.share = share_check.ShareCheck.at_startup(share_photos.root)
     found_pusher = pusher if pusher is not None else pusher_of(settings)

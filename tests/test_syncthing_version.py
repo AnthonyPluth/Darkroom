@@ -136,13 +136,31 @@ class AppSettingTests(unittest.TestCase):
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_one_shot_commands_build_a_scheduler_without_the_gate_and_record_no_event(self):
+        engine = own_database(self)
+        fake, path = on_socket(self)
+        settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing=True)
+        with mock.patch.object(config, "SYNCTHING_SOCKET", path):
+            built = jobs.build(settings, engine)
+        self.assertIsNone(built.syncthing)
+        self.assertNotIn("syncthing.gate", built.jobs)
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING": "1", "DARKROOM_DATA_DIR": folder, "DARKROOM_PHOTOS_ROOT": folder,
+                                                                                   "DARKROOM_SECRET_KEY": "k" * 43}, clear=True), mock.patch.object(config, "SYNCTHING_SOCKET", path):
+            self.assertEqual(run.main(["migrate"]), 0)
+            self.assertEqual(run.main(["jobs", "browser.leases"]), 0)
+            opened_engine = db.make_engine(db.database_url(config.load()))
+            with db.session(opened_engine) as opened:
+                self.assertEqual(events.recent(opened, type=syncthing_version.EVENT), [])
+            opened_engine.dispose()
+        self.assertEqual(fake.requests, [])
+
     def test_a_gate_that_starts_off_is_rechecked_until_the_handed_key_works_with_one_event_per_reason(self):
         engine = own_database(self)
         fake, path = on_socket(self)
         fake.key = "persisted-key-canary-0123456789"
         settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing=True, syncthing_key=KEY)
         with no_leaks(self, KEY, "persisted-key-canary-0123456789", database=engine), mock.patch.object(config, "SYNCTHING_SOCKET", path):
-            scheduler = jobs.build(settings, engine, 100.0)
+            scheduler = jobs.for_serving(settings, engine, 100.0)
             self.assertEqual(scheduler.syncthing, syncthing_version.Gate(False, syncthing_version.KEY_REFUSED))
             scheduler.run_one("syncthing.gate", 160.0)
             scheduler.run_one("syncthing.gate", 220.0)
@@ -154,7 +172,7 @@ class SchedulerTests(unittest.TestCase):
             scheduler.run_one("syncthing.gate", 340.0)
             self.assertEqual(len(fake.requests), asked)
         self.assertEqual(scheduler.jobs["syncthing.gate"].interval, jobs.SYNCTHING_RECHECK_SECONDS)
-        self.assertNotIn("syncthing.gate", jobs.build(dataclasses.replace(settings, syncthing=False), engine, 100.0).jobs)
+        self.assertNotIn("syncthing.gate", jobs.for_serving(dataclasses.replace(settings, syncthing=False), engine, 100.0).jobs)
         with db.session(engine) as opened:
             self.assertEqual([entry.detail for entry in events.recent(opened, type=syncthing_version.EVENT)], [syncthing_version.KEY_REFUSED])
 
@@ -163,12 +181,12 @@ class SchedulerTests(unittest.TestCase):
         engine = own_database(self)
         fake, path = on_socket(self)
         base = settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir())
-        self.assertIsNone(jobs.build(base, engine, 100.0).syncthing)
+        self.assertIsNone(jobs.for_serving(base, engine, 100.0).syncthing)
         self.assertEqual(fake.requests, [])
         with no_leaks(self, KEY, database=engine), mock.patch.object(config, "SYNCTHING_SOCKET", path):
-            self.assertEqual(jobs.build(dataclasses.replace(base, syncthing=True, syncthing_key=KEY), engine, 100.0).syncthing, syncthing_version.Gate(True))
-            self.assertEqual(jobs.build(dataclasses.replace(base, syncthing=True), engine, 100.0).syncthing, syncthing_version.Gate(False, syncthing_version.NO_KEY))
-            self.assertEqual(jobs.build(dataclasses.replace(base, syncthing=True, syncthing_key="with space"), engine, 100.0).syncthing.reason, syncthing_version.NO_KEY)
+            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True, syncthing_key=KEY), engine, 100.0).syncthing, syncthing_version.Gate(True))
+            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True), engine, 100.0).syncthing, syncthing_version.Gate(False, syncthing_version.NO_KEY))
+            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True, syncthing_key="with space"), engine, 100.0).syncthing.reason, syncthing_version.NO_KEY)
 
 
 if __name__ == "__main__":

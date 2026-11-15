@@ -524,7 +524,7 @@ def serve() -> int:
         for line in unusable:
             print(f"config: {line}", file=sys.stderr)
         return 1
-    scheduler = jobs.build(settings, engine, utc_now().timestamp())
+    scheduler = jobs.for_serving(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
     monitoring.log("serving", port=server.server_address[1])
