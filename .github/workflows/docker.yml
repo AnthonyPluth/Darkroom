@@ -100,9 +100,9 @@ jobs:
       - name: Copy browser profiles across mounts with the deployment sandbox, where cp -a is refused
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom-single:smoke bash /probe.sh
-      - name: Run the init in the one container with the deployment sandbox (a noop job, the worker killed under its browser, no secret in any process)
+      - name: Run the init in the one container with the deployment sandbox (a noop job, the viewer through the relay, the worker killed under its browser, no secret in any process)
         run: |
-          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -p 8766:8000 -w /opt/init darkroom-single:smoke python -m darkroom_init
+          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 -w /opt/init darkroom-single:smoke python -m darkroom_init
           bash tests/browser/one_container.sh init 8766
           docker stop init
           docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '

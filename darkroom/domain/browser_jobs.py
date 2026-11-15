@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import dates
-from darkroom.config import Settings
+from darkroom.config import Settings, viewer_link
 from darkroom.domain import alerts, events
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, GoogleAccount, Setting
@@ -270,7 +270,7 @@ def waiting(opened: Session, settings: Settings, job_id: int, reason: str, now: 
     account.session_checked = now
     kind, wording = ("wrong_account", alerts.wrong_account(account.email)) if reason == "wrong_account" else ("sign_in_needed", alerts.sign_in_needed(account.email))
     alerts.close_other_kinds(opened, sign_in_key(job.account_id), kind, now)
-    alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, settings.vnc_url or None, now,
+    alerts.open_alert(opened, settings, sign_in_key(job.account_id), kind, account.email, wording, viewer_link(settings), now,
                       about=alerts.account(job.account_id))
     events.record(opened, now, "browser_job_waiting", str(job.id), reason)
     return job

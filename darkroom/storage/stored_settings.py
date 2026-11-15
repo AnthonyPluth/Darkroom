@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import Engine, inspect, select
@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 
 from darkroom import config
 from darkroom.storage import db, secret_key, secretbox
+from darkroom.storage.settings_keys import SHARE_SENTINEL
 from darkroom.storage.models import StoredSetting
 
 Source = Literal["environment", "stored", "default"]
 REGISTRY = config.STORABLE
 BY_VARIABLE = {entry.variable: entry for entry in REGISTRY}
+RECORDED = (SHARE_SENTINEL,)
 UNREADABLE = "{variable} is stored sealed but cannot be read with this secret key; set {variable}, or set DARKROOM_SECRET_KEY to the key it was sealed with"
 NOT_READ = "the database could not be reached to read the stored settings, so the sources below leave them out"
 
@@ -28,10 +30,15 @@ class Effective:
     settings: config.Settings
     sources: dict[str, Source]
     problems: tuple[str, ...] = ()
+    recorded: dict[str, str] = field(default_factory=dict)
+
+
+def has_table(engine: Engine) -> bool:
+    return inspect(engine).has_table(StoredSetting.__tablename__)
 
 
 def stored_values(engine: Engine) -> dict[str, tuple[str | None, str | None]]:
-    if not inspect(engine).has_table(StoredSetting.__tablename__):
+    if not has_table(engine):
         return {}
     with db.session(engine) as opened:
         return {row.name: (row.value, row.value_sealed) for row in opened.scalars(select(StoredSetting))}
@@ -70,7 +77,8 @@ def combined(settings: config.Settings, rows: dict[str, tuple[str | None, str | 
             continue
         changes[entry.field] = found
         sources[entry.variable] = "stored"
-    return Effective(dataclasses.replace(settings, **changes), sources, tuple(problems))
+    recorded = {name: value for name in RECORDED for value in (rows.get(name, (None, None))[0],) if value}
+    return Effective(dataclasses.replace(settings, **changes), sources, tuple(problems), recorded)
 
 
 def effective(settings: config.Settings, engine: Engine) -> Effective:
@@ -98,3 +106,12 @@ def store(opened: Session, variable: str, plain: str, key: str, now: float) -> N
         raise NotStorable(f"{variable} is not a setting Darkroom stores")
     value, sealed = (None, secretbox.seal(plain, key)) if entry.secret else (plain, None)
     db.upsert(opened, StoredSetting, {"name": variable, "value": value, "value_sealed": sealed, "updated": now}, ("name",))
+
+
+def recorded_share(opened: Session) -> str | None:
+    row = opened.get(StoredSetting, SHARE_SENTINEL, populate_existing=True)
+    return None if row is None else row.value
+
+
+def record_share(opened: Session, token: str, now: float) -> None:
+    db.upsert(opened, StoredSetting, {"name": SHARE_SENTINEL, "value": token, "value_sealed": None, "updated": now}, ("name",))

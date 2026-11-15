@@ -53,9 +53,9 @@ def handed(value):
 class PlanTests(unittest.TestCase):
     def test_the_app_gets_every_setting_it_reads_except_the_browser_token(self):
         read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text()))
-        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD"})
+        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_ONE_CONTAINER"})
         env = plan.app_env(GIVEN)
-        self.assertEqual(env[plan.TOKEN_FD], plan.FD)
+        self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD], env[plan.ONE_CONTAINER]), (plan.PIPE["token"], plan.PIPE["viewer"], "1"))
         self.assertFalse({"DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
         self.assertEqual(env["DARKROOM_SECRET_KEY"], "key-canary")
         self.assertEqual(env["PATH"], "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin")
@@ -87,10 +87,10 @@ class PlanTests(unittest.TestCase):
     def test_the_app_starts_first_and_the_secrets_go_on_pipes_never_on_a_command_line(self):
         specs = plan.specs(GIVEN, bool, bool)
         self.assertEqual([spec.name for spec in specs], ["app", "display", "vnc", "viewer", "worker"])
-        self.assertEqual([spec.secret for spec in specs], ["token", None, None, "viewer", "token"])
+        self.assertEqual([spec.secrets for spec in specs], [("token", "viewer"), (), (), ("viewer",), ("token",)])
         self.assertEqual([spec.name for spec in specs if spec.strays], ["worker"])
         viewer = specs[3].argv
-        self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.FD)
+        self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.PIPE["viewer"])
         self.assertEqual(viewer[viewer.index("--auth-plugin") + 1], plan.VIEWER_PLUGIN)
         self.assertEqual(viewer[-2:], ("127.0.0.1:6080", "127.0.0.1:5900"))
         self.assertIn("-localhost", specs[2].argv)
@@ -141,7 +141,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(all(gap < 0.9 for gap in gaps), gaps)
 
     def test_a_child_that_ran_long_enough_restarts_at_the_base_delay_and_one_that_cannot_start_is_retried(self):
-        running = self.run_for(1.0, [child("steady", "raise SystemExit(0)"), plan.Spec("missing", ("/nonexistent/program",), {}, secret="token")], stable=0.0)
+        running = self.run_for(1.0, [child("steady", "raise SystemExit(0)"), plan.Spec("missing", ("/nonexistent/program",), {}, secrets=("token",))], stable=0.0)
         self.assertEqual(running.children[0].failures, 0)
         self.assertGreaterEqual(running.children[1].failures, 2)
 
@@ -193,8 +193,8 @@ class SupervisorTests(unittest.TestCase):
                 for part in ("environ", "cmdline"):
                     with contextlib.suppress(FileNotFoundError, ProcessLookupError, PermissionError):
                         self.assertNotIn(TOKEN.encode(), Path(f"/proc/{pid}/{part}").read_bytes())
-        worker = child("worker", script, env={plan.TOKEN_FD: plan.FD, "STAY": "0.3"}, secret="token")
-        viewer = plan.Spec("viewer", (sys.executable, "-c", textwrap.dedent(script), plan.FD), {"STAY": "60"}, secret="viewer")
+        worker = child("worker", script, env={plan.TOKEN_FD: plan.PIPE["token"], "STAY": "0.3"}, secrets=("token",))
+        viewer = plan.Spec("viewer", (sys.executable, "-c", textwrap.dedent(script), plan.PIPE["viewer"]), {"STAY": "60"}, secrets=("viewer",))
         self.run_for(0, [viewer, worker], base=0.05, during=scanned)
         seen = [json.loads(line) for line in self.lines("seen")]
         self.assertEqual({(entry["secret"], bool(entry["argv"])) for entry in seen}, {(TOKEN, False), (VIEWER, True)})

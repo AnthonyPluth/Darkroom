@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import oidc
-from darkroom.config import Settings
+from darkroom.config import Settings, viewer_link
 from darkroom.domain import alerts, browser_jobs, events, index, media, renewal
 from darkroom.storage.models import BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from darkroom.storage.paths import Photos, write_once
@@ -240,7 +240,7 @@ def seed_account(opened: Session, settings: Settings, people: dict[str, Person],
     if spec.session_state != "needs_sign_in":
         return renewing
     alerts.open_alert(opened, settings, browser_jobs.sign_in_key(account.id), "sign_in_needed", account.email, alerts.sign_in_needed(account.email),
-                      settings.vnc_url or None, now - 2 * HOUR, notifier=alerts.recorded, about=alerts.account(account.id))
+                      viewer_link(settings), now - 2 * HOUR, notifier=alerts.recorded, about=alerts.account(account.id))
     return renewing + 1
 
 
