@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from darkroom import monitoring
 from darkroom.config import Settings, no_auth_allowed
-from darkroom.server import auth, routes, static
+from darkroom.server import auth, routes, static, wizard
 from darkroom.server.common import CSP, Principal, Request, Response, asks_for_websocket, error_response, header, viewer_url
 from darkroom.storage import db
 
@@ -18,7 +18,9 @@ Authenticator = Callable[[Request], Principal | None]
 
 MAX_BODY = 8 * 1024 * 1024
 
-AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal}
+AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal,
+                                             "setup": wizard.principal, "setup-claim": wizard.claim_principal}
+BROWSER_KINDS = ("session", *routes.SETUP_KINDS)
 
 
 def authenticate(route: routes.Route, request: Request) -> Principal | None:
@@ -34,12 +36,12 @@ def dispatch(request: Request) -> Response:
         return error_response("not found", 404)
     route, params = found
     request = replace(request, params=params)
-    if route.auth == "session" and no_auth_allowed(request.settings) and not auth.no_auth_address_allowed(request):
+    if route.auth in BROWSER_KINDS and no_auth_allowed(request.settings) and not auth.no_auth_address_allowed(request):
         monitoring.log("request refused without sign-in", reason="host not allowed")
         return error_response(auth.HOST_REFUSED, 403)
-    if route.auth == "session" and request.method != "GET" and not auth.same_origin(request):
+    if route.auth in BROWSER_KINDS and request.method != "GET" and not auth.same_origin(request):
         return error_response("cross-site requests are refused", 403)
-    if route.auth == "session" and asks_for_websocket(request) and (header(request, "Origin") is None or not auth.same_origin(request)):
+    if route.auth in BROWSER_KINDS and asks_for_websocket(request) and (header(request, "Origin") is None or not auth.same_origin(request)):
         return error_response("cross-site requests are refused", 403)
     if route.auth == "public":
         return route.handler(request)
@@ -97,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reject(400 if length < 0 else 413)
             return
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
-                          self.rfile.read(length) if length else b"", self.settings, self.engine, target=self.path)
+                          self.rfile.read(length) if length else b"", self.settings, self.engine, client=str(self.client_address[0]), target=self.path)
         self.answer(safe_dispatch(request))
 
     def answer(self, response: Response) -> None:

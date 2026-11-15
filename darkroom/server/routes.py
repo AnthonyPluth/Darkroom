@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from darkroom.server import auth, viewer
+from darkroom.server import auth, viewer, wizard
 from darkroom.server.api import accounts, browser, browser_internal, exports, imports, people, pixels, review, status
+from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request, Response
 
-AUTH_KINDS = ("session", "worker", "public")
+AUTH_KINDS = ("session", "worker", "setup", "setup-claim", "public")
+SETUP_KINDS = ("setup", "setup-claim")
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,7 @@ class Route:
 ROUTES: tuple[Route, ...] = (
     Route("GET", "/healthz", status.healthz, "public"),
     Route("GET", "/auth/login", auth.login, "public"),
-    Route("GET", "/auth/callback", auth.callback, "public"),
+    Route("GET", "/auth/callback", wizard.callback, "public"),
     Route("POST", "/auth/logout", auth.logout, "session"),
     Route("GET", "/auth/signed-out", auth.signed_out, "public"),
     Route("GET", "/api/me", auth.me, "session"),
@@ -64,6 +66,13 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/decisions/{id}/reverse", review.reverse, "session"),
     Route("GET", "/api/media", review.list_media, "session"),
     Route("POST", "/api/media/{id}/reassign", review.reassign, "session"),
+    Route("GET", "/api/setup", setup.setup_state, "setup"),
+    Route("POST", "/api/setup/claim", setup.claim_setup, "setup-claim"),
+    Route("POST", "/api/setup/address", setup.set_address, "setup"),
+    Route("POST", "/api/setup/immich", setup.set_immich, "setup"),
+    Route("POST", "/api/setup/alerts", setup.set_alerts, "setup"),
+    Route("POST", "/api/setup/sign-in", setup.propose_sign_in, "setup"),
+    Route("POST", "/api/setup/sign-in/test", setup.test_sign_in, "setup"),
     Route("POST", "/internal/browser/jobs/claim", browser_internal.claim, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/heartbeat", browser_internal.heartbeat, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/progress", browser_internal.progress, "worker"),

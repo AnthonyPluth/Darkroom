@@ -55,6 +55,7 @@ class Request:
     user: Principal | None = None
     params: Mapping[str, str] = field(default_factory=dict)
     target: str = ""
+    client: str = ""
 
 
 @dataclass(frozen=True)

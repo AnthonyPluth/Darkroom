@@ -486,6 +486,53 @@ export interface ScheduleCheckedBody {
   found?: boolean;
 }
 
+export interface SetupAddressBody {
+  public_url: string;
+}
+
+export interface SetupAlertsBody {
+  resend_api_key?: string;
+  alert_email_from: string;
+  alert_email_to: string;
+}
+
+export interface SetupImmichBody {
+  immich_url: string;
+}
+
+export interface SetupProposal {
+  oidc_issuer: string;
+  oidc_client_id: string;
+  has_client_secret: boolean;
+  oidc_allowed_groups: string[];
+  oidc_allowed_emails: string[];
+}
+
+export interface SetupSetting {
+  variable: string;
+  source: "environment" | "stored" | "default";
+  set: boolean;
+  value: string | null;
+}
+
+export interface SetupSignInBody {
+  oidc_issuer: string;
+  oidc_client_id: string;
+  oidc_client_secret?: string;
+  oidc_allowed_groups: string[];
+  oidc_allowed_emails: string[];
+}
+
+export interface SetupState {
+  settings: SetupSetting[];
+  redirect_uri: string | null;
+  proposal: SetupProposal | null;
+}
+
+export interface SetupTestStart {
+  location: string;
+}
+
 export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
@@ -545,6 +592,13 @@ export interface Endpoints {
   "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
   "GET /api/media": { body: never; reply: MediaList };
   "POST /api/media/{id}/reassign": { body: ReassignBody; reply: MediaReply };
+  "GET /api/setup": { body: never; reply: SetupState };
+  "POST /api/setup/claim": { body: never; reply: SetupState };
+  "POST /api/setup/address": { body: SetupAddressBody; reply: SetupState };
+  "POST /api/setup/immich": { body: SetupImmichBody; reply: SetupState };
+  "POST /api/setup/alerts": { body: SetupAlertsBody; reply: SetupState };
+  "POST /api/setup/sign-in": { body: SetupSignInBody; reply: SetupState };
+  "POST /api/setup/sign-in/test": { body: never; reply: SetupTestStart };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };

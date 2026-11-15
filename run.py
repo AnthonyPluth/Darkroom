@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
@@ -16,7 +17,7 @@ from darkroom.dates import utc_now
 from darkroom.domain import demo, immich_reconcile, index, legacy
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
-from darkroom.server import auth, handler, jobs
+from darkroom.server import auth, handler, jobs, wizard
 from darkroom.storage import db, secret_key, secretbox, stored_settings
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import NotInTheInbox, Photos
@@ -100,9 +101,20 @@ def migrate(settings: config.Settings | None = None) -> int:
     return 0
 
 
+def with_stored(settings: config.Settings, engine: Engine) -> config.Settings | None:
+    loaded = stored_settings.effective(settings, engine)
+    for line in loaded.problems:
+        print(f"config: {line}", file=sys.stderr)
+    return None if loaded.problems else loaded.settings
+
+
 def run_job(name: str) -> int:
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     scheduler = jobs.build(settings, engine)
     if name not in scheduler.jobs:
         print(f"no job called {name}; known jobs: {', '.join(sorted(scheduler.jobs))}", file=sys.stderr)
@@ -166,8 +178,12 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
     if not slug:
         print("import-takeout needs --person", file=sys.stderr)
         return 1
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     photos = Photos(settings.photos_root)
     code = 0
     with db.session(engine) as opened:
@@ -198,8 +214,12 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
     if not slug:
         print("import-legacy needs --person", file=sys.stderr)
         return 1
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     code = 0
     with db.session(engine) as opened:
         person = opened.query(Person).filter(Person.slug == slug).one_or_none()
@@ -225,8 +245,12 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
 
 
 def run_reconcile_immich(slug: str | None) -> int:
-    settings = config.load()
-    engine = db.make_engine(db.database_url(settings))
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
     code = 0
     with db.session(engine) as opened:
         people = opened.query(Person).order_by(Person.id)
@@ -269,6 +293,19 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     engine.dispose()
     monitoring.log("sessions revoked", count=ended)
     print(f"ended {ended} session{'' if ended == 1 else 's'}")
+    return 0
+
+
+REOPENED = "the setup wizard is reopened: the next visitor from a private address may claim it, unless someone has already signed in to this Darkroom"
+
+
+def reopen_setup() -> int:
+    engine = db.make_engine(db.database_url(config.load()))
+    with db.session(engine, writing=True) as opened:
+        wizard.reopen(opened)
+    engine.dispose()
+    monitoring.log("setup wizard reopened")
+    print(REOPENED)
     return 0
 
 
@@ -383,7 +420,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret", "reopen-setup"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -398,6 +435,8 @@ def main(argv: list[str]) -> int:
         return run_demo(args.data)
     if args.command == "seal-secret":
         return seal_secret()
+    if args.command == "reopen-setup":
+        return reopen_setup()
     if args.command == "revoke-sessions":
         return revoke_sessions(args.email, args.sub, args.all)
     if args.command == "index":
