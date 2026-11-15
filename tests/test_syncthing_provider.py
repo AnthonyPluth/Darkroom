@@ -140,6 +140,21 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn(KEY, json.dumps(self.client.configuration()))
         self.assertNotIn(KEY, json.dumps(self.client.call("GET", "/rest/config")))
 
+    def test_a_folder_device_encryption_password_is_stripped_before_anything_sees_the_reply(self):
+        secret = "st-encryption-canary-5d81e0b4"
+        folder = {"id": "pixel-1", "path": PATH, "type": "sendonly", "paused": True,
+                  "devices": [{"deviceID": PIXEL, "introducedBy": "", "encryptionPassword": secret}, {"deviceID": OWN, "encryptionPassword": secret}]}
+        self.fake.raw = json.dumps({"version": 37, "folders": [folder], "devices": [], "gui": {"apiKey": KEY}}).encode()
+        with no_leaks(self, secret) as watched:
+            seen = [self.client.call("GET", "/rest/config"), self.client.configuration()]
+            self.fake.raw = json.dumps([folder]).encode()
+            seen += [self.client.call("GET", "/rest/config/folders"), self.client.folders()]
+            print(repr(seen))
+        self.assertTrue(watched)
+        self.assertNotIn(secret, repr(seen))
+        self.assertNotIn("encryptionPassword", repr(seen))
+        self.assertEqual(seen[2][0]["devices"], [{"deviceID": PIXEL, "introducedBy": ""}, {"deviceID": OWN}])
+
     def test_the_api_key_and_password_are_never_written(self):
         for changes in ({"apiKey": "new-canary-key-1234"}, {"password": "x"}):
             with self.subTest(changes=changes), self.assertRaisesRegex(syncthing.SyncthingFailed, "does not change"):

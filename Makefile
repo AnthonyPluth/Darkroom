@@ -30,7 +30,7 @@ python-lint:
 
 semgrep:
 	$(PYTHON) .semgrep/check_examples.py $(SEMGREP)
-	$(SEMGREP) scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser run.py
+	$(SEMGREP) scan --metrics=off --disable-version-check --error --config .semgrep/darkroom.yml darkroom darkroom_browser darkroom_init run.py
 
 test:
 	$(PYTHON) -m unittest discover tests
