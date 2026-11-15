@@ -63,7 +63,9 @@ jobs:
       - name: Validate the compose file
         env:
           PHOTOS_ROOT: /tmp/photos
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose --profile single config --quiet
       - name: Launch the browser with the deployment sandbox
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --entrypoint bash darkroom-browser:smoke /app/smoke.sh
@@ -95,6 +97,12 @@ jobs:
       - name: Launch Chrome and Chromium in the one-container image with the deployment sandbox
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin darkroom-single:smoke bash -c 'test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh'
+      - name: Run the init in the one container with the deployment sandbox (a noop job, the worker killed under its browser, no secret in any process)
+        run: |
+          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -p 8766:8000 -w /opt/init darkroom-single:smoke python -m darkroom_init
+          bash tests/browser/one_container.sh init 8766
+          docker stop init
+          docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
 
   publish:
     needs: build

@@ -29,6 +29,25 @@ def env_flag(name: str) -> bool:
     return env(name) == "1"
 
 
+handed_tokens: dict[int, str] = {}
+
+
+def read_handed(fd: int) -> str:
+    try:
+        with os.fdopen(fd, "rb") as pipe:
+            return pipe.read().decode("ascii", "replace").strip()
+    except OSError:
+        return ""
+
+
+def browser_token() -> str:
+    raw = env("DARKROOM_BROWSER_TOKEN_FD")
+    fd = whole_number(raw)
+    if raw and fd >= 3 and fd not in handed_tokens:
+        handed_tokens[fd] = read_handed(fd)
+    return handed_tokens.get(fd, "") if raw else env("DARKROOM_BROWSER_TOKEN")
+
+
 KeyOrigin = Literal["environment", "file", "none"]
 StoredKind = Literal["text", "address", "list", "secret", "sealed"]
 
@@ -133,7 +152,7 @@ def load() -> Settings:
         demo=env_flag("DARKROOM_DEMO"),
         immich_url=env("IMMICH_URL").rstrip("/"),
         immich_admin_key=env("IMMICH_ADMIN_KEY"),
-        browser_token=env("DARKROOM_BROWSER_TOKEN"),
+        browser_token=browser_token(),
         vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),

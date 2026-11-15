@@ -50,6 +50,7 @@ COPY --from=deps /app/.venv ./.venv
 COPY darkroom ./darkroom
 COPY --from=web /src/darkroom/static/app ./darkroom/static/app
 COPY run.py ./
+COPY darkroom_init /opt/init/darkroom_init
 
 ARG PUID=99
 ARG PGID=100

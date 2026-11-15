@@ -63,6 +63,7 @@ jobs:
         darkroom/server/mcp_*.py
         darkroom_browser/live.py
         darkroom_browser/runner.py
+        darkroom_init/**
         .semgrep/**
         SECURITY.md
         Dockerfile*
