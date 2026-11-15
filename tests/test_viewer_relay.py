@@ -20,7 +20,7 @@ from darkroom.domain import browser_jobs
 from darkroom.server import routes, viewer
 from darkroom.server.common import CSP, VIEWER_CSP
 from darkroom.storage import db
-from darkroom.storage.models import Alert
+from darkroom.storage.models import Alert, AuthSession
 from darkroom_init import plan, viewer_auth
 from tests.browser.test_init import handed
 from tests.privacy import no_leaks
@@ -364,6 +364,43 @@ class RelayUpstreamTests(RelayCase):
         while not self.fake.ends and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertEqual(self.fake.ends, ["eof"])
+
+    def cut_after(self, take_away):
+        with mock.patch.object(viewer, "CHECK_SECONDS", 0.2), no_leaks(self, SECRET, self.session):
+            stream, _ = self.opened()
+            stream.sendall(frame(BINARY, b"before"))
+            self.assertEqual(read_frame(stream), (BINARY, b"before"))
+            with db.session(self.engine, writing=True) as opened:
+                take_away(opened)
+            started = time.monotonic()
+            self.assertTrue(ended(stream, 3.0))
+            self.assertLess(time.monotonic() - started, 1.5)
+            with contextlib.suppress(OSError):
+                stream.sendall(frame(BINARY, b"after"))
+            deadline = time.monotonic() + 3
+            while not self.fake.ends and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertEqual(self.fake.ends, ["eof"])
+
+    def test_a_session_revoked_after_the_upgrade_closes_both_sides(self):
+        self.cut_after(lambda opened: opened.query(AuthSession).delete())
+
+    def test_a_session_that_expires_after_the_upgrade_closes_both_sides(self):
+        def expire(opened):
+            for found in opened.query(AuthSession):
+                found.expires = time.time() - 1
+        self.cut_after(expire)
+
+    def test_a_failing_session_check_closes_both_sides(self):
+        with mock.patch.object(viewer.auth, "session_still_allowed", side_effect=RuntimeError("database gone")), mock.patch.object(viewer.monitoring, "report"):
+            self.cut_after(lambda opened: None)
+
+    def test_a_live_session_keeps_the_connection_through_several_checks(self):
+        with mock.patch.object(viewer, "CHECK_SECONDS", 0.1):
+            stream, _ = self.opened()
+            time.sleep(0.6)
+            stream.sendall(frame(BINARY, b"still allowed"))
+            self.assertEqual(read_frame(stream), (BINARY, b"still allowed"))
 
     def test_an_upstream_that_is_not_running_or_refuses_is_502(self):
         with socket.create_server(("127.0.0.1", 0)) as closed:

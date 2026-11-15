@@ -114,6 +114,17 @@ def session_principal(request: Request) -> Principal | None:
     return Principal("session", who.sub, who.email, who.name, who.groups, renewed)
 
 
+def session_still_allowed(request: Request) -> bool:
+    settings = request.settings
+    if no_auth_allowed(settings):
+        return True
+    token = cookies_of(request).get(SESSION_COOKIE)
+    if not token or not (oidc.configured(settings) or demo_allowed(settings)):
+        return False
+    with db.session(engine_of(request)) as opened:
+        return oidc.session_user(opened, settings, token, now()) is not None
+
+
 def bearer_of(request: Request) -> str | None:
     raw = header(request, "Authorization") or ""
     if len(raw) > MAX_BEARER_HEADER:

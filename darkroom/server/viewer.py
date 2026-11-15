@@ -4,11 +4,12 @@ import base64
 import re
 import select
 import time
+from collections.abc import Callable
 from io import BufferedIOBase
 from pathlib import Path
 
 from darkroom import config, monitoring, tls
-from darkroom.server import static
+from darkroom.server import auth, static
 from darkroom.server.common import VIEWER_CSP, Request, Response, asks_for_websocket, error_response, header
 
 PREFIX = "/viewer/"
@@ -25,6 +26,7 @@ SEND_SECONDS = 60.0
 PING_SECONDS = 20.0
 SILENT_PINGS = 3
 POLL_SECONDS = 0.25
+CHECK_SECONDS = 15.0
 CHUNK = 64 * 1024
 PING = b"\x89\x00"
 GOING_AWAY = b"\x88\x02\x03\xe9"
@@ -93,7 +95,7 @@ def upgrade(request: Request, rest: str) -> Response:
         monitoring.log("remote browser view refused the relay", status=int(status.group(1)) if status else 0)
         return error_response(NOT_RUNNING, 502)
     upstream.settimeout(SEND_SECONDS)
-    return Response(101, b"", takeover=lambda client, buffered: carry(client, buffered, upstream, reply))
+    return Response(101, b"", takeover=lambda client, buffered: carry(client, buffered, upstream, reply, lambda: auth.session_still_allowed(request)))
 
 
 def read_head(upstream: tls.Stream) -> bytes:
@@ -149,7 +151,15 @@ def payload_size(head: bytearray) -> int:
     return length
 
 
-def carry(client: tls.Stream, buffered: BufferedIOBase, upstream: tls.Stream, reply: bytes) -> None:
+def still(allowed: Callable[[], bool]) -> bool:
+    try:
+        return allowed()
+    except Exception:
+        monitoring.report()
+        return False
+
+
+def carry(client: tls.Stream, buffered: BufferedIOBase, upstream: tls.Stream, reply: bytes, allowed: Callable[[], bool]) -> None:
     started = time.monotonic()
     ended = "error"
     end = reply.index(b"\r\n\r\n") + 4
@@ -165,7 +175,7 @@ def carry(client: tls.Stream, buffered: BufferedIOBase, upstream: tls.Stream, re
         client.settimeout(SEND_SECONDS)
         if early:
             upstream.sendall(early)
-        ended = pump(client, upstream, frames)
+        ended = pump(client, upstream, frames, allowed)
     except OSError:
         pass
     finally:
@@ -174,12 +184,16 @@ def carry(client: tls.Stream, buffered: BufferedIOBase, upstream: tls.Stream, re
         monitoring.log("remote browser view closed", ended=ended, seconds=round(time.monotonic() - started))
 
 
-def pump(client: tls.Stream, upstream: tls.Stream, frames: Frames) -> str:
-    heard = pinged = time.monotonic()
+def pump(client: tls.Stream, upstream: tls.Stream, frames: Frames, allowed: Callable[[], bool]) -> str:
+    heard = pinged = checked = time.monotonic()
     while True:
         now = time.monotonic()
+        if now - checked >= CHECK_SECONDS:
+            if not still(allowed):
+                return "signed out"
+            checked = now
         silent_limit = SILENT_PINGS * PING_SECONDS
-        wait = max(0.0, min(max(POLL_SECONDS, pinged + PING_SECONDS - now), heard + silent_limit - now))
+        wait = max(0.0, min(max(POLL_SECONDS, pinged + PING_SECONDS - now), heard + silent_limit - now, checked + CHECK_SECONDS - now))
         ready, _, _ = select.select([client, upstream], [], [], wait)
         if upstream in ready:
             data = upstream.recv(CHUNK)
