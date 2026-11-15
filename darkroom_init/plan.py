@@ -9,6 +9,7 @@ Secret = Literal["token", "viewer"]
 PIPE: dict[Secret, str] = {"token": "{token_fd}", "viewer": "{viewer_fd}"}
 TOKEN_FD = "DARKROOM_BROWSER_TOKEN_FD"
 VIEWER_FD = "DARKROOM_VIEWER_SECRET_FD"
+ONE_CONTAINER = "DARKROOM_ONE_CONTAINER"
 VIEWER_PLUGIN = "darkroom_init.viewer_auth.SecretOnPipe"
 INIT_HOME = str(Path(__file__).resolve().parent.parent)
 
@@ -40,7 +41,7 @@ def picked(given: Mapping[str, str], names: tuple[str, ...]) -> dict[str, str]:
 
 
 def app_env(given: Mapping[str, str]) -> dict[str, str]:
-    return picked(given, COMMON + APP_SETTINGS) | PYTHON | {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", TOKEN_FD: PIPE["token"], VIEWER_FD: PIPE["viewer"]}
+    return picked(given, COMMON + APP_SETTINGS) | PYTHON | {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", TOKEN_FD: PIPE["token"], VIEWER_FD: PIPE["viewer"], ONE_CONTAINER: "1"}
 
 
 def worker_env(given: Mapping[str, str]) -> dict[str, str]:

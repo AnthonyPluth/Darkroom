@@ -2,6 +2,7 @@ import base64
 import contextlib
 import dataclasses
 import hashlib
+import io
 import json
 import os
 import select
@@ -15,7 +16,9 @@ from unittest import mock
 
 from sqlalchemy import select as query
 
+import run
 from darkroom import config, oidc
+from darkroom.providers import exiftool
 from darkroom.domain import browser_jobs
 from darkroom.server import routes, viewer
 from darkroom.server.common import CSP, VIEWER_CSP
@@ -499,16 +502,33 @@ class ViewerLinkTests(unittest.TestCase):
                 self.assertEqual(config.viewer_link(settings), given)
 
     def test_without_vnc_url_the_link_goes_through_the_relay(self):
-        relayed = "https://darkroom.example/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000&path=viewer/websockify"
-        self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example/")), relayed)
-        self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://home.example/darkroom")),
-                         "https://home.example/darkroom/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000&path=darkroom/viewer/websockify")
+        options = "autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000"
+        cases = {
+            "https://darkroom.example/": f"https://darkroom.example/viewer/vnc.html?{options}&host=darkroom.example&port=443&encrypt=1&path=viewer/websockify",
+            "https://home.example/darkroom": f"https://home.example/darkroom/viewer/vnc.html?{options}&host=home.example&port=443&encrypt=1&path=darkroom/viewer/websockify",
+            "http://192.168.1.20:8000": f"http://192.168.1.20:8000/viewer/vnc.html?{options}&host=192.168.1.20&port=8000&encrypt=0&path=viewer/websockify",
+            "http://[fd00::20]:8000": f"http://[fd00::20]:8000/viewer/vnc.html?{options}&host=[fd00::20]&port=8000&encrypt=0&path=viewer/websockify",
+        }
+        for public, relayed in cases.items():
+            with self.subTest(public=public):
+                self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL=public)), relayed)
 
     def test_check_config_names_a_leftover_vnc_url_in_the_one_container(self):
         leftover = "VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"
         self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html")), [leftover])
         self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html", secret="")), [])
         self.assertEqual(config.vnc_url_problems(self.settings()), [])
+
+    def test_check_config_in_the_one_container_names_a_leftover_vnc_url(self):
+        config.handed_tokens.clear()
+        with tempfile.TemporaryDirectory() as folder:
+            given = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_PUBLIC_URL": "http://127.0.0.1:8000", "DARKROOM_ALLOW_NO_AUTH": "1",
+                     "DATABASE_URL": f"sqlite:///{folder}/db.sqlite", "VNC_URL": "https://browser.example/vnc.html"}
+            for marker, expected in (({"DARKROOM_ONE_CONTAINER": "1"}, True), ({}, False)):
+                with self.subTest(marker=marker), mock.patch.dict(os.environ, given | marker, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"), \
+                        contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+                    run.main(["check-config"])
+                self.assertEqual("remove VNC_URL from .env" in err.getvalue(), expected, err.getvalue())
 
     def test_without_the_secret_or_a_public_address_there_is_no_link(self):
         self.assertIsNone(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", secret="")))

@@ -104,10 +104,19 @@ def probe_cookie():
 class PageParts(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.breakers, self.scripts, self.local = [], [], []
+        self.breakers, self.scripts, self.local, self.inline = [], [], [], []
+        self.in_script = False
+
+    def handle_data(self, data):
+        if self.in_script:
+            self.inline.append(data)
+
+    def handle_endtag(self, tag):
+        self.in_script = False
 
     def handle_starttag(self, tag, attrs):
         fields = dict(attrs)
+        self.in_script = tag == "script" and not fields.get("src")
         self.breakers += [f"{tag} {name}=" for name in fields if name.startswith("on") or name == "style"]
         if tag in ("style", "base") or (tag == "script" and not fields.get("src")):
             self.breakers.append(f"inline {tag}")
@@ -143,6 +152,8 @@ def csp():
         if get(reference)[0] != 200:
             missing.append(reference)
     queue = list(page.scripts)
+    for code in page.inline:
+        queue += [found[0] or found[1] for found in IMPORTS.findall(code) if (found[0] or found[1]).startswith(".")]
     while queue:
         path = posixpath.normpath(queue.pop())
         if path in seen:

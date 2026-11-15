@@ -1,4 +1,5 @@
 import dataclasses
+import hashlib
 import json
 import re
 import tempfile
@@ -131,16 +132,35 @@ class ViewerPolicyTests(unittest.TestCase):
 
     @unittest.skipUnless((config.VIEWER_FILES / "vnc.html").is_file(), "noVNC is not installed here (CI installs it)")
     def test_novncs_page_loads_under_the_viewer_policy(self):
-        parsed = breakers((config.VIEWER_FILES / "vnc.html").read_text())
+        self.assert_viewer_loads(config.VIEWER_FILES)
+
+    def test_a_known_inline_start_script_is_served_as_a_module_of_its_own_and_any_other_stays_inline(self):
+        start = b"\n        import UI from './app/ui.js';\n        UI.start({});\n    "
+        page = b'<!doctype html><script type="module" src="app/error-handler.js"></script><script type="module">' + start + b"</script><p>body</p>"
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "vnc.html").write_bytes(page)
+            with mock.patch.object(viewer, "KNOWN_STARTS", frozenset({hashlib.sha256(start).hexdigest()})):
+                served = viewer.viewer_file(Path(folder), "vnc.html").body
+            self.assertEqual(served, page.replace(b'<script type="module">' + start + b"</script>", b'<script type="module" src="darkroom-start.js"></script>'))
+            self.assertEqual(breakers(served.decode()).found, [])
+            self.assertEqual(breakers(viewer.viewer_file(Path(folder), "vnc.html").body.decode()).found, ["inline script"])
+            module = viewer.viewer_file(Path(folder), viewer.START)
+        self.assertEqual((module.status, module.content_type, module.headers["Content-Security-Policy"]), (200, "text/javascript; charset=utf-8", VIEWER_CSP))
+        self.assertEqual(module.body, viewer.START_FILE.read_bytes())
+        self.assertEqual(re.findall(r"""^import[^'"]*['"]([^'"]+)['"]""", module.body.decode(), re.MULTILINE), ["./app/ui.js", "./core/util/logging.js"])
+
+    def assert_viewer_loads(self, root):
+        served = viewer.viewer_file(root, "vnc.html")
+        parsed = breakers(served.body.decode())
         self.assertEqual(parsed.found, [])
         self.assertTrue(parsed.local)
         for reference in parsed.local:
             with self.subTest(reference=reference):
-                self.assertEqual(viewer.viewer_file(config.VIEWER_FILES, reference).status, 200)
-        scripts = [path for folder in ("app", "core") for path in (config.VIEWER_FILES / folder).rglob("*.js")]
+                self.assertEqual(viewer.viewer_file(root, reference).status, 200)
+        scripts = [path for folder in ("app", "core") for path in (root / folder).rglob("*.js")]
         self.assertTrue(scripts)
         for path in scripts:
-            with self.subTest(script=str(path.relative_to(config.VIEWER_FILES))):
+            with self.subTest(script=str(path.relative_to(root))):
                 text = path.read_text()
                 self.assertIsNone(re.search(r"\beval\(|new Function\(|setAttribute\(['\"](style|on)", text))
                 self.assertEqual(re.findall(r"""^import[^'"]*['"](?!\.{1,2}/)([^'"]+)['"]""", text, re.MULTILINE), [])

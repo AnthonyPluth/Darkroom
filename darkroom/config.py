@@ -117,6 +117,7 @@ class Settings:
     allowed_hosts: tuple[str, ...] = ()
     key_origin: KeyOrigin = "none"
     viewer_secret: str = ""
+    one_container: bool = False
     viewer_files: Path = VIEWER_FILES
     from_environment: frozenset[str] = frozenset()
     wizard: bool = False
@@ -176,6 +177,7 @@ def load() -> Settings:
         allowed_hosts=env_list("DARKROOM_ALLOWED_HOSTS"),
         key_origin=key_origin,
         viewer_secret=viewer_secret(),
+        one_container=env_flag("DARKROOM_ONE_CONTAINER"),
         from_environment=frozenset(entry.variable for entry in STORABLE if env(entry.variable)),
         wizard=env_flag("DARKROOM_WIZARD"),
         blank_in_environment=frozenset(entry.variable for entry in STORABLE if entry.variable in os.environ and not env(entry.variable)),
@@ -357,9 +359,15 @@ def usable_viewer_url(vnc_url: str) -> str | None:
 def relay_viewer_url(settings: Settings) -> str | None:
     if not browser_token_usable(settings.viewer_secret) or usable_viewer_url(settings.public_url) is None:
         return None
-    prefix = urlsplit(settings.public_url).path.strip("/")
+    parts = urlsplit(settings.public_url)
+    prefix = parts.path.strip("/")
     socket_path = f"{prefix}/viewer/websockify" if prefix else "viewer/websockify"
-    return f"{settings.public_url}/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000&path={socket_path}"
+    host = parts.hostname or ""
+    shown = f"[{host}]" if ":" in host else host
+    secure = parts.scheme == "https"
+    port = parts.port or (443 if secure else 80)
+    return (f"{settings.public_url}/viewer/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000"
+            f"&host={shown}&port={port}&encrypt={int(secure)}&path={socket_path}")
 
 
 def viewer_link(settings: Settings) -> str | None:
@@ -367,7 +375,7 @@ def viewer_link(settings: Settings) -> str | None:
 
 
 def vnc_url_problems(settings: Settings) -> list[str]:
-    if settings.vnc_url and browser_token_usable(settings.viewer_secret):
+    if settings.vnc_url and (settings.one_container or browser_token_usable(settings.viewer_secret)):
         return ["VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"]
     if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
         return []

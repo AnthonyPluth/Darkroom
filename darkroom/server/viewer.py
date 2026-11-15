@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 import select
 import time
@@ -32,6 +33,11 @@ PING = b"\x89\x00"
 GOING_AWAY = b"\x88\x02\x03\xe9"
 SIGNED_OUT = b"\x88\x02\x03\xf0"
 CLOSE = 0x8
+START = "darkroom-start.js"
+START_FILE = Path(__file__).with_name("viewer_start.js")
+INLINE_MODULE = re.compile(rb'<script type="module">(.*?)</script>', re.DOTALL)
+KNOWN_STARTS = frozenset({"ffd3cf269d110ed3e86c2855c643e2314f9a3aa25a89cfcac7139149d6151471"})
+STARTED = f'<script type="module" src="{START}"></script>'.encode()
 NOT_HERE = "the remote browser view is not part of this setup"
 NOT_RUNNING = "the remote browser view is not running"
 
@@ -48,12 +54,22 @@ def relay(request: Request) -> Response:
     return viewer_file(settings.viewer_files, rest)
 
 
+def without_inline_start(page: bytes) -> bytes:
+    return INLINE_MODULE.sub(lambda found: STARTED if hashlib.sha256(found.group(1)).hexdigest() in KNOWN_STARTS else found.group(0), page)
+
+
 def viewer_file(root: Path, rest: str) -> Response:
+    headers = {"Content-Security-Policy": VIEWER_CSP, "X-Content-Type-Options": "nosniff"}
+    if rest == START:
+        return Response(200, START_FILE.read_bytes(), static.content_type_of(START), headers)
     base = root.resolve()
     candidate = (base / rest).resolve()
     if not candidate.is_relative_to(base) or not candidate.is_file() or candidate.stat().st_size > MAX_FILE:
         return error_response("not found", 404)
-    return Response(200, candidate.read_bytes(), static.content_type_of(candidate.name), {"Content-Security-Policy": VIEWER_CSP, "X-Content-Type-Options": "nosniff"})
+    body = candidate.read_bytes()
+    if candidate.suffix == ".html":
+        body = without_inline_start(body)
+    return Response(200, body, static.content_type_of(candidate.name), headers)
 
 
 def asks_to_upgrade(request: Request) -> bool:

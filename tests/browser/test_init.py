@@ -53,9 +53,9 @@ def handed(value):
 class PlanTests(unittest.TestCase):
     def test_the_app_gets_every_setting_it_reads_except_the_browser_token(self):
         read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text()))
-        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD"})
+        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_ONE_CONTAINER"})
         env = plan.app_env(GIVEN)
-        self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD]), (plan.PIPE["token"], plan.PIPE["viewer"]))
+        self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD], env[plan.ONE_CONTAINER]), (plan.PIPE["token"], plan.PIPE["viewer"], "1"))
         self.assertFalse({"DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
         self.assertEqual(env["DARKROOM_SECRET_KEY"], "key-canary")
         self.assertEqual(env["PATH"], "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin")
