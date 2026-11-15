@@ -9,7 +9,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/AnthonyPluth/Darkroom/issues</Support>
   <Project>https://github.com/AnthonyPluth/Darkroom</Project>
-  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json from the same release at /boot/config/darkroom/seccomp.json on the server, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). Local network only: never forward its port to the internet.</Overview>
+  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json of a release at /boot/config/darkroom/seccomp.json on the server, set Repository to that release's tag instead of latest, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). Port 8000 is published on every address of the server: keep it off the internet and never forward it.</Overview>
   <Category>MediaApp:Photos</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/AnthonyPluth/Darkroom/main/deploy/unraid/darkroom.xml</TemplateURL>
