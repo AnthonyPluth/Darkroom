@@ -1,3 +1,4 @@
+import contextlib
 import json
 import shutil
 import unittest
@@ -247,6 +248,38 @@ class ReconcilerTests(unittest.TestCase):
         self.assertTrue(all(entry["paused"] for identity, entry in self.fake.devices.items() if identity != OWN))
         self.assertEqual(set(self.rows().values()), {(False, transport.SHARE)})
         self.assertIsNone(moving.approved)
+
+    def test_stopping_pauses_whatever_it_can_reach_when_a_listing_or_a_pause_fails(self):
+        failed = syncthing.SyncthingFailed("Syncthing answered 500", 500)
+        real_update = syncthing.Client.update_device
+
+        def refuse_jo(client, identity, paused):
+            if identity == JO_DEVICE:
+                raise failed
+            return real_update(client, identity, paused)
+
+        for broken, patched in (("folders", {"folders": mock.DEFAULT}), ("devices", {"devices": mock.DEFAULT}), ("own", {"own_device_id": mock.DEFAULT}),
+                                ("one pause", {})):
+            with self.subTest(broken=broken):
+                self.reconcile()
+                self.assertTrue(all(not entry["paused"] for entry in self.fake.folders.values()))
+                with contextlib.ExitStack() as stack:
+                    replaced = stack.enter_context(mock.patch.multiple(syncthing.Client, **patched)) if patched else {}
+                    stack.enter_context(mock.patch.object(syncthing.Client, "update_device", autospec=True,
+                                                          side_effect=refuse_jo if broken == "one pause" else real_update))
+                    for each in replaced.values():
+                        each.side_effect = failed
+                    transport.stop(self.client)
+                folders = {entry["paused"] for entry in self.fake.folders.values()}
+                devices = {identity: entry["paused"] for identity, entry in self.fake.devices.items() if identity != OWN}
+                self.assertEqual(folders, {False} if broken == "folders" else {True})
+                if broken == "devices":
+                    self.assertEqual(set(devices.values()), {False})
+                elif broken == "one pause":
+                    self.assertEqual(devices, {JO_DEVICE: False, SAM_DEVICE: True})
+                else:
+                    self.assertEqual(set(devices.values()), {True})
+                self.held = set()
 
     def test_a_pixel_without_a_usable_device_id_gets_no_folder_and_its_persisted_one_stays_paused(self):
         identity = self.persisted(self.jo_pixel, JO_DEVICE, paused=False)
@@ -498,6 +531,36 @@ class SchedulerTests(unittest.TestCase):
         scheduler.run_one("syncthing.reconcile", 3820.0)
         self.assertTrue(self.folder()["paused"])
         scheduler.run_one("pixels.tend", 7300.0)
+        self.assertFalse(self.folder()["paused"])
+
+    def test_a_share_failure_seen_by_the_poll_holds_the_transport_until_a_tend_has_checked_the_recovered_share(self):
+        from darkroom.storage import db, share
+
+        scheduler = self.serving()
+        scheduler.run_one("pixels.tend", 105.0)
+        self.assertFalse(self.folder()["paused"])
+        copy = self.root / f"_pixels/{self.pixel}/jo/a.jpg"
+        sentinel = share.read_sentinel(self.root)
+        (self.root / share.SHARE_SENTINEL_FILE).unlink()
+        copy.unlink()
+        scheduler.run_one("syncthing.reconcile", 160.0)
+        self.assertTrue(self.folder()["paused"])
+        self.assertFalse(scheduler.placed_copies.ran)
+        share.write_sentinel(self.root, sentinel)
+        for at in (220.0, 280.0):
+            scheduler.run_one("syncthing.reconcile", at)
+            self.assertTrue(self.folder()["paused"])
+            with db.session(self.engine) as opened:
+                self.assertTrue(scheduler.placed_copies.held(opened, self.pixel))
+        self.assertFalse(copy.exists())
+        order = []
+        real_check, real_tick = pixel_check.check, transport.Transport.tick
+        with mock.patch.object(pixel_check, "check", side_effect=lambda *a: order.append("check") or real_check(*a)), \
+                mock.patch.object(transport.Transport, "tick", autospec=True, side_effect=lambda *a, **k: order.append("reconcile") or real_tick(*a, **k)):
+            scheduler.run_one("pixels.tend", 3700.0)
+        self.assertEqual(order, ["check", "reconcile"])
+        self.assertTrue(copy.is_file())
+        scheduler.run_one("syncthing.reconcile", 3760.0)
         self.assertFalse(self.folder()["paused"])
 
     def test_a_share_bound_again_counts_as_unchecked_for_the_transport_until_a_tend_has_seen_it(self):

@@ -177,8 +177,10 @@ def reconcile_transport(scheduler: Scheduler, settings: Settings, opened: Sessio
     client = transport_client(scheduler, settings)
     if client is None:
         return None
-    return scheduler.transport.tick(opened, client, photos, lambda pixel_id: scheduler.placed_copies.held(opened, pixel_id), share_problem(scheduler, opened),
-                                    at, force)
+    problem = share_problem(scheduler, opened)
+    if problem is not None:
+        scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+    return scheduler.transport.tick(opened, client, photos, lambda pixel_id: scheduler.placed_copies.held(opened, pixel_id), problem, at, force)
 
 
 def pause_transport(scheduler: Scheduler, settings: Settings, opened: Session, reason: str, at: float) -> None:

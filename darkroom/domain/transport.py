@@ -253,27 +253,42 @@ def approve(client: syncthing.Client, plan: Plan, own: str) -> set[int]:
     return approved
 
 
-def pause_everything(client: syncthing.Client, own: str, tolerant: bool = False) -> None:
-    writes: list[Callable[[], object]] = []
-    for device in client.devices():
-        if device.device_id != own and not device.paused:
-            writes.append(partial(client.update_device, device.device_id, paused=True))
-    for found in client.folders():
-        if not found.paused:
-            writes.append(partial(client.update_folder, found.id, paused=True))
-    for write in writes:
-        try:
-            write()
-        except syncthing.SyncthingFailed:
-            if not tolerant:
-                raise
+def device_pauses(client: syncthing.Client, own: str | None) -> list[Callable[[], object]]:
+    return [partial(client.update_device, device.device_id, paused=True) for device in client.devices() if device.device_id != own and not device.paused]
+
+
+def folder_pauses(client: syncthing.Client) -> list[Callable[[], object]]:
+    return [partial(client.update_folder, found.id, paused=True) for found in client.folders() if not found.paused]
+
+
+def pause_everything(client: syncthing.Client, own: str) -> None:
+    for write in device_pauses(client, own) + folder_pauses(client):
+        write()
+
+
+def attempted(step: Callable[[], object]) -> bool:
+    try:
+        step()
+    except syncthing.SyncthingFailed:
+        return False
+    return True
+
+
+def listed(listing: Callable[[], list[Callable[[], object]]]) -> list[Callable[[], object]]:
+    try:
+        return listing()
+    except syncthing.SyncthingFailed:
+        return []
 
 
 def stop(client: syncthing.Client) -> None:
     try:
-        pause_everything(client, client.own_device_id(), tolerant=True)
+        own: str | None = client.own_device_id()
     except syncthing.SyncthingFailed:
-        return
+        own = None
+    for listing in (partial(device_pauses, client, own), partial(folder_pauses, client)):
+        for write in listed(listing):
+            attempted(write)
 
 
 def resume(client: syncthing.Client, plan: Plan, approved: set[int], outcome: Outcome) -> None:
