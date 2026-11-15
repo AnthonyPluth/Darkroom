@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
@@ -207,20 +208,27 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             report = cleanup.clean(opened, Photos(settings.photos_root), at)
         monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
 
+    def share_stopped(opened: Session, at: float) -> bool:
+        refused = share.refusal(opened, at)
+        if refused is not None:
+            scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+            monitoring.log("pixel folders not tended: the share check failed", reason=refused)
+            return True
+        if share.rebound:
+            scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+        return False
+
     def tend_pixels(at: float) -> None:
         photos = share_photos
         with db.session(engine) as opened:
-            refused = share.refusal(opened, at)
-            if refused is not None:
-                scheduler.placed_copies = pixel_check.PlacedCopyCheck()
-                monitoring.log("pixel folders not tended: the share check failed", reason=refused)
+            if share_stopped(opened, at):
                 return
-            if share.rebound:
-                scheduler.placed_copies = pixel_check.PlacedCopyCheck()
             if scheduler.placed_copies.due(opened):
                 checked = scheduler.placed_copies.run(opened, photos, at)
                 monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,
                                unaccounted=sum(checked.unaccounted.values()), held=len(scheduler.placed_copies.held_pixels(opened)))
+            if share_stopped(opened, at) or share.rebound:
+                return
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
             held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,

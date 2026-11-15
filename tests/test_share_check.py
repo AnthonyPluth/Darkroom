@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 import run
 from darkroom import config, monitoring
-from darkroom.domain import pixel_folder, share_bind, share_check
+from darkroom.domain import pixel_check, pixel_folder, share_bind, share_check
 from darkroom.server import jobs
 from darkroom.storage import db, share, stored_settings
 from darkroom.storage.models import Event, StoredSetting
@@ -172,6 +172,54 @@ class ShareCheckTests(ShareWorld):
         self.assertEqual(self.states(), ["pruned", "pruned", "placed", "placed"])
         self.assertTrue(self.copy_path(self.jo_pixel, later).is_file())
         self.assertEqual(self.events(share_check.PASSED), [None])
+
+    def test_a_share_lost_during_the_placed_copy_pass_is_checked_again_before_pruning_or_placing(self):
+        prunable, missing, queued = self.busy_share()
+        self.bind()
+        scheduler = self.scheduler()
+        sentinel = self.root / share.SHARE_SENTINEL_FILE
+        real = pixel_check.PlacedCopyCheck.run
+        trees = []
+
+        def lose_the_share(check, opened, photos, now):
+            found = real(check, opened, photos, now)
+            sentinel.unlink()
+            trees.append((self.rows(), share_tree(self.root)))
+            return found
+
+        with mock.patch.object(pixel_check.PlacedCopyCheck, "run", lose_the_share), mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
+            scheduler.run_one("pixels.tend", NOW + HOUR)
+        log.assert_any_call("pixel folders not tended: the share check failed", reason=share_check.MISSING)
+        self.assertNotIn("pixel folders tended", [call.args[0] for call in log.call_args_list])
+        rows, tree = trees[0]
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(share_tree(self.root), tree)
+        self.assertTrue(self.copy_path(self.jo_pixel, prunable).is_file())
+        self.assertFalse(self.copy_path(self.jo_pixel, missing).exists())
+        self.assertFalse(self.copy_path(self.jo_pixel, queued).exists())
+        self.assertEqual(self.events(share_check.FAILED), [share_check.MISSING])
+
+    def test_a_share_rebound_during_the_placed_copy_pass_waits_for_the_next_cycle(self):
+        self.busy_share()
+        self.bind()
+        scheduler = self.scheduler()
+        real = pixel_check.PlacedCopyCheck.run
+        trees = []
+
+        def rebind(check, opened, photos, now):
+            found = real(check, opened, photos, now)
+            (self.root / share.SHARE_SENTINEL_FILE).unlink()
+            self.bind("f" * 32)
+            trees.append((self.rows(), share_tree(self.root)))
+            return found
+
+        with mock.patch.object(pixel_check.PlacedCopyCheck, "run", rebind):
+            scheduler.run_one("pixels.tend", NOW + HOUR)
+        rows, tree = trees[0]
+        self.assertEqual((self.rows(), share_tree(self.root)), (rows, tree))
+        self.assertFalse(scheduler.placed_copies.ran)
+        scheduler.run_one("pixels.tend", NOW + 2 * HOUR)
+        self.assertEqual(self.states(), ["pruned", "placed", "placed"])
 
     def test_a_symlinked_root_retargeted_while_running_is_never_tended_at_the_new_place(self):
         prunable, missing, queued = self.busy_share()
