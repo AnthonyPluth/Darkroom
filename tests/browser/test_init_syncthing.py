@@ -262,6 +262,79 @@ class SupervisedTests(Folders):
         self.assertEqual(fake.key, NEW)
 
 
+class RecoveryTests(Folders):
+    def setUp(self):
+        super().setUp()
+        self.home.mkdir(mode=0o700)
+        (self.home / "config.xml").write_text(GENERATED)
+        self.held = {"token": "t" * 43, "viewer": "v" * 43, "syncthing": NEW}
+
+    def supervise(self, syncthing_script, during):
+        out = self.data / "app-got"
+        app = plan.Spec("app", (sys.executable, "-c", f"import os, time; open({str(out)!r}, 'w').write(os.read(int(os.environ['FD']), 100).decode()); time.sleep(30)"),
+                        {"PATH": "/usr/bin:/bin", "FD": plan.PIPE["syncthing"]}, secrets=("syncthing",))
+        st = plan.Spec("syncthing", (sys.executable, "-c", syncthing_script), {"PATH": "/usr/bin:/bin"}, ready=syncthing.key_rotated(self.home, self.held, self.socket),
+                       recheck=True)
+        running = supervisor.Supervisor([st, app], self.held, base=0.1, cap=0.2, stop_seconds=1.0, ready_seconds=0.3, tick=0.02, recheck_seconds=0.05)
+        thread = threading.Thread(target=running.run)
+        with no_leaks(self, OLD, NEW) as watched:
+            thread.start()
+            try:
+                fake = during(running)
+                deadline = time.monotonic() + 10
+                while fake.key != NEW and time.monotonic() < deadline:
+                    time.sleep(0.05)
+            finally:
+                running.stop()
+                thread.join(10)
+        self.assertTrue(watched)
+        self.assertEqual(out.read_text(), NEW)
+        return fake, running
+
+    def until(self, condition):
+        deadline = time.monotonic() + 10
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(condition())
+
+    def test_syncthing_that_exits_before_the_rotation_is_rotated_once_the_supervisor_restarts_it(self):
+        marker = self.data / "first-run"
+        script = f"import os, sys, time\nif not os.path.exists({str(marker)!r}):\n    open({str(marker)!r}, 'w').close()\n    sys.exit(1)\ntime.sleep(30)"
+
+        def during(running):
+            self.until(lambda: (self.data / "app-got").exists() and running.children[0].failures >= 1 and running.children[0].process is not None)
+            self.assertFalse(running.children[0].ready)
+            return FakeSyncthing(self, OLD, OWN, str(self.socket))
+
+        fake, running = self.supervise(script, during)
+        self.assertEqual(fake.key, NEW)
+        self.assertEqual(syncthing.status(self.socket, "GET", "/rest/system/version", OLD), 403)
+        self.assertTrue(running.children[0].ready)
+
+    def test_a_start_slower_than_the_readiness_window_is_rotated_when_syncthing_answers(self):
+        def during(running):
+            self.until(lambda: (self.data / "app-got").exists())
+            time.sleep(0.2)
+            self.assertFalse(running.children[0].ready)
+            return FakeSyncthing(self, OLD, OWN, str(self.socket))
+
+        fake, running = self.supervise("import time; time.sleep(30)", during)
+        self.assertEqual(fake.key, NEW)
+        self.assertEqual(running.children[0].failures, 0)
+
+    def test_a_rotation_that_cannot_succeed_leaves_the_old_key_and_never_hands_it_to_the_app(self):
+        def during(running):
+            fake = FakeSyncthing(self, "a-key-the-config-does-not-hold-0123", OWN, str(self.socket))
+            self.until(lambda: (self.data / "app-got").exists())
+            time.sleep(0.3)
+            return fake
+
+        fake, running = self.supervise("import time; time.sleep(30)", during)
+        self.assertEqual(fake.key, "a-key-the-config-does-not-hold-0123")
+        self.assertFalse(running.children[0].ready)
+        self.assertNotIn(OLD, (self.data / "app-got").read_text())
+
+
 class PlanAndMainTests(unittest.TestCase):
     def test_with_the_setting_on_syncthing_comes_first_and_only_the_app_is_handed_its_key(self):
         specs = plan.specs(GIVEN, bool, bool, bool)
@@ -269,6 +342,7 @@ class PlanAndMainTests(unittest.TestCase):
         self.assertEqual([spec.secrets for spec in specs], [(), ("token", "viewer", "syncthing"), (), (), ("viewer",), ("token",)])
         self.assertEqual(specs[0].argv, ("python3", "-P", "-m", "darkroom_init.syncthing", "/appdata/syncthing"))
         self.assertIs(specs[0].ready, bool)
+        self.assertEqual([spec.name for spec in specs if spec.recheck], ["syncthing"])
         self.assertEqual(specs[1].env[plan.SYNCTHING_KEY_FD], plan.PIPE["syncthing"])
         self.assertEqual(specs[1].env["DARKROOM_SYNCTHING"], "1")
         self.assertFalse({plan.SYNCTHING_KEY_FD} & {name for spec in specs[2:] for name in spec.env})

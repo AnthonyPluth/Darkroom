@@ -37,6 +37,7 @@ class Spec:
     quiet: bool = False
     strays: bool = False
     ready: Callable[[], bool] | None = field(default=None, compare=False)
+    recheck: bool = False
 
 
 def picked(given: Mapping[str, str], names: tuple[str, ...]) -> dict[str, str]:
@@ -80,7 +81,7 @@ def syncthing_env(given: Mapping[str, str]) -> dict[str, str]:
 def syncthing_specs(given: Mapping[str, str], ready: Callable[[], bool] | None) -> list[Spec]:
     if not syncthing_on(given):
         return []
-    return [Spec("syncthing", ("python3", "-P", "-m", SYNCTHING_MODULE, syncthing_home(given)), syncthing_env(given), ready=ready)]
+    return [Spec("syncthing", ("python3", "-P", "-m", SYNCTHING_MODULE, syncthing_home(given)), syncthing_env(given), ready=ready, recheck=True)]
 
 
 def specs(given: Mapping[str, str], app_ready: Callable[[], bool], display_ready: Callable[[], bool], syncthing_ready: Callable[[], bool] | None = None) -> list[Spec]:

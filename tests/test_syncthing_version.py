@@ -136,6 +136,29 @@ class AppSettingTests(unittest.TestCase):
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_a_gate_that_starts_off_is_rechecked_until_the_handed_key_works_with_one_event_per_reason(self):
+        engine = own_database(self)
+        fake, path = on_socket(self)
+        fake.key = "persisted-key-canary-0123456789"
+        settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing=True, syncthing_key=KEY)
+        with no_leaks(self, KEY, "persisted-key-canary-0123456789", database=engine), mock.patch.object(config, "SYNCTHING_SOCKET", path):
+            scheduler = jobs.build(settings, engine, 100.0)
+            self.assertEqual(scheduler.syncthing, syncthing_version.Gate(False, syncthing_version.KEY_REFUSED))
+            scheduler.run_one("syncthing.gate", 160.0)
+            scheduler.run_one("syncthing.gate", 220.0)
+            self.assertFalse(scheduler.syncthing.on)
+            fake.key = KEY
+            scheduler.run_one("syncthing.gate", 280.0)
+            self.assertEqual(scheduler.syncthing, syncthing_version.Gate(True))
+            asked = len(fake.requests)
+            scheduler.run_one("syncthing.gate", 340.0)
+            self.assertEqual(len(fake.requests), asked)
+        self.assertEqual(scheduler.jobs["syncthing.gate"].interval, jobs.SYNCTHING_RECHECK_SECONDS)
+        self.assertNotIn("syncthing.gate", jobs.build(dataclasses.replace(settings, syncthing=False), engine, 100.0).jobs)
+        with db.session(engine) as opened:
+            self.assertEqual([entry.detail for entry in events.recent(opened, type=syncthing_version.EVENT)], [syncthing_version.KEY_REFUSED])
+
+
     def test_the_scheduler_holds_the_startup_gate_only_with_syncthing_on(self):
         engine = own_database(self)
         fake, path = on_socket(self)

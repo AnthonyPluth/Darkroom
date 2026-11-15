@@ -21,6 +21,7 @@ CAP_SECONDS = 60.0
 STABLE_SECONDS = 60.0
 STOP_SECONDS = 5.0
 READY_SECONDS = 60.0
+RECHECK_SECONDS = 1.0
 KILL_SECONDS = 1.0
 TICK_SECONDS = 0.2
 LISTEN = "0A"
@@ -81,16 +82,19 @@ class Child:
     started: float = 0.0
     failures: int = 0
     due: float = 0.0
+    ready: bool = False
+    next_check: float = 0.0
 
 
 class Supervisor:
     def __init__(self, specs: list[Spec], secrets: Mapping[Secret, str], adopt_orphans: bool = False, base: float = BASE_SECONDS, cap: float = CAP_SECONDS,
-                 stable: float = STABLE_SECONDS, stop_seconds: float = STOP_SECONDS, ready_seconds: float = READY_SECONDS, tick: float = TICK_SECONDS) -> None:
+                 stable: float = STABLE_SECONDS, stop_seconds: float = STOP_SECONDS, ready_seconds: float = READY_SECONDS, tick: float = TICK_SECONDS,
+                 recheck_seconds: float = RECHECK_SECONDS) -> None:
         self.children = [Child(spec) for spec in specs]
         self.secrets = dict(secrets)
         self.adopt_orphans = adopt_orphans
         self.base, self.cap, self.stable = base, cap, stable
-        self.stop_seconds, self.ready_seconds, self.tick = stop_seconds, ready_seconds, tick
+        self.stop_seconds, self.ready_seconds, self.tick, self.recheck_seconds = stop_seconds, ready_seconds, tick, recheck_seconds
         self.stopping = False
         self.ended: list[Child] = []
 
@@ -106,6 +110,7 @@ class Supervisor:
             env = {key: value.replace(PIPE[name], str(read_end)) for key, value in env.items()}
         output = subprocess.DEVNULL if spec.quiet else None
         child.started = time.monotonic()
+        child.ready, child.next_check = False, child.started
         try:
             child.process = subprocess.Popen(argv, env=env, cwd=spec.cwd, pass_fds=tuple(read_end for read_end, _ in pipes.values()), start_new_session=True,
                                              stdin=subprocess.DEVNULL, stdout=output, stderr=output)
@@ -196,11 +201,19 @@ class Supervisor:
         deadline = time.monotonic() + self.ready_seconds
         while child.spec.ready is not None and not self.stopping and child.process is not None and time.monotonic() < deadline:
             if child.spec.ready():
+                child.ready = True
                 return
             self.handle_exits()
             time.sleep(self.tick)
         if child.spec.ready is not None and child.process is not None and not self.stopping:
             log("child not ready in time; starting the next one", child=child.spec.name)
+
+    def recheck(self) -> None:
+        for child in self.children:
+            spec, now = child.spec, time.monotonic()
+            if spec.recheck and spec.ready is not None and child.process is not None and not child.ready and now >= child.next_check and not self.stopping:
+                child.next_check = now + self.recheck_seconds
+                child.ready = spec.ready()
 
     def run(self) -> int:
         for child in self.children:
@@ -210,6 +223,7 @@ class Supervisor:
             self.wait_ready(child)
         while not self.stopping:
             self.handle_exits()
+            self.recheck()
             for child in self.children:
                 if child.process is None and child.due <= time.monotonic() and not self.stopping:
                     self.start(child)

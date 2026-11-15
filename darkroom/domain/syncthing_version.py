@@ -63,11 +63,12 @@ def reason_off(client: syncthing.Client | None) -> str | None:
     return None if tested(found) else untested(found)
 
 
-def at_startup(opened: Session, client: syncthing.Client | None, now: float) -> Gate:
+def at_startup(opened: Session, client: syncthing.Client | None, now: float, previous: Gate | None = None) -> Gate:
     reason = reason_off(client)
     if reason is None:
-        monitoring.log("syncthing is a tested release; the transport may start", tested=tested_range())
+        monitoring.log("syncthing is a tested release; the transport may start", tested=tested_range(), after_retry=previous is not None)
         return Gate(True)
-    events.record(opened, now, EVENT, SUBJECT, reason)
-    monitoring.log("syncthing transport kept off", reason=reason)
+    if previous is None or previous.reason != reason:
+        events.record(opened, now, EVENT, SUBJECT, reason)
+        monitoring.log("syncthing transport kept off", reason=reason)
     return Gate(False, reason)

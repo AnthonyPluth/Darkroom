@@ -112,6 +112,7 @@ CLEANUP_HOUR = 4
 PIXEL_TEND_SECONDS = 3600.0
 IMMICH_RECONCILE_SECONDS = 900.0
 SCHEDULE_WATCH_HOUR = 5
+SYNCTHING_RECHECK_SECONDS = 60.0
 
 
 def tend_checks_placed_copies(scheduler: Scheduler) -> bool:
@@ -153,16 +154,23 @@ def syncthing_client(settings: Settings) -> syncthing.Client | None:
         return None
 
 
-def check_syncthing(settings: Settings, engine: Engine, at: float) -> syncthing_version.Gate | None:
+def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syncthing_version.Gate | None = None) -> syncthing_version.Gate | None:
     if not settings.syncthing:
         return None
     with db.session(engine, writing=True) as opened:
-        return syncthing_version.at_startup(opened, syncthing_client(settings), at)
+        return syncthing_version.at_startup(opened, syncthing_client(settings), at, previous)
 
 
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
     scheduler.syncthing = check_syncthing(settings, engine, now)
+
+    def recheck_syncthing(at: float) -> None:
+        if scheduler.syncthing is not None and not scheduler.syncthing.on:
+            scheduler.syncthing = check_syncthing(settings, engine, at, scheduler.syncthing)
+
+    if settings.syncthing:
+        scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
     share_photos = Photos(settings.photos_root)
     share = scheduler.share = share_check.ShareCheck.at_startup(share_photos.root)
     found_pusher = pusher if pusher is not None else pusher_of(settings)
