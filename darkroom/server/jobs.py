@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version
 from darkroom.domain.ingest import cleanup, run
-from darkroom.providers import immich, resend
+from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -41,6 +41,7 @@ class Scheduler:
         self.stopping = threading.Event()
         self.placed_copies = pixel_check.PlacedCopyCheck()
         self.share: share_check.ShareCheck | None = None
+        self.syncthing: syncthing_version.Gate | None = None
 
     def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
         self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
@@ -145,8 +146,23 @@ def pusher_of(settings: Settings) -> Pusher | None:
     return found
 
 
+def syncthing_client(settings: Settings) -> syncthing.Client | None:
+    try:
+        return syncthing.Client.on_socket(str(config.SYNCTHING_SOCKET), settings.syncthing_key) if settings.syncthing_key else None
+    except syncthing.SyncthingFailed:
+        return None
+
+
+def check_syncthing(settings: Settings, engine: Engine, at: float) -> syncthing_version.Gate | None:
+    if not settings.syncthing:
+        return None
+    with db.session(engine, writing=True) as opened:
+        return syncthing_version.at_startup(opened, syncthing_client(settings), at)
+
+
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
+    scheduler.syncthing = check_syncthing(settings, engine, now)
     share_photos = Photos(settings.photos_root)
     share = scheduler.share = share_check.ShareCheck.at_startup(share_photos.root)
     found_pusher = pusher if pusher is not None else pusher_of(settings)

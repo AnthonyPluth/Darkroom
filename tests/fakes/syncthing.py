@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import socketserver
 import threading
 import unittest
 from dataclasses import dataclass
@@ -23,9 +24,14 @@ class Received:
     body: bytes
 
 
+class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 class FakeSyncthing:
-    def __init__(self, test: unittest.TestCase, key: str, my_id: str):
+    def __init__(self, test: unittest.TestCase, key: str, my_id: str, socket_path: str | None = None):
         self.key = key
+        self.version = {"version": "v2.1.7", "longVersion": "syncthing v2.1.7", "isRelease": True, "isBeta": False, "os": "linux", "arch": "amd64"}
         self.my_id = my_id
         self.requests: list[Received] = []
         self.folders: dict[str, dict[str, object]] = {}
@@ -65,12 +71,13 @@ class FakeSyncthing:
             def log_message(self, *args: object) -> None:
                 pass
 
-        self.server = ThreadingHTTPServer((HOST, 0), Handler)
-        self.server.daemon_threads = True
+        self.server: socketserver.TCPServer | UnixServer = UnixServer(socket_path, Handler) if socket_path else ThreadingHTTPServer((HOST, 0), Handler)
+        if isinstance(self.server, ThreadingHTTPServer):
+            self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         test.addCleanup(self.server.server_close)
         test.addCleanup(self.server.shutdown)
-        self.url = f"http://{HOST}:{self.server.server_address[1]}"
+        self.url = "http://localhost" if socket_path else f"http://{HOST}:{self.server.server_address[1]}"
 
     def configuration(self) -> dict[str, object]:
         return {"version": 37, "folders": list(self.folders.values()), "devices": list(self.devices.values()), "options": dict(self.options),
@@ -100,7 +107,7 @@ class FakeSyncthing:
         if route == ("GET", "/rest/system/status"):
             return 200, {"myID": self.my_id, "uptime": 10}
         if route == ("GET", "/rest/system/version"):
-            return 200, {"version": "v2.1.7", "longVersion": "syncthing v2.1.7", "isRelease": True, "isBeta": False, "os": "linux", "arch": "amd64"}
+            return 200, self.version
         if route == ("GET", "/rest/config"):
             return 200, self.configuration()
         if route == ("GET", "/rest/config/folders"):

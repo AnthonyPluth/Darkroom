@@ -105,8 +105,11 @@ jobs:
         run: |
           docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 darkroom-single:smoke
           bash tests/browser/one_container.sh init 8766
+          docker exec init test ! -e /data/syncthing
           docker stop init
           docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
+      - name: Run the one container with Syncthing on under the deployment sandbox (the pinned release, started paused, its API on a private socket only, nothing synced with a peer until resumed)
+        run: bash tests/browser/syncthing_paused.sh darkroom-single:smoke 8767
 
   publish:
     needs: [build, single]

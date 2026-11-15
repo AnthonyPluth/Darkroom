@@ -6,8 +6,9 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
-from darkroom_init import plan, supervisor
+from darkroom_init import plan, supervisor, syncthing
 
 TOKEN_BYTES = 32
 
@@ -32,7 +33,10 @@ def main(given: Mapping[str, str] | None = None) -> int:
     supervisor.prctl(supervisor.PR_SET_DUMPABLE, 0)
     adopt = supervisor.prctl(supervisor.PR_SET_CHILD_SUBREAPER, 1)
     held: dict[plan.Secret, str] = {"token": secrets.token_urlsafe(TOKEN_BYTES), "viewer": secrets.token_urlsafe(TOKEN_BYTES)}
-    running = supervisor.Supervisor(plan.specs(given, app_ready(given), display_ready(given)), held, adopt_orphans=adopt)
+    if plan.syncthing_on(given):
+        held["syncthing"] = secrets.token_urlsafe(TOKEN_BYTES)
+    ready = syncthing.key_rotated(Path(plan.syncthing_home(given)), held)
+    running = supervisor.Supervisor(plan.specs(given, app_ready(given), display_ready(given), ready), held, adopt_orphans=adopt)
     signal.signal(signal.SIGTERM, running.stop)
     signal.signal(signal.SIGINT, running.stop)
     supervisor.log("init started", orphans_adopted=int(adopt))

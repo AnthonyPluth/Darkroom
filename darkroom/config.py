@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -57,10 +57,16 @@ def viewer_secret() -> str:
     return handed_on_pipe(raw) if raw else ""
 
 
+def syncthing_key() -> str:
+    raw = env("DARKROOM_SYNCTHING_KEY_FD")
+    return handed_on_pipe(raw) if raw else ""
+
+
 KeyOrigin = Literal["environment", "file", "none"]
 VIEWER_FILES = Path("/usr/share/novnc")
 VIEWER_PORT = 6080
 VIEWER_USER = "darkroom"
+SYNCTHING_SOCKET = Path("/run/darkroom/syncthing.sock")
 StoredKind = Literal["text", "address", "list", "secret", "sealed"]
 
 
@@ -123,6 +129,8 @@ class Settings:
     wizard: bool = False
     blank_in_environment: frozenset[str] = frozenset()
     browser_root: Path | None = None
+    syncthing: bool = False
+    syncthing_key: str = field(default="", repr=False)
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -183,6 +191,8 @@ def load() -> Settings:
         wizard=env_flag("DARKROOM_WIZARD"),
         blank_in_environment=frozenset(entry.variable for entry in STORABLE if entry.variable in os.environ and not env(entry.variable)),
         browser_root=Path(env("DARKROOM_BROWSER_ROOT")) if env("DARKROOM_BROWSER_ROOT") else None,
+        syncthing=env_flag("DARKROOM_SYNCTHING"),
+        syncthing_key=syncthing_key(),
     )
 
 
@@ -363,7 +373,16 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
+    return (found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings)
+            + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings))
+
+
+SYNCTHING_TWO_CONTAINERS = ("DARKROOM_SYNCTHING=1 does nothing in the two-container layout: only the one container's init starts Darkroom's Syncthing, "
+                            "so unset it here (docs/deploy/one-container.md)")
+
+
+def syncthing_problems(settings: Settings) -> list[str]:
+    return [SYNCTHING_TWO_CONTAINERS] if settings.syncthing and not settings.one_container else []
 
 
 def port_problem(address: str) -> bool:
