@@ -218,7 +218,7 @@ class SingleImageTests(unittest.TestCase):
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
-        for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:latest", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
+        for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:${{DARKROOM_TAG:-latest}}", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
                      "- seccomp:./deploy/browser/seccomp.json", '- "127.0.0.1:8000:8000"', "- ./data:/data"):
             self.assertIn(line, single)
         self.assertNotIn("working_dir:", single)
@@ -259,6 +259,24 @@ class SingleImageTests(unittest.TestCase):
 
 def template():
     return ElementTree.parse(ROOT / "deploy/unraid/darkroom.xml").getroot()
+
+
+class SecurityScanTests(unittest.TestCase):
+    def test_trivy_scans_the_one_container_image_as_it_scans_the_service_image(self):
+        workflow = (ROOT / ".github/workflows/security.yml").read_text()
+        jobs = re.split(r"\n  (?=[a-z][a-z-]*:\n)", workflow[workflow.index("\njobs:\n"):])[1:]
+        calls = [job for job in jobs if "uses: AnthonyPluth/fleet/.github/workflows/security.yml@" in job]
+        self.assertEqual(len(calls), 2)
+        service, single = calls
+        self.assertNotIn("dockerfile:", service)
+        self.assertIn("dockerfile: Dockerfile.single", single)
+        pins = {re.search(r"security\.yml@([0-9a-f]{40})", call).group(1) for call in calls}
+        self.assertEqual(len(pins), 1, "both calls run the same fleet release")
+        image_paths = re.search(r"^      image-paths: (\S+)$", single, re.M).group(1)
+        for changed in ("Dockerfile.single", "deploy/single/requirements.txt", "poetry.lock", "pyproject.toml", ".dockerignore"):
+            self.assertRegex(changed, image_paths)
+        self.assertIn("      sarif-upload: false\n", single)
+        self.assertEqual(re.search(r"^      code-paths: (\S+)$", single, re.M).group(1), "^$")
 
 
 class UnraidTemplateTests(unittest.TestCase):
@@ -302,6 +320,21 @@ class UnraidTemplateTests(unittest.TestCase):
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}
         self.assertEqual(masked, {"OIDC_CLIENT_SECRET", "IMMICH_ADMIN_KEY", "DARKROOM_SECRET_KEY"})
         self.assertFalse([config.get("Target") for config in configs if (config.text or "") != (config.get("Default") or "")])
+
+    def test_the_deploy_page_pairs_the_image_with_the_seccomp_profile_of_one_release(self):
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        self.assertIn("export DARKROOM_TAG=v1.2.3", page)
+        self.assertIn("git checkout v1.2.3", page)
+        self.assertIn("Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest`", page)
+        self.assertRegex((ROOT / ".env.example").read_text(), r"(?m)^# DARKROOM_TAG=$")
+        self.assertIn("set Repository to that release's tag", template().findtext("Overview"))
+
+    def test_the_deploy_page_keeps_the_first_run_setup_to_the_runbooks_conditions(self):
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        self.assertNotIn("LAN address only", page)
+        self.assertIn("every address the server has", page)
+        self.assertIn("unless `DARKROOM_WIZARD=1` is set", page)
+        self.assertNotIn("DARKROOM_WIZARD", {config.get("Target") for config in template().iter("Config")})
 
     def test_the_deploy_page_names_the_templates_seccomp_path_and_the_compose_command(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()

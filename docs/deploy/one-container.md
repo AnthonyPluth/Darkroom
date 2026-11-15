@@ -25,7 +25,7 @@ Two things are the owner's and come first:
 
 Chrome's sandbox needs user namespaces, which Docker's default seccomp profile refuses to an unprivileged process, so the container runs under `deploy/browser/seccomp.json` instead of with `--no-sandbox` ([browser.md](browser.md#chromium-sandbox-seccomp-instead-of---no-sandbox)). In one container that profile covers every process. Docker reads it from the host when the container is created, which the container cannot do for itself, so it is put on the host by hand:
 
-- **Compose:** nothing to do. The service points at `./deploy/browser/seccomp.json` in the checkout, which matches the checked-out release.
+- **Compose:** nothing to copy. The service points at `./deploy/browser/seccomp.json` in the checkout; set `DARKROOM_TAG` to the release tag the checkout is at, so the image compose pulls comes from the same release (below).
 - **Unraid:** copy `deploy/browser/seccomp.json` of the release you run to `/boot/config/darkroom/seccomp.json`, the path the template's Extra Parameters name:
 
   ```sh
@@ -33,7 +33,7 @@ Chrome's sandbox needs user namespaces, which Docker's default seccomp profile r
   wget -O /boot/config/darkroom/seccomp.json https://raw.githubusercontent.com/AnthonyPluth/Darkroom/<release>/deploy/browser/seccomp.json
   ```
 
-  `<release>` is the tag of the image you pull (for example `v1.2.3`), so the profile and the image match. Keep the file outside every folder mapped into a container (appdata and the photo share included): the container can write there, and a profile it could edit would no longer limit it. `/boot/config` is on the flash drive, survives a reboot and is mapped into nothing.
+  `<release>` is a release tag (for example `v1.2.3`), and the template's **Repository** names the same tag (below), so the profile and the image come from one release. Keep the file outside every folder mapped into a container (appdata and the photo share included): the container can write there, and a profile it could edit would no longer limit it. `/boot/config` is on the flash drive, survives a reboot and is mapped into nothing.
 
 Before each upgrade, compare `deploy/browser/seccomp.json` of the new release with the copy on the host (`git diff <old release> <new release> -- deploy/browser/seccomp.json` in a checkout); when it changed, copy the new file before recreating the container. If the file is missing, Docker refuses to start the container (`opening seccomp profile (...) failed: open ...: no such file or directory`); it never runs without it.
 
@@ -41,18 +41,19 @@ Before each upgrade, compare `deploy/browser/seccomp.json` of the new release wi
 
 1. Put the seccomp profile in place (above).
 2. Create the appdata folder and give it to Darkroom's user, so the app can write its database and secret key there (Docker would otherwise create it as root): `mkdir -p /mnt/user/appdata/darkroom && chown 99:100 /mnt/user/appdata/darkroom`. Prepare the photo share as the runbook says ([runbook](../runbook.md#darkroom-could-not-create-the-persons-folders)).
-3. Add the template: copy [deploy/unraid/darkroom.xml](../../deploy/unraid/darkroom.xml) to `/boot/config/plugins/dockerMan/templates-user/my-darkroom.xml`, then Docker, Add Container, and choose `darkroom` under Template.
-4. Set **Photo share** to the share's path (for example `/mnt/user/photos`), and the sign-in and Immich variables (or leave them empty and use the first-run setup, [runbook](../runbook.md#the-first-run-setup-api)). Leave `DARKROOM_SECRET_KEY` empty: the key is generated into appdata on the first start. Don't change Extra Parameters: they hold the user, the shared memory size, `--cap-drop=ALL`, `no-new-privileges` and the seccomp profile.
+3. Add the template: copy [deploy/unraid/darkroom.xml](../../deploy/unraid/darkroom.xml) to `/boot/config/plugins/dockerMan/templates-user/my-darkroom.xml`, then Docker, Add Container, and choose `darkroom` under Template. Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest` to the release whose profile you copied (`ghcr.io/anthonypluth/darkroom-single:v1.2.3`): `latest` moves with every release, and the profile on the flash drive does not.
+4. Set **Photo share** to the share's path (for example `/mnt/user/photos`), and the sign-in variables (`OIDC_*`, `DARKROOM_PUBLIC_URL`) and `IMMICH_URL`. The template does not turn on the first-run setup: its routes answer 401 unless `DARKROOM_WIZARD=1` is set, it has no screens yet (#305), and it may be on only while port 8000 cannot be reached from outside the LAN, IPv6 included ([runbook](../runbook.md#the-first-run-setup-api), `SECURITY.md`). If you use it anyway, add `DARKROOM_WIZARD=1` as a variable yourself, under those conditions, and remove it once the setup is done. Leave `DARKROOM_SECRET_KEY` empty: the key is generated into appdata on the first start. Don't change Extra Parameters: they hold the user, the shared memory size, `--cap-drop=ALL`, `no-new-privileges` and the seccomp profile.
 5. Apply, then check from another machine on the LAN: `curl -fsS http://<server>:8000/healthz` answers `{"ok": true, "version": ...}`, and the container's log (Docker, the container's icon, Logs) shows `"event": "init started"`.
 
-The template publishes port 8000 on the server's LAN address only; never forward it from the router. Unraid is believed to set `TZ` for every container (UNVERIFIED until spike S4, #311); if the times in Darkroom's log are UTC, add a `TZ` variable. Appdata on Unraid's user-share layer is believed to be unreliable for SQLite's locking on some setups; if the log shows `database is locked`, point **Appdata** at the pool's direct path (for example `/mnt/cache/appdata/darkroom`).
+In bridge mode Docker publishes port 8000 on every address the server has, not only its LAN address, and its proxy relays IPv6 connections to it too: anything that can reach the server on any address can reach Darkroom. Keep it so: never forward the port from the router, don't give the server a public IPv6 address that the firewall lets through, and treat Tailscale or VPN addresses as part of who can reach it. Unraid is believed to set `TZ` for every container (UNVERIFIED until spike S4, #311); if the times in Darkroom's log are UTC, add a `TZ` variable. Appdata on Unraid's user-share layer is believed to be unreliable for SQLite's locking on some setups; if the log shows `database is locked`, point **Appdata** at the pool's direct path (for example `/mnt/cache/appdata/darkroom`).
 
 ## Docker Compose
 
-From a checkout of the release you run, with the photo share at `/path/to/the/photo/share`:
+From a checkout of the release you run (a release tag such as `v1.2.3`, not `main`), with the photo share at `/path/to/the/photo/share`:
 
 ```sh
-git checkout <release>
+git checkout v1.2.3
+export DARKROOM_TAG=v1.2.3
 mkdir -p data && sudo chown 99:100 data
 export PHOTOS_ROOT=/path/to/the/photo/share
 docker compose --profile single pull darkroom-single
@@ -60,7 +61,7 @@ docker compose --profile single up -d darkroom-single
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-Always name the service: `--profile single up -d` without `darkroom-single` also starts the two-container `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
+`DARKROOM_TAG` (also read from `.env`) picks the image tag, so the image and the checkout's seccomp profile come from the same release; left unset, compose pulls `latest`, which matches only a checkout of the newest release. Always name the service: `--profile single up -d` without `darkroom-single` also starts the two-container `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
 
 Settings go in `.env` next to `docker-compose.yml`, which compose reads for `PHOTOS_ROOT` and hands to the container whole. Copy only what you set from `.env.example`; in particular leave out `DARKROOM_HOST`, `DARKROOM_PORT`, `DARKROOM_PHOTOS_ROOT`, `DARKROOM_DATA_DIR` and `DARKROOM_BROWSER_ROOT`, which the image sets: `DARKROOM_HOST=127.0.0.1` from the example would make the app listen on the container's own loopback, where the published port cannot reach it.
 
@@ -119,4 +120,4 @@ To restore, stop the container, put the appdata folder back (owner 99:100), and 
 
 ## Upgrading
 
-Pull and recreate: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`, or on Unraid, Check for Updates and Apply. Before that, check whether the seccomp profile changed, and copy it first (above). A release that migrates the database cannot be undone by starting the older image; take a backup before upgrading and restore it to go back (design section 9).
+With Compose, check out the new release tag and set `DARKROOM_TAG` to it, then pull and recreate: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`; the checkout brings the release's seccomp profile. On Unraid, copy the new release's seccomp profile first when it changed (above), then change **Repository** to the new tag and Apply. A release that migrates the database cannot be undone by starting the older image; take a backup before upgrading and restore it to go back (design section 9).
