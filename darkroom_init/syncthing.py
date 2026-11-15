@@ -5,7 +5,6 @@ import os
 import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
@@ -13,7 +12,7 @@ from pathlib import Path
 from xml.etree import ElementTree  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml -- only Syncthing's own config.xml is parsed; Python's parser resolves no external entity
 
 from darkroom_init.plan import Secret
-from darkroom_init.supervisor import log
+from darkroom_init.supervisor import become_quietly, log, run_quietly
 
 BINARY = "/usr/local/bin/syncthing"
 SOCKET_FOLDER = Path("/run/darkroom")
@@ -26,7 +25,7 @@ OFF = {"globalAnnounceEnabled": "false", "relaysEnabled": "false", "natEnabled":
 FIRST_START = OFF | {"localAnnounceEnabled": "false", "startBrowser": "false", "setLowPriority": "false"}
 GENERATE_SECONDS = 120.0
 TIMEOUT = 5.0
-Runner = Callable[..., object]
+Runner = Callable[[list[str], float], None]
 
 
 class Refused(Exception):
@@ -75,8 +74,7 @@ def not_off(config: Path, socket_path: Path) -> list[str]:
 def generate(home: Path, socket_path: Path, binary: str, run: Runner) -> None:
     fresh = Path(tempfile.mkdtemp(prefix=".syncthing-", dir=home.parent))
     try:
-        run([binary, "generate", f"--home={fresh}", "--no-port-probing"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=True, timeout=GENERATE_SECONDS)
+        run([binary, "generate", f"--home={fresh}", "--no-port-probing"], GENERATE_SECONDS)
         write_first_start_options(fresh / CONFIG, socket_path)
         os.rename(fresh, home)
     except BaseException:
@@ -99,7 +97,7 @@ def clear_stale_socket(socket_path: Path) -> None:
     socket_path.unlink()
 
 
-def prepare(home: Path, socket_path: Path = SOCKET, binary: str = BINARY, run: Runner = subprocess.run) -> None:
+def prepare(home: Path, socket_path: Path = SOCKET, binary: str = BINARY, run: Runner = run_quietly) -> None:
     if not private_folder(socket_path.parent):
         raise Refused("the folder for Syncthing's API socket is not private to the container's user")
     if not (home / CONFIG).exists():
@@ -177,13 +175,10 @@ def main(argv: list[str]) -> int:
     except Refused as refused:
         log("syncthing not started", reason=str(refused))
         return 1
-    except (OSError, subprocess.SubprocessError, ElementTree.ParseError) as error:
+    except (OSError, ElementTree.ParseError) as error:
         log("syncthing not started", reason="its home or first configuration could not be prepared", error=type(error).__name__)
         return 1
-    quiet = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(quiet, 1)
-    os.dup2(quiet, 2)
-    os.execv(BINARY, serve_argv(home))
+    become_quietly(serve_argv(home))
 
 
 if __name__ == "__main__":

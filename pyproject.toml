@@ -151,7 +151,7 @@ id = "subprocess-only-exiftool"
 name = "Only the exiftool provider runs subprocesses"
 type = "protected"
 protected_modules = ["subprocess"]
-allowed_importers = ["darkroom.providers.exiftool", "darkroom_browser.runner", "darkroom_init.supervisor", "darkroom_init.__main__", "darkroom_init.syncthing"]
+allowed_importers = ["darkroom.providers.exiftool", "darkroom_browser.runner", "darkroom_init.supervisor", "darkroom_init.__main__"]
 broken_contract_guidance = "Run exiftool through darkroom.providers.exiftool."
 
 [tool.mypy]

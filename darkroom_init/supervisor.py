@@ -10,6 +10,7 @@ import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import NoReturn
 from pathlib import Path
 
 from darkroom_init.plan import PIPE, Secret, Spec
@@ -25,6 +26,24 @@ RECHECK_SECONDS = 1.0
 KILL_SECONDS = 1.0
 TICK_SECONDS = 0.2
 LISTEN = "0A"
+
+
+class CommandFailed(OSError):
+    pass
+
+
+def run_quietly(argv: list[str], timeout: float) -> None:
+    try:
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=timeout)
+    except subprocess.SubprocessError as error:
+        raise CommandFailed(type(error).__name__) from None
+
+
+def become_quietly(argv: list[str]) -> NoReturn:
+    quiet = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(quiet, 1)
+    os.dup2(quiet, 2)
+    os.execv(argv[0], argv)
 
 
 def log(event: str, **fields: str | int | float) -> None:

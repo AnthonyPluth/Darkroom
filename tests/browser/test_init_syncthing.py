@@ -1,7 +1,6 @@
 import os
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -53,7 +52,7 @@ GIVEN = {"PATH": "/x", "HOME": "/home/darkroom", "LANG": "C.UTF-8", "TZ": "Europ
          "IMMICH_ADMIN_KEY": "immich-canary"}
 
 
-def fake_generate(argv, **options):
+def fake_generate(argv, timeout):
     home = Path(next(part for part in argv if part.startswith("--home=")).removeprefix("--home="))
     (home / "config.xml").write_text(GENERATED)
     (home / "key.pem").write_text("made-up key")
@@ -90,8 +89,7 @@ class FirstStartTests(Folders):
         self.assertEqual(argv[:2], ["/opt/made-up/syncthing", "generate"])
         self.assertEqual(argv[3:], ["--no-port-probing"])
         self.assertTrue(argv[2].startswith(f"--home={self.data}/.syncthing-"))
-        self.assertEqual(generate.call_args.kwargs | {"stdin": None}, {"stdin": None, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": True,
-                                                                        "timeout": syncthing.GENERATE_SECONDS})
+        self.assertEqual(generate.call_args.args[1], syncthing.GENERATE_SECONDS)
         options, listen, gui = options_of(self.home / "config.xml")
         self.assertEqual({name: options[name] for name in syncthing.FIRST_START}, syncthing.FIRST_START)
         self.assertEqual(options["globalAnnounceServer"], "default")
@@ -116,11 +114,11 @@ class FirstStartTests(Folders):
         self.assertTrue((self.home / "key.pem").exists())
 
     def test_a_failed_generate_leaves_no_half_made_home(self):
-        def broken(argv, **options):
-            fake_generate(argv)
-            raise subprocess.CalledProcessError(1, argv)
+        def broken(argv, timeout):
+            fake_generate(argv, timeout)
+            raise supervisor.CommandFailed("CalledProcessError")
 
-        self.assertRaises(subprocess.CalledProcessError, self.prepare, broken)
+        self.assertRaises(supervisor.CommandFailed, self.prepare, broken)
         self.assertEqual([path.name for path in self.data.iterdir()], ["run"])
 
     def test_a_configuration_that_turns_an_outward_option_back_on_or_moves_the_api_off_the_socket_is_refused_at_every_start(self):
@@ -169,6 +167,18 @@ class FirstStartTests(Folders):
         self.assertNotIn("STGUIAPIKEY", source)
 
 
+class RunQuietlyTests(unittest.TestCase):
+    def test_only_the_supervisor_runs_a_program_and_a_failure_or_timeout_is_an_os_error_with_no_output(self):
+        with no_leaks(self, "printed-canary-0123") as watched:
+            supervisor.run_quietly([sys.executable, "-c", "print('printed-canary-0123')"], 10)
+            with self.assertRaisesRegex(supervisor.CommandFailed, "^CalledProcessError$"):
+                supervisor.run_quietly([sys.executable, "-c", "import sys; print('printed-canary-0123'); sys.exit(3)"], 10)
+            with self.assertRaisesRegex(supervisor.CommandFailed, "^TimeoutExpired$"):
+                supervisor.run_quietly([sys.executable, "-c", "import time; time.sleep(5)"], 0.2)
+        self.assertTrue(watched)
+        self.assertNotIn("import subprocess", (ROOT / "darkroom_init/syncthing.py").read_text())
+
+
 class WrapperTests(Folders):
     def test_the_wrapper_prepares_then_becomes_syncthing_with_its_output_dropped(self):
         with mock.patch.object(syncthing, "prepare") as prepare, mock.patch("os.execv") as execv, mock.patch("os.dup2") as dup2, \
@@ -177,6 +187,8 @@ class WrapperTests(Folders):
         prepare.assert_called_once_with(self.home)
         self.assertEqual([call.args for call in dup2.call_args_list], [(99, 1), (99, 2)])
         execv.assert_called_once_with(syncthing.BINARY, syncthing.serve_argv(self.home))
+        source = (ROOT / "darkroom_init/syncthing.py").read_text()
+        self.assertFalse([name for name in ("os.exec", "os.spawn", "os.system", "os.popen", "os.fork") if name in source])
 
     def test_a_refused_or_failed_start_exits_with_a_fixed_reason_for_the_init_to_retry(self):
         with no_leaks(self, "unusable-home-canary") as watched, mock.patch("os.execv") as execv:
