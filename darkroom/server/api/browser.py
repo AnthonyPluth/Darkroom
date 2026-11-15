@@ -41,7 +41,7 @@ def list_jobs(request: Request) -> Annotated[Response, contract.BrowserJobs]:
 def view(request: Request) -> Annotated[Response, contract.BrowserView]:
     with db.session(engine_of(request)) as opened:
         seen = browser_jobs.worker_last_seen(opened)
-    return json_response({"vnc_url": viewer_url(request.settings.vnc_url), "worker_last_seen": seen})
+    return json_response({"vnc_url": viewer_url(request.settings), "worker_last_seen": seen})
 
 
 def enqueue(request: Annotated[Request, contract.EnqueueBody]) -> Annotated[Response, contract.BrowserJobReply]:

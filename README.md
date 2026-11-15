@@ -11,6 +11,7 @@ make setup          # Python 3.14 + Poetry; exiftool must be installed too
 make check          # lint, checks, tests with the coverage floor
 python run.py check-config
 python run.py serve # GET /healthz
+python run.py bind-share         # once per deployment, in the container: binds the working share (docs/deploy/share.md)
 python run.py demo --data demo   # made-up people, Pixels, iPhones and photos in ./demo, to look at without a Google account
 ```
 

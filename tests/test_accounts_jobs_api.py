@@ -507,7 +507,7 @@ class TwoRootsTests(ApiCase):
         (self.browser_root / str(self.account_id) / "profile").mkdir(parents=True)
         status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
         self.assertEqual(status, 500)
-        self.assertIn("is a link", reply["error"])
+        self.assertIn("the account's old browser folder on the photo share (_browser/, from before the move to appdata) is a link, so it was not removed", reply["error"])
         self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
         self.assertTrue((self.browser_root / str(self.account_id) / "profile").is_dir())
         self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
@@ -519,7 +519,8 @@ class TwoRootsTests(ApiCase):
         (self.browser_root / str(self.account_id)).symlink_to(self.photos / "jo")
         status, reply = self.call("DELETE", f"/api/accounts/{self.account_id}")
         self.assertEqual(status, 500)
-        self.assertIn("is a link", reply["error"])
+        self.assertIn("the account's browser folder is a link, so it was not removed", reply["error"])
+        self.assertNotIn("photo share", reply["error"])
         self.assertEqual((self.photos / "jo" / "a.jpg").read_bytes(), b"photo")
         self.assertEqual(len(self.call("GET", "/api/accounts")[1]["accounts"]), 1)
 

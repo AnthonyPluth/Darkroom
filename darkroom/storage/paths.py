@@ -85,6 +85,8 @@ class NotAPixelCopy(ValueError):
     pass
 
 
+LIVE_PROFILE = "the account's browser folder"
+STALE_PROFILE = "the account's old browser folder on the photo share (_browser/, from before the move to appdata)"
 UNSAFE_BROWSER_ROOT = "the browser's folder is the photo folder, inside it or holds it, so nothing was removed"
 
 
@@ -118,21 +120,21 @@ class BrowserState:
     def failures(self, account: str, job: str) -> Path:
         return self.inside(self.name_part(account), "failures", self.name_part(job))
 
-    def retire_account(self, account: str) -> None:
+    def retire_account(self, account: str, what: str = LIVE_PROFILE) -> None:
         name = self.name_part(account)
         if self.unsafe():
             raise ProfileNotRemoved(UNSAFE_BROWSER_ROOT)
         target = self.given / name
         if self.given.is_symlink() or target.is_symlink():
-            raise ProfileNotRemoved("the account's browser folder is a link, so it was not removed")
+            raise ProfileNotRemoved(f"{what} is a link, so it was not removed")
         if not target.exists():
             return
         if target.resolve() != self.profile(name).parent:
-            raise ProfileNotRemoved("the account's browser folder is not where it should be, so it was not removed")
+            raise ProfileNotRemoved(f"{what} is not where it should be, so it was not removed")
         try:
             shutil.rmtree(target)
         except OSError as error:
-            raise ProfileNotRemoved("the account's browser folder could not be removed") from error
+            raise ProfileNotRemoved(f"{what} could not be removed") from error
 
 
 def browser_state(photos_root: Path, browser_root: Path | None) -> BrowserState:

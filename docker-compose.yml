@@ -32,6 +32,7 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-15}
       BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}
       TZ: ${TZ:-UTC}
+      DARKROOM_ONE_CONTAINER: "1"
     shm_size: 1g
     stop_grace_period: 30s
     cap_drop: [ALL]

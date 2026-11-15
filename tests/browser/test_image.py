@@ -296,7 +296,8 @@ class UnraidTemplateTests(unittest.TestCase):
         names = [config.get("Target") for config in configs]
         self.assertEqual(len(names), len(set(names)))
         environment = set(re.findall(r"^      ([A-Z_]+): ", compose_service("darkroom-single"), re.M))
-        self.assertEqual(set(names), environment - {"TZ"})
+        self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER"})
+        self.assertRegex(SINGLE, r"(?m)^ENV .*\bDARKROOM_ONE_CONTAINER=1\b", "the image marks itself, so the template and `docker exec` need no variable for it")
         self.assertFalse(set(names) & set(FALLBACK_ONLY))
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}
         self.assertEqual(masked, {"OIDC_CLIENT_SECRET", "IMMICH_ADMIN_KEY", "DARKROOM_SECRET_KEY"})

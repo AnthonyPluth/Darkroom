@@ -317,3 +317,28 @@ rules:
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]
+
+  - id: darkroom-share-sentinel-one-writer
+    message: >-
+      Only `python run.py bind-share` writes the share's sentinel and records its identity (#316): placing and pruning
+      run only while the sentinel on the share matches the recorded one, and the share check never repairs itself,
+      because a missing mount looks exactly like a lost share. darkroom/domain/share_bind.py writes them, only run.py
+      calls share_bind.bind_share, and only darkroom/storage/share.py names the sentinel's file.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $M.$F(...)
+                  - pattern: $F(...)
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^(write_sentinel|record_share|bind_share)$
+          - pattern: $M.SHARE_SENTINEL_FILE
+          - pattern: SHARE_SENTINEL_FILE
+          - pattern: |
+              ".darkroom-share"
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/"]
+      exclude: ["/darkroom/storage/share.py", "/darkroom/domain/share_bind.py"]
