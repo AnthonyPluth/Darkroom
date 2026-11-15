@@ -1,38 +1,8 @@
 services:
-  darkroom:
-    build:
-      context: .
-      args:
-        PUID: ${PUID:-99}
-        PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom:latest
-    restart: unless-stopped
-    user: "${PUID:-99}:${PGID:-100}"
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
-      - ./data:/data
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      DARKROOM_SECRET_KEY: ${DARKROOM_SECRET_KEY:-}
-      DARKROOM_PUBLIC_URL: ${DARKROOM_PUBLIC_URL:-}
-      OIDC_ISSUER: ${OIDC_ISSUER:-}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_ALLOWED_GROUPS: ${OIDC_ALLOWED_GROUPS:-parents}
-      IMMICH_URL: ${IMMICH_URL:-}
-      IMMICH_ADMIN_KEY: ${IMMICH_ADMIN_KEY:-}
-      DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
-      VNC_URL: ${VNC_URL:-}
-      TZ: ${TZ:-UTC}
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-
-  # The one container, opt-in (docs/design/single-container.md, section 3): stop the two, remove VNC_URL from .env (the two-container token and viewer secret are ignored here), then `docker compose --profile single up -d darkroom-single`.
+  # The default: the one container, the app and the browser worker together (docs/deploy/one-container.md). Start it by name, with
+  # `docker compose --profile single up -d darkroom-single`: without the name, compose also starts `darkroom` below. Never run both layouts at once.
+  # Set DARKROOM_TAG to the release the checkout is at (for example v1.2.3): every service's image takes it, so the images, ./deploy/browser/seccomp.json
+  # and the fallback you go back to all come from the same release. Unset, every service pulls latest, as before.
   darkroom-single:
     build:
       context: .
@@ -40,11 +10,10 @@ services:
       args:
         PUID: ${PUID:-99}
         PGID: ${PGID:-100}
+    image: ghcr.io/anthonypluth/darkroom-single:${DARKROOM_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     profiles: [single]
-    working_dir: /opt/init
-    command: ["python", "-m", "darkroom_init"]
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -73,9 +42,44 @@ services:
       - no-new-privileges:true
       - seccomp:./deploy/browser/seccomp.json
 
+  # The fallback: the app and the browser worker in two containers, as before the one container (docs/deploy/browser.md). `docker compose up -d` starts
+  # only the app; `docker compose --profile browser up -d` adds the worker. Kept for one minor release after the one container became the default.
+  darkroom:
+    build:
+      context: .
+      args:
+        PUID: ${PUID:-99}
+        PGID: ${PGID:-100}
+    image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}
+    restart: unless-stopped
+    user: "${PUID:-99}:${PGID:-100}"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DARKROOM_SECRET_KEY: ${DARKROOM_SECRET_KEY:-}
+      DARKROOM_PUBLIC_URL: ${DARKROOM_PUBLIC_URL:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_ALLOWED_GROUPS: ${OIDC_ALLOWED_GROUPS:-parents}
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_ADMIN_KEY: ${IMMICH_ADMIN_KEY:-}
+      DARKROOM_BROWSER_TOKEN: ${DARKROOM_BROWSER_TOKEN:-}
+      VNC_URL: ${VNC_URL:-}
+      TZ: ${TZ:-UTC}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
   # PostgreSQL instead of the default SQLite (docs/deploy/postgres.md): uncomment this service and the `volumes:` entry at the end of the file, put
   # DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom and the same password in .env, and add
-  # `depends_on: [postgres]` to darkroom. Nothing moves an existing SQLite database over.
+  # `depends_on: [postgres]` to darkroom-single (or to darkroom, in the two containers). Nothing moves an existing SQLite database over.
   # postgres:
   #   image: postgres:17
   #   restart: unless-stopped
@@ -93,7 +97,7 @@ services:
       args:
         PUID: ${PUID:-99}
         PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom-browser:latest
+    image: ghcr.io/anthonypluth/darkroom-browser:${DARKROOM_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     profiles: [browser]

@@ -1,5 +1,7 @@
 # Deploying the browser worker
 
+The default deployment is the one container, which runs this worker inside it ([one-container.md](one-container.md)). This page describes the worker itself and the two-container layout, `darkroom` plus `darkroom-browser`, which stays the fallback for one minor release after the one container became the default, configured exactly as below.
+
 The `darkroom-browser` container is a stateless executor: `darkroom` owns the job queue in its database and the worker claims jobs over the internal API with a shared token, runs them in Chromium on a virtual display, and reports back. Nothing in it needs to be backed up; the per-account browser profiles and failure captures live on the photo share under `_browser/`.
 
 ## What runs inside
