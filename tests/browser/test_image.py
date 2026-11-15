@@ -40,9 +40,9 @@ class BrowserImageTests(unittest.TestCase):
                 self.assertIn('getent group "$PGID"', contents)
                 self.assertIn('--uid "$PUID" --gid "$PGID"', contents)
         compose = (ROOT / "docker-compose.yml").read_text()
-        self.assertEqual(compose.count('user: "${PUID:-99}:${PGID:-100}"'), 2)
-        self.assertEqual(compose.count("PUID: ${PUID:-99}"), 2)
-        self.assertEqual(compose.count("PGID: ${PGID:-100}"), 2)
+        self.assertEqual(compose.count('user: "${PUID:-99}:${PGID:-100}"'), 3)
+        self.assertEqual(compose.count("PUID: ${PUID:-99}"), 3)
+        self.assertEqual(compose.count("PGID: ${PGID:-100}"), 3)
 
     def test_the_seccomp_profile_allows_chromiums_namespace_and_chroot_sandbox(self):
         profile = json.loads((ROOT / "deploy/browser/seccomp.json").read_text())
@@ -180,8 +180,8 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("file: Dockerfile.single", job)
         self.assertIn("tags: darkroom-single:smoke", job)
         run_lines = [line.strip() for line in job.splitlines() if line.strip().startswith("docker run")]
-        self.assertEqual(len(run_lines), 2)
-        healthz, smoke = run_lines
+        self.assertEqual(len(run_lines), 3)
+        healthz, smoke, init = run_lines
         self.assertIn(SANDBOX, healthz)
         self.assertIn("-p 8765:8000 darkroom-single:smoke", healthz)
         self.assertIn("curl -fsS http://127.0.0.1:8765/healthz", job)
@@ -190,6 +190,22 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("-e PATH=/opt/worker/bin:", smoke)
         self.assertIn("test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh", smoke)
         self.assertNotIn("platforms:", job)
+        self.assertIn(f"{SANDBOX} --shm-size=1g", init)
+        self.assertTrue(init.endswith("-w /opt/init darkroom-single:smoke python -m darkroom_init"))
+        self.assertIn("bash tests/browser/one_container.sh init 8766", job)
+        self.assertIn('"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" ', job)
+
+    def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
+        self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
+        self.assertIn('CMD ["python", "run.py", "serve"]', SINGLE)
+        compose = (ROOT / "docker-compose.yml").read_text()
+        single = compose[compose.index("  darkroom-single:"):compose.index("  # PostgreSQL instead")]
+        for line in ("dockerfile: Dockerfile.single", "profiles: [single]", "working_dir: /opt/init", 'command: ["python", "-m", "darkroom_init"]',
+                     "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true", "- seccomp:./deploy/browser/seccomp.json", '- "127.0.0.1:8000:8000"'):
+            self.assertIn(line, single)
+        self.assertFalse([name for name in ("DARKROOM_BROWSER_TOKEN:", "DARKROOM_VNC_SECRET:", "VNC_URL:", "DARKROOM_URL:") if name in single])
+        self.assertNotIn("profiles:", compose[compose.index("  darkroom:"):compose.index("  darkroom-single:")])
+        self.assertIn("docker compose --profile single config --quiet", (ROOT / ".github/workflows/docker.yml").read_text())
 
 
 if __name__ == "__main__":

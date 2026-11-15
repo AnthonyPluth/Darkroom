@@ -63,7 +63,7 @@ command = "make --no-print-directory -s verify-skill-print"
 fix = "make verify-skill"
 
 [tool.fleet.no-comments]
-paths = ["darkroom", "darkroom_browser", "tests", "tools", "frontend/src", "run.py", ".semgrep"]
+paths = ["darkroom", "darkroom_browser", "darkroom_init", "tests", "tools", "frontend/src", "run.py", ".semgrep"]
 
 [tool.fleet.coverage]
 overall = 85
@@ -75,12 +75,12 @@ omit = ["tests/*", "darkroom_browser/live.py"]
 relative_files = true
 
 [tool.coverage.report]
-include = ["darkroom/*", "darkroom_browser/*"]
+include = ["darkroom/*", "darkroom_browser/*", "darkroom_init/*"]
 omit = ["darkroom_browser/live.py"]
 skip_empty = true
 
 [tool.importlinter]
-root_packages = ["darkroom", "darkroom_browser"]
+root_packages = ["darkroom", "darkroom_browser", "darkroom_init"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -151,18 +151,18 @@ id = "subprocess-only-exiftool"
 name = "Only the exiftool provider runs subprocesses"
 type = "protected"
 protected_modules = ["subprocess"]
-allowed_importers = ["darkroom.providers.exiftool", "darkroom_browser.runner"]
+allowed_importers = ["darkroom.providers.exiftool", "darkroom_browser.runner", "darkroom_init.supervisor", "darkroom_init.__main__"]
 broken_contract_guidance = "Run exiftool through darkroom.providers.exiftool."
 
 [tool.mypy]
 python_version = "3.14"
-files = ["darkroom", "darkroom_browser", "run.py"]
+files = ["darkroom", "darkroom_browser", "darkroom_init", "run.py"]
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["darkroom.domain.*", "darkroom.providers.*", "darkroom_browser.pages.*", "darkroom_browser.jobs.*"]
+module = ["darkroom.domain.*", "darkroom.providers.*", "darkroom_browser.pages.*", "darkroom_browser.jobs.*", "darkroom_init.*"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_calls = true
@@ -172,7 +172,7 @@ no_implicit_reexport = true
 strict_equality = true
 
 [[tool.mypy.overrides]]
-module = ["imagehash", "timezonefinder", "pillow_heif", "playwright.*"]
+module = ["imagehash", "timezonefinder", "pillow_heif", "playwright.*", "websockify.*"]
 ignore_missing_imports = true
 
 [[tool.importlinter.contracts]]
@@ -180,3 +180,9 @@ id = "service-and-worker-apart"
 name = "darkroom and darkroom_browser never import each other"
 type = "independence"
 modules = ["darkroom", "darkroom_browser"]
+
+[[tool.importlinter.contracts]]
+id = "init-apart"
+name = "The one container's init imports neither darkroom nor darkroom_browser, and neither imports it"
+type = "independence"
+modules = ["darkroom_init", "darkroom", "darkroom_browser"]
