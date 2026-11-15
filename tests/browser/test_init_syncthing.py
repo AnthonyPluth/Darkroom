@@ -123,18 +123,22 @@ class FirstStartTests(Folders):
         self.assertRaises(subprocess.CalledProcessError, self.prepare, broken)
         self.assertEqual([path.name for path in self.data.iterdir()], ["run"])
 
-    def test_a_configuration_that_turns_an_outward_option_back_on_is_refused_at_every_start(self):
+    def test_a_configuration_that_turns_an_outward_option_back_on_or_moves_the_api_off_the_socket_is_refused_at_every_start(self):
         self.prepare()
         config = self.home / "config.xml"
         for name in syncthing.OFF:
             with self.subTest(name=name):
                 original = config.read_text()
                 config.write_text(original.replace(f"<{name}>{syncthing.OFF[name]}</{name}>", f"<{name}>1</{name}>"))
-                with self.assertRaisesRegex(syncthing.Refused, f"turns on what Darkroom keeps off: {name}$"):
+                with self.assertRaisesRegex(syncthing.Refused, f"differs from what Darkroom keeps: {name}$"):
                     self.prepare()
                 config.write_text(original)
         config.write_text(config.read_text().replace("<localAnnounceEnabled>false", "<localAnnounceEnabled>true"))
         self.prepare()
+        original = config.read_text()
+        config.write_text(original.replace(f"<address>{self.socket}</address>", "<address>0.0.0.0:8384</address>").replace(">0600<", ">0666<"))
+        self.assertRaisesRegex(syncthing.Refused, "differs from what Darkroom keeps: gui address, gui unixSocketPermissions$", self.prepare)
+        config.write_text(original)
         config.write_text("<configuration><gui/></configuration>")
         self.assertRaisesRegex(syncthing.Refused, "no options or GUI section", self.prepare)
 
@@ -155,9 +159,8 @@ class FirstStartTests(Folders):
         self.assertRaisesRegex(syncthing.Refused, "not private", self.prepare)
 
     def test_syncthing_is_served_paused_on_the_socket_with_no_key_on_its_command_line_or_in_its_environment(self):
-        argv = syncthing.serve_argv(self.home, self.socket)
-        self.assertEqual(argv, [syncthing.BINARY, "serve", f"--home={self.home}", "--no-browser", "--no-upgrade", "--no-restart", "--paused",
-                                f"--gui-address=unix://{self.socket}"])
+        argv = syncthing.serve_argv(self.home)
+        self.assertEqual(argv, [syncthing.BINARY, "serve", f"--home={self.home}", "--no-browser", "--no-upgrade", "--no-restart", "--paused"])
         env = plan.syncthing_env(GIVEN)
         self.assertEqual(env, {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/darkroom", "LANG": "C.UTF-8", "TZ": "Europe/Paris", "PYTHONPATH": plan.INIT_HOME,
                                "PYTHONDONTWRITEBYTECODE": "1", "STNOUPGRADE": "1", "STNODEFAULTFOLDER": "1"})

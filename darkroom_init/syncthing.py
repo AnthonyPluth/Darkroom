@@ -65,9 +65,11 @@ def write_first_start_options(config: Path, socket_path: Path) -> None:
     tree.write(config, encoding="utf-8", xml_declaration=True)
 
 
-def not_off(config: Path) -> list[str]:
-    options, _ = sections(parsed(config))
-    return [name for name, value in OFF.items() if (options.findtext(name) or "").strip() != value]
+def not_off(config: Path, socket_path: Path) -> list[str]:
+    options, gui = sections(parsed(config))
+    found = [name for name, value in OFF.items() if (options.findtext(name) or "").strip() != value]
+    wanted = {"address": str(socket_path), "unixSocketPermissions": SOCKET_MODE}
+    return found + [f"gui {name}" for name, value in wanted.items() if (gui.findtext(name) or "").strip() != value]
 
 
 def generate(home: Path, socket_path: Path, binary: str, run: Runner) -> None:
@@ -105,14 +107,14 @@ def prepare(home: Path, socket_path: Path = SOCKET, binary: str = BINARY, run: R
             raise Refused("the Syncthing folder in appdata holds files but no configuration; move it aside to start with a fresh identity")
         generate(home, socket_path, binary, run)
         log("syncthing identity generated")
-    left_on = not_off(home / CONFIG)
+    left_on = not_off(home / CONFIG, socket_path)
     if left_on:
-        raise Refused(f"Syncthing's configuration turns on what Darkroom keeps off: {', '.join(left_on)}")
+        raise Refused(f"Syncthing's configuration differs from what Darkroom keeps: {', '.join(left_on)}")
     clear_stale_socket(socket_path)
 
 
-def serve_argv(home: Path, socket_path: Path = SOCKET, binary: str = BINARY) -> list[str]:
-    return [binary, "serve", f"--home={home}", "--no-browser", "--no-upgrade", "--no-restart", "--paused", f"--gui-address=unix://{socket_path}"]
+def serve_argv(home: Path, binary: str = BINARY) -> list[str]:
+    return [binary, "serve", f"--home={home}", "--no-browser", "--no-upgrade", "--no-restart", "--paused"]
 
 
 def usable_key(key: str) -> bool:
