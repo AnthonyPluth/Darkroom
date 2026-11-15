@@ -14,15 +14,17 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy
+from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, share_check
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
-from darkroom.storage import db, secret_key, secretbox, stored_settings
+from darkroom.storage import db, secret_key, secretbox, share, stored_settings
+from darkroom.storage.settings_keys import SHARE_SENTINEL
 from darkroom.storage.models import Export, Person
-from darkroom.storage.paths import NotInTheInbox, Photos
+from darkroom.storage.paths import PIXELS, NotInTheInbox, Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
+PIXELS_NOTE = f"{PIXELS}/"
 
 
 def check_config() -> int:
@@ -42,6 +44,9 @@ def check_config() -> int:
         print(f"config: {line}", file=sys.stderr)
     if config.ignored_alert_variables():
         print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
+    unbound = share_warning(loaded)
+    if unbound:
+        print(f"config: warning: {unbound}", file=sys.stderr)
     print(alert_channel(settings))
     print(key_origin_line(settings, missing_key))
     for line in source_lines(loaded):
@@ -49,6 +54,16 @@ def check_config() -> int:
     if not found:
         print("Configuration looks complete.")
     return 1 if found else 0
+
+
+SHARE_WARNING = "the working share is not bound ({problem}), so Darkroom places and prunes no Pixel copies; run `python run.py bind-share` once in the container (docs/deploy/share.md)"
+
+
+def share_warning(loaded: stored_settings.Effective) -> str | None:
+    if stored_settings.NOT_READ in loaded.problems or config.demo_allowed(loaded.settings):
+        return None
+    problem = share_check.sentinel_problem(Photos(loaded.settings.photos_root).root, loaded.recorded.get(SHARE_SENTINEL))
+    return None if problem is None else SHARE_WARNING.format(problem=problem)
 
 
 def alert_channel(settings: config.Settings) -> str:
@@ -296,6 +311,82 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
     return 0
 
 
+SYNCTHING_PAUSED = "paused"
+CONFIRM_BIND = "bind"
+NOT_SET_UP = "bind-share: the database has no settings table yet; start the service once (`python run.py serve` migrates it), then run this again"
+SYNCTHING_PROMPT = (f"Syncthing is configured by hand, outside Darkroom. Pause it for every folder under {PIXELS_NOTE} on this server now: an empty replacement would otherwise reach each Pixel as deletions. "
+                    f"Type {SYNCTHING_PAUSED} once it is paused: ")
+BIND_BUSY = "bind-share: another bind-share is running in this container; nothing was written. Let it finish, then run this again if it failed"
+BIND_PROMPT = f"Type {CONFIRM_BIND} to write a new sentinel on this share and record it: "
+RESUME_NOTE = (f"Bound. Placing and pruning resume at the next hourly tend (or now with `python run.py jobs pixels.tend`); the placed-copy check first writes back every placed copy that is missing. "
+               f"Resume the outside Syncthing for {PIXELS_NOTE} only when Darkroom reports the refill complete: the `pixel folders tended` log line shows held=0.")
+
+
+def asked(prompt: str, expected: str) -> bool:
+    print(prompt, end="", flush=True)
+    return sys.stdin.readline().strip() == expected
+
+
+def describe_share(found: share_bind.Found) -> list[str]:
+    return [
+        f"Share root: {found.root}",
+        f"Mounted from: {found.mount.source} ({found.mount.kind}), separate from the container's own filesystem",
+        f"Entries at the root: {found.entries}; files under {PIXELS_NOTE}: {found.pixel_files}",
+        f"Pixel copies recorded as placed: {found.placed} (any that are missing are written again before the folders are tended)",
+        "No sentinel is on this share yet.",
+    ]
+
+
+def bind_locked(settings: config.Settings, engine: Engine, wired: bool, held: share.BindLock) -> int:
+    with db.session(engine) as opened:
+        try:
+            found = share_bind.survey(opened, Photos(settings.photos_root).root, wired, held)
+        except share_bind.Refused as refused:
+            print(f"bind-share: {refused}", file=sys.stderr)
+            return 1
+        for line in describe_share(found):
+            print(line)
+        if not asked(SYNCTHING_PROMPT, SYNCTHING_PAUSED):
+            print("bind-share: the outside Syncthing was not confirmed paused; nothing was written", file=sys.stderr)
+            return 1
+        if not asked(BIND_PROMPT, CONFIRM_BIND):
+            print("bind-share: not confirmed; nothing was written", file=sys.stderr)
+            return 1
+        try:
+            share_bind.bind_share(opened, found, utc_now().timestamp(), held)
+        except share_bind.Refused as refused:
+            print(f"bind-share: {refused}", file=sys.stderr)
+            return 1
+        except OSError as error:
+            print(f"bind-share: the sentinel could not be written ({type(error).__name__}); placing and pruning stay stopped, and the command can be run again", file=sys.stderr)
+            return 1
+    monitoring.log("share bound")
+    print(RESUME_NOTE)
+    return 0
+
+
+def bind_share() -> int:
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    try:
+        if not stored_settings.has_table(engine):
+            print(NOT_SET_UP, file=sys.stderr)
+            return 1
+        wired = jobs.tend_checks_placed_copies(jobs.build(settings, engine))
+        with contextlib.ExitStack() as stack:
+            try:
+                held = stack.enter_context(share.bind_lock(settings.data_dir))
+            except share.BindBusy:
+                print(BIND_BUSY, file=sys.stderr)
+                return 1
+            except OSError as error:
+                print(f"bind-share: the lock in DARKROOM_DATA_DIR could not be taken ({type(error).__name__}); nothing was written", file=sys.stderr)
+                return 1
+            return bind_locked(settings, engine, wired, held)
+    finally:
+        engine.dispose()
+
+
 REOPENED = "the setup wizard is reopened: the next visitor from a private address may claim it, unless someone has already signed in to this Darkroom"
 
 
@@ -420,7 +511,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret", "reopen-setup"])
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -435,6 +526,8 @@ def main(argv: list[str]) -> int:
         return run_demo(args.data)
     if args.command == "seal-secret":
         return seal_secret()
+    if args.command == "bind-share":
+        return bind_share()
     if args.command == "reopen-setup":
         return reopen_setup()
     if args.command == "revoke-sessions":
