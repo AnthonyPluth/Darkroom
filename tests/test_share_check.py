@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -213,8 +214,10 @@ class ShareCheckTests(ShareWorld):
             trees.append((self.rows(), share_tree(self.root)))
             return found
 
-        with mock.patch.object(pixel_check.PlacedCopyCheck, "run", rebind):
+        with mock.patch.object(pixel_check.PlacedCopyCheck, "run", rebind), mock.patch.object(monitoring, "log", wraps=monitoring.log) as log:
             scheduler.run_one("pixels.tend", NOW + HOUR)
+        log.assert_any_call("pixel folders not tended: the share was bound again during the check; tending at the next cycle")
+        self.assertNotIn("pixel folders tended", [call.args[0] for call in log.call_args_list])
         rows, tree = trees[0]
         self.assertEqual((self.rows(), share_tree(self.root)), (rows, tree))
         self.assertFalse(scheduler.placed_copies.ran)
@@ -497,11 +500,66 @@ class BindShareTests(ShareWorld):
 
     def test_the_share_changing_while_the_operator_confirms_refuses_the_bind(self):
         found = share_bind.Found(self.root, self.mount, -1, 0, 0, 0)
-        with mock.patch.object(share, "separate_mount", return_value=self.mount):
+        with mock.patch.object(share, "separate_mount", return_value=self.mount), share.bind_lock(Path(self.environment["DARKROOM_DATA_DIR"])) as held:
             with self.assertRaises(share_bind.Refused):
-                share_bind.bind_share(self.opened, found, NOW)
+                share_bind.bind_share(self.opened, found, NOW, held)
         self.assertIsNone(self.recorded())
         self.assertFalse((self.root / share.SHARE_SENTINEL_FILE).exists())
+
+    def test_a_bind_refuses_while_another_bind_holds_the_lock_and_works_once_it_is_released(self):
+        data = Path(self.environment["DARKROOM_DATA_DIR"])
+        with share.bind_lock(data):
+            self.assert_refused(self.run_bind(), "another bind-share is running in this container; nothing was written")
+        self.assertIsNone(self.recorded())
+        self.assertEqual(self.run_bind()[0], 0)
+        self.assertIsNone(share_check.sentinel_problem(self.root, self.recorded()))
+        self.assertEqual(stat.S_IMODE(os.stat(data / share.BIND_LOCK_FILE).st_mode), 0o600)
+
+    def test_two_overlapping_binds_leave_one_identity_that_matches_the_sentinel(self):
+        data = Path(self.environment["DARKROOM_DATA_DIR"])
+        surveyed, tried = threading.Event(), threading.Event()
+        outcome = {}
+
+        def first():
+            with share.bind_lock(data) as held, db.Session(self.engine, expire_on_commit=False) as opened:
+                found = share_bind.survey(opened, self.root, True, held)
+                surveyed.set()
+                tried.wait(30)
+                share_bind.bind_share(opened, found, NOW, held)
+                outcome["first"] = "bound"
+
+        def second():
+            surveyed.wait(30)
+            try:
+                with share.bind_lock(data):
+                    outcome["second"] = "entered"
+            except share.BindBusy:
+                outcome["second"] = "refused"
+            finally:
+                tried.set()
+
+        with mock.patch.object(share, "separate_mount", return_value=self.mount):
+            threads = [threading.Thread(target=first), threading.Thread(target=second)]
+            for each in threads:
+                each.start()
+            for each in threads:
+                each.join(60)
+        self.assertEqual(outcome, {"first": "bound", "second": "refused"})
+        self.assertIsNone(share_check.sentinel_problem(self.root, self.recorded()))
+        self.assertEqual(self.events(share_check.BOUND), [None])
+
+    def test_a_bind_after_another_binds_failed_write_still_works(self):
+        data = Path(self.environment["DARKROOM_DATA_DIR"])
+        with mock.patch.object(share.os, "write", side_effect=OSError(28, "No space left on device")):
+            self.assert_refused(self.run_bind(), "the sentinel could not be written (OSError)")
+        with share.bind_lock(data):
+            pass
+        self.assertEqual(self.run_bind()[0], 0)
+        self.assertIsNone(share_check.sentinel_problem(self.root, self.recorded()))
+
+    def test_a_data_folder_that_cannot_hold_the_lock_refuses_the_bind(self):
+        self.environment["DARKROOM_DATA_DIR"] = str(self.root.parent / f"{self.root.name}-no-such-folder")
+        self.assert_refused(self.run_bind(), "the lock in DARKROOM_DATA_DIR could not be taken (FileNotFoundError)")
 
     def test_the_record_is_kept_apart_from_the_settings_the_environment_can_set(self):
         self.assertNotIn("share_sentinel", stored_settings.BY_VARIABLE)

@@ -21,6 +21,7 @@ An existing deployment has no sentinel, so from this version on placing and prun
 - the share root (`DARKROOM_PHOTOS_ROOT`) is not a mount separate from the container's own filesystem;
 - the share root already holds a `.darkroom-share` (Darkroom never replaces one: check what that file is before you remove it by hand);
 - the database has not been set up yet.
+- another `bind-share` is running in the container (it holds `.bind-share.lock` in `DARKROOM_DATA_DIR` from its first check until the sentinel is written).
 
 Otherwise it shows what it found (the root, what it is mounted from, how many entries are at the root and files under `_pixels/`, how many copies are recorded as placed) and asks two things, each answered by typing a word:
 

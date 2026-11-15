@@ -227,7 +227,10 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 checked = scheduler.placed_copies.run(opened, photos, at)
                 monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,
                                unaccounted=sum(checked.unaccounted.values()), held=len(scheduler.placed_copies.held_pixels(opened)))
-            if share_stopped(opened, at) or share.rebound:
+            if share_stopped(opened, at):
+                return
+            if share.rebound:
+                monitoring.log("pixel folders not tended: the share was bound again during the check; tending at the next cycle")
                 return
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
             held = len(scheduler.placed_copies.held_pixels(opened))

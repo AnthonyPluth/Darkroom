@@ -18,7 +18,7 @@ from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, s
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
-from darkroom.storage import db, secret_key, secretbox, stored_settings
+from darkroom.storage import db, secret_key, secretbox, share, stored_settings
 from darkroom.storage.settings_keys import SHARE_SENTINEL
 from darkroom.storage.models import Export, Person
 from darkroom.storage.paths import PIXELS, NotInTheInbox, Photos
@@ -316,6 +316,7 @@ CONFIRM_BIND = "bind"
 NOT_SET_UP = "bind-share: the database has no settings table yet; start the service once (`python run.py serve` migrates it), then run this again"
 SYNCTHING_PROMPT = (f"Syncthing is configured by hand, outside Darkroom. Pause it for every folder under {PIXELS_NOTE} on this server now: an empty replacement would otherwise reach each Pixel as deletions. "
                     f"Type {SYNCTHING_PAUSED} once it is paused: ")
+BIND_BUSY = "bind-share: another bind-share is running in this container; nothing was written. Let it finish, then run this again if it failed"
 BIND_PROMPT = f"Type {CONFIRM_BIND} to write a new sentinel on this share and record it: "
 RESUME_NOTE = (f"Bound. Placing and pruning resume at the next hourly tend (or now with `python run.py jobs pixels.tend`); the placed-copy check first writes back every placed copy that is missing. "
                f"Resume the outside Syncthing for {PIXELS_NOTE} only when Darkroom reports the refill complete: the `pixel folders tended` log line shows held=0.")
@@ -336,6 +337,34 @@ def describe_share(found: share_bind.Found) -> list[str]:
     ]
 
 
+def bind_locked(settings: config.Settings, engine: Engine, wired: bool, held: share.BindLock) -> int:
+    with db.session(engine) as opened:
+        try:
+            found = share_bind.survey(opened, Photos(settings.photos_root).root, wired, held)
+        except share_bind.Refused as refused:
+            print(f"bind-share: {refused}", file=sys.stderr)
+            return 1
+        for line in describe_share(found):
+            print(line)
+        if not asked(SYNCTHING_PROMPT, SYNCTHING_PAUSED):
+            print("bind-share: the outside Syncthing was not confirmed paused; nothing was written", file=sys.stderr)
+            return 1
+        if not asked(BIND_PROMPT, CONFIRM_BIND):
+            print("bind-share: not confirmed; nothing was written", file=sys.stderr)
+            return 1
+        try:
+            share_bind.bind_share(opened, found, utc_now().timestamp(), held)
+        except share_bind.Refused as refused:
+            print(f"bind-share: {refused}", file=sys.stderr)
+            return 1
+        except OSError as error:
+            print(f"bind-share: the sentinel could not be written ({type(error).__name__}); placing and pruning stay stopped, and the command can be run again", file=sys.stderr)
+            return 1
+    monitoring.log("share bound")
+    print(RESUME_NOTE)
+    return 0
+
+
 def bind_share() -> int:
     settings = config.load()
     engine = db.make_engine(db.database_url(settings))
@@ -344,31 +373,16 @@ def bind_share() -> int:
             print(NOT_SET_UP, file=sys.stderr)
             return 1
         wired = jobs.tend_checks_placed_copies(jobs.build(settings, engine))
-        with db.session(engine) as opened:
+        with contextlib.ExitStack() as stack:
             try:
-                found = share_bind.survey(opened, Photos(settings.photos_root).root, wired)
-            except share_bind.Refused as refused:
-                print(f"bind-share: {refused}", file=sys.stderr)
-                return 1
-            for line in describe_share(found):
-                print(line)
-            if not asked(SYNCTHING_PROMPT, SYNCTHING_PAUSED):
-                print("bind-share: the outside Syncthing was not confirmed paused; nothing was written", file=sys.stderr)
-                return 1
-            if not asked(BIND_PROMPT, CONFIRM_BIND):
-                print("bind-share: not confirmed; nothing was written", file=sys.stderr)
-                return 1
-            try:
-                share_bind.bind_share(opened, found, utc_now().timestamp())
-            except share_bind.Refused as refused:
-                print(f"bind-share: {refused}", file=sys.stderr)
+                held = stack.enter_context(share.bind_lock(settings.data_dir))
+            except share.BindBusy:
+                print(BIND_BUSY, file=sys.stderr)
                 return 1
             except OSError as error:
-                print(f"bind-share: the sentinel could not be written ({type(error).__name__}); placing and pruning stay stopped, and the command can be run again", file=sys.stderr)
+                print(f"bind-share: the lock in DARKROOM_DATA_DIR could not be taken ({type(error).__name__}); nothing was written", file=sys.stderr)
                 return 1
-        monitoring.log("share bound")
-        print(RESUME_NOTE)
-        return 0
+            return bind_locked(settings, engine, wired, held)
     finally:
         engine.dispose()
 

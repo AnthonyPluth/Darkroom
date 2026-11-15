@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,10 +16,34 @@ SHARE_SENTINEL_FILE = ".darkroom-share"
 SENTINEL_PREFIX = "darkroom-share "
 SENTINEL_MODE = 0o600
 LONGEST_SENTINEL = 256
+BIND_LOCK_FILE = ".bind-share.lock"
+BIND_LOCK_MODE = 0o600
 
 
 class NotASentinel(OSError):
     pass
+
+
+class BindBusy(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class BindLock:
+    fd: int
+
+
+@contextmanager
+def bind_lock(data_dir: Path) -> Iterator[BindLock]:
+    fd = os.open(data_dir / BIND_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, BIND_LOCK_MODE)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise BindBusy("another bind-share is running") from error
+        yield BindLock(fd)
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)

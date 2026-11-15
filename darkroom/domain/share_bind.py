@@ -41,7 +41,7 @@ def count_files(folder: Path) -> int:
     return counted
 
 
-def survey(opened: Session, root: Path, wired: bool) -> Found:
+def survey(opened: Session, root: Path, wired: bool, held: share.BindLock) -> Found:
     if not wired:
         raise Refused(NOT_WIRED)
     mount = share.separate_mount(root)
@@ -55,7 +55,7 @@ def survey(opened: Session, root: Path, wired: bool) -> Found:
     return Found(root, mount, device, len(os.listdir(root)), count_files(root / PIXELS), placed)
 
 
-def bind_share(opened: Session, found: Found, now: float) -> None:
+def bind_share(opened: Session, found: Found, now: float, held: share.BindLock) -> None:
     if share.separate_mount(found.root) != found.mount or share.device_of(found.root) != found.device or share.sentinel_present(found.root):
         raise Refused(CHANGED_SINCE)
     token = secrets.token_hex(16)
