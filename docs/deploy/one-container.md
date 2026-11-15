@@ -53,15 +53,14 @@ From a checkout of the release you run (a release tag such as `v1.2.3`, not `mai
 
 ```sh
 git checkout v1.2.3
-export DARKROOM_TAG=v1.2.3
+printf 'DARKROOM_TAG=v1.2.3\nPHOTOS_ROOT=/path/to/the/photo/share\n' >> .env
 mkdir -p data && sudo chown 99:100 data
-export PHOTOS_ROOT=/path/to/the/photo/share
 docker compose --profile single pull darkroom-single
 docker compose --profile single up -d darkroom-single
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-`DARKROOM_TAG` (also read from `.env`) picks the image tag, so the image and the checkout's seccomp profile come from the same release; left unset, compose pulls `latest`, which matches only a checkout of the newest release. Always name the service: `--profile single up -d` without `darkroom-single` also starts the two-container `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
+`DARKROOM_TAG` in `.env` picks the image tag of every service, so the image and the checkout's seccomp profile come from the same release for every later `docker compose` command, in any shell; left unset, compose pulls `latest`, which matches only a checkout of the newest release. Keep it in `.env` rather than exporting it in one shell, and change it only together with the checkout (Upgrading, below). Always name the service: `--profile single up -d` without `darkroom-single` also starts the two-container `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
 
 Settings go in `.env` next to `docker-compose.yml`, which compose reads for `PHOTOS_ROOT` and hands to the container whole. Copy only what you set from `.env.example`; in particular leave out `DARKROOM_HOST`, `DARKROOM_PORT`, `DARKROOM_PHOTOS_ROOT`, `DARKROOM_DATA_DIR` and `DARKROOM_BROWSER_ROOT`, which the image sets: `DARKROOM_HOST=127.0.0.1` from the example would make the app listen on the container's own loopback, where the published port cannot reach it.
 
@@ -71,20 +70,21 @@ In the one container, leave `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VN
 
 The database and the generated secret key stay where they are, directly in appdata, and the one container uses the same appdata folder. The browser profiles move from `_browser/` on the share into `browser/` in appdata with a copy that is checked before it is used and never removes the source (design section 9). With Compose:
 
-1. Keep the two containers' settings for the way back: `cp .env .env.two-containers`.
-2. Stop both containers: `docker compose --profile browser down`.
-3. Back up `./data` and `$PHOTOS_ROOT/_browser`, and with `DATABASE_URL` set, a dump of that database taken now ([postgres.md](postgres.md)).
-4. Copy and verify the profiles, as Darkroom's user under the same sandbox:
+1. Check out the release you move to and put its tag in `.env`, so the copy below and every later command use that release's image and seccomp profile: `git checkout v1.2.3`, then a line `DARKROOM_TAG=v1.2.3` in `.env` (change the line if `.env` already has one). Move on the release the two containers run, or upgrade them to it first: that way the two containers of the same release are the way back.
+2. Keep the two containers' settings, with that tag, for the way back: `cp .env .env.two-containers`.
+3. Stop both containers: `docker compose --profile browser down`.
+4. Back up `./data` and `$PHOTOS_ROOT/_browser`, and with `DATABASE_URL` set, a dump of that database taken now ([postgres.md](postgres.md)).
+5. Copy and verify the profiles, as Darkroom's user under the same sandbox:
 
    ```sh
    docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /photos/_browser --target /data/browser
    ```
 
    What it checks, and what to do when it stops, is in [browser.md](browser.md#moving-existing-profiles-into-appdata).
-5. In `.env`, empty `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VNC_SECRET`, and move the Traefik route from `darkroom:8000` to `darkroom-single:8000`.
-6. Start the one container: `docker compose --profile single up -d darkroom-single`, then `curl -fsS http://127.0.0.1:8000/healthz`. Within a minute the Remote browser page shows the worker as last seen.
+6. In `.env`, empty `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VNC_SECRET`, and move the Traefik route from `darkroom:8000` to `darkroom-single:8000`.
+7. Start the one container: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`, then `curl -fsS http://127.0.0.1:8000/healthz`. Within a minute the Remote browser page shows the worker as last seen.
 
-On Unraid, stop both containers, back up as in step 3, put the seccomp profile in place, and run step 4 with the template's flags and paths (the share and appdata paths are yours):
+On Unraid, stop both containers, back up as in step 3, put the seccomp profile in place, and run step 5 with the template's flags and paths (the share and appdata paths are yours):
 
 ```sh
 docker run --rm --user 99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json \
@@ -96,21 +96,21 @@ Then add the container from the template with the same appdata folder (Unraid, a
 
 ## Going back to the two containers
 
-Go back to the two containers of the same release: their images are published with every release until #327, and they start on the database the one container used. With Compose, `DARKROOM_TAG` picks the release for all three services, so keep it set to the release the one container runs while you go back (in the shell, or in `.env`: `.env.two-containers` is the copy from before the move and may not hold it) and pull before starting; left unset, the two containers come from `latest`, which can be a newer release that migrates the database, or an older one that refuses it. On Unraid, give both containers' Repository the tag the one container ran (`ghcr.io/anthonypluth/darkroom:v1.2.3` and `ghcr.io/anthonypluth/darkroom-browser:v1.2.3`). An older release than the one you moved with cannot start on a database a newer one has migrated; for that, restore the backup from step 3 (design section 9).
+Go back to the two containers of the same release: their images are published with every release until #327, and they start on the database the one container used. With Compose, `DARKROOM_TAG` in `.env` picks the release for all three services. `.env.two-containers` holds the tag of the move (step 1); if the one container was upgraded since, change that line in `.env` to the release it runs now (`docker compose --profile single images darkroom-single` shows it) after restoring the copy, and pull before starting; left unset, the two containers come from `latest`, which can be a newer release that migrates the database, or an older one that refuses it. On Unraid, give both containers' Repository the tag the one container ran (`ghcr.io/anthonypluth/darkroom:v1.2.3` and `ghcr.io/anthonypluth/darkroom-browser:v1.2.3`). An older release than the one you moved with cannot start on a database a newer one has migrated; for that, restore the backup from step 4 (design section 9).
 
-- **Before the one container has done any browser work** (no sign-in, no account added, no failure capture): stop it (`docker compose --profile single stop darkroom-single`), `cp .env.two-containers .env`, then with `DARKROOM_TAG` still set to the one container's release, `docker compose --profile browser pull && docker compose --profile browser up -d`. The profiles on the share are as you left them.
+- **Before the one container has done any browser work** (no sign-in, no account added, no failure capture): stop it (`docker compose --profile single stop darkroom-single`), `cp .env.two-containers .env`, check that its `DARKROOM_TAG` line names the one container's release, then `docker compose --profile browser pull && docker compose --profile browser up -d`. The profiles on the share are as you left them.
 - **Afterwards**, the share's copy is stale: copy appdata back first, with the container stopped, then start the two containers:
 
   ```sh
   docker compose --profile single stop darkroom-single
   docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
   cp .env.two-containers .env
-  export DARKROOM_TAG=v1.2.3
+  grep '^DARKROOM_TAG=' .env
   docker compose --profile browser pull
   docker compose --profile browser up -d
   ```
 
-  `DARKROOM_TAG` is the release the one container ran (`docker compose --profile single images darkroom-single` shows its tag).
+  The `grep` must show the release the one container ran (`docker compose --profile single images darkroom-single` shows its tag); change the line in `.env` before pulling if it does not.
 
   `--set-aside` renames the old `_browser/` to `_browser.before-<time>` only after the copy is verified; nothing is deleted in either direction.
 
@@ -124,4 +124,4 @@ To restore, stop the container, put the appdata folder back (owner 99:100), and 
 
 ## Upgrading
 
-With Compose, check out the new release tag and set `DARKROOM_TAG` to it, then pull and recreate: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`; the checkout brings the release's seccomp profile. On Unraid, copy the new release's seccomp profile first when it changed (above), then change **Repository** to the new tag and Apply. A release that migrates the database cannot be undone by starting the older image; take a backup before upgrading and restore it to go back (design section 9).
+With Compose, check out the new release tag and change the `DARKROOM_TAG` line in `.env` to it, then pull and recreate: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`; the checkout brings the release's seccomp profile. On Unraid, copy the new release's seccomp profile first when it changed (above), then change **Repository** to the new tag and Apply. A release that migrates the database cannot be undone by starting the older image; take a backup before upgrading and restore it to go back (design section 9).

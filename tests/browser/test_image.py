@@ -323,8 +323,17 @@ class UnraidTemplateTests(unittest.TestCase):
 
     def test_the_deploy_page_pairs_the_image_with_the_seccomp_profile_of_one_release(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
-        self.assertIn("export DARKROOM_TAG=v1.2.3", page)
+        self.assertIn("printf 'DARKROOM_TAG=v1.2.3\\nPHOTOS_ROOT=/path/to/the/photo/share\\n' >> .env", page)
         self.assertIn("git checkout v1.2.3", page)
+        self.assertNotIn("export DARKROOM_TAG", page, "a tag exported in one shell is gone for the next command: it goes in .env")
+        move = page[page.index("## Moving from the two containers"):page.index("## Going back to the two containers")]
+        steps = re.findall(r"(?m)^(\d+)\. ", move)
+        self.assertEqual(steps, [str(number) for number in range(1, len(steps) + 1)])
+        first = move[move.index("1. "):move.index("2. ")]
+        self.assertIn("`git checkout v1.2.3`", first)
+        self.assertIn("`DARKROOM_TAG=v1.2.3` in `.env`", first)
+        self.assertLess(move.index("DARKROOM_TAG=v1.2.3"), move.index("cp .env .env.two-containers"))
+        self.assertLess(move.index("cp .env .env.two-containers"), move.index("copy-browser-state"))
         self.assertIn("Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest`", page)
         self.assertRegex((ROOT / ".env.example").read_text(), r"(?m)^# DARKROOM_TAG=$")
         self.assertIn("set Repository to that release's tag", template().findtext("Overview"))
@@ -335,10 +344,10 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertEqual(images, [f"ghcr.io/anthonypluth/{name}:${{DARKROOM_TAG:-latest}}" for name in ("darkroom-single", "darkroom", "darkroom-browser")])
         page = (ROOT / "docs/deploy/one-container.md").read_text()
         back = page[page.index("## Going back to the two containers"):page.index("## Backup and restore")]
-        self.assertIn("with `DARKROOM_TAG` still set to the one container's release, `docker compose --profile browser pull && docker compose --profile browser up -d`", back)
+        self.assertIn("check that its `DARKROOM_TAG` line names the one container's release, then `docker compose --profile browser pull && docker compose --profile browser up -d`", back)
         later = back[back.index("**Afterwards**"):]
-        self.assertLess(later.index("cp .env.two-containers .env"), later.index("export DARKROOM_TAG=v1.2.3"))
-        self.assertLess(later.index("export DARKROOM_TAG=v1.2.3"), later.index("docker compose --profile browser pull"))
+        self.assertLess(later.index("cp .env.two-containers .env"), later.index("grep '^DARKROOM_TAG=' .env"))
+        self.assertLess(later.index("grep '^DARKROOM_TAG=' .env"), later.index("docker compose --profile browser pull"))
         self.assertLess(later.index("docker compose --profile browser pull"), later.index("docker compose --profile browser up -d"))
         self.assertIn("ghcr.io/anthonypluth/darkroom-browser:v1.2.3", back)
 
