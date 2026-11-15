@@ -96,17 +96,21 @@ Then add the container from the template with the same appdata folder (Unraid, a
 
 ## Going back to the two containers
 
-Go back to the two containers of the same release: their images are published with every release until #327, and they start on the database the one container used. An older release than the one you moved with cannot start on a database a newer one has migrated; for that, restore the backup from step 3 (design section 9).
+Go back to the two containers of the same release: their images are published with every release until #327, and they start on the database the one container used. With Compose, `DARKROOM_TAG` picks the release for all three services, so keep it set to the release the one container runs while you go back (in the shell, or in `.env`: `.env.two-containers` is the copy from before the move and may not hold it) and pull before starting; left unset, the two containers come from `latest`, which can be a newer release that migrates the database, or an older one that refuses it. On Unraid, give both containers' Repository the tag the one container ran (`ghcr.io/anthonypluth/darkroom:v1.2.3` and `ghcr.io/anthonypluth/darkroom-browser:v1.2.3`). An older release than the one you moved with cannot start on a database a newer one has migrated; for that, restore the backup from step 3 (design section 9).
 
-- **Before the one container has done any browser work** (no sign-in, no account added, no failure capture): stop it (`docker compose --profile single stop darkroom-single`), `cp .env.two-containers .env`, and `docker compose --profile browser up -d`. The profiles on the share are as you left them.
+- **Before the one container has done any browser work** (no sign-in, no account added, no failure capture): stop it (`docker compose --profile single stop darkroom-single`), `cp .env.two-containers .env`, then with `DARKROOM_TAG` still set to the one container's release, `docker compose --profile browser pull && docker compose --profile browser up -d`. The profiles on the share are as you left them.
 - **Afterwards**, the share's copy is stale: copy appdata back first, with the container stopped, then start the two containers:
 
   ```sh
   docker compose --profile single stop darkroom-single
   docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
   cp .env.two-containers .env
+  export DARKROOM_TAG=v1.2.3
+  docker compose --profile browser pull
   docker compose --profile browser up -d
   ```
+
+  `DARKROOM_TAG` is the release the one container ran (`docker compose --profile single images darkroom-single` shows its tag).
 
   `--set-aside` renames the old `_browser/` to `_browser.before-<time>` only after the copy is verified; nothing is deleted in either direction.
 

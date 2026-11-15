@@ -1,7 +1,8 @@
 services:
   # The default: the one container, the app and the browser worker together (docs/deploy/one-container.md). Start it by name, with
   # `docker compose --profile single up -d darkroom-single`: without the name, compose also starts `darkroom` below. Never run both layouts at once.
-  # Set DARKROOM_TAG to the release the checkout is at (for example v1.2.3), so the image and ./deploy/browser/seccomp.json come from the same release.
+  # Set DARKROOM_TAG to the release the checkout is at (for example v1.2.3): every service's image takes it, so the images, ./deploy/browser/seccomp.json
+  # and the fallback you go back to all come from the same release. Unset, every service pulls latest, as before.
   darkroom-single:
     build:
       context: .
@@ -49,7 +50,7 @@ services:
       args:
         PUID: ${PUID:-99}
         PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom:latest
+    image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     ports:
@@ -96,7 +97,7 @@ services:
       args:
         PUID: ${PUID:-99}
         PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom-browser:latest
+    image: ghcr.io/anthonypluth/darkroom-browser:${DARKROOM_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     profiles: [browser]

@@ -232,12 +232,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("docker compose --profile single up -d darkroom-single", compose[:compose.index("  darkroom-single:")])
         app = compose_service("darkroom")
         self.assertNotIn("profiles:", app, "a plain `docker compose up -d` still starts the fallback's app, as before")
-        self.assertIn("image: ghcr.io/anthonypluth/darkroom:latest", app)
+        self.assertIn("image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}", app)
         for name in ("DARKROOM_BROWSER_TOKEN", "VNC_URL"):
             self.assertIn(f"{name}: ${{{name}:-}}", app)
         browser = compose_service("darkroom-browser")
         self.assertIn("profiles: [browser]", browser)
-        self.assertIn("image: ghcr.io/anthonypluth/darkroom-browser:latest", browser)
+        self.assertIn("image: ghcr.io/anthonypluth/darkroom-browser:${DARKROOM_TAG:-latest}", browser)
         self.assertIn("DARKROOM_URL: http://darkroom:8000", browser)
 
     def test_ci_validates_both_layouts_and_publishes_all_three_images(self):
@@ -328,6 +328,19 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertIn("Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest`", page)
         self.assertRegex((ROOT / ".env.example").read_text(), r"(?m)^# DARKROOM_TAG=$")
         self.assertIn("set Repository to that release's tag", template().findtext("Overview"))
+
+    def test_every_service_takes_its_image_tag_from_darkroom_tag_so_the_fallback_matches_the_release(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        images = re.findall(r"^    image: (\S+)$", compose, re.M)
+        self.assertEqual(images, [f"ghcr.io/anthonypluth/{name}:${{DARKROOM_TAG:-latest}}" for name in ("darkroom-single", "darkroom", "darkroom-browser")])
+        page = (ROOT / "docs/deploy/one-container.md").read_text()
+        back = page[page.index("## Going back to the two containers"):page.index("## Backup and restore")]
+        self.assertIn("with `DARKROOM_TAG` still set to the one container's release, `docker compose --profile browser pull && docker compose --profile browser up -d`", back)
+        later = back[back.index("**Afterwards**"):]
+        self.assertLess(later.index("cp .env.two-containers .env"), later.index("export DARKROOM_TAG=v1.2.3"))
+        self.assertLess(later.index("export DARKROOM_TAG=v1.2.3"), later.index("docker compose --profile browser pull"))
+        self.assertLess(later.index("docker compose --profile browser pull"), later.index("docker compose --profile browser up -d"))
+        self.assertIn("ghcr.io/anthonypluth/darkroom-browser:v1.2.3", back)
 
     def test_the_deploy_page_keeps_the_first_run_setup_to_the_runbooks_conditions(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
