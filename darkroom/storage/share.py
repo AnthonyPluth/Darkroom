@@ -101,15 +101,16 @@ def write_sentinel(root: Path, content: bytes) -> None:
     try:
         fd = os.open(SHARE_SENTINEL_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, SENTINEL_MODE, dir_fd=folder)
         try:
+            created = os.fstat(fd)
             written = 0
             while written < len(content):
                 written += os.write(fd, content[written:])
             os.fsync(fd)
+            os.fsync(folder)
         except BaseException:
-            remove_own(folder, os.fstat(fd))
+            remove_own(folder, created)
             raise
         finally:
             os.close(fd)
-        os.fsync(folder)
     finally:
         os.close(folder)

@@ -3,6 +3,7 @@ import contextlib
 import io
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -401,6 +402,17 @@ class BindShareTests(ShareWorld):
         self.assertEqual(sentinel.read_bytes(), b"someone else's")
         sentinel.unlink()
         with mock.patch.object(share.os, "fsync", side_effect=OSError(5, "I/O error")), self.assertRaises(OSError):
+            share.write_sentinel(self.root, share.sentinel_content("e" * 32))
+        self.assertFalse(os.path.lexists(sentinel))
+
+        real_fsync = share.os.fsync
+
+        def folder_fsync_fails(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "I/O error")
+            real_fsync(fd)
+
+        with mock.patch.object(share.os, "fsync", side_effect=folder_fsync_fails), self.assertRaises(OSError):
             share.write_sentinel(self.root, share.sentinel_content("e" * 32))
         self.assertFalse(os.path.lexists(sentinel))
 
