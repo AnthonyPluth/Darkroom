@@ -548,3 +548,12 @@ class Setting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
+
+
+class StoredSetting(Base):
+    __tablename__ = "stored_settings"
+    __table_args__ = (CheckConstraint("(value IS NULL) <> (value_sealed IS NULL)", name="ck_stored_settings_one_value"),)
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    value_sealed: Mapped[str | None] = mapped_column(Text)
+    updated: Mapped[float] = mapped_column(Float, nullable=False)

@@ -24,8 +24,7 @@ def display_ready(given: Mapping[str, str]) -> Callable[[], bool]:
 
 def app_ready(given: Mapping[str, str]) -> Callable[[], bool]:
     port = given.get("DARKROOM_PORT", "8000")
-    number = int(port) if port.isascii() and port.isdigit() else 8000
-    return lambda: supervisor.listening(number)
+    return lambda: supervisor.listening(int(port) if port.isascii() and port.isdigit() else 8000)
 
 
 def main(given: Mapping[str, str] | None = None) -> int:

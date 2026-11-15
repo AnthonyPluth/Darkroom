@@ -26,6 +26,7 @@ from darkroom_browser import runner
 from darkroom_browser.client import Client
 from darkroom_init import __main__ as init_main
 from darkroom_init import plan, supervisor, viewer_auth
+from tests.browser import one_container
 from tests.browser.test_runner import FakeBrowser
 from tests.privacy import no_leaks
 from tests.shared import own_database, start_server
@@ -47,13 +48,6 @@ def handed(value):
     os.write(write_end, value.encode())
     os.close(write_end)
     return read_end
-
-
-def gone(pid):
-    try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
-    except FileNotFoundError:
-        return True
 
 
 class PlanTests(unittest.TestCase):
@@ -167,7 +161,7 @@ class SupervisorTests(unittest.TestCase):
         left = [int(pid) for pid in self.lines("left")]
         self.assertGreaterEqual(len(left), 2)
         time.sleep(0.2)
-        self.assertTrue(all(gone(pid) for pid in left), left)
+        self.assertFalse(set(left) & {process["pid"] for process in one_container.processes()}, left)
 
     def test_a_restarted_child_gets_the_same_secret_on_a_pipe_and_nowhere_else(self):
         script = f"""
@@ -227,7 +221,7 @@ class OrphanTests(unittest.TestCase):
             done = subprocess.run([sys.executable, "-c", ORPHAN_HARNESS, str(record), mode], cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
             self.assertEqual(done.returncode, 0, done.stderr)
             left = [int(pid) for pid in record.read_text().split()]
-        self.assertTrue(all(gone(pid) for pid in left), left)
+        self.assertFalse(set(left) & {process["pid"] for process in one_container.processes()}, left)
         return left, done
 
     def test_a_browser_that_left_its_workers_group_is_stopped_when_the_worker_exits(self):
@@ -238,6 +232,11 @@ class OrphanTests(unittest.TestCase):
     def test_a_running_workers_strays_outlive_other_restarts_until_shutdown(self):
         left, done = self.strays("stay")
         self.assertEqual((len(left), done.stdout), (1, "[True]\n"))
+
+    def test_the_image_check_counts_only_browsers_outside_every_worker_as_strays(self):
+        every = [{"pid": 277, "ppid": 7, "args": ["python", "-m", "darkroom_browser"], "comm": "python"}, {"pid": 300, "ppid": 277, "args": [], "comm": "node"},
+                 {"pid": 328, "ppid": 300, "args": [], "comm": "chrome"}, {"pid": 339, "ppid": 328, "args": [], "comm": "chrome"}, {"pid": 150, "ppid": 7, "args": [], "comm": "chrome"}]
+        self.assertEqual(one_container.pids(every), {"workers": [277], "browsers": [328, 339, 150], "strays": [150]})
 
     def test_adopted_processes_and_listening_ports_are_read_from_proc(self):
         with tempfile.TemporaryDirectory() as folder:

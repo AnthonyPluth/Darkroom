@@ -205,8 +205,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         with db.session(engine) as opened:
             if scheduler.placed_copies.due(opened):
                 checked = scheduler.placed_copies.run(opened, photos, at)
-                monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued,
-                               held=len(pixel_check.replacing_pixels(opened)))
+                monitoring.log("placed copies checked", checked=checked.checked, intact=checked.intact, requeued=checked.requeued, adopted=checked.adopted,
+                               unaccounted=sum(checked.unaccounted.values()), held=len(scheduler.placed_copies.held_pixels(opened)))
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused)

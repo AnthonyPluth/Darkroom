@@ -19,9 +19,9 @@ def processes():
     found = []
     for folder in Path("/proc").glob("[0-9]*"):
         try:
-            state = (folder / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            state, ppid = (folder / "stat").read_text().rsplit(")", 1)[1].split()[:2]
             args = [part.decode() for part in (folder / "cmdline").read_bytes().split(b"\0") if part]
-            found.append({"pid": int(folder.name), "state": state, "comm": (folder / "comm").read_text().strip(), "args": args})
+            found.append({"pid": int(folder.name), "ppid": int(ppid), "state": state, "comm": (folder / "comm").read_text().strip(), "args": args})
         except (OSError, IndexError, ValueError):
             continue
     return [process for process in found if process["state"] != "Z"]
@@ -50,9 +50,17 @@ def scan_with_control():
     return 0 if not found and caught and readable > 10 else 1
 
 
-def pids():
-    every = processes()
-    return {"workers": [p["pid"] for p in every if "darkroom_browser" in p["args"]], "browsers": [p["pid"] for p in every if p["comm"] == "chrome"]}
+def under(pid, ancestors, parents):
+    while pid in parents and pid not in ancestors:
+        pid = parents[pid]
+    return pid in ancestors
+
+
+def pids(every=None):
+    every = processes() if every is None else every
+    parents = {p["pid"]: p["ppid"] for p in every}
+    workers, browsers = [p["pid"] for p in every if "darkroom_browser" in p["args"]], [p["pid"] for p in every if p["comm"] == "chrome"]
+    return {"workers": workers, "browsers": browsers, "strays": [pid for pid in browsers if not under(pid, workers, parents)]}
 
 
 def kill_worker_under_browser():
@@ -61,7 +69,7 @@ def kill_worker_under_browser():
         seen = pids()
         if seen["browsers"] and len(seen["workers"]) == 1:
             os.kill(seen["workers"][0], signal.SIGKILL)
-            print(json.dumps({"worker": seen["workers"][0], "browsers": len(seen["browsers"])}))
+            print(json.dumps({"worker": seen["workers"][0], "browsers": seen["browsers"], "at": time.time()}))
             return 0
         time.sleep(0.05)
     return 1
@@ -69,12 +77,11 @@ def kill_worker_under_browser():
 
 def viewer():
     args = next(p["args"] for p in processes() if any(part.endswith("websockify") for part in p["args"][:2]))
+    status, source = 200, args[args.index("--auth-source") + 1]
     try:
         urllib.request.urlopen("http://127.0.0.1:6080/vnc.html", timeout=5).close()
-        status = 200
     except urllib.error.HTTPError as error:
         status = error.code
-    source = args[args.index("--auth-source") + 1]
     print(json.dumps({"auth_source": source, "status": status}))
     return 0 if source.isdigit() and status == 401 and "127.0.0.1:6080" in args else 1
 
@@ -133,7 +140,8 @@ def main(argv):
     from darkroom.storage.models import BrowserJob
     commands = {"scan": scan_with_control, "viewer": viewer, "relay": relay, "kill-worker": kill_worker_under_browser,
                 "enqueue": lambda: database(lambda opened: enqueue(opened, argv[1])),
-                "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status)}
+                "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status),
+                "claimed-since": lambda: database(lambda opened: opened.query(BrowserJob).filter(BrowserJob.started >= float(argv[1])).count())}
     if argv:
         return commands[argv[0]]()
     print(json.dumps(pids()))

@@ -553,5 +553,52 @@ class PixelFolderPathTests(unittest.TestCase):
         self.assertFalse(copy.exists())
         self.assert_kept_unchanged()
 
+    def test_the_pixel_folder_lists_every_entry_but_its_control_entries_without_following_links(self):
+        folder = self.root / "_pixels" / "1"
+        self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [])
+        (folder / "jo" / "2024").mkdir(parents=True)
+        (folder / ".stfolder").mkdir()
+        (folder / ".stfolder" / "marker").write_text("x")
+        (folder / ".stignore").write_text("x")
+        (folder / "jo" / ".stignore").write_text("x")
+        (folder / "jo" / "2024" / "a.HEIC").write_bytes(b"a")
+        (folder / "jo" / "linked").symlink_to(self.root / "jo" / "originals")
+        os.mkfifo(folder / "jo" / "pipe")
+        (folder / "empty").mkdir()
+        before = tree(self.root)
+        self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [("jo", ".stignore"), ("jo", "2024", "a.HEIC"), ("jo", "linked"), ("jo", "pipe")])
+        self.assertEqual(tree(self.root), before)
+        with self.assertRaises(paths.OutsideRoot):
+            paths.pixel_folder_entries(self.photos, 0)
+
+    def test_a_pixel_folder_that_cannot_be_walked_is_listed_as_entries_it_cannot_account_for(self):
+        folder = self.root / "_pixels"
+        (folder / "1" / "jo" / "deep").mkdir(parents=True)
+        (folder / "1" / "jo" / "deep" / "a.HEIC").write_bytes(b"a")
+        (folder / "2").symlink_to(self.root / "jo" / "originals")
+        self.assertEqual(paths.pixel_folder_entries(self.photos, 2), [()])
+        real_open, real_stat = os.open, os.stat
+
+        def refused(name, flags, *args, **kwargs):
+            if name == "deep":
+                raise PermissionError(errno.EACCES, "refused")
+            return real_open(name, flags, *args, **kwargs)
+        with mock.patch.object(paths.os, "open", side_effect=refused):
+            self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [("jo", "deep")])
+
+        def failing(name, *args, **kwargs):
+            if name == "deep":
+                raise OSError(errno.EIO, "input/output error")
+            return real_stat(name, *args, **kwargs)
+        with mock.patch.object(paths.os, "stat", side_effect=failing):
+            self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [("jo", "deep")])
+        with mock.patch.object(paths, "DEEPEST_PIXEL_FOLDER", 1):
+            self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [("jo", "deep")])
+        with mock.patch.object(paths.os, "listdir", side_effect=[["jo"], OSError(errno.EIO, "input/output error")]):
+            self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [("jo",)])
+        with mock.patch.object(paths.os, "listdir", side_effect=OSError(errno.EIO, "input/output error")):
+            self.assertEqual(paths.pixel_folder_entries(self.photos, 1), [()])
+
+
 if __name__ == "__main__":
     unittest.main()
