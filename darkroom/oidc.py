@@ -429,6 +429,16 @@ def finish_login(opened: Session, settings: Settings, query: Mapping[str, list[s
     return SignedIn(token, safe_next(pending.next), seal_refresh_token(settings, tokens.get("refresh_token")) is not None)
 
 
+def finish_test_login(opened: Session, settings: Settings, query: Mapping[str, list[str]], login_cookie: str | None, now: float, expected_next: str) -> Identity:
+    state, code = callback_state(query, login_cookie)
+    pending = take_pending(opened, state, now)
+    if pending.next != expected_next:
+        raise SignInFailed("the settings being tested changed during the test")
+    document = discovery(settings, now)
+    tokens = exchange_code(settings, document, code, pending.verifier)
+    return authorize(settings, claims_from(settings, document, tokens, pending.nonce, None))
+
+
 def stored_groups(user: User) -> tuple[str, ...]:
     try:
         raw = json.loads(user.groups or "[]")

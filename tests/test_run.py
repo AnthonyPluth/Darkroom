@@ -163,3 +163,59 @@ class JobsCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoredSettingsCommandTests(unittest.TestCase):
+    def setUp(self):
+        from darkroom.storage import stored_settings
+        from tests.shared import add_person, own_database_url
+
+        self.url = own_database_url(self)
+        self.engine = db.make_engine(self.url)
+        self.addCleanup(self.engine.dispose)
+        db.Base.metadata.create_all(self.engine)
+        with db.session(self.engine) as opened:
+            stored_settings.store(opened, "IMMICH_URL", "http://immich.lan:2283", "stored-key-0123456789", 1.0)
+            add_person(opened, "jo")
+        self.env = {"DATABASE_URL": self.url, "DARKROOM_SECRET_KEY": "stored-key-0123456789"}
+
+    def captured(self, argv, target, attribute, position, env=None, **returns):
+        seen = []
+
+        def capture(*args, **kwargs):
+            seen.append(args[position])
+            if "error" in returns:
+                raise returns["error"]
+            return returns.get("value")
+
+        with mock.patch.dict(os.environ, env or self.env, clear=True), mock.patch.object(target, attribute, side_effect=capture), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = run.main(argv)
+        return code, seen
+
+    def test_the_commands_use_a_value_the_wizard_stored(self):
+        from darkroom.domain import immich_reconcile
+
+        code, seen = self.captured(["reconcile-immich", "--person", "jo"], immich_reconcile, "reconcile_person", 1, error=immich_reconcile.NotReady("not yet"))
+        self.assertEqual((code, [settings.immich_url for settings in seen]), (1, ["http://immich.lan:2283"]))
+        code, seen = self.captured(["jobs", "nightly"], run.jobs, "build", 0, value=mock.Mock(jobs={}))
+        self.assertEqual((code, [settings.immich_url for settings in seen]), (1, ["http://immich.lan:2283"]))
+        export = mock.Mock(status="unpacked", id=1)
+        with mock.patch.object(run.unpack, "inspect_manual_inbox", return_value=[export]):
+            code, seen = self.captured(["import-takeout", "--person", "jo"], run, "import_one", 1, value=0)
+        self.assertEqual((code, [settings.immich_url for settings in seen]), (0, ["http://immich.lan:2283"]))
+        code, seen = self.captured(["import-legacy", "--person", "jo"], run.legacy, "import_person", 1, error=run.legacy.NoSource("none"))
+        self.assertEqual((code, [settings.immich_url for settings in seen]), (1, ["http://immich.lan:2283"]))
+
+    def test_the_environment_still_wins_and_an_unreadable_stored_secret_stops_the_command(self):
+        from darkroom.domain import immich_reconcile
+
+        _, seen = self.captured(["reconcile-immich"], immich_reconcile, "reconcile_person", 1, env={**self.env, "IMMICH_URL": "http://env.lan"}, error=immich_reconcile.NotReady("x"))
+        self.assertEqual([settings.immich_url for settings in seen], ["http://env.lan"])
+        from darkroom.storage import stored_settings
+        with db.session(self.engine) as opened:
+            stored_settings.store(opened, "OIDC_CLIENT_SECRET", "sealed-with-another-key", "another-key-0123456789", 1.0)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(run.main(["jobs", "nightly"]), 1)
+        self.assertIn("OIDC_CLIENT_SECRET is stored sealed but cannot be read", err.getvalue())
