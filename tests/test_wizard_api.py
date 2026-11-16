@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 from sqlalchemy.exc import OperationalError
 
 import run
@@ -21,7 +21,7 @@ from darkroom.storage.models import Setting, StoredSetting, User
 from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN, SETUP_TESTED
 from tests.fakes.oidc_provider import CLIENT_ID, CLIENT_SECRET, FakeProvider
 from tests.privacy import no_leaks
-from tests.shared import cookies_set, fetch, own_database, own_database_url, settings_from, start_server
+from tests.shared import cookies_set, fetch, own_database, own_database_url, settings_from, start_server, write_elsewhere
 
 KEY = "wizard-test-secret-key-0123456789"
 RESEND_KEY = "re_resend-key-canary-4b5c6d7e"
@@ -484,6 +484,37 @@ class AfterTestTests(AfterTestCase):
         self.assertEqual(self.stored(), stored_before)
         with db.session(self.engine) as opened:
             self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
+
+    def test_a_test_committed_from_another_connection_waits_for_the_steps_check_and_write(self):
+        with db.session(self.engine) as opened:
+            tested = opened.get(Setting, SETUP_TESTED).value
+        steps = (("/api/setup/sign-in", {"oidc_issuer": self.provider.base, "oidc_client_id": CLIENT_ID, "oidc_allowed_groups": ["parents"]}), ("/api/setup/sign-in/test", {}),
+                 ("/api/setup/address", {"public_url": "http://other.lan:8000"}))
+        for path, body in steps:
+            with self.subTest(path=path):
+                with db.session(self.engine) as opened:
+                    opened.execute(delete(Setting).where(Setting.key == SETUP_TESTED))
+                seen = []
+
+                def test_passes_meanwhile(conn, cursor, statement, parameters, context, executemany, seen=seen):
+                    if not seen and "settings" in statement and "stored_settings" not in statement:
+                        seen.append(write_elsewhere(self, self.engine, "INSERT INTO settings (key, value) VALUES (:key, :value)", key=SETUP_TESTED, value=tested))
+
+                request = Request("POST", path, {}, {"Host": self.base.removeprefix("http://")}, json.dumps(body).encode(), self.settings, self.engine, client="127.0.0.1")
+                request = dataclasses.replace(request, settings=handler.with_stored(request))
+                event.listen(self.engine, "after_cursor_execute", test_passes_meanwhile)
+                try:
+                    with mock.patch.object(setup, "after_the_test", return_value=None), contextlib.redirect_stdout(io.StringIO()):
+                        response = routes.find("POST", path).handler(request)
+                finally:
+                    event.remove(self.engine, "after_cursor_execute", test_passes_meanwhile)
+                self.assertEqual(seen, ["locked"])
+                self.assertNotEqual(response.status, 409, response.body)
+                with db.session(self.engine) as opened:
+                    self.assertIsNone(opened.get(Setting, SETUP_TESTED))
+                self.assertEqual(write_elsewhere(self, self.engine, "INSERT INTO settings (key, value) VALUES (:key, :value)", key=SETUP_TESTED, value=tested), "committed")
+                status = routes.find("POST", path).handler(request).status
+                self.assertEqual(status, 409)
 
     def test_turning_the_wizard_off_and_on_again_reopens_only_the_pair(self):
         off = dataclasses.replace(self.settings, wizard=False)
