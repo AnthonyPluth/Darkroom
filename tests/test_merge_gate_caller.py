@@ -21,3 +21,12 @@ class MergeGateCallerTests(unittest.TestCase):
         inputs = gate_inputs()
         self.assertEqual(inputs.get("require-codex-review"), "true")
         self.assertEqual(inputs.get("automerge-fleet-bumps"), "true")
+
+    def test_the_agent_guide_overrides_the_fleet_block_on_marking_ready(self):
+        guide = (ROOT / "AGENTS.md").read_text()
+        start = guide.index("<!-- fleet:begin git-and-prs ")
+        end = guide.index("<!-- fleet:end git-and-prs -->")
+        self.assertIn("`auto-ready`", guide[start:end])
+        outside = guide[:start] + guide[end:]
+        self.assertIn("**Only the owner marks a pull request ready for review.**", outside)
+        self.assertNotIn("**Only the owner marks a pull request ready for review.**", guide[start:end])
