@@ -19,7 +19,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
-| `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off) |
+| `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
@@ -190,7 +190,7 @@ Rows 4 and 5 together keep the chip and show both lines. Counts are numbers only
 
 ### The Syncthing card on Status
 
-A card titled "Syncthing", after the People section and before Recent events. Its first line is the title and a chip for Darkroom's Syncthing as a whole, then one sentence; under that, one row per Pixel (name, its chip and line from the table above), or "No Pixel is paired yet." with a link "Open People". It is not drawn with `DARKROOM_SYNCTHING` off. The person card's Pixel row becomes "{Pixel}, synced {ago}" (as board 02 already shows) followed by the per-Pixel chip when it is not `ok`, and "{Pixel}, not synced yet" before the first sync.
+A card titled "Syncthing", after the People section and before Recent events. Its first line is the title and a chip for Darkroom's Syncthing as a whole, then one sentence; under that, one row per Pixel (name, its chip and line from the table above), or "No Pixel is paired yet." with a link "Open People". It is not drawn with `DARKROOM_SYNCTHING` off. The person card's Pixel row becomes "{Pixel}, synced {ago}" (as board 02 already shows) followed by the per-Pixel chip when it is not `ok`, and "{Pixel}, not synced yet" before the first sync. At desktop width the Syncthing card, the alerts and each person card span the full content column, one person card per row ("Full-width sections" below; awaiting the owner's sign-off).
 
 | Card state | Chip | Sentence |
 | --- | --- | --- |
@@ -252,7 +252,7 @@ Status: **signed off by the owner on 2026-11-16: all 9 decisions approved as rec
 - **(b) The device ID is shared with another Pixel.** Two or more Pixels have the same ID (compared in canonical form); the reconciler records `device_id_shared` and gives none of them a folder. #350 refuses an ID another Pixel already has, so this too comes from values saved before it.
 - **(c) The folder was removed.** The reconciler found the Pixel's folder in Darkroom's Syncthing not Send Only, or not at the Pixel's folder, removed it (event `syncthing_folder_removed`) and records `folder_removed`. It never shares the folder again by itself. #350 adds the release: `POST /api/pixels/{id}/release-folder` with `{"confirmed": true}` records `syncthing_folder_released`, and the reconciler's next run (within 60 s, as the plan's fingerprint changes) adds the folder afresh, Send Only at the Pixel's folder, once the share check passes and the Pixel is not held. It answers 409 when nothing was removed or the transport is off, and it needs a signed-in session from Darkroom's origin like every other route (Darkroom has no separate owner role).
 
-Board: `03-people-pairing-states-desktop.dc.html` and `03-people-pairing-states-phone.dc.html` (the Pixels card with the three states, the confirmation to share a folder again in each of its states, the row just after, the person card's Pixel row and the Syncthing card). Existing tokens, chips, buttons, table and modal only. Names are made up.
+Board: `03-people-pairing-states-desktop.dc.html` and `03-people-pairing-states-phone.dc.html` (the Pixels card with the three states, the confirmation to share a folder again in each of its states, the row just after, the person card's Pixel row and the Syncthing card; row 2d is drawn there too since the full-width redraw below). Existing tokens, chips, buttons, table and modal only. Names are made up.
 
 ### Where they sit
 
@@ -306,7 +306,7 @@ None of the four raises an alert, and no alert kind is added. (a) and (b) can on
 
 - The reconciler records one code per Pixel, and today `folder_removed` wins over `device_id_invalid` and `device_id_shared`. The build changes that order so the ID's problem is recorded first (`device_id_invalid` and `device_id_shared` ahead of `folder_removed`); the removal stays on record and shows once the ID is fixed.
 - #350's "nothing to release" message (the 409 when nothing was removed) says "share again", as the button does.
-- Row 2d (`folder_path_refused`) is built with the other three: chip, line, no button, no alert. It is described here in full and has no board yet; a later board draws it.
+- Row 2d (`folder_path_refused`) is built with the other three: chip, line, no button, no alert. It is described here in full, and the full-width redraw below draws it on the addendum boards (Alex's Pixel, after 2c, in the Pixels card and the Syncthing card).
 - The other Pixels' names for (b) are worked out on the server from the stored IDs in canonical form, as the reconciler compares them; the reply carries names only, never an ID.
 - Right after a release, the Pixel shows Checking because the release is on record, before the reconciler's next run rewrites its code.
 - The demo seed gains one Pixel in each of the three states (and, for (b), its pair), and the People and Status images and a flow that presses Share again, then Share folder again, carry them, as #356's do.
@@ -324,3 +324,25 @@ The owner approved all nine as recommended on 2026-11-16, recorded on #322 (http
 7. **After sharing again the Pixel shows Checking** until the reconciler's next run. Not chosen: keeping "Folder removed" until then.
 8. **Any signed-in member may share a folder again**, after the confirmation, as #350 built it. Not chosen: an owner role, which Darkroom does not have yet.
 9. **A fourth code found while reading the reconciler, `folder_path_refused`** (the Pixel's folder resolves outside the photo share, so no folder is added), also fell through. Decided: a row 2d, warn "Folder refused", "Its folder leads outside the photo share, so Darkroom does not share it.", with no button and no alert, drawn in a later board. Not chosen: leaving it to fall through.
+
+## Full-width sections on the #322 and addendum boards (for the owner's sign-off)
+
+Status: **drawn for the owner's sign-off, not signed off.** The owner asked for every section of the pairing, Syncthing status and People designs to be full width, not just some of them. Until signed off, the boards as they were stand.
+
+The rule: at desktop width (1280, with the same 232 px left rail) every card and section on these boards spans the full content column, the space right of the rail less the page's 40 px padding each side (968 px at 1280), and none is narrower. That is the column boards 02 and 03 already draw and the built shell already has (`Shell.svelte`'s `main`: `flex-1`, `md:px-10`, no maximum width). The phone layout (390) is unchanged. Modal dialogs stay dialogs: the existing `Modal`, at most 32 rem (512 px) wide, full width less 1 rem each side on a phone, so the Pixel form, the pairing steps and the Share again confirmation keep their width.
+
+What changed, per board:
+
+| Board | Change |
+| --- | --- |
+| `02-status-syncthing-desktop.dc.html` | The content column's 1040 px cap is gone (column 960 to 968 px, as boards 02 and 03). The person card loses its 520 px cap and spans the column, one card per row. The alerts and the Syncthing card already spanned it. Sub-heading and the person card's note updated. |
+| `03-people-pairing-desktop.dc.html` | The content column's 1040 px cap is gone. The Pixels card already spanned it; the modals are unchanged. Sub-heading updated. |
+| `03-people-pairing-states-desktop.dc.html` | The content column's 1040 px cap is gone. The person card loses its 520 px cap and spans the column. Row 2d added (Alex's Pixel, warn "Folder refused", its line, Edit only) after 2c in the Pixels card and in the Syncthing card. Title, sub-heading and the Pixels card's note updated; the board is 100 px taller. |
+| `03-people-pairing-states-phone.dc.html` | Layout unchanged. Row 2d added as on desktop; title, sub-heading and note updated; the board is 400 px taller. |
+| `02-status-syncthing-phone.dc.html`, `03-people-pairing-phone.dc.html` | Unchanged. |
+
+What the build changes:
+
+- **#324 (PR #356, Syncthing on Status and People):** on Status, the People section's cards go from two columns at `md` (`grid gap-4 md:grid-cols-2` in `frontend/src/pages/Status.svelte`) to one column, each card the full width, whether `DARKROOM_SYNCTHING` is on or off; this replaces board 02's two-column person grid on the built page. Row 2d is built as "For the build" above says. The Syncthing card, the alerts, Recent events and the People page's cards already span the column; nothing else moves. Its `status-desktop.png` shows the cards one per row.
+- **#323 (PR #355, the pairing screens):** no layout change. The pairing steps stay in `Modal` (`max-w-lg`), and the People page's cards already span the column.
+- Neither touches the shell or any other page; the whole app's page layout stays with #16.
