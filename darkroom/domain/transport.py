@@ -443,23 +443,35 @@ def pause(opened: Session, client: syncthing.Client, reason: str, now: float) ->
     monitoring.log("syncthing transport paused: the share check failed")
 
 
+def observed(client: syncthing.Client) -> tuple[object, ...] | None:
+    try:
+        return (tuple(sorted(client.folders(), key=lambda found: found.id)), tuple(sorted(client.devices(), key=lambda found: found.device_id)))
+    except syncthing.SyncthingFailed:
+        return None
+
+
 @dataclass
 class Transport:
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     approved: tuple[object, ...] | None = None
+    seen: tuple[object, ...] | None = field(default=None, repr=False)
+
+    def unchanged(self, client: syncthing.Client) -> bool:
+        return self.seen is not None and observed(client) == self.seen
 
     def tick(self, opened: Session, client: syncthing.Client, photos: Photos, held: Callable[[int], bool], share_problem: str | None, now: float,
              force: bool = False) -> Outcome | None:
         with self.lock:
             found = plan(opened, photos, held, share_problem)
-            if not force and found.fingerprint() == self.approved:
-                opened.commit()
+            opened.commit()
+            if not force and found.fingerprint() == self.approved and self.unchanged(client):
                 return None
             outcome = reconcile(opened, client, photos, held, share_problem, now, found)
             self.approved = found.fingerprint() if outcome.failure is None else None
+            self.seen = observed(client) if outcome.failure is None else None
             return outcome
 
     def pause(self, opened: Session, client: syncthing.Client, reason: str, now: float) -> None:
         with self.lock:
-            self.approved = None
+            self.approved, self.seen = None, None
             pause(opened, client, reason, now)

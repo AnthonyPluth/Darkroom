@@ -317,6 +317,66 @@ class ReconcilerTests(unittest.TestCase):
         self.assertEqual(outcome.resumed, {self.sam_pixel})
         self.assertEqual(self.rows()[self.jo_pixel], (False, transport.INVALID_DEVICE))
 
+    def link_jos_folder(self, link: str) -> Path:
+        originals = self.root / "jo" / "originals"
+        (originals / "2024").mkdir(parents=True, exist_ok=True)
+        (originals / "2024" / "IMG_0001.HEIC").write_bytes(b"jo's original")
+        if link == "_pixels":
+            (self.root / "_pixels").symlink_to(self.root / "jo")
+        else:
+            (self.root / "_pixels").mkdir(exist_ok=True)
+            (self.root / "_pixels" / str(self.jo_pixel)).symlink_to(originals)
+        return self.root / "_pixels" / str(self.jo_pixel)
+
+    def test_a_pixel_whose_folder_is_a_link_gets_no_folder_and_no_device_and_the_other_still_resumes(self):
+        self.link_jos_folder(f"_pixels/{self.jo_pixel}")
+        before = test_pixel_check.share_tree(self.root)
+        for at in (NOW, NOW + 10):
+            outcome = self.reconcile(at=at)
+            self.assertIsNone(outcome.failure)
+            self.assertEqual(outcome.resumed, {self.sam_pixel})
+            self.assertEqual({folder.id for folder in self.client.folders()}, {self.folder_id(self.sam_pixel)})
+            self.assertEqual({device.device_id for device in self.client.devices()}, {OWN, SAM_DEVICE})
+            self.assertEqual(self.rows(), {self.jo_pixel: (False, transport.PATH_REFUSED), self.sam_pixel: (True, None)})
+        self.assertFalse(any(method == "POST" and path == "/rest/config/folders" and body["id"] == self.folder_id(self.jo_pixel)
+                             for method, path, body in self.writes()))
+        self.assertEqual(self.events(transport.FOLDER_ADDED), [(f"pixel {self.sam_pixel}", mock.ANY)])
+        self.assertEqual(self.events(transport.FOLDER_REMOVED), [])
+        self.assertEqual(test_pixel_check.share_tree(self.root), before)
+
+    def test_a_persisted_folder_of_a_pixel_whose_folder_became_a_link_stays_paused_and_is_never_resumed(self):
+        for link in (f"_pixels/{self.jo_pixel}", "_pixels"):
+            with self.subTest(link=link):
+                linked = self.link_jos_folder(link)
+                identity = self.folder_id(self.jo_pixel)
+                self.fake.folders[identity] = {"id": identity, "path": str(linked), "type": "sendonly", "paused": False,
+                                               "devices": [{"deviceID": JO_DEVICE}, {"deviceID": OWN}], "versioning": {"type": ""}}
+                self.fake.devices[JO_DEVICE] = {"deviceID": JO_DEVICE, "name": "persisted", "paused": False}
+                self.fake.ignores[identity] = ["*.xmp"]
+                self.fake.requests.clear()
+                refused = {self.jo_pixel} if link != "_pixels" else {self.jo_pixel, self.sam_pixel}
+                for at in (NOW, NOW + 10, NOW + 20):
+                    outcome = self.reconcile(at=at)
+                    self.assertIsNone(outcome.failure)
+                    self.assertEqual(outcome.resumed, {self.jo_pixel, self.sam_pixel} - refused)
+                    self.assertNotIn(self.jo_pixel, outcome.approved)
+                    self.assertIn(identity, self.fake.folders)
+                    self.assertTrue(self.fake.folders[identity]["paused"])
+                    self.assertTrue(self.fake.devices[JO_DEVICE]["paused"])
+                    self.assertEqual({pixel_id: row for pixel_id, row in self.rows().items() if pixel_id in refused},
+                                     dict.fromkeys(refused, (False, transport.PATH_REFUSED)))
+                writes = self.writes()
+                self.assertFalse(any(isinstance(body, dict) and body.get("paused") is False and (path.endswith(identity) or path.endswith(JO_DEVICE))
+                                     for _, path, body in writes))
+                self.assertNotIn(identity, [body.get("id") for method, path, body in writes if method == "POST" and path == "/rest/config/folders"])
+                self.assertEqual(self.events(transport.FOLDER_REMOVED), [])
+                self.assertEqual((self.root / "jo/originals/2024/IMG_0001.HEIC").read_bytes(), b"jo's original")
+                if link == "_pixels":
+                    (self.root / "_pixels").unlink()
+                else:
+                    (self.root / "_pixels" / str(self.jo_pixel)).unlink()
+                    (self.root / "_pixels").rmdir()
+
     def test_two_pixels_with_one_device_id_get_no_folder_at_all(self):
         self.pair(self.sam_pixel, JO_DEVICE)
         outcome = self.reconcile()
@@ -385,7 +445,7 @@ class ReconcilerTests(unittest.TestCase):
         self.assertIsNotNone(tick(NOW))
         self.fake.requests.clear()
         self.assertIsNone(tick(NOW + 60))
-        self.assertEqual(self.fake.requests, [])
+        self.assertEqual({received.method for received in self.fake.requests}, {"GET"})
         self.assertIsNotNone(tick(NOW + 120, force=True))
         for change in (lambda: self.pair(self.sam_pixel, None), lambda: self.held.add(self.jo_pixel)):
             change()
@@ -397,6 +457,34 @@ class ReconcilerTests(unittest.TestCase):
         self.fake.forgetful = False
         self.assertIsNone(tick(NOW + 360).failure)
         self.assertIsNone(tick(NOW + 420))
+
+    def test_the_transport_reconciles_again_when_syncthing_comes_back_paused_or_changed_behind_its_back(self):
+        moving = transport.Transport()
+
+        def tick(at):
+            return moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, at)
+
+        self.assertEqual(tick(NOW).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertIsNone(tick(NOW + 60))
+        for entry in [*self.fake.folders.values(), *(device for identity, device in self.fake.devices.items() if identity != OWN)]:
+            entry["paused"] = True
+        self.assertEqual(tick(NOW + 120).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertTrue(all(not entry["paused"] for entry in self.fake.folders.values()))
+        self.assertIsNone(tick(NOW + 180))
+        self.fake.folders[self.folder_id(self.jo_pixel)]["type"] = "sendreceive"
+        self.assertEqual(tick(NOW + 240).resumed, {self.sam_pixel})
+        self.assertNotIn(self.folder_id(self.jo_pixel), self.fake.folders)
+        self.assertEqual(tick(NOW + 300).resumed, {self.sam_pixel})
+        self.assertNotIn(JO_DEVICE, self.fake.devices)
+        self.assertIsNone(tick(NOW + 360))
+        self.fake.devices[STRANGER] = {"deviceID": STRANGER, "name": "stranger", "paused": False}
+        self.assertIsNotNone(tick(NOW + 420))
+        self.assertNotIn(STRANGER, self.fake.devices)
+        with mock.patch.object(syncthing.Client, "folders", side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+            self.assertIsNotNone(tick(NOW + 480).failure)
+        self.assertIsNone(moving.seen)
+        self.assertIsNotNone(tick(NOW + 540))
+        self.assertIsNone(tick(NOW + 600))
 
 
 class FolderIdTests(unittest.TestCase):
@@ -539,7 +627,16 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue((self.root / f"_pixels/{self.pixel}/jo/a.jpg").is_file())
         self.fake.requests.clear()
         scheduler.run_one("syncthing.reconcile", 160.0)
-        self.assertEqual([received.method for received in self.fake.requests], [])
+        self.assertEqual({received.method for received in self.fake.requests}, {"GET"})
+        self.assertTrue(scheduler.jobs["syncthing.reconcile"].own_thread)
+
+    def test_a_startup_reconcile_that_raises_does_not_stop_the_service_from_starting(self):
+        with mock.patch.object(transport.Transport, "tick", side_effect=PermissionError("made-up lstat refusal")), \
+                mock.patch.object(transport.monitoring, "log") as logged:
+            scheduler = self.serving()
+        self.assertIn("syncthing.reconcile", scheduler.jobs)
+        self.assertIsNone(self.folder())
+        self.assertIn(mock.call("job failed", job="syncthing.reconcile", error="PermissionError"), logged.call_args_list)
 
     def test_a_failed_share_check_pauses_the_transport_and_nothing_resumes_until_a_tend_has_checked_again(self):
         from darkroom.storage import share

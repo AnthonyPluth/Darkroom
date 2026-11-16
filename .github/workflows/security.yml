@@ -2,9 +2,9 @@ name: Security scans
 
 # The security scans, through fleet's reusable workflow: Semgrep (the registry packs plus Darkroom's own rules in
 # .semgrep/, after their example check), npm audit in frontend/, Trivy over the files, over the service image and (a
-# second call) over the one-container image, and zizmor over the workflows. A pull request runs only the scans its
-# change can affect (a change under .github/ runs everything; Trivy's file scan always runs); the weekly run and a
-# manual one scan everything.
+# call each) over the one-container image and the browser worker's image, and zizmor over the workflows. A pull request
+# runs only the scans its change can affect (a change under .github/ runs everything; Trivy's file scan always runs);
+# the weekly run and a manual one scan everything.
 #
 # Darkroom is public (the owner's decision, #90). CodeQL's default setup scans it and the ruleset's code scanning rule
 # enforces its results. With sarif-upload off, Semgrep, Trivy and zizmor fail their job on findings, which the merge gate
@@ -43,13 +43,14 @@ jobs:
       code-paths: ^((darkroom|darkroom_browser|frontend/src|\.semgrep)/|run\.py$)
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       web-dirs: frontend
-      image-paths: ^(Dockerfile|Dockerfile\.browser|\.dockerignore|pyproject\.toml|poetry\.lock)$
+      image-paths: ^(Dockerfile|\.dockerignore|pyproject\.toml|poetry\.lock)$
       sarif-upload: false
       scorecard: false
 
-  # The same scans called a second time, for the one-container image (Dockerfile.single), which fleet's workflow builds
-  # and scans one Dockerfile at a time. Its code-paths match no changed file, so its Semgrep runs only where every scan
-  # runs (a change under .github/, the weekly and manual runs), like its file scan and zizmor, repeating the call above.
+  # The same scans called again for each other image, the one container (Dockerfile.single) and the browser worker
+  # (Dockerfile.browser), since fleet's workflow builds and scans one Dockerfile at a time. Their code-paths match no
+  # changed file, so their Semgrep runs only where every scan runs (a change under .github/, the weekly and manual runs),
+  # like their file scan and zizmor, repeating the first call.
   single-image:
     permissions:
       contents: read
@@ -63,5 +64,21 @@ jobs:
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       image-paths: ^(Dockerfile\.single|\.dockerignore|pyproject\.toml|poetry\.lock|deploy/single/requirements\.txt|deploy/browser/smoke\.sh)$
       dockerfile: Dockerfile.single
+      sarif-upload: false
+      scorecard: false
+
+  browser-image:
+    permissions:
+      contents: read
+      pull-requests: read      # the pull request's changed files
+      security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
+      actions: read            # Scorecard, which scorecard: false skips
+      id-token: write          # Scorecard, which scorecard: false skips
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    with:
+      code-paths: ^$
+      semgrep-paths: darkroom darkroom_browser run.py frontend/src
+      image-paths: ^(Dockerfile\.browser|\.dockerignore|deploy/browser/(requirements\.txt|entrypoint\.sh|smoke\.sh))$
+      dockerfile: Dockerfile.browser
       sarif-upload: false
       scorecard: false
