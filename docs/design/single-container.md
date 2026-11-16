@@ -331,7 +331,7 @@ The questions this design first left open were answered on #284 on 2026-11-10. N
 | 1 | Does the browser move in first, or after Syncthing? | First |
 | 2 | One unix user, or a root init dropping to separate users? | One user for everything; no separate users, groups, second mappings or root init. This was not the design's recommendation; section 5 states what it gives up |
 | 3 | The Chromium seccomp profile on Unraid | Kept, as one manual host step |
-| 4 | Who may open the wizard before sign-in exists? | The first visitor from a private address, until the first successful sign-in |
+| 4 | Who may open the wizard before sign-in exists? | The first visitor from a private address, until the first successful sign-in. Amended on 2026-11-16 (`docs/DECISIONS.md`, "Answers of 2026-11-16 on the first-run wizard"): after the passing test sign-in it stays open to that browser and the tested session until Finish setup, the session ending, another account's sign-in or 7 days |
 | 5 | The generated secret key in appdata beside the database | Yes, with the environment variable as an override |
 | 6 | Volumes | State in appdata, including browser profiles; the working folders on a second mapping |
 | 7 | Syncthing's reach and Unraid networking | Local discovery only, with host networking |
