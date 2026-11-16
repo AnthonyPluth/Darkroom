@@ -1,6 +1,6 @@
 # First-run setup wizard (#303, proposed)
 
-Status: **draft for the owner's sign-off on #303. It is not signed off, and nothing is built from it until the owner signs off #303 itself (AGENTS.md, promise 6).** The owner has answered the open points of the first draft on #344; those answers are recorded under "The owner's decisions" below and are written into this design. The UI is #305. It calls the setup API that is on `main` (#304, `darkroom/server/api/wizard.py` and `darkroom/server/wizard.py`, behind `DARKROOM_WIZARD=1`), as extended by #346, which #305 depends on. The steps are the full list in `docs/design/single-container.md`, section 8; who may open the wizard is the owner's answer 4 there.
+Status: **draft for the owner's sign-off on #303. It is not signed off, and nothing is built from it until the owner signs off #303 itself (AGENTS.md, promise 6).** The owner has answered the open points of the first draft on #344; those answers, including the three raised by the new order, are recorded under "The owner's decisions" below and are written into this design. The UI is #305. It calls the setup API that is on `main` (#304, `darkroom/server/api/wizard.py` and `darkroom/server/wizard.py`, behind `DARKROOM_WIZARD=1`), as extended by #346, which #305 depends on. The steps are the full list in `docs/design/single-container.md`, section 8; who may open the wizard is the owner's answer 4 there.
 
 Every name, address and key below is made up.
 
@@ -329,11 +329,11 @@ The People, account and Pixel routes are not changed: the wizard calls them with
 
 ## The owner's decisions
 
-The owner answered the first draft's open points on #344. They are recorded here as the owner's decisions; the design as a whole still waits for the sign-off of #303.
+The owner answered the first draft's open points on #344, and the three that decision 2 raised afterwards (16 to 18). They are recorded here as the owner's decisions; the design as a whole is still a draft, not signed off, and waits for the sign-off of #303, which the owner gives itself.
 
 1. **What is signed off:** accepted as recommended. This document first, then the boards listed above, before #303 closes.
 2. **The steps and their order:** the owner chose to extend the API rather than shorten the wizard: "we should never provide a worse experience just so the tests pass". The wizard keeps section 8's full order, and a passing test does not close it before People, Google accounts and Pixels (#346, which #305 depends on).
-3. **Section 8's Done screen:** accepted as recommended (its content in the wizard, not on the server's success page). With decision 2 the wizard stays open after the test, so the content is on the Done step at the end rather than before the test, and the server's success page is replaced by the redirect to `/setup`.
+3. **Section 8's Done screen:** accepted as recommended (its content in the wizard, not on the server's success page). With decision 2 the wizard stays open after the test, so the content (restart, turn the wizard off, sign in, back up appdata) sits on the final Done step at the end, not before the test, and the server's success page is replaced by the redirect to `/setup`. The owner confirmed this reading.
 4. **How a person finds `/setup`:** accepted as recommended. Named in the one-container guide and the runbook; the signed-out page is unchanged.
 5. **When the wizard is claimed:** accepted as recommended. Only when Start setup is pressed, never on load.
 6. **One closed screen for every reason:** accepted as recommended.
@@ -346,11 +346,6 @@ The owner answered the first draft's open points on #344. They are recorded here
 13. **The server's failure pages:** a follow-up issue, #349 (a "Back to setup" link); #305 ships without it.
 14. **The desktop layout:** accepted as recommended. The signed-out page's two columns with the step list on the left.
 15. **Images for #305:** the wizard mode of `tools/verify.py` is part of #305.
-
-## Still open for the owner
-
-These come from decision 2's new order and were not in the first draft; each has a recommendation, and the owner can answer them with the sign-off of #303.
-
-1. **People required.** Recommended: Continue on People needs at least one person; Google accounts and Pixels can be skipped. Alternative: People can be skipped too.
-2. **The one change to the Remote browser page.** Recommended: a "Back to setup" link at its top when it was opened from the wizard (`?from=setup`). Alternative: no change; the person uses the browser's back button.
-3. **The post-test time limit.** Recommended: 7 days after the passing test, as #346 says. Alternative: no limit beyond the session's own life.
+16. **People required:** accepted as recommended. Continue on People needs at least one person; Google accounts and Pixels stay skippable. Not chosen: letting People be skipped too.
+17. **The one change to the Remote browser page:** accepted as recommended. A "Back to setup" link at its top when the page is opened from the wizard (`?from=setup`); this is the only change to board 07. Not chosen: no change, leaving the person to the browser's back button.
+18. **The post-test time limit:** accepted as recommended. After the passing test the wizard stays reachable for 7 days, then closes by itself; it also closes on Finish setup, when the tested session ends, or when another account signs in. Not chosen: no limit beyond the session's own life.
