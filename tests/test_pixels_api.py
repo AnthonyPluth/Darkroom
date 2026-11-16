@@ -17,7 +17,7 @@ from darkroom.storage.paths import Photos
 from tests.api_world import ApiCase
 from tests.fakes.syncthing import FakeSyncthing
 from tests.privacy import no_leaks
-from tests.shared import add_person, fetch, own_database, settings_from, start_server
+from tests.shared import add_person, another_writer_holds_the_lock, fetch, impatient_engine, own_database, settings_from, start_server
 
 FIRST_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of the first pixel in the pixel api tests")
 SECOND_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of the second pixel in the pixel api tests")
@@ -105,7 +105,7 @@ class PixelsApiTests(ApiCase):
             ({"name": "P", "google_account_id": account, "people_ids": [1, 1]}, "people_ids lists the same number twice"),
             ({"name": "P", "google_account_id": account, "people_ids": [True]}, "people_ids must be a list of whole numbers"),
             ({"name": "P", "google_account_id": account, "people_ids": list(range(1, 60))}, "people_ids has too many entries"),
-            ({"name": "P", "google_account_id": account, "syncthing_device_id": "bad id!"}, "syncthing_device_id: not a Syncthing device ID"),
+            ({"name": "P", "google_account_id": account, "syncthing_device_id": "bad id!"}, "not a Syncthing device ID"),
         )
         for body, message in bad:
             with self.subTest(body=body):
@@ -226,10 +226,11 @@ class PixelsApiTests(ApiCase):
         wrong_check = SECOND_DEVICE[:13] + ("A" if SECOND_DEVICE[13] != "A" else "B") + SECOND_DEVICE[14:]
         path = f"/api/pixels/{pixel['id']}"
         refused = (
-            (SECOND_DEVICE[:-1], "syncthing_device_id: not a Syncthing device ID"),
-            (SECOND_DEVICE.replace(SECOND_DEVICE[0], "1", 1), "syncthing_device_id: not a Syncthing device ID"),
-            ("MADE-UP-DEVICE", "syncthing_device_id: not a Syncthing device ID"),
-            (wrong_check, "syncthing_device_id: a check character of the Syncthing device ID is wrong"),
+            (SECOND_DEVICE[:-1], "not a Syncthing device ID"),
+            (SECOND_DEVICE.replace(SECOND_DEVICE[0], "1", 1), "not a Syncthing device ID"),
+            ("MADE-UP-DEVICE", "not a Syncthing device ID"),
+            (wrong_check, "a check character of the Syncthing device ID is wrong"),
+            (FIRST_DEVICE + "-" + FIRST_DEVICE, "not a Syncthing device ID"),
         )
         for typed, message in refused:
             with self.subTest(typed=typed):
@@ -257,7 +258,7 @@ class PixelsApiTests(ApiCase):
         status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": "DEMO-FAMILY-PIXEL"})
         self.assertEqual((status, reply["pixel"]["syncthing_device_id"]), (200, "DEMO-FAMILY-PIXEL"))
         self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"syncthing_device_id": "DEMO-FAMILY-PIXEL-2"}),
-                         (400, {"error": "syncthing_device_id: not a Syncthing device ID"}))
+                         (400, {"error": "not a Syncthing device ID"}))
 
 
 class AccountsApiTests(ApiCase):
@@ -591,19 +592,23 @@ class PairingApiTests(unittest.TestCase):
             self.assertEqual(opened.query(Event).filter(Event.type == "pixel_updated").count(), 1)
 
     def test_nothing_is_paired_without_a_session_from_another_origin_or_without_explicit_confirmation(self):
-        refused = (
-            (self.approve(cookie=False), (401, {"error": "sign in required"})),
-            (self.approve(origin="https://evil.example"), (403, {"error": "cross-site requests are refused"})),
-            (self.approve(confirmed=False), (400, {"error": "confirmed must be true: compare the device ID with the one the Pixel's Syncthing app shows first"})),
-            (self.approve(confirmed="yes"), (400, {"error": "confirmed must be true or false"})),
-            (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"device_id": WAITING}), (400, {"error": "confirmed must be true or false"})),
-            (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"confirmed": True}), (400, {"error": "device_id is required"})),
-            (self.approve(STRANGER), (409, {"error": "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead"})),
-            (self.approve(OWN), (409, {"error": "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead"})),
-            (self.approve(WAITING[:-1]), (400, {"error": "syncthing_device_id: not a Syncthing device ID"})),
-            (self.approve(pixel_id=999), (404, {"error": "no such Pixel"})),
-            (self.call("POST", "/api/pixels/abc/pair", {"device_id": WAITING, "confirmed": True}), (404, {"error": "no such Pixel"})),
-        )
+        with no_leaks(self, WAITING, STRANGER, OWN, WAITING[:-1], str(self.root), replies=self.replies):
+            refused = (
+                (self.approve(cookie=False), (401, {"error": "sign in required"})),
+                (self.approve(origin="https://evil.example"), (403, {"error": "cross-site requests are refused"})),
+                (self.approve(confirmed=False), (400, {"error": "the approval was not confirmed"})),
+                (self.approve(confirmed="yes"), (400, {"error": "the approval was not confirmed"})),
+                (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"device_id": WAITING}), (400, {"error": "the approval was not confirmed"})),
+                (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"confirmed": True}), (400, {"error": "device_id is required"})),
+                (self.approve(STRANGER), (409, {"error": "that device is no longer waiting; ask the Pixel to connect again"})),
+                (self.approve(OWN), (409, {"error": "that device is no longer waiting; ask the Pixel to connect again"})),
+                (self.approve(WAITING[:-1]), (400, {"error": "not a Syncthing device ID"})),
+                (self.approve(WAITING + "-" + WAITING), (400, {"error": "not a Syncthing device ID"})),
+                (self.approve(WAITING[:13] + ("A" if WAITING[13] != "A" else "B") + WAITING[14:]),
+                 (400, {"error": "a check character of the Syncthing device ID is wrong"})),
+                (self.approve(pixel_id=999), (404, {"error": "no such Pixel"})),
+                (self.call("POST", "/api/pixels/abc/pair", {"device_id": WAITING, "confirmed": True}), (404, {"error": "no such Pixel"})),
+            )
         for answer, expected in refused:
             with self.subTest(expected=expected):
                 self.assertEqual(answer, expected)
@@ -617,6 +622,12 @@ class PairingApiTests(unittest.TestCase):
         self.assertEqual(self.devices(), [None, WAITING.lower()])
         self.assertEqual(self.approve(pixel_id=self.other_id)[0], 200)
         self.assertEqual(self.devices(), [None, WAITING])
+
+    def test_an_approval_that_cannot_get_the_lock_says_darkroom_is_busy_and_pairs_nothing(self):
+        base, _ = start_server(self, self.settings, impatient_engine(self, self.engine, 0.1))
+        with another_writer_holds_the_lock(self.engine):
+            self.assertEqual(self.approve(base=base, origin=base), (503, {"error": "Darkroom is busy with another change; try again in a moment"}))
+        self.assertEqual(self.devices(), [None, None])
 
     def test_a_reset_phone_is_paired_again_with_its_new_id(self):
         with db.session(self.engine) as opened:
@@ -640,7 +651,7 @@ class PairingApiTests(unittest.TestCase):
 
     def test_with_the_transport_off_every_pairing_route_says_so_and_typing_still_works(self):
         base, _ = start_server(self, dataclasses.replace(self.settings, public_url="", syncthing=False), self.engine)
-        off = (409, {"error": "the Syncthing transport is off; type the Pixel's device ID in the Pixel's details instead"})
+        off = (409, {"error": "Darkroom's Syncthing is off"})
         self.assertEqual(self.call("GET", "/api/pairing/device", base=base), off)
         self.assertEqual(self.call("GET", "/api/pairing/waiting", base=base), off)
         self.assertEqual(self.approve(base=base, origin=base), off)
