@@ -125,3 +125,43 @@ export const BUTTON = "btn min-h-12 md:min-h-11";
 export const PRIMARY = "btn btn-primary min-h-12 md:min-h-11";
 
 export const browser = { leave: (url: string): void => location.assign(url) };
+
+export const COPY_FAILED = "Couldn't copy the callback URL. It is selected above: copy it with your keyboard or the browser's menu.";
+
+function copyWithSelection(text: string): boolean {
+  const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.readOnly = true;
+  area.className = "fixed top-0 left-0 opacity-0";
+  document.body.append(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+    before?.focus();
+  }
+}
+
+export async function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return copyWithSelection(text);
+    }
+  }
+  return copyWithSelection(text);
+}
+
+export function selectText(element: HTMLElement): void {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}

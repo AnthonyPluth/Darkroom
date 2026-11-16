@@ -125,11 +125,20 @@
     }
   }
 
+  let reloadsStarted = 0;
+  let reloadsSettled = 0;
+
   async function reloadFamily(): Promise<void> {
+    const order = ++reloadsStarted;
     try {
-      family = await loadFamily();
+      const found = await loadFamily();
+      if (order < reloadsSettled) return;
+      reloadsSettled = order;
+      family = found;
       familyError = "";
     } catch (err) {
+      if (order < reloadsSettled) return;
+      reloadsSettled = order;
       if (unauthorized(err)) screen = { kind: "closed" };
       else familyError = errMsg(err);
     }

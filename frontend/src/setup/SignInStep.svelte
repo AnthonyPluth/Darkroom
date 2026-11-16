@@ -7,7 +7,7 @@
   import { attempt } from "./attempt";
   import EnvRow from "./EnvRow.svelte";
   import Saved from "./Saved.svelte";
-  import { browser, BUTTON, fromEnvironment, joinList, PRIMARY, ROW, splitList, startTesting } from "./wizard";
+  import { browser, BUTTON, COPY_FAILED, copyText, selectText, fromEnvironment, joinList, PRIMARY, ROW, splitList, startTesting } from "./wizard";
 
   let { setup, onstate, onback, goAddress, reload }: {
     setup: SetupState;
@@ -33,6 +33,8 @@
   let savedNow = $state(false);
   let testError = $state("");
   let copied = $state(false);
+  let copyFailed = $state(false);
+  let callbackBox: HTMLElement | undefined = $state();
 
   const env = $derived({
     issuer: fromEnvironment(setup, "OIDC_ISSUER"),
@@ -50,15 +52,15 @@
     saveError = "";
     testError = "";
     copied = false;
+    copyFailed = false;
   }
 
   async function copy(): Promise<void> {
     clear();
     if (!setup.redirect_uri) return;
-    try {
-      await navigator.clipboard.writeText(setup.redirect_uri);
-      copied = true;
-    } catch { copied = false; }
+    copied = await copyText(setup.redirect_uri);
+    copyFailed = !copied;
+    if (copyFailed && callbackBox) selectText(callbackBox);
   }
 
   function body(): SetupSignInBody {
@@ -107,11 +109,12 @@
   <h2 class="text-md font-bold">1. Add Darkroom to Pocket ID</h2>
   {#if setup.redirect_uri}
     <p>In Pocket ID, add an OIDC client for Darkroom with this callback URL:</p>
-    <div class="rounded-md border border-line bg-canvas px-3 py-2.5 font-mono text-sm break-all" aria-label="Callback URL">{setup.redirect_uri}</div>
+    <div class="rounded-md border border-line bg-canvas px-3 py-2.5 font-mono text-sm break-all" aria-label="Callback URL" bind:this={callbackBox}>{setup.redirect_uri}</div>
     <div class={ROW}>
       <button type="button" class={BUTTON} onclick={copy}>Copy</button>
     </div>
     {#if copied}<Saved message="Copied." />{/if}
+    <FormError message={copyFailed ? COPY_FAILED : ""} />
   {:else}
     <p>Confirm Darkroom's address first. <a class="font-semibold underline" href="/setup" onclick={(e) => { e.preventDefault(); clear(); goAddress(); }}>Go to Address</a></p>
   {/if}

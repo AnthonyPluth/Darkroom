@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupSetting, SetupState } from "$lib/api-types";
@@ -154,6 +154,36 @@ describe("the Sign-in step", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Copied.");
     expect(screen.getByRole("button", { name: "Test sign-in" })).toBeDisabled();
     expect(screen.getByText("Save the details above first.")).toBeInTheDocument();
+  });
+
+  it("copies through a selection when the page isn't a secure context and has no clipboard", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    show({ "GET /api/setup": addressed() });
+    const copy = await screen.findByRole("button", { name: "Copy" });
+    await userEvent.click(copy);
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(await screen.findByRole("status")).toHaveTextContent("Copied.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(copy).toHaveFocus();
+    Reflect.deleteProperty(document, "execCommand");
+  });
+
+  it("says copying failed and selects the callback URL when the browser won't copy", async () => {
+    const writeText = vi.fn(() => Promise.reject(new Error("not allowed")));
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
+    show({ "GET /api/setup": addressed() });
+    await userEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't copy the callback URL. It is selected above: copy it with your keyboard or the browser's menu.");
+    expect(screen.queryByText("Copied.")).not.toBeInTheDocument();
+    expect(window.getSelection()?.toString()).toBe(CALLBACK);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => { throw new Error("unsupported"); }) });
+    await userEvent.click(screen.getByRole("button", { name: "Save details" }));
+    expect(screen.queryByText(/Couldn't copy/)).not.toBeInTheDocument();
+    Reflect.deleteProperty(document, "execCommand");
   });
 
   it("asks for the address first when there is no callback URL", async () => {
@@ -380,6 +410,39 @@ describe("after the test sign-in", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
     expect(server.sent("POST /api/people")).toHaveLength(1);
+  });
+
+  it("keeps the newest reload when an older one answers after it", async () => {
+    sessionStorage.setItem("darkroom.setup.step", "people");
+    let calls = 0;
+    let releaseStale = () => {};
+    const stale = new Promise<void>((done) => { releaseStale = done; });
+    const base = serve({ "GET /api/setup": after(immich), "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/people": { people: [jo] } });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url !== "/api/people") return base.mock(url, init);
+      calls += 1;
+      if (calls === 1) return base.mock(url, init);
+      if (calls === 2) return Promise.resolve(new Response(JSON.stringify({ error: "database is busy" }), { status: 503 }));
+      if (calls === 3) return stale.then(() => new Response(JSON.stringify({ error: "an old failure" }), { status: 503 }));
+      return base.mock(url, init);
+    });
+    render(Setup);
+    await screen.findByRole("table", { name: "Persons" });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Jo Example" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit person" });
+    vi.stubGlobal("fetch", ((previous) => (url: string, init?: RequestInit) => (url.startsWith("/api/people/") ? Promise.resolve(new Response(JSON.stringify(jo), { status: 200 })) : previous(url, init)))(globalThis.fetch));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is busy");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const retry = screen.getByRole("button", { name: "Try again" });
+    await fireEvent.click(retry);
+    await fireEvent.click(retry);
+    expect(await screen.findByRole("table", { name: "Persons" })).toHaveTextContent("Jo Example");
+    releaseStale();
+    await waitFor(() => expect(calls).toBe(4));
+    await new Promise((done) => setTimeout(done, 20));
+    expect(screen.queryByText("an old failure")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
   });
 
   it("keeps Skip for now away while the accounts are unknown", async () => {
