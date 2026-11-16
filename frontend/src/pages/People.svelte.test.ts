@@ -321,3 +321,94 @@ describe("pairing a Pixel with Darkroom's Syncthing on", () => {
     expect(await screen.findByLabelText("Syncthing device ID")).toBeInTheDocument();
   });
 });
+
+describe("unpairing a Pixel with Darkroom's Syncthing on", () => {
+  const OWN = "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG";
+  const DEVICE = "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE";
+  const pixel8 = { ...shared, syncthing_device_id: DEVICE };
+  const FIRST = "Darkroom stops sharing Pixel 8's folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches Pixel 8 until it is paired again.";
+  const SECOND = "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to Pixel 8: they stay on the Pixel until someone removes them there.";
+
+  function pixels(after: () => boolean) {
+    return {
+      "GET /api/people": { people: [jo, sam] },
+      "GET /api/accounts": { accounts: [joAccount, familyAccount] },
+      "GET /api/pixels": () => ({ pixels: [solo, after() ? shared : pixel8] }),
+      "GET /api/pairing/device": { device_id: OWN },
+      "GET /api/pairing/waiting": { devices: [] },
+    };
+  }
+
+  async function openConfirm() {
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const form = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    await userEvent.type(within(form).getByLabelText("Name"), " renamed");
+    await userEvent.click(within(form).getByRole("button", { name: "Unpair Pixel 8" }));
+    return screen.findByRole("dialog", { name: "Unpair Pixel 8?" });
+  }
+
+  it("closes the form, asks first, and Cancel changes nothing", async () => {
+    const server = show(pixels(() => false));
+    const dialog = await openConfirm();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit Pixel" })).not.toBeInTheDocument());
+    expect(dialog).toHaveAccessibleDescription(FIRST);
+    expect(within(dialog).getByText(SECOND)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/PIXELNA/)).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Unpair"]);
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toHaveClass("btn", "btn-danger");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.calls.filter((c) => !c.key.startsWith("GET "))).toHaveLength(0);
+  });
+
+  it("sends only the cleared device ID, then shows the Pixel as not paired with Pair", async () => {
+    let done = false;
+    const server = show({ ...pixels(() => done), "PATCH /api/pixels/21": () => { done = true; return { pixel: shared }; } });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.sent("PATCH /api/pixels/21").map((c) => c.body)).toEqual([{ syncthing_device_id: null }]);
+    expect(await screen.findByRole("button", { name: "Pair Pixel 8" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit Pixel 8" }));
+    const row = within(await screen.findByRole("dialog", { name: "Edit Pixel" })).getByRole("group", { name: "Syncthing" });
+    expect(within(row).getByText("Not paired")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Pair" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+  });
+
+  it("disables both buttons and can't be dismissed while the unpair is in flight", async () => {
+    let answer: (r: Response) => void = () => {};
+    const server = show(pixels(() => false));
+    const dialog = await openConfirm();
+    const base = server.mock.getMockImplementation()!;
+    server.mock.mockImplementation((url: string, init: RequestInit = {}) =>
+      init.method === "PATCH" ? new Promise<Response>((resolve) => (answer = resolve)) : base(url, init));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Unpair Pixel 8?" })).toBeInTheDocument();
+    answer(new Response(JSON.stringify({ pixel: shared }), { status: 200 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("stays open with Darkroom's refusal unchanged, and the line goes at the next press", async () => {
+    let attempt = 0;
+    show({ ...pixels(() => false), "PATCH /api/pixels/21": () => (attempt++ === 0 ? reply(503, { error: "Darkroom is busy with another change; try again in a moment" }) : reply(404, { error: "no such Pixel." })) });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: Darkroom is busy with another change; try again in a moment\.$/);
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toBeEnabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: no such Pixel\.$/));
+    expect(screen.getByRole("dialog", { name: "Unpair Pixel 8?" })).toBeInTheDocument();
+  });
+
+  it("says when Darkroom can't be reached", async () => {
+    show(pixels(() => false));
+    const dialog = await openConfirm();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Couldn't unpair Pixel 8: Can't reach Darkroom. Check your connection and try again.");
+  });
+});

@@ -3,10 +3,11 @@
   import FormError from "../forms/FormError.svelte";
   import Modal from "./Modal.svelte";
 
-  let { open = $bindable(false), title, message, confirm, run, done }: {
+  let { open = $bindable(false), title, message, detail, confirm, run, done }: {
     open?: boolean;
     title: string;
     message: string;
+    detail?: string;
     confirm: string;
     run: () => Promise<unknown>;
     done: () => void;
@@ -28,6 +29,9 @@
 
 <Modal bind:open {title} description={message} dismissible={!busy}>
   <div class="flex flex-col gap-4">
+    {#if detail}
+      <p>{detail}</p>
+    {/if}
     <FormError message={error} />
     <div class="flex justify-end gap-3">
       <button type="button" class="btn" disabled={busy} onclick={() => (open = false)}>Cancel</button>
