@@ -325,7 +325,8 @@
       "auth": "session",
       "handler": "darkroom.server.api.pixels.update_pixel",
       "frontend": [
-        "frontend/src/forms/PixelForm.svelte"
+        "frontend/src/forms/PixelForm.svelte",
+        "frontend/src/forms/PixelPairing.svelte"
       ],
       "tests": [
         "tests/test_every_route.py",
@@ -348,7 +349,9 @@
       "route": "POST /api/pixels/{id}/pair",
       "auth": "session",
       "handler": "darkroom.server.api.pixels.pair_pixel",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/forms/PixelPairing.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_pixels_api.py"
@@ -368,20 +371,26 @@
       "route": "GET /api/pairing/device",
       "auth": "session",
       "handler": "darkroom.server.api.pixels.own_device",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/lib/pairing.ts"
+      ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_pixels_api.py"
+        "tests/test_pixels_api.py",
+        "tests/test_verify_env.py"
       ]
     },
     {
       "route": "GET /api/pairing/waiting",
       "auth": "session",
       "handler": "darkroom.server.api.pixels.waiting_devices",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/forms/PixelPairing.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_pixels_api.py"
+        "tests/test_pixels_api.py",
+        "tests/test_verify_env.py"
       ]
     },
     {

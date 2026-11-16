@@ -263,3 +263,61 @@ describe("when loading fails", () => {
     expect(await screen.findByRole("table", { name: "Persons" })).toBeInTheDocument();
   });
 });
+
+describe("pairing a Pixel with Darkroom's Syncthing on", () => {
+  const OWN = "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG";
+  const PHONE = { device_id: "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE", name: "Pixel 7" };
+  const added = { ...shared, id: 22, name: "Pixel 7" };
+  const on = () => ({ ...seeded(), "GET /api/pairing/device": { device_id: OWN }, "GET /api/pairing/waiting": { devices: [PHONE] } });
+
+  it("offers Pair only on an unpaired Pixel, and opens the modal straight at the pairing step", async () => {
+    show(on());
+    expect(await screen.findByRole("button", { name: "Pair Pixel 8" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pair Pixel 9a" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Pair Pixel 8" }));
+    const dialog = await screen.findByRole("dialog", { name: "Pair Pixel 8" });
+    expect(dialog).toHaveAccessibleDescription("Connect the Syncthing app on Pixel 8 to Darkroom. Nothing is shared until you approve the Pixel here.");
+    expect(within(dialog).getByRole("img", { name: "QR code of Darkroom's device ID" })).toBeInTheDocument();
+  });
+
+  it("adds a Pixel, moves the same modal on to pairing it, and closes once it is paired", async () => {
+    const server = show({ ...on(), "POST /api/pixels": reply(201, { pixel: added }), "POST /api/pixels/22/pair": { pixel: { ...added, syncthing_device_id: PHONE.device_id } } });
+    await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
+    let dialog = await screen.findByRole("dialog", { name: "Add Pixel" });
+    expect(within(dialog).queryByLabelText(/Syncthing device ID/)).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Pixel 7");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add Pixel" }));
+    dialog = await screen.findByRole("dialog", { name: "Pair Pixel 7" });
+    await waitFor(() => expect(server.sent("GET /api/pixels")).toHaveLength(2));
+    await userEvent.click(await within(dialog).findByRole("button", { name: "This is Pixel 7" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
+    expect(await within(dialog).findByText("Darkroom is sharing Pixel 7's folder with it.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Paired")).toBeInTheDocument();
+    expect(within(dialog).getByText("In Google Photos on the Pixel, turn on backup for that folder.")).toBeInTheDocument();
+    await waitFor(() => expect(server.sent("GET /api/pixels")).toHaveLength(3));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("leaves an unpaired Pixel behind when pairing is put off", async () => {
+    show(on());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Pair" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Pair Pixel 8" })).getByRole("button", { name: "Pair later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("keeps today's form and no Pair button with Darkroom's Syncthing off", async () => {
+    show({ ...seeded(), "GET /api/pairing/device": reply(409, { error: "Darkroom's Syncthing is off" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    expect(within(await screen.findByRole("dialog", { name: "Edit Pixel" })).getByLabelText("Syncthing device ID (optional)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
+  });
+
+  it("still offers pairing when Darkroom's Syncthing is on but not answering", async () => {
+    show({ ...seeded(), "GET /api/pairing/device": reply(503, { error: "Darkroom's Syncthing could not be reached" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Pair Pixel 8" }));
+    expect(await screen.findByLabelText("Syncthing device ID")).toBeInTheDocument();
+  });
+});
