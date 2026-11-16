@@ -106,7 +106,7 @@ def specs(given: Mapping[str, str], app_ready: Callable[[], bool], display_ready
     shown = given.get("DISPLAY", ":99")
     wrapped = display_env(given) | {"PYTHONPATH": INIT_HOME, "PYTHONDONTWRITEBYTECODE": "1"}
     app_secrets: tuple[Secret, ...] = ("token", "viewer", "syncthing") if syncthing_on(given) else ("token", "viewer")
-    vnc = (X11VNC, "-display", shown, "-unixsock", str(VNC_SOCKET), "-rfbport", "0", "-forever", "-shared", "-nopw", "-noxdamage", "-quiet")
+    vnc = (X11VNC, "-display", shown, "-unixsock", str(VNC_SOCKET), "-rfbport", "0", "-rfbportv6", "0", "-forever", "-shared", "-nopw", "-noxdamage", "-quiet")
     viewer = (WEBSOCKIFY, "--web=/usr/share/novnc", "--web-auth", "--auth-plugin", VIEWER_PLUGIN, "--auth-source", PIPE["viewer"], "--unix-listen", str(VIEWER_SOCKET),
               "--unix-target", str(VNC_SOCKET))
     return [
