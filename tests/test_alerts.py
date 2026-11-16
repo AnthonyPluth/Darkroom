@@ -379,6 +379,18 @@ class TransportAlertTests(unittest.TestCase):
         self.review(START + 4, dataclasses.replace(self.settings, alerts_off=("pixel_held",)))
         self.assertEqual(self.open_kinds(), [])
 
+    def test_an_open_held_alert_closes_once_darkrooms_syncthing_is_off_switched_off_or_not(self):
+        for alerts_off in ((), ("pixel_held",)):
+            with self.subTest(alerts_off=alerts_off):
+                self.opened.query(Alert).delete()
+                self.opened.commit()
+                self.event(transport.RECOVERED, transport.SUBJECT)
+                self.held_by_strays()
+                self.review(START + 1)
+                self.assertEqual(self.open_kinds(), [("pixel_held", f"pixel {self.jo_pixel}")])
+                self.review(START + 2, dataclasses.replace(self.settings, syncthing=False, alerts_off=alerts_off))
+                self.assertEqual(self.open_kinds(), [])
+
     def test_a_kind_switched_off_never_opens_and_an_open_one_closes(self):
         self.event(share_check.FAILED, share_check.SUBJECT, share_check.MISSING)
         self.review(START)

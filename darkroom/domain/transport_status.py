@@ -213,8 +213,12 @@ def close_switched_off(opened: Session, settings: Settings, now: float) -> None:
         if kind in settings.alerts_off:
             alerts.close(opened, key, now)
     if "pixel_held" in settings.alerts_off:
-        for alert in opened.execute(select(Alert).where(Alert.kind == "pixel_held", Alert.closed.is_(None))).scalars().all():
-            alerts.close(opened, alert.key, now)
+        close_held(opened, now)
+
+
+def close_held(opened: Session, now: float) -> None:
+    for alert in opened.execute(select(Alert).where(Alert.kind == "pixel_held", Alert.closed.is_(None))).scalars().all():
+        alerts.close(opened, alert.key, now)
 
 
 def review(opened: Session, settings: Settings, now: float, notifier: alerts.Notifier | None = None) -> None:
@@ -229,11 +233,12 @@ def review_unlocked(opened: Session, settings: Settings, now: float, notifier: a
     home = link_to(settings, "/")
     raise_or_close(opened, settings, SHARE_KEY, "share_check_failed", share_check.SUBJECT, alerts.share_check_failed(settings.syncthing) if failed else None, home, now,
                    notifier)
+    close_switched_off(opened, settings, now)
     if not settings.syncthing:
         for key in (DOWN_KEY, SETTINGS_KEY, VERSION_KEY):
             alerts.close(opened, key, now)
+        close_held(opened, now)
         return
-    close_switched_off(opened, settings, now)
     seen = overview(opened, now)
     if seen.card.state in ("share_check_failed", "starting"):
         return
