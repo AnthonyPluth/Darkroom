@@ -133,11 +133,11 @@ describe("approving", () => {
   it("shows Darkroom's refusal as a sentence, goes back to the list read again at once, and drops the line at the next press", async () => {
     const { server, onpaired } = mount({
       "GET /api/pairing/waiting": { devices: [PHONE] },
-      "POST /api/pixels/21/pair": reply(409, { error: "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead" }),
+      "POST /api/pixels/21/pair": reply(409, { error: "that device is no longer waiting; ask the Pixel to connect again" }),
     });
     await userEvent.click(await screen.findByRole("button", { name: "This is Pixel 8" }));
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't pair Pixel 8: that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't pair Pixel 8: that device is no longer waiting; ask the Pixel to connect again.");
     expect(screen.queryByRole("heading", { name: "Approve this device for Pixel 8?" })).not.toBeInTheDocument();
     await waitFor(() => expect(server.sent("GET /api/pairing/waiting")).toHaveLength(2));
     expect(onpaired).not.toHaveBeenCalled();

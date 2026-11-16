@@ -309,7 +309,7 @@ describe("pairing a Pixel with Darkroom's Syncthing on", () => {
   });
 
   it("keeps today's form and no Pair button with Darkroom's Syncthing off", async () => {
-    show({ ...seeded(), "GET /api/pairing/device": reply(409, { error: "the Syncthing transport is off" }) });
+    show({ ...seeded(), "GET /api/pairing/device": reply(409, { error: "Darkroom's Syncthing is off" }) });
     await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
     expect(within(await screen.findByRole("dialog", { name: "Edit Pixel" })).getByLabelText("Syncthing device ID (optional)")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
