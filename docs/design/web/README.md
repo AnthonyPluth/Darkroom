@@ -20,6 +20,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
+| `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, for the owner's sign-off, **not signed off**) |
 | `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
 | `08-setup-welcome-desktop.dc.html`, `08-setup-welcome-phone.dc.html` | Setup wizard: Welcome (signed off, #303) |
 | `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup wizard: Setup isn't open, and open in another browser (signed off, #303) |
@@ -361,6 +362,64 @@ What the build changes:
 - **#323 (PR #355, the pairing screens):** a layout change: the Pixel form and every pairing step open in the full-width `Modal`, and their contents (fields, the QR code centred, the waiting list, the buttons) lay out across the wider dialog as the board draws. The People page's cards already span the column.
 - **The addendum's Share again confirmation** (built with #324's Pixel rows) uses the full-width `Modal` too.
 - None of this touches the shell or any other page; the whole app's page layout stays with #16.
+
+## Unpairing a Pixel (addendum to #322, for the owner's sign-off)
+
+Status: **drawn for the owner's sign-off, NOT yet signed off.** Nothing here is built until the owner approves it on #322. It adds to "Pairing, Syncthing status and the new alerts" and changes none of its signed-off rows, cards or alerts.
+
+Why: with Darkroom's Syncthing on, the Pixel form shows the paired ID read-only with only "Pair again" (or "Pair"), so there is no way in the app to unpair. A Pixel that is lost, sold or replaced keeps its Syncthing device and its Send Only share of the photos until someone clears the ID with `PATCH /api/pixels/{id} {"syncthing_device_id": null}` by hand. The second review flagged this as access that outlives the device. The backend already does the rest: once the ID is cleared, the reconciler removes the device and the Pixel's folder from Darkroom's Syncthing within 60 s, and deletes no file (`tests/test_transport.py`, "a Pixel that is deleted or unpaired loses its folder and device and no file is deleted"). So this is a UI action on an existing route; no new route.
+
+Boards: `03-people-unpair-desktop.dc.html` and `03-people-unpair-phone.dc.html`, six states stacked: Edit Pixel paired with Unpair, the confirmation, in flight, refused, then the Pixels card and Edit Pixel afterwards. They follow the full-width rule above: at 1280 every card and dialog spans the content column (968 px); the phone layout is as on the other phone boards. Existing tokens, chips, buttons, table and modal only. Names and the device ID are made up.
+
+### The action
+
+- **Where.** In Edit Pixel's read-only Syncthing row, after "Pair again": the ID in mono, then "Pair again" and "Unpair" side by side (on a phone, stacked full width, Pair again first). Shown whenever the Pixel has a saved device ID, whatever its per-Pixel state (including 2a and 2b, where the saved ID is the problem). Not shown when the Pixel is not paired, and not shown with `DARKROOM_SYNCTHING` off, where the form keeps today's typed field and clearing it is the way.
+- **Label.** "Unpair", with the accessible name "Unpair {name}".
+- **Style.** The app's danger-outline secondary button (`btn btn-danger`), as Delete Pixel in the same form: it takes access away, so it is not a plain `btn`, and never primary. The form's own Save stays the only primary.
+- **What it does.** It never applies on Save. Pressing it opens the confirmation the way Delete Pixel does today: the form closes (unsaved edits in it are dropped, as for Delete Pixel) and the existing `Confirm` dialog opens.
+
+### The confirmation
+
+The existing `Confirm` dialog, full width at desktop like every dialog since the full-width redraw.
+
+- Title: "Unpair {name}?"
+- Description (muted, `Confirm`'s message): "Darkroom stops sharing {name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches {name} until it is paired again."
+- Then: "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to {name}: they stay on the Pixel until someone removes them there."
+- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stack full width.
+- **Unpair** sends `PATCH /api/pixels/{id}` with only `{"syncthing_device_id": null}` (no other field), so nothing else in the form is saved by it.
+- **In flight:** both buttons disabled and the dialog can't be dismissed (`Confirm`'s `busy`).
+- **Refused** (any 4xx or 5xx, or no answer): the dialog stays, and the danger-toned `role="alert"` line (`FormError`) above the buttons reads "Couldn't unpair {name}: {message}." with Darkroom's message unchanged, for example "Darkroom is busy with another change; try again in a moment" or "no such Pixel". The line goes at the next press, as `Confirm` does today.
+- **Done:** the dialog closes and the page data reloads.
+
+### Afterwards
+
+- The Pixel has no ID, so it shows row 2 at once: neutral "Not paired", "Pair it to start sending photos.", and the People row gets its "Pair" button before Edit, as an unpaired Pixel has (#322). It does not show a "removing" state for the minute the reconciler takes.
+- Reopened, Edit Pixel's Syncthing row reads "Not paired" with "Pair"; no Unpair.
+- On Status the Pixel is no longer listed as paired in the Syncthing card; with no other paired Pixel the card reads "No Pixel is paired yet." as signed off. No alert opens or closes because of it, and no alert kind is added.
+- Pairing it again is the ordinary pairing step; nothing remembers the old ID.
+
+### Drawing choices and open points (for the owner)
+
+Each is drawn as recommended; the alternative is not drawn.
+
+1. **Placement: in Edit Pixel's Syncthing row, after Pair again.** Recommended, because that row is where the device ID is shown and changed. Alternative: an "Unpair" button in the People row's actions beside Edit (one click closer, but a destructive action in a table row next to Edit, and a row already carries Pair again or Share again in some states).
+2. **Danger-outline secondary (`btn-danger`), not plain secondary.** Recommended: it removes a device's access, like Delete Pixel. Alternative: plain `btn`, keeping danger styling for deletes only (nothing is deleted).
+3. **A confirmation dialog, through the existing `Confirm`.** Recommended: unpairing a phone in use stops its backups until someone re-pairs it at the phone, which is not a one-click undo. Alternative: no dialog, with the "Not paired" row as the only sign.
+4. **The form closes when the confirmation opens** (as Delete Pixel does), and unsaved edits in it are dropped. Alternative: the confirmation over the form and the form back afterwards, which needs a second dialog layer the app does not have.
+5. **The PATCH carries only the device ID**, never the rest of the form. Alternative: clear the field in the form and apply it on Save (one save, but an unpair would wait on, and fail with, unrelated edits).
+6. **Shown for any saved ID, including 2a (not valid) and 2b (shared).** Recommended: in 2b, unpairing the wrong Pixel is a direct fix. Alternative: only for a Pixel whose ID is valid and unique.
+7. **The dialog does not show the device ID.** The form just showed it; the dialog names the Pixel. Alternative: repeat the ID in mono in the dialog.
+8. **"Within a minute" is the only timing promise**, and the row shows Not paired at once, with no "removing" state. When Darkroom's Syncthing is not running (the card is not Running), the device is removed at the reconciler's first run after it starts, before anything syncs, so "within a minute" is not true then. Open: keep one text (recommended, it is the usual case), or swap the first sentence in that case for "Darkroom's Syncthing is not running now. Darkroom removes the device as soon as it is running again, before anything syncs."
+9. **Already-synced copies on the Pixel are out of Darkroom's reach**, said plainly ("they stay on the Pixel until someone removes them there"). For a lost or sold phone this is the honest limit. Alternative: say nothing about the Pixel's copies, or add advice ("Reset a lost or sold Pixel from Google's Find My Device") that Darkroom can't check.
+10. **Darkroom's own copies after unpairing.** The Pixel still exists and still serves its people, so copies for it keep being queued and placed in `_pixels/<pixel>/` and pruned as today; only the sharing stops. This design draws nothing about it. Open: keep it so (recommended; pairing again picks up where it left off), or stop queueing for an unpaired Pixel, which is a backend change outside this design.
+11. **No alert, no event wording on the page.** The PATCH records `pixel_updated` as today; the reconciler's removal is in its own records. Alternative: a dedicated `pixel_unpaired` event shown in Recent events.
+12. **No Unpair on Status**, as Pair and Share again live only on People (decision 4 of the addendum).
+
+### For the build
+
+- `frontend/src/forms/PixelForm.svelte` (as built by #323): the Unpair button in the Syncthing row when `syncthing_device_id` is set and Darkroom's Syncthing is on; an `onunpair` callback like `ondelete`.
+- `frontend/src/pages/People.svelte`: an `unpairPixel` through `ask()` with the copy above. `Confirm` takes one `message`; the build either passes the second paragraph as a second line of text or lets `Confirm` take a body, without changing how other confirmations look.
+- Checks: `PixelForm.svelte.test.ts` (Unpair shown only with an ID and the Syncthing on; it opens the confirmation and saves nothing), a People page test for the PATCH body (`{"syncthing_device_id": null}` only), the refused line, and the row turning to Not paired after reload; `make verify` images at phone and desktop width beside these boards, from a flow that opens Edit on a paired demo Pixel, presses Unpair, then Unpair in the dialog.
 
 ## First-run setup wizard (#303, document signed off)
 
