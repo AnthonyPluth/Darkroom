@@ -385,7 +385,7 @@ The existing `Confirm` dialog, full width at desktop like every dialog since the
 - Title: "Unpair {name}?"
 - Description (muted, `Confirm`'s message): "Darkroom stops sharing {name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches {name} until it is paired again."
 - Then: "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to {name}: they stay on the Pixel until someone removes them there."
-- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stay side by side as the built `Confirm` lays them out, Cancel left and Unpair right (the phone board draws them at equal width), not stacked.
+- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stay side by side as the built `Confirm` lays them out, Cancel left and Unpair right: right-aligned, natural width, 12 px apart (`flex justify-end gap-3`), not stacked and not equal width.
 - **Unpair** sends `PATCH /api/pixels/{id}` with only `{"syncthing_device_id": null}` (no other field), so nothing else in the form is saved by it.
 - **In flight:** both buttons disabled and the dialog can't be dismissed (`Confirm`'s `busy`).
 - **Refused** (any 4xx or 5xx, or no answer): the dialog stays, and the danger-toned `role="alert"` line (`FormError`) above the buttons reads "Couldn't unpair {name}: {message}." with Darkroom's message unchanged, for example "Darkroom is busy with another change; try again in a moment" or "no such Pixel". The line goes at the next press, as `Confirm` does today.
