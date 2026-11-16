@@ -8,7 +8,7 @@ from unittest import mock
 
 from sqlalchemy import select, update
 
-from darkroom import config, oidc
+from darkroom import config, oidc, tls
 from darkroom.providers import syncthing
 from darkroom.storage import db
 from darkroom.domain import accounts, alerts, browser_jobs, dedupe, pixels, transport
@@ -512,9 +512,10 @@ class PairingApiTests(unittest.TestCase):
         socket = self.root / "st.sock"
         self.fake = FakeSyncthing(self, KEY, OWN, str(socket))
         self.fake.pending = {WAITING: {"name": "Jo's Pixel", "address": ADDRESS, "time": "2026-11-16T10:00:00Z"}}
-        patched = mock.patch.object(config, "SYNCTHING_SOCKET", socket)
-        patched.start()
-        self.addCleanup(patched.stop)
+        for target, name, value in ((config, "SYNCTHING_SOCKET", socket), (tls, "SOCKET_FOLDER", self.root)):
+            patched = mock.patch.object(target, name, value)
+            patched.start()
+            self.addCleanup(patched.stop)
         self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), **OIDC), syncthing=True, syncthing_key=KEY)
         self.base, self.settings = start_server(self, self.settings, self.engine)
         moment = time.time()
