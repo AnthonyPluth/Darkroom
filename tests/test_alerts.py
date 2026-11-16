@@ -343,6 +343,21 @@ class TransportAlertTests(unittest.TestCase):
         seen = transport_status.overview(self.opened, START)
         self.assertEqual((seen.pixels[self.jo_pixel].state, seen.pixels[self.sam_pixel].state, seen.pixels[self.sam_pixel].days), ("checking", "not_seen", 10))
 
+    def test_a_held_alert_stays_open_and_unresolved_while_the_pixel_is_checked_again_after_a_restart(self):
+        self.event(transport.RECOVERED, transport.SUBJECT)
+        self.held_by_strays()
+        self.review(START + 1)
+        alert = self.opened.execute(select(Alert)).scalar_one()
+        alert.sent_count = 1
+        self.opened.commit()
+        self.row(self.jo_pixel, error=transport.CHECKING)
+        self.review(START + 2)
+        self.assertEqual(self.open_kinds(), [("pixel_held", f"pixel {self.jo_pixel}")])
+        self.assertIsNone(self.opened.get(Alert, alert.id).push_due)
+        self.row(self.jo_pixel, error=None)
+        self.review(START + 3)
+        self.assertEqual(self.open_kinds(), [])
+
     def test_a_held_alert_is_left_as_it_is_while_syncthing_is_not_running(self):
         self.event(transport.RECOVERED, transport.SUBJECT)
         self.held_by_strays()

@@ -196,12 +196,13 @@ def review_held(opened: Session, settings: Settings, seen: Overview, now: float,
         return
     names = dict(opened.execute(select(Pixel.id, Pixel.name)).all())
     held = {pixel_id: view for pixel_id, view in seen.pixels.items() if view.state == "held"}
+    checking = {pixel_id for pixel_id, view in seen.pixels.items() if view.state == "checking"}
     for pixel_id, view in sorted(held.items()):
         raise_or_close(opened, settings, f"{HELD_PREFIX}{pixel_id}", "pixel_held", f"pixel {pixel_id}", alerts.pixel_held(names[pixel_id], view.copies, view.files),
                        link_to(settings, "/people"), now, notifier)
     for alert in opened.execute(select(Alert).where(Alert.kind == "pixel_held", Alert.closed.is_(None))).scalars().all():
         number = alert.key.removeprefix(HELD_PREFIX)
-        if not (number.isdigit() and int(number) in held):
+        if not (number.isdigit() and (int(number) in held or int(number) in checking)):
             alerts.close(opened, alert.key, now)
 
 
