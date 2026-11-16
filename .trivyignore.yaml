@@ -1,10 +1,17 @@
-# Image findings the owner has accepted for a limited time, read by the image scan from main only (SECURITY.md,
-# "Accepted scanner findings"). Each entry names one exact path, says why on one line and expires within 180 days.
+# Image findings the owner has accepted for a limited time, read by the image scan from main only, and only once
+# security.yml's single-image call passes trivy-image-ignore-file (SECURITY.md, "Accepted scanner findings"). Each
+# entry names one exact path, says why on one line and expires within 180 days.
+#
+# CVE-2026-78661: the owner's acceptance is recorded on #341,
+# https://github.com/AnthonyPluth/Darkroom/issues/341#issuecomment-6926210618, in the owner's words:
+#   "Add ignore-file support to fleet (Recommended)"
+#   "Since darkroom isn't deployed, let's just merge with these CVEs and fix when fleet bump is merged in so we can keep moving"
+# Scope: this one CVE, this one path, until a fixed Syncthing is pinned or the entry expires, whichever comes first.
 vulnerabilities:
   - id: CVE-2026-78661
     paths:
       - usr/local/bin/syncthing
     purls:
       - pkg:golang/golang.org/x/net
-    statement: "The pinned Syncthing v2.1.7 embeds golang.org/x/net v0.60.0, but the vulnerable x/net/html package is not linked into the binary, its API is only on a private 0600 Unix socket, and no Syncthing release with a fixed x/net exists yet (#341)."
+    statement: "Accepted by the owner on #341 (issuecomment-6926210618) until a fixed Syncthing is pinned: the pinned Syncthing v2.1.7 embeds golang.org/x/net v0.60.0, but the vulnerable x/net/html package is not linked into the binary (its Go build info and symbols show 12 x/net packages, none of them html), its API is only on a private 0600 Unix socket, and no Syncthing release with a fixed x/net exists yet."
     expired_at: 2027-02-14
