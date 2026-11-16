@@ -30,13 +30,14 @@
   let screen = $state<Screen>({ kind: "loading" });
   let setup = $state<SetupState | null>(null);
   let family = $state<Family | null>(null);
+  let familyError = $state("");
   let marks = $state(rememberedMarks());
   let works = $state<string | null>(null);
   let busy = $state(false);
   let startError = $state("");
   let main: HTMLElement | undefined = $state();
 
-  const counts = $derived<Counts | null>(family ? { people: family.people.length, accounts: family.accounts.length, pixels: family.pixels.length } : null);
+  const counts = $derived<Counts | null>(family && !familyError ? { people: family.people.length, accounts: family.accounts.length, pixels: family.pixels.length } : null);
   const current = $derived(screen.kind === "step" ? screen.step : null);
   const wide = $derived(current !== null && WIDE_STEPS.includes(current));
   const showSteps = $derived(screen.kind === "welcome" || screen.kind === "step");
@@ -127,8 +128,10 @@
   async function reloadFamily(): Promise<void> {
     try {
       family = await loadFamily();
+      familyError = "";
     } catch (err) {
       if (unauthorized(err)) screen = { kind: "closed" };
+      else familyError = errMsg(err);
     }
   }
 
@@ -189,13 +192,15 @@
             <ImmichStep {setup} {works} onsaved={(next) => saved(next, "people")} reload={reloadState} />
           {:else if screen.step === "alerts"}
             <AlertsStep {setup} onsaved={(next) => { mark("alerts", "done"); saved(next, "done"); }} onskip={() => { mark("alerts", "skipped"); go("done"); }} onback={() => go("pixels")} reload={reloadState} />
-          {:else if screen.step === "done" && counts}
-            <DoneStep {setup} {counts} onfinished={finished} onback={() => go("alerts")} />
+          {:else if screen.step === "done" && family}
+            <DoneStep {setup} {counts} failed={familyError} retry={reloadFamily} onfinished={finished} onback={() => go("alerts")} />
           {:else if family}
             {@const part = screen.step === "people" ? "people" : screen.step === "accounts" ? "accounts" : "pixels"}
             <FamilyStep
               {part}
               data={family}
+              failed={familyError}
+              retry={reloadFamily}
               onchanged={() => void reloadFamily()}
               oncontinue={() => go(part === "people" ? "accounts" : part === "accounts" ? "pixels" : "alerts")}
               onskip={() => { mark(part, "skipped"); go(part === "accounts" ? "pixels" : "alerts"); }}
