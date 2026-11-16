@@ -76,7 +76,9 @@ def alert_channel(settings: config.Settings) -> str:
 
 
 SYNCTHING_OFF = "Syncthing: off (DARKROOM_SYNCTHING=1 in the one container starts Darkroom's own Syncthing, paused)."
-SYNCTHING_ON = "Syncthing: on; the one container's init starts it paused with a fresh API key, and nothing syncs until a later release resumes it."
+SYNCTHING_ON = ("Syncthing: on; the one container's init starts it paused with a fresh API key, and Darkroom then shares each Pixel's own _pixels folder, "
+                "Send Only, with the Syncthing device ID on its Pixel record, resumes it once the Pixel's copies are checked, and turns local discovery on "
+                "(ports 22000 and 21027 on the local network; docs/deploy/one-container.md).")
 
 
 def syncthing_line(settings: config.Settings) -> str:

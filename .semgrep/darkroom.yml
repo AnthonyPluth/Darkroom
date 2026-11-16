@@ -348,8 +348,8 @@ rules:
       Syncthing is given only `_pixels/<pixel id>/`, and that path is built only by `Photos.pixel_root` in
       darkroom/storage/paths.py, which refuses a link on the way (AGENTS.md, promise 1; #319). The provider and the
       reconciler never build a folder path themselves: no `_pixels` text, no `PIXELS`, no photo root, no `Path`,
-      `os.path` or `joinpath`, and a folder is added only with the path of its `Wanted` entry or straight from
-      `Photos.pixel_root`.
+      `os.path` or `joinpath`, and a folder is added only with the ID and path of its `Wanted` entry (`want.folder`, `want.path`) or
+      straight from `Photos.pixel_root`, never with a path read back from Syncthing.
     severity: ERROR
     languages: [python]
     patterns:
@@ -369,8 +369,8 @@ rules:
               - pattern-either:
                   - pattern: $C.add_folder($ID, $PATH, ...)
                   - pattern: $C.add_folder($ID, path=$PATH, ...)
-              - pattern-not: $C.add_folder($ID, $W.path, ...)
-              - pattern-not: $C.add_folder($ID, path=$W.path, ...)
+              - pattern-not: $C.add_folder(want.folder, want.path, ...)
+              - pattern-not: $C.add_folder(want.folder, path=want.path, ...)
               - pattern-not: $C.add_folder($ID, str($PH.pixel_root($N)), ...)
     paths:
       include: ["/darkroom/domain/transport.py", "/darkroom/providers/syncthing.py"]

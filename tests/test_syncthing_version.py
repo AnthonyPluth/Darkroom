@@ -146,6 +146,24 @@ class AppSettingTests(unittest.TestCase):
             self.assertEqual(run.main(["check-config"]), 1)
         self.assertEqual(config.syncthing_problems(settings_from(DARKROOM_ONE_CONTAINER="1")), [])
 
+    def test_check_config_the_deploy_page_and_the_example_say_what_syncs_once_it_is_on(self):
+        root = Path(__file__).resolve().parent.parent
+        page = (root / "docs/deploy/one-container.md").read_text()
+        section = page[page.index("## Syncthing: in the image, off by default"):page.index("## Moving from the two containers")]
+        example = next(line for line in (root / ".env.example").read_text().splitlines() if line.startswith("# 1 makes the one container's init start"))
+        for text in (run.SYNCTHING_ON, section, example):
+            with self.subTest(text=text[:40]):
+                self.assertNotRegex(text.lower(), r"nothing syncs|syncs nothing|later release|no folder or device is configured")
+                self.assertIn("device ID", text)
+                self.assertIn("Send Only", text)
+                self.assertRegex(text, r"resumes? ")
+        for text in (run.SYNCTHING_ON, section):
+            with self.subTest(text=text[:40]):
+                self.assertIn("local discovery", text)
+                self.assertIn("22000", text)
+                self.assertIn("21027", text)
+        self.assertIn("br0", section)
+
 
 class SchedulerTests(unittest.TestCase):
     def test_one_shot_commands_build_a_scheduler_without_the_gate_and_record_no_event(self):

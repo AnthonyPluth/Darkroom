@@ -118,6 +118,23 @@ class BrowserImageTests(unittest.TestCase):
         self.assertLess(DOCKERFILE.index("--require-hashes"), DOCKERFILE.index("USER darkroom-browser"), "packages are installed before dropping root")
 
 
+    def test_the_os_packages_trivy_flagged_are_upgraded_in_the_apt_step(self):
+        apt = DOCKERFILE[DOCKERFILE.index("RUN apt-get update"):DOCKERFILE.index("COPY deploy/browser/requirements.txt")]
+        self.assertIn("apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg6.0t64 libbrotli1", apt)
+        self.assertLess(apt.index("--only-upgrade"), apt.index("rm -rf /var/lib/apt/lists/*"))
+
+    def test_the_build_tools_and_their_caches_leave_the_image_after_the_pinned_install(self):
+        install = DOCKERFILE[DOCKERFILE.index("RUN pip install"):DOCKERFILE.index("RUN if [ \"$(dpkg --print-architecture)\"")]
+        tools = re.search(r"pip uninstall -y --break-system-packages (virtualenv [a-z -]+?) \\\n", install)
+        self.assertIsNotNone(tools)
+        self.assertEqual(set(tools.group(1).split()), {"virtualenv", "python-discovery", "filelock", "distlib", "platformdirs", "packaging"})
+        self.assertFalse(set(tools.group(1).split()) & set(requirement_blocks(REQUIREMENTS)), "only the base image's tools go, never a pinned requirement")
+        self.assertLess(install.index("metadata.version('playwright')"), install.index("pip uninstall"))
+        self.assertLess(install.index("pip uninstall -y --break-system-packages virtualenv"), install.index("pip uninstall -y --break-system-packages pip"))
+        self.assertIn("rm -rf /tmp/requirements.txt /root/.cache", install)
+        self.assertEqual(DOCKERFILE.count("pip install"), 1)
+        self.assertNotRegex(DOCKERFILE[DOCKERFILE.index("pip uninstall -y --break-system-packages pip"):], r"\bpip3? install\b|-m pip\b")
+
 class SingleImageTests(unittest.TestCase):
     def test_the_worker_venv_pins_the_same_playwright_as_the_browser_image(self):
         version = re.search(r"^FROM mcr\.microsoft\.com/playwright/python:v(\d+\.\d+\.\d+)-\w+$", DOCKERFILE, re.M).group(1)
@@ -267,6 +284,19 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
         self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
 
+    def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
+        script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
+        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -eo pipefail\n"))
+        for text in (script, job):
+            self.assertNotRegex(text, r"\|\s*grep\s+-[A-Za-z]*q", "grep -q quits at the first match, so under pipefail docker logs dies of SIGPIPE and a match reads as a miss")
+        self.assertIn('logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"; }', script)
+        self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', script[script.index("fail() {"):script.index("wait_for() {")])
+        cleanup = script.index("docker rm -f darkroom peer >/dev/null 2>&1 || true\ndocker network rm \"$net\" >/dev/null 2>&1 || true\n")
+        self.assertLess(cleanup, script.index('docker network create "$net"'))
+        self.assertLess(script.index('docker network create "$net"'), script.index("docker run -d --name darkroom"))
+
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
@@ -313,22 +343,51 @@ def template():
     return ElementTree.parse(ROOT / "deploy/unraid/darkroom.xml").getroot()
 
 
+def fleet_security_calls():
+    workflow = (ROOT / ".github/workflows/security.yml").read_text()
+    jobs = re.split(r"\n  (?=[a-z][a-z-]*:\n)", workflow[workflow.index("\njobs:\n"):])[1:]
+    return [job for job in jobs if "uses: AnthonyPluth/fleet/.github/workflows/security.yml@" in job]
+
+
+def call_input(call, name):
+    return re.search(rf"^      {name}: (\S+)$", call, re.M).group(1)
+
+
 class SecurityScanTests(unittest.TestCase):
-    def test_trivy_scans_the_one_container_image_as_it_scans_the_service_image(self):
-        workflow = (ROOT / ".github/workflows/security.yml").read_text()
-        jobs = re.split(r"\n  (?=[a-z][a-z-]*:\n)", workflow[workflow.index("\njobs:\n"):])[1:]
-        calls = [job for job in jobs if "uses: AnthonyPluth/fleet/.github/workflows/security.yml@" in job]
-        self.assertEqual(len(calls), 2)
-        service, single = calls
+    def test_every_image_gets_its_own_call_of_the_same_fleet_release_with_the_same_permissions(self):
+        calls = fleet_security_calls()
+        self.assertEqual(len(calls), 3)
+        service, single, browser = calls
         self.assertNotIn("dockerfile:", service)
-        self.assertIn("dockerfile: Dockerfile.single", single)
+        self.assertEqual(call_input(single, "dockerfile"), "Dockerfile.single")
+        self.assertEqual(call_input(browser, "dockerfile"), "Dockerfile.browser")
         pins = {re.search(r"security\.yml@([0-9a-f]{40})", call).group(1) for call in calls}
-        self.assertEqual(len(pins), 1, "both calls run the same fleet release")
-        image_paths = re.search(r"^      image-paths: (\S+)$", single, re.M).group(1)
+        self.assertEqual(len(pins), 1, "every call runs the same fleet release")
+        permissions = {call[call.index("    permissions:\n"):call.index("    uses:")] for call in calls}
+        self.assertEqual(len(permissions), 1)
+
+    def test_trivy_scans_the_one_container_image_as_it_scans_the_service_image(self):
+        _, single, _ = fleet_security_calls()
+        image_paths = call_input(single, "image-paths")
         for changed in ("Dockerfile.single", "deploy/single/requirements.txt", "poetry.lock", "pyproject.toml", ".dockerignore"):
             self.assertRegex(changed, image_paths)
         self.assertIn("      sarif-upload: false\n", single)
-        self.assertEqual(re.search(r"^      code-paths: (\S+)$", single, re.M).group(1), "^$")
+        self.assertEqual(call_input(single, "code-paths"), "^$")
+
+    def test_trivy_scans_the_browser_image_in_its_own_call_not_the_service_images(self):
+        service, _, browser = fleet_security_calls()
+        image_paths = call_input(browser, "image-paths")
+        for changed in ("Dockerfile.browser", "deploy/browser/requirements.txt", "deploy/browser/entrypoint.sh", "deploy/browser/smoke.sh", ".dockerignore"):
+            with self.subTest(changed=changed):
+                self.assertRegex(changed, image_paths)
+        for unrelated in ("Dockerfile", "Dockerfile.single", "poetry.lock", "pyproject.toml", "deploy/browser/seccomp.json"):
+            with self.subTest(unrelated=unrelated):
+                self.assertNotRegex(unrelated, image_paths)
+        self.assertNotRegex("Dockerfile.browser", call_input(service, "image-paths"))
+        self.assertRegex("Dockerfile", call_input(service, "image-paths"))
+        self.assertIn("      sarif-upload: false\n", browser)
+        self.assertIn("      scorecard: false\n", browser)
+        self.assertEqual(call_input(browser, "code-paths"), "^$")
 
 
 class UnraidTemplateTests(unittest.TestCase):
