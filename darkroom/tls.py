@@ -25,6 +25,10 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         raise Refused("redirects are not followed")
 
 
+def tls_failure(error: BaseException) -> bool:
+    return isinstance(error, ssl.SSLError) or isinstance(getattr(error, "reason", None), ssl.SSLError)
+
+
 def client_context(cafile: str | None = None) -> ssl.SSLContext:
     context = ssl.create_default_context(cafile=cafile)
     context.minimum_version = ssl.TLSVersion.TLSv1_2

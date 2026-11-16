@@ -12,15 +12,18 @@ from sqlalchemy import delete, event
 from sqlalchemy.exc import OperationalError
 
 import run
-from darkroom import oidc
+from darkroom import oidc, tls
+from darkroom.providers import immich
 from darkroom.server import auth, common, handler, jobs, routes, wizard
 from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request
 from darkroom.storage import db, stored_settings
 from darkroom.storage.models import Setting, StoredSetting, User
 from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN, SETUP_TESTED
+from tests.fakes.immich import FakeImmich
 from tests.fakes.oidc_provider import CLIENT_ID, CLIENT_SECRET, FakeProvider
 from tests.privacy import no_leaks
+from tests.test_immich_address_check import REDIRECT_TARGET, Answering, closed_port
 from tests.shared import cookies_set, fetch, own_database, own_database_url, settings_from, start_server, write_elsewhere
 
 KEY = "wizard-test-secret-key-0123456789"
@@ -84,6 +87,10 @@ class WizardCase(unittest.TestCase):
 
     def stored(self):
         return stored_settings.stored_values(self.engine)
+
+    def store_immich(self, url):
+        with db.session(self.engine, writing=True) as opened:
+            stored_settings.store(opened, "IMMICH_URL", url, KEY, common.now())
 
     def restarted(self):
         return stored_settings.effective(settings_from(DARKROOM_SECRET_KEY=KEY, **self.env), self.engine).settings
@@ -154,9 +161,6 @@ class StepTests(WizardCase):
         entry = next(entry for entry in reply["settings"] if entry["variable"] == "DARKROOM_PUBLIC_URL")
         self.assertEqual(entry, {"variable": "DARKROOM_PUBLIC_URL", "source": "stored", "set": True, "value": "https://photos.example.com"})
         self.assertEqual(reply["redirect_uri"], "https://photos.example.com/auth/callback")
-        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283/"})[0], 200)
-        self.assertEqual(self.stored()["IMMICH_URL"], ("http://immich.lan:2283", None))
-        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": 5})[0], 400)
 
     def test_alerts_seal_the_key_and_never_echo_it(self):
         self.claim()
@@ -418,7 +422,8 @@ class AfterTestTests(AfterTestCase):
         status, state = self.json_call("GET", "/api/setup", cookies=self.pair())
         self.assertEqual(status, 200)
         self.assertEqual((state["phase"], state["tested_email"], state["proposal"]), ("after_test", TESTED_EMAIL, None))
-        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"}, cookies=self.pair())[0], 200)
+        with FakeImmich([]) as fake:
+            self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": fake.url}, cookies=self.pair())[0], 200)
         self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies=self.pair())[0], 200)
         jar = {auth.SESSION_COOKIE: self.session}
         self.assertEqual(self.json_call("GET", "/api/me", cookies=jar), (200, {"sub": "user-1", "email": TESTED_EMAIL, "name": "Jo Example", "groups": ["parents"]}))
@@ -605,6 +610,71 @@ class ClosingTests(AfterTestCase):
         self.assertEqual(self.json_call("POST", "/api/setup/finish", cookies=self.pair()), REFUSED)
 
 
+class ImmichBeforeTheTestTests(WizardCase):
+    def test_saving_immich_before_the_test_is_refused_and_contacts_nothing(self):
+        self.claim()
+        self.propose()
+        with mock.patch.object(immich, "check_address", side_effect=AssertionError("contacted")) as checked, \
+                mock.patch.object(tls, "urlopen", side_effect=AssertionError("contacted")) as opened:
+            for body in ({"immich_url": "http://immich.lan:2283"}, {"immich_url": 5}, {}):
+                with self.subTest(body=body):
+                    self.assertEqual(self.json_call("POST", "/api/setup/immich", body), (409, {"error": setup.IMMICH_NOT_TESTED}))
+        self.assertEqual((checked.call_count, opened.call_count), (0, 0))
+        self.assertNotIn("IMMICH_URL", self.stored())
+        self.assertEqual(setup.IMMICH_NOT_TESTED, "Immich's address can be saved only after the test sign-in has passed")
+
+
+class ImmichCheckTests(AfterTestCase):
+    def save(self, url):
+        return self.json_call("POST", "/api/setup/immich", {"immich_url": url}, cookies=self.pair())
+
+    def answering(self, status, body, headers=None):
+        found = Answering(status, body, headers)
+        self.addCleanup(found.stop)
+        return found
+
+    def test_an_address_immich_answers_at_is_stored_through_tls(self):
+        with FakeImmich([]) as fake, mock.patch.object(tls, "urlopen", wraps=tls.urlopen) as opened:
+            status, reply = self.save(fake.url + "/")
+            self.assertEqual(fake.requests(), [("GET", "/api/server/ping")])
+        self.assertEqual(status, 200)
+        self.assertEqual(opened.call_args.args, (fake.url + "/api/server/ping",))
+        self.assertEqual(self.stored()["IMMICH_URL"], (fake.url, None))
+        entry = next(entry for entry in reply["settings"] if entry["variable"] == "IMMICH_URL")
+        self.assertEqual(entry, {"variable": "IMMICH_URL", "source": "stored", "set": True, "value": fake.url})
+
+    def test_each_refusal_is_a_422_with_its_fixed_reason_and_stores_nothing(self):
+        plain = self.answering(200, b'{"res": "pong"}')
+        cases = {f"http://127.0.0.1:{closed_port()}": "nothing answered there", self.answering(200, b"<html>router</html>").url: "the server there isn't Immich",
+                 plain.url.replace("http://", "https://"): "its TLS connection failed"}
+        for url, reason in cases.items():
+            with self.subTest(reason=reason):
+                self.assertEqual(self.save(url), (422, {"error": f"Immich didn't answer at {url}: {reason}"}))
+                self.assertNotIn("IMMICH_URL", self.stored())
+
+    def test_a_stored_address_is_checked_again_and_kept_when_the_check_fails(self):
+        with FakeImmich([]) as fake:
+            self.assertEqual(self.save(fake.url)[0], 200)
+            fake.mode("down")
+            self.assertEqual(self.save(fake.url), (422, {"error": f"Immich didn't answer at {fake.url}: nothing answered there"}))
+            self.assertEqual(len(fake.requests()), 1)
+        self.assertEqual(self.stored()["IMMICH_URL"], (fake.url, None))
+
+    def test_a_redirect_target_and_the_reply_are_never_shown_or_logged(self):
+        canary = "reply-body-canary-5e6f7a8b"
+        moved = self.answering(302, canary.encode(), {"Location": REDIRECT_TARGET, "X-Detail": canary})
+        with no_leaks(self, REDIRECT_TARGET, "redirect-target-canary", canary, self.session, self.cookie, database=self.engine, replies=self.replies):
+            self.assertEqual(self.save(moved.url), (422, {"error": f"Immich didn't answer at {moved.url}: the server there isn't Immich"}))
+        self.assertNotIn("IMMICH_URL", self.stored())
+
+    def test_a_bad_address_is_refused_before_anything_is_contacted(self):
+        with mock.patch.object(immich, "check_address", side_effect=AssertionError("contacted")):
+            for value in (5, "ftp://immich.lan", "http://jo@immich.lan", "http://photos.example.com"):
+                with self.subTest(value=value):
+                    self.assertEqual(self.save(value)[0], 400)
+        self.assertNotIn("IMMICH_URL", self.stored())
+
+
 class FinishBeforeTheTestTests(WizardCase):
     def test_finish_before_the_test_is_refused_and_changes_nothing(self):
         self.claim()
@@ -616,7 +686,7 @@ class LiveSettingsTests(WizardCase):
     def test_stored_values_reach_the_running_jobs_without_a_restart(self):
         scheduler = jobs.build(self.settings, self.engine, common.now())
         self.claim()
-        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"})[0], 200)
+        self.store_immich("http://immich.lan:2283")
         self.assertEqual(self.json_call("POST", "/api/setup/alerts", {"resend_api_key": RESEND_KEY, "alert_email_from": "alerts@example.com", "alert_email_to": "jo@example.com"})[0], 200)
         seen = []
 
@@ -651,7 +721,7 @@ class LiveSettingsTests(WizardCase):
 
     def test_a_request_sees_the_stored_values_and_the_environment_still_wins(self):
         self.claim()
-        self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"})
+        self.store_immich("http://immich.lan:2283")
         request = Request("GET", "/", {}, {}, b"", self.settings, self.engine)
         self.assertEqual(handler.with_stored(request).immich_url, "http://immich.lan:2283")
         self.assertIs(handler.with_stored(dataclasses.replace(request, engine=None)), self.settings)

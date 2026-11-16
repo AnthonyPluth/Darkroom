@@ -26,7 +26,7 @@ export async function prepareContext(ctx, now) {
 export const loadedWhen = (signedIn) => (signedIn ? "networkidle" : "load");
 export const SETTLE_MS = 300;
 export const FROZEN_NOW = "2026-06-15T12:00:00Z";
-export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser", "setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"];
+export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser", "setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-immich-refused", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"];
 export const SETUP_PAGES = PAGES.filter(isSetupPage);
 export const DEMO_PAGES = PAGES.filter((n) => !isSetupPage(n));
 export const SESSION_FILE = "demo-session.json";
@@ -317,13 +317,13 @@ export function commitImages(staging, images, replaceAll, copy = copyFileSync) {
   rmSync(old, { recursive: true, force: true });
 }
 
-export async function runSetup({ setupUrls, signIn, now, staging, out, from }) {
+export async function runSetup({ setupUrls, signIn, immich, now, staging, out, from }) {
   const browser = await chromium.launch(launchOptions());
   try {
     const outcomes = [];
     for (const [i, viewport] of IMAGE_VIEWPORTS.entries()) {
       const env = { browser, base: setupUrls[i], cookie: null, now, images: staging, out };
-      const result = await setupVisit(visit, env, { label: SETUP_PAGE, viewport, signIn });
+      const result = await setupVisit(visit, env, { label: SETUP_PAGE, viewport, signIn, immich });
       outcomes.push({ ...result, visit: { kind: "page", name: SETUP_PAGE, viewport, index: from + i }, worker: 0 });
     }
     return outcomes;
@@ -345,6 +345,7 @@ async function main() {
   const only = optAll("--flow").flatMap(urlsOf);
   const setupUrls = optAll("--setup").flatMap(urlsOf);
   const signIn = opt("--sign-in", "");
+  const immich = opt("--immich", "");
   if (!urls.length) { console.error("verify: no server address (--url or DARKROOM_VERIFY_URL)"); process.exit(2); }
   if (!sessionFile) { console.error("verify: no demo session file (--session or DARKROOM_VERIFY_SESSION)"); process.exit(2); }
   const unknown = unknownPages(args);
@@ -357,7 +358,7 @@ async function main() {
   try { cookie = sessionCookie(sessionFile); } catch (e) { console.error(`verify: couldn't read the demo session (${e.message})`); process.exit(2); }
   const pages = (args.length ? args : PAGES).filter((n) => n !== SETUP_PAGE && !isSetupPage(n));
   const setup = wantsSetup(args, args.length > 0, only.length > 0);
-  if (setup && (setupUrls.length < IMAGE_VIEWPORTS.length || !signIn)) { console.error(`verify: the setup pages need ${IMAGE_VIEWPORTS.length} setup servers (--setup) and a sign-in provider (--sign-in)`); process.exit(2); }
+  if (setup && (setupUrls.length < IMAGE_VIEWPORTS.length || !signIn || !immich)) { console.error(`verify: the setup pages need ${IMAGE_VIEWPORTS.length} setup servers (--setup), a sign-in provider (--sign-in) and a made-up Immich (--immich)`); process.exit(2); }
   const flows = only.length ? everyFlow.filter((f) => only.includes(f.name)) : everyFlow;
   const visits = planVisits({ pages, flows, viewports: DEFAULT_VIEWPORTS, ownPages: [], filtered: args.length > 0 || only.length > 0, flowsOnly: only.length > 0 });
 
@@ -373,7 +374,7 @@ async function main() {
     work: (v, env) => runVisit(env, v),
     release: (env) => env.browser.close(),
   });
-  if (setup) outcomes.push(...await runSetup({ setupUrls, signIn, now, staging, out, from: visits.length }));
+  if (setup) outcomes.push(...await runSetup({ setupUrls, signIn, immich, now, staging, out, from: visits.length }));
   const { problems, notes, results } = summarize({ outcomes, failures, urls });
   const seconds = Math.round((Date.now() - started) / 1000);
 

@@ -39,6 +39,6 @@
   </Field>
 {/if}
 <div class={ROW}>
-  <button type="button" class={PRIMARY} disabled={busy} onclick={save}>{inEnvironment ? "Continue" : "Save and continue"}</button>
+  <button type="button" class={PRIMARY} disabled={busy} onclick={save}>{inEnvironment ? "Continue" : busy ? "Checking Immich..." : "Save and continue"}</button>
 </div>
 <FormError message={error} />

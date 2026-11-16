@@ -17,7 +17,10 @@ async function dialogDone(page, title, submit, fill) {
   await dialog.waitFor({ state: "hidden" });
 }
 
-export async function walkSetup(page, { base, signIn, shot, audit }) {
+export const UNANSWERED_IMMICH = "http://127.0.0.1:9";
+export const REFUSED_IMMICH_CONSOLE = "the server responded with a status of 422";
+
+export async function walkSetup(page, { base, signIn, immich, shot, audit }) {
   const step = async (name, title) => {
     await heading(page, title).waitFor();
     await shot(name);
@@ -44,7 +47,13 @@ export async function walkSetup(page, { base, signIn, shot, audit }) {
   await page.getByText("Sign-in works.", { exact: false }).waitFor();
   await step("setup-immich", "Immich");
 
-  await page.getByRole("textbox", { name: "Immich address" }).fill("http://192.168.1.20:2283");
+  const immichField = page.getByRole("textbox", { name: "Immich address" });
+  await immichField.fill(UNANSWERED_IMMICH);
+  await button(page, "Save and continue").click();
+  await page.getByRole("alert").filter({ hasText: "Immich didn't answer at" }).waitFor();
+  await step("setup-immich-refused", "Immich");
+
+  await immichField.fill(immich);
   await button(page, "Save and continue").click();
   await heading(page, "People").waitFor();
   await button(page, "Add person").click();
@@ -83,12 +92,13 @@ export async function walkSetup(page, { base, signIn, shot, audit }) {
   await step("setup-closed", "Setup isn't open");
 }
 
-export function setupVisit(visit, env, { label, viewport, signIn }) {
+export function setupVisit(visit, env, { label, viewport, signIn, immich }) {
   return visit(env, label, viewport, async (page, shot) => {
     const problems = [];
     await walkSetup(page, {
       base: env.base,
       signIn,
+      immich,
       shot: (name) => shot(name, env.images),
       audit: async (name) => {
         const found = await auditPage(page, viewport);
@@ -96,5 +106,5 @@ export function setupVisit(visit, env, { label, viewport, signIn }) {
       },
     });
     if (problems.length) throw new Error(`accessibility: ${problems.join("; ")}`);
-  }, { signedIn: false, audit: false, also: [signIn] });
+  }, { signedIn: false, audit: false, also: [signIn], allowConsole: [REFUSED_IMMICH_CONSOLE] });
 }

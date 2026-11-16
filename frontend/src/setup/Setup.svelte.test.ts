@@ -231,6 +231,44 @@ describe("after the test sign-in", () => {
     expect(screen.queryByText(/Sign-in works/)).not.toBeInTheDocument();
   });
 
+  it("checks Immich, and a refusal keeps the field and the step without reloading", async () => {
+    let release = () => {};
+    let tries = 0;
+    const gate = new Promise<void>((done) => { release = done; });
+    const refused = "Immich didn't answer at http://192.168.1.21:2283: nothing answered there";
+    const server = serve({ "GET /api/setup": after(), ...family([]), "POST /api/setup/immich": () => (++tries === 1 ? reply(422, { error: refused }) : after(immich)) });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url === "/api/setup/immich" && tries === 0 ? gate.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(Setup);
+    const field = await screen.findByRole("textbox", { name: "Immich address" });
+    await userEvent.type(field, "http://192.168.1.21:2283");
+    await userEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+    expect(screen.getByRole("button", { name: "Checking Immich..." })).toBeDisabled();
+    release();
+    expect(await screen.findByRole("alert")).toHaveTextContent(`Couldn't save Immich's address: ${refused}.`);
+    expect(screen.getByRole("button", { name: "Save and continue" })).toBeEnabled();
+    expect(screen.getByRole("heading", { level: 1, name: "Immich" })).toBeInTheDocument();
+    expect(field).toHaveValue("http://192.168.1.21:2283");
+    expect(server.sent("GET /api/setup")).toHaveLength(1);
+    await userEvent.clear(field);
+    await userEvent.type(field, "http://192.168.1.20:2283");
+    await userEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "People" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(server.sent("POST /api/setup/immich").map((c) => c.body)).toEqual([{ immich_url: "http://192.168.1.21:2283" }, { immich_url: "http://192.168.1.20:2283" }]);
+  });
+
+  it("reloads only for the environment's 409, not for the check's 422", async () => {
+    const server = show({
+      "GET /api/setup": after(),
+      ...family([]),
+      "POST /api/setup/immich": reply(409, { error: "IMMICH_URL is set in the environment, which always wins over the wizard; change it there" }),
+    });
+    await userEvent.type(await screen.findByRole("textbox", { name: "Immich address" }), "http://192.168.1.20:2283");
+    await userEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+    await screen.findByRole("alert");
+    await waitFor(() => expect(server.sent("GET /api/setup")).toHaveLength(2));
+  });
+
   it("needs a person before People can continue", async () => {
     let people = [] as (typeof jo)[];
     const server = show({
