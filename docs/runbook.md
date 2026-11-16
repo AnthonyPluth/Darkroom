@@ -50,7 +50,7 @@ The browser worker is the fragile part; everything after the inbox works without
 
 Alert "Google sign-in needed" (or "Wrong Google account"). The worker never types a password or a 2FA code; it stops and waits.
 
-1. Open the link in the alert (the `VNC_URL` browser view, behind the same sign-in as Darkroom). If the viewer asks for a username and password, or shows 401, the route is not sending the viewer secret: `docker logs darkroom-browser` shows `viewer locked` when `DARKROOM_VNC_SECRET` is unset or too short; otherwise check the Traefik `headers` label (see "Network" in [deploy/browser.md](deploy/browser.md)). Don't type the secret into the prompt.
+1. Open the link in the alert (the Remote browser page's viewer at `/viewer/` under `DARKROOM_PUBLIC_URL`, behind Darkroom's own sign-in). If the alert has no link or the page says the remote browser is not set up, `DARKROOM_PUBLIC_URL` is not set to the address Darkroom is opened at.
 2. Sign in to the Google account the alert names, finish any 2FA prompt, and leave the browser on a Google page (a page the worker does not recognise for more than 5 minutes fails the job).
 3. Do nothing else: the waiting job notices the signed-in page and carries on, and the alert closes.
 
@@ -168,7 +168,7 @@ Each iPhone backs up and clears its photos with Immich's own iOS app; Darkroom d
 
 ### Rotating the worker token
 
-`DARKROOM_BROWSER_TOKEN` is a shared secret of at least 32 printable ASCII characters. Make a new one with `openssl rand -hex 32`, put it in `.env`, and recreate both containers with `docker compose up -d --force-recreate darkroom darkroom-browser` (`docker compose restart` keeps the old environment). Until both run with the new value the worker gets 401 and does no jobs; queued jobs wait.
+The one container's init generates a new browser token at every start and hands it to the app and the worker on pipes, so restarting the container rotates it; there is nothing to set. `DARKROOM_BROWSER_TOKEN`, from the separate browser container that is gone (#327), is ignored: `python run.py check-config` and the start-up log name it as set and ignored, never with its value, so remove it from `.env`, along with `DARKROOM_URL`, `VNC_URL` and `DARKROOM_VNC_SECRET`.
 
 ### The secret key
 
@@ -190,7 +190,7 @@ The sign-in settings are only proposed until a test sign-in with them succeeds, 
 
 ### Moving the browser profiles into appdata
 
-Switching from the two containers to the one container keeps the browser profiles, and with them the Google sign-ins, by copying `_browser/` from the share into `/data/browser` with everything stopped: `python run.py copy-browser-state --source /photos/_browser --target /data/browser`, run inside the one-container image. It checks the copy against the source before putting it in place and never removes the source; the steps, the way back and what to do with a copy that was interrupted are in [deploy/browser.md](deploy/browser.md#moving-existing-profiles-into-appdata). If an account asks for a sign-in after the move, sign in again in the remote browser: Google can tie a session to more than the profile's files. In the one container a profile is under `/data/browser/<account id>/profile/`, not `_browser/` on the share, wherever this runbook names `_browser`. Deleting an account there also removes its old copy in `_browser/` on the share; if that copy is a link the delete fails and says which folder. It does not reach the copies the moves leave behind (`_browser.before-<time>/`, `browser.before-<time>/`, `.browser.copying-*`, or an older `/data/browser/` after going back to two containers): remove those by hand, as [deploy/browser.md](deploy/browser.md#going-back-to-two-containers) says.
+Switching from the two containers to the one container, on the newest `v3` release ([deploy/one-container.md](deploy/one-container.md#moving-from-the-two-containers)), keeps the browser profiles, and with them the Google sign-ins, by copying `_browser/` from the share into `/data/browser` with everything stopped: `python run.py copy-browser-state --source /photos/_browser --target /data/browser`, run inside the one-container image. It checks the copy against the source before putting it in place and never removes the source; what it checks and what to do with a copy that was interrupted are in [deploy/browser.md](deploy/browser.md#copying-browser-profiles-copy-browser-state). If an account asks for a sign-in after the move, sign in again in the remote browser: Google can tie a session to more than the profile's files. In the one container a profile is under `/data/browser/<account id>/profile/`, not `_browser/` on the share, wherever this runbook names `_browser`. Deleting an account there also removes its old copy in `_browser/` on the share; if that copy is a link the delete fails and says which folder. It does not reach the copies the moves leave behind (`_browser.before-<time>/`, `browser.before-<time>/`, `.browser.copying-*`, or an older `/data/browser/` after going back to an older release): remove those by hand, as [deploy/browser.md](deploy/browser.md#the-browser-profiles-in-appdata-the-one-container) says.
 
 ### "Darkroom could not create the person's folders"
 

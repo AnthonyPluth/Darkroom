@@ -20,8 +20,9 @@ INIT_HOME = str(Path(__file__).resolve().parent.parent)
 APP_SETTINGS = (
     "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO", "DARKROOM_ALLOWED_HOSTS", "DARKROOM_ALLOW_NO_AUTH", "DARKROOM_BROWSER_ROOT", "DARKROOM_DATA_DIR", "DARKROOM_DEMO", "DARKROOM_HOST",
     "DARKROOM_PHOTOS_ROOT", "DARKROOM_PORT", "DARKROOM_PUBLIC_URL", "DARKROOM_SECRET_KEY", "DARKROOM_SYNCTHING", "DARKROOM_WIZARD", "DATABASE_URL", "IMMICH_ADMIN_KEY", "IMMICH_URL",
-    "NTFY_TOKEN", "NTFY_TOPIC", "NTFY_URL", "OIDC_ALLOWED_EMAILS", "OIDC_ALLOWED_GROUPS", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ISSUER", "PIXEL_FOLDER_CAP_GB", "RESEND_API_KEY", "TZ", "VNC_URL",
+    "NTFY_TOKEN", "NTFY_TOPIC", "NTFY_URL", "OIDC_ALLOWED_EMAILS", "OIDC_ALLOWED_GROUPS", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ISSUER", "PIXEL_FOLDER_CAP_GB", "RESEND_API_KEY", "TZ",
 )
+REMOVED_SETTINGS = ("DARKROOM_BROWSER_TOKEN", "DARKROOM_URL", "DARKROOM_VNC_SECRET", "VNC_URL")
 WORKER_SETTINGS = ("BROWSER_CHANNEL", "POLL_SECONDS", "TZ", "WORKER_NAME", "PLAYWRIGHT_BROWSERS_PATH")
 COMMON = ("HOME", "LANG", "LC_ALL")
 PYTHON = {"PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
@@ -53,16 +54,21 @@ def syncthing_home(given: Mapping[str, str]) -> str:
     return f"{(given.get('DARKROOM_DATA_DIR') or '/data').rstrip('/')}/syncthing"
 
 
+def removed_and_set(given: Mapping[str, str]) -> dict[str, str]:
+    return {name: "set" for name in REMOVED_SETTINGS if given.get(name, "").strip()}
+
+
 def app_env(given: Mapping[str, str]) -> dict[str, str]:
     handed = {TOKEN_FD: PIPE["token"], VIEWER_FD: PIPE["viewer"]} | ({SYNCTHING_KEY_FD: PIPE["syncthing"]} if syncthing_on(given) else {})
-    return picked(given, COMMON + APP_SETTINGS) | PYTHON | {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", ONE_CONTAINER: "1"} | handed
+    fixed = {"PATH": f"/app/.venv/bin:{SYSTEM_PATH}", ONE_CONTAINER: "1"}
+    return picked(given, COMMON + APP_SETTINGS) | removed_and_set(given) | PYTHON | fixed | handed
 
 
 def worker_env(given: Mapping[str, str]) -> dict[str, str]:
     photos = given.get("DARKROOM_PHOTOS_ROOT", "/photos")
     fixed = {
         "PATH": f"/opt/worker/bin:{SYSTEM_PATH}",
-        "DARKROOM_URL": f"http://127.0.0.1:{given.get('DARKROOM_PORT', '8000')}",
+        "DARKROOM_PORT": given.get("DARKROOM_PORT", "8000"),
         "PHOTOS_ROOT": photos,
         "BROWSER_ROOT": given.get("DARKROOM_BROWSER_ROOT") or f"{photos.rstrip('/')}/_browser",
         "DISPLAY": given.get("DISPLAY", ":99"),

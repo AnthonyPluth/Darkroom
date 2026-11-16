@@ -21,7 +21,7 @@ from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import SIGNED_IN, VERIFY
 from tests.browser.test_parse_exports import page, ready
-from tests.shared import add_person, own_database, settings_from
+from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = 1_793_750_400.0
@@ -127,7 +127,7 @@ class DownloadWorld(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        self.settings = settings_from(DARKROOM_PHOTOS_ROOT=folder.name, VNC_URL="https://browser.example/vnc.html")
+        self.settings = settings_from(DARKROOM_PHOTOS_ROOT=folder.name, DARKROOM_PUBLIC_URL="https://darkroom.example", viewer_secret=VIEWER_SECRET)
         with db.session(self.engine) as opened:
             person = add_person(opened, "jo")
             account = GoogleAccount(email="jo@example.test", default_person_id=person, created=1.0, session_state="ok")
