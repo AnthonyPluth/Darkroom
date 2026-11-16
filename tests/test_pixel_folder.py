@@ -604,5 +604,69 @@ class PixelFolderTests(unittest.TestCase):
         self.assertEqual([c.state for c in self.copies(self.jo_pixel)], ["queued"])
 
 
+    def test_a_fully_synced_report_from_syncthing_prunes_nothing(self):
+        from darkroom.domain import transport
+        from darkroom.providers import syncthing
+        from tests.fakes.syncthing import FakeSyncthing
+
+        own, device = (syncthing.device_id_of_certificate(name) for name in (b"made-up darkroom", b"made-up pixel of jo"))
+        fake = FakeSyncthing(self, "st-prune-canary-key-9d", own)
+        client = syncthing.Client(fake.url, "st-prune-canary-key-9d", timeout=5.0)
+        self.opened.get(Pixel, self.jo_pixel).syncthing_device_id = device
+        self.opened.commit()
+        item = self.item(self.jo)
+        pixel_folder.queue(self.opened, item, NOW)
+        self.tend(at=NOW + 1)
+        folder = transport.folder_of(self.jo_pixel)
+        fake.connections = {device: {"connected": True, "type": "tcp-client"}}
+        fake.completions = {(folder, device): {"completion": 100, "needItems": 0, "needDeletes": 0, "globalItems": 1}}
+        for at in (NOW + 2, NOW + 3):
+            transport.reconcile(self.opened, client, self.photos, lambda pixel_id: False, None, at)
+        self.assertEqual(self.opened.get(Pixel, self.jo_pixel).last_sync, NOW + 3)
+        before = kept_tree(self.root)
+        tended = self.tend(at=NOW + 4)
+        self.assertEqual((tended.pruned, tended.skipped), (0, 0))
+        self.assertEqual([copy.state for copy in self.copies(self.jo_pixel)], ["placed"])
+        self.assertTrue(self.copy_path(self.jo_pixel, item).is_file())
+        self.assertEqual(kept_tree(self.root), before)
+
+
+PRUNING_MODULES = ("darkroom/domain/pixel_folder.py", "darkroom/storage/paths.py", "darkroom/domain/takeout_copies.py", "darkroom/domain/ingest/cleanup.py",
+                   "darkroom/domain/dedupe.py")
+TRANSPORT_NAMES = frozenset({"syncthing", "transport", "PixelTransport"})
+
+
+def transport_references(source: str) -> set[str]:
+    import ast
+
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found |= {alias.name for alias in node.names if TRANSPORT_NAMES & set(alias.name.split("."))}
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or "", *(f"{node.module}.{alias.name}" for alias in node.names)]
+            found |= {name for name in modules if TRANSPORT_NAMES & set(name.split("."))}
+        elif isinstance(node, ast.Name | ast.Attribute):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            found |= {name} & TRANSPORT_NAMES
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "pixel_transport" in node.value:
+            found.add("pixel_transport")
+    return found
+
+
+class PruningApartFromTheTransportTests(unittest.TestCase):
+    def test_the_pruning_modules_neither_import_the_syncthing_provider_or_the_reconciler_nor_read_the_transport_table(self):
+        root = Path(__file__).resolve().parent.parent
+        for module in PRUNING_MODULES:
+            with self.subTest(module=module):
+                self.assertEqual(transport_references((root / module).read_text()), set())
+
+    def test_the_check_finds_each_way_of_reaching_the_transport(self):
+        for source in ("from darkroom.providers import syncthing\n", "import darkroom.domain.transport\n", "from darkroom.storage.models import PixelTransport\n",
+                       "from darkroom.storage import models\nmodels.PixelTransport\n", "x = 'SELECT * FROM pixel_transport'\n"):
+            with self.subTest(source=source):
+                self.assertTrue(transport_references(source))
+        self.assertEqual(transport_references("from darkroom.storage.models import Pixel, PixelCopy\n"), set())
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
@@ -42,6 +42,7 @@ class Scheduler:
         self.placed_copies = pixel_check.PlacedCopyCheck()
         self.share: share_check.ShareCheck | None = None
         self.syncthing: syncthing_version.Gate | None = None
+        self.transport = transport.Transport()
 
     def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
         self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
@@ -113,6 +114,7 @@ PIXEL_TEND_SECONDS = 3600.0
 IMMICH_RECONCILE_SECONDS = 900.0
 SCHEDULE_WATCH_HOUR = 5
 SYNCTHING_RECHECK_SECONDS = 60.0
+SYNCTHING_RECONCILE_SECONDS = 60.0
 
 
 def tend_checks_placed_copies(scheduler: Scheduler) -> bool:
@@ -161,15 +163,50 @@ def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syn
         return syncthing_version.at_startup(opened, syncthing_client(settings), at, previous)
 
 
+def transport_client(scheduler: Scheduler, settings: Settings) -> syncthing.Client | None:
+    if not settings.syncthing or scheduler.syncthing is None or not scheduler.syncthing.on:
+        return None
+    return syncthing_client(settings)
+
+
+def share_problem(scheduler: Scheduler, opened: Session) -> str | None:
+    return share_check.MOVED if scheduler.share is None else scheduler.share.transport_problem(opened)
+
+
+def reconcile_transport(scheduler: Scheduler, settings: Settings, opened: Session, photos: Photos, at: float, force: bool) -> transport.Outcome | None:
+    client = transport_client(scheduler, settings)
+    if client is None:
+        return None
+    problem = share_problem(scheduler, opened)
+    if problem is not None:
+        scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+    return scheduler.transport.tick(opened, client, photos, lambda pixel_id: scheduler.placed_copies.held(opened, pixel_id), problem, at, force)
+
+
+def pause_transport(scheduler: Scheduler, settings: Settings, opened: Session, reason: str, at: float) -> None:
+    client = transport_client(scheduler, settings)
+    if client is not None:
+        scheduler.transport.pause(opened, client, reason, at)
+
+
 def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now: float) -> Scheduler:
     scheduler.syncthing = check_syncthing(settings, engine, now)
+    photos = Photos(settings.photos_root)
+
+    def reconcile(at: float, force: bool) -> None:
+        with db.session(engine) as opened:
+            reconcile_transport(scheduler, settings, opened, photos, at, force)
 
     def recheck_syncthing(at: float) -> None:
         if scheduler.syncthing is not None and not scheduler.syncthing.on:
             scheduler.syncthing = check_syncthing(settings, engine, at, scheduler.syncthing)
+            reconcile(at, True)
 
     if settings.syncthing:
+        scheduler.guarded(Registered("syncthing.reconcile", lambda at: reconcile(at, True), None, None, now), now)
         scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
+        scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now,
+                        own_thread=True)
     return scheduler
 
 
@@ -244,6 +281,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         refused = share.refusal(opened, at)
         if refused is not None:
             scheduler.placed_copies = pixel_check.PlacedCopyCheck()
+            pause_transport(scheduler, settings, opened, refused, at)
             monitoring.log("pixel folders not tended: the share check failed", reason=refused)
             return True
         if share.rebound:
@@ -264,6 +302,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             if share.rebound:
                 monitoring.log("pixel folders not tended: the share was bound again during the check; tending at the next cycle")
                 return
+            reconcile_transport(scheduler, settings, opened, photos, at, force=True)
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
             held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,

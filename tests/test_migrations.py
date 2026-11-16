@@ -266,6 +266,37 @@ class MigrationTests(unittest.TestCase):
         db.migrate(self.engine)
         self.assertIn("stored_settings", inspect(self.engine).get_table_names())
 
+    def test_0031_pixel_transport_adds_an_empty_table_keeps_the_pixels_and_their_copies_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0030")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("UPDATE pixels SET syncthing_device_id = 'MADE-UP-DEVICE', last_sync = 4.5")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all() for table in ("pixels", "pixel_copies")}
+            pixel_id = connection.exec_driver_sql("SELECT min(id) FROM pixels").scalar()
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM pixel_transport").scalar(), 0)
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            connection.execute(text("INSERT INTO pixel_transport (pixel_id, last_seen, completion, error, updated) VALUES (:pixel, 1.5, 99.5, 'held', 2.0)"),
+                               {"pixel": pixel_id})
+            self.assertEqual(connection.exec_driver_sql("SELECT paired, last_seen, completion, error FROM pixel_transport").one(), (False, 1.5, 99.5, "held"))
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.execute(text("INSERT INTO pixel_transport (pixel_id, updated) VALUES (:pixel, 3.0)"), {"pixel": pixel_id})
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO pixel_transport (pixel_id, updated) VALUES (987654, 3.0)")
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0030")
+        self.assertNotIn("pixel_transport", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+        db.migrate(self.engine)
+        self.assertIn("pixel_transport", inspect(self.engine).get_table_names())
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

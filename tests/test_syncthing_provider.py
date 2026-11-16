@@ -79,8 +79,23 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual((folder.id, folder.path, folder.type, folder.paused), ("pixel-1", PATH, "sendonly", True))
         self.assertEqual(folder.devices, {PIXEL, OWN})
         posted = json.loads(next(received.body for received in self.fake.requests if received.method == "POST"))
-        self.assertEqual(posted, {"id": "pixel-1", "path": PATH, "type": "sendonly", "paused": True, "devices": [{"deviceID": PIXEL}]})
+        self.assertEqual(posted, {"id": "pixel-1", "path": PATH, "type": "sendonly", "paused": True, "devices": [{"deviceID": PIXEL}],
+                                  "versioning": {"type": ""}})
         self.assertEqual([folder.id for folder in self.client.folders()], ["pixel-1"])
+
+    def test_versioning_is_read_back_and_turned_off_by_any_folder_write(self):
+        self.add()
+        self.fake.folders["pixel-1"]["versioning"] = {"type": "staggered", "params": {"maxAge": "1"}}
+        self.assertEqual(self.client.folder("pixel-1").versioning, "staggered")
+        with self.assertRaisesRegex(syncthing.ReadBackFailed, "versioning"):
+            self.client.checked_folder("pixel-1", None, None)
+        self.assertEqual(self.client.update_folder("pixel-1", paused=True).versioning, "")
+
+    def test_override_and_replacing_the_whole_configuration_are_never_sent(self):
+        for method, path in (("POST", "/rest/db/override"), ("POST", "/rest/db/revert"), ("PUT", "/rest/config"), ("PUT", "/rest/config/folders/pixel-1")):
+            with self.subTest(method=method, path=path), self.assertRaisesRegex(syncthing.SyncthingFailed, "not allowed"):
+                self.client.call(method, path)
+        self.assertEqual(self.fake.requests, [])
 
     def test_a_configured_folder_is_never_added_again(self):
         self.add()

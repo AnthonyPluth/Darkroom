@@ -14,6 +14,7 @@ from darkroom import config, tls
 TIMEOUT = 15.0
 MAX_REPLY = 4 * 1024 * 1024
 SEND_ONLY = "sendonly"
+NO_VERSIONING = {"type": ""}
 ON_SOCKET = "http://localhost"
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 SECRET_FIELDS = frozenset({"apiKey", "password", "encryptionPassword"})
@@ -136,6 +137,7 @@ class Folder:
     type: str
     devices: frozenset[str] = field(repr=False)
     paused: bool
+    versioning: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,7 +183,9 @@ def folder_of(entry: object) -> Folder:
     identity, path, kind, paused, devices = found.get("id"), found.get("path"), found.get("type"), found.get("paused"), found.get("devices")
     if not isinstance(identity, str) or not isinstance(path, str) or not isinstance(kind, str) or not isinstance(paused, bool) or not isinstance(devices, list):
         raise SyncthingFailed("Syncthing sent a folder without its id, path, type, devices or paused state")
-    return Folder(identity, path, kind, frozenset(device_id(mapping(device, "folder device").get("deviceID")) for device in devices), paused)
+    versioning = found.get("versioning")
+    kept = text(versioning.get("type")) if isinstance(versioning, dict) else ""
+    return Folder(identity, path, kind, frozenset(device_id(mapping(device, "folder device").get("deviceID")) for device in devices), paused, kept)
 
 
 def device_of(entry: object) -> Device:
@@ -284,6 +288,8 @@ class Client:
             raise ReadBackFailed("Syncthing did not keep the folder as written") from None
         if found.type != SEND_ONLY:
             raise NotSendOnly("Syncthing did not keep the folder Send Only")
+        if found.versioning:
+            raise ReadBackFailed("Syncthing kept versioning on the folder")
         own = self.own_device_id()
         if (found.id != identity or (path is not None and found.path != path) or (paused is not None and found.paused != paused)
                 or (devices is not None and found.devices - {own} != devices - {own})):
@@ -297,13 +303,14 @@ class Client:
         identity = folder_id(identity)
         if any(found.id == identity for found in self.folders()):
             raise SyncthingFailed("the folder is already configured")
-        body = {"id": identity, "path": path, "type": SEND_ONLY, "paused": paused, "devices": [{"deviceID": device} for device in sorted(wanted)]}
+        body = {"id": identity, "path": path, "type": SEND_ONLY, "paused": paused, "devices": [{"deviceID": device} for device in sorted(wanted)],
+                "versioning": NO_VERSIONING}
         self.call("POST", "/rest/config/folders", body=body)
         return self.checked_folder(identity, wanted, paused, path)
 
     def update_folder(self, identity: str, devices: Iterable[str] | None = None, paused: bool | None = None) -> Folder:
         wanted = None if devices is None else frozenset(device_id(device) for device in devices)
-        body: dict[str, object] = {"type": SEND_ONLY}
+        body: dict[str, object] = {"type": SEND_ONLY, "versioning": NO_VERSIONING}
         if wanted is not None:
             body["devices"] = [{"deviceID": device} for device in sorted(wanted)]
         if paused is not None:

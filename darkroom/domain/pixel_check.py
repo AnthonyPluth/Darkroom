@@ -42,10 +42,14 @@ def recorded(row: PixelCopy) -> tuple[str, str | None, str, int]:
     return row.state, row.name, row.sha1, row.bytes
 
 
-def check(opened: Session, photos: Photos, now: float) -> Checked:
+def check(opened: Session, photos: Photos, now: float, only: frozenset[int] | None = None) -> Checked:
     checked = Checked()
     accounted: set[tuple[int, str, str]] = set()
-    placed = opened.execute(select(PixelCopy.id).where(PixelCopy.state == "placed").order_by(PixelCopy.pixel_id, PixelCopy.id)).scalars().all()
+    placed_rows = select(PixelCopy.id).where(PixelCopy.state == "placed").order_by(PixelCopy.pixel_id, PixelCopy.id)
+    pixel_rows = select(Pixel.id).order_by(Pixel.id)
+    if only is not None:
+        placed_rows, pixel_rows = placed_rows.where(PixelCopy.pixel_id.in_(only)), pixel_rows.where(Pixel.id.in_(only))
+    placed = opened.execute(placed_rows).scalars().all()
     for copy_id in placed:
         row = opened.get(PixelCopy, copy_id, populate_existing=True)
         if row is None or row.state != "placed":
@@ -67,7 +71,7 @@ def check(opened: Session, photos: Photos, now: float) -> Checked:
             mark_for_replacement(opened, row, now)
             checked.requeued += 1
         opened.commit()
-    for pixel_id in opened.execute(select(Pixel.id).order_by(Pixel.id)).scalars().all():
+    for pixel_id in opened.execute(pixel_rows).scalars().all():
         account_for_files(opened, photos, pixel_id, accounted, checked, now)
     opened.commit()
     return checked
@@ -177,19 +181,33 @@ class PlacedCopyCheck:
     ran_at: float = 0.0
     listed: dict[int, tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
+    def every_pixel_due(self, now: float) -> bool:
+        return not self.ran or not self.ran_at <= now < self.ran_at + RECHECK_SECONDS
+
+    def changed_unaccounted(self, photos: Photos) -> set[int]:
+        found = listing(photos, self.unaccounted)
+        return {pixel_id for pixel_id in self.unaccounted if found.get(pixel_id) != self.listed.get(pixel_id)}
+
+    def scope(self, opened: Session, photos: Photos, now: float) -> frozenset[int] | None:
+        if self.every_pixel_due(now):
+            return None
+        return frozenset(set(replacing_pixels(opened)) | self.changed_unaccounted(photos))
+
     def due(self, opened: Session, photos: Photos, now: float) -> bool:
-        if not self.ran or replacing_pixels(opened):
-            return True
-        if not self.unaccounted:
-            return False
-        return not self.ran_at <= now < self.ran_at + RECHECK_SECONDS or listing(photos, self.unaccounted) != self.listed
+        found = self.scope(opened, photos, now)
+        return found is None or bool(found)
 
     def run(self, opened: Session, photos: Photos, now: float) -> Checked:
-        before = listing(photos, opened.execute(select(Pixel.id)).scalars().all())
+        only = self.scope(opened, photos, now) or None
+        pixel_ids = opened.execute(select(Pixel.id)).scalars().all() if only is None else sorted(only)
+        before = listing(photos, pixel_ids)
         opened.commit()
-        checked = check(opened, photos, now)
-        self.ran, self.unaccounted, self.ran_at = True, dict(checked.unaccounted), now
-        self.listed = {pixel_id: before.get(pixel_id, ()) for pixel_id in sorted(self.unaccounted)}
+        checked = check(opened, photos, now, only)
+        kept = {} if only is None else {pixel_id: count for pixel_id, count in self.unaccounted.items() if pixel_id not in only}
+        self.unaccounted = kept | dict(checked.unaccounted)
+        self.listed = {pixel_id: before.get(pixel_id, self.listed.get(pixel_id, ())) for pixel_id in sorted(self.unaccounted)}
+        if only is None:
+            self.ran, self.ran_at = True, now
         return checked
 
     def held(self, opened: Session, pixel_id: int) -> bool:
