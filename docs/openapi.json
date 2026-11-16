@@ -1748,6 +1748,18 @@
         ],
         "type": "object"
       },
+      "OwnDevice": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id"
+        ],
+        "type": "object"
+      },
       "PartBody": {
         "additionalProperties": false,
         "properties": {
@@ -2120,6 +2132,22 @@
         ],
         "type": "object"
       },
+      "PixelPairBody": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmed",
+          "device_id"
+        ],
+        "type": "object"
+      },
       "PixelPatchBody": {
         "additionalProperties": false,
         "properties": {
@@ -2370,6 +2398,18 @@
         },
         "required": [
           "person_id"
+        ],
+        "type": "object"
+      },
+      "ReleaseFolderBody": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirmed"
         ],
         "type": "object"
       },
@@ -2914,6 +2954,37 @@
         },
         "required": [
           "reason"
+        ],
+        "type": "object"
+      },
+      "WaitingDevice": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "WaitingDevices": {
+        "additionalProperties": false,
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/WaitingDevice"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
         ],
         "type": "object"
       },
@@ -3556,6 +3627,48 @@
         "x-auth": "session"
       }
     },
+    "/api/pairing/device": {
+      "get": {
+        "operationId": "own_device",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnDevice"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pairing/waiting": {
+      "get": {
+        "operationId": "waiting_devices",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitingDevices"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/people": {
       "get": {
         "operationId": "list_people",
@@ -3744,6 +3857,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels/{id}/pair": {
+      "post": {
+        "operationId": "pair_pixel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PixelPairBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels/{id}/release-folder": {
+      "post": {
+        "operationId": "release_folder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleaseFolderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
                 }
               }
             },

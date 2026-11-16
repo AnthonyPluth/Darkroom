@@ -1,13 +1,26 @@
+import dataclasses
+import json
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select, update
 
+from darkroom import config, oidc
+from darkroom.providers import syncthing
 from darkroom.storage import db
-from darkroom.domain import accounts, alerts, browser_jobs, dedupe
-from darkroom.storage.models import Alert, BrowserJob, Event, Export, MediaItem, Pixel, PixelCopy, PixelPerson
+from darkroom.domain import accounts, alerts, browser_jobs, dedupe, pixels, transport
+from darkroom.storage.models import Alert, BrowserJob, Event, Export, GoogleAccount, MediaItem, Pixel, PixelCopy, PixelPerson
+from darkroom.storage.paths import Photos
 from tests.api_world import ApiCase
+from tests.fakes.syncthing import FakeSyncthing
+from tests.privacy import no_leaks
+from tests.shared import add_person, fetch, own_database, settings_from, start_server
+
+FIRST_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of the first pixel in the pixel api tests")
+SECOND_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of the second pixel in the pixel api tests")
 
 
 class PixelsApiTests(ApiCase):
@@ -25,15 +38,15 @@ class PixelsApiTests(ApiCase):
         return found["served_people"]
 
     def test_a_pixel_serves_the_accounts_default_person_unless_told_otherwise(self):
-        pixel = self.pixel(self.account["id"], syncthing_device_id="ABCD123-EFGH456")
-        self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], "ABCD123-EFGH456", self.account["id"]))
+        pixel = self.pixel(self.account["id"], syncthing_device_id=FIRST_DEVICE)
+        self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], FIRST_DEVICE, self.account["id"]))
         self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel], "syncthing": None})
 
     def test_only_a_pixel_that_starts_serving_someone_new_scans_for_items_to_confirm(self):
         with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
             pixel = self.pixel(self.account["id"], "First")
             scan.assert_not_called()
-            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": "ABCD123-EFGH456"})[0], 200)
+            self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": FIRST_DEVICE})[0], 200)
             self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"people_ids": [self.jo["id"]]})[0], 200)
             scan.assert_not_called()
             self.pixel(self.account["id"], "Second", people_ids=[self.jo["id"]])
@@ -74,9 +87,9 @@ class PixelsApiTests(ApiCase):
         return self.call("POST", "/api/accounts", {"email": email, "default_person_id": person_id})[1]["account"]
 
     def test_update_changes_only_what_is_sent(self):
-        pixel = self.pixel(self.account["id"], "Old", syncthing_device_id="AAA-111")
+        pixel = self.pixel(self.account["id"], "Old", syncthing_device_id=SECOND_DEVICE)
         status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "New"})
-        self.assertEqual((status, reply["pixel"]["name"], reply["pixel"]["syncthing_device_id"]), (200, "New", "AAA-111"))
+        self.assertEqual((status, reply["pixel"]["name"], reply["pixel"]["syncthing_device_id"]), (200, "New", SECOND_DEVICE))
         status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", {"syncthing_device_id": None})
         self.assertEqual(reply["pixel"]["syncthing_device_id"], None)
         self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {})[0], 200)
@@ -92,7 +105,7 @@ class PixelsApiTests(ApiCase):
             ({"name": "P", "google_account_id": account, "people_ids": [1, 1]}, "people_ids lists the same number twice"),
             ({"name": "P", "google_account_id": account, "people_ids": [True]}, "people_ids must be a list of whole numbers"),
             ({"name": "P", "google_account_id": account, "people_ids": list(range(1, 60))}, "people_ids has too many entries"),
-            ({"name": "P", "google_account_id": account, "syncthing_device_id": "bad id!"}, "syncthing_device_id may hold only letters, numbers and dashes"),
+            ({"name": "P", "google_account_id": account, "syncthing_device_id": "bad id!"}, "syncthing_device_id: not a Syncthing device ID"),
         )
         for body, message in bad:
             with self.subTest(body=body):
@@ -205,6 +218,47 @@ class PixelsApiTests(ApiCase):
             self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed"})[0], 503)
             self.assertEqual(self.call("DELETE", f"/api/pixels/{pixel['id']}")[0], 503)
         self.assertEqual(self.call("GET", "/api/pixels")[1]["pixels"][0]["name"], "Pixel A")
+
+    def test_a_typed_device_id_is_checked_with_syncthings_format_and_stored_in_its_canonical_form(self):
+        loose = FIRST_DEVICE.lower().replace("-", "")
+        pixel = self.pixel(self.account["id"], syncthing_device_id=f"  {loose}  ")
+        self.assertEqual(pixel["syncthing_device_id"], FIRST_DEVICE)
+        wrong_check = SECOND_DEVICE[:13] + ("A" if SECOND_DEVICE[13] != "A" else "B") + SECOND_DEVICE[14:]
+        path = f"/api/pixels/{pixel['id']}"
+        refused = (
+            (SECOND_DEVICE[:-1], "syncthing_device_id: not a Syncthing device ID"),
+            (SECOND_DEVICE.replace(SECOND_DEVICE[0], "1", 1), "syncthing_device_id: not a Syncthing device ID"),
+            ("MADE-UP-DEVICE", "syncthing_device_id: not a Syncthing device ID"),
+            (wrong_check, "syncthing_device_id: a check character of the Syncthing device ID is wrong"),
+        )
+        for typed, message in refused:
+            with self.subTest(typed=typed):
+                self.assertEqual(self.call("PATCH", path, {"syncthing_device_id": typed}), (400, {"error": message}))
+                self.assertEqual(self.call("POST", "/api/pixels", {"name": "P", "google_account_id": self.account["id"], "syncthing_device_id": typed}),
+                                 (400, {"error": message}))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(Pixel, pixel["id"]).syncthing_device_id, FIRST_DEVICE)
+            self.assertEqual(opened.query(Pixel).count(), 1)
+
+    def test_a_typed_device_id_already_on_another_pixel_is_refused(self):
+        first = self.pixel(self.account["id"], "First", syncthing_device_id=FIRST_DEVICE)
+        second = self.pixel(self.account["id"], "Second")
+        taken = (409, {"error": pixels.DEVICE_TAKEN})
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{second['id']}", {"syncthing_device_id": FIRST_DEVICE.lower()}), taken)
+        self.assertEqual(self.call("POST", "/api/pixels", {"name": "Third", "google_account_id": self.account["id"], "syncthing_device_id": FIRST_DEVICE}), taken)
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{first['id']}", {"name": "Still first", "syncthing_device_id": FIRST_DEVICE})[0], 200)
+        with db.session(self.engine) as opened:
+            self.assertEqual([pixel.syncthing_device_id for pixel in opened.query(Pixel).order_by(Pixel.id)], [FIRST_DEVICE, None])
+
+    def test_a_stored_device_id_sent_back_unchanged_is_kept_as_it_was(self):
+        pixel = self.pixel(self.account["id"])
+        with db.session(self.engine) as opened:
+            opened.get(Pixel, pixel["id"]).syncthing_device_id = "DEMO-FAMILY-PIXEL"
+        status, reply = self.call("PATCH", f"/api/pixels/{pixel['id']}", {"name": "Renamed", "syncthing_device_id": "DEMO-FAMILY-PIXEL"})
+        self.assertEqual((status, reply["pixel"]["syncthing_device_id"]), (200, "DEMO-FAMILY-PIXEL"))
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{pixel['id']}", {"syncthing_device_id": "DEMO-FAMILY-PIXEL-2"}),
+                         (400, {"error": "syncthing_device_id: not a Syncthing device ID"}))
+
 
 class AccountsApiTests(ApiCase):
     def test_create_list_update_delete(self):
@@ -438,6 +492,194 @@ class AccountsApiTests(ApiCase):
         self.assertEqual(self.call("DELETE", f"/api/accounts/{account['id']}"), (200, {"ok": True}))
         with db.session(self.engine) as opened:
             self.assertEqual(opened.query(BrowserJob).count(), 0)
+
+
+KEY = "pairing-api-syncthing-key-canary-5e2a"
+OWN = syncthing.device_id_of_certificate(b"made-up certificate of darkroom in the pairing api tests")
+WAITING = syncthing.device_id_of_certificate(b"made-up certificate of a pixel waiting to pair")
+STRANGER = syncthing.device_id_of_certificate(b"made-up certificate of a device that never tried to connect")
+ADDRESS = "192.0.2.77:22000"
+OIDC = {"OIDC_ISSUER": "https://id.example", "OIDC_CLIENT_ID": "darkroom", "OIDC_ALLOWED_GROUPS": "parents", "DARKROOM_SECRET_KEY": "pairing-api-key-0123456789abcdef"}
+
+
+class PairingApiTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = own_database(self)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        socket = self.root / "st.sock"
+        self.fake = FakeSyncthing(self, KEY, OWN, str(socket))
+        self.fake.pending = {WAITING: {"name": "Jo's Pixel", "address": ADDRESS, "time": "2026-11-16T10:00:00Z"}}
+        patched = mock.patch.object(config, "SYNCTHING_SOCKET", socket)
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), **OIDC), syncthing=True, syncthing_key=KEY)
+        self.base, self.settings = start_server(self, self.settings, self.engine)
+        moment = time.time()
+        with db.session(self.engine, writing=True) as opened:
+            oidc.remember_user(opened, oidc.Identity("u1", "jo@example.test", "Jo", ("parents",), True), moment)
+            self.session = oidc.new_session(opened, self.settings, "u1", moment)
+            person = add_person(opened, "jo")
+            account = GoogleAccount(email="jo.photos@example.test", default_person_id=person, created=1.0)
+            opened.add(account)
+            opened.flush()
+            for name in ("Jo's Pixel", "Other Pixel"):
+                pixel = Pixel(name=name, google_account_id=account.id, created=1.0)
+                opened.add(pixel)
+                opened.flush()
+                opened.add(PixelPerson(pixel_id=pixel.id, person_id=person))
+            self.pixel_id, self.other_id = [pixel.id for pixel in opened.query(Pixel).order_by(Pixel.id)]
+        self.replies: list[bytes] = []
+
+    def call(self, method, path, body=None, base=None, cookie=True, origin=None):
+        headers = {"Cookie": f"darkroom_session={self.session}"} if cookie else {}
+        if method != "GET":
+            headers |= {"Content-Type": "application/json", "Origin": origin or self.base}
+        status, _, reply = fetch(base or self.base, method, path, headers, None if method == "GET" else json.dumps(body if body is not None else {}).encode())
+        self.replies.append(reply)
+        return status, json.loads(reply)
+
+    def approve(self, device=WAITING, confirmed=True, pixel_id=None, **options):
+        return self.call("POST", f"/api/pixels/{pixel_id or self.pixel_id}/pair", {"device_id": device, "confirmed": confirmed}, **options)
+
+    def devices(self):
+        with db.session(self.engine) as opened:
+            return [pixel.syncthing_device_id for pixel in opened.query(Pixel).order_by(Pixel.id)]
+
+    def writes_to_syncthing(self):
+        return [(received.method, received.path) for received in self.fake.requests if received.method != "GET"]
+
+    def test_the_routes_are_session_routes(self):
+        from darkroom.server import routes
+
+        found = {f"{route.method} {route.path}": route.auth for route in routes.ROUTES}
+        for key in ("GET /api/pairing/device", "GET /api/pairing/waiting", "POST /api/pixels/{id}/pair", "POST /api/pixels/{id}/release-folder"):
+            self.assertEqual(found[key], "session", key)
+
+    def test_darkrooms_own_device_id_is_shown_to_a_signed_in_person(self):
+        self.assertEqual(self.call("GET", "/api/pairing/device"), (200, {"device_id": OWN}))
+        self.assertEqual(self.call("GET", "/api/pairing/device", cookie=False), (401, {"error": "sign in required"}))
+
+    def test_the_waiting_devices_show_their_id_and_a_cleaned_name_and_nothing_else(self):
+        self.fake.pending[STRANGER] = {"name": "Odd\x07\nname" + "x" * 300, "address": ADDRESS}
+        self.fake.pending["not-a-device-id"] = {"name": "ignored"}
+        with no_leaks(self, ADDRESS, KEY, self.session, replies=self.replies):
+            status, reply = self.call("GET", "/api/pairing/waiting")
+        self.assertEqual(status, 200)
+        expected = sorted([{"device_id": WAITING, "name": "Jo's Pixel"}, {"device_id": STRANGER, "name": "Oddname" + "x" * 93}], key=lambda found: found["device_id"])
+        self.assertEqual(reply, {"devices": expected})
+        self.assertEqual(self.call("GET", "/api/pairing/waiting", cookie=False), (401, {"error": "sign in required"}))
+
+    def test_looking_at_waiting_devices_pairs_nothing(self):
+        for _ in range(3):
+            self.assertEqual(self.call("GET", "/api/pairing/waiting")[0], 200)
+            self.assertEqual(self.call("GET", "/api/pairing/device")[0], 200)
+        self.assertEqual(self.devices(), [None, None])
+        self.assertEqual(self.writes_to_syncthing(), [])
+        self.assertEqual(set(self.fake.devices), {OWN})
+
+    def test_approving_a_waiting_device_saves_its_id_for_that_pixel_and_the_reconciler_then_wants_it(self):
+        with no_leaks(self, ADDRESS, KEY, self.session, replies=self.replies, database=self.engine):
+            status, reply = self.approve(WAITING.lower().replace("-", ""))
+        self.assertEqual((status, reply["pixel"]["id"], reply["pixel"]["syncthing_device_id"]), (200, self.pixel_id, WAITING))
+        self.assertEqual(self.devices(), [WAITING, None])
+        self.assertEqual(self.writes_to_syncthing(), [])
+        with db.session(self.engine) as opened:
+            wanted = transport.plan(opened, Photos(self.root), lambda pixel_id: False, None).wanted
+            self.assertEqual((wanted[self.pixel_id].device, wanted[self.pixel_id].code), (WAITING, None))
+            self.assertEqual(opened.query(Event).filter(Event.type == "pixel_updated").count(), 1)
+
+    def test_nothing_is_paired_without_a_session_from_another_origin_or_without_explicit_confirmation(self):
+        refused = (
+            (self.approve(cookie=False), (401, {"error": "sign in required"})),
+            (self.approve(origin="https://evil.example"), (403, {"error": "cross-site requests are refused"})),
+            (self.approve(confirmed=False), (400, {"error": "confirmed must be true: compare the device ID with the one the Pixel's Syncthing app shows first"})),
+            (self.approve(confirmed="yes"), (400, {"error": "confirmed must be true or false"})),
+            (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"device_id": WAITING}), (400, {"error": "confirmed must be true or false"})),
+            (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"confirmed": True}), (400, {"error": "device_id is required"})),
+            (self.approve(STRANGER), (409, {"error": "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead"})),
+            (self.approve(OWN), (409, {"error": "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead"})),
+            (self.approve(WAITING[:-1]), (400, {"error": "syncthing_device_id: not a Syncthing device ID"})),
+            (self.approve(pixel_id=999), (404, {"error": "no such Pixel"})),
+            (self.call("POST", "/api/pixels/abc/pair", {"device_id": WAITING, "confirmed": True}), (404, {"error": "no such Pixel"})),
+        )
+        for answer, expected in refused:
+            with self.subTest(expected=expected):
+                self.assertEqual(answer, expected)
+        self.assertEqual(self.devices(), [None, None])
+        self.assertEqual(self.writes_to_syncthing(), [])
+
+    def test_a_device_id_already_paired_with_another_pixel_is_refused(self):
+        with db.session(self.engine) as opened:
+            opened.get(Pixel, self.other_id).syncthing_device_id = WAITING.lower()
+        self.assertEqual(self.approve(), (409, {"error": pixels.DEVICE_TAKEN}))
+        self.assertEqual(self.devices(), [None, WAITING.lower()])
+        self.assertEqual(self.approve(pixel_id=self.other_id)[0], 200)
+        self.assertEqual(self.devices(), [None, WAITING])
+
+    def test_a_reset_phone_is_paired_again_with_its_new_id(self):
+        with db.session(self.engine) as opened:
+            opened.get(Pixel, self.pixel_id).syncthing_device_id = STRANGER
+        self.assertEqual(self.approve()[0], 200)
+        self.assertEqual(self.devices(), [WAITING, None])
+
+    def test_when_syncthing_cannot_be_reached_nothing_is_paired(self):
+        unreachable = (503, {"error": "Darkroom's Syncthing could not be reached; try again in a moment, or type the Pixel's device ID instead"})
+        self.fake.status = 500
+        self.assertEqual(self.approve(), unreachable)
+        self.assertEqual(self.call("GET", "/api/pairing/waiting"), unreachable)
+        self.assertEqual(self.call("GET", "/api/pairing/device"), unreachable)
+        self.fake.status = 0
+        with no_leaks(self, KEY, "pairing-api-wrong-key-canary-0001", replies=self.replies):
+            for key in ("", "pairing-api-wrong-key-canary-0001"):
+                base, _ = start_server(self, dataclasses.replace(self.settings, public_url="", syncthing_key=key), self.engine)
+                self.assertEqual(self.call("GET", "/api/pairing/device", base=base), unreachable)
+                self.assertEqual(self.approve(base=base, origin=base), unreachable)
+        self.assertEqual(self.devices(), [None, None])
+
+    def test_with_the_transport_off_every_pairing_route_says_so_and_typing_still_works(self):
+        base, _ = start_server(self, dataclasses.replace(self.settings, public_url="", syncthing=False), self.engine)
+        off = (409, {"error": "the Syncthing transport is off; type the Pixel's device ID in the Pixel's details instead"})
+        self.assertEqual(self.call("GET", "/api/pairing/device", base=base), off)
+        self.assertEqual(self.call("GET", "/api/pairing/waiting", base=base), off)
+        self.assertEqual(self.approve(base=base, origin=base), off)
+        self.assertEqual(self.call("POST", f"/api/pixels/{self.pixel_id}/release-folder", {"confirmed": True}, base=base, origin=base), off)
+        self.assertEqual(self.fake.requests, [])
+        status, reply = self.call("PATCH", f"/api/pixels/{self.pixel_id}", {"syncthing_device_id": WAITING}, base=base, origin=base)
+        self.assertEqual((status, reply["pixel"]["syncthing_device_id"]), (200, WAITING))
+
+    def removed(self, pixel_id):
+        with db.session(self.engine) as opened:
+            return transport.removed_before(opened, pixel_id)
+
+    def test_a_removed_folder_is_released_only_on_explicit_confirmation_by_a_signed_in_person(self):
+        path = f"/api/pixels/{self.pixel_id}/release-folder"
+        nothing = (409, {"error": transport.NOTHING_TO_RELEASE})
+        self.assertEqual(self.call("POST", path, {"confirmed": True}), nothing)
+        with db.session(self.engine, writing=True) as opened:
+            transport.hold_removed(opened, self.pixel_id, 5.0)
+        refused = (
+            (self.call("POST", path, {"confirmed": True}, cookie=False), (401, {"error": "sign in required"})),
+            (self.call("POST", path, {"confirmed": True}, origin="https://evil.example"), (403, {"error": "cross-site requests are refused"})),
+            (self.call("POST", path, {}), (400, {"error": "confirmed must be true or false"})),
+            (self.call("POST", path, {"confirmed": False}), (400, {"error": "confirmed must be true to let Darkroom share this Pixel's folder again"})),
+            (self.call("POST", "/api/pixels/999/release-folder", {"confirmed": True}), (404, {"error": "no such Pixel"})),
+            (self.call("POST", "/api/pixels/abc/release-folder", {"confirmed": True}), (404, {"error": "no such Pixel"})),
+            (self.call("POST", f"/api/pixels/{self.other_id}/release-folder", {"confirmed": True}), nothing),
+        )
+        for answer, expected in refused:
+            with self.subTest(expected=expected):
+                self.assertEqual(answer, expected)
+        self.assertTrue(self.removed(self.pixel_id))
+        with no_leaks(self, KEY, str(self.root), self.session, replies=self.replies):
+            self.assertEqual(self.call("POST", path, {"confirmed": True}), (200, {"ok": True}))
+        self.assertFalse(self.removed(self.pixel_id))
+        self.assertEqual(self.call("POST", path, {"confirmed": True}), nothing)
+        self.assertEqual(self.writes_to_syncthing(), [])
+        with db.session(self.engine) as opened:
+            found = opened.query(Event.type, Event.subject, Event.detail).filter(Event.type.in_((transport.FOLDER_REMOVED, transport.FOLDER_RELEASED))).order_by(Event.id).all()
+        self.assertEqual([tuple(row) for row in found], [(transport.FOLDER_REMOVED, f"pixel {self.pixel_id}", None), (transport.FOLDER_RELEASED, f"pixel {self.pixel_id}", None)])
 
 
 if __name__ == "__main__":

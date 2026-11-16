@@ -192,6 +192,28 @@ class PixelPatchBody(TypedDict):
     people_ids: NotRequired[list[int]]
 
 
+class PixelPairBody(TypedDict):
+    device_id: str
+    confirmed: bool
+
+
+class ReleaseFolderBody(TypedDict):
+    confirmed: bool
+
+
+class OwnDevice(TypedDict):
+    device_id: str
+
+
+class WaitingDevice(TypedDict):
+    device_id: str
+    name: str
+
+
+class WaitingDevices(TypedDict):
+    devices: list[WaitingDevice]
+
+
 class EventView(TypedDict):
     id: int
     time: float
