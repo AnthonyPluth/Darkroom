@@ -1,20 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { watchHistory } from "$lib/nav.svelte";
+  import { onSetupPage, router, watchHistory } from "$lib/nav.svelte";
   import { session, watchSignOut } from "$lib/session.svelte";
   import Shell from "./Shell.svelte";
   import SignedOut from "./SignedOut.svelte";
+  import Setup from "./setup/Setup.svelte";
   import Unreachable from "./Unreachable.svelte";
+
+  const setupPage = onSetupPage(router.path);
 
   onMount(() => {
     const stopSignOut = watchSignOut();
     const stopHistory = watchHistory();
-    void session.load();
+    if (!setupPage) void session.load();
     return () => { stopSignOut(); stopHistory(); };
   });
 </script>
 
-{#if session.current.kind === "loading"}
+{#if setupPage}
+  <Setup />
+{:else if session.current.kind === "loading"}
   <p role="status" class="p-4 text-ink-muted">Loading...</p>
 {:else if session.current.kind === "signed-out"}
   <SignedOut />

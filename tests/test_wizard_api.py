@@ -252,9 +252,7 @@ class TestSignInTests(WizardCase):
             self.assertEqual(self.stored(), {})
             self.assertEqual(self.propose(oidc_client_secret=None)["proposal"]["has_client_secret"], True)
             status, headers, body = self.try_sign_in()
-            self.assertEqual(status, 200)
-            self.assertIn("Sign-in works", body.decode())
-            self.assertIn("without a restart", body.decode())
+            self.assertEqual((status, headers["Location"], body), (303, "/setup", b""))
         baked = headers.get_all("Set-Cookie")
         self.assertFalse(any(line.startswith(wizard.CLAIM_COOKIE + "=") for line in baked))
         self.assertIn(f"{wizard.TEST_COOKIE}=; Path=/auth; Max-Age=0", "\n".join(baked))
@@ -282,7 +280,7 @@ class TestSignInTests(WizardCase):
         self.claim()
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["family"], email="kim@example.com", email_verified=False)[0], 403)
-        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 200)
+        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 303)
         self.assertEqual(self.restarted().oidc_allowed_groups, ("parents",))
 
     def test_a_proposal_changed_during_the_test_saves_nothing(self):
@@ -324,7 +322,7 @@ class TestSignInTests(WizardCase):
         self.assertEqual(status, 200)
         self.assertTrue(reply["location"].startswith(self.provider.base))
         self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": self.base})[0], 200)
-        self.assertEqual(self.try_sign_in()[0], 200)
+        self.assertEqual(self.try_sign_in()[0], 303)
         self.assertEqual(self.restarted().public_url, self.base)
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {}, b"", self.settings), self.base))
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {"Host": "127.0.0.1"}, b"", self.settings), "http://[::1"))
@@ -345,7 +343,7 @@ class BlankGroupsTests(WizardCase):
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["parents"])[0], 403)
         self.assertEqual(self.stored(), {})
-        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 200)
+        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 303)
         restarted = self.restarted()
         self.assertEqual((restarted.oidc_allowed_groups, restarted.oidc_allowed_emails), ((), ("kim@example.com",)))
         self.assertTrue(oidc.allowed(restarted, "kim@example.com", True, ()))
@@ -365,7 +363,7 @@ class AfterTestCase(WizardCase):
         state = self.propose()
         self.assertEqual((state["phase"], state["tested_email"]), ("before_test", None))
         status, headers, _ = self.try_sign_in()
-        self.assertEqual(status, 200)
+        self.assertEqual((status, headers["Location"]), (303, "/setup"))
         self.session = cookies_set(headers)[auth.SESSION_COOKIE]
         self.replies.clear()
 

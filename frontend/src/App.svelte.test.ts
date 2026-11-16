@@ -169,3 +169,16 @@ describe("when Darkroom can't be reached", () => {
     expect(await screen.findByRole("navigation", { name: "Main" })).toBeInTheDocument();
   });
 });
+
+describe("the setup page", () => {
+  afterEach(() => history.replaceState(null, "", "/"));
+
+  it("opens the wizard outside the app shell without asking who is signed in", async () => {
+    history.replaceState(null, "", "/setup/");
+    router.sync();
+    const server = start({ "GET /api/setup": reply(401, { error: "sign in required" }) });
+    expect(await screen.findByRole("heading", { level: 1, name: "Set up Darkroom" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
+    expect(server.calls.map((c) => c.key)).toEqual(["GET /api/setup"]);
+  });
+});

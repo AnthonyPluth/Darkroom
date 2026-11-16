@@ -4,11 +4,13 @@
   import { apiCall } from "$lib/contract";
   import { nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
+  import { SETUP_PATH } from "$lib/nav.svelte";
   import { workerChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
 
   const REFRESH_MS = 10_000;
+  const fromSetup = new URLSearchParams(location.search).get("from") === "setup";
   let viewer: HTMLElement | undefined = $state();
   let frame: HTMLIFrameElement | undefined = $state();
   let frameFocused = $state(false);
@@ -61,6 +63,9 @@
 </script>
 
 <div class="flex flex-col gap-5">
+  {#if fromSetup}
+    <a class="self-start font-semibold underline" href={SETUP_PATH}>Back to setup</a>
+  {/if}
   {#if loader.current.kind === "loading"}
     <h1 class="text-xl font-bold tracking-tight">Remote browser</h1>
     <p role="status" class="text-ink-muted">Loading...</p>
