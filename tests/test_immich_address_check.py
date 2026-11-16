@@ -1,3 +1,4 @@
+import contextlib
 import socket
 import ssl
 import threading
@@ -80,6 +81,27 @@ class CheckAddressTests(unittest.TestCase):
             silent.bind(("127.0.0.1", 0))
             silent.listen()
             self.assertEqual(immich.check_address(f"http://127.0.0.1:{silent.getsockname()[1]}", timeout=0.2), "no_answer")
+
+    def test_a_server_that_does_not_speak_http_is_not_immich(self):
+        self.assertEqual(immich.check_address(self.raw(b"SSH-2.0-OpenSSH_9.6\r\n")), "not_immich")
+
+    def test_a_server_that_hangs_up_without_answering_answers_nothing(self):
+        self.assertEqual(immich.check_address(self.raw(b"")), "no_answer")
+
+    def raw(self, line: bytes) -> str:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.addCleanup(listener.close)
+
+        def answer() -> None:
+            with contextlib.suppress(OSError):
+                connection, _ = listener.accept()
+                with connection:
+                    connection.recv(4096)
+                    connection.sendall(line)
+        threading.Thread(target=answer, daemon=True).start()
+        return f"http://127.0.0.1:{listener.getsockname()[1]}"
 
     def test_something_else_answers(self):
         replies = {"an error": (500, b'{"message": "Internal server error"}'), "a web page": (200, b"<html>router</html>"),
