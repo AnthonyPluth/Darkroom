@@ -59,10 +59,10 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 
 | Earlier decision or text | Effect of #284 |
 | --- | --- |
-| Two containers, `darkroom` and `darkroom-browser` (SPEC, Deployment and stack; `docs/deploy/browser.md`) | Superseded as the target by one container. Still the deployed layout, and kept as the fallback |
+| Two containers, `darkroom` and `darkroom-browser` (SPEC, Deployment and stack; `docs/deploy/browser.md`) | Superseded by one container, kept as the fallback for one minor release, then removed (#327); rollback is pinning the previous release |
 | Syncthing set up by hand on Unraid as the Pixels' peer, with a hand-written `.stignore` (SPEC phases 1 and 5; #9) | Superseded as the target: Darkroom runs and configures it. The Pixels keep their own Syncthing app |
 | #199 question 2 and question 6, and #216: a transient Send Only folder per Pixel, pruned by Darkroom on the Takeout match, capped by size | Unchanged. Only who configures the transport changes; Syncthing's progress never becomes a reason to prune |
-| A shared `DARKROOM_BROWSER_TOKEN` and the `DARKROOM_URL` and `VNC_URL` settings (`docs/deploy/browser.md`) | Superseded as the target: generated and internal, or gone. They keep working in the fallback layout |
+| A shared `DARKROOM_BROWSER_TOKEN` and the `DARKROOM_URL` and `VNC_URL` settings (`docs/deploy/browser.md`) | Superseded: generated and internal, or gone. Removed with the fallback (#327); `check-config` and the start-up log name them as set and ignored |
 | Promises 1 to 6 (`AGENTS.md`) and the #259 replacement promises | Unchanged |
 
 **Answers of 2026-11-10 to the design's open questions** (#284):
@@ -73,7 +73,7 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 | Users | One unprivileged user for everything (app, browser, Syncthing). No separate users, no group arrangement, no second mappings for permission reasons, no root init that drops privileges. This was not the design's recommendation. What it gives up, stated once: operating-system permissions no longer stop the browser or Syncthing from writing under the share, so promises 1 and 2 rest on the existing Semgrep rules, the tests and the provider boundaries, not on file permissions |
 | Seccomp profile on Unraid | Kept, as one manual host step |
 | Generated secret key | In appdata beside the database, with `DARKROOM_SECRET_KEY` as an override |
-| First-run wizard | Open to the first visitor from a private address until the first successful sign-in |
+| First-run wizard | Open to the first visitor from a private address until the first successful sign-in. Amended on 2026-11-16 (below): the passing test sign-in no longer closes it |
 | Volumes | State in appdata, including browser profiles; the working folders on a second mapping |
 | Syncthing network | Local discovery only, with host networking |
 | Syncthing identity | Fresh; each Pixel is paired once |
@@ -81,6 +81,16 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 | A Pixel holding files Darkroom already pruned | Fixed manually only |
 | Deep scan #54 | Scoped re-scans after the browser phase and after the Syncthing phase |
 | Separate browser container | Kept for one minor release after the one container is the default |
+
+**Answers of 2026-11-16 on the first-run wizard** (#303, #344, #346), given in the session that built the wizard's API, amending the "First-run wizard" row above:
+
+| Item | Decision |
+| --- | --- |
+| The wizard's order | The wizard keeps the full order of `design/single-container.md` section 8 (Welcome, Address, Sign-in with a test sign-in, Immich, People, Google accounts, Pixels, Alert emails, Done), and the API is extended so it can run. Asked how to handle the API as built, where a passing test sign-in closes the wizard before People, Google accounts and Pixels, the owner answered: "Extend the API - we should never provide a worse experience just so the tests pass" |
+| First-run wizard, after the test sign-in | Before the test, unchanged: open to the one first visitor from a private address who claims it. The passing test sign-in signs that account in and ends that phase for good. The wizard then stays open, only to a request carrying both that browser's claim and the tested account's session under the same address and header conditions, until the first of Finish setup, the tested session ending, a sign-in by another account, or 7 days after the test. Asked how long after the passing test the wizard stays reachable, the owner chose "7 days (Recommended)" |
+| When stored settings apply | At once, without a restart; precedence stays environment, then stored, then default (#346) |
+| The six open points of #358 | Accepted as built: "Accept all as built (Recommended)". After the test the address and sign-in routes answer 409; a claim after the test answers 200 to the pair and 401 to everyone else; finishing before the test answers 409; a stored public address counts at once in the `Host` and `Origin` checks; another account's sign-in is detected by its user row; after the test the wizard does not close merely because `OIDC_*` is set in the environment |
+| The wizard's design | Signed off: the owner commented "signed off" on [#344](https://github.com/AnthonyPluth/Darkroom/pull/344#issuecomment-6926275008); the sign-off is recorded on [#303](https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385) |
 
 Two known gaps from review remain open in the design (the order of the reconciler and the placed-copy check; the placement cutoff when a queued copy is adopted).
 

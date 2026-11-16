@@ -145,6 +145,47 @@ class ReconcilerTests(unittest.TestCase):
             self.assertEqual(self.reconcile(at=at).resumed, {self.sam_pixel})
         self.assertNotIn(identity, {folder.id for folder in self.client.folders()})
 
+    def test_a_device_id_problem_is_recorded_ahead_of_a_removed_folder_and_the_removal_shows_once_the_id_is_fixed(self):
+        invalid = JO_DEVICE[:-1] + ("A" if JO_DEVICE[-1] != "A" else "B")
+        for problem, device, code in (("invalid", invalid, transport.INVALID_DEVICE), ("shared", SAM_DEVICE, transport.SHARED_DEVICE)):
+            with self.subTest(problem=problem):
+                self.opened.query(Event).delete()
+                self.opened.commit()
+                self.fake.folders.clear()
+                self.fake.requests.clear()
+                identity = self.persisted(self.jo_pixel, JO_DEVICE, type="sendreceive")
+                self.pair(self.jo_pixel, device)
+                for at in (NOW, NOW + 10):
+                    outcome = self.reconcile(at=at)
+                    self.assertIsNone(outcome.failure)
+                    self.assertEqual(self.rows()[self.jo_pixel], (False, code))
+                self.assertNotIn(identity, self.fake.folders)
+                self.assertEqual(self.events(transport.FOLDER_REMOVED), [(f"pixel {self.jo_pixel}", None)])
+                self.pair(self.jo_pixel, JO_DEVICE)
+                self.pair(self.sam_pixel, SAM_DEVICE)
+                for at in (NOW + 20, NOW + 30):
+                    outcome = self.reconcile(at=at)
+                    self.assertEqual(self.rows()[self.jo_pixel], (False, transport.REMOVED))
+                    self.assertNotIn(self.jo_pixel, outcome.resumed)
+                self.assertNotIn(identity, self.fake.folders)
+
+    def test_darkrooms_own_device_id_on_a_pixel_gives_that_pixel_nothing_and_pauses_no_other_pixel(self):
+        identity = self.persisted(self.jo_pixel, JO_DEVICE)
+        self.assertEqual(self.reconcile().resumed, {self.jo_pixel, self.sam_pixel})
+        self.pair(self.jo_pixel, OWN.lower())
+        for at in (NOW + 10, NOW + 20):
+            outcome = self.reconcile(at=at)
+            self.assertIsNone(outcome.failure)
+            self.assertEqual(outcome.resumed, {self.sam_pixel})
+            self.assertEqual(self.rows(), {self.jo_pixel: (False, transport.INVALID_DEVICE), self.sam_pixel: (True, None)})
+            self.assertTrue(self.fake.folders[identity]["paused"])
+            self.assertFalse(self.fake.folders[self.folder_id(self.sam_pixel)]["paused"])
+            self.assertEqual(set(self.fake.devices), {OWN, SAM_DEVICE})
+        self.assertEqual(self.events(transport.FAILED), [])
+        self.pair(self.jo_pixel, JO_DEVICE)
+        self.assertEqual(self.reconcile(at=NOW + 30).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertEqual(self.rows()[self.jo_pixel], (True, None))
+
     def test_a_released_folder_is_shared_again_and_removed_again_if_it_is_wrong_again(self):
         identity = self.persisted(self.jo_pixel, JO_DEVICE, type="sendreceive")
         self.reconcile()
@@ -485,6 +526,28 @@ class ReconcilerTests(unittest.TestCase):
         self.assertIsNone(moving.seen)
         self.assertIsNotNone(tick(NOW + 540))
         self.assertIsNone(tick(NOW + 600))
+
+    def test_the_transport_reconciles_again_when_only_a_folders_ignore_patterns_changed(self):
+        moving = transport.Transport()
+
+        def tick(at):
+            return moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, at)
+
+        identity = self.folder_id(self.jo_pixel)
+        self.assertEqual(tick(NOW).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertIsNone(tick(NOW + 60))
+        for at, drift in ((NOW + 120, lambda: self.fake.ignores.__setitem__(identity, ["*"])), (NOW + 240, lambda: self.fake.ignores.pop(identity))):
+            drift()
+            self.fake.requests.clear()
+            outcome = tick(at)
+            self.assertIsNotNone(outcome)
+            self.assertIn((transport.CORRECTED, f"pixel {self.jo_pixel}", transport.IGNORES_SET), outcome.corrections)
+            writes = self.writes()
+            paused = writes.index(("PATCH", f"/rest/config/folders/{identity}", mock.ANY))
+            self.assertTrue(writes[paused][2]["paused"])
+            self.assertLess(paused, writes.index(("POST", "/rest/db/ignores", {"ignore": ["*.xmp"]})))
+            self.assertEqual(self.fake.ignores[identity], ["*.xmp"])
+            self.assertIsNone(tick(at + 60))
 
 
 class FolderIdTests(unittest.TestCase):

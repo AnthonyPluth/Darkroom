@@ -16,7 +16,7 @@ from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events,
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
-from darkroom.storage import db
+from darkroom.storage import db, stored_settings
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
@@ -214,20 +214,39 @@ def for_serving(settings: Settings, engine: Engine, now: float) -> Scheduler:
     return gate_syncthing(build(settings, engine, now), settings, engine, now)
 
 
+def pusher_key(settings: Settings) -> tuple[object, ...]:
+    return settings.demo, settings.resend_api_key, settings.alert_email_from, settings.alert_email_to, settings.secret_key
+
+
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:
     scheduler = Scheduler(settings.timezone)
     share_photos = Photos(settings.photos_root)
     share = scheduler.share = share_check.ShareCheck.at_startup(share_photos.root)
-    found_pusher = pusher if pusher is not None else pusher_of(settings)
+    pushers: dict[tuple[object, ...], Pusher | None] = {}
+
+    def live() -> Settings:
+        return stored_settings.effective(settings, engine).settings
+
+    def pusher_for(current: Settings) -> Pusher | None:
+        if pusher is not None:
+            return pusher
+        key = pusher_key(current)
+        if key not in pushers:
+            pushers.clear()
+            pushers[key] = pusher_of(current)
+        return pushers[key]
+
+    pusher_for(live())
 
     def tick_alerts(at: float) -> None:
+        current = live()
         with db.session(engine, writing=True) as opened:
-            downloads.watch_expiry(opened, settings, at)
-            renewal.reword_ended(opened, settings, at)
-            alerts.tick(opened, settings, at)
+            downloads.watch_expiry(opened, current, at)
+            renewal.reword_ended(opened, current, at)
+            alerts.tick(opened, current, at)
 
     def tick_sessions(at: float) -> None:
-        recheck_sessions(settings, engine, at)
+        recheck_sessions(live(), engine, at)
 
     def index_originals(at: float) -> None:
         photos = Photos(settings.photos_root)
@@ -239,10 +258,11 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     scheduler.every("alerts.tick", ALERT_TICK_SECONDS, tick_alerts, now=now)
     scheduler.every("index", INDEX_SECONDS, index_originals, first_after=INDEX_FIRST_AFTER_SECONDS, now=now)
     def expire_browser_leases(at: float) -> None:
+        current = live()
         with db.session(engine, writing=True) as opened:
-            expired = browser_jobs.expire_leases(opened, settings, at)
+            expired = browser_jobs.expire_leases(opened, current, at)
             downloads.jobs_failed(opened, expired, at)
-            renewal.jobs_failed(opened, settings, expired, at)
+            renewal.jobs_failed(opened, current, expired, at)
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))
 
@@ -257,20 +277,23 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             monitoring.log("export status checks queued", count=queued)
 
     def watch_expiry(at: float) -> None:
+        current = live()
         with db.session(engine, writing=True) as opened:
-            opened_now = downloads.watch_expiry(opened, settings, at)
+            opened_now = downloads.watch_expiry(opened, current, at)
         if opened_now:
             monitoring.log("export expiry alerts opened", count=opened_now)
 
     def watch_schedules(at: float) -> None:
+        current = live()
         with db.session(engine) as opened:
-            queued = renewal.watch_schedules(opened, settings, at)
+            queued = renewal.watch_schedules(opened, current, at)
         if queued:
             monitoring.log("schedule renewals queued", count=queued)
 
     def run_imports(at: float) -> None:
+        current = live()
         with db.session(engine) as opened:
-            run.run_waiting(opened, settings, at)
+            run.run_waiting(opened, current, at)
 
     def clean_inbox(at: float) -> None:
         with db.session(engine) as opened:
@@ -309,16 +332,18 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                        failed=tended.failed, refused=tended.refused, held=held)
 
     def reconcile_immich(at: float) -> None:
+        current = live()
         try:
-            client = immich.Client.at(settings)
+            client = immich.Client.at(current)
         except immich.NotConfigured:
             return
         with db.session(engine) as opened:
-            done = immich_reconcile.reconcile_all(opened, settings, at, client, immich_reconcile.PixelFolderQueue())
+            done = immich_reconcile.reconcile_all(opened, current, at, client, immich_reconcile.PixelFolderQueue())
         monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()))
 
     def send_pushes(at: float) -> None:
-        push_alerts(settings, engine, found_pusher, at)
+        current = live()
+        push_alerts(current, engine, pusher_for(current), at)
 
     scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now, own_thread=True)
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)

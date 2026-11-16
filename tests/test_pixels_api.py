@@ -601,7 +601,7 @@ class PairingApiTests(unittest.TestCase):
                 (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"device_id": WAITING}), (400, {"error": "the approval was not confirmed"})),
                 (self.call("POST", f"/api/pixels/{self.pixel_id}/pair", {"confirmed": True}), (400, {"error": "device_id is required"})),
                 (self.approve(STRANGER), (409, {"error": "that device is no longer waiting; ask the Pixel to connect again"})),
-                (self.approve(OWN), (409, {"error": "that device is no longer waiting; ask the Pixel to connect again"})),
+                (self.approve(OWN), (400, {"error": pixels.OWN_DEVICE})),
                 (self.approve(WAITING[:-1]), (400, {"error": "not a Syncthing device ID"})),
                 (self.approve(WAITING + "-" + WAITING), (400, {"error": "not a Syncthing device ID"})),
                 (self.approve(WAITING[:13] + ("A" if WAITING[13] != "A" else "B") + WAITING[14:]),
@@ -622,6 +622,20 @@ class PairingApiTests(unittest.TestCase):
         self.assertEqual(self.devices(), [None, WAITING.lower()])
         self.assertEqual(self.approve(pixel_id=self.other_id)[0], 200)
         self.assertEqual(self.devices(), [None, WAITING])
+
+    def test_darkrooms_own_device_id_is_refused_when_approved_or_typed(self):
+        self.fake.pending[OWN] = {"name": "Darkroom", "address": ADDRESS}
+        own = (400, {"error": "that is Darkroom's own device ID; use the one the Syncthing app on the Pixel shows"})
+        self.assertEqual(self.approve(OWN), own)
+        self.assertEqual(self.approve(OWN.lower().replace("-", "")), own)
+        self.assertEqual(self.call("PATCH", f"/api/pixels/{self.pixel_id}", {"syncthing_device_id": OWN.lower()}), own)
+        with db.session(self.engine) as opened:
+            account_id = opened.query(GoogleAccount.id).scalar()
+        self.assertEqual(self.call("POST", "/api/pixels", {"name": "Third", "google_account_id": account_id, "syncthing_device_id": OWN}), own)
+        self.assertEqual(self.devices(), [None, None])
+        self.assertEqual(self.writes_to_syncthing(), [])
+        status, reply = self.call("PATCH", f"/api/pixels/{self.pixel_id}", {"name": "Renamed"})
+        self.assertEqual((status, reply["pixel"]["syncthing_device_id"]), (200, None))
 
     def test_an_approval_that_cannot_get_the_lock_says_darkroom_is_busy_and_pairs_nothing(self):
         base, _ = start_server(self, self.settings, impatient_engine(self, self.engine, 0.1))

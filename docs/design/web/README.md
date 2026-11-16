@@ -17,7 +17,23 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
+| `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
+| `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
+| `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
 | `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, for the owner's sign-off, **not signed off**) |
+| `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
+| `08-setup-welcome-desktop.dc.html`, `08-setup-welcome-phone.dc.html` | Setup wizard: Welcome (signed off, #303) |
+| `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup wizard: Setup isn't open, and open in another browser (signed off, #303) |
+| `08-setup-address-desktop.dc.html`, `08-setup-address-phone.dc.html` | Setup wizard: Step 1, Address (signed off, #303) |
+| `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | Setup wizard: Step 2, Sign-in (signed off, #303) |
+| `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | Setup wizard: After Pocket ID: the server's failure pages (signed off, #303) |
+| `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Setup wizard: Step 3, Immich (signed off, #303) |
+| `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` | Setup wizard: Step 3, Immich, checking the address (#347, drawn for sign-off, **not yet signed off**) |
+| `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | Setup wizard: Step 4, People (signed off, #303) |
+| `08-setup-accounts-desktop.dc.html`, `08-setup-accounts-phone.dc.html` | Setup wizard: Step 5, Google accounts (signed off, #303) |
+| `08-setup-pixels-desktop.dc.html`, `08-setup-pixels-phone.dc.html` | Setup wizard: Step 6, Pixels (signed off, #303) |
+| `08-setup-alerts-desktop.dc.html`, `08-setup-alerts-phone.dc.html` | Setup wizard: Step 7, Alert emails (signed off, #303) |
+| `08-setup-done-desktop.dc.html`, `08-setup-done-phone.dc.html` | Setup wizard: Step 8, Done (signed off, #303) |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
@@ -116,6 +132,237 @@ The two alerts that name the button say where it is. "Takeout schedule not renew
 
 `frontend/src/pages/Exports.svelte.test.ts` for each row of the state table, the 409 line and the status line; `frontend/src/lib/view.test.ts` for the state function; `tests/test_alerts` text for the two alerts; `make verify` images at phone and desktop width beside these boards.
 
+## Pairing, Syncthing status and the new alerts (#322, signed off)
+
+Status: **signed off by the owner on 2026-11-16: all 13 open points approved as recommended.** Recorded on #322 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6924183929). For #322 (single container, step C6 of `docs/design/single-container.md`). It covers section 7.4 (pairing), section 7.5 (Syncthing down, settings not applied, version out of range, share check failed, a Pixel held by the placed-copy check, a Pixel not seen for long) and the wording of each new alert kind. The pairing screens are built in #323 on the routes of #321; the Status and People parts and the alerts in #324.
+
+Boards: `03-people-pairing-desktop.dc.html` and `03-people-pairing-phone.dc.html` (the People page's Pixels card with its new column, then the Pixel form in each pairing state), `02-status-syncthing-desktop.dc.html` and `02-status-syncthing-phone.dc.html` (the new alerts in "Needs you", the person card's Pixel row, and the Syncthing card in each state). They use the signed-off tokens only (no new colour, size or font) and the app shell, chips, buttons, table and modal as built; everything not drawn is as in boards 02 and 03 and the built pages. Device IDs on the boards are made up.
+
+Everything here applies only with `DARKROOM_SYNCTHING` on in the one container. With it off (today's layout, a Syncthing configured by hand) the Pixel form, the People page and the Status page stay exactly as they are now, and the Syncthing card is not drawn; the share check alert is the one exception, because the share check runs in both layouts.
+
+The app calls it **Syncthing** wherever a person reads it (the form already says "Syncthing device ID"); "transport" stays a word for the code and the design documents.
+
+### Pairing, in the People page's Pixel form
+
+The form stays in the existing modal (`Modal`, full width less 1 rem each side on a phone; at desktop width as wide as the content column since the full-width redraw below, where it was at most 32 rem). The device ID field leaves the details step and pairing becomes a second step of the same modal.
+
+**Add Pixel.** The details step is the form as today without the "Syncthing device ID (optional)" field: Name, Google account, People served, then Cancel and Add Pixel. Add Pixel saves the Pixel (`POST /api/pixels`, no device ID), reloads the page data behind the modal, and the modal moves to the pairing step for that Pixel; its title becomes "Pair {name}". The Pixel exists from then on, so closing the modal at any point leaves an unpaired Pixel that can be paired later.
+
+**Edit Pixel.** The details step as today, with the device ID field replaced by a read-only row: label "Syncthing", then the paired ID in mono (two lines of four groups) with a secondary button "Pair again", or, when the Pixel has no ID, the text "Not paired" and a secondary button "Pair". Either button moves to the pairing step. Pair again keeps the old ID until a new one is approved or saved (a reset phone, section 7.4).
+
+**The pairing step**, top to bottom:
+
+1. Modal description (in `text-ink-muted`, under the title): "Connect the Syncthing app on {name} to Darkroom. Nothing is shared until you approve the Pixel here."
+2. A numbered heading "1. Scan Darkroom's code" and the sentence "On the Pixel, open the Syncthing app, add a device and scan this code."
+3. The QR code of Darkroom's own device ID, nothing else encoded: dark modules in `canvas` on a tile of `ink`, with a quiet zone of four modules, 192 px square on desktop and 224 px on a phone, centred; `role="img"` with the label "QR code of Darkroom's device ID". Under it the label "Darkroom's device ID" and the ID as text, mono, selectable, split after the fourth group onto two lines. No copy button.
+4. A numbered heading "2. Approve the Pixel", then the waiting list (below), which is a `role="status"` region.
+5. At the end of the step, a text button "Type the device ID instead" (it opens the typed field below, under the waiting list; the rest of the step stays), and the footer: "Pair later" (secondary) on the left, nothing primary until a device is chosen.
+
+**The waiting list** is read when the step opens and then every 5 seconds while the step is open and the tab is visible, with a secondary "Check now" button beside the heading. Polling stops once the step is closed or a device is approved. Each waiting device is a row inside a bordered box (`line`): the name the device presented, bold; under it its device ID, mono, on two lines like Darkroom's; under that the sentence "Check that this matches the device ID the Syncthing app shows for {name} itself."; and a primary button "This is {name}". The rows are in the order Syncthing lists them; nothing is preselected.
+
+**The approval** is its own state, never a single press: "This is {name}" replaces the waiting list (polling paused) with a bordered box: heading "Approve this device for {name}?", the device's presented name and full ID again, and "Darkroom will share {name}'s folder with this device and with nothing else. Approve it only if the ID matches the one on the Pixel." Buttons: "Back" (secondary, returns to the list and resumes polling) and "Approve" (primary). Approve posts the approval with the explicit confirmation #321 requires; while it is in flight both buttons are disabled.
+
+**The typed ID** (opened by "Type the device ID instead", and the only way when the waiting list can't be read): a `Field` labelled "Syncthing device ID", mono, with the hint "Eight groups of seven letters and digits, as the Syncthing app on the Pixel shows it.", and a primary "Save device ID". It saves through the same validation as today (#317's validator). On success it goes to the approved state below.
+
+### Pairing states and copy
+
+| State | What the step shows |
+| --- | --- |
+| Waiting, nobody yet | The list says "Waiting for {name} to connect. Darkroom checks again every few seconds." Check now is enabled |
+| Waiting, one device | One row, as above |
+| Waiting, several devices | The rows, with the sentence "More than one device is waiting. Approve only the one whose ID matches the Pixel." above them |
+| Approving | The approval box, as above |
+| Approved (or a typed ID saved) | The whole step is replaced by: an `ok` chip "Paired", then "Darkroom is sharing {name}'s folder with it." and a numbered list: "1. On the Pixel, accept the folder Darkroom shares and choose where it goes." "2. In Google Photos on the Pixel, turn on backup for that folder." Then "Darkroom shows the Pixel as connected once it has synced." One primary button, "Done", which closes the modal |
+| Refused by Darkroom (any 4xx on approve or save) | The step stays, and a danger-toned `role="alert"` line under the approval box or the typed field reads "Couldn't pair {name}: {message}." with Darkroom's own message unchanged; the approval box returns to the list and the list is read again at once. The line stays until the next press in the step |
+| The list can't be read (no network, 5xx) | Under the heading: "Couldn't check for waiting devices: {message}." Polling carries on; the line goes at the next successful read |
+| Darkroom's Syncthing not answering, or not started | The QR code and the waiting list are not drawn. In their place: "Darkroom's Syncthing is not running, so the Pixel can't be paired by scanning now. Type the Pixel's device ID instead; it connects once Syncthing is running again." and the typed field, open |
+
+The messages #321's routes are asked to give, so the line above reads as a sentence: "that device is no longer waiting; ask the Pixel to connect again", "that device is waiting for another Pixel's approval" (if #321 keeps one waiting device to one Pixel), "the approval was not confirmed", "not a Syncthing device ID", "a check character of the Syncthing device ID is wrong" (the validator's two texts, unchanged), "Darkroom's Syncthing is off" and "Darkroom is busy with another change; try again in a moment".
+
+### The Pixels card on the People page
+
+The Pixels table gains a column "Syncthing" between People served and Last sync: Device, Google account, People served, Syncthing, Last sync, and the actions. The cell holds a chip and, under it in `text-ink-muted`, one short line. On a phone the table turns into cards as today, with "Syncthing" as one more labelled line. An unpaired Pixel has a secondary "Pair" button before Edit in its actions cell; it opens the modal straight at the pairing step. Last sync keeps its wording ("6 minutes ago", "Not synced yet").
+
+### Per-Pixel states
+
+The same chip and line appear in the People page's Syncthing column, in the Syncthing card on Status, and (chip only, and only when it is not `ok`) after the Pixel's name in the person card's Pixel row. The first row that applies wins, in this order.
+
+| # | State | Chip | Line |
+| --- | --- | --- | --- |
+| 1 | Darkroom's Syncthing is not running (any card state but Running) | neutral "Not syncing" | "Nothing syncs until Syncthing is running again." |
+| 2 | Not paired (no device ID) | neutral "Not paired" | "Pair it to start sending photos." |
+| 3 | Held, the check has not run since the start | neutral "Checking" | "Darkroom is checking its folder before sharing it." |
+| 4 | Held, copies can't be written again | warn "Folder held" | "{n} photos could not be written again, so its folder is not shared." |
+| 5 | Held, unaccounted files | warn "Folder held" | "Its folder has {n} files Darkroom did not put there, so it is not shared." |
+| 6 | Paired, never seen | neutral "Waiting for the Pixel" | "Paired; the Pixel has not connected yet." |
+| 7 | Not seen for 3 days or more | warn "Not seen for {d} days" | "Darkroom reaches the Pixel only on the home network. Check it is on, on the Wi-Fi, with Syncthing running." |
+| 8 | Connected, sending | ok "Sending" | "{p}% sent" |
+| 9 | Connected, up to date | ok "Connected" | "Up to date" |
+| 10 | Seen within 3 days, not connected now | neutral "Not connected" | "Last seen {ago}." |
+
+Rows 4 and 5 together keep the chip and show both lines. Counts are numbers only; no row ever names a file, a path or a device ID. Row 7 is shown and never alerted (section 7.5): the "originals unmatched" alert still covers photos not reaching Google. The percentage is Syncthing's reported completion, display only, never an input to pruning.
+
+### The Syncthing card on Status
+
+A card titled "Syncthing", after the People section and before Recent events. Its first line is the title and a chip for Darkroom's Syncthing as a whole, then one sentence; under that, one row per Pixel (name, its chip and line from the table above), or "No Pixel is paired yet." with a link "Open People". It is not drawn with `DARKROOM_SYNCTHING` off. The person card's Pixel row becomes "{Pixel}, synced {ago}" (as board 02 already shows) followed by the per-Pixel chip when it is not `ok`, and "{Pixel}, not synced yet" before the first sync. At desktop width the Syncthing card, the alerts and each person card span the full content column, one person card per row ("Full-width sections" below; awaiting the owner's sign-off).
+
+| Card state | Chip | Sentence |
+| --- | --- | --- |
+| Starting (the first reconcile after a start has not finished) | neutral "Starting" | "Darkroom is checking Syncthing's settings before anything syncs." |
+| Running | ok "Running" | "Syncthing is running with the settings Darkroom set." |
+| Not answering | bad "Down" | "Syncthing has not answered for {duration} (for example "2 hours"). Darkroom keeps restarting it. Placing and pruning carry on, and the Pixels catch up once it is back." |
+| Settings not applied | bad "Paused" | "Darkroom could not apply its settings to Syncthing ({reason}), so nothing is syncing. It tries again before the next hourly run." |
+| Version out of range | bad "Not started" | "{reason}, so Darkroom has not started Syncthing." with the existing text, for example "Syncthing reported v2.2.0, outside the tested range v2.1.7, so Darkroom has not started Syncthing." |
+| Key not handed over or refused at start | bad "Not started" | "{reason}, so Darkroom has not started Syncthing. Restart the container." with the existing texts of `syncthing_version.py` |
+| Share check failed | bad "Paused" | "The photo share failed Darkroom's check ({reason}), so placing, pruning and syncing are paused, and nothing on the share is changed." with the existing reasons of `share_check.py` |
+
+Share check failed wins over every other state, then version out of range, key refused, settings not applied and not answering, in that order. Each `{reason}` is one of Darkroom's fixed texts (C3 and C7 add the reconciler's, such as "the folder settings did not read back as written"), never a path, a device ID or a file name.
+
+### Alert wording
+
+Each new alert carries only its kind and an id (the Pixel's id for `pixel_held`, none for the others); the text below is built from fixed words, counts and the Pixel's Darkroom name. No alert names a device ID, a path or a file name. The email sends only the title and the link, as every alert does today. Each opens once and closes when its state has recovered, without closing a newer warning. None adds a button on Status; the chip is shown with the existing alert card. Links go to `/` except `pixel_held`, which goes to `/people`.
+
+| Kind | Title (email and `TITLES`) | Chip | Message |
+| --- | --- | --- | --- |
+| `syncthing_down` (not answering for 1 hour, or the key not handed over or refused at start) | Syncthing not answering | bad "Syncthing down" | "Darkroom's Syncthing has not answered for over an hour, so nothing is reaching the Pixels. Darkroom keeps restarting it, and placing and pruning carry on; the Pixels catch up once it is back. If it stays down, restart the container." |
+| `syncthing_settings_failed` | Syncthing settings not applied | bad "Settings not applied" | "Darkroom could not apply its settings to Syncthing or read them back, so it has resumed nothing and the Pixels are not syncing. It tries again before the next hourly run. The Status page gives the reason." |
+| `syncthing_version` | Syncthing version not tested | bad "Untested Syncthing" | "The Syncthing in this container is not a version Darkroom was tested with, so Darkroom has not started it and nothing reaches the Pixels. Run the published Darkroom image, which carries a tested Syncthing." |
+| `share_check_failed`, Darkroom's Syncthing on | Photo share check failed | bad "Share check failed" | "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, and nothing on the share is changed. If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new one as the runbook says. The Status page gives the reason." |
+| `share_check_failed`, a Syncthing set up by hand | Photo share check failed | bad "Share check failed" | "The photo share did not pass Darkroom's check, so placing and pruning are paused, and nothing on the share is changed. Pause the Syncthing that serves the Pixels until it passes again. If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new one as the runbook says." |
+| `pixel_held`, copies can't be written again | Pixel folder held | warn "Folder held" | "{n} photos could not be written to {pixel}'s folder again, so Darkroom is not sharing the folder with it. Nothing is deleted from the Pixel. Something else is in their place, or Darkroom can't read it; the runbook says what to look for." |
+| `pixel_held`, unaccounted files | Pixel folder held | warn "Folder held" | "{pixel}'s folder has {n} files Darkroom did not put there, so Darkroom is not sharing the folder with it. Darkroom never removes or moves them: remove them, or move them out of the folder, by hand." |
+
+A Pixel held both ways has one alert whose message is the first text followed by "It also has {n} files Darkroom did not put there." Counts take the singular at one ("1 photo", "1 file"). The share check alert opens on the first failed check; `syncthing_down` opens after the set time below, so a restart that recovers within it never alerts.
+
+### The owner's decisions (answered on PR #345, all as recommended)
+
+The owner answered the thirteen open points on pull request #345 and accepted the recommended option for each. These settle the choices below; the owner then signed off the design as a whole on #322 on 2026-11-16.
+
+1. **Pairing is a second step of the Pixel form.** Add Pixel saves the details, then the same modal moves to "Pair {name}", because an approval is for a given Pixel (#321). Not chosen: one long form saved at the end.
+2. **The approval is its own step.** "This is {name}", then a separate "Approve this device for {name}?" box with Approve, so nothing is paired on one press. Not chosen: a "The device IDs match" checkbox beside one Approve button.
+3. **The waiting list refreshes every 5 seconds** while the step is open, plus Check now. Not chosen: Check now only.
+4. **The QR code is `canvas` modules on an `ink` tile**, existing tokens only. Not chosen: light modules on the dark surface.
+5. **People read "Syncthing"** everywhere in the app. Not chosen: "Pixel transport".
+6. **With `DARKROOM_SYNCTHING` off the pages are exactly as today** (the typed field in the form, no Syncthing column or card); only the share check alert is new. Not chosen: the column and card shown as "Set up by hand".
+7. **Syncthing has its own card on Status**, after People and before Recent events, plus the chip after a Pixel's name in the person card when it is not `ok`. Not chosen: a line in the header sentence.
+8. **People has a "Syncthing" column** between People served and Last sync, with a Pair button for an unpaired Pixel. Not chosen: the state only inside the Edit form.
+9. **"Not seen for long" is 3 days**, shown in warn, never alerted. Not chosen: 7 days.
+10. **`syncthing_down` alerts after 1 hour** without an answer. Not chosen: 15 minutes.
+11. **`pixel_held` names the Pixel by its Darkroom name**; the email carries only the title. Not chosen: "One of your Pixels".
+12. **No button on the new alerts.** Not chosen: "Open People" on `pixel_held`.
+13. **The kinds are `syncthing_down`, `syncthing_settings_failed`, `syncthing_version`, `share_check_failed` and `pixel_held`**, with a key refused at start folded into `syncthing_down`. Not chosen: a separate `syncthing_key_refused`.
+
+### What the owner reviews, and what the build pull requests carry
+
+The review artefact for this sign-off is the four boards above, read in a browser at 390 and 1280 wide (as for the Renew now boards), and the tables in this section; the README is what is signed off when a board and a table disagree. No screenshot can exist yet: `make verify` drives the built app on demo data, and none of these screens is built. No images are committed here.
+
+The build pull requests then carry, beside these boards, the `make verify` images at phone (440x956) and desktop (1280x800): #323 the People page (`docs/screenshots/people-phone.png` and `people-desktop.png`, with an unpaired Pixel and the new column in the demo seed) and a new flow `frontend/verify/flows/pixel-pairing.json` that opens Pair on the demo's unpaired Pixel and screenshots the waiting (nobody, then one device from a fake waiting list), approving, approved and refused states; #324 the Status page (`status-phone.png` and `status-desktop.png`, with the demo seed holding one held Pixel, one not seen for 4 days and one connected) and a flow `frontend/verify/flows/status-syncthing.json` for the Down and Share check failed card states with their alerts. The demo seed and the fake Syncthing those flows need are part of #323 and #324.
+
+## Three per-Pixel states #322 did not draw (addendum, signed off)
+
+Status: **signed off by the owner on 2026-11-16: all 9 decisions approved as recommended.** Recorded on #322 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6926460427). It adds to the section above and changes none of its signed-off rows, cards or alerts. The build of #324 (PR #356) found three states the reconciler records for a Pixel that have no row in "Per-Pixel states", so today they fall through to "Waiting for the Pixel":
+
+- **(a) The device ID is not valid.** The Pixel has a device ID, but not one Syncthing accepts; the reconciler records `device_id_invalid` and gives it no device and no folder. Since the pairing API (#350) a new or changed ID must pass #317's validator, so this is a value saved before that (typed by hand, any 1 to 80 letters, digits and dashes), kept as it was.
+- **(b) The device ID is shared with another Pixel.** Two or more Pixels have the same ID (compared in canonical form); the reconciler records `device_id_shared` and gives none of them a folder. #350 refuses an ID another Pixel already has, so this too comes from values saved before it.
+- **(c) The folder was removed.** The reconciler found the Pixel's folder in Darkroom's Syncthing not Send Only, or not at the Pixel's folder, removed it (event `syncthing_folder_removed`) and records `folder_removed`. It never shares the folder again by itself. #350 adds the release: `POST /api/pixels/{id}/release-folder` with `{"confirmed": true}` records `syncthing_folder_released`, and the reconciler's next run (within 60 s, as the plan's fingerprint changes) adds the folder afresh, Send Only at the Pixel's folder, once the share check passes and the Pixel is not held. It answers 409 when nothing was removed or the transport is off, and it needs a signed-in session from Darkroom's origin like every other route (Darkroom has no separate owner role).
+
+Board: `03-people-pairing-states-desktop.dc.html` and `03-people-pairing-states-phone.dc.html` (the Pixels card with the three states, the confirmation to share a folder again in each of its states, the row just after, the person card's Pixel row and the Syncthing card; row 2d is drawn there too since the full-width redraw below). Existing tokens, chips, buttons, table and modal only. Names are made up.
+
+### Where they sit
+
+Four rows go between row 2 (Not paired) and row 3 (Checking): 2a to 2c, and row 2d for a fourth code (decision 9). The first row that applies still wins; rows 1 to 10 are as signed off.
+
+| # | State | Chip | Line |
+| --- | --- | --- | --- |
+| 1 | Darkroom's Syncthing is not running | (as signed off) | |
+| 2 | Not paired | (as signed off) | |
+| 2a | (a) The device ID is not valid | warn "Device ID not valid" | "Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again." |
+| 2b | (b) The device ID is shared | warn "Same device ID" | "{others} {has/have} the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong." |
+| 2c | (c) The folder was removed | warn "Folder removed" | "Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again." |
+| 2d | (d) The folder was refused (`folder_path_refused`) | warn "Folder refused" | "Its folder leads outside the photo share, so Darkroom does not share it." |
+| 3 to 10 | | (as signed off) | |
+
+- **Why there.** Each of the four means the Pixel has no folder at all, so the rows below (held, waiting, connected) say nothing true about it; and Not paired and Not syncing still win, because neither can be helped from the Pixel's row. (a) and (b) come before (c) because a folder can't be shared again until the ID is usable: sharing it again for a Pixel whose ID is wrong would only lead back to (a) or (b).
+- **`{others}`** is the other Pixels' Darkroom names, in the People page's order, joined "A", "A and B", "A, B and C", with "has" for one and "have" for more: "Casey's Pixel has the same device ID, so Darkroom shares neither folder." Each Pixel that shares the ID shows the row, naming the others. No row names the ID itself.
+- **Warn, not bad**, like Folder held: the Pixel is not syncing, but nothing is lost and nothing is at risk while it waits.
+
+### On the People page
+
+The Syncthing column shows the chip and line above. The actions cell gains one secondary button before Edit, as an unpaired Pixel has Pair:
+
+| State | Button | What it does |
+| --- | --- | --- |
+| 2a, 2b | "Pair again" (label for screen readers: "Pair {name} again") | Opens the modal at the pairing step, as Edit Pixel's Pair again does (#322): the old ID stays until a new one is approved or saved. Until #323 lands, as for Pair, it opens the existing Edit Pixel form |
+| 2c | "Share again" (label: "Share {name}'s folder again") | Opens the confirmation below |
+| 2d | none | Nothing on the row can help: the folder's place is set on the Pixel, not by pairing or sharing again |
+
+The Edit Pixel form is unchanged: its Syncthing row shows the saved value in mono with Pair again, whatever the state. The pairing step does not offer sharing again: pairing is about the device, and in (c) the device is fine.
+
+**The confirmation** is the existing modal:
+
+- Title: "Share {name}'s folder again?"
+- "Darkroom removed {name}'s folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at {name}'s folder on the photo share."
+- "If you share it again, Darkroom adds the folder afresh, Send Only, at {name}'s folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on {name} asks, accept the folder there."
+- "If the folder is changed outside Darkroom again, Darkroom removes it again."
+- Buttons: "Cancel" (secondary) and "Share folder again" (primary). The press posts the release with `confirmed: true`; while it is in flight both buttons are disabled.
+- Refused (any 4xx, or no answer): the modal stays, and a danger-toned `role="alert"` line under the text reads "Couldn't share {name}'s folder again: {message}." with Darkroom's message unchanged, as the pairing step's refusals do. The line stays until the next press.
+- Done: the modal closes, the page data reloads, and the Pixel shows row 3 (neutral "Checking", "Darkroom is checking its folder before sharing it.") until the reconciler's next run has recorded its state, then whatever row applies.
+
+### On Status
+
+The Syncthing card's Pixel row shows the same chip and line, with no button (the card has none; the actions stay on People, as for Pair). The card's own chip and sentence are unchanged: these are states of one Pixel, not of Syncthing. A Pixel in (a) or (b) has a device ID, so it counts as paired and is listed; "No Pixel is paired yet." is unchanged. The person card's Pixel row shows the chip after the Pixel's name, as for any state that is not `ok`.
+
+### No new alert
+
+None of the four raises an alert, and no alert kind is added. (a) and (b) can only come from IDs saved before #350, are fixed in the People page and are on every Pixel row that shows them; (c) follows a change someone made in Darkroom's Syncthing, and the reconciler records it as an event. As with "Not seen for 3 days", the existing "originals unmatched" alert covers photos that don't reach Google, which is what a Pixel left like this ends in.
+
+### For the build
+
+- The reconciler records one code per Pixel, and today `folder_removed` wins over `device_id_invalid` and `device_id_shared`. The build changes that order so the ID's problem is recorded first (`device_id_invalid` and `device_id_shared` ahead of `folder_removed`); the removal stays on record and shows once the ID is fixed.
+- #350's "nothing to release" message (the 409 when nothing was removed) says "share again", as the button does.
+- Row 2d (`folder_path_refused`) is built with the other three: chip, line, no button, no alert. It is described here in full, and the full-width redraw below draws it on the addendum boards (Alex's Pixel, after 2c, in the Pixels card and the Syncthing card).
+- The other Pixels' names for (b) are worked out on the server from the stored IDs in canonical form, as the reconciler compares them; the reply carries names only, never an ID.
+- Right after a release, the Pixel shows Checking because the release is on record, before the reconciler's next run rewrites its code.
+- The demo seed gains one Pixel in each of the three states (and, for (b), its pair), and the People and Status images and a flow that presses Share again, then Share folder again, carry them, as #356's do.
+
+### The owner's decisions (signed off, all as recommended)
+
+The owner approved all nine as recommended on 2026-11-16, recorded on #322 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6926460427). Each is kept as decided, with the option not chosen.
+
+1. **Rows 2a, 2b and 2c sit after Not paired and before Checking**, the ID's problems before the removed folder. Not chosen: after the Folder held rows (rows 4 and 5).
+2. **All three are warn.** Not chosen: bad for (b) and (c).
+3. **(a) and (b) get a "Pair again" button in the People row.** Not chosen: only through Edit Pixel.
+4. **Sharing a removed folder again is a "Share again" button in the People row with its own confirmation**, not in the pairing step and not on Status. Not chosen: a button in the Edit Pixel form's Syncthing row.
+5. **No new alert kind.** Not chosen: a `pixel_folder_removed` alert, warn "Folder removed", linking to `/people`.
+6. **(b) names the other Pixels by their Darkroom names.** Not chosen: "Another Pixel has the same device ID".
+7. **After sharing again the Pixel shows Checking** until the reconciler's next run. Not chosen: keeping "Folder removed" until then.
+8. **Any signed-in member may share a folder again**, after the confirmation, as #350 built it. Not chosen: an owner role, which Darkroom does not have yet.
+9. **A fourth code found while reading the reconciler, `folder_path_refused`** (the Pixel's folder resolves outside the photo share, so no folder is added), also fell through. Decided: a row 2d, warn "Folder refused", "Its folder leads outside the photo share, so Darkroom does not share it.", with no button and no alert, drawn in a later board. Not chosen: leaving it to fall through.
+
+## Full-width sections on the #322 and addendum boards (for the owner's sign-off)
+
+Status: **drawn for the owner's sign-off, not signed off.** The owner asked for every section of the pairing, Syncthing status and People designs to be full width, not just some of them. Until signed off, the boards as they were stand.
+
+The rule: at desktop width (1280, with the same 232 px left rail) every card and section on these boards spans the full content column, the space right of the rail less the page's 40 px padding each side (968 px at 1280), and none is narrower. That is the column boards 02 and 03 already draw and the built shell already has (`Shell.svelte`'s `main`: `flex-1`, `md:px-10`, no maximum width). The phone layout (390) is unchanged. Modal dialogs span the column too (the owner's decision, superseding an earlier "keep them 512 px"): at desktop width each dialog (the Pixel form, the pairing steps, the Share again confirmation) is as wide as the content column, 968 px at 1280, where it was at most 32 rem (512 px). It stays a dialog over the dimmed page, and on a phone it stays full width less 1 rem each side. The QR code keeps its fixed 192 px.
+
+What changed, per board:
+
+| Board | Change |
+| --- | --- |
+| `02-status-syncthing-desktop.dc.html` | The content column's 1040 px cap is gone (column 960 to 968 px, as boards 02 and 03). The person card loses its 520 px cap and spans the column, one card per row. The alerts and the Syncthing card already spanned it. Sub-heading and the person card's note updated. |
+| `03-people-pairing-desktop.dc.html` | The content column's 1040 px cap is gone. The Pixels card already spanned it. Each of the 11 dialogs (Add Pixel, Edit Pixel, the 9 pairing steps) loses its 512 px cap and spans the column. Sub-heading updated; the board is 7000 px tall (was 6400, with the content overflowing to 7377). |
+| `03-people-pairing-states-desktop.dc.html` | The content column's 1040 px cap is gone. The person card loses its 520 px cap and spans the column. Row 2d added (Alex's Pixel, warn "Folder refused", its line, Edit only) after 2c in the Pixels card and in the Syncthing card. The three Share again dialogs lose their 512 px cap and span the column. The refused example's message ends "so there is nothing to share again." (was "nothing to release"), as "For the build" says. Title, sub-heading and the Pixels card's note updated; the board stays 3300 px tall. |
+| `03-people-pairing-states-phone.dc.html` | Layout unchanged. Row 2d and the refused example's wording as on desktop; title, sub-heading and note updated; the board is 400 px taller. |
+| `02-status-syncthing-phone.dc.html`, `03-people-pairing-phone.dc.html` | Layout unchanged. Only the sub-heading: "Draft for #322, not signed off" becomes "Signed off on #322 2026-11-16". |
+
+What the build changes:
+
+- **#324 (PR #356, Syncthing on Status and People):** on Status, the People section's cards go from two columns at `md` (`grid gap-4 md:grid-cols-2` in `frontend/src/pages/Status.svelte`) to one column, each card the full width, whether `DARKROOM_SYNCTHING` is on or off; this replaces board 02's two-column person grid on the built page. Row 2d is built as "For the build" above says. The Syncthing card, the alerts, Recent events and the People page's cards already span the column; nothing else moves. Its `status-desktop.png` shows the cards one per row.
+- **`Modal` (`frontend/src/components/Modal.svelte`):** loses its `max-w-lg`: from `md` up the dialog sits over the content column, right of the rail and inset by the page's `md:px-10`, as wide as the column; on a phone it is as today. Today only the People page opens `Modal` (one for the person, Google account and Pixel forms, and one through `Confirm` for every confirmation), so the change reaches no other page; a page that later wants a narrow dialog goes through #16.
+- **#323 (PR #355, the pairing screens):** a layout change: the Pixel form and every pairing step open in the full-width `Modal`, and their contents (fields, the QR code centred, the waiting list, the buttons) lay out across the wider dialog as the board draws. The People page's cards already span the column.
+- **The addendum's Share again confirmation** (built with #324's Pixel rows) uses the full-width `Modal` too.
+- None of this touches the shell or any other page; the whole app's page layout stays with #16.
+
 ## Unpairing a Pixel (addendum to #322, for the owner's sign-off)
 
 Status: **drawn for the owner's sign-off, NOT yet signed off.** Nothing here is built until the owner approves it on #322. It adds to "Pairing, Syncthing status and the new alerts" and changes none of its signed-off rows, cards or alerts.
@@ -173,3 +420,43 @@ Each is drawn as recommended; the alternative is not drawn.
 - `frontend/src/forms/PixelForm.svelte` (as built by #323): the Unpair button in the Syncthing row when `syncthing_device_id` is set and Darkroom's Syncthing is on; an `onunpair` callback like `ondelete`.
 - `frontend/src/pages/People.svelte`: an `unpairPixel` through `ask()` with the copy above. `Confirm` takes one `message`; the build either passes the second paragraph as a second line of text or lets `Confirm` take a body, without changing how other confirmations look.
 - Checks: `PixelForm.svelte.test.ts` (Unpair shown only with an ID and the Syncthing on; it opens the confirmation and saves nothing), a People page test for the PATCH body (`{"syncthing_device_id": null}` only), the refused line, and the row turning to Not paired after reload; `make verify` images at phone and desktop width beside these boards, from a flow that opens Edit on a paired demo Pixel, presses Unpair, then Unpair in the dialog.
+
+## First-run setup wizard (#303, document signed off)
+
+Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards signed off by the owner on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234).** #303 closes, and #305 builds against the boards, once #344 merges (decision 1 of `08-setup.md`). Every decision the owner made on #344 (1 to 18) is recorded in `08-setup.md`, "The owner's decisions", unchanged.
+
+Boards: `08-setup-{welcome,closed,address,sign-in,test-failed,immich,people,accounts,pixels,alerts,done}-{desktop,phone}.dc.html`, the eleven pairs the document's board list names, each stacking the states that list names for it, in its order. They use the signed-off tokens only (no new colour, size or font) and the parts already built (card, buttons, fields, the danger alert line, chips, and the People page's table and modal on the People, Google accounts and Pixels steps). The copy is the document's, word for word; `{placeholders}` are filled with made-up values (addresses on 192.168.1.20 and example.com, made-up client and device IDs). `08-setup-test-failed-*` draws the server's own pages as `darkroom/server/common.py` renders them today, not the app's style. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+
+## Checking Immich's address in the setup wizard (#347, for the owner's sign-off)
+
+Status: **drawn for the owner's sign-off, not signed off.** Until it is, the signed-off Immich step (boards `08-setup-immich-*`, which claim no check) stands, and the check is not built into the UI. #347 asks for the check (`POST /api/setup/immich` asks Immich before storing the address) and for its copy and states to be drawn and signed off on #303 first. The wizard API it builds on (#346) is merged (PR #358).
+
+Boards: `08-setup-immich-check-desktop.dc.html` and `08-setup-immich-check-phone.dc.html`, four states: Checking Immich (in flight), then the three refusals (no answer, not Immich, TLS failed). They add to `08-setup-immich-*` and change none of its five states. The only change there is State 4's note, which said "The screen claims no check of Immich (#347)" and now points to the new board. Signed-off tokens and parts only (the card, the field, the primary button disabled as Welcome's "Starting...", the danger alert line). Addresses are made up. The copy, and the amended lines of `08-setup.md` ("Step 3 of 8: Immich", the error table, the API's messages, "What reaches beyond Darkroom" and an addendum to decision 8), are marked "not yet signed off" there.
+
+### What it does
+
+- Save and continue on the Immich step asks Immich's unauthenticated `GET /api/server/ping` at the address typed, through `darkroom/tls.py`, with a short time limit, sending no key, cookie or Darkroom header and following no redirect. It stores the address only on Immich's ping reply (`{"res": "pong"}`).
+- Only after the passing test. The wizard shows the step only then, but the route accepts the claim alone before it (today it stores the address there); see decision J. Before the test nothing is contacted.
+- While it runs, the primary button is disabled and reads "Checking Immich...". An earlier error line is cleared on the press.
+- A refusal shows "Couldn't save Immich's address: Immich didn't answer at {address}: {reason}." in the danger line under the button (`role="alert"`), with one of three fixed reasons: "nothing answered there", "the server there isn't Immich", "its TLS connection failed". Nothing is stored, the field keeps what was typed, the page state is not reloaded, and the line stays until the next press.
+- A pass stores the address and goes on to People as today, with no new line.
+- Set in the environment, Continue checks nothing, as it saves nothing.
+
+### Decisions for the owner (recommendation first)
+
+A. **The refusal's status code.** #347 says 409. But the wizard already reads a 409 from a save as "set in the environment, the page is out of date" and reloads the page's state (`08-setup.md`'s error table; the built `ImmichStep.svelte` passes `outdated: reload`), so a 409 here would reload the page under the error line. Recommended: **422**, a reply about the address the person typed that cannot be mistaken for the environment's 409 and does not read as Darkroom failing. Not chosen: 409 as the issue says (the UI would have to tell two 409s apart by their message); 502, which the test sign-in uses when the issuer can't be reached (consistent with it, but reads as Darkroom's own failure, and a reverse proxy's 502 looks the same).
+B. **The in-flight label** "Checking Immich..." Not chosen: "Saving..." (true but hides the wait, which can last the whole time limit).
+C. **The three reasons' wording**, inside #347's fixed "Immich didn't answer at {address}: {reason}" and decision 10's "Couldn't save {what}: {message}.", so the line has two colons. Not chosen: rewording #347's sentence (for example "Couldn't save Immich's address: nothing answered at {address}."), which would change the issue's fixed message.
+D. **What counts as each reason.** No answer: connection refused, the time limit passed, or the name did not resolve. Not Immich: any reply other than Immich's ping reply, a redirect included (not followed, so the check never reaches an address the person did not type). TLS failed: an https:// address whose certificate was not trusted or whose handshake failed. The line never carries the reply's body or headers, a redirect's target, or the certificate or error detail.
+E. **No page reload, field kept, line until the next press**, as the other refusals on the step. Not chosen: reloading the state, as for the environment's 409.
+F. **No status line when the check passes**: the step moves on, and coming back shows "Saved." as signed off. Not chosen: "Immich answered at {address}." on the People step, which would change the signed-off People board.
+G. **No "Save anyway".** An address Immich doesn't answer at can't be stored from the wizard; `IMMICH_URL` in the environment remains for an Immich that is not up yet. The People step's keys need Immich to answer anyway. Not chosen: a second button that stores without the check.
+H. **Every press checks again**, a stored address too. Not chosen: skipping the check when the address is unchanged.
+I. **Layout.** The README's full-width rule ("Full-width sections") is for the app shell's pages, with the 232 px rail and its content column. The wizard is outside the shell, and its signed-off desktop layout (decision 14) is two columns with the card at most 30 rem. The new states keep that layout, as the other ten wizard board pairs do; making the wizard's card span its column would change every wizard board and is not #347's. Not chosen: widening the card on these boards alone. Phone unchanged.
+J. **A save before the test** (the API only; the wizard never shows the step then). Recommended: refuse it with a 409, as Finish setup refuses before the test, with the message "Immich's address can be saved only after the test sign-in has passed", and contact nothing, so the address is only ever stored checked. Not chosen: storing it unchecked before the test, as today, and checking only after.
+
+### For the build (not copy)
+
+- The time limit: 5 seconds recommended (#347 says "short"). The copy names none.
+- Only `GET /api/server/ping` (Immich's current ping route); an Immich old enough to have only `/api/server-info/ping` reads as "the server there isn't Immich".
+- Tests as #347 lists them, with a loopback fake Immich for each reason, nothing stored on a refusal, the request through `tls.py`, and the negative test that nothing is contacted before the passing test. The wizard's `make verify` flow and the frontend tests gain the in-flight state and one refusal.

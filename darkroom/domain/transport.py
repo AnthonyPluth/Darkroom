@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 
@@ -33,6 +33,7 @@ INVALID_DEVICE = "device_id_invalid"
 SHARED_DEVICE = "device_id_shared"
 PATH_REFUSED = "folder_path_refused"
 REMOVED = "folder_removed"
+ID_PROBLEMS = (INVALID_DEVICE, SHARED_DEVICE)
 HELD = "held"
 SHARE = "share_check_failed"
 DOWN = "reconcile_failed"
@@ -132,6 +133,7 @@ class Outcome:
     reports: dict[int, Report] = field(default_factory=dict)
     failure: str | None = None
     paused: bool = False
+    own_device: set[int] = field(default_factory=set)
 
     def corrected(self, kind: str, subject: str, detail: str) -> None:
         self.corrections.append((kind, subject, detail))
@@ -172,8 +174,8 @@ def plan(opened: Session, photos: Photos, held: Callable[[int], bool], share_pro
         except paths.OutsideRoot:
             path, code = None, code or PATH_REFUSED
         removed = removed_before(opened, pixel_id)
-        wanted[pixel_id] = Wanted(pixel_id, None if code in (INVALID_DEVICE, SHARED_DEVICE) else device, path, held(pixel_id), removed,
-                                  REMOVED if removed else code)
+        wanted[pixel_id] = Wanted(pixel_id, None if code in ID_PROBLEMS else device, path, held(pixel_id), removed,
+                                  REMOVED if removed and code not in ID_PROBLEMS else code)
     return Plan(wanted, tuple(pixel_id for pixel_id, _ in rows), share_problem)
 
 
@@ -346,10 +348,19 @@ def read_reports(client: syncthing.Client, plan: Plan, outcome: Outcome) -> None
         monitoring.log("syncthing's reports could not be read; the transport state stays as it was")
 
 
+def without_own(plan: Plan, own: str, outcome: Outcome) -> Plan:
+    outcome.own_device = {want.pixel_id for want in plan.wanted.values() if want.device == own}
+    if not outcome.own_device:
+        return plan
+    wanted = {pixel_id: replace(want, device=None, code=INVALID_DEVICE) if pixel_id in outcome.own_device else want for pixel_id, want in plan.wanted.items()}
+    return Plan(wanted, plan.pixels, plan.share_problem)
+
+
 def apply(opened: Session, client: syncthing.Client, plan: Plan, now: float) -> Outcome:
     outcome = Outcome()
     try:
         own = client.own_device_id()
+        plan = without_own(plan, own, outcome)
         present = correct_folders(opened, client, plan, own, outcome, now)
         correct_devices(client, plan, own, outcome)
         add_folders(client, plan, present, outcome)
@@ -386,6 +397,10 @@ def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
         return None
     if outcome.failure is not None:
         return DOWN
+    if want.pixel_id in outcome.own_device:
+        return INVALID_DEVICE
+    if want.code in ID_PROBLEMS:
+        return want.code
     if want.pixel_id in outcome.removed:
         return REMOVED
     if want.code is not None:
@@ -445,7 +460,8 @@ def pause(opened: Session, client: syncthing.Client, reason: str, now: float) ->
 
 def observed(client: syncthing.Client) -> tuple[object, ...] | None:
     try:
-        return (tuple(sorted(client.folders(), key=lambda found: found.id)), tuple(sorted(client.devices(), key=lambda found: found.device_id)))
+        folders = tuple(sorted(client.folders(), key=lambda found: found.id))
+        return (folders, tuple(client.ignores(found.id) for found in folders), tuple(sorted(client.devices(), key=lambda found: found.device_id)))
     except syncthing.SyncthingFailed:
         return None
 

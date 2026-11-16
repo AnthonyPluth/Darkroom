@@ -22,14 +22,17 @@ def read_handed(fd: int) -> str:
 
 def browser_token() -> str:
     raw = env("DARKROOM_BROWSER_TOKEN_FD")
-    if not raw:
-        return env("DARKROOM_BROWSER_TOKEN")
     return read_handed(int(raw)) if raw.isascii() and raw.isdigit() and int(raw) >= 3 else ""
+
+
+def app_port() -> int:
+    raw = env("DARKROOM_PORT", "8000")
+    return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 5 else 0
 
 
 @dataclass(frozen=True)
 class Settings:
-    darkroom_url: str
+    app_port: int
     token: str
     photos_root: Path
     display: str
@@ -40,7 +43,7 @@ class Settings:
 
 def load() -> Settings:
     return Settings(
-        darkroom_url=env("DARKROOM_URL", "http://darkroom:8000").rstrip("/"),
+        app_port=app_port(),
         token=browser_token(),
         photos_root=Path(env("PHOTOS_ROOT", "/photos")),
         display=env("DISPLAY", ":99"),
@@ -48,6 +51,10 @@ def load() -> Settings:
         worker_name=env("WORKER_NAME") or platform.node() or "browser-worker",
         browser_root=Path(env("BROWSER_ROOT")) if env("BROWSER_ROOT") else None,
     )
+
+
+def darkroom_url(settings: Settings) -> str:
+    return f"http://127.0.0.1:{settings.app_port}"
 
 
 def token_usable(token: str) -> bool:
@@ -62,11 +69,11 @@ def in_the_share(browser_root: Path, photos_root: Path) -> bool:
 def problems(settings: Settings) -> list[str]:
     found = []
     if not settings.token:
-        found.append("DARKROOM_BROWSER_TOKEN is not set; the worker will not start without the shared token")
+        found.append("no browser token was handed on DARKROOM_BROWSER_TOKEN_FD; the worker starts only under the one container's init")
     elif not token_usable(settings.token):
-        found.append(f"DARKROOM_BROWSER_TOKEN must be at least {MIN_TOKEN} printable ASCII characters without spaces")
-    if not settings.darkroom_url.startswith(("http://", "https://")) or len(settings.darkroom_url) <= len("https://"):
-        found.append("DARKROOM_URL must be an http:// or https:// address")
+        found.append(f"the browser token must be at least {MIN_TOKEN} printable ASCII characters without spaces")
+    if not 1 <= settings.app_port <= 65535:
+        found.append("DARKROOM_PORT must be the app's port, a number from 1 to 65535")
     if not settings.photos_root.is_dir():
         found.append("PHOTOS_ROOT is not a directory")
     if settings.browser_root is not None and not settings.browser_root.is_absolute():
