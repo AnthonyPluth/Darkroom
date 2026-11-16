@@ -297,6 +297,54 @@ class MigrationTests(unittest.TestCase):
         db.migrate(self.engine)
         self.assertIn("pixel_transport", inspect(self.engine).get_table_names())
 
+    def test_0032_pixel_transport_connected_starts_not_connected_keeps_the_rows_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0031")
+            seed_pixel_source_parents(connection)
+            pixel_id = connection.exec_driver_sql("SELECT min(id) FROM pixels").scalar()
+            connection.execute(text("INSERT INTO pixel_transport (pixel_id, paired, last_seen, completion, error, updated) VALUES (:pixel, :paired, 1.5, 82.5, 'held', 2.0)"),
+                               {"pixel": pixel_id, "paired": True})
+            before = connection.exec_driver_sql("SELECT pixel_id, paired, last_seen, completion, error, updated FROM pixel_transport").all()
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, last_seen, completion, error, updated FROM pixel_transport").all(), before)
+            self.assertEqual(connection.exec_driver_sql("SELECT connected FROM pixel_transport").scalar(), False)
+            connection.execute(text("UPDATE pixel_transport SET connected = :connected"), {"connected": True})
+            self.assertEqual(connection.exec_driver_sql("SELECT connected FROM pixel_transport").scalar(), True)
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0031")
+        self.assertNotIn("connected", {column["name"] for column in inspect(self.engine).get_columns("pixel_transport")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, last_seen, completion, error, updated FROM pixel_transport").all(), before)
+        db.migrate(self.engine)
+
+    def test_0033_pixel_transport_synced_starts_not_synced_keeps_the_rows_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0032")
+            seed_pixel_source_parents(connection)
+            pixel_id = connection.exec_driver_sql("SELECT min(id) FROM pixels").scalar()
+            connection.execute(text("INSERT INTO pixel_transport (pixel_id, paired, connected, last_seen, completion, error, updated) VALUES (:pixel, :paired, :paired, 1.5, 100.0, 'held', 2.0)"),
+                               {"pixel": pixel_id, "paired": True})
+            before = connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all()
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all(), before)
+            self.assertEqual(connection.exec_driver_sql("SELECT synced FROM pixel_transport").scalar(), False)
+            connection.execute(text("UPDATE pixel_transport SET synced = :synced"), {"synced": True})
+            self.assertEqual(connection.exec_driver_sql("SELECT synced FROM pixel_transport").scalar(), True)
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0032")
+        self.assertNotIn("synced", {column["name"] for column in inspect(self.engine).get_columns("pixel_transport")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all(), before)
+        db.migrate(self.engine)
+
     def test_migrating_twice_changes_nothing(self):
         db.migrate(self.engine)
         db.migrate(self.engine)

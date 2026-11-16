@@ -17,7 +17,7 @@ from unittest import mock
 from sqlalchemy import select as query
 
 import run
-from darkroom import config, oidc
+from darkroom import config, oidc, tls
 from darkroom.providers import exiftool
 from darkroom.domain import browser_jobs
 from darkroom.server import routes, static, viewer
@@ -27,7 +27,7 @@ from darkroom.storage.models import Alert, AuthSession, User
 from darkroom_init import plan, viewer_auth
 from tests.browser.test_init import handed
 from tests.privacy import no_leaks
-from tests.shared import fetch, own_database, settings_from, start_server
+from tests.shared import fetch, own_database, private_socket_folder, settings_from, start_server
 from tests.test_browser_jobs import add_account
 
 SECRET = "viewer-relay-secret-canary-0123456789abcdef"
@@ -94,9 +94,15 @@ def ended(stream, seconds=3.0):
 
 
 class FakeWebsockify:
-    def __init__(self, test, close_after_hello=False, refuse=False):
-        self.listener = socket.create_server(("127.0.0.1", 0))
-        self.port = self.listener.getsockname()[1]
+    def __init__(self, test, close_after_hello=False, refuse=False, path=None):
+        if path is None:
+            self.listener = socket.create_server(("127.0.0.1", 0))
+            self.port = self.listener.getsockname()[1]
+        else:
+            self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.listener.bind(str(path))
+            self.listener.listen()
+            self.port = None
         self.close_after_hello, self.refuse = close_after_hello, refuse
         self.heads, self.pongs, self.ends = [], [], []
         self.connections = 0
@@ -199,8 +205,9 @@ class RelayCase(unittest.TestCase):
         with db.session(self.engine, writing=True) as opened:
             oidc.remember_user(opened, oidc.Identity("u1", "jo@example.test", "Jo", ("parents",), True), moment)
             self.session = oidc.new_session(opened, self.settings, "u1", moment)
-        self.fake = FakeWebsockify(self)
-        patch = mock.patch.object(config, "VIEWER_PORT", self.fake.port)
+        self.sockets = private_socket_folder(self)
+        self.fake = FakeWebsockify(self, path=self.sockets / "viewer.sock")
+        patch = mock.patch.object(config, "VIEWER_SOCKET", self.sockets / "viewer.sock")
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -287,7 +294,7 @@ class RelayRefusalTests(RelayCase):
         (head,) = self.fake.heads
         lines = head.split("\r\n")
         self.assertEqual(lines[0], "GET /websockify HTTP/1.1")
-        self.assertIn(f"Host: 127.0.0.1:{self.fake.port}", lines)
+        self.assertIn("Host: localhost", lines)
         self.assertNotIn("ZXZpbDpldmls", head)
         self.assertFalse({"cookie", "x-forwarded-host", "forwarded", "x-target", "origin"} & {line.partition(":")[0].lower() for line in lines[1:]})
         self.assertNotIn(self.session, head)
@@ -433,9 +440,7 @@ class RelayUpstreamTests(RelayCase):
             self.assertEqual(read_frame(stream), (BINARY, b"still allowed"))
 
     def test_an_upstream_that_is_not_running_or_refuses_is_502(self):
-        with socket.create_server(("127.0.0.1", 0)) as closed:
-            unused = closed.getsockname()[1]
-        with mock.patch.object(config, "VIEWER_PORT", unused):
+        with mock.patch.object(config, "VIEWER_SOCKET", self.sockets / "missing.sock"):
             self.assertEqual(self.status_of(self.raw()), 502)
         self.fake.refuse = True
         with no_leaks(self, SECRET, self.session) as watched:
@@ -443,6 +448,24 @@ class RelayUpstreamTests(RelayCase):
             head = read_head(stream)
             watched.add("Unauthorized")
         self.assertTrue(head.startswith(b"HTTP/1.0 502"), head)
+
+    def test_the_relay_never_connects_to_a_socket_outside_the_private_folder_or_in_a_folder_others_can_enter(self):
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        outside = FakeWebsockify(self, path=Path(elsewhere.name) / "viewer.sock")
+        (self.sockets / "nested").mkdir(mode=0o700)
+        nested = FakeWebsockify(self, path=self.sockets / "nested" / "viewer.sock")
+        for path in (Path(elsewhere.name) / "viewer.sock", self.sockets / "nested" / "viewer.sock", self.sockets / "nested" / ".." / "viewer.sock"):
+            logged = io.StringIO()
+            with self.subTest(path=path), mock.patch.object(config, "VIEWER_SOCKET", path), contextlib.redirect_stderr(logged):
+                self.assertEqual(self.status_of(self.raw()), 502)
+            self.assertIn("the private socket folder check failed", logged.getvalue())
+        for mode in (0o750, 0o705, 0o711):
+            with self.subTest(mode=oct(mode)):
+                self.sockets.chmod(mode)
+                self.addCleanup(self.sockets.chmod, 0o700)
+                self.assertEqual(self.status_of(self.raw()), 502)
+        self.assertEqual((self.fake.connections, outside.connections, nested.connections), (0, 0, 0))
 
 
 class IdleTests(RelayCase):
@@ -604,7 +627,9 @@ class ViewerSecretTests(unittest.TestCase):
 
     def test_the_relay_and_the_init_agree_on_the_upstream(self):
         viewer_spec = next(spec for spec in plan.specs({}, bool, bool) if spec.name == "viewer")
-        self.assertIn(f"127.0.0.1:{config.VIEWER_PORT}", viewer_spec.argv)
+        self.assertEqual(viewer_spec.argv[viewer_spec.argv.index("--unix-listen") + 1], str(config.VIEWER_SOCKET))
+        self.assertEqual((config.VIEWER_SOCKET, config.SYNCTHING_SOCKET), (plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET))
+        self.assertEqual({config.VIEWER_SOCKET.parent, config.SYNCTHING_SOCKET.parent, plan.SOCKET_FOLDER}, {tls.SOCKET_FOLDER})
         self.assertIn(f"--web={config.VIEWER_FILES}", viewer_spec.argv)
         self.assertEqual(config.VIEWER_USER, viewer_auth.VIEWER_USER)
         self.assertEqual(VIEWER_CSP, CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'"))

@@ -6,6 +6,7 @@ import socket
 import stat
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -28,14 +29,19 @@ def key():
     return ElementTree.parse(CONFIG).getroot().findtext("gui/apikey")
 
 
-def call(method, path, body=None):
+def answer(method, path, body=None):
     connection = OnSocket()
     connection.request(method, path, body=None if body is None else json.dumps(body), headers={"X-API-Key": key(), "Content-Type": "application/json"})
     reply = connection.getresponse()
     data = reply.read()
     connection.close()
-    if reply.status != 200:
-        raise SystemExit(f"{method} {path} answered {reply.status}")
+    return reply.status, data
+
+
+def call(method, path, body=None):
+    status, data = answer(method, path, body)
+    if status != 200:
+        raise SystemExit(f"{method} {path} answered {status}")
     return json.loads(data) if data.strip() else None
 
 
@@ -78,6 +84,31 @@ def connected(device):
     return call("GET", "/rest/system/connections")["connections"].get(device, {}).get("connected") is True
 
 
+def query(**values):
+    return urllib.parse.urlencode(values)
+
+
+def folder(identity):
+    found = [each for each in call("GET", "/rest/config")["folders"] if each["id"] == identity]
+    if not found:
+        return None
+    return {"type": found[0]["type"], "paused": found[0]["paused"], "path": found[0]["path"], "devices": sorted(device["deviceID"] for device in found[0]["devices"])}
+
+
+def need(identity):
+    status = call("GET", f"/rest/db/status?{query(folder=identity)}")
+    return status["needFiles"] + status["needDeletes"]
+
+
+def knows(identity, name):
+    status, data = answer("GET", f"/rest/db/file?{query(folder=identity, file=name)}")
+    return status == 200 and json.loads(data).get("global") is not None
+
+
+def scan(identity):
+    call("POST", f"/rest/db/scan?{query(folder=identity)}")
+
+
 def monitor():
     found = {}
     for folder in Path("/proc").glob("[0-9]*"):
@@ -118,6 +149,14 @@ def main(command, *args):
         resume(*args)
     elif command == "connected":
         return 0 if connected(args[0]) else 1
+    elif command == "folder":
+        print(json.dumps(folder(args[0]), sort_keys=True))
+    elif command == "need":
+        print(need(args[0]))
+    elif command == "knows":
+        return 0 if knows(*args) else 1
+    elif command == "scan":
+        scan(args[0])
     elif command == "restart":
         restart()
     elif command == "key-in-stdin":

@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import json
 import shutil
 import unittest
@@ -7,9 +8,10 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import pixel_check, pixel_folder, transport
+from darkroom import config
+from darkroom.domain import events, pixel_check, pixel_folder, syncthing_version, transport, transport_status
 from darkroom.providers import syncthing
-from darkroom.storage.models import Event, Pixel, PixelTransport
+from darkroom.storage.models import Alert, Event, Pixel, PixelTransport
 from tests import test_pixel_check, test_pixel_folder
 from tests.fakes.syncthing import FakeSyncthing
 from tests.privacy import no_leaks
@@ -212,6 +214,25 @@ class ReconcilerTests(unittest.TestCase):
         self.assertNotIn(identity, {folder.id for folder in self.client.folders()})
         self.assertEqual(self.rows()[self.jo_pixel], (False, transport.REMOVED))
         self.assertEqual(self.reconcile(at=NOW + 30).resumed, {self.sam_pixel})
+
+    def test_a_first_reconcile_that_succeeds_on_a_fresh_install_leaves_starting_and_lets_a_held_folder_alert(self):
+        folder = self.photos.pixel_root(self.jo_pixel) / "jo"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "IMG_STRAY.HEIC").write_bytes(b"made up")
+        pixel_check.check(self.opened, self.photos, NOW)
+        self.held.add(self.jo_pixel)
+        self.assertEqual(self.events(transport.RECOVERED), [])
+        self.assertIsNone(self.reconcile().failure)
+        self.assertEqual(self.events(transport.RECOVERED), [(transport.SUBJECT, None)])
+        seen = transport_status.overview(self.opened, NOW)
+        self.assertEqual(seen.card.state, "running")
+        self.assertEqual(seen.pixels[self.jo_pixel].state, "held")
+        self.assertNotEqual(seen.pixels[self.sam_pixel].state, "not_syncing")
+        transport_status.review(self.opened, dataclasses.replace(config.load(), syncthing=True), NOW, None)
+        self.assertEqual([(alert.kind, alert.subject) for alert in self.opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars()],
+                         [("pixel_held", f"pixel {self.jo_pixel}")])
+        self.reconcile(at=NOW + 10)
+        self.assertEqual(len(self.events(transport.RECOVERED)), 1)
 
     def test_a_persisted_folder_outside_its_pixels_folder_is_removed_before_anything_is_resumed(self):
         for path in (str(self.root / "jo" / "originals"), str(self.root / "_pixels"), str(self.photos.pixel_root(self.sam_pixel)), "/elsewhere"):
@@ -454,9 +475,96 @@ class ReconcilerTests(unittest.TestCase):
         self.assertEqual((jo.completion, jo.last_seen, jo.updated), (100.0, 1794312000.123456, NOW + 10))
         self.assertEqual((sam.completion, sam.last_seen), (100.0, None))
         self.assertEqual((self.opened.get(Pixel, self.jo_pixel).last_sync, self.opened.get(Pixel, self.sam_pixel).last_sync), (NOW + 10, None))
+        self.assertEqual((jo.synced, sam.synced), (True, False))
+        self.fake.completions[(self.folder_id(self.jo_pixel), JO_DEVICE)] = {"completion": 100, "needItems": 0, "needDeletes": 2}
+        self.reconcile(at=NOW + 15)
+        jo = self.opened.get(PixelTransport, self.jo_pixel, populate_existing=True)
+        self.assertEqual((jo.connected, jo.completion, jo.synced, self.opened.get(Pixel, self.jo_pixel).last_sync), (True, 100.0, False, NOW + 10))
         self.fake.completions[(self.folder_id(self.jo_pixel), JO_DEVICE)] = {"completion": 40.5, "needItems": 3}
         self.reconcile(at=NOW + 20)
         self.assertEqual((self.opened.get(PixelTransport, self.jo_pixel).completion, self.opened.get(Pixel, self.jo_pixel).last_sync), (40.5, NOW + 10))
+
+    def test_the_minute_job_refreshes_whether_each_pixel_is_connected_without_reconciling(self):
+        moving = transport.Transport()
+
+        def tick(at):
+            return moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, at)
+
+        self.assertIsNotNone(tick(NOW))
+        self.assertEqual(self.opened.get(PixelTransport, self.jo_pixel).connected, False)
+        self.fake.connections = {JO_DEVICE: {"connected": True, "type": "tcp-client"}, SAM_DEVICE: {"connected": False}}
+        self.fake.completions = {(self.folder_id(self.jo_pixel), JO_DEVICE): {"completion": 82.5, "needItems": 4}}
+        self.fake.requests.clear()
+        self.assertIsNone(tick(NOW + 60))
+        self.assertEqual({received.method for received in self.fake.requests}, {"GET"})
+        jo = self.opened.get(PixelTransport, self.jo_pixel, populate_existing=True)
+        self.assertEqual((jo.connected, jo.completion, jo.updated), (True, 82.5, NOW))
+        self.fake.connections[JO_DEVICE] = {"connected": False}
+        self.assertIsNone(tick(NOW + 120))
+        self.assertFalse(self.opened.get(PixelTransport, self.jo_pixel, populate_existing=True).connected)
+
+    def connected_and_up_to_date(self):
+        self.fake.connections = {JO_DEVICE: {"connected": True, "type": "tcp-client"}, SAM_DEVICE: {"connected": True, "type": "tcp-client"}}
+        self.fake.stats = {JO_DEVICE: {"lastSeen": "2026-11-10T12:00:00Z"}}
+        self.fake.completions = {(self.folder_id(self.jo_pixel), JO_DEVICE): {"completion": 100, "needItems": 0, "needDeletes": 0},
+                                 (self.folder_id(self.sam_pixel), SAM_DEVICE): {"completion": 100, "needItems": 0, "needDeletes": 0}}
+
+    def shown(self, at):
+        seen = transport_status.overview(self.opened, at)
+        return {pixel_id: (view.state, view.last_seen) for pixel_id, view in seen.pixels.items()}
+
+    def test_reports_that_cannot_be_read_on_the_minute_job_stop_showing_the_pixel_as_connected(self):
+        moving = transport.Transport()
+        self.connected_and_up_to_date()
+        self.assertIsNotNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW))
+        self.assertEqual(self.shown(NOW)[self.jo_pixel], ("connected", 1794312000.0))
+        for failing in ("connections", "device_stats", "completion"):
+            with self.subTest(failing=failing):
+                with mock.patch.object(syncthing.Client, failing, side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+                    self.assertIsNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW + 60))
+                self.opened.expire_all()
+                jo, sam = self.opened.get(PixelTransport, self.jo_pixel), self.opened.get(PixelTransport, self.sam_pixel)
+                self.assertEqual((jo.connected, jo.synced, jo.completion, jo.last_seen), (False, False, None, 1794312000.0))
+                self.assertEqual((sam.connected, sam.synced, sam.completion), (False, False, None))
+                self.assertEqual(self.shown(NOW + 60)[self.jo_pixel], ("not_connected", 1794312000.0))
+                self.assertEqual(self.shown(NOW + 60)[self.sam_pixel], ("not_connected", NOW))
+                self.assertIsNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW + 120))
+                self.opened.expire_all()
+                self.assertEqual(self.shown(NOW + 120)[self.jo_pixel], ("connected", 1794312000.0))
+
+    def test_reports_that_cannot_be_read_during_a_reconcile_stop_showing_the_pixel_as_connected(self):
+        self.connected_and_up_to_date()
+        self.reconcile()
+        self.assertEqual(self.shown(NOW)[self.jo_pixel][0], "connected")
+        with mock.patch.object(syncthing.Client, "connections", side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+            self.assertIsNone(self.reconcile(at=NOW + 10).failure)
+        jo = self.opened.get(PixelTransport, self.jo_pixel)
+        self.assertEqual((jo.connected, jo.synced, jo.completion, jo.last_seen, jo.paired), (False, False, None, 1794312000.0, True))
+        self.assertEqual(transport_status.card(self.opened).state, "running")
+        self.assertEqual(self.shown(NOW + 10)[self.jo_pixel], ("not_connected", 1794312000.0))
+
+    def test_a_pixel_held_before_the_placed_copy_check_has_run_is_recorded_as_checking(self):
+        self.held.add(self.jo_pixel)
+        transport.reconcile(self.opened, self.client, self.photos, lambda pixel_id: pixel_id in self.held, None, NOW, checked=False)
+        self.assertEqual((self.opened.get(PixelTransport, self.jo_pixel).error, self.opened.get(PixelTransport, self.sam_pixel).error), (transport.CHECKING, None))
+        transport.reconcile(self.opened, self.client, self.photos, lambda pixel_id: pixel_id in self.held, None, NOW + 1, checked=True)
+        self.assertEqual(self.opened.get(PixelTransport, self.jo_pixel).error, transport.HELD)
+
+    def test_a_reconcile_after_the_version_gate_kept_syncthing_off_records_that_it_runs_again(self):
+        self.reconcile()
+        events.record(self.opened, NOW + 1, syncthing_version.EVENT, syncthing_version.SUBJECT, syncthing_version.NOT_ANSWERING)
+        self.opened.commit()
+        self.reconcile(at=NOW + 2)
+        self.assertEqual(transport.last_outcome(self.opened), (transport.RECOVERED, None))
+
+    def test_a_failed_reconcile_marks_every_pixel_not_connected(self):
+        self.fake.connections = {JO_DEVICE: {"connected": True, "type": "tcp-client"}}
+        self.reconcile()
+        self.assertTrue(self.opened.get(PixelTransport, self.jo_pixel).connected)
+        with mock.patch.object(syncthing.Client, "folders", side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+            self.assertIsNotNone(self.reconcile(at=NOW + 1).failure)
+        jo = self.opened.get(PixelTransport, self.jo_pixel)
+        self.assertEqual((jo.connected, jo.synced, jo.error), (False, False, transport.DOWN))
 
     def test_reports_that_cannot_be_read_leave_the_reconcile_standing(self):
         self.reconcile()
@@ -631,15 +739,13 @@ class SchedulerTests(unittest.TestCase):
 
         from darkroom.storage import db
         from darkroom.storage.models import GoogleAccount, MediaItem, PixelPerson
-        from tests.shared import add_person, bound_share, own_database, settings_from
+        from tests.shared import add_person, bound_share, own_database, private_socket_folder, settings_from
 
         self.engine = own_database(self)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name).resolve()
-        socket_folder = tempfile.TemporaryDirectory()
-        self.addCleanup(socket_folder.cleanup)
-        self.socket = Path(socket_folder.name) / "syncthing.sock"
+        self.socket = private_socket_folder(self) / "syncthing.sock"
         self.fake = FakeSyncthing(self, KEY, OWN, str(self.socket))
         self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=str(self.root)), syncthing=True, syncthing_key=KEY)
         (self.root / "jo/originals").mkdir(parents=True)
@@ -790,3 +896,66 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchedulerAlertTests(unittest.TestCase):
+    setUp = SchedulerTests.setUp
+    serving = SchedulerTests.serving
+
+    def open_kinds(self):
+        from darkroom.storage import db
+        from darkroom.storage.models import Alert
+
+        with db.session(self.engine) as opened:
+            return sorted(alert.kind for alert in opened.query(Alert).filter(Alert.closed.is_(None)).all())
+
+    def row(self):
+        from darkroom.storage import db
+
+        with db.session(self.engine) as opened:
+            return opened.get(PixelTransport, self.pixel).error
+
+    def test_startup_records_the_pixel_as_checking_and_the_first_tend_releases_it(self):
+        scheduler = self.serving()
+        self.assertEqual(self.row(), transport.CHECKING)
+        scheduler.run_one("pixels.tend", 105.0)
+        scheduler.run_one("syncthing.reconcile", 160.0)
+        self.assertIsNone(self.row())
+        self.assertEqual(self.open_kinds(), [])
+
+    def test_an_untested_syncthing_at_startup_opens_its_alert_before_the_first_tick(self):
+        self.fake.version = {**self.fake.version, "version": "v2.2.0", "longVersion": "syncthing v2.2.0"}
+        self.serving()
+        self.assertEqual(self.open_kinds(), ["syncthing_version"])
+
+    def test_a_share_check_that_fails_during_a_tend_alerts_at_once(self):
+        from darkroom.storage import share
+
+        scheduler = self.serving()
+        scheduler.run_one("pixels.tend", 105.0)
+        (self.root / share.SHARE_SENTINEL_FILE).unlink()
+        scheduler.run_one("pixels.tend", 200.0)
+        self.assertEqual(self.open_kinds(), ["share_check_failed"])
+
+    def test_the_alert_tick_opens_syncthing_down_once_it_has_not_answered_for_an_hour(self):
+        scheduler = self.serving()
+        scheduler.run_one("pixels.tend", 105.0)
+        self.fake.status = 500
+        scheduler.run_one("syncthing.reconcile", 160.0)
+        scheduler.run_one("alerts.tick", 160.0 + 3599)
+        self.assertEqual(self.open_kinds(), [])
+        scheduler.run_one("alerts.tick", 160.0 + 3600)
+        self.assertEqual(self.open_kinds(), ["syncthing_down"])
+
+    def test_a_demo_server_with_no_share_bound_starts_no_syncthing_or_tending_jobs_and_records_nothing_about_them(self):
+        import dataclasses
+
+        from darkroom.storage import db
+        from darkroom.storage.models import Event
+
+        scheduler = self.serving(dataclasses.replace(self.settings, demo=True))
+        self.assertNotIn("syncthing.reconcile", scheduler.jobs)
+        self.assertNotIn("pixels.tend", scheduler.jobs)
+        self.assertEqual(self.fake.requests, [])
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(Event).filter(Event.subject == transport.SUBJECT).count(), 0)

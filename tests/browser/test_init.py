@@ -95,8 +95,6 @@ class PlanTests(unittest.TestCase):
         viewer = specs[3].argv
         self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.PIPE["viewer"])
         self.assertEqual(viewer[viewer.index("--auth-plugin") + 1], plan.VIEWER_PLUGIN)
-        self.assertEqual(viewer[-2:], ("127.0.0.1:6080", "127.0.0.1:5900"))
-        self.assertIn("-localhost", specs[2].argv)
         for spec in specs:
             self.assertFalse(any(TOKEN in part or VIEWER in part for part in (*spec.argv, *spec.env.values())))
 

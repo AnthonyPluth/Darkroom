@@ -38,6 +38,7 @@ A step has one action and an optional `timeout` in milliseconds (default 10000).
 - `{"scroll_to": selector}` scrolls it to the top of the screen. An image is always the whole page, taken from the top, so this only matters to a later step.
 - `{"sign_out": true}` clears the session cookie and reloads: the page is then the sign-in page, and the flow no longer needs `allow_console` for the 401.
 - `{"reload": true}` reloads the page.
+- `{"demo_post": {"path": "/api/demo/syncthing", "body": {"state": "down"}}}` posts the body, as the demo member, to a route under `/api/demo/`, which only a demo server answers: it puts the demo data in a state no page can reach, such as Syncthing not answering (`down`), the share check failed (`share_check_failed`) and back (`running`). A flow that uses it puts the state back at the end.
 
 **Checking and capturing**
 

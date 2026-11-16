@@ -33,6 +33,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **What usually breaks:**
   - Starts on Status and follows the navigation to People: the tab bar at phone width, the sidebar at desktop.
 
+#### `status-syncthing`
+
+- **Starts at:** `status`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Syncthing is running with the settings Darkroom set.`, `Syncthing has not answered for 2 hours.`, `Syncthing down`, `The photo share failed Darkroom's check (the sentinel is missing from the share)`, `Share check failed`.
+- **Drive it:** `tools/control flow status-syncthing`; or `poetry run python tools/verify.py run --flow status-syncthing`.
+
 ## People (`people`)
 
 - **Reach it:** the navigation's People, at `/people`; control `tools/control goto people`.
@@ -42,6 +49,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
   - Forms here change demo data only; `reset` puts it back. Put no real email, name or Immich key in one.
 
 ### Flows on People
+
+#### `people-share-again`
+
+- **Starts at:** `people`.
+- **Widths:** phone, desktop.
+- **Touches:** `button[aria-label="Share again: Blair's second Pixel's folder"]`, `[role=dialog] button:has-text('Share folder again')`.
+- **Expects to see:** `Darkroom removed its folder because it was changed outside Darkroom.`, `If the folder is changed outside Darkroom again, Darkroom removes it again.`, `Darkroom is checking its folder before sharing it.`, `It stays unshared until you share it again.`.
+- **Drive it:** `tools/control flow people-share-again`; or `poetry run python tools/verify.py run --flow people-share-again`.
 
 #### `pixel-pairing`
 

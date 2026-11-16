@@ -4,19 +4,18 @@ import json
 import os
 import shutil
 import socket
-import stat
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from xml.etree import ElementTree  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml -- only Syncthing's own config.xml is parsed; Python's parser resolves no external entity
 
-from darkroom_init.plan import Secret
+from darkroom_init.plan import SYNCTHING_SOCKET, Secret
+from darkroom_init.sockets import Refused, clear_stale_socket, private_folder
 from darkroom_init.supervisor import become_quietly, log, run_quietly
 
 BINARY = "/usr/local/bin/syncthing"
-SOCKET_FOLDER = Path("/run/darkroom")
-SOCKET = SOCKET_FOLDER / "syncthing.sock"
+SOCKET = SYNCTHING_SOCKET
 CONFIG = "config.xml"
 SOCKET_MODE = "0600"
 LISTEN = ("tcp://0.0.0.0:22000", "quic://0.0.0.0:22000")
@@ -26,10 +25,6 @@ FIRST_START = OFF | {"localAnnounceEnabled": "false", "startBrowser": "false", "
 GENERATE_SECONDS = 120.0
 TIMEOUT = 5.0
 Runner = Callable[[list[str], float], None]
-
-
-class Refused(Exception):
-    pass
 
 
 def parsed(config: Path) -> ElementTree.ElementTree[ElementTree.Element]:
@@ -80,21 +75,6 @@ def generate(home: Path, socket_path: Path, binary: str, run: Runner) -> None:
     except BaseException:
         shutil.rmtree(fresh, ignore_errors=True)
         raise
-
-
-def private_folder(folder: Path) -> bool:
-    found = os.lstat(folder)
-    return stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid() and stat.S_IMODE(found.st_mode) & 0o077 == 0
-
-
-def clear_stale_socket(socket_path: Path) -> None:
-    try:
-        found = os.lstat(socket_path)
-    except FileNotFoundError:
-        return
-    if not stat.S_ISSOCK(found.st_mode):
-        raise Refused("something other than a socket is where Syncthing's API socket goes")
-    socket_path.unlink()
 
 
 def prepare(home: Path, socket_path: Path = SOCKET, binary: str = BINARY, run: Runner = run_quietly) -> None:

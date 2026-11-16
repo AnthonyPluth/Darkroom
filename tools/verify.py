@@ -61,7 +61,7 @@ def clean_env(root: str, base: dict[str, str] | None = None, port: int | None = 
     env = {k: v for k, v in (os.environ if base is None else base).items() if k in KEPT_ENV or k.startswith(KEPT_ENV_PREFIXES)}
     public = f"http://127.0.0.1:{port}" if port else "http://127.0.0.1"
     env.update(DARKROOM_DEMO="1", DARKROOM_HOST="127.0.0.1", DARKROOM_DATA_DIR=data_dir(root), DARKROOM_PHOTOS_ROOT=photos_root(root),
-               DARKROOM_PUBLIC_URL=public, DARKROOM_SECRET_KEY=DEMO_SECRET, PYTHONUNBUFFERED="1",
+               DARKROOM_PUBLIC_URL=public, DARKROOM_SECRET_KEY=DEMO_SECRET, DARKROOM_SYNCTHING="1", PYTHONUNBUFFERED="1",
                HTTP_PROXY=NO_OUTSIDE, HTTPS_PROXY=NO_OUTSIDE, http_proxy=NO_OUTSIDE, https_proxy=NO_OUTSIDE, NO_PROXY=LOOPBACK_ONLY, no_proxy=LOOPBACK_ONLY)
     if port:
         env["DARKROOM_PORT"] = str(port)

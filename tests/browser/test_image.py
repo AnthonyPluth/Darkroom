@@ -211,13 +211,39 @@ class SingleImageTests(unittest.TestCase):
             self.assertIn(check, script)
         self.assertLess(script.index("the paused instance sent a file"), script.index("probe darkroom resume"))
 
-    def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
+    def test_ci_runs_the_one_container_with_host_networking_and_checks_every_internal_listener_is_closed(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
         job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
-        script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
-        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -eo pipefail\n"))
-        for text in (script, job):
-            self.assertNotRegex(text, r"\|\s*grep\s+-[A-Za-z]*q", "grep -q quits at the first match, so under pipefail docker logs dies of SIGPIPE and a match reads as a miss")
+        self.assertIn("run: bash tests/browser/host_network.sh darkroom-single:smoke\n", job)
+        self.assertLess(job.index("syncthing_paused.sh"), job.index("host_network.sh"))
+        script = (ROOT / "tests/browser/host_network.sh").read_text()
+        self.assertIn("sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json)", script)
+        self.assertIn('--network host "${sandbox[@]}"', script)
+        self.assertIn("-e DARKROOM_SYNCTHING=1", script)
+        self.assertNotRegex(script, r" -p ")
+        for check in ("check refused 127.0.0.1 ::1", "sudo -u nobody python3 -I - refused", 'docker exec -i -u 4242:4242 "$name" python3 -I - inside', "sudo ss -Hltunp | check listeners",
+                      "sudo ss -Hlxp | check unix-listeners", "probe relay", "syncthing reconciled"):
+            self.assertIn(check, script)
+        probe = (ROOT / "tests/browser/host_network.py").read_text()
+        self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
+        self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
+
+    def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        scripts = {path.name: path.read_text() for path in sorted((ROOT / "tests/browser").glob("*.sh"))}
+        self.assertLessEqual({"syncthing_paused.sh", "syncthing_peer.sh", "one_container.sh"}, set(scripts))
+        for name, text in scripts.items():
+            self.assertRegex(text, r"\A#!/usr/bin/env bash\nset -eu?o pipefail\n", name)
+        for name, text in [*scripts.items(), ("docker.yml", workflow)]:
+            self.assertNotRegex(text, r"\|\s*grep\s+(-[A-Za-z]*[qm]|--quiet|--silent|--max-count)",
+                                f"{name}: grep -q quits at the first match, so under pipefail the producer dies of SIGPIPE and a match reads as a miss")
+        peer = scripts["syncthing_peer.sh"]
+        self.assertIn('logged_since_start() { local logs; logs=$(docker logs --since "$started" "$darkroom" 2>&1) && grep -qF "$1" <<<"$logs"; }', peer)
+        self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', peer[peer.index("logs() {"):peer.index("fail() {")])
+        leftovers = peer.index('docker rm -f "$darkroom" "$peer" >/dev/null 2>&1 || true\ndocker network rm "$net" >/dev/null 2>&1 || true\n', peer.index("trap cleanup EXIT"))
+        self.assertLess(leftovers, peer.index('docker network create "$net"'))
+        self.assertLess(peer.index('docker network create "$net"'), peer.index('docker run -d --name "$peer"'))
+        script = scripts["syncthing_paused.sh"]
         self.assertIn('logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"; }', script)
         self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', script[script.index("fail() {"):script.index("wait_for() {")])
         cleanup = script.index("docker rm -f darkroom peer >/dev/null 2>&1 || true\ndocker network rm \"$net\" >/dev/null 2>&1 || true\n")
@@ -228,11 +254,32 @@ class SingleImageTests(unittest.TestCase):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
         for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:${{DARKROOM_TAG:-latest}}", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
-                     "- seccomp:./deploy/browser/seccomp.json", '- "127.0.0.1:8000:8000"', "- ./data:/data"):
+                     "- seccomp:./deploy/browser/seccomp.json", "- ./data:/data"):
             self.assertIn(line, single)
         self.assertNotIn("working_dir:", single)
         self.assertNotIn("command:", single)
         self.assertFalse([name for name in REMOVED_SETTINGS if f"{name}:" in single])
+
+    def test_the_one_container_runs_on_the_host_network_with_syncthing_on_and_its_web_port_on_loopback(self):
+        single = compose_service("darkroom-single")
+        self.assertRegex(single, r"(?m)^    network_mode: host$")
+        self.assertNotRegex(single, r"(?m)^    ports:", "compose ignores published ports on the host network; the web port's address is DARKROOM_HOST")
+        self.assertRegex(single, r'(?m)^      DARKROOM_HOST: "127\.0\.0\.1"$', "the web port stays on the host's loopback, as the published 127.0.0.1:8000 was")
+        self.assertRegex(single, r"(?m)^      DARKROOM_SYNCTHING: \$\{DARKROOM_SYNCTHING:-1\}$")
+        app = compose_service("darkroom")
+        self.assertNotIn("network_mode", app)
+        self.assertIn('- "127.0.0.1:8000:8000"', app)
+        self.assertNotIn("DARKROOM_SYNCTHING", app)
+
+    def test_the_postgresql_recipe_reaches_the_host_network_service_on_loopback_only(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        recipe = compose[compose.index("  # PostgreSQL instead of the default SQLite"):]
+        self.assertIn("DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom", recipe)
+        self.assertIn("DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom", recipe)
+        published = re.findall(r'^  #     - "([^"]+:5432)"$', recipe, re.M)
+        self.assertEqual(published, ["127.0.0.1:5432:5432"], "PostgreSQL is published on the host's loopback only, never on every address")
+        page = (ROOT / "docs/deploy/postgres.md").read_text()
+        self.assertIn("@127.0.0.1:5432/darkroom", page)
 
     def test_the_one_container_comes_first_and_no_separate_browser_container_is_left(self):
         compose = (ROOT / "docker-compose.yml").read_text()
@@ -336,11 +383,12 @@ class SecurityScanTests(unittest.TestCase):
 
 
 class UnraidTemplateTests(unittest.TestCase):
-    def test_it_runs_the_published_one_container_image_unprivileged_on_bridge(self):
+    def test_it_runs_the_published_one_container_image_unprivileged_on_the_host_network(self):
         root = template()
         self.assertEqual(root.findtext("Repository"), f"{SINGLE_IMAGE}:latest")
         self.assertEqual(root.findtext("Privileged"), "false")
-        self.assertEqual(root.findtext("Network"), "bridge")
+        self.assertEqual(root.findtext("Network"), "host")
+        self.assertIn("never forward them", root.findtext("Overview"))
         self.assertEqual(root.findtext("PostArgs") or "", "")
 
     def test_its_extra_parameters_are_the_compose_sandbox(self):
@@ -358,10 +406,11 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertFalse([path for path in paths if path and UNRAID_SECCOMP.startswith(path.rstrip("/") + "/")])
         self.assertTrue(UNRAID_SECCOMP.startswith("/boot/config/"))
 
-    def test_it_publishes_8000_only_and_maps_appdata_and_the_share(self):
+    def test_its_ports_are_8000_and_syncthings_and_it_maps_appdata_and_the_share(self):
         configs = list(template().iter("Config"))
         ports = [(config.get("Target"), config.get("Mode"), config.text) for config in configs if config.get("Type") == "Port"]
-        self.assertEqual(ports, [("8000", "tcp", "8000")])
+        self.assertEqual(ports, [("8000", "tcp", "8000"), ("22000", "tcp", "22000"), ("22000", "udp", "22000"), ("21027", "udp", "21027")])
+        self.assertFalse([port for port in ports if port[0] in ("5900", "6080", "8384")])
         paths = {config.get("Target"): (config.get("Mode"), config.get("Required"), config.get("Default")) for config in configs if config.get("Type") == "Path"}
         self.assertEqual(paths, {"/data": ("rw", "true", "/mnt/user/appdata/darkroom"), "/photos": ("rw", "true", "")})
 
@@ -370,7 +419,10 @@ class UnraidTemplateTests(unittest.TestCase):
         names = [config.get("Target") for config in configs]
         self.assertEqual(len(names), len(set(names)))
         environment = set(re.findall(r"^      ([A-Z_]+): ", compose_service("darkroom-single"), re.M))
-        self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER"})
+        self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER", "DARKROOM_HOST"})
+        self.assertNotIn("DARKROOM_HOST", names, "on Unraid the image's 0.0.0.0 stands: bridge networking already published 8000 on every address")
+        syncthing = next(config for config in configs if config.get("Target") == "DARKROOM_SYNCTHING")
+        self.assertEqual((syncthing.get("Default"), syncthing.text), ("1", "1"))
         self.assertRegex(SINGLE, r"(?m)^ENV .*\bDARKROOM_ONE_CONTAINER=1\b", "the image marks itself, so the template and `docker exec` need no variable for it")
         self.assertFalse(set(names) & set(REMOVED_SETTINGS))
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}

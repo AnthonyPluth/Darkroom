@@ -7,7 +7,7 @@
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
   import { pairingMode, sentence } from "$lib/pairing";
-  import { sessionChip } from "$lib/view";
+  import { pixelSyncthing, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import Confirm from "../components/Confirm.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
@@ -25,7 +25,7 @@
     | { kind: "pixel"; item: PixelView | null }
     | { kind: "pairing"; item: PixelView }
     | { kind: "paired"; item: PixelView };
-  type Asking = { title: string; message: string; detail?: string; confirm: string; run: () => Promise<unknown> };
+  type Asking = { title: string; message: string; detail?: string; more?: string[]; confirm: string; primary?: boolean; refused?: (message: string) => string; run: () => Promise<unknown> };
 
   const loader = new Loader(async () => {
     const [people, accounts, pixels, pairing] = await Promise.all([
@@ -34,7 +34,7 @@
       apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
       pairingMode(),
     ]);
-    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, pairing: pairing.kind === "on", now: nowSeconds() };
+    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, syncthing: pixels.syncthing, pairing: pairing.kind === "on", now: nowSeconds() };
   });
 
   let formOpen = $state(false);
@@ -126,6 +126,21 @@
     });
   }
 
+  function shareAgain(pixel: PixelView): void {
+    ask({
+      title: `Share ${pixel.name}'s folder again?`,
+      message: `Darkroom removed ${pixel.name}'s folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at ${pixel.name}'s folder on the photo share.`,
+      more: [
+        `If you share it again, Darkroom adds the folder afresh, Send Only, at ${pixel.name}'s folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on ${pixel.name} asks, accept the folder there.`,
+        "If the folder is changed outside Darkroom again, Darkroom removes it again.",
+      ],
+      confirm: "Share folder again",
+      primary: true,
+      refused: (m) => `Couldn't share ${pixel.name}'s folder again: ${m.replace(/\.$/, "")}.`,
+      run: () => apiCall<"POST /api/pixels/{id}/release-folder">(`/api/pixels/${pixel.id}/release-folder`, { method: "POST", body: { confirmed: true } }),
+    });
+  }
+
   function removePixel(pixel: PixelView): void {
     ask({
       title: `Delete ${pixel.name}?`,
@@ -197,17 +212,32 @@
         <h2 class="text-md font-semibold">Pixels</h2>
         <button type="button" class="btn" disabled={data.accounts.length === 0} onclick={() => edit({ kind: "pixel", item: null })}>Add Pixel</button>
       </div>
-      <Table label="Pixels" columns={["Device", "Google account", "People served", "Last sync", ""]} rows={data.pixels} empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."}>
+      <Table label="Pixels" columns={data.syncthing === null ? ["Device", "Google account", "People served", "Last sync", ""] : ["Device", "Google account", "People served", "Syncthing", "Last sync", ""]} rows={data.pixels} empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."}>
         {#snippet row(pixel)}
+          {@const transport = data.syncthing?.find((t) => t.pixel_id === pixel.id)}
+          {@const state = transport === undefined ? null : pixelSyncthing(transport, data.now)}
           <tr>
             <td data-label="Device"><b>{pixel.name}</b></td>
             <td data-label="Google account">{data.accounts.find((a) => a.id === pixel.google_account_id)?.email ?? "Unknown"}</td>
             <td data-label="People served">{names(pixel.people_ids.map((id) => personName(data.people, id)), "No one")}</td>
+            {#if data.syncthing !== null}
+              <td data-label="Syncthing">
+                {#if state !== null}
+                  <span class="flex flex-col items-start gap-1"><Chip tone={state.tone} label={state.label} />
+                    {#each state.lines as line (line)}<span class="text-sm text-ink-muted">{line}</span>{/each}
+                  </span>
+                {/if}
+              </td>
+            {/if}
             <td data-label="Last sync" class:text-ink-muted={pixel.last_sync === null}>{pixel.last_sync === null ? "Not synced yet" : ago(pixel.last_sync, data.now)}</td>
             <td class="md:text-right">
-              <span class="flex flex-wrap justify-end gap-2">
+              <span class="flex flex-wrap justify-end gap-2 md:flex-nowrap">
                 {#if data.pairing && !pixel.syncthing_device_id}
                   <button type="button" class="btn" aria-label="Pair {pixel.name}" onclick={() => pair(pixel)}>Pair</button>
+                {:else if transport?.state === "device_id_invalid" || transport?.state === "device_id_shared"}
+                  <button type="button" class="btn" aria-label="Pair again: {pixel.name}" onclick={() => pair(pixel)}>Pair again</button>
+                {:else if transport?.state === "folder_removed"}
+                  <button type="button" class="btn" aria-label="Share again: {pixel.name}'s folder" onclick={() => shareAgain(pixel)}>Share again</button>
                 {/if}
                 <button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button>
               </span>
@@ -238,6 +268,6 @@
   {/if}
 
   {#if asking}
-    <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} detail={asking.detail} confirm={asking.confirm} run={asking.run} done={removed} />
+    <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} detail={asking.detail} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} run={asking.run} done={removed} />
   {/if}
 </div>
