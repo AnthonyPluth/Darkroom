@@ -357,6 +357,13 @@ class SecurityScanTests(unittest.TestCase):
         self.assertIn("      sarif-upload: false\n", single)
         self.assertEqual(call_input(single, "code-paths"), "^$")
 
+    def test_only_the_one_container_image_scan_names_the_accepted_findings(self):
+        service, single, browser = fleet_security_calls()
+        self.assertEqual(call_input(single, "trivy-image-ignore-file"), ".trivyignore.yaml")
+        for call in (service, browser):
+            with self.subTest(call=call.split(":", 1)[0]):
+                self.assertNotIn("trivy-image-ignore-file:", call)
+
     def test_trivy_scans_the_browser_image_in_its_own_call_not_the_service_images(self):
         service, _, browser = fleet_security_calls()
         image_paths = call_input(browser, "image-paths")
