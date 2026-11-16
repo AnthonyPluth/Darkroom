@@ -460,7 +460,8 @@ def pause(opened: Session, client: syncthing.Client, reason: str, now: float) ->
 
 def observed(client: syncthing.Client) -> tuple[object, ...] | None:
     try:
-        return (tuple(sorted(client.folders(), key=lambda found: found.id)), tuple(sorted(client.devices(), key=lambda found: found.device_id)))
+        folders = tuple(sorted(client.folders(), key=lambda found: found.id))
+        return (folders, tuple(client.ignores(found.id) for found in folders), tuple(sorted(client.devices(), key=lambda found: found.device_id)))
     except syncthing.SyncthingFailed:
         return None
 
