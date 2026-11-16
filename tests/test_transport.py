@@ -475,6 +475,11 @@ class ReconcilerTests(unittest.TestCase):
         self.assertEqual((jo.completion, jo.last_seen, jo.updated), (100.0, 1794312000.123456, NOW + 10))
         self.assertEqual((sam.completion, sam.last_seen), (100.0, None))
         self.assertEqual((self.opened.get(Pixel, self.jo_pixel).last_sync, self.opened.get(Pixel, self.sam_pixel).last_sync), (NOW + 10, None))
+        self.assertEqual((jo.synced, sam.synced), (True, False))
+        self.fake.completions[(self.folder_id(self.jo_pixel), JO_DEVICE)] = {"completion": 100, "needItems": 0, "needDeletes": 2}
+        self.reconcile(at=NOW + 15)
+        jo = self.opened.get(PixelTransport, self.jo_pixel, populate_existing=True)
+        self.assertEqual((jo.connected, jo.completion, jo.synced, self.opened.get(Pixel, self.jo_pixel).last_sync), (True, 100.0, False, NOW + 10))
         self.fake.completions[(self.folder_id(self.jo_pixel), JO_DEVICE)] = {"completion": 40.5, "needItems": 3}
         self.reconcile(at=NOW + 20)
         self.assertEqual((self.opened.get(PixelTransport, self.jo_pixel).completion, self.opened.get(Pixel, self.jo_pixel).last_sync), (40.5, NOW + 10))
@@ -519,7 +524,7 @@ class ReconcilerTests(unittest.TestCase):
         with mock.patch.object(syncthing.Client, "folders", side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
             self.assertIsNotNone(self.reconcile(at=NOW + 1).failure)
         jo = self.opened.get(PixelTransport, self.jo_pixel)
-        self.assertEqual((jo.connected, jo.error), (False, transport.DOWN))
+        self.assertEqual((jo.connected, jo.synced, jo.error), (False, False, transport.DOWN))
 
     def test_reports_that_cannot_be_read_leave_the_reconcile_standing(self):
         self.reconcile()

@@ -156,7 +156,7 @@ class SyncthingStatusApiTests(ApiCase):
         super().setUp()
         jo = self.person()
         account = self.account(jo["id"])
-        names = ("Unpaired", "Held", "Checking", "Waiting", "Away", "Sending", "Connected", "Recent")
+        names = ("Unpaired", "Held", "Checking", "Waiting", "Away", "Sending", "Deleting", "Connected", "Recent")
         self.pixels = {name: self.pixel(account["id"], name, syncthing_device_id=None if name == "Unpaired" else made_up_device(index))["id"]
                        for index, name in enumerate(names)}
         self.now = utc_now().timestamp()
@@ -170,7 +170,8 @@ class SyncthingStatusApiTests(ApiCase):
         values = {
             "Held": {"error": transport.HELD}, "Checking": {"error": transport.CHECKING}, "Waiting": {},
             "Away": {"last_seen": now - 4 * 86_400 - 60}, "Sending": {"connected": True, "completion": 82.5, "last_seen": now},
-            "Connected": {"connected": True, "completion": 100.0, "last_seen": now}, "Recent": {"last_seen": now - 5 * 3600},
+            "Deleting": {"connected": True, "completion": 100.0, "synced": False, "last_seen": now},
+            "Connected": {"connected": True, "completion": 100.0, "synced": True, "last_seen": now}, "Recent": {"last_seen": now - 5 * 3600},
         }
         with db.session(self.engine) as opened:
             for name, fields in values.items():
@@ -194,7 +195,7 @@ class SyncthingStatusApiTests(ApiCase):
         self.assertEqual(reply["syncthing"]["state"], "running")
         self.assertEqual(self.states(reply["syncthing"]), {
             "Unpaired": ("not_paired", 0, 0), "Held": ("held", 3, 0), "Checking": ("checking", 0, 0), "Waiting": ("waiting", 0, 0), "Away": ("not_seen", 0, 4),
-            "Sending": ("sending", 0, 0), "Connected": ("connected", 0, 0), "Recent": ("not_connected", 0, 0)})
+            "Sending": ("sending", 0, 0), "Deleting": ("sending", 0, 0), "Connected": ("connected", 0, 0), "Recent": ("not_connected", 0, 0)})
         person = reply["people"][0]
         self.assertEqual([(pixel["name"], pixel["syncthing"]["state"]) for pixel in person["pixels"]][:2], [("Unpaired", "not_paired"), ("Held", "held")])
         _, listed = self.call("GET", "/api/pixels")
@@ -224,7 +225,7 @@ class SyncthingStatusApiTests(ApiCase):
         card = reply["syncthing"]
         self.assertEqual({pixel["name"]: pixel["state"] for pixel in card["pixels"]}, {
             "Unpaired": "not_paired", "Held": "device_id_shared", "Checking": "device_id_shared", "Waiting": "device_id_shared", "Away": "device_id_invalid",
-            "Sending": "folder_removed", "Connected": "folder_path_refused", "Recent": "not_connected"})
+            "Sending": "folder_removed", "Deleting": "sending", "Connected": "folder_path_refused", "Recent": "not_connected"})
         others = {pixel["name"]: pixel["others"] for pixel in card["pixels"]}
         self.assertEqual((others["Held"], others["Checking"], others["Waiting"]), (["Checking", "Waiting"], ["Held", "Waiting"], ["Held", "Checking"]))
         self.assertEqual({name for name, listed in others.items() if listed}, {"Held", "Checking", "Waiting"})

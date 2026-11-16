@@ -132,7 +132,7 @@ def pixel_view(pixel: Pixel, row: PixelTransport | None, running: bool, copies: 
     if row is None or (row.last_seen is None and not row.connected):
         return PixelView("waiting")
     if row.connected:
-        if row.completion is not None and row.completion < 100.0:
+        if row.completion is not None and (row.completion < 100.0 or not row.synced):
             return PixelView("sending", completion=row.completion, last_seen=row.last_seen)
         return PixelView("connected", completion=row.completion, last_seen=row.last_seen)
     seen = row.last_seen if row.last_seen is not None else now

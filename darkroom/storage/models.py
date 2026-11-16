@@ -67,6 +67,7 @@ class PixelTransport(Base):
     pixel_id: Mapped[int] = mapped_column(ForeignKey("pixels.id", ondelete="CASCADE"), primary_key=True)
     paired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     connected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     last_seen: Mapped[float | None] = mapped_column(Float)
     completion: Mapped[float | None] = mapped_column(Float)
     error: Mapped[str | None] = mapped_column(String)

@@ -417,6 +417,7 @@ def write_report(row: PixelTransport, pixel: Pixel, report: Report, now: float) 
     row.connected = report.connected
     row.last_seen = report.last_seen if report.last_seen is not None else row.last_seen
     row.completion = report.completion
+    row.synced = report.synced
     if report.synced:
         pixel.last_sync = now
 
@@ -443,7 +444,7 @@ def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: b
         if report is not None:
             write_report(row, pixel, report, now)
         elif pixel.id not in outcome.resumed:
-            row.connected = False
+            row.connected, row.synced = False, False
     opened.commit()
 
 

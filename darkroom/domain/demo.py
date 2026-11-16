@@ -376,6 +376,7 @@ def seed_transport(opened: Session, now: float) -> None:
         opened.add(row)
         seen = None if spec.seen_ago is None else now - spec.seen_ago
         row.paired, row.connected, row.last_seen, row.completion, row.error, row.updated = spec.error is None, spec.connected, seen, None if seen is None else 100.0, spec.error, now
+        row.synced = spec.connected and seen is not None
         pixel.last_sync = seen
         if spec.error == transport.REMOVED and not transport.removed_before(opened, pixel.id):
             events.record(opened, now - 2 * DAY, transport.FOLDER_REMOVED, f"pixel {pixel.id}")
@@ -386,7 +387,7 @@ def seed_transport(opened: Session, now: float) -> None:
 
 def transport_rows(opened: Session, error: str, now: float) -> None:
     for row in opened.execute(select(PixelTransport)).scalars().all():
-        row.paired, row.connected, row.error, row.updated = False, False, error, now
+        row.paired, row.connected, row.synced, row.error, row.updated = False, False, False, error, now
 
 
 def syncthing_state(opened: Session, settings: Settings, state: str, now: float) -> None:
