@@ -27,8 +27,8 @@ const HELLO_MASK_0 = [
   "#######.###.#.##...##",
 ];
 
-const DEVICE = "P56IOI7-MZJNU2Y-IQGDREY-DM2MGTI-MGL3BXN-PQ6W5BM-TBBZ4TJ-XZWICQ2";
-const DEVICE_MASK_3 = [
+const SYNCTHING_DOCS_EXAMPLE_ID = "P56IOI7-MZJNU2Y-IQGDREY-DM2MGTI-MGL3BXN-PQ6W5BM-TBBZ4TJ-XZWICQ2";
+const SYNCTHING_DOCS_EXAMPLE_MASK_3 = [
   "#######.####...#..#.###.#####.#######",
   "#.....#.#.#....#..###.###.....#.....#",
   "#.###.#..##.###.#.#.#.#..####.#.###.#",
@@ -74,11 +74,11 @@ describe("qrMatrix", () => {
   });
 
   it("draws a Syncthing device ID as version 5, module for module as a reference encoder does", () => {
-    expect(drawn(qrMatrix(DEVICE, 3))).toEqual(DEVICE_MASK_3);
+    expect(drawn(qrMatrix(SYNCTHING_DOCS_EXAMPLE_ID, 3))).toEqual(SYNCTHING_DOCS_EXAMPLE_MASK_3);
   });
 
   it("chooses a mask by itself and keeps the finder patterns in three corners", () => {
-    const matrix = qrMatrix(DEVICE);
+    const matrix = qrMatrix(SYNCTHING_DOCS_EXAMPLE_ID);
     const size = matrix.length;
     expect(size).toBe(37);
     const finder = ["#######", "#.....#", "#.###.#", "#.###.#", "#.###.#", "#.....#", "#######"];
