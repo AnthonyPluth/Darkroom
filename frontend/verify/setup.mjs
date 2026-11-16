@@ -1,10 +1,10 @@
 import { auditPage } from "./a11y.mjs";
 
 export const SETUP_PAGE = "setup";
-export const SETUP_SHOTS = ["setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"];
+export const isSetupPage = (name) => name === SETUP_PAGE || name.startsWith(`${SETUP_PAGE}-`);
 export const SIGN_IN_CLIENT = { id: "darkroom-web", secret: "verify-client-secret", groups: "parents" };
 
-export const wantsSetup = (pages, filtered, flowsOnly) => !flowsOnly && (!filtered || pages.includes(SETUP_PAGE));
+export const wantsSetup = (pages, filtered, flowsOnly) => !flowsOnly && (!filtered || pages.some(isSetupPage));
 
 const heading = (page, name) => page.getByRole("heading", { level: 1, name, exact: true });
 const button = (scope, name) => scope.getByRole("button", { name, exact: true });

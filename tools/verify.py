@@ -79,7 +79,7 @@ def wizard_env(root: str, port: int) -> dict[str, str]:
 
 
 def wants_setup(pages: list[str], flows: list[str]) -> bool:
-    return not flows and (not pages or SETUP_PAGE in pages)
+    return not flows and (not pages or any(page == SETUP_PAGE or page.startswith(SETUP_PAGE + "-") for page in pages))
 
 
 def find_faketime(candidates: tuple[str, ...] = FAKETIME_LIBRARIES) -> str | None:

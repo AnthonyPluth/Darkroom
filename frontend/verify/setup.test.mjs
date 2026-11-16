@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { SETUP_PAGE, SETUP_SHOTS, wantsSetup } from "./setup.mjs";
-import { allowedFor, unknownPages } from "./verify.mjs";
+import { SETUP_PAGE, isSetupPage, wantsSetup } from "./setup.mjs";
+import { allowedFor, DEMO_PAGES, SETUP_PAGES, unknownPages } from "./verify.mjs";
 
 describe("the setup pages", () => {
   it("run on a full verify or when asked for, never for flows alone", () => {
     expect(wantsSetup([], false, false)).toBe(true);
     expect(wantsSetup(["status", SETUP_PAGE], true, false)).toBe(true);
+    expect(wantsSetup(["setup-done"], true, false)).toBe(true);
     expect(wantsSetup(["status"], true, false)).toBe(false);
     expect(wantsSetup([], true, true)).toBe(false);
   });
 
   it("are a page verify knows, with an image for every step and the closed screen", () => {
     expect(unknownPages([SETUP_PAGE, "nowhere"])).toEqual(["nowhere"]);
-    expect(SETUP_SHOTS).toEqual(["setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"]);
+    expect(SETUP_PAGES).toEqual(["setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"]);
+    expect(DEMO_PAGES.some(isSetupPage)).toBe(false);
+    expect(unknownPages(["setup-done"])).toEqual([]);
   });
 
   it("let the browser reach the made-up sign-in provider and nothing else", () => {

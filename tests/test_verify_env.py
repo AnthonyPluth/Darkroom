@@ -331,6 +331,8 @@ class RunTests(unittest.TestCase):
     def test_the_setup_pages_run_unless_only_flows_or_other_pages_are_asked_for(self):
         self.assertTrue(verify.wants_setup([], []))
         self.assertTrue(verify.wants_setup(["status", "setup"], []))
+        self.assertTrue(verify.wants_setup(["setup-done"], []))
+        self.assertFalse(verify.wants_setup(["setups"], []))
         self.assertFalse(verify.wants_setup(["status"], []))
         self.assertFalse(verify.wants_setup([], ["open-people"]))
         command = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [], ["http://127.0.0.1:7", "http://127.0.0.1:8"], "http://127.0.0.1:9")

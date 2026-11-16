@@ -1,4 +1,6 @@
-export const ROUTES = { "sign-in": "/", status: "/", people: "/people", exports: "/exports", imports: "/imports", review: "/review", browser: "/browser" };
+export const ROUTES = { "sign-in": "/", status: "/", people: "/people", exports: "/exports", imports: "/imports", review: "/review", browser: "/browser",
+  "setup-welcome": "/setup", "setup-address": "/setup", "setup-sign-in": "/setup", "setup-immich": "/setup", "setup-people": "/setup",
+  "setup-accounts": "/setup", "setup-pixels": "/setup", "setup-alerts": "/setup", "setup-done": "/setup", "setup-closed": "/setup" };
 export const SIGNED_OUT_PAGES = ["sign-in"];
 export const routeOf = (name) => ROUTES[name] ?? `/${name}`;
 

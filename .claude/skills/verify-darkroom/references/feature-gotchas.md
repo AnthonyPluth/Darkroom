@@ -32,3 +32,8 @@ Hand-edited. `tools/user_feature_map.py` merges these into [feature-map.md](feat
 
 ## browser
 - A plain demo visit has no VNC address and shows the not-set-up state. `make verify PAGES="browser"` and the `browser-fullscreen` flow use a synthetic viewer served from the session's own loopback address, labelled as made-up demo data. This checks viewer sizing and full-screen controls without opening Google or a real VNC server.
+
+## setup-welcome
+- The `setup-*` images come from `make verify`'s own walk through the wizard, on two empty servers with `DARKROOM_WIZARD=1` and a made-up sign-in provider (`frontend/verify/setup.mjs`), one per width; `make verify PAGES="setup-welcome"` runs the whole walk.
+- The control session's demo server has the wizard off, so `goto setup-welcome` there shows Welcome, and Start setup leads only to "Setup isn't open".
+- The images carry the servers' loopback ports (the Address field and the callback URL), which change on every run.

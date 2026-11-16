@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
 import { planVisits, runPool, summarize, urlsOf } from "./jobs.mjs";
 import { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer } from "./routes.mjs";
-import { SETUP_PAGE, setupVisit, wantsSetup } from "./setup.mjs";
+import { SETUP_PAGE, isSetupPage, setupVisit, wantsSetup } from "./setup.mjs";
 
 export { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer };
 
@@ -26,7 +26,9 @@ export async function prepareContext(ctx, now) {
 export const loadedWhen = (signedIn) => (signedIn ? "networkidle" : "load");
 export const SETTLE_MS = 300;
 export const FROZEN_NOW = "2026-06-15T12:00:00Z";
-export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser"];
+export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser", "setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"];
+export const SETUP_PAGES = PAGES.filter(isSetupPage);
+export const DEMO_PAGES = PAGES.filter((n) => !isSetupPage(n));
 export const SESSION_FILE = "demo-session.json";
 export const LOADING = "[role=status]:has-text('Loading')";
 
@@ -353,7 +355,7 @@ async function main() {
   if (missing.length) { console.error(`verify: no such flow: ${missing.join(", ")}`); process.exit(2); }
   let cookie;
   try { cookie = sessionCookie(sessionFile); } catch (e) { console.error(`verify: couldn't read the demo session (${e.message})`); process.exit(2); }
-  const pages = (args.length ? args : PAGES).filter((n) => n !== SETUP_PAGE);
+  const pages = (args.length ? args : PAGES).filter((n) => n !== SETUP_PAGE && !isSetupPage(n));
   const setup = wantsSetup(args, args.length > 0, only.length > 0);
   if (setup && (setupUrls.length < IMAGE_VIEWPORTS.length || !signIn)) { console.error(`verify: the setup pages need ${IMAGE_VIEWPORTS.length} setup servers (--setup) and a sign-in provider (--sign-in)`); process.exit(2); }
   const flows = only.length ? everyFlow.filter((f) => only.includes(f.name)) : everyFlow;
