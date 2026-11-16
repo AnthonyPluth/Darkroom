@@ -23,7 +23,7 @@ trap cleanup EXIT
 probe() { docker exec -i "$1" python3 -c "$code" "${@:2}"; }
 seed() { docker exec -i -w /app "$darkroom" python - "$@" < "$here/syncthing_seed.py"; }
 host() { sudo python3 -I "$here/syncthing_host.py" "$@"; }
-logs() { for name in "$darkroom" "$peer"; do docker logs "$name" 2>&1 | grep -v '"event": "request"' | tail -n 60 >&2 || true; done; }
+logs() { for name in "$darkroom" "$peer"; do docker container inspect "$name" >/dev/null 2>&1 || continue; docker logs "$name" 2>&1 | grep -v '"event": "request"' | tail -n 60 >&2 || true; done; }
 fail() { echo "$1" >&2; logs; exit 1; }
 wait_for() {
   for _ in $(seq 1 "$1"); do
@@ -33,7 +33,7 @@ wait_for() {
   fail "timed out: $2"
 }
 field() { python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])[sys.argv[2]], sort_keys=True))' "$1" "$2"; }
-logged_since_start() { docker logs --since "$started" "$darkroom" 2>&1 | grep -qF "$1"; }
+logged_since_start() { local logs; logs=$(docker logs --since "$started" "$darkroom" 2>&1) && grep -qF "$1" <<<"$logs"; }
 start_darkroom() {
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   docker "$@" >/dev/null
@@ -42,7 +42,7 @@ start_darkroom() {
 }
 folder_state() { probe "$darkroom" folder "$folder"; }
 folder_gone() { [ "$(folder_state)" = null ]; }
-folder_running() { folder_state | grep -qF '"paused": false'; }
+folder_running() { local state; state=$(folder_state) && grep -qF '"paused": false' <<<"$state"; }
 peer_files() { docker exec "$peer" find /data/pixel -name 'IMG_*.jpg' -type f | wc -l; }
 snapshot() { host snapshot "$work/share" > "$work/$1.share.json"; seed copies > "$work/$1.copies.json"; host snapshot "$work/peer/pixel" > "$work/$1.peer.json"; }
 unchanged() {
@@ -62,6 +62,8 @@ peer_unchanged() {
 }
 
 sudo install -d -o 99 -g 100 -m 0755 "$work/share" "$work/data" "$work/peer"
+docker rm -f "$darkroom" "$peer" >/dev/null 2>&1 || true
+docker network rm "$net" >/dev/null 2>&1 || true
 docker network create "$net" >/dev/null
 docker run -d --name "$peer" --network "$net" "${sandbox[@]}" -v "$work/peer:/data" --entrypoint /usr/bin/env "$image" \
   PYTHONPATH=/opt/init python3 -P -m darkroom_init.syncthing /data/syncthing >/dev/null
