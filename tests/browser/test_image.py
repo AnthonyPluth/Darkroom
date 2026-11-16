@@ -116,6 +116,23 @@ class BrowserImageTests(unittest.TestCase):
         self.assertLess(DOCKERFILE.index("--require-hashes"), DOCKERFILE.index("USER darkroom-browser"), "packages are installed before dropping root")
 
 
+    def test_the_os_packages_trivy_flagged_are_upgraded_in_the_apt_step(self):
+        apt = DOCKERFILE[DOCKERFILE.index("RUN apt-get update"):DOCKERFILE.index("COPY deploy/browser/requirements.txt")]
+        self.assertIn("apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg6.0t64 libbrotli1", apt)
+        self.assertLess(apt.index("--only-upgrade"), apt.index("rm -rf /var/lib/apt/lists/*"))
+
+    def test_the_build_tools_and_their_caches_leave_the_image_after_the_pinned_install(self):
+        install = DOCKERFILE[DOCKERFILE.index("RUN pip install"):DOCKERFILE.index("RUN if [ \"$(dpkg --print-architecture)\"")]
+        tools = re.search(r"pip uninstall -y --break-system-packages (virtualenv [a-z -]+?) \\\n", install)
+        self.assertIsNotNone(tools)
+        self.assertEqual(set(tools.group(1).split()), {"virtualenv", "python-discovery", "filelock", "distlib", "platformdirs", "packaging"})
+        self.assertFalse(set(tools.group(1).split()) & set(requirement_blocks(REQUIREMENTS)), "only the base image's tools go, never a pinned requirement")
+        self.assertLess(install.index("metadata.version('playwright')"), install.index("pip uninstall"))
+        self.assertLess(install.index("pip uninstall -y --break-system-packages virtualenv"), install.index("pip uninstall -y --break-system-packages pip"))
+        self.assertIn("rm -rf /tmp/requirements.txt /root/.cache", install)
+        self.assertEqual(DOCKERFILE.count("pip install"), 1)
+        self.assertNotRegex(DOCKERFILE[DOCKERFILE.index("pip uninstall -y --break-system-packages pip"):], r"\bpip3? install\b|-m pip\b")
+
 class SingleImageTests(unittest.TestCase):
     def test_the_worker_venv_pins_the_same_playwright_as_the_browser_image(self):
         version = re.search(r"^FROM mcr\.microsoft\.com/playwright/python:v(\d+\.\d+\.\d+)-\w+$", DOCKERFILE, re.M).group(1)
