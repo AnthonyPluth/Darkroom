@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -8,12 +9,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import run
 from darkroom import oidc
-from darkroom.server import common, handler, routes, wizard
+from darkroom.server import auth, common, handler, jobs, routes, wizard
 from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request
 from darkroom.storage import db, stored_settings
 from darkroom.storage.models import Setting, StoredSetting, User
-from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED
+from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN, SETUP_TESTED
 from tests.fakes.oidc_provider import CLIENT_ID, CLIENT_SECRET, FakeProvider
 from tests.privacy import no_leaks
 from tests.shared import cookies_set, fetch, own_database, own_database_url, settings_from, start_server
@@ -229,7 +230,7 @@ class MemberTests(WizardCase):
         bodies = {"/api/setup/address": {"public_url": "https://evil.example.com"}, "/api/setup/immich": {"immich_url": "https://evil.example.com"},
                   "/api/setup/sign-in": {"oidc_issuer": "https://evil.example.com", "oidc_client_id": "x"}}
         found = [route for route in routes.ROUTES if route.auth in routes.SETUP_KINDS]
-        self.assertEqual(len(found), 7)
+        self.assertEqual(len(found), 8)
         for route in found:
             with self.subTest(route=f"{route.method} {route.path}"):
                 status, reply = self.json_call(route.method, route.path, bodies.get(route.path, {}), cookies=jar)
@@ -247,9 +248,11 @@ class TestSignInTests(WizardCase):
             self.assertEqual(self.stored(), {})
             self.assertEqual(self.propose(oidc_client_secret=None)["proposal"]["has_client_secret"], True)
             status, headers, body = self.try_sign_in()
-            self.assertEqual(status, 200, body)
-            self.assertIn("Sign-in works", body.decode())
-        self.assertIn(f"{wizard.CLAIM_COOKIE}=; Path=/; Max-Age=0", "\n".join(headers.get_all("Set-Cookie")))
+            self.assertEqual((status, headers["Location"], body), (303, "/setup", b""))
+        baked = headers.get_all("Set-Cookie")
+        self.assertFalse(any(line.startswith(wizard.CLAIM_COOKIE + "=") for line in baked))
+        self.assertIn(f"{wizard.TEST_COOKIE}=; Path=/auth; Max-Age=0", "\n".join(baked))
+        self.assertRegex(baked[0], rf"^{auth.SESSION_COOKIE}=[^;]+; Path=/; Max-Age={oidc.COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax$")
         loaded = stored_settings.effective(self.settings, self.engine).settings
         self.assertEqual((loaded.oidc_issuer, loaded.oidc_client_id, loaded.oidc_client_secret), (self.provider.base, CLIENT_ID, CLIENT_SECRET))
         self.assertEqual((loaded.oidc_allowed_groups, loaded.oidc_allowed_emails), (("parents",), ()))
@@ -257,7 +260,8 @@ class TestSignInTests(WizardCase):
         self.assertEqual(self.json_call("GET", "/api/setup")[0], 401)
         self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies={})[0], 401)
         with db.session(self.engine) as opened:
-            self.assertEqual((opened.query(User).count(), opened.query(StoredSetting).count()), (0, 5))
+            self.assertEqual((opened.query(User).count(), opened.query(StoredSetting).count()), (1, 5))
+            self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
 
     def test_an_account_the_proposal_does_not_allow_saves_nothing(self):
         self.claim()
@@ -272,7 +276,7 @@ class TestSignInTests(WizardCase):
         self.claim()
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["family"], email="kim@example.com", email_verified=False)[0], 403)
-        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 200)
+        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 303)
         self.assertEqual(self.restarted().oidc_allowed_groups, ("parents",))
 
     def test_a_proposal_changed_during_the_test_saves_nothing(self):
@@ -308,9 +312,9 @@ class TestSignInTests(WizardCase):
         self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": "https://photos.example.com"})[0], 200)
         self.propose()
         self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test"), (409, {"error": setup.ELSEWHERE}))
-        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com"})[0], 401)
+        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com"})[0], 403)
         self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": self.base})[0], 200)
-        self.assertEqual(self.try_sign_in()[0], 200)
+        self.assertEqual(self.try_sign_in()[0], 303)
         self.assertEqual(self.restarted().public_url, self.base)
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {}, b"", self.settings), self.base))
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {"Host": "127.0.0.1"}, b"", self.settings), "http://[::1"))
@@ -331,11 +335,232 @@ class BlankGroupsTests(WizardCase):
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["parents"])[0], 403)
         self.assertEqual(self.stored(), {})
-        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 200)
+        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 303)
         restarted = self.restarted()
         self.assertEqual((restarted.oidc_allowed_groups, restarted.oidc_allowed_emails), ((), ("kim@example.com",)))
         self.assertTrue(oidc.allowed(restarted, "kim@example.com", True, ()))
         self.assertFalse(oidc.allowed(restarted, "jo@example.test", True, ("parents",)))
+
+
+SETUP_ROUTES = tuple((route.method, route.path) for route in routes.ROUTES if route.auth in routes.SETUP_KINDS)
+TESTED_EMAIL = "jo@example.test"
+OTHER_EMAIL = "kim.other@example.test"
+REFUSED = (401, {"error": "sign in required"})
+
+
+class AfterTestCase(WizardCase):
+    def setUp(self):
+        super().setUp()
+        self.claim()
+        state = self.propose()
+        self.assertEqual((state["phase"], state["tested_email"]), ("before_test", None))
+        status, headers, _ = self.try_sign_in()
+        self.assertEqual(status, 303)
+        self.session = cookies_set(headers)[auth.SESSION_COOKIE]
+        self.replies.clear()
+
+    def pair(self):
+        return {wizard.CLAIM_COOKIE: self.cookie, auth.SESSION_COOKIE: self.session}
+
+    def every_route(self, jar, headers=None):
+        return {f"{method} {path}": self.json_call(method, path, {}, cookies=jar, headers=headers) for method, path in SETUP_ROUTES}
+
+    def assert_refused_everywhere(self, jar, headers=None):
+        for route, answer in self.every_route(jar, headers).items():
+            with self.subTest(route=route, jar=sorted(jar), headers=headers):
+                self.assertEqual(answer, REFUSED)
+
+    def assert_closed_for_good(self):
+        for jar in (self.pair(), {wizard.CLAIM_COOKIE: self.cookie}, {auth.SESSION_COOKIE: self.session}, {}):
+            self.assert_refused_everywhere(jar)
+        with mock.patch.dict(os.environ, {"DATABASE_URL": self.engine.url.render_as_string(hide_password=False)}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(run.main(["reopen-setup"]), 0)
+        self.assertEqual(out.getvalue().strip(), run.CLOSED_AFTER_TEST)
+        self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies={}), REFUSED)
+        self.assert_refused_everywhere(self.pair())
+
+    def direct(self, path, jar, settings=None, client="127.0.0.1", method="GET", **headers):
+        cookie = "; ".join(f"{name}={value}" for name, value in jar.items())
+        sent = {"Cookie": cookie, "Host": self.base.removeprefix("http://"), **headers}
+        request = Request(method, path, {}, sent, b"{}" if method != "GET" else b"", settings or self.settings, self.engine, client=client)
+        return handler.dispatch(request).status
+
+
+class AfterTestTests(AfterTestCase):
+    def test_the_tested_pair_carries_on_and_sign_in_works_without_a_restart(self):
+        status, state = self.json_call("GET", "/api/setup", cookies=self.pair())
+        self.assertEqual(status, 200)
+        self.assertEqual((state["phase"], state["tested_email"], state["proposal"]), ("after_test", TESTED_EMAIL, None))
+        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"}, cookies=self.pair())[0], 200)
+        self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies=self.pair())[0], 200)
+        jar = {auth.SESSION_COOKIE: self.session}
+        self.assertEqual(self.json_call("GET", "/api/me", cookies=jar), (200, {"sub": "user-1", "email": TESTED_EMAIL, "name": "Jo Example", "groups": ["parents"]}))
+        self.assertEqual(self.json_call("GET", "/api/people", cookies=jar)[0], 200)
+        self.assertIsNone(self.settings.oidc_issuer or None)
+        with db.session(self.engine) as opened:
+            tested = json.loads(opened.get(Setting, SETUP_TESTED).value)
+            self.assertEqual(set(tested), {"sub", "email", "session", "at"})
+            self.assertNotEqual(tested["session"], self.session)
+            self.assertEqual(oidc.find_session(opened, self.session).token_hash, tested["session"])
+            self.assertIsNotNone(oidc.find_session(opened, self.session).refresh_token_sealed)
+
+    def test_anything_but_the_pair_from_this_network_gets_401_on_every_setup_route(self):
+        with db.session(self.engine) as opened:
+            second = oidc.new_session(opened, self.settings, "user-1", common.now())
+        with no_leaks(self, self.session, self.cookie, second, TESTED_EMAIL, SECRET_CANARY, replies=self.replies):
+            self.assert_refused_everywhere({wizard.CLAIM_COOKIE: self.cookie})
+            self.assert_refused_everywhere({auth.SESSION_COOKIE: self.session})
+            self.assert_refused_everywhere({wizard.CLAIM_COOKIE: self.cookie, auth.SESSION_COOKIE: second})
+            self.assert_refused_everywhere({wizard.CLAIM_COOKIE: "guess", auth.SESSION_COOKIE: self.session})
+            for headers in ({"X-Forwarded-For": "192.168.1.20"}, {"Forwarded": "for=10.0.0.2"}, {"X-Real-IP": "10.0.0.2"}, {"Host": "rebound.example"}):
+                self.assert_refused_everywhere(self.pair(), headers)
+            for client in ("198.51.100.7", "2001:db8::1", "100.64.0.9", ""):
+                for method, path in SETUP_ROUTES:
+                    with self.subTest(client=client, route=path):
+                        self.assertEqual(self.direct(path, self.pair(), client=client, method=method, Origin=self.base), 401)
+            self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://x.lan"}, cookies=self.pair(), headers={"Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(self.json_call("GET", "/api/setup", cookies=self.pair())[0], 200)
+        with db.session(self.engine) as opened:
+            oidc.remember_user(opened, oidc.Identity("user-2", OTHER_EMAIL, "Kim Other", ("parents",), True), common.now())
+            other = oidc.new_session(opened, self.settings, "user-2", common.now())
+        self.replies.clear()
+        with no_leaks(self, self.session, self.cookie, other, TESTED_EMAIL, replies=self.replies):
+            self.assert_refused_everywhere({wizard.CLAIM_COOKIE: self.cookie, auth.SESSION_COOKIE: other})
+            self.assert_refused_everywhere(self.pair())
+
+    def test_a_second_claim_after_the_test_is_refused(self):
+        with db.session(self.engine) as opened:
+            held = opened.get(Setting, SETUP_CLAIM).value
+        self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies={}), REFUSED)
+        self.assertEqual(self.json_call("POST", "/api/setup/claim", cookies={wizard.CLAIM_COOKIE: self.cookie}), REFUSED)
+        status, headers, _ = self.call("POST", "/api/setup/claim", cookies=self.pair())
+        self.assertEqual((status, headers.get_all("Set-Cookie")), (200, None))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(Setting, SETUP_CLAIM).value, held)
+
+    def test_the_address_and_the_sign_in_are_settled_by_the_test(self):
+        for path, body in (("/api/setup/address", {"public_url": "http://other.lan:8000"}), ("/api/setup/sign-in", {"oidc_issuer": self.provider.base, "oidc_client_id": CLIENT_ID}),
+                           ("/api/setup/sign-in/test", {})):
+            with self.subTest(path=path):
+                self.assertEqual(self.json_call("POST", path, body, cookies=self.pair()), (409, {"error": setup.SETTLED}))
+        self.assertNotIn("DARKROOM_PUBLIC_URL", self.stored())
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
+
+    def test_turning_the_wizard_off_and_on_again_reopens_only_the_pair(self):
+        off = dataclasses.replace(self.settings, wizard=False)
+        self.assertEqual(self.direct("/api/setup", self.pair(), off), 401)
+        self.assertEqual(self.direct("/api/setup", self.pair()), 200)
+        self.assertEqual(self.direct("/api/setup/claim", {}, method="POST"), 401)
+        self.assertEqual(self.direct("/api/setup", {wizard.CLAIM_COOKIE: self.cookie}), 401)
+        for refused in (dataclasses.replace(self.settings, allow_no_auth=True), dataclasses.replace(self.settings, demo=True)):
+            self.assertEqual(self.direct("/api/setup", self.pair(), refused), 401)
+
+
+class ClosingTests(AfterTestCase):
+    def test_finish_closes_setup_for_good(self):
+        status, headers, reply = self.call("POST", "/api/setup/finish", cookies=self.pair())
+        self.assertEqual((status, json.loads(reply)), (200, {"ok": True}))
+        self.assertIn(f"{wizard.CLAIM_COOKIE}=; Path=/; Max-Age=0", "\n".join(headers.get_all("Set-Cookie")))
+        self.assertEqual(self.json_call("GET", "/api/me", cookies={auth.SESSION_COOKIE: self.session})[0], 200)
+        self.assert_closed_for_good()
+
+    def test_signing_out_closes_setup_for_good(self):
+        self.assertEqual(self.call("POST", "/auth/logout", cookies={auth.SESSION_COOKIE: self.session})[0], 303)
+        self.assert_closed_for_good()
+
+    def test_an_expired_tested_session_closes_setup_for_good(self):
+        with db.session(self.engine) as opened:
+            oidc.find_session(opened, self.session).expires = 1.0
+        self.assert_closed_for_good()
+
+    def test_a_failed_recheck_of_the_tested_session_closes_setup_for_good(self):
+        with db.session(self.engine) as opened:
+            oidc.find_session(opened, self.session).last_checked = 1.0
+        self.provider.revoke_all()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            jobs.build(self.settings, self.engine, common.now()).run_one("sessions.recheck", common.now())
+        with db.session(self.engine) as opened:
+            self.assertIsNone(oidc.find_session(opened, self.session))
+        self.assert_closed_for_good()
+
+    def test_another_accounts_sign_in_closes_setup_for_good(self):
+        status, headers, _ = self.call("GET", "/auth/login", cookies={})
+        self.assertEqual(status, 303)
+        query = {name: values[0] for name, values in parse_qs(urlsplit(headers["Location"]).query).items()}
+        self.provider.issue("code-other-7c6b5a", nonce=query["nonce"], challenge=query["code_challenge"], sub="user-2", email=OTHER_EMAIL, groups=["parents"])
+        status, headers, _ = self.call("GET", f"/auth/callback?code=code-other-7c6b5a&state={query['state']}", cookies={auth.LOGIN_COOKIE: query["state"]})
+        self.assertEqual(status, 303)
+        other = cookies_set(headers)[auth.SESSION_COOKIE]
+        self.assertEqual(self.json_call("GET", "/api/me", cookies={auth.SESSION_COOKIE: other})[1]["email"], OTHER_EMAIL)
+        self.assert_refused_everywhere({wizard.CLAIM_COOKIE: self.cookie, auth.SESSION_COOKIE: other})
+        self.assert_closed_for_good()
+
+    def test_seven_days_after_the_test_setup_closes_for_good(self):
+        with db.session(self.engine) as opened:
+            tested_at = json.loads(opened.get(Setting, SETUP_TESTED).value)["at"]
+        with mock.patch.object(wizard, "now", return_value=tested_at + wizard.AFTER_TEST_SECONDS - 60):
+            self.assertEqual(self.json_call("GET", "/api/setup", cookies=self.pair())[0], 200)
+        with mock.patch.object(wizard, "now", return_value=tested_at + wizard.AFTER_TEST_SECONDS):
+            self.assert_refused_everywhere(self.pair())
+        with mock.patch.dict(os.environ, {"DATABASE_URL": self.engine.url.render_as_string(hide_password=False)}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            run.main(["reopen-setup"])
+        self.assert_closed_for_good()
+
+    def test_a_damaged_test_record_closes_setup_and_reopens_nothing(self):
+        with db.session(self.engine) as opened:
+            opened.get(Setting, SETUP_TESTED).value = "{not json"
+        self.assert_closed_for_good()
+        for value in ('{"sub": "", "email": "", "session": "x", "at": 1}', '{"sub": "a", "email": "", "session": "x", "at": true}', "[]"):
+            self.assertIsNone(wizard.read_tested(value))
+
+    def test_finish_needs_a_passed_test(self):
+        self.assertEqual(self.json_call("POST", "/api/setup/finish", cookies=self.pair())[0], 200)
+        self.assertEqual(self.json_call("POST", "/api/setup/finish", cookies=self.pair()), REFUSED)
+
+
+class FinishBeforeTheTestTests(WizardCase):
+    def test_finish_before_the_test_is_refused_and_changes_nothing(self):
+        self.claim()
+        self.assertEqual(self.json_call("POST", "/api/setup/finish"), (409, {"error": setup.NOT_TESTED}))
+        self.assertEqual(self.json_call("GET", "/api/setup")[1]["phase"], "before_test")
+
+
+class LiveSettingsTests(WizardCase):
+    def test_stored_values_reach_the_running_jobs_without_a_restart(self):
+        scheduler = jobs.build(self.settings, self.engine, common.now())
+        self.claim()
+        self.assertEqual(self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"})[0], 200)
+        self.assertEqual(self.json_call("POST", "/api/setup/alerts", {"resend_api_key": RESEND_KEY, "alert_email_from": "alerts@example.com", "alert_email_to": "jo@example.com"})[0], 200)
+        seen = []
+
+        def not_reached(settings):
+            seen.append(settings.immich_url)
+            raise jobs.immich.NotConfigured("not reached in this test")
+
+        with mock.patch.object(jobs.immich.Client, "at", side_effect=not_reached):
+            scheduler.run_one("immich.reconcile", common.now())
+        self.assertEqual(seen, ["http://immich.lan:2283"])
+        with mock.patch.object(jobs, "pusher_of", side_effect=lambda settings: seen.append(settings.alert_email_to)) as made:
+            scheduler.run_one("alerts.push", common.now())
+            scheduler.run_one("alerts.push", common.now())
+        self.assertEqual((seen[1:], made.call_count), (["jo@example.com"], 1))
+
+    def test_the_health_check_reads_no_stored_settings(self):
+        with mock.patch.object(stored_settings, "effective", side_effect=AssertionError("read")):
+            self.assertEqual(self.json_call("GET", "/healthz")[0], 200)
+            self.assertEqual(self.json_call("GET", "/api/setup")[0], 500)
+
+    def test_a_request_sees_the_stored_values_and_the_environment_still_wins(self):
+        self.claim()
+        self.json_call("POST", "/api/setup/immich", {"immich_url": "http://immich.lan:2283"})
+        request = Request("GET", "/", {}, {}, b"", self.settings, self.engine)
+        self.assertEqual(handler.with_stored(request).immich_url, "http://immich.lan:2283")
+        self.assertIs(handler.with_stored(dataclasses.replace(request, engine=None)), self.settings)
+        pinned = settings_from(DARKROOM_SECRET_KEY=KEY, DARKROOM_WIZARD="1", IMMICH_URL="http://pinned.lan")
+        self.assertEqual(handler.with_stored(dataclasses.replace(request, settings=pinned)).immich_url, "http://pinned.lan")
 
 
 class NoKeyTests(WizardCase):

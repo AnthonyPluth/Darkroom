@@ -26,7 +26,8 @@
         "tests/test_auth_routes.py",
         "tests/test_demo_session.py",
         "tests/test_every_route.py",
-        "tests/test_static.py"
+        "tests/test_static.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
@@ -50,7 +51,8 @@
         "tests/test_auth_routes.py",
         "tests/test_demo_session.py",
         "tests/test_routes_table.py",
-        "tests/test_viewer_relay.py"
+        "tests/test_viewer_relay.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
@@ -140,7 +142,8 @@
         "tests/test_pixels_api.py",
         "tests/test_secretbox.py",
         "tests/test_static.py",
-        "tests/test_stored_settings.py"
+        "tests/test_stored_settings.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
@@ -158,7 +161,8 @@
         "tests/test_pixels_api.py",
         "tests/test_secretbox.py",
         "tests/test_static.py",
-        "tests/test_stored_settings.py"
+        "tests/test_stored_settings.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
@@ -647,6 +651,16 @@
       "route": "POST /api/setup/sign-in/test",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.test_sign_in",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_wizard_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/setup/finish",
+      "auth": "setup",
+      "handler": "darkroom.server.api.wizard.finish_setup",
       "frontend": [],
       "tests": [
         "tests/test_every_route.py",

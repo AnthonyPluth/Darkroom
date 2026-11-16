@@ -4,6 +4,7 @@ import dataclasses
 import ipaddress
 import json
 import secrets
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from sqlalchemy import delete, select
@@ -11,10 +12,10 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.server import auth
-from darkroom.server.common import Principal, Request, Response, engine_of, first_query, header, now, page
+from darkroom.server.common import Principal, Request, Response, engine_of, first_query, header, now, page, redirect
 from darkroom.storage import db, secretbox, stored_settings
 from darkroom.storage.models import Setting, User
-from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN
+from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN, SETUP_TESTED
 
 CLAIM_COOKIE = "darkroom_setup"
 TEST_COOKIE = "darkroom_setup_login"
@@ -25,7 +26,28 @@ PRIVATE_NETWORKS = tuple(ipaddress.ip_network(network) for network in ("10.0.0.0
 SIGN_IN_VARIABLES = ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ALLOWED_GROUPS", "OIDC_ALLOWED_EMAILS")
 REOPENED_KEYS = (SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN)
 CLOSED, UNCLAIMED, CLAIMANT, OTHER = "closed", "unclaimed", "claimant", "other"
+BEFORE_TEST, AFTER_TEST = "before_test", "after_test"
+AFTER_TEST_SECONDS = 7 * 86_400
 TEST_PATH = "/setup?proposal="
+SETUP_PAGE = "/setup"
+
+
+@dataclass(frozen=True)
+class Tested:
+    sub: str
+    email: str
+    session: str
+    at: float
+
+
+@dataclass(frozen=True)
+class Window:
+    phase: str
+    claim: str = ""
+    tested: Tested | None = None
+
+
+SHUT = Window(CLOSED)
 
 
 def private_peer(client: str) -> bool:
@@ -38,8 +60,12 @@ def private_peer(client: str) -> bool:
     return any(address in network for network in PRIVATE_NETWORKS)
 
 
+def turned_on(settings: config.Settings) -> bool:
+    return settings.wizard and not (settings.allow_no_auth or settings.demo)
+
+
 def open_by_settings(settings: config.Settings) -> bool:
-    return settings.wizard and not (config.oidc_configured(settings) or config.no_auth_allowed(settings) or config.demo_allowed(settings))
+    return turned_on(settings) and not config.oidc_configured(settings)
 
 
 def from_this_network(request: Request) -> bool:
@@ -48,13 +74,47 @@ def from_this_network(request: Request) -> bool:
     return private_peer(request.client) and auth.no_auth_address_allowed(request)
 
 
-def locked(opened: Session) -> bool:
-    return opened.get(Setting, SETUP_LOCKED) is not None or opened.scalars(select(User.sub).limit(1)).first() is not None
+def read_tested(value: str | None) -> Tested | None:
+    try:
+        fields = json.loads(value or "")
+    except ValueError:
+        return None
+    if not isinstance(fields, dict) or not all(isinstance(fields.get(name), str) for name in ("sub", "email", "session")):
+        return None
+    moment = fields.get("at")
+    if isinstance(moment, bool) or not isinstance(moment, (int, float)) or not fields["sub"] or not fields["session"]:
+        return None
+    return Tested(fields["sub"], fields["email"], fields["session"], float(moment))
+
+
+def someone_else_signed_in(opened: Session, sub: str | None) -> bool:
+    others = select(User.sub).limit(1) if sub is None else select(User.sub).where(User.sub != sub).limit(1)
+    return opened.scalars(others).first() is not None
+
+
+def window(opened: Session, at: float) -> Window:
+    if opened.get(Setting, SETUP_LOCKED) is not None:
+        return SHUT
+    row = opened.get(Setting, SETUP_TESTED)
+    if row is None:
+        return SHUT if someone_else_signed_in(opened, None) else Window(BEFORE_TEST, stored_claim(opened))
+    found = read_tested(row.value)
+    if found is None or at >= found.at + AFTER_TEST_SECONDS or someone_else_signed_in(opened, found.sub):
+        return SHUT
+    return Window(AFTER_TEST, stored_claim(opened), found)
 
 
 def holds_claim(request: Request, claim_hash: str) -> bool:
     token = auth.cookies_of(request).get(CLAIM_COOKIE, "")
-    return bool(token) and len(token) <= 200 and secrets.compare_digest(oidc.hash_token(token), claim_hash)
+    return bool(claim_hash) and bool(token) and len(token) <= 200 and secrets.compare_digest(oidc.hash_token(token), claim_hash)
+
+
+def holds_tested_session(opened: Session, request: Request, found: Tested, at: float) -> bool:
+    token = auth.cookies_of(request).get(auth.SESSION_COOKIE, "")
+    if not token or len(token) > 200 or not secrets.compare_digest(oidc.hash_token(token), found.session):
+        return False
+    who = oidc.session_user(opened, request.settings, token, at)
+    return who is not None and who.sub == found.sub
 
 
 def stored_claim(opened: Session) -> str:
@@ -62,16 +122,24 @@ def stored_claim(opened: Session) -> str:
     return found.value or "" if found is not None else ""
 
 
-def visitor(request: Request) -> str:
-    if not (open_by_settings(request.settings) and from_this_network(request)):
-        return CLOSED
+def standing(request: Request) -> tuple[str, str]:
+    if not (turned_on(request.settings) and from_this_network(request)):
+        return CLOSED, CLOSED
+    moment = now()
     with db.session(engine_of(request)) as opened:
-        if locked(opened):
-            return CLOSED
-        claim = stored_claim(opened)
-    if not claim:
-        return UNCLAIMED
-    return CLAIMANT if holds_claim(request, claim) else OTHER
+        found = window(opened, moment)
+        if found.phase == AFTER_TEST and found.tested is not None:
+            paired = holds_claim(request, found.claim) and holds_tested_session(opened, request, found.tested, moment)
+            return (CLAIMANT, AFTER_TEST) if paired else (CLOSED, CLOSED)
+    if found.phase != BEFORE_TEST or not open_by_settings(request.settings):
+        return CLOSED, CLOSED
+    if not found.claim:
+        return UNCLAIMED, BEFORE_TEST
+    return (CLAIMANT if holds_claim(request, found.claim) else OTHER), BEFORE_TEST
+
+
+def visitor(request: Request) -> str:
+    return standing(request)[0]
 
 
 def principal(request: Request) -> Principal | None:
@@ -131,16 +199,17 @@ def callback(request: Request) -> Response:
 
 def finish_test(request: Request, state: str) -> Response:
     settings = request.settings
-    if principal(request) is None:
+    if standing(request) != (CLAIMANT, BEFORE_TEST):
         return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
     live = live_settings(request)
     with db.session(engine_of(request)) as opened:
         fields = load_proposal(opened, settings.secret_key)
     if fields is None:
         return test_page(409, "Nothing to test", "There are no proposed sign-in settings to test, so nothing was saved.", request)
+    tested_settings = proposed_settings(live, fields)
     try:
         with db.session(engine_of(request)) as opened:
-            oidc.finish_test_login(opened, proposed_settings(live, fields), request.query, state, now(), TEST_PATH + fields["id"])
+            who, refresh_token = oidc.finish_test_login(opened, tested_settings, request.query, state, now(), TEST_PATH + fields["id"])
     except oidc.NotAllowed:
         monitoring.log("test sign-in refused", reason="not_allowed")
         return test_page(403, "Not allowed", "The account you signed in with is not allowed by the proposed settings, so nothing was saved. "
@@ -149,18 +218,33 @@ def finish_test(request: Request, state: str) -> Response:
         monitoring.log("test sign-in failed", reason=type(error).__name__)
         return test_page(403, "The test sign-in failed", f"Something was wrong with this sign-in: {error}. Nothing was saved.", request)
     with db.session(engine_of(request), writing=True) as opened:
+        moment = now()
+        if window(opened, moment).phase != BEFORE_TEST:
+            return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
         current = load_proposal(opened, settings.secret_key)
         if current is None or current["id"] != fields["id"]:
             return test_page(409, "The settings changed", "The proposed sign-in settings changed during the test, so nothing was saved. Test again.", request)
-        moment = now()
         for variable in SIGN_IN_VARIABLES:
             stored_settings.store(opened, variable, fields[variable], settings.secret_key, moment)
-        opened.execute(delete(Setting).where(Setting.key.in_((SETUP_SIGN_IN, SETUP_CLAIM))))
-        db.upsert(opened, Setting, {"key": SETUP_LOCKED, "value": "1"}, ("key",))
-    monitoring.log("test sign-in passed; the sign-in settings are stored and the setup window is closed")
-    return page(200, "Sign-in works", "Darkroom stored these sign-in settings. Restart Darkroom to turn sign-in on, then sign in.", ("/auth/login", "Sign in"),
-                (auth.cleared(settings, TEST_COOKIE, "/auth"), auth.cleared(settings, CLAIM_COOKIE)))
+        oidc.remember_user(opened, who, moment)
+        token = oidc.new_session(opened, tested_settings, who.sub, moment, refresh_token)
+        life = oidc.cookie_life(oidc.find_session(opened, token) or oidc.AuthSession(expires=None), moment)
+        opened.execute(delete(Setting).where(Setting.key == SETUP_SIGN_IN))
+        tested = {"sub": who.sub, "email": who.email or "", "session": oidc.hash_token(token), "at": moment}
+        opened.add(Setting(key=SETUP_TESTED, value=json.dumps(tested)))
+    rechecks = oidc.seal_refresh_token(tested_settings, refresh_token) is not None
+    monitoring.log("test sign-in passed; the sign-in settings are stored, the account is signed in and setup continues", rechecks=rechecks)
+    return redirect(SETUP_PAGE, (auth.session_cookie(tested_settings, token, life), auth.cleared(settings, TEST_COOKIE, "/auth")))
 
 
-def reopen(opened: Session) -> None:
+def close(opened: Session) -> None:
+    opened.execute(delete(Setting).where(Setting.key.in_((SETUP_CLAIM, SETUP_SIGN_IN))))
+    db.upsert(opened, Setting, {"key": SETUP_LOCKED, "value": "1"}, ("key",))
+
+
+def reopen(opened: Session) -> bool:
+    if opened.get(Setting, SETUP_TESTED) is not None:
+        close(opened)
+        return False
     opened.execute(delete(Setting).where(Setting.key.in_(REOPENED_KEYS)))
+    return True

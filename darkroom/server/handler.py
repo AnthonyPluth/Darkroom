@@ -12,7 +12,7 @@ from darkroom import monitoring
 from darkroom.config import Settings, no_auth_allowed
 from darkroom.server import auth, routes, static, wizard
 from darkroom.server.common import CSP, Principal, Request, Response, asks_for_websocket, error_response, header, viewer_url
-from darkroom.storage import db
+from darkroom.storage import db, stored_settings
 
 Authenticator = Callable[[Request], Principal | None]
 
@@ -21,6 +21,13 @@ MAX_BODY = 8 * 1024 * 1024
 AUTHENTICATORS: dict[str, Authenticator] = {"session": auth.session_principal, "worker": auth.worker_principal,
                                              "setup": wizard.principal, "setup-claim": wizard.claim_principal}
 BROWSER_KINDS = ("session", *routes.SETUP_KINDS)
+WITHOUT_STORED = ("/healthz",)
+
+
+def with_stored(request: Request) -> Settings:
+    if request.engine is None:
+        return request.settings
+    return stored_settings.effective(request.settings, request.engine).settings
 
 
 def authenticate(route: routes.Route, request: Request) -> Principal | None:
@@ -35,7 +42,7 @@ def dispatch(request: Request) -> Response:
             return static.serve(request.path, vnc_url=viewer_url(request.settings) or "")
         return error_response("not found", 404)
     route, params = found
-    request = replace(request, params=params)
+    request = replace(request, params=params, settings=request.settings if route.path in WITHOUT_STORED else with_stored(request))
     if route.auth in BROWSER_KINDS and no_auth_allowed(request.settings) and not auth.no_auth_address_allowed(request):
         monitoring.log("request refused without sign-in", reason="host not allowed")
         return error_response(auth.HOST_REFUSED, 403)

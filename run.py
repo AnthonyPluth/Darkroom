@@ -415,15 +415,16 @@ def bind_share() -> int:
 
 
 REOPENED = "the setup wizard is reopened: the next visitor from a private address may claim it, unless someone has already signed in to this Darkroom"
+CLOSED_AFTER_TEST = "the setup wizard is closed for good: its test sign-in had passed, so nothing was reopened; finish the rest on Darkroom's own pages"
 
 
 def reopen_setup() -> int:
     engine = db.make_engine(db.database_url(config.load()))
     with db.session(engine, writing=True) as opened:
-        wizard.reopen(opened)
+        reopened = wizard.reopen(opened)
     engine.dispose()
-    monitoring.log("setup wizard reopened")
-    print(REOPENED)
+    monitoring.log("setup wizard reopened" if reopened else "setup wizard closed after its test sign-in; nothing reopened")
+    print(REOPENED if reopened else CLOSED_AFTER_TEST)
     return 0
 
 
@@ -517,8 +518,7 @@ def serve() -> int:
         print(f"config: {refused}", file=sys.stderr)
         return 1
     loaded = stored_settings.effective(settings, engine)
-    settings = loaded.settings
-    unusable = [*loaded.problems, *config.refuses_to_start(settings)]
+    unusable = [*loaded.problems, *config.refuses_to_start(loaded.settings)]
     if unusable:
         engine.dispose()
         for line in unusable:

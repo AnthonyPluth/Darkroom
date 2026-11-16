@@ -25,7 +25,7 @@ VIEWER_ROUTES = {"GET /viewer/{path*}"}
 UPGRADE = {"Upgrade": "websocket", "Connection": "Upgrade", "Sec-WebSocket-Key": "ZXZlcnktcm91dGUta2V5MQ==", "Sec-WebSocket-Version": "13"}
 SETUP_ROUTES = {
     "GET /api/setup": "setup", "POST /api/setup/claim": "setup-claim", "POST /api/setup/address": "setup", "POST /api/setup/immich": "setup",
-    "POST /api/setup/alerts": "setup", "POST /api/setup/sign-in": "setup", "POST /api/setup/sign-in/test": "setup",
+    "POST /api/setup/alerts": "setup", "POST /api/setup/sign-in": "setup", "POST /api/setup/sign-in/test": "setup", "POST /api/setup/finish": "setup",
 }
 BROWSER_KINDS = {"session", "setup", "setup-claim"}
 CROSS_SITE_HEADERS = ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-site"})

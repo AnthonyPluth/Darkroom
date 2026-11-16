@@ -279,7 +279,7 @@ Values the wizard collects live in a new settings table, sealed where secret. Pr
 8. Alerts, optional: the email settings and a test email.
 9. Done: what to back up (the appdata folder, which contains the key), and where the Status page is.
 
-What a person must still supply: the appdata mapping and ports in the template, the identity provider's details, Immich's address and each person's key, each Google sign-in, each Pixel's scan, confirmation and Google Photos switch, and optionally the email settings. Before sign-in exists, the wizard is open to the first visitor from a private address; the first successful sign-in locks it, and a console command reopens it (decision 7).
+What a person must still supply: the appdata mapping and ports in the template, the identity provider's details, Immich's address and each person's key, each Google sign-in, each Pixel's scan, confirmation and Google Photos switch, and optionally the email settings. Before sign-in exists, the wizard is open to the first visitor from a private address who presses Start setup, and a console command clears a lost claim (decision 7). The passing test sign-in signs that account in and keeps the wizard open for the later steps, in the same sitting and without a restart (stored values apply at once), but only to a request with both that browser's claim and the tested account's session, from the same private address conditions (#346). It closes for good at Finish setup, when the tested session ends, when another account signs in, or 7 days after the test; after the test the console command closes it and reopens nothing.
 
 ## 9. Unraid, backup, upgrade and rollback
 

@@ -19,6 +19,8 @@ NO_PROPOSAL = "there are no proposed sign-in settings to test; send them first"
 ELSEWHERE = ("the test sign-in comes back to DARKROOM_PUBLIC_URL, which is not the address this browser is using, so the wizard could not see it finish; "
              "open the wizard at the address you confirmed, or confirm the address you are using now")
 NO_ADDRESS = "confirm the address Darkroom is opened at first, so the sign-in can come back to it"
+SETTLED = "the address and the sign-in are settled by the passing test sign-in; change them in Darkroom's environment"
+NOT_TESTED = "setup can finish only after the test sign-in has passed"
 
 
 def from_environment(request: Request, *variables: str) -> Response | None:
@@ -102,8 +104,16 @@ def state_of(request: Request) -> contract.SetupState:
         views.append({"variable": entry.variable, "source": source, "set": source != "default", "value": shown})
     with db.session(engine) as opened:
         fields = wizard.load_proposal(opened, request.settings.secret_key)
+        tested = wizard.window(opened, now()).tested
     public_url = found.settings.public_url
-    return {"settings": views, "redirect_uri": oidc.redirect_uri(found.settings) if public_url else None, "proposal": proposal_view(fields)}
+    return {"settings": views, "redirect_uri": oidc.redirect_uri(found.settings) if public_url else None, "proposal": proposal_view(fields),
+            "phase": "after_test" if tested is not None else "before_test", "tested_email": (tested.email or None) if tested is not None else None}
+
+
+def after_the_test(request: Request) -> Response | None:
+    with db.session(engine_of(request)) as opened:
+        tested = wizard.window(opened, now()).tested
+    return error_response(SETTLED, 409) if tested is not None else None
 
 
 def setup_state(request: Request) -> Annotated[Response, contract.SetupState]:
@@ -113,9 +123,12 @@ def setup_state(request: Request) -> Annotated[Response, contract.SetupState]:
 def claim_setup(request: Request) -> Annotated[Response, contract.SetupState]:
     token = secrets.token_urlsafe(32)
     with db.session(engine_of(request), writing=True) as opened:
-        if wizard.locked(opened):
+        found = wizard.window(opened, now())
+        if found.phase == wizard.CLOSED:
             return error_response("sign in required", 401)
-        held = wizard.stored_claim(opened)
+        held = found.claim
+        if found.phase == wizard.AFTER_TEST and not wizard.holds_claim(request, held):
+            return error_response("sign in required", 401)
         if held and not wizard.holds_claim(request, held):
             return error_response(CLAIMED_ELSEWHERE, 409)
         if not held:
@@ -137,7 +150,7 @@ def store_all(request: Request, values: dict[str, str]) -> Response:
 
 
 def set_address(request: Annotated[Request, contract.SetupAddressBody]) -> Annotated[Response, contract.SetupState]:
-    refused = from_environment(request, "DARKROOM_PUBLIC_URL")
+    refused = after_the_test(request) or from_environment(request, "DARKROOM_PUBLIC_URL")
     if refused is not None:
         return refused
     try:
@@ -178,7 +191,7 @@ def set_alerts(request: Annotated[Request, contract.SetupAlertsBody]) -> Annotat
 
 
 def propose_sign_in(request: Annotated[Request, contract.SetupSignInBody]) -> Annotated[Response, contract.SetupState]:
-    refused = from_environment(request, *wizard.SIGN_IN_VARIABLES)
+    refused = after_the_test(request) or from_environment(request, *wizard.SIGN_IN_VARIABLES)
     if refused is not None:
         return refused
     if not request.settings.secret_key:
@@ -205,6 +218,9 @@ def propose_sign_in(request: Annotated[Request, contract.SetupSignInBody]) -> An
 
 
 def test_sign_in(request: Request) -> Annotated[Response, contract.SetupTestStart]:
+    refused = after_the_test(request)
+    if refused is not None:
+        return refused
     live = wizard.live_settings(request)
     if not wizard.same_address(request, live.public_url):
         return error_response(ELSEWHERE, 409)
@@ -219,3 +235,15 @@ def test_sign_in(request: Request) -> Annotated[Response, contract.SetupTestStar
             return error_response(f"the test sign-in could not start: {error}", 502)
     baked = auth.cookie(request.settings, wizard.TEST_COOKIE, state_value, int(oidc.LOGIN_TTL), "/auth")
     return json_response({"location": target}, cookies=(baked,))
+
+
+def finish_setup(request: Request) -> Annotated[Response, contract.Ok]:
+    with db.session(engine_of(request), writing=True) as opened:
+        found = wizard.window(opened, now())
+        if found.phase == wizard.CLOSED:
+            return error_response("sign in required", 401)
+        if found.phase != wizard.AFTER_TEST:
+            return error_response(NOT_TESTED, 409)
+        wizard.close(opened)
+    monitoring.log("setup wizard finished; setup is closed for good")
+    return json_response({"ok": True}, cookies=(auth.cleared(request.settings, wizard.CLAIM_COOKIE),))
