@@ -3,11 +3,13 @@ import dataclasses
 import io
 import json
 import os
+import sqlite3
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import delete
+from sqlalchemy.exc import OperationalError
 
 import run
 from darkroom import oidc
@@ -587,6 +589,18 @@ class LiveSettingsTests(WizardCase):
         with mock.patch.object(stored_settings, "effective", side_effect=AssertionError("read")):
             self.assertEqual(self.json_call("GET", "/healthz")[0], 200)
             self.assertEqual(self.json_call("GET", "/api/setup")[0], 500)
+
+    def test_an_unreadable_database_keeps_the_started_settings_and_a_busy_one_is_retried(self):
+        missing = db.make_engine("sqlite:////nonexistent-darkroom-folder/darkroom.db")
+        self.addCleanup(missing.dispose)
+        request = Request("GET", "/api/me", {}, {"Host": "127.0.0.1"}, b"", self.settings, missing, client="127.0.0.1")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertIs(handler.with_stored(request), self.settings)
+            self.assertEqual(handler.safe_dispatch(request).status, 401)
+        locked = OperationalError("SELECT", {}, sqlite3.OperationalError("database is locked"))
+        with mock.patch.object(stored_settings, "effective", side_effect=locked), contextlib.redirect_stdout(io.StringIO()):
+            response = handler.safe_dispatch(dataclasses.replace(request, engine=self.engine))
+        self.assertEqual((response.status, json.loads(response.body)), (503, {"error": handler.BUSY_MESSAGE}))
 
     def test_a_request_sees_the_stored_values_and_the_environment_still_wins(self):
         self.claim()

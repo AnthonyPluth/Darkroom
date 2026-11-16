@@ -27,7 +27,13 @@ WITHOUT_STORED = ("/healthz",)
 def with_stored(request: Request) -> Settings:
     if request.engine is None:
         return request.settings
-    return stored_settings.effective(request.settings, request.engine).settings
+    try:
+        return stored_settings.effective(request.settings, request.engine).settings
+    except OperationalError as error:
+        if db.is_busy(error):
+            raise
+        monitoring.log("stored settings not read; the request uses the settings Darkroom started with", error=type(error).__name__)
+        return request.settings
 
 
 def authenticate(route: routes.Route, request: Request) -> Principal | None:
