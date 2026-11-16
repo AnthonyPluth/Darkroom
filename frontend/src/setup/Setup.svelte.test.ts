@@ -310,6 +310,59 @@ describe("after the test sign-in", () => {
     expect(server.sent("POST /api/setup/alerts")).toHaveLength(0);
   });
 
+  it("says so when the people can't be reloaded after an add, and keeps Continue off until a retry works", async () => {
+    let people = [] as (typeof jo)[];
+    let reloads = 0;
+    const server = show({
+      "GET /api/setup": after(immich),
+      "GET /api/people": () => {
+        reloads += 1;
+        if (reloads === 2 || reloads === 3) return reply(503, { error: "database is busy" });
+        return { people };
+      },
+      "GET /api/accounts": { accounts: [] },
+      "GET /api/pixels": { pixels: [] },
+      "POST /api/people": () => { people = [jo]; return jo; },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Add person" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add person" });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Name" }), "Jo Example");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add person" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is busy");
+    expect(screen.queryByText("No people yet. Add at least one person to continue.")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Add person" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(stepItem("People")).not.toHaveTextContent("Done");
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(reloads).toBe(3));
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is busy");
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("table", { name: "Persons" })).toHaveTextContent("Jo Example");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(server.sent("POST /api/people")).toHaveLength(1);
+  });
+
+  it("keeps Skip for now away while the accounts are unknown", async () => {
+    sessionStorage.setItem("darkroom.setup.step", "accounts");
+    let reloads = 0;
+    show({
+      "GET /api/setup": after(immich),
+      "GET /api/people": { people: [jo] },
+      "GET /api/accounts": () => (++reloads === 2 ? reply(500, { error: "database is busy" }) : { accounts: [] }),
+      "GET /api/pixels": { pixels: [] },
+      "POST /api/accounts": familyAccount,
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Add account" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add Google account" });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Google account email" }), "family@example.com");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add account" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is busy");
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
   it("closes when the tested session ends", async () => {
     let ended = false;
     show({

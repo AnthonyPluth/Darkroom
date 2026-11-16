@@ -2,17 +2,17 @@
 
 The default deployment is one container, `ghcr.io/anthonypluth/darkroom-single`, built from `Dockerfile.single`. Its init (`darkroom_init/`) starts the app, then the browser worker and its display stack (Xvfb, x11vnc, websockify with noVNC), all as one unprivileged user (uid 99, gid 100 by default), restarts any of them that exits, and hands the browser token it generates at each start to the app and the worker on a pipe. Nothing in it runs as root. The design is [docs/design/single-container.md](../design/single-container.md) (sections 3 to 6 and 9).
 
-The two-container layout (`darkroom` and `darkroom-browser`) is the fallback. It is configured exactly as before ([browser.md](browser.md)) and kept for one minor release after this one became the default; then it is removed (#327). Never run both layouts against the same appdata folder or share at once.
+The separate browser container (`darkroom-browser`) and its settings are gone (#327, a breaking release): its image is no longer published and the compose file has no `browser` profile. Rolling back to it is pinning the previous release (Going back to the two containers, below). The `darkroom` image and compose service stay as the app alone, without the browser worker, so with no Google sign-in, Takeout download or remote browser view; never run it against the same appdata folder or share as the one container.
 
-| | One container | Two containers (fallback) |
-| --- | --- | --- |
-| Images | `darkroom-single` (amd64) | `darkroom` and `darkroom-browser` |
-| Compose | `docker compose --profile single up -d darkroom-single` | `docker compose --profile browser up -d` |
-| Unraid | [deploy/unraid/darkroom.xml](../../deploy/unraid/darkroom.xml) | Two containers set up by hand |
-| Browser token, `DARKROOM_URL`, `VNC_URL`, `DARKROOM_VNC_SECRET` | None: generated, on loopback, or served by the app | Set by hand in both containers |
-| Remote browser view | The app's own Remote browser page, behind Darkroom's sign-in | A second Traefik route to `darkroom-browser:6080` |
-| Browser profiles and failure captures | `browser/` in appdata (`/data/browser`) | `_browser/` on the photo share |
-| Published ports | 8000 only | 8000 (the worker publishes none) |
+| | |
+| --- | --- |
+| Image | `darkroom-single` (amd64) |
+| Compose | `docker compose --profile single up -d darkroom-single` |
+| Unraid | [deploy/unraid/darkroom.xml](../../deploy/unraid/darkroom.xml) |
+| Browser token and the viewer's secret | None to set: generated at every start and handed on pipes |
+| Remote browser view | The app's own Remote browser page, behind Darkroom's sign-in |
+| Browser profiles and failure captures | `browser/` in appdata (`/data/browser`) |
+| Published ports | 8000 only |
 
 ## Before the first deploy
 
@@ -60,65 +60,25 @@ docker compose --profile single up -d darkroom-single
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-`DARKROOM_TAG` in `.env` picks the image tag of every service, so the image and the checkout's seccomp profile come from the same release for every later `docker compose` command, in any shell; left unset, compose pulls `latest`, which matches only a checkout of the newest release. Keep it in `.env` rather than exporting it in one shell, and change it only together with the checkout (Upgrading, below). Always name the service: `--profile single up -d` without `darkroom-single` also starts the two-container `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
+`DARKROOM_TAG` in `.env` picks the image tag of every service, so the image and the checkout's seccomp profile come from the same release for every later `docker compose` command, in any shell; left unset, compose pulls `latest`, which matches only a checkout of the newest release. Keep it in `.env` rather than exporting it in one shell, and change it only together with the checkout (Upgrading, below). Always name the service: `--profile single up -d` without `darkroom-single` also starts the app-only `darkroom` service, which has no profile. The port is published on the host's loopback only, for a reverse proxy on the same host (Traefik) to reach; `docker compose --profile single up -d --build darkroom-single` builds the image from the checkout instead of pulling it, for custom `PUID` and `PGID` (both are build arguments, as in [browser.md](browser.md#users-and-the-shared-group)).
 
 Settings go in `.env` next to `docker-compose.yml`, which compose reads for `PHOTOS_ROOT` and hands to the container whole. Copy only what you set from `.env.example`; in particular leave out `DARKROOM_HOST`, `DARKROOM_PORT`, `DARKROOM_PHOTOS_ROOT`, `DARKROOM_DATA_DIR` and `DARKROOM_BROWSER_ROOT`, which the image sets: `DARKROOM_HOST=127.0.0.1` from the example would make the app listen on the container's own loopback, where the published port cannot reach it.
 
-In the one container, leave `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VNC_SECRET` empty: the init generates the token and the viewer secret and hands them on pipes, and the Remote browser page and the sign-in alert show the app's own viewer, at `/viewer/` under `DARKROOM_PUBLIC_URL` (so set that address, or the page has no viewer). `DARKROOM_URL` is ignored there: the init gives the worker the app's loopback address. `VNC_URL`, when set, still wins and points the page at that address instead, which in one container is a route to nothing; `python run.py check-config` says so. The Traefik route needs only `darkroom-single:8000`, behind the same sign-in as before; the separate `browser.<your-domain>` route and its viewer-secret label go.
+The init generates the browser token and the viewer secret at every start and hands them on pipes, and the Remote browser page and the sign-in alert show the app's own viewer, at `/viewer/` under `DARKROOM_PUBLIC_URL` (so set that address, or the page has no viewer). The worker reaches the app on the container's loopback. `DARKROOM_BROWSER_TOKEN`, `DARKROOM_URL`, `VNC_URL` and `DARKROOM_VNC_SECRET`, the separate browser container's settings, are ignored: when one is still in `.env`, `python run.py check-config` and the start-up log name it as set and ignored, never with its value, and it can be removed. The Traefik route needs only `darkroom-single:8000`, behind the same sign-in as before; a `browser.<your-domain>` route and its viewer-secret label from the two containers go.
 
 ## Syncthing: in the image, off by default
 
-The image carries Darkroom's own Syncthing (v2.1.7, the official release, checked against its signed checksum when the image is built). It stays off until `DARKROOM_SYNCTHING=1` is set. With it on, the init starts Syncthing with its home in `/data/syncthing` (a fresh identity on the first start; an existing Syncthing's keys are never imported), always paused, with automatic upgrades, usage and crash reporting, global and local discovery, relays and NAT traversal off, and its API on a socket inside the container only. Nothing syncs yet: no folder or device is configured, and a later release adds the pairing and resumes what Darkroom approves. Don't publish 22000 or 21027 yet. `check-config` says whether it is on. The way back is to unset the variable and recreate the container; `/data/syncthing` stays, and is backed up with appdata like the secret key, since it holds Syncthing's device key.
+The image carries Darkroom's own Syncthing (v2.1.7, the official release, checked against its signed checksum when the image is built). It stays off until `DARKROOM_SYNCTHING=1` is set. With it on, the init starts Syncthing with its home in `/data/syncthing` (a fresh identity on the first start; an existing Syncthing's keys are never imported), always paused, with automatic upgrades, usage and crash reporting, global and local discovery, relays and NAT traversal off, and its API on a socket inside the container only. With it on, Darkroom configures Syncthing itself and photos start going to the Pixels. Every Pixel whose Syncthing device ID is filled in on the People page's Pixel form gets that device and one Send Only folder, its own `_pixels/<pixel id>/` (the copies of the originals of the people it serves, never `originals/` itself), shared with that device alone, with no versioning and `*.xmp` ignored. Darkroom removes any other folder or device it finds in Syncthing, reads the whole configuration back, and only then resumes the folder and its device, which happens after the first hourly tend has checked the Pixel's copies; it also turns local discovery on. A Pixel without a device ID gets nothing, and so does one whose device ID is invalid or used by another Pixel, or whose `_pixels/<pixel id>/` (or `_pixels/` itself) is a link. A failed share check ([share.md](share.md)) or any Syncthing error pauses every folder and device. Global discovery, relays and NAT traversal stay off, so a Pixel reaches Syncthing only on the local network: through 22000 (TCP and UDP) and, for local discovery, 21027/udp. With the bridge network compose uses, publish those ports only when the Pixels should sync, and know that discovery broadcasts don't cross the bridge; with host or Unraid's br0 networking, Syncthing listens on the LAN directly and local discovery announces the server to every device there. Leave `DARKROOM_SYNCTHING` unset, or remove the device IDs, until you mean photos to leave the server. `check-config` says whether it is on. The way back is to unset the variable and recreate the container; `/data/syncthing` stays, and is backed up with appdata like the secret key, since it holds Syncthing's device key.
 
 ## Moving from the two containers
 
-The database and the generated secret key stay where they are, directly in appdata, and the one container uses the same appdata folder. The browser profiles move from `_browser/` on the share into `browser/` in appdata with a copy that is checked before it is used and never removes the source (design section 9). With Compose:
-
-1. Check out the release you move to and put its tag in `.env`, so the copy below and every later command use that release's image and seccomp profile: `git checkout v1.2.3`, then a line `DARKROOM_TAG=v1.2.3` in `.env` (change the line if `.env` already has one). Move on the release the two containers run, or upgrade them to it first: that way the two containers of the same release are the way back.
-2. Keep the two containers' settings, with that tag, for the way back: `cp .env .env.two-containers`.
-3. Stop both containers: `docker compose --profile browser down`.
-4. Back up `./data` and `$PHOTOS_ROOT/_browser`, and with `DATABASE_URL` set, a dump of that database taken now ([postgres.md](postgres.md)).
-5. Copy and verify the profiles, as Darkroom's user under the same sandbox:
-
-   ```sh
-   docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /photos/_browser --target /data/browser
-   ```
-
-   What it checks, and what to do when it stops, is in [browser.md](browser.md#moving-existing-profiles-into-appdata).
-6. In `.env`, empty `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VNC_SECRET`, and move the Traefik route from `darkroom:8000` to `darkroom-single:8000`.
-7. Start the one container: `docker compose --profile single pull darkroom-single && docker compose --profile single up -d darkroom-single`, then `curl -fsS http://127.0.0.1:8000/healthz`. Within a minute the Remote browser page shows the worker as last seen.
-
-On Unraid, stop both containers, back up as in step 3, put the seccomp profile in place, and run step 5 with the template's flags and paths (the share and appdata paths are yours):
-
-```sh
-docker run --rm --user 99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json \
-  -v /mnt/user/appdata/darkroom:/data -v /mnt/user/photos:/photos -w /app ghcr.io/anthonypluth/darkroom-single:<release> \
-  python run.py copy-browser-state --source /photos/_browser --target /data/browser
-```
-
-Then add the container from the template with the same appdata folder (Unraid, above) and leave the two old containers stopped, with their autostart turned off on the Docker tab.
+The two containers are not in this release. Move from them on the newest `v3` release, the last one that publishes their images and has the `browser` profile, following that release's copy of this page (`git checkout` its tag and read `docs/deploy/one-container.md`; its `DARKROOM_TAG=v1.2.3` steps name that tag). That keeps the two containers of the same release as the way back while you need one. Once the one container runs there, upgrade it to this release (Upgrading, below) and remove `DARKROOM_BROWSER_TOKEN`, `DARKROOM_URL`, `VNC_URL` and `DARKROOM_VNC_SECRET` from `.env`. The profiles are copied into appdata with `copy-browser-state` ([browser.md](browser.md#copying-browser-profiles-copy-browser-state)), which this release keeps.
 
 ## Going back to the two containers
 
-Go back to the two containers of the same release: their images are published with every release until #327, and they start on the database the one container used. With Compose, `DARKROOM_TAG` in `.env` picks the release for all three services. `.env.two-containers` holds the tag of the move (step 1); if the one container was upgraded since, change that line in `.env` to the release it runs now (`docker compose --profile single images darkroom-single` shows it) after restoring the copy, and pull before starting; left unset, the two containers come from `latest`, which can be a newer release that migrates the database, or an older one that refuses it. On Unraid, give both containers' Repository the tag the one container ran (`ghcr.io/anthonypluth/darkroom:v1.2.3` and `ghcr.io/anthonypluth/darkroom-browser:v1.2.3`). An older release than the one you moved with cannot start on a database a newer one has migrated; for that, restore the backup from step 4 (design section 9).
+Rollback is pinning the previous release. The release that removed the two containers (#327) added no migration, so the newest `v3` release starts on the database it left. Stop the one container, check out that release's tag, set `DARKROOM_TAG` in `.env` to it, and follow its copy of this page, "Going back to the two containers", which also copies the profiles back to the share (`copy-browser-state --set-aside`). On Unraid, give the containers that release's tag as **Repository**. A release cannot start on a database a newer one has migrated; after a later release that migrates it, restore the backup taken before that upgrade (design section 9).
 
-- **Before the one container has done any browser work** (no sign-in, no account added, no failure capture): stop it (`docker compose --profile single stop darkroom-single`), `cp .env.two-containers .env`, check that its `DARKROOM_TAG` line names the one container's release, then `docker compose --profile browser pull && docker compose --profile browser up -d`. The profiles on the share are as you left them.
-- **Afterwards**, the share's copy is stale: copy appdata back first, with the container stopped, then start the two containers:
-
-  ```sh
-  docker compose --profile single stop darkroom-single
-  docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
-  cp .env.two-containers .env
-  grep '^DARKROOM_TAG=' .env
-  docker compose --profile browser pull
-  docker compose --profile browser up -d
-  ```
-
-  The `grep` must show the release the one container ran (`docker compose --profile single images darkroom-single` shows its tag); change the line in `.env` before pulling if it does not.
-
-  `--set-aside` renames the old `_browser/` to `_browser.before-<time>` only after the copy is verified; nothing is deleted in either direction.
-
-Remove the stopped one container (`docker compose --profile single rm darkroom-single`) so it is not started again next to the two. `_browser/` on the share, and any `_browser.before-<time>`, are removed by hand once you no longer need the way back; no Darkroom code deletes them. Until then they still hold every account's signed-in session, including accounts deleted later, and so does an older `browser/` left in appdata after going back ([browser.md](browser.md#going-back-to-two-containers) says what to remove before using one again). `copy-browser-state` only ever copies between the share's own `_browser/` and a folder outside the share: any other folder on the share, or one that holds it, is refused before anything is copied or renamed.
+`_browser/` on the share, and any `_browser.before-<time>`, are removed by hand once you no longer need the way back; no Darkroom code deletes them. Until then they still hold every account's signed-in session, including accounts deleted later ([browser.md](browser.md#the-browser-profiles-in-appdata-the-one-container) says what to remove before using one again). `copy-browser-state` only ever copies between the share's own `_browser/` and a folder outside the share: any other folder on the share, or one that holds it, is refused before anything is copied or renamed.
 
 ## Backup and restore
 

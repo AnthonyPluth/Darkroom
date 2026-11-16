@@ -1,11 +1,19 @@
 <script lang="ts">
   import type { SetupState } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
+  import LoadFailed from "../components/LoadFailed.svelte";
   import FormError from "../forms/FormError.svelte";
   import { attempt } from "./attempt";
   import { alertsOn, BUTTON, PRIMARY, ROW, type Counts } from "./wizard";
 
-  let { setup, counts, onfinished, onback }: { setup: SetupState; counts: Counts; onfinished: () => void; onback: () => void } = $props();
+  let { setup, counts, failed, retry, onfinished, onback }: {
+    setup: SetupState;
+    counts: Counts | null;
+    failed: string;
+    retry: () => void;
+    onfinished: () => void;
+    onback: () => void;
+  } = $props();
 
   let busy = $state(false);
   let error = $state("");
@@ -23,7 +31,11 @@
 </script>
 
 <h1 tabindex="-1" class="text-xl font-bold tracking-tight">Darkroom is set up</h1>
-<p>{counts.people} people, {counts.accounts} Google accounts and {counts.pixels} Pixels. Alert emails: {alertsOn(setup) ? "on" : "off"}.</p>
+{#if failed || !counts}
+  <LoadFailed message={failed} {retry} />
+{:else}
+  <p>{counts.people} people, {counts.accounts} Google accounts and {counts.pixels} Pixels. Alert emails: {alertsOn(setup) ? "on" : "off"}.</p>
+{/if}
 <h2 class="text-md font-bold">Before you go</h2>
 <ol class="flex list-decimal flex-col gap-1.5 pl-5">
   <li>Remove <code class="font-mono text-sm">DARKROOM_WIZARD=1</code> from the container's settings.</li>

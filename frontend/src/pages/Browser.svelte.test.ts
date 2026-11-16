@@ -132,6 +132,8 @@ describe("the Remote browser page", () => {
   it("says so when no viewer address is configured", async () => {
     show({ "GET /api/browser/view": { vnc_url: null, worker_last_seen: null }, "GET /api/accounts": { accounts: [] }, "GET /api/browser/jobs": { jobs: [] } });
     expect(await screen.findByText("The remote browser is not set up")).toBeInTheDocument();
+    expect(screen.getByText(/Set DARKROOM_PUBLIC_URL to the address Darkroom is opened at/)).toBeInTheDocument();
+    expect(screen.queryByText(/VNC_URL/)).not.toBeInTheDocument();
     expect(screen.getByText("Worker not seen yet")).toBeInTheDocument();
     expect(screen.queryByTitle("Remote browser")).not.toBeInTheDocument();
   });
