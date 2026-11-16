@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, BrowserJobView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelView, Status } from "$lib/api-types";
+import type { AccountView, BrowserJobView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelSyncthing, PixelView, Status, SyncthingCard } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -36,19 +36,20 @@ export const familyAccount: AccountView = { id: 11, email: "family.photos@exampl
 export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], last_sync: 940, created: 1 };
 export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], last_sync: null, created: 1 };
 
-export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [] };
+export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [], syncthing: null };
 
 export const signInAlert = { id: 1, kind: "sign_in_needed", subject: "family.photos@example.com", message: "family.photos@example.com needs someone to sign in to Google again.", link: null, opened: 900 };
 export const unmatchedAlert = { id: 2, kind: "originals_unmatched", subject: "sam-example", message: "14 of Sam's originals have no match in Google yet.", link: null, opened: 800 };
 
 export const seededStatus: Status = {
   worker_last_seen: 940,
+  syncthing: null,
   alerts: [signInAlert, unmatchedAlert],
   people: [
     {
       id: 1, slug: "jo-example", name: "Jo Example", indexed: 120, with_gps: 100, unknown_time: 3, index_skipped: 0,
       accounts: [{ id: 10, email: "jo.photos@example.com", session_state: "ok", session_checked: 1000, schedule_end: null }],
-      pixels: [{ id: 20, name: "Pixel 9a", google_account_id: 10 }],
+      pixels: [{ id: 20, name: "Pixel 9a", google_account_id: 10, last_sync: 940, syncthing: null }],
       last_import: 700, unmatched: null, alerts: [],
     },
     {
@@ -85,3 +86,30 @@ export const importedExport: ExportView = {
 };
 export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", parts: [part(1, "done", 1), part(2, "failed", 3)] };
 export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [] };
+
+export const transport = (pixel_id: number, name: string, state: PixelSyncthing["state"], extra: Partial<PixelSyncthing> = {}): PixelSyncthing => ({
+  pixel_id, name, state, copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [], ...extra,
+});
+
+export const runningCard: SyncthingCard = {
+  state: "running", reason: null, since: null,
+  pixels: [
+    transport(20, "Pixel 9a", "connected", { completion: 100, last_seen: 990 }),
+    transport(22, "Pixel 7", "sending", { completion: 82.6, last_seen: 990 }),
+    transport(23, "Pixel 6", "not_seen", { days: 4, last_seen: 1000 - 4 * 86_400 }),
+    transport(24, "Pixel 5", "held", { copies: 1, files: 3 }),
+    transport(25, "Pixel 4a", "not_connected", { last_seen: 1000 - 5 * 3600 }),
+  ],
+};
+
+export const syncthingStatus: Status = {
+  ...seededStatus,
+  syncthing: runningCard,
+  people: seededStatus.people.map((person) => person.id === 1
+    ? { ...person, pixels: [
+      { id: 20, name: "Pixel 9a", google_account_id: 10, last_sync: 1000 - 360, syncthing: transport(20, "Pixel 9a", "connected", { completion: 100 }) },
+      { id: 24, name: "Pixel 5", google_account_id: 10, last_sync: 1000 - 2 * 86_400, syncthing: transport(24, "Pixel 5", "held", { files: 3 }) },
+      { id: 26, name: "Pixel 4a", google_account_id: 10, last_sync: null, syncthing: transport(26, "Pixel 4a", "waiting") },
+    ] }
+    : person),
+};

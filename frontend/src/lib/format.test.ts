@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, count, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
+import { ago, count, joined, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
 
 const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m - 1, d, h, min).getTime() / 1000;
 
@@ -44,6 +44,7 @@ describe("small helpers", () => {
     expect(count(2, "person", "people")).toBe("2 people");
     expect(names([], "None")).toBe("None");
     expect(names(["Jo", "Sam"], "None")).toBe("Jo, Sam");
+    expect([joined([]), joined(["A"]), joined(["A", "B"]), joined(["A", "B", "C"])]).toEqual(["", "A", "A and B", "A, B and C"]);
   });
   it("reads the clock in seconds", () => {
     vi.useFakeTimers({ toFake: ["Date"] });

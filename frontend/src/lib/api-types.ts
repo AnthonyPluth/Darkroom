@@ -112,6 +112,10 @@ export interface Decisions {
   page_size: number;
 }
 
+export interface DemoSyncthingBody {
+  state: "running" | "down" | "share_check_failed";
+}
+
 export interface DoneBody {
   result?: Record<string, unknown>;
 }
@@ -424,6 +428,20 @@ export interface PixelState {
   id: number;
   name: string;
   google_account_id: number;
+  last_sync: number | null;
+  syncthing: PixelSyncthing | null;
+}
+
+export interface PixelSyncthing {
+  pixel_id: number;
+  name: string;
+  state: "not_syncing" | "not_paired" | "device_id_invalid" | "device_id_shared" | "folder_removed" | "folder_path_refused" | "checking" | "held" | "waiting" | "not_seen" | "sending" | "connected" | "not_connected";
+  copies: number;
+  files: number;
+  days: number;
+  completion: number | null;
+  last_seen: number | null;
+  others: string[];
 }
 
 export interface PixelView {
@@ -438,6 +456,7 @@ export interface PixelView {
 
 export interface Pixels {
   pixels: PixelView[];
+  syncthing: PixelSyncthing[] | null;
 }
 
 export interface ProgressBody {
@@ -552,6 +571,14 @@ export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
   alerts: AlertView[];
+  syncthing: SyncthingCard | null;
+}
+
+export interface SyncthingCard {
+  state: "starting" | "running" | "down" | "settings_failed" | "version" | "key" | "share_check_failed";
+  reason: string | null;
+  since: number | null;
+  pixels: PixelSyncthing[];
 }
 
 export interface WaitingBody {
@@ -583,6 +610,7 @@ export interface Endpoints {
   "GET /api/me": { body: never; reply: Me };
   "GET /api/status": { body: never; reply: Status };
   "GET /api/events": { body: never; reply: Events };
+  "POST /api/demo/syncthing": { body: DemoSyncthingBody; reply: Ok };
   "GET /api/people": { body: never; reply: People };
   "POST /api/people": { body: PersonCreateBody; reply: PersonReply };
   "PATCH /api/people/{id}": { body: PersonPatchBody; reply: PersonReply };

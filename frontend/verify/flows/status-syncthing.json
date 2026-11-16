@@ -1,0 +1,21 @@
+{
+  "name": "status-syncthing",
+  "page": "status",
+  "steps": [
+    { "expect_text": { "selector": "section[aria-label='Syncthing']", "text": "Syncthing is running with the settings Darkroom set." } },
+    { "demo_post": { "path": "/api/demo/syncthing", "body": { "state": "down" } } },
+    { "reload": true },
+    { "expect_text": { "selector": "section[aria-label='Syncthing']", "text": "Syncthing has not answered for 2 hours." } },
+    { "expect_text": { "selector": "section[aria-label='Open alerts']", "text": "Syncthing down" } },
+    { "screenshot": "down" },
+    { "demo_post": { "path": "/api/demo/syncthing", "body": { "state": "share_check_failed" } } },
+    { "reload": true },
+    { "expect_text": { "selector": "section[aria-label='Syncthing']", "text": "The photo share failed Darkroom's check (the sentinel is missing from the share)" } },
+    { "expect_text": { "selector": "section[aria-label='Open alerts']", "text": "Share check failed" } },
+    { "screenshot": "share-check-failed" },
+    { "demo_post": { "path": "/api/demo/syncthing", "body": { "state": "running" } } },
+    { "reload": true },
+    { "expect_text": { "selector": "section[aria-label='Syncthing']", "text": "Syncthing is running with the settings Darkroom set." } },
+    { "screenshot": "running" }
+  ]
+}
