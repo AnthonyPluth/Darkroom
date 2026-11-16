@@ -16,7 +16,7 @@ DAY = 86400.0
 
 
 class ExportsApiTests(ApiCase):
-    extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN}
+    extra_env = {"browser_token": TOKEN}
 
     def setUp(self):
         super().setUp()

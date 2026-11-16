@@ -511,6 +511,8 @@ class SetupState(TypedDict):
     settings: list[SetupSetting]
     redirect_uri: str | None
     proposal: SetupProposal | None
+    phase: Literal["before_test", "after_test"]
+    tested_email: str | None
 
 
 class SetupAddressBody(TypedDict):

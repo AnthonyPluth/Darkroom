@@ -2650,6 +2650,12 @@
       "SetupState": {
         "additionalProperties": false,
         "properties": {
+          "phase": {
+            "enum": [
+              "before_test",
+              "after_test"
+            ]
+          },
           "proposal": {
             "anyOf": [
               {
@@ -2675,12 +2681,24 @@
               "$ref": "#/components/schemas/SetupSetting"
             },
             "type": "array"
+          },
+          "tested_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
+          "phase",
           "proposal",
           "redirect_uri",
-          "settings"
+          "settings",
+          "tested_email"
         ],
         "type": "object"
       },
@@ -3759,6 +3777,27 @@
           }
         },
         "x-auth": "setup-claim"
+      }
+    },
+    "/api/setup/finish": {
+      "post": {
+        "operationId": "finish_setup",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "setup"
       }
     },
     "/api/setup/immich": {

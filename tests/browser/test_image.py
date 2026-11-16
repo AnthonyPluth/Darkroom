@@ -7,14 +7,12 @@ from xml.etree import ElementTree
 from darkroom.domain.syncthing_version import TESTED_FROM, TESTED_UP_TO, named
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-DOCKERFILE = (ROOT / "Dockerfile.browser").read_text()
-REQUIREMENTS = (ROOT / "deploy/browser/requirements.txt").read_text()
 SINGLE = (ROOT / "Dockerfile.single").read_text()
 SINGLE_REQUIREMENTS = (ROOT / "deploy/single/requirements.txt").read_text()
 SANDBOX = "--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json"
 SINGLE_IMAGE = "ghcr.io/anthonypluth/darkroom-single"
 UNRAID_SECCOMP = "/boot/config/darkroom/seccomp.json"
-FALLBACK_ONLY = ("DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "VNC_URL", "DARKROOM_URL")
+REMOVED_SETTINGS = ("DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "VNC_URL", "DARKROOM_URL")
 
 
 def compose_service(name):
@@ -45,7 +43,7 @@ class BrowserImageTests(unittest.TestCase):
             requirement_blocks("pkg==1.0 --hash=sha256:aa\npkg==2.0\n")
 
     def test_both_images_and_compose_default_to_the_unraid_user_and_group(self):
-        for name in ("Dockerfile", "Dockerfile.browser"):
+        for name in ("Dockerfile", "Dockerfile.single"):
             contents = (ROOT / name).read_text()
             with self.subTest(image=name):
                 self.assertIn("ARG PUID=99", contents)
@@ -53,9 +51,9 @@ class BrowserImageTests(unittest.TestCase):
                 self.assertIn('getent group "$PGID"', contents)
                 self.assertIn('--uid "$PUID" --gid "$PGID"', contents)
         compose = (ROOT / "docker-compose.yml").read_text()
-        self.assertEqual(compose.count('user: "${PUID:-99}:${PGID:-100}"'), 3)
-        self.assertEqual(compose.count("PUID: ${PUID:-99}"), 3)
-        self.assertEqual(compose.count("PGID: ${PGID:-100}"), 3)
+        self.assertEqual(compose.count('user: "${PUID:-99}:${PGID:-100}"'), 2)
+        self.assertEqual(compose.count("PUID: ${PUID:-99}"), 2)
+        self.assertEqual(compose.count("PGID: ${PGID:-100}"), 2)
 
     def test_the_seccomp_profile_allows_chromiums_namespace_and_chroot_sandbox(self):
         profile = json.loads((ROOT / "deploy/browser/seccomp.json").read_text())
@@ -75,85 +73,31 @@ class BrowserImageTests(unittest.TestCase):
         self.assertIn("browser.content()", smoke)
         self.assertIn("chrome_launch_failed", smoke)
 
-    def test_the_playwright_package_is_pinned_to_the_image_version(self):
-        image = re.search(r"^FROM mcr\.microsoft\.com/playwright/python:v(\d+\.\d+\.\d+)-\w+$", DOCKERFILE, re.M)
-        self.assertIsNotNone(image, "the base image must be a pinned Playwright Python image")
-        version = image.group(1)
-        pinned = re.search(r"^playwright==(\d+\.\d+\.\d+)", REQUIREMENTS, re.M)
-        self.assertIsNotNone(pinned, "deploy/browser/requirements.txt must pin playwright==<version>")
-        self.assertEqual(pinned.group(1), version, "the pip pin and the image tag must name the same Playwright release")
-        self.assertIn(f"metadata.version('playwright') == '{version}'", DOCKERFILE, "the build must check the installed version")
-        self.assertIn("import playwright.sync_api", DOCKERFILE, "the build must import the package it installed")
-        self.assertIn("--require-hashes", DOCKERFILE)
-        self.assertIn("--ignore-installed", DOCKERFILE, "the base image ships its own copies of some packages, which pip cannot uninstall")
-
     def test_every_requirement_is_pinned_with_hashes(self):
-        for requirements in (REQUIREMENTS, SINGLE_REQUIREMENTS):
-            blocks = list(requirement_blocks(requirements).values())
-            self.assertTrue(blocks)
-            for block in blocks:
-                with self.subTest(block=block.split()[0]):
-                    self.assertRegex(block.split()[0], r"^[a-z][a-z0-9-]*==\d+\.\d+\.\d+$")
-                    self.assertRegex(block, r"--hash=sha256:[0-9a-f]{64}")
+        blocks = list(requirement_blocks(SINGLE_REQUIREMENTS).values())
+        self.assertEqual({block.split()[0].split("==")[0] for block in blocks}, {"playwright", "greenlet", "pyee", "typing-extensions"})
+        for block in blocks:
+            with self.subTest(block=block.split()[0]):
+                self.assertRegex(block.split()[0], r"^[a-z][a-z0-9-]*==\d+\.\d+\.\d+$")
+                self.assertRegex(block, r"--hash=sha256:[0-9a-f]{64}")
 
     def test_the_pyproject_extra_admits_the_pinned_version(self):
-        pinned = re.search(r"^playwright==(\d+)\.(\d+)\.", REQUIREMENTS, re.M)
+        pinned = re.search(r"^playwright==(\d+)\.(\d+)\.", SINGLE_REQUIREMENTS, re.M)
         major, minor = int(pinned.group(1)), int(pinned.group(2))
         extra = re.search(r'browser = \["playwright \(>=(\d+)\.(\d+),<(\d+)\.0\)"\]', (ROOT / "pyproject.toml").read_text())
         self.assertIsNotNone(extra)
         self.assertGreaterEqual((major, minor), (int(extra.group(1)), int(extra.group(2))))
         self.assertLess(major, int(extra.group(3)))
 
-    def test_google_chrome_is_installed_as_root_on_amd64_only(self):
-        install = re.search(r"^RUN .*playwright install --with-deps chrome.*$", DOCKERFILE, re.M)
-        self.assertIsNotNone(install, "the image installs Google Chrome with the pinned Playwright's own installer")
-        self.assertIn('dpkg --print-architecture)" = "amd64"', DOCKERFILE, "Chrome for Linux is amd64 only")
-        self.assertLess(DOCKERFILE.index("--require-hashes"), install.start(), "the pinned playwright package provides the installer")
-        self.assertLess(install.start(), DOCKERFILE.index("USER darkroom-browser"), "Chrome is installed as root")
-        self.assertNotIn("--no-sandbox", DOCKERFILE)
-        self.assertNotRegex(DOCKERFILE, r"curl[^\n]*\|\s*(ba)?sh")
-
-    def test_the_image_stays_non_root(self):
-        self.assertIn("USER darkroom-browser", DOCKERFILE)
-        self.assertLess(DOCKERFILE.index("--require-hashes"), DOCKERFILE.index("USER darkroom-browser"), "packages are installed before dropping root")
-
-
-    def test_the_os_packages_trivy_flagged_are_upgraded_in_the_apt_step(self):
-        apt = DOCKERFILE[DOCKERFILE.index("RUN apt-get update"):DOCKERFILE.index("COPY deploy/browser/requirements.txt")]
-        self.assertIn("apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg6.0t64 libbrotli1", apt)
-        self.assertLess(apt.index("--only-upgrade"), apt.index("rm -rf /var/lib/apt/lists/*"))
-
-    def test_the_build_tools_and_their_caches_leave_the_image_after_the_pinned_install(self):
-        install = DOCKERFILE[DOCKERFILE.index("RUN pip install"):DOCKERFILE.index("RUN if [ \"$(dpkg --print-architecture)\"")]
-        tools = re.search(r"pip uninstall -y --break-system-packages (virtualenv [a-z -]+?) \\\n", install)
-        self.assertIsNotNone(tools)
-        self.assertEqual(set(tools.group(1).split()), {"virtualenv", "python-discovery", "filelock", "distlib", "platformdirs", "packaging"})
-        self.assertFalse(set(tools.group(1).split()) & set(requirement_blocks(REQUIREMENTS)), "only the base image's tools go, never a pinned requirement")
-        self.assertLess(install.index("metadata.version('playwright')"), install.index("pip uninstall"))
-        self.assertLess(install.index("pip uninstall -y --break-system-packages virtualenv"), install.index("pip uninstall -y --break-system-packages pip"))
-        self.assertIn("rm -rf /tmp/requirements.txt /root/.cache", install)
-        self.assertEqual(DOCKERFILE.count("pip install"), 1)
-        self.assertNotRegex(DOCKERFILE[DOCKERFILE.index("pip uninstall -y --break-system-packages pip"):], r"\bpip3? install\b|-m pip\b")
-
 class SingleImageTests(unittest.TestCase):
-    def test_the_worker_venv_pins_the_same_playwright_as_the_browser_image(self):
-        version = re.search(r"^FROM mcr\.microsoft\.com/playwright/python:v(\d+\.\d+\.\d+)-\w+$", DOCKERFILE, re.M).group(1)
+    def test_the_worker_venv_pins_playwright_and_the_build_checks_that_version(self):
         pinned = re.search(r"^playwright==(\d+\.\d+\.\d+)", SINGLE_REQUIREMENTS, re.M)
         self.assertIsNotNone(pinned, "deploy/single/requirements.txt must pin playwright==<version>")
-        self.assertEqual(pinned.group(1), version)
+        version = pinned.group(1)
         self.assertIn("COPY deploy/single/requirements.txt /tmp/requirements.txt", SINGLE)
         self.assertIn("/opt/worker/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt", SINGLE)
         self.assertIn(f"metadata.version('playwright') == '{version}'", SINGLE)
         self.assertIn("import playwright.sync_api", SINGLE)
-
-    def test_only_greenlet_differs_from_the_browser_images_pins(self):
-        single = requirement_blocks(SINGLE_REQUIREMENTS)
-        browser = requirement_blocks(REQUIREMENTS)
-        self.assertEqual(set(single), set(browser))
-        for name in sorted(set(single) - {"greenlet"}):
-            with self.subTest(package=name):
-                self.assertEqual(single[name], browser[name])
-        self.assertNotEqual(single["greenlet"], browser["greenlet"])
 
     def test_greenlet_is_poetry_locks_with_its_python_314_linux_wheels(self):
         locked = locked_package("greenlet")
@@ -297,38 +241,43 @@ class SingleImageTests(unittest.TestCase):
             self.assertIn(line, single)
         self.assertNotIn("working_dir:", single)
         self.assertNotIn("command:", single)
-        self.assertFalse([name for name in FALLBACK_ONLY if f"{name}:" in single])
+        self.assertFalse([name for name in REMOVED_SETTINGS if f"{name}:" in single])
 
-    def test_the_one_container_comes_first_and_the_fallback_keeps_its_layout(self):
+    def test_the_one_container_comes_first_and_no_separate_browser_container_is_left(self):
         compose = (ROOT / "docker-compose.yml").read_text()
         self.assertLess(compose.index("  darkroom-single:"), compose.index("  darkroom:"))
-        self.assertLess(compose.index("  darkroom:"), compose.index("  darkroom-browser:"))
         self.assertIn("docker compose --profile single up -d darkroom-single", compose[:compose.index("  darkroom-single:")])
+        self.assertEqual(re.findall(r"^  ([a-z][a-z-]*):$", compose, re.M), ["darkroom-single", "darkroom"])
         app = compose_service("darkroom")
-        self.assertNotIn("profiles:", app, "a plain `docker compose up -d` still starts the fallback's app, as before")
+        self.assertNotIn("profiles:", app, "a plain `docker compose up -d` still starts the app alone, as before")
         self.assertIn("image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}", app)
-        for name in ("DARKROOM_BROWSER_TOKEN", "VNC_URL"):
-            self.assertIn(f"{name}: ${{{name}:-}}", app)
-        browser = compose_service("darkroom-browser")
-        self.assertIn("profiles: [browser]", browser)
-        self.assertIn("image: ghcr.io/anthonypluth/darkroom-browser:${DARKROOM_TAG:-latest}", browser)
-        self.assertIn("DARKROOM_URL: http://darkroom:8000", browser)
+        for name in ("darkroom-browser", "Dockerfile.browser", "profiles: [browser]", "6080", *REMOVED_SETTINGS):
+            with self.subTest(name=name):
+                self.assertNotIn(name, compose)
+        self.assertFalse((ROOT / "Dockerfile.browser").exists())
+        self.assertFalse((ROOT / "deploy/browser/entrypoint.sh").exists())
+        self.assertFalse((ROOT / "deploy/browser/requirements.txt").exists())
 
-    def test_ci_validates_both_layouts_and_publishes_all_three_images(self):
+    def test_ci_validates_both_compose_services_and_publishes_the_two_images(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
-        for command in ("docker compose --profile single config --quiet", "docker compose config --quiet", "docker compose --profile browser config --quiet"):
+        for command in ("docker compose --profile single config --quiet", "docker compose config --quiet"):
             self.assertIn(command, workflow)
+        for gone in ("--profile browser", "Dockerfile.browser", "darkroom-browser", "BROWSER_IMAGE", "browser_image"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, workflow)
         publish = workflow[workflow.index("\n  publish:\n"):]
         self.assertIn("needs: [build, single]", publish)
         self.assertIn('echo "SINGLE_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom-single" >> "$GITHUB_ENV"', publish)
-        self.assertIn("for name in IMAGE BROWSER_IMAGE SINGLE_IMAGE; do", publish)
+        self.assertIn("for name in IMAGE SINGLE_IMAGE; do", publish)
         steps = publish.split("      - name: ")
         single = [step for step in steps if "file: Dockerfile.single" in step]
         self.assertEqual(len(single), 1)
         self.assertIn("platforms: linux/amd64\n", single[0])
         self.assertIn("tags: ${{ steps.tags.outputs.single_image }}", single[0])
-        self.assertEqual(len([step for step in steps if "file: Dockerfile.browser" in step]), 1)
+        self.assertEqual(len([step for step in steps if "docker/build-push-action@" in step]), 2)
         self.assertEqual(len([step for step in steps if "tags: ${{ steps.tags.outputs.image }}" in step]), 1)
+        build = workflow[workflow.index("\n  build:\n"):workflow.index("\n  single:\n")]
+        self.assertEqual(build.count("docker/build-push-action@"), 1)
 
 
 def template():
@@ -348,30 +297,36 @@ def call_input(call, name):
 class SecurityScanTests(unittest.TestCase):
     def test_every_image_gets_its_own_call_of_the_same_fleet_release_with_the_same_permissions(self):
         calls = fleet_security_calls()
-        self.assertEqual(len(calls), 3)
-        service, single, browser = calls
+        self.assertEqual(len(calls), 2)
+        service, single = calls
         self.assertNotIn("dockerfile:", service)
         self.assertEqual(call_input(single, "dockerfile"), "Dockerfile.single")
-        self.assertEqual(call_input(browser, "dockerfile"), "Dockerfile.browser")
         pins = {re.search(r"security\.yml@([0-9a-f]{40})", call).group(1) for call in calls}
         self.assertEqual(len(pins), 1, "every call runs the same fleet release")
         permissions = {call[call.index("    permissions:\n"):call.index("    uses:")] for call in calls}
         self.assertEqual(len(permissions), 1)
 
     def test_trivy_scans_the_one_container_image_as_it_scans_the_service_image(self):
-        _, single, _ = fleet_security_calls()
+        _, single = fleet_security_calls()
         image_paths = call_input(single, "image-paths")
         for changed in ("Dockerfile.single", "deploy/single/requirements.txt", "poetry.lock", "pyproject.toml", ".dockerignore"):
             self.assertRegex(changed, image_paths)
         self.assertIn("      sarif-upload: false\n", single)
         self.assertEqual(call_input(single, "code-paths"), "^$")
 
+    def test_no_call_scans_the_removed_browser_image(self):
+        workflow = (ROOT / ".github/workflows/security.yml").read_text()
+        self.assertNotIn("Dockerfile.browser", workflow)
+        self.assertNotIn("browser-image:", workflow)
+        for call in fleet_security_calls():
+            with self.subTest(call=call.split(":")[0]):
+                self.assertNotRegex("Dockerfile.browser", call_input(call, "image-paths"))
+                self.assertNotRegex("deploy/browser/entrypoint.sh", call_input(call, "image-paths"))
+
     def test_only_the_one_container_image_scan_names_the_accepted_findings(self):
-        service, single, browser = fleet_security_calls()
+        service, single = fleet_security_calls()
         self.assertEqual(call_input(single, "trivy-image-ignore-file"), ".trivyignore.yaml")
-        for call in (service, browser):
-            with self.subTest(call=call.split(":", 1)[0]):
-                self.assertNotIn("trivy-image-ignore-file:", call)
+        self.assertNotIn("trivy-image-ignore-file:", service)
 
     def test_every_list_of_accepted_findings_is_owned_reviewed_and_explained(self):
         named = [call_input(call, "trivy-image-ignore-file") for call in fleet_security_calls() if "      trivy-image-ignore-file:" in call]
@@ -387,21 +342,6 @@ class SecurityScanTests(unittest.TestCase):
                 self.assertIn(f"        {name}", second_review)
                 self.assertIn(f"/{name} @AnthonyPluth", owners)
                 self.assertIn("## Accepted scanner findings", security)
-
-    def test_trivy_scans_the_browser_image_in_its_own_call_not_the_service_images(self):
-        service, _, browser = fleet_security_calls()
-        image_paths = call_input(browser, "image-paths")
-        for changed in ("Dockerfile.browser", "deploy/browser/requirements.txt", "deploy/browser/entrypoint.sh", "deploy/browser/smoke.sh", ".dockerignore"):
-            with self.subTest(changed=changed):
-                self.assertRegex(changed, image_paths)
-        for unrelated in ("Dockerfile", "Dockerfile.single", "poetry.lock", "pyproject.toml", "deploy/browser/seccomp.json"):
-            with self.subTest(unrelated=unrelated):
-                self.assertNotRegex(unrelated, image_paths)
-        self.assertNotRegex("Dockerfile.browser", call_input(service, "image-paths"))
-        self.assertRegex("Dockerfile", call_input(service, "image-paths"))
-        self.assertIn("      sarif-upload: false\n", browser)
-        self.assertIn("      scorecard: false\n", browser)
-        self.assertEqual(call_input(browser, "code-paths"), "^$")
 
 
 class UnraidTemplateTests(unittest.TestCase):
@@ -441,7 +381,7 @@ class UnraidTemplateTests(unittest.TestCase):
         environment = set(re.findall(r"^      ([A-Z_]+): ", compose_service("darkroom-single"), re.M))
         self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER"})
         self.assertRegex(SINGLE, r"(?m)^ENV .*\bDARKROOM_ONE_CONTAINER=1\b", "the image marks itself, so the template and `docker exec` need no variable for it")
-        self.assertFalse(set(names) & set(FALLBACK_ONLY))
+        self.assertFalse(set(names) & set(REMOVED_SETTINGS))
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}
         self.assertEqual(masked, {"OIDC_CLIENT_SECRET", "IMMICH_ADMIN_KEY", "DARKROOM_SECRET_KEY"})
         self.assertFalse([config.get("Target") for config in configs if (config.text or "") != (config.get("Default") or "")])
@@ -451,30 +391,29 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertIn("printf 'DARKROOM_TAG=v1.2.3\\nPHOTOS_ROOT=/path/to/the/photo/share\\n' >> .env", page)
         self.assertIn("git checkout v1.2.3", page)
         self.assertNotIn("export DARKROOM_TAG", page, "a tag exported in one shell is gone for the next command: it goes in .env")
-        move = page[page.index("## Moving from the two containers"):page.index("## Going back to the two containers")]
-        steps = re.findall(r"(?m)^(\d+)\. ", move)
-        self.assertEqual(steps, [str(number) for number in range(1, len(steps) + 1)])
-        first = move[move.index("1. "):move.index("2. ")]
-        self.assertIn("`git checkout v1.2.3`", first)
-        self.assertIn("`DARKROOM_TAG=v1.2.3` in `.env`", first)
-        self.assertLess(move.index("DARKROOM_TAG=v1.2.3"), move.index("cp .env .env.two-containers"))
-        self.assertLess(move.index("cp .env .env.two-containers"), move.index("copy-browser-state"))
         self.assertIn("Change **Repository** from `ghcr.io/anthonypluth/darkroom-single:latest`", page)
         self.assertRegex((ROOT / ".env.example").read_text(), r"(?m)^# DARKROOM_TAG=$")
         self.assertIn("set Repository to that release's tag", template().findtext("Overview"))
 
-    def test_every_service_takes_its_image_tag_from_darkroom_tag_so_the_fallback_matches_the_release(self):
+    def test_every_service_takes_its_image_tag_from_darkroom_tag(self):
         compose = (ROOT / "docker-compose.yml").read_text()
         images = re.findall(r"^    image: (\S+)$", compose, re.M)
-        self.assertEqual(images, [f"ghcr.io/anthonypluth/{name}:${{DARKROOM_TAG:-latest}}" for name in ("darkroom-single", "darkroom", "darkroom-browser")])
+        self.assertEqual(images, [f"ghcr.io/anthonypluth/{name}:${{DARKROOM_TAG:-latest}}" for name in ("darkroom-single", "darkroom")])
+
+    def test_the_deploy_pages_say_the_browser_container_is_gone_and_rollback_is_pinning_the_previous_release(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
         back = page[page.index("## Going back to the two containers"):page.index("## Backup and restore")]
-        self.assertIn("check that its `DARKROOM_TAG` line names the one container's release, then `docker compose --profile browser pull && docker compose --profile browser up -d`", back)
-        later = back[back.index("**Afterwards**"):]
-        self.assertLess(later.index("cp .env.two-containers .env"), later.index("grep '^DARKROOM_TAG=' .env"))
-        self.assertLess(later.index("grep '^DARKROOM_TAG=' .env"), later.index("docker compose --profile browser pull"))
-        self.assertLess(later.index("docker compose --profile browser pull"), later.index("docker compose --profile browser up -d"))
-        self.assertIn("ghcr.io/anthonypluth/darkroom-browser:v1.2.3", back)
+        self.assertIn("Rollback is pinning the previous release", back)
+        self.assertIn("newest `v3` release", back)
+        move = page[page.index("## Moving from the two containers"):page.index("## Going back to the two containers")]
+        self.assertIn("newest `v3` release", move)
+        for name in ("docs/deploy/one-container.md", "docs/deploy/browser.md", "docs/runbook.md", ".env.example"):
+            text = (ROOT / name).read_text()
+            with self.subTest(page=name):
+                self.assertNotIn("--profile browser", text)
+                self.assertNotIn("darkroom-browser:", text)
+                self.assertNotIn("Dockerfile.browser", text)
+                self.assertNotRegex(text, r"(?m)^(DARKROOM_BROWSER_TOKEN|VNC_URL|DARKROOM_URL|DARKROOM_VNC_SECRET)=")
 
     def test_the_deploy_page_keeps_the_first_run_setup_to_the_runbooks_conditions(self):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
@@ -487,9 +426,11 @@ class UnraidTemplateTests(unittest.TestCase):
         page = (ROOT / "docs/deploy/one-container.md").read_text()
         self.assertIn(UNRAID_SECCOMP, page)
         self.assertIn("docker compose --profile single up -d darkroom-single", page)
-        self.assertIn("python run.py copy-browser-state --source /photos/_browser --target /data/browser", page)
-        self.assertIn("python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside", page)
-        self.assertIn(f"--security-opt seccomp={UNRAID_SECCOMP}", page)
+        worker_page = (ROOT / "docs/deploy/browser.md").read_text()
+        self.assertIn("python run.py copy-browser-state --source /photos/_browser --target /data/browser", worker_page)
+        self.assertIn("python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside", worker_page)
+        self.assertIn("browser.md#copying-browser-profiles-copy-browser-state", page)
+        self.assertIn(f"--security-opt seccomp={UNRAID_SECCOMP}", worker_page)
 
 
 if __name__ == "__main__":

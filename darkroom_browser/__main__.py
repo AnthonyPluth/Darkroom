@@ -19,7 +19,7 @@ def main() -> int:
     if found:
         return 1
     os.umask(WORKER_UMASK)
-    runner = Runner(settings, Client(settings.darkroom_url, settings.token), functools.partial(live.open_context, working_root=settings.photos_root))
+    runner = Runner(settings, Client(config.darkroom_url(settings), settings.token), functools.partial(live.open_context, working_root=settings.photos_root))
     try:
         runner.run_forever()
     except KeyboardInterrupt:
