@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 
@@ -133,6 +133,7 @@ class Outcome:
     reports: dict[int, Report] = field(default_factory=dict)
     failure: str | None = None
     paused: bool = False
+    own_device: set[int] = field(default_factory=set)
 
     def corrected(self, kind: str, subject: str, detail: str) -> None:
         self.corrections.append((kind, subject, detail))
@@ -347,10 +348,19 @@ def read_reports(client: syncthing.Client, plan: Plan, outcome: Outcome) -> None
         monitoring.log("syncthing's reports could not be read; the transport state stays as it was")
 
 
+def without_own(plan: Plan, own: str, outcome: Outcome) -> Plan:
+    outcome.own_device = {want.pixel_id for want in plan.wanted.values() if want.device == own}
+    if not outcome.own_device:
+        return plan
+    wanted = {pixel_id: replace(want, device=None, code=INVALID_DEVICE) if pixel_id in outcome.own_device else want for pixel_id, want in plan.wanted.items()}
+    return Plan(wanted, plan.pixels, plan.share_problem)
+
+
 def apply(opened: Session, client: syncthing.Client, plan: Plan, now: float) -> Outcome:
     outcome = Outcome()
     try:
         own = client.own_device_id()
+        plan = without_own(plan, own, outcome)
         present = correct_folders(opened, client, plan, own, outcome, now)
         correct_devices(client, plan, own, outcome)
         add_folders(client, plan, present, outcome)
@@ -387,6 +397,8 @@ def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
         return None
     if outcome.failure is not None:
         return DOWN
+    if want.pixel_id in outcome.own_device:
+        return INVALID_DEVICE
     if want.code in ID_PROBLEMS:
         return want.code
     if want.pixel_id in outcome.removed:

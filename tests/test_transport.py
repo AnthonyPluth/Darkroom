@@ -169,6 +169,23 @@ class ReconcilerTests(unittest.TestCase):
                     self.assertNotIn(self.jo_pixel, outcome.resumed)
                 self.assertNotIn(identity, self.fake.folders)
 
+    def test_darkrooms_own_device_id_on_a_pixel_gives_that_pixel_nothing_and_pauses_no_other_pixel(self):
+        identity = self.persisted(self.jo_pixel, JO_DEVICE)
+        self.assertEqual(self.reconcile().resumed, {self.jo_pixel, self.sam_pixel})
+        self.pair(self.jo_pixel, OWN.lower())
+        for at in (NOW + 10, NOW + 20):
+            outcome = self.reconcile(at=at)
+            self.assertIsNone(outcome.failure)
+            self.assertEqual(outcome.resumed, {self.sam_pixel})
+            self.assertEqual(self.rows(), {self.jo_pixel: (False, transport.INVALID_DEVICE), self.sam_pixel: (True, None)})
+            self.assertTrue(self.fake.folders[identity]["paused"])
+            self.assertFalse(self.fake.folders[self.folder_id(self.sam_pixel)]["paused"])
+            self.assertEqual(set(self.fake.devices), {OWN, SAM_DEVICE})
+        self.assertEqual(self.events(transport.FAILED), [])
+        self.pair(self.jo_pixel, JO_DEVICE)
+        self.assertEqual(self.reconcile(at=NOW + 30).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertEqual(self.rows()[self.jo_pixel], (True, None))
+
     def test_a_released_folder_is_shared_again_and_removed_again_if_it_is_wrong_again(self):
         identity = self.persisted(self.jo_pixel, JO_DEVICE, type="sendreceive")
         self.reconcile()

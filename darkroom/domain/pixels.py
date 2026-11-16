@@ -32,7 +32,12 @@ class DeviceTaken(ValueError):
     pass
 
 
+class OwnDevice(ValueError):
+    pass
+
+
 DEVICE_TAKEN = "that Syncthing device ID is already another Pixel's; a device can be paired with one Pixel only"
+OWN_DEVICE = "that is Darkroom's own device ID; use the one the Syncthing app on the Pixel shows"
 
 
 def canonical_device(value: str) -> str:
@@ -42,10 +47,12 @@ def canonical_device(value: str) -> str:
         raise InvalidDevice(str(error)) from None
 
 
-def checked_device(opened: Session, pixel_id: int | None, value: str | None, stored: str | None) -> str | None:
+def checked_device(opened: Session, pixel_id: int | None, value: str | None, stored: str | None, own: str | None = None) -> str | None:
     if value is None or (pixel_id is not None and value == stored):
         return value
     device = canonical_device(value)
+    if own is not None and device == own:
+        raise OwnDevice(OWN_DEVICE)
     for other_id, other in opened.execute(select(Pixel.id, Pixel.syncthing_device_id).where(Pixel.syncthing_device_id.is_not(None))).all():
         if other_id != pixel_id and syncthing.is_device_id(other) and syncthing.device_id(other) == device:
             raise DeviceTaken(DEVICE_TAKEN)
@@ -98,13 +105,14 @@ def set_people(opened: Session, pixel_id: int, people_ids: list[int]) -> None:
     opened.flush()
 
 
-def create(opened: Session, name: str, syncthing_device_id: str | None, account_id: int, people_ids: list[int] | None, now: float) -> Pixel:
+def create(opened: Session, name: str, syncthing_device_id: str | None, account_id: int, people_ids: list[int] | None, now: float,
+           own: str | None = None) -> Pixel:
     db.write_lock(opened)
     account = require_account(opened, account_id)
     chosen = people_ids if people_ids is not None else [account.default_person_id]
     require_people(opened, chosen)
     before = accounts.served_people(opened, account_id)
-    pixel = Pixel(name=name, syncthing_device_id=checked_device(opened, None, syncthing_device_id, None), google_account_id=account_id, created=now)
+    pixel = Pixel(name=name, syncthing_device_id=checked_device(opened, None, syncthing_device_id, None, own), google_account_id=account_id, created=now)
     opened.add(pixel)
     opened.flush()
     set_people(opened, pixel.id, chosen)
@@ -123,11 +131,11 @@ def lock(opened: Session, pixel_id: int) -> None:
         raise accounts.Busy("Darkroom is busy with another change; try again in a moment") from None
 
 
-def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float) -> Pixel:
+def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float, own: str | None = None) -> Pixel:
     lock(opened, pixel_id)
     pixel = get(opened, pixel_id)
     typed = fields.get("syncthing_device_id")
-    device = checked_device(opened, pixel.id, typed if isinstance(typed, str) else None, pixel.syncthing_device_id)
+    device = checked_device(opened, pixel.id, typed if isinstance(typed, str) else None, pixel.syncthing_device_id, own)
     account_id = fields.get("google_account_id", pixel.google_account_id)
     assert isinstance(account_id, int)
     require_account(opened, account_id)

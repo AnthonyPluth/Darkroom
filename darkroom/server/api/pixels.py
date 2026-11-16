@@ -36,6 +36,15 @@ def transport_client(request: Request) -> syncthing.Client:
     return syncthing.Client.on_socket(str(config.SYNCTHING_SOCKET), request.settings.syncthing_key)
 
 
+def own_or_none(request: Request) -> str | None:
+    if not request.settings.syncthing:
+        return None
+    try:
+        return syncthing.device_id(transport_client(request).own_device_id())
+    except (syncthing.SyncthingFailed, syncthing.InvalidDeviceId):
+        return None
+
+
 def shown_name(name: str) -> str:
     return "".join(character for character in name if character.isprintable())[:LONGEST_NAME]
 
@@ -79,17 +88,23 @@ def pair_pixel(request: Annotated[Request, contract.PixelPairBody]) -> Annotated
     except (validate.Invalid, pixels.InvalidDevice) as error:
         return error_response(str(error), 400)
     try:
-        waiting = {found.device_id for found in transport_client(request).pending_devices()}
-    except syncthing.SyncthingFailed:
+        client = transport_client(request)
+        own = syncthing.device_id(client.own_device_id())
+        waiting = {found.device_id for found in client.pending_devices()}
+    except (syncthing.SyncthingFailed, syncthing.InvalidDeviceId):
         return error_response(UNREACHABLE, 503)
+    if device == own:
+        return error_response(pixels.OWN_DEVICE, 400)
     if device not in waiting:
         return error_response(NOT_WAITING, 409)
     try:
         with db.session(engine_of(request)) as opened:
-            pixel = pixels.update(opened, pixel_id, {"syncthing_device_id": device}, now())
+            pixel = pixels.update(opened, pixel_id, {"syncthing_device_id": device}, now(), own)
             reply = pixels.as_dict(opened, pixel)
     except pixels.NoSuchPixel:
         return error_response(NO_PIXEL, 404)
+    except pixels.OwnDevice as error:
+        return error_response(str(error), 400)
     except (pixels.DeviceTaken, accounts.StillConfirming, pixels.StillHasCopies) as error:
         return error_response(str(error), 409)
     except accounts.Busy as error:
@@ -131,10 +146,11 @@ def create_pixel(request: Annotated[Request, contract.PixelCreateBody]) -> Annot
         account_id = validate.whole_number(body, "google_account_id", minimum=1)
         device_id = syncthing_id(body)
         people_ids = validate.whole_numbers(body, "people_ids") if validate.present(body, "people_ids") else None
+        own = own_or_none(request) if device_id is not None else None
         with db.session(engine_of(request), writing=True) as opened:
-            pixel = pixels.create(opened, name, device_id, account_id, people_ids, now())
+            pixel = pixels.create(opened, name, device_id, account_id, people_ids, now(), own)
             reply = pixels.as_dict(opened, pixel)
-    except (validate.Invalid, pixels.InvalidDevice, pixels.NoPeople) as error:
+    except (validate.Invalid, pixels.InvalidDevice, pixels.OwnDevice, pixels.NoPeople) as error:
         return error_response(str(error), 400)
     except pixels.DeviceTaken as error:
         return error_response(str(error), 409)
@@ -160,10 +176,11 @@ def update_pixel(request: Annotated[Request, contract.PixelPatchBody]) -> Annota
             fields["syncthing_device_id"] = syncthing_id(body)
         if validate.present(body, "people_ids"):
             fields["people_ids"] = validate.whole_numbers(body, "people_ids")
+        own = own_or_none(request) if fields.get("syncthing_device_id") is not None else None
         with db.session(engine_of(request)) as opened:
-            pixel = pixels.update(opened, pixel_id, fields, now())
+            pixel = pixels.update(opened, pixel_id, fields, now(), own)
             reply = pixels.as_dict(opened, pixel)
-    except (validate.Invalid, pixels.InvalidDevice, pixels.NoPeople) as error:
+    except (validate.Invalid, pixels.InvalidDevice, pixels.OwnDevice, pixels.NoPeople) as error:
         return error_response(str(error), 400)
     except pixels.DeviceTaken as error:
         return error_response(str(error), 409)
