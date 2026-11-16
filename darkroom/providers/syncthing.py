@@ -44,6 +44,9 @@ class InvalidDeviceId(SyncthingFailed):
     pass
 
 
+NOT_A_DEVICE_ID = "not a Syncthing device ID"
+
+
 class ReadBackFailed(SyncthingFailed):
     pass
 
@@ -67,10 +70,10 @@ def grouped(characters: str) -> str:
 
 def device_id(value: object) -> str:
     if not isinstance(value, str):
-        raise InvalidDeviceId("not a Syncthing device ID")
+        raise InvalidDeviceId(NOT_A_DEVICE_ID)
     characters = value.strip().upper().replace("-", "")
     if len(characters) != 56 or any(character not in ALPHABET for character in characters):
-        raise InvalidDeviceId("not a Syncthing device ID")
+        raise InvalidDeviceId(NOT_A_DEVICE_ID)
     for start in range(0, 56, 14):
         if check_character(characters[start:start + 13]) != characters[start + 13]:
             raise InvalidDeviceId("a check character of the Syncthing device ID is wrong")

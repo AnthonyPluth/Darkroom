@@ -11,17 +11,25 @@ from darkroom.storage import db
 
 MAX_BODY = 16 * 1024
 NO_PIXEL = "no such Pixel"
-TRANSPORT_OFF = "the Syncthing transport is off; type the Pixel's device ID in the Pixel's details instead"
+TRANSPORT_OFF = "Darkroom's Syncthing is off"
 UNREACHABLE = "Darkroom's Syncthing could not be reached; try again in a moment, or type the Pixel's device ID instead"
-NOT_WAITING = "that device is not waiting to connect to Darkroom; check the ID, or type it in the Pixel's details instead"
-UNCONFIRMED = "confirmed must be true: compare the device ID with the one the Pixel's Syncthing app shows first"
+NOT_WAITING = "that device is no longer waiting; ask the Pixel to connect again"
+UNCONFIRMED = "the approval was not confirmed"
 RELEASE_UNCONFIRMED = "confirmed must be true to let Darkroom share this Pixel's folder again"
 MOST_WAITING = 50
 LONGEST_NAME = 100
+LONGEST_DEVICE_ID = 80
+
+
+def typed_device(body: dict[str, object], name: str) -> str | None:
+    value = body.get(name)
+    if isinstance(value, str) and len(value) > LONGEST_DEVICE_ID:
+        raise pixels.InvalidDevice(syncthing.NOT_A_DEVICE_ID)
+    return validate.text_or_none(body, name, limit=LONGEST_DEVICE_ID)
 
 
 def syncthing_id(body: dict[str, object]) -> str | None:
-    return validate.text_or_none(body, "syncthing_device_id", limit=80)
+    return typed_device(body, "syncthing_device_id")
 
 
 def transport_client(request: Request) -> syncthing.Client:
@@ -65,8 +73,9 @@ def pair_pixel(request: Annotated[Request, contract.PixelPairBody]) -> Annotated
         return error_response(NO_PIXEL, 404)
     try:
         body = validate.json_object(request.body, limit=MAX_BODY)
-        device = pixels.canonical_device(validate.text(body, "device_id", limit=80))
-        confirmed(body, UNCONFIRMED)
+        device = pixels.canonical_device(typed_device(body, "device_id") or validate.text(body, "device_id"))
+        if body.get("confirmed") is not True:
+            raise validate.Invalid(UNCONFIRMED)
     except (validate.Invalid, pixels.InvalidDevice) as error:
         return error_response(str(error), 400)
     try:

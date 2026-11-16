@@ -39,7 +39,7 @@ def canonical_device(value: str) -> str:
     try:
         return syncthing.device_id(value)
     except syncthing.InvalidDeviceId as error:
-        raise InvalidDevice(f"syncthing_device_id: {error}") from None
+        raise InvalidDevice(str(error)) from None
 
 
 def checked_device(opened: Session, pixel_id: int | None, value: str | None, stored: str | None) -> str | None:
@@ -120,7 +120,7 @@ def lock(opened: Session, pixel_id: int) -> None:
     except OperationalError as error:
         if not db.is_busy(error):
             raise
-        raise accounts.Busy("Darkroom is busy copying or pruning this Pixel's photos; try again in a moment") from None
+        raise accounts.Busy("Darkroom is busy with another change; try again in a moment") from None
 
 
 def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float) -> Pixel:

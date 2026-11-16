@@ -11,7 +11,7 @@ from tests.shared import another_writer_holds_the_lock, impatient_engine, start_
 
 TRY_AGAIN = "Darkroom is busy with another change; try again in a moment"
 DELETE_AGAIN = "Darkroom is busy with another change; try deleting the account again in a moment"
-PIXEL_BUSY = "Darkroom is busy copying or pruning this Pixel's photos; try again in a moment"
+PIXEL_BUSY = "Darkroom is busy with another change; try again in a moment"
 
 
 class BusyApiTests(ApiCase):

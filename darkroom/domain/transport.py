@@ -143,7 +143,7 @@ class NotRemoved(ValueError):
     pass
 
 
-NOTHING_TO_RELEASE = "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to release"
+NOTHING_TO_RELEASE = "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again"
 
 
 def removed_before(opened: Session, pixel_id: int) -> bool:
