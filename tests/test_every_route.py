@@ -14,7 +14,7 @@ PEOPLE_AND_STATUS_ROUTES = {
     "GET /api/people", "POST /api/people", "PATCH /api/people/{id}", "DELETE /api/people/{id}",
     "GET /api/accounts", "POST /api/accounts", "PATCH /api/accounts/{id}", "DELETE /api/accounts/{id}",
     "POST /api/accounts/{id}/connect", "POST /api/accounts/{id}/schedule", "POST /api/accounts/{id}/schedule/checked", "POST /api/accounts/{id}/schedule/renew", "GET /api/browser/view",
-    "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events",
+    "GET /api/pixels", "POST /api/pixels", "PATCH /api/pixels/{id}", "DELETE /api/pixels/{id}", "GET /api/status", "GET /api/events", "POST /api/demo/syncthing",
 }
 REVIEW_AND_IMPORT_ROUTES = {
     "GET /api/imports", "GET /api/imports/{id}", "POST /api/exports/{id}/import", "GET /api/review", "GET /api/review/{id}",

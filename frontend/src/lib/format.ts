@@ -13,6 +13,14 @@ export function ago(then: number | null, now: number): string {
   return `${plural(Math.floor(seconds / DAY), "day")} ago`;
 }
 
+export function lasted(seconds: number): string {
+  const span = Math.max(0, seconds);
+  if (span < MINUTE) return "less than a minute";
+  if (span < HOUR) return plural(Math.floor(span / MINUTE), "minute");
+  if (span < DAY) return plural(Math.floor(span / HOUR), "hour");
+  return plural(Math.floor(span / DAY), "day");
+}
+
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
 const weekday = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
 const dayMonth = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });

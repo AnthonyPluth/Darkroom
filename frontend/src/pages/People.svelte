@@ -5,7 +5,7 @@
   import { ago, names, nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { sessionChip } from "$lib/view";
+  import { pixelSyncthing, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import Confirm from "../components/Confirm.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
@@ -27,7 +27,7 @@
       apiCall<"GET /api/accounts">("/api/accounts", { failed: "Couldn't load the Google accounts" }),
       apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
     ]);
-    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, now: nowSeconds() };
+    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, syncthing: pixels.syncthing, now: nowSeconds() };
   });
 
   let formOpen = $state(false);
@@ -159,14 +159,34 @@
         <h2 class="text-md font-semibold">Pixels</h2>
         <button type="button" class="btn" disabled={data.accounts.length === 0} onclick={() => edit({ kind: "pixel", item: null })}>Add Pixel</button>
       </div>
-      <Table label="Pixels" columns={["Device", "Google account", "People served", "Last sync", ""]} rows={data.pixels} empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."}>
+      <Table label="Pixels" columns={data.syncthing === null ? ["Device", "Google account", "People served", "Last sync", ""] : ["Device", "Google account", "People served", "Syncthing", "Last sync", ""]} rows={data.pixels} empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."}>
         {#snippet row(pixel)}
+          {@const transport = data.syncthing?.find((t) => t.pixel_id === pixel.id)}
+          {@const state = transport === undefined ? null : pixelSyncthing(transport, data.now)}
           <tr>
             <td data-label="Device"><b>{pixel.name}</b></td>
             <td data-label="Google account">{data.accounts.find((a) => a.id === pixel.google_account_id)?.email ?? "Unknown"}</td>
             <td data-label="People served">{names(pixel.people_ids.map((id) => personName(data.people, id)), "No one")}</td>
+            {#if data.syncthing !== null}
+              <td data-label="Syncthing">
+                {#if state !== null}
+                  <span class="flex flex-col items-start gap-1"><Chip tone={state.tone} label={state.label} />
+                    {#each state.lines as line (line)}<span class="text-sm text-ink-muted">{line}</span>{/each}
+                  </span>
+                {/if}
+              </td>
+            {/if}
             <td data-label="Last sync" class:text-ink-muted={pixel.last_sync === null}>{pixel.last_sync === null ? "Not synced yet" : ago(pixel.last_sync, data.now)}</td>
-            <td class="md:text-right"><button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button></td>
+            <td class="md:text-right">
+              {#if data.syncthing !== null && !pixel.syncthing_device_id}
+                <span class="flex flex-wrap justify-end gap-2">
+                  <button type="button" class="btn" aria-label="Pair {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Pair</button>
+                  <button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button>
+                </span>
+              {:else}
+                <button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button>
+              {/if}
+            </td>
           </tr>
         {/snippet}
       </Table>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import struct
 from dataclasses import dataclass
@@ -15,8 +16,10 @@ from sqlalchemy.orm import Session
 
 from darkroom import oidc
 from darkroom.config import Settings, viewer_link
-from darkroom.domain import alerts, browser_jobs, events, index, media, renewal
-from darkroom.storage.models import BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.domain import alerts, browser_jobs, events, index, media, pixel_check, renewal, share_check, transport, transport_status
+from darkroom.storage import db
+from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, PixelTransport,
+                                     ReviewItem)
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -79,8 +82,25 @@ RENEWAL_FAILED = "UnexpectedPage: the page stayed unrecognised for more than 5 m
 ACCOUNTS = (
     DemoAccount("avery.photos@example.com", "avery", "Family Pixel", "DEMO-FAMILY-PIXEL", ("avery", "blair"), "needs_sign_in", 20, RENEWAL_UNSURE),
     DemoAccount("casey.photos@example.com", "casey", "Casey's Pixel", "DEMO-CASEY-PIXEL", ("casey",), "ok", 300),
-    DemoAccount("blair.photos@example.com", "blair", None, None, (), "ok", -10, RENEWAL_FAILED),
+    DemoAccount("blair.photos@example.com", "blair", "Blair's Pixel", "DEMO-BLAIR-PIXEL", ("blair",), "ok", -10, RENEWAL_FAILED),
 )
+
+
+@dataclass(frozen=True)
+class DemoTransport:
+    pixel: str
+    connected: bool
+    seen_ago: float
+    error: str | None = None
+    unaccounted: int = 0
+
+
+TRANSPORT = (
+    DemoTransport("Family Pixel", True, 6 * 60.0),
+    DemoTransport("Casey's Pixel", False, 4 * DAY + 2 * HOUR),
+    DemoTransport("Blair's Pixel", False, 2 * DAY, transport.HELD, 2),
+)
+SYNCTHING_STATES = ("running", "down", "share_check_failed")
 
 SHOTS: dict[str, tuple[Shot, ...]] = {
     "avery": (
@@ -298,6 +318,43 @@ def seed_download(opened: Session, now: float) -> None:
     opened.add(ExportPart(export_id=export.id, number=3, bytes=1_800_000, status="pending"))
 
 
+def seed_transport(opened: Session, now: float) -> None:
+    for spec in TRANSPORT:
+        pixel = opened.execute(select(Pixel).where(Pixel.name == spec.pixel)).scalar_one()
+        row = opened.get(PixelTransport, pixel.id) or PixelTransport(pixel_id=pixel.id, updated=now)
+        opened.add(row)
+        row.paired, row.connected, row.last_seen, row.completion, row.error, row.updated = spec.error is None, spec.connected, now - spec.seen_ago, 100.0, spec.error, now
+        pixel.last_sync = now - spec.seen_ago
+        if spec.unaccounted:
+            events.record(opened, now - 2 * HOUR, pixel_check.UNACCOUNTED, f"pixel {pixel.id}", f"files {spec.unaccounted}")
+    opened.flush()
+
+
+def transport_rows(opened: Session, error: str, now: float) -> None:
+    for row in opened.execute(select(PixelTransport)).scalars().all():
+        row.paired, row.connected, row.error, row.updated = False, False, error, now
+
+
+def syncthing_state(opened: Session, settings: Settings, state: str, now: float) -> None:
+    db.write_lock(opened)
+    if state == "down":
+        events.record(opened, now - 2 * HOUR, transport.FAILED, transport.SUBJECT, transport.UNREACHABLE)
+        transport_rows(opened, transport.DOWN, now)
+    elif state == "share_check_failed":
+        events.record(opened, now - HOUR, share_check.FAILED, share_check.SUBJECT, share_check.MISSING)
+        events.record(opened, now - HOUR, transport.PAUSED, transport.SUBJECT, share_check.MISSING)
+        transport_rows(opened, transport.SHARE, now)
+    else:
+        last = share_check.last_share_event(opened)
+        if last is not None and last[0] == share_check.FAILED:
+            events.record(opened, now, share_check.PASSED, share_check.SUBJECT)
+        if transport.last_outcome(opened) not in (None, (transport.RECOVERED, None)):
+            events.record(opened, now, transport.RECOVERED, transport.SUBJECT)
+        seed_transport(opened, now)
+    transport_status.review_unlocked(opened, dataclasses.replace(settings, syncthing=True), now, alerts.recorded)
+    opened.commit()
+
+
 def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Summary:
     now = noon(today)
     people: dict[str, Person] = {}
@@ -310,8 +367,12 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     opened.flush()
     seed_import(opened, photos, people, today, now)
     seed_download(opened, now)
+    events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
+    seed_transport(opened, now)
+    transport_status.review_unlocked(opened, dataclasses.replace(settings, syncthing=True), now - 2 * HOUR, alerts.recorded)
     opened.flush()
-    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), originals, indexed, failed, opened_alerts)
+    held = len(opened.execute(select(Alert.id).where(Alert.kind == "pixel_held", Alert.closed.is_(None))).all())
+    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), originals, indexed, failed, opened_alerts + held)
 
 
 def sign_in(opened: Session, settings: Settings, now: float) -> str:

@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo } from "../test/server";
+import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo, transport } from "../test/server";
 import People from "./People.svelte";
 
 beforeEach(() => {
@@ -20,7 +20,7 @@ afterEach(() => {
 const seeded = () => ({
   "GET /api/people": { people: [jo, sam] },
   "GET /api/accounts": { accounts: [joAccount, familyAccount] },
-  "GET /api/pixels": { pixels: [solo, shared] },
+  "GET /api/pixels": { pixels: [solo, shared], syncthing: null },
 });
 
 function show(routes: Parameters<typeof serve>[0]) {
@@ -32,7 +32,7 @@ function show(routes: Parameters<typeof serve>[0]) {
 
 describe("the People page with no data", () => {
   it("asks for a person first, then an account, and disables what can't be added yet", async () => {
-    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("Add a person first.")).toBeInTheDocument();
     expect(screen.getByText("Add a Google account first.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
@@ -41,7 +41,7 @@ describe("the People page with no data", () => {
   });
 
   it("says no accounts or Pixels yet once there is a person", async () => {
-    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("No Google accounts yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
@@ -261,5 +261,39 @@ describe("when loading fails", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("table", { name: "Persons" })).toBeInTheDocument();
+  });
+});
+
+describe("the People page with Darkroom's Syncthing", () => {
+  const withSyncthing = () => ({
+    ...seeded(),
+    "GET /api/pixels": { pixels: [solo, shared], syncthing: [transport(20, "Pixel 9a", "connected", { completion: 100 }), transport(21, "Pixel 8", "not_paired")] },
+  });
+
+  it("has no Syncthing column or Pair button when Syncthing is off", async () => {
+    show(seeded());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Last sync", ""]);
+    expect(within(table).queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
+  });
+
+  it("puts a Syncthing column between People served and Last sync, with each Pixel's chip and line", async () => {
+    show(withSyncthing());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Syncthing", "Last sync", ""]);
+    const [paired, unpaired] = within(table).getAllByRole("row").slice(1);
+    const cell = (row: HTMLElement) => row.querySelector('td[data-label="Syncthing"]') as HTMLElement;
+    expect(cell(paired)).toHaveTextContent(/Connected\s*Up to date/);
+    expect(cell(unpaired)).toHaveTextContent(/Not paired\s*Pair it to start sending photos\./);
+    expect(within(paired).queryByRole("button", { name: "Pair Pixel 9a" })).not.toBeInTheDocument();
+  });
+
+  it("gives an unpaired Pixel a Pair button before Edit, which opens its form", async () => {
+    show(withSyncthing());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    const unpaired = within(table).getAllByRole("row")[2];
+    expect(within(unpaired).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pair", "Edit"]);
+    await userEvent.click(within(unpaired).getByRole("button", { name: "Pair Pixel 8" }));
+    expect(await screen.findByRole("dialog", { name: "Edit Pixel" })).toBeInTheDocument();
   });
 });

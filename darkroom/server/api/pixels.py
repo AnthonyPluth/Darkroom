@@ -4,7 +4,7 @@ import re
 from typing import Annotated
 
 from darkroom import validate
-from darkroom.domain import accounts, pixels
+from darkroom.domain import accounts, pixels, transport_status
 from darkroom.server import contract
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now, path_id
 from darkroom.storage import db
@@ -24,7 +24,8 @@ def syncthing_id(body: dict[str, object]) -> str | None:
 def list_pixels(request: Request) -> Annotated[Response, contract.Pixels]:
     with db.session(engine_of(request)) as opened:
         listed = [pixels.as_dict(opened, pixel) for pixel in pixels.listing(opened)]
-    return json_response({"pixels": listed})
+        syncthing = list(transport_status.pixel_dicts(opened, transport_status.overview(opened, now())).values()) if request.settings.syncthing else None
+    return json_response({"pixels": listed, "syncthing": syncthing})
 
 
 def create_pixel(request: Annotated[Request, contract.PixelCreateBody]) -> Annotated[Response, contract.PixelReply]:

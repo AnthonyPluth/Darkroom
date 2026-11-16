@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import dates, monitoring
-from darkroom.domain import events
+from darkroom.domain import events, syncthing_version
 from darkroom.providers import syncthing
 from darkroom.storage import db, paths
 from darkroom.storage.models import Event, Pixel, PixelTransport
@@ -26,13 +26,14 @@ FOLDER_REMOVED = "syncthing_folder_removed"
 FAILED = "syncthing_reconcile_failed"
 RECOVERED = "syncthing_reconciled"
 PAUSED = "syncthing_transport_paused"
-OUTCOMES = (FAILED, RECOVERED, PAUSED)
+OUTCOMES = (FAILED, RECOVERED, PAUSED, syncthing_version.EVENT)
 
 INVALID_DEVICE = "device_id_invalid"
 SHARED_DEVICE = "device_id_shared"
 PATH_REFUSED = "folder_path_refused"
 REMOVED = "folder_removed"
 HELD = "held"
+CHECKING = "checking"
 SHARE = "share_check_failed"
 DOWN = "reconcile_failed"
 
@@ -364,7 +365,7 @@ def record_outcome(opened: Session, kind: str, detail: str | None, now: float) -
         events.record(opened, now, kind, SUBJECT, detail)
 
 
-def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
+def code_of(want: Wanted | None, plan: Plan, outcome: Outcome, checked: bool = True) -> str | None:
     if want is None:
         return None
     if outcome.failure is not None:
@@ -375,10 +376,20 @@ def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
         return want.code
     if plan.share_problem is not None:
         return SHARE
-    return HELD if want.held else None
+    if not want.held:
+        return None
+    return HELD if checked else CHECKING
 
 
-def record(opened: Session, plan: Plan, outcome: Outcome, now: float) -> None:
+def write_report(row: PixelTransport, pixel: Pixel, report: Report, now: float) -> None:
+    row.connected = report.connected
+    row.last_seen = report.last_seen if report.last_seen is not None else row.last_seen
+    row.completion = report.completion
+    if report.synced:
+        pixel.last_sync = now
+
+
+def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: bool = True) -> None:
     db.write_lock(opened)
     for kind, subject, detail in outcome.corrections:
         events.record(opened, now, kind, subject, detail)
@@ -395,22 +406,34 @@ def record(opened: Session, plan: Plan, outcome: Outcome, now: float) -> None:
             opened.add(row)
         want = plan.wanted.get(pixel.id)
         row.paired = pixel.id in outcome.approved and outcome.failure is None
-        row.error, row.updated = code_of(want, plan, outcome), now
+        row.error, row.updated = code_of(want, plan, outcome, checked), now
         report = outcome.reports.get(pixel.id)
         if report is not None:
-            row.last_seen = report.last_seen if report.last_seen is not None else row.last_seen
-            row.completion = report.completion
-            if report.synced:
-                pixel.last_sync = now
+            write_report(row, pixel, report, now)
+        elif pixel.id not in outcome.resumed:
+            row.connected = False
+    opened.commit()
+
+
+def refresh(opened: Session, client: syncthing.Client, plan: Plan, resumed: frozenset[int], now: float) -> None:
+    outcome = Outcome(resumed=set(resumed))
+    read_reports(client, plan, outcome)
+    if not outcome.reports:
+        return
+    db.write_lock(opened)
+    for pixel_id, report in sorted(outcome.reports.items()):
+        row, pixel = opened.get(PixelTransport, pixel_id), opened.get(Pixel, pixel_id)
+        if row is not None and pixel is not None:
+            write_report(row, pixel, report, now)
     opened.commit()
 
 
 def reconcile(opened: Session, client: syncthing.Client, photos: Photos, held: Callable[[int], bool], share_problem: str | None, now: float,
-              found: Plan | None = None) -> Outcome:
+              found: Plan | None = None, checked: bool = True) -> Outcome:
     wanted = found if found is not None else plan(opened, photos, held, share_problem)
     opened.commit()
     outcome = apply(opened, client, wanted, now)
-    record(opened, wanted, outcome, now)
+    record(opened, wanted, outcome, now, checked)
     monitoring.log("syncthing reconciled", corrected=len(outcome.corrections), approved=len(outcome.approved), resumed=len(outcome.resumed),
                    paused=outcome.paused, failed=outcome.failure is not None)
     return outcome
@@ -421,7 +444,7 @@ def pause(opened: Session, client: syncthing.Client, reason: str, now: float) ->
     db.write_lock(opened)
     record_outcome(opened, PAUSED, reason, now)
     for row in opened.execute(select(PixelTransport)).scalars().all():
-        row.paired, row.error, row.updated = False, SHARE, now
+        row.paired, row.connected, row.error, row.updated = False, False, SHARE, now
     opened.commit()
     monitoring.log("syncthing transport paused: the share check failed")
 
@@ -438,23 +461,26 @@ class Transport:
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     approved: tuple[object, ...] | None = None
     seen: tuple[object, ...] | None = field(default=None, repr=False)
+    resumed: frozenset[int] = frozenset()
 
     def unchanged(self, client: syncthing.Client) -> bool:
         return self.seen is not None and observed(client) == self.seen
 
     def tick(self, opened: Session, client: syncthing.Client, photos: Photos, held: Callable[[int], bool], share_problem: str | None, now: float,
-             force: bool = False) -> Outcome | None:
+             force: bool = False, checked: bool = True) -> Outcome | None:
         with self.lock:
             found = plan(opened, photos, held, share_problem)
             opened.commit()
             if not force and found.fingerprint() == self.approved and self.unchanged(client):
+                refresh(opened, client, found, self.resumed, now)
                 return None
-            outcome = reconcile(opened, client, photos, held, share_problem, now, found)
+            outcome = reconcile(opened, client, photos, held, share_problem, now, found, checked)
             self.approved = found.fingerprint() if outcome.failure is None else None
             self.seen = observed(client) if outcome.failure is None else None
+            self.resumed = frozenset(outcome.resumed)
             return outcome
 
     def pause(self, opened: Session, client: syncthing.Client, reason: str, now: float) -> None:
         with self.lock:
-            self.approved, self.seen = None, None
+            self.approved, self.seen, self.resumed = None, None, frozenset()
             pause(opened, client, reason, now)

@@ -124,6 +124,16 @@
       ]
     },
     {
+      "route": "POST /api/demo/syncthing",
+      "auth": "session",
+      "handler": "darkroom.server.api.demo.syncthing_state",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_status_api.py"
+      ]
+    },
+    {
       "route": "GET /api/people",
       "auth": "session",
       "handler": "darkroom.server.api.people.list_people",
@@ -296,7 +306,8 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
-        "tests/test_served_people_guard.py"
+        "tests/test_served_people_guard.py",
+        "tests/test_status_api.py"
       ]
     },
     {
@@ -312,7 +323,8 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
-        "tests/test_served_people_guard.py"
+        "tests/test_served_people_guard.py",
+        "tests/test_status_api.py"
       ]
     },
     {

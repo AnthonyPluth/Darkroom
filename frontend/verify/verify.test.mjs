@@ -12,6 +12,12 @@ describe("flowProblems", () => {
 
   it("accepts a well formed flow", () => expect(flowProblems(ok)).toEqual([]));
 
+  it("takes a demo_post only to a demo route with a body", () => {
+    expect(flowProblems({ ...ok, steps: [{ demo_post: { path: "/api/demo/syncthing", body: { state: "down" } } }] })).toEqual([]);
+    expect(flowProblems({ ...ok, steps: [{ demo_post: { path: "/api/pixels", body: {} } }] })).toEqual(["step 1: demo_post needs a path under /api/demo/ and a body object"]);
+    expect(flowProblems({ ...ok, steps: [{ demo_post: { path: "/api/demo/syncthing" } }] })).toEqual(["step 1: demo_post needs a path under /api/demo/ and a body object"]);
+  });
+
   it("names what is wrong, step by step", () => {
     expect(flowProblems({ steps: [] })).toEqual(["needs a name of letters, digits, - or _", "needs a list of steps"]);
     const bad = flowProblems({ ...ok, steps: [{ click: "a", goto: "/b" }, { fill: "text" }, { drag: "x" }] });
@@ -195,7 +201,7 @@ describe("readFlows", () => {
   it("reads every flow of the repository", () => {
     const { flows, error } = readFlows(join(import.meta.dirname, "flows"));
     expect(error).toBeUndefined();
-    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-renewal", "exports", "open-people", "review-item", "sign-out"]);
+    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-renewal", "exports", "open-people", "review-item", "sign-out", "status-syncthing"]);
   });
 
   it("says which file is not JSON or not a flow, instead of ending the process", () => {

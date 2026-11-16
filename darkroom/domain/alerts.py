@@ -31,6 +31,11 @@ TITLES = {
     "schedule_renewal_unconfirmed": "Takeout schedule renewal not confirmed",
     "export_expiring": "A Takeout export is about to expire",
     "failure": "Darkroom needs a look",
+    "syncthing_down": "Syncthing not answering",
+    "syncthing_settings_failed": "Syncthing settings not applied",
+    "syncthing_version": "Syncthing version not tested",
+    "share_check_failed": "Photo share check failed",
+    "pixel_held": "Pixel folder held",
 }
 
 Notifier = Callable[[Settings, str, str, str | None], str]
@@ -111,6 +116,52 @@ def export_expiring(export: str, expires: str) -> Wording:
 
 def failure(subject: str) -> Wording:
     return Wording("Darkroom needs a look", f"{subject} failed. Open Darkroom for details.")
+
+
+def syncthing_down() -> Wording:
+    return Wording(TITLES["syncthing_down"],
+                   "Darkroom's Syncthing has not answered for over an hour, so nothing is reaching the Pixels. Darkroom keeps restarting it, and placing and pruning carry on; "
+                   "the Pixels catch up once it is back. If it stays down, restart the container.")
+
+
+def syncthing_settings_failed() -> Wording:
+    return Wording(TITLES["syncthing_settings_failed"],
+                   "Darkroom could not apply its settings to Syncthing or read them back, so it has resumed nothing and the Pixels are not syncing. "
+                   "It tries again before the next hourly run. The Status page gives the reason.")
+
+
+def syncthing_version() -> Wording:
+    return Wording(TITLES["syncthing_version"],
+                   "The Syncthing in this container is not a version Darkroom was tested with, so Darkroom has not started it and nothing reaches the Pixels. "
+                   "Run the published Darkroom image, which carries a tested Syncthing.")
+
+
+def share_check_failed(own_syncthing: bool) -> Wording:
+    if own_syncthing:
+        return Wording(TITLES["share_check_failed"],
+                       "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, and nothing on the share is changed. "
+                       "If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new one as the runbook says. "
+                       "The Status page gives the reason.")
+    return Wording(TITLES["share_check_failed"],
+                   "The photo share did not pass Darkroom's check, so placing and pruning are paused, and nothing on the share is changed. "
+                   "Pause the Syncthing that serves the Pixels until it passes again. If the share is not mounted, fix the mapping and restart the container. "
+                   "If it really was replaced, bind the new one as the runbook says.")
+
+
+def counted(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def pixel_held(pixel: str, copies: int, files: int) -> Wording:
+    if copies:
+        message = (f"{counted(copies, 'photo')} could not be written to {pixel}'s folder again, so Darkroom is not sharing the folder with it. Nothing is deleted from the Pixel. "
+                   "Something else is in their place, or Darkroom can't read it; the runbook says what to look for.")
+        if files:
+            message += f" It also has {counted(files, 'file')} Darkroom did not put there."
+        return Wording(TITLES["pixel_held"], message)
+    return Wording(TITLES["pixel_held"],
+                   f"{pixel}'s folder has {counted(files, 'file')} Darkroom did not put there, so Darkroom is not sharing the folder with it. "
+                   "Darkroom never removes or moves them: remove them, or move them out of the folder, by hand.")
 
 
 def undelivered(settings: Settings, title: str, message: str, link: str | None = None) -> str:
