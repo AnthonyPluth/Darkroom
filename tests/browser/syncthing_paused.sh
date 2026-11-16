@@ -10,7 +10,7 @@ net=syncthing-ci
 photo=/photos/_pixels/ci/IMG_0001.jpg
 
 probe() { docker exec -i "$1" python3 -c "$code" "${@:2}"; }
-fail() { echo "$1" >&2; for name in darkroom peer; do docker logs "$name" 2>&1 | grep -v '"event": "request"' | tail -n 40 >&2 || true; done; exit 1; }
+fail() { echo "$1" >&2; for name in darkroom peer; do docker container inspect "$name" >/dev/null 2>&1 || continue; docker logs "$name" 2>&1 | grep -v '"event": "request"' | tail -n 40 >&2 || true; done; exit 1; }
 wait_for() {
   for _ in $(seq 1 "$1"); do
     if eval "$2"; then return 0; fi
@@ -19,8 +19,10 @@ wait_for() {
   fail "timed out: $2"
 }
 field() { python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])[sys.argv[2]], sort_keys=True))' "$1" "$2"; }
-logged() { docker logs "$1" 2>&1 | grep -qF "$2"; }
+logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"; }
 
+docker rm -f darkroom peer >/dev/null 2>&1 || true
+docker network rm "$net" >/dev/null 2>&1 || true
 docker network create "$net" >/dev/null
 docker run -d --name darkroom --network "$net" "${sandbox[@]}" --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e DARKROOM_SYNCTHING=1 -e OIDC_ISSUER=https://id.example \
   -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p "$port:8000" "$image" >/dev/null
