@@ -19,6 +19,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
+| `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (draft, not signed off) |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
@@ -242,3 +243,80 @@ The owner answered the thirteen open points on pull request #345 and accepted th
 The review artefact for this sign-off is the four boards above, read in a browser at 390 and 1280 wide (as for the Renew now boards), and the tables in this section; the README is what is signed off when a board and a table disagree. No screenshot can exist yet: `make verify` drives the built app on demo data, and none of these screens is built. No images are committed here.
 
 The build pull requests then carry, beside these boards, the `make verify` images at phone (440x956) and desktop (1280x800): #323 the People page (`docs/screenshots/people-phone.png` and `people-desktop.png`, with an unpaired Pixel and the new column in the demo seed) and a new flow `frontend/verify/flows/pixel-pairing.json` that opens Pair on the demo's unpaired Pixel and screenshots the waiting (nobody, then one device from a fake waiting list), approving, approved and refused states; #324 the Status page (`status-phone.png` and `status-desktop.png`, with the demo seed holding one held Pixel, one not seen for 4 days and one connected) and a flow `frontend/verify/flows/status-syncthing.json` for the Down and Share check failed card states with their alerts. The demo seed and the fake Syncthing those flows need are part of #323 and #324.
+
+## Three per-Pixel states #322 did not draw (addendum, draft, not signed off)
+
+Status: **draft, not signed off.** Nothing here is built until the owner signs it off. It adds to the section above and changes none of its signed-off rows, cards or alerts. The build of #324 (PR #356) found three states the reconciler records for a Pixel that have no row in "Per-Pixel states", so today they fall through to "Waiting for the Pixel":
+
+- **(a) The device ID is not valid.** The Pixel has a device ID, but not one Syncthing accepts; the reconciler records `device_id_invalid` and gives it no device and no folder. Since the pairing API (#350) a new or changed ID must pass #317's validator, so this is a value saved before that (typed by hand, any 1 to 80 letters, digits and dashes), kept as it was.
+- **(b) The device ID is shared with another Pixel.** Two or more Pixels have the same ID (compared in canonical form); the reconciler records `device_id_shared` and gives none of them a folder. #350 refuses an ID another Pixel already has, so this too comes from values saved before it.
+- **(c) The folder was removed.** The reconciler found the Pixel's folder in Darkroom's Syncthing not Send Only, or not at the Pixel's folder, removed it (event `syncthing_folder_removed`) and records `folder_removed`. It never shares the folder again by itself. #350 adds the release: `POST /api/pixels/{id}/release-folder` with `{"confirmed": true}` records `syncthing_folder_released`, and the reconciler's next run (within 60 s, as the plan's fingerprint changes) adds the folder afresh, Send Only at the Pixel's folder, once the share check passes and the Pixel is not held. It answers 409 when nothing was removed or the transport is off, and it needs a signed-in session from Darkroom's origin like every other route (Darkroom has no separate owner role).
+
+Board: `03-people-pairing-states-desktop.dc.html` and `03-people-pairing-states-phone.dc.html` (the Pixels card with the three states, the confirmation to share a folder again in each of its states, the row just after, the person card's Pixel row and the Syncthing card). Existing tokens, chips, buttons, table and modal only. Names are made up.
+
+### Where they sit
+
+Three rows go between row 2 (Not paired) and row 3 (Checking). The first row that applies still wins; rows 1 to 10 are as signed off.
+
+| # | State | Chip | Line |
+| --- | --- | --- | --- |
+| 1 | Darkroom's Syncthing is not running | (as signed off) | |
+| 2 | Not paired | (as signed off) | |
+| 2a | (a) The device ID is not valid | warn "Device ID not valid" | "Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again." |
+| 2b | (b) The device ID is shared | warn "Same device ID" | "{others} {has/have} the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong." |
+| 2c | (c) The folder was removed | warn "Folder removed" | "Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again." |
+| 3 to 10 | | (as signed off) | |
+
+- **Why there.** Each of the three means the Pixel has no folder at all, so the rows below (held, waiting, connected) say nothing true about it; and Not paired and Not syncing still win, because neither can be helped from the Pixel's row. (a) and (b) come before (c) because a folder can't be shared again until the ID is usable: sharing it again for a Pixel whose ID is wrong would only lead back to (a) or (b).
+- **`{others}`** is the other Pixels' Darkroom names, in the People page's order, joined "A", "A and B", "A, B and C", with "has" for one and "have" for more: "Casey's Pixel has the same device ID, so Darkroom shares neither folder." Each Pixel that shares the ID shows the row, naming the others. No row names the ID itself.
+- **Warn, not bad**, like Folder held: the Pixel is not syncing, but nothing is lost and nothing is at risk while it waits.
+
+### On the People page
+
+The Syncthing column shows the chip and line above. The actions cell gains one secondary button before Edit, as an unpaired Pixel has Pair:
+
+| State | Button | What it does |
+| --- | --- | --- |
+| 2a, 2b | "Pair again" (label for screen readers: "Pair {name} again") | Opens the modal at the pairing step, as Edit Pixel's Pair again does (#322): the old ID stays until a new one is approved or saved. Until #323 lands, as for Pair, it opens the existing Edit Pixel form |
+| 2c | "Share again" (label: "Share {name}'s folder again") | Opens the confirmation below |
+
+The Edit Pixel form is unchanged: its Syncthing row shows the saved value in mono with Pair again, whatever the state. The pairing step does not offer sharing again: pairing is about the device, and in (c) the device is fine.
+
+**The confirmation** is the existing modal:
+
+- Title: "Share {name}'s folder again?"
+- "Darkroom removed {name}'s folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at {name}'s folder on the photo share."
+- "If you share it again, Darkroom adds the folder afresh, Send Only, at {name}'s folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on {name} asks, accept the folder there."
+- "If the folder is changed outside Darkroom again, Darkroom removes it again."
+- Buttons: "Cancel" (secondary) and "Share folder again" (primary). The press posts the release with `confirmed: true`; while it is in flight both buttons are disabled.
+- Refused (any 4xx, or no answer): the modal stays, and a danger-toned `role="alert"` line under the text reads "Couldn't share {name}'s folder again: {message}." with Darkroom's message unchanged, as the pairing step's refusals do. The line stays until the next press.
+- Done: the modal closes, the page data reloads, and the Pixel shows row 3 (neutral "Checking", "Darkroom is checking its folder before sharing it.") until the reconciler's next run has recorded its state, then whatever row applies.
+
+### On Status
+
+The Syncthing card's Pixel row shows the same chip and line, with no button (the card has none; the actions stay on People, as for Pair). The card's own chip and sentence are unchanged: these are states of one Pixel, not of Syncthing. A Pixel in (a) or (b) has a device ID, so it counts as paired and is listed; "No Pixel is paired yet." is unchanged. The person card's Pixel row shows the chip after the Pixel's name, as for any state that is not `ok`.
+
+### No new alert
+
+None of the three raises an alert, and no alert kind is added. (a) and (b) can only come from IDs saved before #350, are fixed in the People page and are on every Pixel row that shows them; (c) follows a change someone made in Darkroom's Syncthing, and the reconciler records it as an event. As with "Not seen for 3 days", the existing "originals unmatched" alert covers photos that don't reach Google, which is what a Pixel left like this ends in.
+
+### For the build
+
+- The reconciler records one code per Pixel, and today `folder_removed` wins over `device_id_invalid` and `device_id_shared`. The build changes that order so the ID's problem is recorded first; the removal stays on record and shows once the ID is fixed.
+- The other Pixels' names for (b) are worked out on the server from the stored IDs in canonical form, as the reconciler compares them; the reply carries names only, never an ID.
+- Right after a release, the Pixel shows Checking because the release is on record, before the reconciler's next run rewrites its code.
+- The demo seed gains one Pixel in each of the three states (and, for (b), its pair), and the People and Status images and a flow that presses Share again, then Share folder again, carry them, as #356's do.
+
+### The owner's decisions (open)
+
+Each lists the recommended option first.
+
+1. **Rows 2a, 2b and 2c sit after Not paired and before Checking**, the ID's problems before the removed folder. Not chosen: after the Folder held rows (rows 4 and 5).
+2. **All three are warn.** Not chosen: bad for (b) and (c).
+3. **(a) and (b) get a "Pair again" button in the People row.** Not chosen: only through Edit Pixel.
+4. **Sharing a removed folder again is a "Share again" button in the People row with its own confirmation**, not in the pairing step and not on Status. Not chosen: a button in the Edit Pixel form's Syncthing row.
+5. **No new alert kind.** Not chosen: a `pixel_folder_removed` alert, warn "Folder removed", linking to `/people`.
+6. **(b) names the other Pixels by their Darkroom names.** Not chosen: "Another Pixel has the same device ID".
+7. **After sharing again the Pixel shows Checking** until the reconciler's next run. Not chosen: keeping "Folder removed" until then.
+8. **Any signed-in member may share a folder again**, after the confirmation, as #350 built it. Not chosen: an owner role, which Darkroom does not have yet.
+9. **A fourth code found while reading the reconciler, `folder_path_refused`** (the Pixel's folder resolves outside the photo share, so no folder is added), also falls through today. Recommended: a row 2d, warn "Folder refused", "Its folder leads outside the photo share, so Darkroom does not share it.", with no button and no alert, drawn in a later board. Not chosen: leaving it to fall through.
