@@ -14,8 +14,10 @@ services:
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     profiles: [single]
-    ports:
-      - "127.0.0.1:8000:8000"
+    # Host networking, for Syncthing's local discovery (decision 7 of docs/design/single-container.md): Syncthing listens on 22000 TCP and UDP and 21027
+    # UDP on every address of the host. DARKROOM_HOST keeps the web port on the host's loopback, as the published port was before: a reverse proxy has
+    # to run on the host or on the host network to reach it (docs/deploy/one-container.md, "Traefik").
+    network_mode: host
     volumes:
       - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
       - ./data:/data
@@ -34,6 +36,8 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-15}
       BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}
       TZ: ${TZ:-UTC}
+      DARKROOM_HOST: "127.0.0.1"
+      DARKROOM_SYNCTHING: ${DARKROOM_SYNCTHING:-1}
       DARKROOM_ONE_CONTAINER: "1"
     shm_size: 1g
     stop_grace_period: 30s
@@ -76,8 +80,11 @@ services:
       - no-new-privileges:true
 
   # PostgreSQL instead of the default SQLite (docs/deploy/postgres.md): uncomment this service and the `volumes:` entry at the end of the file, put
-  # DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom and the same password in .env, and add
-  # `depends_on: [postgres]` to darkroom-single (or to darkroom, for the app alone). Nothing moves an existing SQLite database over.
+  # the same password in POSTGRES_PASSWORD and DATABASE_URL in .env, and add `depends_on: [postgres]` to the service that uses it. darkroom-single is on
+  # the host's network, where the name `postgres` does not resolve: it reaches the database on the host's loopback, through the `ports:` entry below
+  # (127.0.0.1 only, never every address), with DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom. The app alone (darkroom) shares
+  # compose's network with it and uses DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom; it needs no `ports:` entry.
+  # Nothing moves an existing SQLite database over.
   # postgres:
   #   image: postgres:17
   #   restart: unless-stopped
@@ -85,6 +92,8 @@ services:
   #     POSTGRES_USER: darkroom
   #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
   #     POSTGRES_DB: darkroom
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
   #   volumes:
   #     - postgres-data:/var/lib/postgresql/data
 
