@@ -1,6 +1,6 @@
-import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus } from "./api-types";
+import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus, PixelSyncthing, SyncthingCard } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
-import { onDay } from "./format";
+import { ago, count, joined, lasted, onDay } from "./format";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
   if (state === "ok") return { tone: "ok", label: "Session ok" };
@@ -22,7 +22,53 @@ export function alertChip(kind: string): { tone: Tone; label: string } {
     case "schedule_renewal_failed": return { tone: "bad", label: "Not renewed" };
     case "schedule_renewal_unconfirmed": return { tone: "warn", label: "Renewal unconfirmed" };
     case "export_expiring": return { tone: "warn", label: "Export expiring" };
+    case "syncthing_down": return { tone: "bad", label: "Syncthing down" };
+    case "syncthing_settings_failed": return { tone: "bad", label: "Settings not applied" };
+    case "syncthing_version": return { tone: "bad", label: "Untested Syncthing" };
+    case "share_check_failed": return { tone: "bad", label: "Share check failed" };
+    case "pixel_held": return { tone: "warn", label: "Folder held" };
     default: return { tone: "warn", label: "Needs a look" };
+  }
+}
+
+export type Chipped = { tone: Tone; label: string };
+export type Described = Chipped & { line: string };
+
+export function syncthingCard(card: SyncthingCard, now: number): Described {
+  const reason = card.reason ?? "";
+  switch (card.state) {
+    case "starting": return { tone: "neutral", label: "Starting", line: "Darkroom is checking Syncthing's settings before anything syncs." };
+    case "running": return { tone: "ok", label: "Running", line: "Syncthing is running with the settings Darkroom set." };
+    case "down": return { tone: "bad", label: "Down", line: `Syncthing has not answered for ${lasted(now - (card.since ?? now))}. Darkroom keeps restarting it. Placing and pruning carry on, and the Pixels catch up once it is back.` };
+    case "settings_failed": return { tone: "bad", label: "Paused", line: `Darkroom could not apply its settings to Syncthing (${reason}), so nothing is syncing. It tries again before the next hourly run.` };
+    case "version": return { tone: "bad", label: "Not started", line: `${reason}, so Darkroom has not started Syncthing.` };
+    case "key": return { tone: "bad", label: "Not started", line: `${reason}, so Darkroom has not started Syncthing. Restart the container.` };
+    case "share_check_failed": return { tone: "bad", label: "Paused", line: `The photo share failed Darkroom's check (${reason}), so placing, pruning and syncing are paused, and nothing on the share is changed.` };
+  }
+}
+
+function heldLines(pixel: PixelSyncthing): string[] {
+  const lines: string[] = [];
+  if (pixel.copies > 0) lines.push(`${count(pixel.copies, "photo")} could not be written again, so its folder is not shared.`);
+  if (pixel.files > 0) lines.push(`Its folder has ${count(pixel.files, "file")} Darkroom did not put there, so it is not shared.`);
+  return lines;
+}
+
+export function pixelSyncthing(pixel: PixelSyncthing, now: number): Chipped & { lines: string[] } {
+  switch (pixel.state) {
+    case "not_syncing": return { tone: "neutral", label: "Not syncing", lines: ["Nothing syncs until Syncthing is running again."] };
+    case "not_paired": return { tone: "neutral", label: "Not paired", lines: ["Pair it to start sending photos."] };
+    case "device_id_invalid": return { tone: "warn", label: "Device ID not valid", lines: ["Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again."] };
+    case "device_id_shared": return { tone: "warn", label: "Same device ID", lines: [`${joined(pixel.others)} ${pixel.others.length === 1 ? "has" : "have"} the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong.`] };
+    case "folder_removed": return { tone: "warn", label: "Folder removed", lines: ["Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again."] };
+    case "folder_path_refused": return { tone: "warn", label: "Folder refused", lines: ["Its folder leads outside the photo share, so Darkroom does not share it."] };
+    case "checking": return { tone: "neutral", label: "Checking", lines: ["Darkroom is checking its folder before sharing it."] };
+    case "held": return { tone: "warn", label: "Folder held", lines: heldLines(pixel) };
+    case "waiting": return { tone: "neutral", label: "Waiting for the Pixel", lines: ["Paired; the Pixel has not connected yet."] };
+    case "not_seen": return { tone: "warn", label: `Not seen for ${pixel.days} days`, lines: ["Darkroom reaches the Pixel only on the home network. Check it is on, on the Wi-Fi, with Syncthing running."] };
+    case "sending": return { tone: "ok", label: "Sending", lines: [`${Math.floor(pixel.completion ?? 0)}% sent`] };
+    case "connected": return { tone: "ok", label: "Connected", lines: ["Up to date"] };
+    case "not_connected": return { tone: "neutral", label: "Not connected", lines: [`Last seen ${ago(pixel.last_seen, now)}.`] };
   }
 }
 

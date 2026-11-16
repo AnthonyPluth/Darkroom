@@ -67,7 +67,7 @@ class CleanEnvTests(unittest.TestCase):
         env = verify.clean_env("/tmp/demo", {"PATH": "/bin"})
         self.assertEqual(env, {"PATH": "/bin", "DARKROOM_DEMO": "1", "DARKROOM_HOST": "127.0.0.1", "DARKROOM_DATA_DIR": "/tmp/demo/data",
                                "DARKROOM_PHOTOS_ROOT": "/tmp/demo/photos", "DARKROOM_PUBLIC_URL": "http://127.0.0.1", "DARKROOM_SECRET_KEY": verify.DEMO_SECRET,
-                               "PYTHONUNBUFFERED": "1", "HTTP_PROXY": verify.NO_OUTSIDE, "HTTPS_PROXY": verify.NO_OUTSIDE, "http_proxy": verify.NO_OUTSIDE,
+                               "DARKROOM_SYNCTHING": "1", "PYTHONUNBUFFERED": "1", "HTTP_PROXY": verify.NO_OUTSIDE, "HTTPS_PROXY": verify.NO_OUTSIDE, "http_proxy": verify.NO_OUTSIDE,
                                "https_proxy": verify.NO_OUTSIDE, "NO_PROXY": verify.LOOPBACK_ONLY, "no_proxy": verify.LOOPBACK_ONLY})
         with_port = verify.clean_env("/tmp/demo", {}, port=8123)
         self.assertEqual((with_port["DARKROOM_PORT"], with_port["DARKROOM_PUBLIC_URL"]), ("8123", "http://127.0.0.1:8123"))

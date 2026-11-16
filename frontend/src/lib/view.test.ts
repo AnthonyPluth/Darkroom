@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
 import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, sessionChip } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -21,6 +21,11 @@ describe("alertChip", () => {
     expect(alertChip("schedule_renewal_failed")).toEqual({ tone: "bad", label: "Not renewed" });
     expect(alertChip("schedule_renewal_unconfirmed")).toEqual({ tone: "warn", label: "Renewal unconfirmed" });
     expect(alertChip("export_expiring").label).toBe("Export expiring");
+    expect(alertChip("syncthing_down")).toEqual({ tone: "bad", label: "Syncthing down" });
+    expect(alertChip("syncthing_settings_failed")).toEqual({ tone: "bad", label: "Settings not applied" });
+    expect(alertChip("syncthing_version")).toEqual({ tone: "bad", label: "Untested Syncthing" });
+    expect(alertChip("share_check_failed")).toEqual({ tone: "bad", label: "Share check failed" });
+    expect(alertChip("pixel_held")).toEqual({ tone: "warn", label: "Folder held" });
     expect(alertChip("anything_else")).toEqual({ tone: "warn", label: "Needs a look" });
   });
 });
@@ -223,5 +228,53 @@ describe("renewNow", () => {
   it("is enabled after the schedule ended and says scheduled exports have stopped", () => {
     const ended = { ...inWindow, schedule_end: NOW - 86400 };
     expect(renewNow(ended, [], NOW)).toEqual({ enabled: true, sentence: `This schedule ended on ${onDay(NOW - 86400)}, so scheduled exports have stopped. Renew now or Create schedule sets up a new yearly schedule in Takeout; both run the same steps.` });
+  });
+});
+
+describe("pixelSyncthing", () => {
+  const now = 100_000;
+  const base = { pixel_id: 1, name: "Pixel 8", copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [] };
+
+  it("gives each per-Pixel state its chip and line", () => {
+    expect(pixelSyncthing({ ...base, state: "not_syncing" }, now)).toEqual({ tone: "neutral", label: "Not syncing", lines: ["Nothing syncs until Syncthing is running again."] });
+    expect(pixelSyncthing({ ...base, state: "not_paired" }, now)).toEqual({ tone: "neutral", label: "Not paired", lines: ["Pair it to start sending photos."] });
+    expect(pixelSyncthing({ ...base, state: "checking" }, now)).toEqual({ tone: "neutral", label: "Checking", lines: ["Darkroom is checking its folder before sharing it."] });
+    expect(pixelSyncthing({ ...base, state: "waiting" }, now)).toEqual({ tone: "neutral", label: "Waiting for the Pixel", lines: ["Paired; the Pixel has not connected yet."] });
+    expect(pixelSyncthing({ ...base, state: "not_seen", days: 3 }, now).label).toBe("Not seen for 3 days");
+    expect(pixelSyncthing({ ...base, state: "sending", completion: 99.9 }, now)).toEqual({ tone: "ok", label: "Sending", lines: ["99% sent"] });
+    expect(pixelSyncthing({ ...base, state: "connected", completion: 100 }, now)).toEqual({ tone: "ok", label: "Connected", lines: ["Up to date"] });
+    expect(pixelSyncthing({ ...base, state: "not_connected", last_seen: now - 7200 }, now)).toEqual({ tone: "neutral", label: "Not connected", lines: ["Last seen 2 hours ago."] });
+  });
+
+  it("gives the three states with no folder and the refused folder a warn chip and their line", () => {
+    expect(pixelSyncthing({ ...base, state: "device_id_invalid" }, now)).toEqual({ tone: "warn", label: "Device ID not valid", lines: ["Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again."] });
+    expect(pixelSyncthing({ ...base, state: "folder_removed" }, now)).toEqual({ tone: "warn", label: "Folder removed", lines: ["Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again."] });
+    expect(pixelSyncthing({ ...base, state: "folder_path_refused" }, now)).toEqual({ tone: "warn", label: "Folder refused", lines: ["Its folder leads outside the photo share, so Darkroom does not share it."] });
+  });
+
+  it("names the other Pixels with the same device ID, with has for one and have for more", () => {
+    const shared = { ...base, state: "device_id_shared" as const };
+    expect(pixelSyncthing({ ...shared, others: ["Casey's Pixel"] }, now)).toEqual({ tone: "warn", label: "Same device ID", lines: ["Casey's Pixel has the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."] });
+    expect(pixelSyncthing({ ...shared, others: ["A", "B"] }, now).lines).toEqual(["A and B have the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."]);
+    expect(pixelSyncthing({ ...shared, others: ["A", "B", "C"] }, now).lines).toEqual(["A, B and C have the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."]);
+  });
+
+  it("keeps the Folder held chip and shows both causes, counting one photo and one file in the singular", () => {
+    expect(pixelSyncthing({ ...base, state: "held", copies: 1, files: 1 }, now)).toEqual({
+      tone: "warn", label: "Folder held",
+      lines: ["1 photo could not be written again, so its folder is not shared.", "Its folder has 1 file Darkroom did not put there, so it is not shared."],
+    });
+    expect(pixelSyncthing({ ...base, state: "held", copies: 0, files: 2 }, now).lines).toEqual(["Its folder has 2 files Darkroom did not put there, so it is not shared."]);
+  });
+});
+
+describe("syncthingCard", () => {
+  it("says how long Syncthing has not answered", () => {
+    const down = { state: "down" as const, reason: null, since: 0, pixels: [] };
+    expect(syncthingCard(down, 30).line).toMatch(/^Syncthing has not answered for less than a minute\./);
+    expect(syncthingCard(down, 45 * 60).line).toMatch(/^Syncthing has not answered for 45 minutes\./);
+    expect(syncthingCard(down, 3600).line).toMatch(/^Syncthing has not answered for 1 hour\./);
+    expect(syncthingCard(down, 3 * 86_400).line).toMatch(/^Syncthing has not answered for 3 days\./);
+    expect(syncthingCard({ ...down, since: null }, 99).line).toMatch(/^Syncthing has not answered for less than a minute\./);
   });
 });

@@ -6,7 +6,7 @@ from darkroom import VERSION, validate
 from darkroom.domain import events
 from darkroom.domain import status as overview
 from darkroom.server import contract
-from darkroom.server.common import Request, Response, engine_of, error_response, first_query, json_response
+from darkroom.server.common import Request, Response, engine_of, error_response, first_query, json_response, now
 from darkroom.storage import db
 
 DEFAULT_EVENTS = 50
@@ -19,7 +19,7 @@ def healthz(request: Request) -> Annotated[Response, contract.Health]:
 
 def status(request: Request) -> Annotated[Response, contract.Status]:
     with db.session(engine_of(request)) as opened:
-        reply = overview.overview(opened)
+        reply = overview.overview(opened, request.settings.syncthing, now())
     return json_response(reply)
 
 
