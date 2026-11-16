@@ -48,8 +48,7 @@ def handed_on_pipe(raw: str) -> str:
 
 
 def browser_token() -> str:
-    raw = env("DARKROOM_BROWSER_TOKEN_FD")
-    return handed_on_pipe(raw) if raw else env("DARKROOM_BROWSER_TOKEN")
+    return handed_on_pipe(env("DARKROOM_BROWSER_TOKEN_FD"))
 
 
 def viewer_secret() -> str:
@@ -114,7 +113,6 @@ class Settings:
     immich_url: str
     immich_admin_key: str
     browser_token: str
-    vnc_url: str
     timezone: str
     pixel_folder_cap_gb: int = 50
     resend_api_key: str = ""
@@ -177,7 +175,6 @@ def load() -> Settings:
         immich_url=env("IMMICH_URL").rstrip("/"),
         immich_admin_key=env("IMMICH_ADMIN_KEY"),
         browser_token=browser_token(),
-        vnc_url=env("VNC_URL"),
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
         resend_api_key=env("RESEND_API_KEY"),
@@ -227,14 +224,6 @@ MIN_BROWSER_TOKEN = 32
 
 def browser_token_usable(token: str) -> bool:
     return len(token) >= MIN_BROWSER_TOKEN and token.isascii() and token.isprintable() and " " not in token
-
-
-def browser_token_problems(token: str) -> list[str]:
-    if not token:
-        return []
-    if not browser_token_usable(token):
-        return [f"DARKROOM_BROWSER_TOKEN must be at least {MIN_BROWSER_TOKEN} printable ASCII characters without spaces (try `openssl rand -hex 32`)"]
-    return []
 
 
 def oidc_configured(settings: Settings) -> bool:
@@ -373,24 +362,15 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return (found + auth_problems(settings) + browser_token_problems(settings.browser_token) + pixel_cap_problems(settings) + vnc_url_problems(settings)
-            + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings))
+    return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings))
 
 
-SYNCTHING_TWO_CONTAINERS = ("DARKROOM_SYNCTHING=1 does nothing in the two-container layout: only the one container's init starts Darkroom's Syncthing, "
+SYNCTHING_TWO_CONTAINERS = ("DARKROOM_SYNCTHING=1 does nothing outside the one container: only the one container's init starts Darkroom's Syncthing, "
                             "so unset it here (docs/deploy/one-container.md)")
 
 
 def syncthing_problems(settings: Settings) -> list[str]:
     return [SYNCTHING_TWO_CONTAINERS] if settings.syncthing and not settings.one_container else []
-
-
-def splits(address: str) -> bool:
-    try:
-        urlsplit(address)
-    except ValueError:
-        return False
-    return True
 
 
 def port_problem(address: str) -> bool:
@@ -435,17 +415,7 @@ def relay_address(public_url: str) -> str:
 
 
 def viewer_link(settings: Settings) -> str | None:
-    return settings.vnc_url if settings.vnc_url else relay_viewer_url(settings)
-
-
-def vnc_url_problems(settings: Settings) -> list[str]:
-    if settings.vnc_url and (settings.one_container or browser_token_usable(settings.viewer_secret)):
-        return ["VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"]
-    if not settings.vnc_url or usable_viewer_url(settings.vnc_url) is not None:
-        return []
-    if port_problem(settings.vnc_url) and splits(settings.vnc_url):
-        return ["VNC_URL has a port that is not a number from 0 to 65535"]
-    return ["VNC_URL is not usable: it must be an http:// or https:// address without a username or password, so the Remote browser page shows no viewer"]
+    return relay_viewer_url(settings)
 
 
 SEALED_PREFIX = "enc:v1:"
@@ -460,6 +430,18 @@ IGNORED_VARIABLES_NOTE = "NTFY_URL, NTFY_TOPIC or NTFY_TOKEN is set and ignored:
 
 def ignored_alert_variables() -> bool:
     return any(env(name) for name in REMOVED_ALERT_VARIABLES)
+
+
+REMOVED_BROWSER_VARIABLES = ("DARKROOM_BROWSER_TOKEN", "DARKROOM_URL", "VNC_URL", "DARKROOM_VNC_SECRET")
+
+
+def ignored_browser_variables() -> tuple[str, ...]:
+    return tuple(name for name in REMOVED_BROWSER_VARIABLES if env(name))
+
+
+def ignored_browser_note(names: tuple[str, ...]) -> str:
+    return (f"{', '.join(names)} {'is' if len(names) == 1 else 'are'} set and ignored: the separate browser container is gone, and the one container generates "
+            "the browser token and serves the remote browser view itself, so remove these lines from .env (docs/deploy/one-container.md)")
 
 
 def resend_configured(settings: Settings) -> bool:

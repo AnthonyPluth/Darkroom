@@ -53,21 +53,23 @@ def handed(value):
 class PlanTests(unittest.TestCase):
     def test_the_app_gets_every_setting_it_reads_except_the_browser_token(self):
         read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text())) | set(app_config.REMOVED_ALERT_VARIABLES)
-        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN", "DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_SYNCTHING_KEY_FD",
-                                                         "DARKROOM_ONE_CONTAINER"})
+        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_SYNCTHING_KEY_FD", "DARKROOM_ONE_CONTAINER"})
         env = plan.app_env(GIVEN)
         self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD], env[plan.ONE_CONTAINER]), (plan.PIPE["token"], plan.PIPE["viewer"], "1"))
-        self.assertFalse({"DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
+        self.assertFalse({"HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
+        self.assertEqual((env["DARKROOM_BROWSER_TOKEN"], env["DARKROOM_VNC_SECRET"]), ("set", "set"))
+        self.assertFalse({GIVEN["DARKROOM_BROWSER_TOKEN"], GIVEN["DARKROOM_VNC_SECRET"]} & set(env.values()))
         self.assertEqual(env["DARKROOM_SECRET_KEY"], "key-canary")
         self.assertEqual(env["PATH"], "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin")
 
     def test_the_worker_gets_what_it_reads_and_no_darkroom_secret(self):
         read = set(re.findall(r'env\("([A-Z0-9_]+)"', (ROOT / "darkroom_browser/config.py").read_text())) | {"TZ", "BROWSER_CHANNEL"}
         env = plan.worker_env(GIVEN)
-        self.assertEqual(read - set(env) - set(plan.WORKER_SETTINGS), {"DARKROOM_BROWSER_TOKEN"})
-        self.assertEqual(env["DARKROOM_URL"], "http://127.0.0.1:8123")
+        self.assertEqual(read - set(env) - set(plan.WORKER_SETTINGS), set())
+        self.assertEqual(env["DARKROOM_PORT"], "8123")
+        self.assertEqual(plan.worker_env({})["DARKROOM_PORT"], "8000")
         self.assertEqual((env["PHOTOS_ROOT"], env["DISPLAY"], env["TZ"], env["POLL_SECONDS"]), ("/share", ":99", "Europe/Paris", "5"))
-        self.assertFalse({*APP_SECRETS, "DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "HOSTNAME", "DARKROOM_PORT"} & set(env))
+        self.assertFalse({*APP_SECRETS, "DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "DARKROOM_URL", "HOSTNAME"} & set(env))
 
     def test_the_worker_and_the_app_get_the_same_browser_root(self):
         self.assertEqual(plan.worker_env(GIVEN)["BROWSER_ROOT"], "/share/_browser")
@@ -78,7 +80,7 @@ class PlanTests(unittest.TestCase):
     def test_the_one_container_image_keeps_the_browser_state_in_appdata(self):
         image = (ROOT / "Dockerfile.single").read_text()
         self.assertIn("DARKROOM_BROWSER_ROOT=/data/browser", image)
-        self.assertNotIn("BROWSER_ROOT", (ROOT / "Dockerfile").read_text() + (ROOT / "Dockerfile.browser").read_text())
+        self.assertNotIn("BROWSER_ROOT", (ROOT / "Dockerfile").read_text())
 
     def test_the_display_stack_gets_almost_nothing(self):
         self.assertEqual(plan.display_env(GIVEN), {"PATH": "/usr/local/bin:/usr/bin:/bin", "DISPLAY": ":99", "HOME": "/home/darkroom", "LANG": "C.UTF-8"})
@@ -335,13 +337,18 @@ class TokenOnPipeTests(unittest.TestCase):
             self.assertEqual(run.main(["check-config"]), 0)
             self.assertNotIn(TOKEN, "".join(os.environ.values()))
 
-    def test_the_environment_token_still_works_and_a_bad_pipe_gives_none(self):
-        with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN": TOKEN}, clear=True):
-            self.assertEqual((app_config.load().browser_token, worker_config.load().token), (TOKEN, TOKEN))
+    def test_the_environment_token_and_address_are_ignored_and_a_bad_pipe_gives_none(self):
+        with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_URL": "http://darkroom:8000"}, clear=True):
+            worker = worker_config.load()
+            self.assertEqual((app_config.load().browser_token, worker.token), ("", ""))
+            self.assertEqual(worker_config.darkroom_url(worker), "http://127.0.0.1:8000")
+            self.assertIn("no browser token was handed on DARKROOM_BROWSER_TOKEN_FD; the worker starts only under the one container's init", worker_config.problems(worker))
         for raw in ("1", "x", "999999"):
             with self.subTest(raw=raw), mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN_FD": raw, "DARKROOM_BROWSER_TOKEN": TOKEN}, clear=True):
                 self.assertEqual((app_config.load().browser_token, worker_config.load().token), ("", ""))
-                self.assertIn("DARKROOM_BROWSER_TOKEN is not set; the worker will not start without the shared token", worker_config.problems(worker_config.load()))
+        for port in ("0", "70000", "80x", "123456"):
+            with self.subTest(port=port), mock.patch.dict(os.environ, {"DARKROOM_PORT": port}, clear=True):
+                self.assertIn("DARKROOM_PORT must be the app's port, a number from 1 to 65535", worker_config.problems(worker_config.load()))
 
     def test_a_worker_and_the_app_both_given_the_token_on_pipes_run_a_noop_job_without_logging_it(self):
         engine = own_database(self)
@@ -354,10 +361,11 @@ class TokenOnPipeTests(unittest.TestCase):
             job = browser_jobs.enqueue(opened, add_account(opened), "noop", None, 1.0).id
         with no_leaks(self, TOKEN, database=engine):
             base, _ = start_server(self, settings, engine)
-            with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "DARKROOM_URL": base, "PHOTOS_ROOT": photos.name}, clear=True):
+            with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "DARKROOM_PORT": base.rsplit(":", 1)[1], "PHOTOS_ROOT": photos.name}, clear=True):
                 worker = worker_config.load()
             self.assertEqual(worker_config.problems(worker), [])
-            self.assertTrue(runner.Runner(worker, Client(worker.darkroom_url, worker.token), lambda folder: FakeBrowser(), sleep=lambda seconds: None).tick())
+            self.assertEqual(worker_config.darkroom_url(worker), base)
+            self.assertTrue(runner.Runner(worker, Client(worker_config.darkroom_url(worker), worker.token), lambda folder: FakeBrowser(), sleep=lambda seconds: None).tick())
         with db.session(engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job).status, "done")
 

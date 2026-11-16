@@ -44,14 +44,6 @@ jobs:
           load: true
           tags: darkroom:smoke
           cache-from: type=gha
-      - name: Build the browser worker image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.browser
-          load: true
-          tags: darkroom-browser:smoke
-          cache-from: type=gha
       - name: Check the service image answers /healthz
         run: |
           docker run -d --name smoke -p 8765:8000 darkroom:smoke
@@ -66,10 +58,6 @@ jobs:
         run: |
           docker compose --profile single config --quiet
           docker compose config --quiet
-          docker compose --profile browser config --quiet
-      - name: Launch the browser with the deployment sandbox
-        run: |
-          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --entrypoint bash darkroom-browser:smoke /app/smoke.sh
 
   single:
     runs-on: ubuntu-latest   # hosted: small repository
@@ -128,7 +116,6 @@ jobs:
       - name: Image names (registry names must be lowercase)
         run: |
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom" >> "$GITHUB_ENV"
-          echo "BROWSER_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom-browser" >> "$GITHUB_ENV"
           echo "SINGLE_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom-single" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
@@ -145,7 +132,7 @@ jobs:
         run: |
           v="${VERSION#v}"
           IFS=. read -r major minor patch <<< "$v"
-          for name in IMAGE BROWSER_IMAGE SINGLE_IMAGE; do
+          for name in IMAGE SINGLE_IMAGE; do
             image="${!name}"
             {
               echo "${name,,}<<EOF"
@@ -172,19 +159,6 @@ jobs:
             org.opencontainers.image.version=${{ needs.build.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Push the browser worker image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.browser
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.browser_image }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.build.outputs.version }}
-          cache-from: type=gha
       - name: Push the one-container image (amd64 only, the platform its checks run on)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
         with:

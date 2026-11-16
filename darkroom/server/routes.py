@@ -73,6 +73,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/setup/alerts", setup.set_alerts, "setup"),
     Route("POST", "/api/setup/sign-in", setup.propose_sign_in, "setup"),
     Route("POST", "/api/setup/sign-in/test", setup.test_sign_in, "setup"),
+    Route("POST", "/api/setup/finish", setup.finish_setup, "setup"),
     Route("POST", "/internal/browser/jobs/claim", browser_internal.claim, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/heartbeat", browser_internal.heartbeat, "worker"),
     Route("POST", "/internal/browser/jobs/{id}/progress", browser_internal.progress, "worker"),

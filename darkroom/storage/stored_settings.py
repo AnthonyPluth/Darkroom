@@ -40,8 +40,9 @@ def has_table(engine: Engine) -> bool:
 def stored_values(engine: Engine) -> dict[str, tuple[str | None, str | None]]:
     if not has_table(engine):
         return {}
-    with db.session(engine) as opened:
-        return {row.name: (row.value, row.value_sealed) for row in opened.scalars(select(StoredSetting))}
+    with engine.connect() as connection:
+        rows = connection.execute(select(StoredSetting.name, StoredSetting.value, StoredSetting.value_sealed)).all()
+    return {name: (value, sealed) for name, value, sealed in rows}
 
 
 def parsed(entry: config.Storable, value: str | None, sealed: str | None, key: str) -> str | tuple[str, ...] | None:

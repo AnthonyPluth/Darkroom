@@ -518,11 +518,12 @@ class ViewerLinkTests(unittest.TestCase):
         secret = values.pop("secret", SECRET)
         return dataclasses.replace(settings_from(**values), viewer_secret=secret)
 
-    def test_vnc_url_is_used_unchanged_when_set(self):
+    def test_a_vnc_url_left_in_the_environment_changes_no_link(self):
         for given in ("https://browser.example/vnc.html?autoconnect=1", "javascript:alert(1)"):
             with self.subTest(given=given):
                 settings = self.settings(VNC_URL=given, DARKROOM_PUBLIC_URL="https://darkroom.example")
-                self.assertEqual(config.viewer_link(settings), given)
+                self.assertEqual(config.viewer_link(settings), config.relay_viewer_url(settings))
+                self.assertTrue((config.viewer_link(settings) or "").startswith("https://darkroom.example/viewer/vnc.html?"))
 
     def test_without_vnc_url_the_link_goes_through_the_relay(self):
         options = "autoconnect=1&resize=scale&reconnect=1&reconnect_delay=3000"
@@ -536,22 +537,17 @@ class ViewerLinkTests(unittest.TestCase):
             with self.subTest(public=public):
                 self.assertEqual(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL=public)), relayed)
 
-    def test_check_config_names_a_leftover_vnc_url_in_the_one_container(self):
-        leftover = "VNC_URL is set, so the Remote browser page and the sign-in alert use it instead of the one container's own viewer; remove VNC_URL from .env unless the separate browser container still runs"
-        self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html")), [leftover])
-        self.assertEqual(config.vnc_url_problems(self.settings(VNC_URL="https://browser.example/vnc.html", secret="")), [])
-        self.assertEqual(config.vnc_url_problems(self.settings()), [])
-
     def test_check_config_in_the_one_container_names_a_leftover_vnc_url(self):
         config.handed_tokens.clear()
         with tempfile.TemporaryDirectory() as folder:
             given = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_PUBLIC_URL": "http://127.0.0.1:8000", "DARKROOM_ALLOW_NO_AUTH": "1",
                      "DATABASE_URL": f"sqlite:///{folder}/db.sqlite", "VNC_URL": "https://browser.example/vnc.html"}
-            for marker, expected in (({"DARKROOM_ONE_CONTAINER": "1"}, True), ({}, False)):
+            for marker in ({"DARKROOM_ONE_CONTAINER": "1"}, {}):
                 with self.subTest(marker=marker), mock.patch.dict(os.environ, given | marker, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"), \
                         contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
-                    run.main(["check-config"])
-                self.assertEqual("remove VNC_URL from .env" in err.getvalue(), expected, err.getvalue())
+                    self.assertEqual(run.main(["check-config"]), 0, err.getvalue())
+                self.assertIn("config: warning: VNC_URL is set and ignored", err.getvalue())
+                self.assertNotIn("browser.example", err.getvalue())
 
     def test_a_public_address_with_a_malformed_port_gives_no_link_keeps_pages_working_and_is_named_by_check_config(self):
         for public in ("https://darkroom.example:99999", "https://darkroom.example:port", "http://[fd00::20]:70000"):
@@ -578,10 +574,10 @@ class ViewerLinkTests(unittest.TestCase):
         self.assertIsNone(config.viewer_link(self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", secret="short")))
         self.assertIsNone(config.viewer_link(self.settings()))
 
-    def test_the_alert_links_through_the_relay_only_when_vnc_url_is_unset(self):
+    def test_the_alert_links_through_the_relay_even_with_a_vnc_url_left_in_the_environment(self):
         engine = own_database(self)
         cases = ((self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example"), "https://darkroom.example/viewer/vnc.html?"),
-                 (self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", VNC_URL="https://browser.example/vnc.html"), "https://browser.example/vnc.html"),
+                 (self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", VNC_URL="https://browser.example/vnc.html"), "https://darkroom.example/viewer/vnc.html?"),
                  (self.settings(DARKROOM_PUBLIC_URL="https://darkroom.example", secret=""), None))
         for number, (settings, link) in enumerate(cases):
             with self.subTest(link=link), db.session(engine, writing=True) as opened:
