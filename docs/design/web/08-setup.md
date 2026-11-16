@@ -19,6 +19,7 @@ The review has two stages (decision 1), and both are recorded on #303. Both are 
 | `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | No details saved yet (test disabled); details saved with a secret stored (test enabled); unsaved edits (test disabled); a refused save; the test could not start; set in the environment |
 | `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | The server's failure pages after the test: Not allowed (account); Not allowed (not started here); The test sign-in failed; The settings changed; Nothing to test |
 | `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Arrived from a passing test (the "Sign-in works" status line); empty; stored; a refused save; set in the environment |
+| `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` (#347, drawn for sign-off, not yet signed off) | Checking Immich (in flight); refused, no answer; refused, not Immich; refused, TLS failed |
 | `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | No people yet (Continue disabled); the add-person form open; two people added |
 | `08-setup-accounts-desktop.dc.html`, `08-setup-accounts-phone.dc.html` | No accounts yet; one account waiting for its sign-in; one account signed in |
 | `08-setup-pixels-desktop.dc.html`, `08-setup-pixels-phone.dc.html` | No Pixels yet; the add-Pixel form open; one Pixel added |
@@ -201,7 +202,19 @@ Test sign-in is enabled only when details are saved (`proposal` is not null) and
 | Field label | Immich address |
 | Primary button | Save and continue |
 
-There is no Back button from here on to Address or Sign-in: those are settled by the passing test. Posts `POST /api/setup/immich` with `immich_url`. The API stores the address without contacting Immich, so the screen claims no check; the check is #347, and #305 ships without it (decision 8).
+There is no Back button from here on to Address or Sign-in: those are settled by the passing test. Posts `POST /api/setup/immich` with `immich_url`.
+
+**Checking the address (#347, drawn for sign-off, not yet signed off; boards `08-setup-immich-check-*`).** Before storing the address, Darkroom asks Immich's unauthenticated ping (`GET /api/server/ping`) at that address, through `darkroom/tls.py`, with a short time limit and without following a redirect, and stores it only if Immich answers as Immich. Every press of Save and continue checks again, a stored value too; Continue, when the address is set in the environment, checks nothing.
+
+| Part | Copy |
+| --- | --- |
+| Primary button while the check runs (disabled) | Checking Immich... |
+| Refused (the API's message, inside the usual line) | Couldn't save Immich's address: Immich didn't answer at {address}: {reason}. |
+| `{reason}`, nothing answered (refused, timed out, name not found) | nothing answered there |
+| `{reason}`, something answered but not as Immich (any other reply, or a redirect) | the server there isn't Immich |
+| `{reason}`, the TLS connection failed (untrusted certificate, failed handshake) | its TLS connection failed |
+
+`{address}` is the address as it would be stored, as the person typed it; the line never names a redirect's target, a reply's body or headers, or a certificate or error detail. A refusal is a {status} (422 recommended; see the README's #347 section, decision A): nothing is stored, the page state is not reloaded, the field keeps what was typed, and the line stays until the next press, which clears it. When the check passes, the address is stored and the wizard goes on to People as before, with no new status line; coming back to the step shows the stored state with "Saved.". There is no way to store an address Immich doesn't answer at from the wizard; the environment's `IMMICH_URL` remains for that.
 
 ### Step 4 of 8: People
 
@@ -282,6 +295,7 @@ A refused save or test shows one danger `role="alert"` line under the step's pri
 | 409, set in the environment (only when the page is out of date) | Couldn't save {what}: {message}. The page then reloads its state, so the field turns into the environment row |
 | 409 from Save details, no address | Couldn't save the sign-in details: {message}. |
 | 503, no secret key | Couldn't save {what}: {message}. |
+| {status} from Save and continue on Immich: the check failed (#347, not yet signed off) | Couldn't save Immich's address: {message}. The page state is not reloaded |
 | 409 from Test sign-in (another address, or nothing saved) | Couldn't start the test sign-in: {message}. |
 | 502 from Test sign-in | Couldn't start the test sign-in: {message}. |
 | 401 from any setup call | The "Setup isn't open" screen |
@@ -289,14 +303,14 @@ A refused save or test shows one danger `role="alert"` line under the step's pri
 | No network, or any other 5xx | Couldn't save {what}: {the error's text}. (or "Couldn't start the test sign-in: ...", "Couldn't finish setup: ...") |
 | `GET /api/setup` fails other than 401 | In the card, "Couldn't load setup: {message}." with a "Try again" button that loads it again |
 
-The messages the API gives today, so the boards can show real ones: "public_url must be an http:// or https:// address without a user name, query or fragment", "public_url must be just the address, without a path", "public_url must use https:// for an address reachable beyond the LAN", the same for `immich_url` (without the path one), "alert_email_from must be one email address, like alerts@example.com", "resend_api_key is required", "resend_api_key must be printable ASCII without spaces", "oidc_client_id must be printable ASCII without spaces", "oidc_allowed_emails must hold email addresses, like jo@example.com", "OIDC_ISSUER must use https:// unless the provider is on the LAN", "set OIDC_ALLOWED_GROUPS or OIDC_ALLOWED_EMAILS so someone can sign in", "confirm the address Darkroom is opened at first, so the sign-in can come back to it", "Darkroom has no secret key to seal settings with; check the secret-key file in DARKROOM_DATA_DIR", "{VARIABLE} is set in the environment, which always wins over the wizard; change it there", "there are no proposed sign-in settings to test; send them first", "the test sign-in comes back to DARKROOM_PUBLIC_URL, which is not the address this browser is using, so the wizard could not see it finish; open the wizard at the address you confirmed, or confirm the address you are using now" and "the test sign-in could not start: {reason}".
+The messages the API gives today, so the boards can show real ones: "public_url must be an http:// or https:// address without a user name, query or fragment", "public_url must be just the address, without a path", "public_url must use https:// for an address reachable beyond the LAN", the same for `immich_url` (without the path one), "alert_email_from must be one email address, like alerts@example.com", "resend_api_key is required", "resend_api_key must be printable ASCII without spaces", "oidc_client_id must be printable ASCII without spaces", "oidc_allowed_emails must hold email addresses, like jo@example.com", "OIDC_ISSUER must use https:// unless the provider is on the LAN", "set OIDC_ALLOWED_GROUPS or OIDC_ALLOWED_EMAILS so someone can sign in", "confirm the address Darkroom is opened at first, so the sign-in can come back to it", "Darkroom has no secret key to seal settings with; check the secret-key file in DARKROOM_DATA_DIR", "{VARIABLE} is set in the environment, which always wins over the wizard; change it there", "there are no proposed sign-in settings to test; send them first", "the test sign-in comes back to DARKROOM_PUBLIC_URL, which is not the address this browser is using, so the wizard could not see it finish; open the wizard at the address you confirmed, or confirm the address you are using now", "the test sign-in could not start: {reason}" and, with #347 (not yet signed off), "Immich didn't answer at {address}: nothing answered there", "Immich didn't answer at {address}: the server there isn't Immich" and "Immich didn't answer at {address}: its TLS connection failed".
 
 ## What the wizard may and may not show
 
 - **No secret is ever echoed** (decision 11). The client secret, the Resend key and each person's Immich API key are password fields (`type="password"`, `autocomplete="off"`), never prefilled, without a show button, emptied after every save (successful or not), never put in a URL, the page's history or browser storage, and never in an error line. The API gives back only whether one is set (`set`, `has_client_secret`, and the People page's own flag), and the page shows only that. The claim cookie and the session cookie are HttpOnly and never shown.
 - **Values from the environment are never shown.** The API does not return them; the page says only that the setting is set there.
 - **Nothing on the page comes from outside the LAN.** The page loads only Darkroom's own files, under the app's CSP (`'self'`): no web font, image, script or analytics from anywhere else. Copy uses the browser's own clipboard. What the person types goes only to Darkroom.
-- **What reaches beyond Darkroom, and when.** The test sign-in: the browser is sent to the issuer address the person typed, and Darkroom fetches that issuer's configuration and exchanges the code with it. After the test, the steps that already reach out on the People page do the same as there (a person's Immich key against the Immich address; a Google account's sign-in in the remote browser, which reaches Google). Saving the address, Immich's address or the alert settings contacts nothing, and the wizard sends no email.
+- **What reaches beyond Darkroom, and when.** The test sign-in: the browser is sent to the issuer address the person typed, and Darkroom fetches that issuer's configuration and exchanges the code with it. After the test, the steps that already reach out on the People page do the same as there (a person's Immich key against the Immich address; a Google account's sign-in in the remote browser, which reaches Google). Saving the address or the alert settings contacts nothing, and the wizard sends no email. Saving Immich's address (#347, not yet signed off) asks Immich's unauthenticated ping at the address typed, and nothing else: no key, cookie or header from Darkroom goes with it, and it is made only after the passing test, never by a route open before it.
 - **Before the test**, the wizard shows nothing about people, accounts, Pixels or photos, and the setup routes return none. After it, the People, Google accounts and Pixels steps show what the People page shows to that signed-in member, nothing more.
 
 ## How it is turned on and off
@@ -338,7 +352,7 @@ The owner answered the first draft's open points on #344, and the three that dec
 5. **When the wizard is claimed:** accepted as recommended. Only when Start setup is pressed, never on load.
 6. **One closed screen for every reason:** accepted as recommended.
 7. **The address step:** accepted as recommended. Prefilled with the address in use, editable, with the warning line; an https address through Traefik is set in the environment afterwards.
-8. **Immich "checked":** a follow-up issue, #347; #305 is not held for it and ships without it, as this design says.
+8. **Immich "checked":** a follow-up issue, #347; #305 is not held for it and ships without it, as this design says. Addendum for #347 (drawn for sign-off, not yet signed off): the check, its in-flight state and its three refusals are in "Step 3 of 8: Immich" and on boards `08-setup-immich-check-*`; the choices are in the README's #347 section.
 9. **A test email:** a follow-up issue, #348; #305 ships without it.
 10. **Error wording:** accepted as recommended. The API's message unchanged inside "Couldn't save {what}: {message}.".
 11. **Secret fields:** accepted as recommended. Password fields with no show button, emptied after every save.
