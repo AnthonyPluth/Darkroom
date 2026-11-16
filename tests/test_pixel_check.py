@@ -570,6 +570,24 @@ class PlacedCopyCheckTests(unittest.TestCase):
         self.assertEqual(self.events(pixel_check.UNACCOUNTED), ["files 2"])
 
 
+    def test_a_copy_lost_from_a_pixel_that_holds_nothing_is_noticed_by_the_daily_full_run(self):
+        (item,) = self.placed()
+        placed_copies = pixel_check.PlacedCopyCheck()
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 100), pixel_check.Checked(checked=1, intact=1))
+        self.assertEqual(placed_copies.held_pixels(self.opened), [])
+        self.copy_path(self.jo_pixel, item).unlink()
+        day = pixel_check.RECHECK_SECONDS
+        for at in (NOW + 100, NOW + 3700, NOW + 100 + day - 1):
+            with self.subTest(at=at):
+                self.assertFalse(placed_copies.due(self.opened, self.photos, at))
+                self.assertFalse(placed_copies.held(self.opened, self.jo_pixel))
+        self.assertTrue(placed_copies.due(self.opened, self.photos, NOW + 100 + day))
+        self.assertEqual(placed_copies.scope(self.opened, self.photos, NOW + 100 + day), None)
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 100 + day), pixel_check.Checked(checked=1, intact=0, requeued=1))
+        self.assertEqual(placed_copies.ran_at, NOW + 100 + day)
+        self.assertTrue(placed_copies.held(self.opened, self.jo_pixel))
+        self.assertEqual(self.events("pixel_copy_missing"), [f"copy {self.copies(self.jo_pixel)[0].id}"])
+
     def test_the_check_object_holds_every_pixel_until_it_has_run(self):
         self.placed()
         placed_copies = pixel_check.PlacedCopyCheck()

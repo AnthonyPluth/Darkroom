@@ -52,6 +52,35 @@ class PixelFolderPathTests(unittest.TestCase):
             with self.assertRaises(paths.OutsideRoot):
                 self.photos.pixel_folder(1, bad)
 
+    def test_the_root_of_a_pixel_is_its_folder_under_pixels_whether_or_not_it_exists_yet(self):
+        self.assertEqual(self.photos.pixel_root(3), self.root / "_pixels/3")
+        (self.root / "_pixels/3/jo").mkdir(parents=True)
+        self.assertEqual(self.photos.pixel_root(3), self.root / "_pixels/3")
+        for bad in (0, -1, True, False, "1", 1.0, None):
+            with self.subTest(pixel_id=bad), self.assertRaises(paths.OutsideRoot):
+                self.photos.pixel_root(bad)
+
+    def test_the_root_of_a_pixel_is_refused_when_its_folder_or_the_pixels_folder_is_a_link(self):
+        (self.root / "_pixels").mkdir()
+        (self.root / "_pixels/2").mkdir()
+        for target in (self.root / "jo/originals", self.root / "jo", self.root / "_pixels/2", self.root / "nowhere"):
+            with self.subTest(link="_pixels/1", target=target.name):
+                (self.root / "_pixels/1").symlink_to(target)
+                with self.assertRaises(paths.OutsideRoot):
+                    self.photos.pixel_root(1)
+                (self.root / "_pixels/1").unlink()
+        self.assertEqual(self.photos.pixel_root(2), self.root / "_pixels/2")
+        (self.root / "_pixels/2").rmdir()
+        (self.root / "_pixels").rmdir()
+        for target in (self.root / "jo", self.root / "jo/originals", self.root / "nowhere"):
+            with self.subTest(link="_pixels", target=target.name):
+                (self.root / "_pixels").symlink_to(target)
+                for pixel_id in (1, 2024):
+                    with self.assertRaises(paths.OutsideRoot):
+                        self.photos.pixel_root(pixel_id)
+                (self.root / "_pixels").unlink()
+        self.assert_kept_unchanged()
+
     def test_a_copy_is_a_separate_file_with_the_originals_bytes(self):
         name = self.place()
         self.assertEqual(name, "2024/IMG_0001.HEIC")
