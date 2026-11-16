@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 
+from darkroom.domain.syncthing_version import TESTED_FROM, TESTED_UP_TO, named
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = (ROOT / "Dockerfile.browser").read_text()
 REQUIREMENTS = (ROOT / "deploy/browser/requirements.txt").read_text()
@@ -167,7 +169,7 @@ class SingleImageTests(unittest.TestCase):
 
     def test_the_worker_has_its_own_venv_on_the_apps_python(self):
         bases = re.findall(r"^FROM (\S+)", SINGLE, re.M)
-        self.assertEqual(bases, ["node:22-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim"])
+        self.assertEqual(bases, ["node:22-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim"])
         self.assertIn("python -m venv /opt/worker", SINGLE)
         self.assertIn("COPY --from=worker-deps /opt/worker /opt/worker", SINGLE)
         self.assertIn("COPY --from=deps /app/.venv ./.venv", SINGLE)
@@ -231,6 +233,39 @@ class SingleImageTests(unittest.TestCase):
         self.assertTrue(healthz.endswith("-p 8765:8000 darkroom-single:smoke"))
         self.assertIn("bash tests/browser/one_container.sh init 8766", job)
         self.assertIn('"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" ', job)
+
+    def test_syncthing_is_the_pinned_release_verified_against_its_signed_checksums_at_build(self):
+        stage = SINGLE[SINGLE.index("AS syncthing"):SINGLE.index("AS runtime")]
+        self.assertIn("version=v2.1.7;", stage)
+        self.assertEqual(named(TESTED_FROM), "v2.1.7")
+        self.assertEqual(TESTED_FROM, TESTED_UP_TO)
+        self.assertIn("amd64) sum=2edc416e7ed136b7c858ed5f3f02a3b8316589605e54c380228ceea7acbf0142 ;;", stage)
+        self.assertIn("arm64) sum=48e456690cd2b97e7d26b02b5ac35f62a3b36172267b144cfeaf02c993ab955c ;;", stage)
+        self.assertIn("2edc416e7ed136b7c858ed5f3f02a3b8316589605e54c380228ceea7acbf0142", (ROOT / "docs/spikes/syncthing-api.md").read_text())
+        self.assertIn('"https://github.com/syncthing/syncthing/releases/download/$version/$name.tar.gz"', stage)
+        self.assertLess(stage.index('sha256sum -c -'), stage.index("tar -xzf"))
+        self.assertIn('*) echo "no pinned Syncthing for $arch" >&2; exit 1 ;;', stage)
+        self.assertNotRegex(stage, r"(?m)^ARG ")
+        runtime = SINGLE[SINGLE.index("AS runtime"):]
+        self.assertLess(runtime.index("COPY --from=syncthing /syncthing /usr/local/bin/syncthing"), runtime.index("USER darkroom"))
+        self.assertNotIn("8384", SINGLE)
+
+    def test_ci_runs_syncthing_paused_against_a_peer_under_the_deployment_policy_and_checks_it_is_off_by_default(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
+        self.assertIn("run: bash tests/browser/syncthing_paused.sh darkroom-single:smoke 8767", job)
+        self.assertLess(job.index("bash tests/browser/one_container.sh init 8766\n          docker exec init test ! -e /data/syncthing"), job.index("syncthing_paused.sh"))
+        script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
+        self.assertIn("sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json)", script)
+        self.assertEqual(script.count('"${sandbox[@]}"'), 2)
+        self.assertIn("-e DARKROOM_SYNCTHING=1", script)
+        self.assertNotRegex(script, r"-p [^ ]*(22000|21027|8384)")
+        self.assertNotIn("--network host", script)
+        for check in ("Syncthing is not the pinned release", "Syncthing did not start paused", "Syncthing's API answers from outside the container",
+                      "Syncthing's API is reachable from another container", "the paused instance sent a file", "the peer got a different file",
+                      "Syncthing's API key is in the container's log", "a restart did not pause the configured device and folder"):
+            self.assertIn(check, script)
+        self.assertLess(script.index("the paused instance sent a file"), script.index("probe darkroom resume"))
 
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))

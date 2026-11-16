@@ -48,6 +48,7 @@ def check_config() -> int:
     if unbound:
         print(f"config: warning: {unbound}", file=sys.stderr)
     print(alert_channel(settings))
+    print(syncthing_line(settings))
     print(key_origin_line(settings, missing_key))
     for line in source_lines(loaded):
         print(line)
@@ -72,6 +73,14 @@ def alert_channel(settings: config.Settings) -> str:
     if resend.of(settings) is None:
         return "Alerts: shown on the Status page only, because the Resend settings above need fixing."
     return "Alerts: emailed to the owner through Resend, from the sender address you set."
+
+
+SYNCTHING_OFF = "Syncthing: off (DARKROOM_SYNCTHING=1 in the one container starts Darkroom's own Syncthing, paused)."
+SYNCTHING_ON = "Syncthing: on; the one container's init starts it paused with a fresh API key, and nothing syncs until a later release resumes it."
+
+
+def syncthing_line(settings: config.Settings) -> str:
+    return SYNCTHING_ON if settings.syncthing and settings.one_container else SYNCTHING_OFF
 
 
 KEY_ORIGIN_LINES = {
@@ -515,7 +524,7 @@ def serve() -> int:
         for line in unusable:
             print(f"config: {line}", file=sys.stderr)
         return 1
-    scheduler = jobs.build(settings, engine, utc_now().timestamp())
+    scheduler = jobs.for_serving(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
     monitoring.log("serving", port=server.server_address[1])

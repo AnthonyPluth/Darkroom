@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version
 from darkroom.domain.ingest import cleanup, run
-from darkroom.providers import immich, resend
+from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
 from darkroom.storage import db
 from darkroom.storage.models import Person
@@ -41,6 +41,7 @@ class Scheduler:
         self.stopping = threading.Event()
         self.placed_copies = pixel_check.PlacedCopyCheck()
         self.share: share_check.ShareCheck | None = None
+        self.syncthing: syncthing_version.Gate | None = None
 
     def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
         self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
@@ -111,6 +112,7 @@ CLEANUP_HOUR = 4
 PIXEL_TEND_SECONDS = 3600.0
 IMMICH_RECONCILE_SECONDS = 900.0
 SCHEDULE_WATCH_HOUR = 5
+SYNCTHING_RECHECK_SECONDS = 60.0
 
 
 def tend_checks_placed_copies(scheduler: Scheduler) -> bool:
@@ -143,6 +145,36 @@ def pusher_of(settings: Settings) -> Pusher | None:
     if found is None and config.resend_configured(settings):
         monitoring.log("Resend is set up but unusable, so alerts stay on the Status page; run check-config", problems=len(config.resend_problems(settings) + resend.problems(settings)))
     return found
+
+
+def syncthing_client(settings: Settings) -> syncthing.Client | None:
+    try:
+        return syncthing.Client.on_socket(str(config.SYNCTHING_SOCKET), settings.syncthing_key) if settings.syncthing_key else None
+    except syncthing.SyncthingFailed:
+        return None
+
+
+def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syncthing_version.Gate | None = None) -> syncthing_version.Gate | None:
+    if not settings.syncthing:
+        return None
+    with db.session(engine, writing=True) as opened:
+        return syncthing_version.at_startup(opened, syncthing_client(settings), at, previous)
+
+
+def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now: float) -> Scheduler:
+    scheduler.syncthing = check_syncthing(settings, engine, now)
+
+    def recheck_syncthing(at: float) -> None:
+        if scheduler.syncthing is not None and not scheduler.syncthing.on:
+            scheduler.syncthing = check_syncthing(settings, engine, at, scheduler.syncthing)
+
+    if settings.syncthing:
+        scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
+    return scheduler
+
+
+def for_serving(settings: Settings, engine: Engine, now: float) -> Scheduler:
+    return gate_syncthing(build(settings, engine, now), settings, engine, now)
 
 
 def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher | None = None) -> Scheduler:

@@ -66,6 +66,10 @@ Settings go in `.env` next to `docker-compose.yml`, which compose reads for `PHO
 
 In the one container, leave `DARKROOM_BROWSER_TOKEN`, `VNC_URL` and `DARKROOM_VNC_SECRET` empty: the init generates the token and the viewer secret and hands them on pipes, and the Remote browser page and the sign-in alert show the app's own viewer, at `/viewer/` under `DARKROOM_PUBLIC_URL` (so set that address, or the page has no viewer). `DARKROOM_URL` is ignored there: the init gives the worker the app's loopback address. `VNC_URL`, when set, still wins and points the page at that address instead, which in one container is a route to nothing; `python run.py check-config` says so. The Traefik route needs only `darkroom-single:8000`, behind the same sign-in as before; the separate `browser.<your-domain>` route and its viewer-secret label go.
 
+## Syncthing: in the image, off by default
+
+The image carries Darkroom's own Syncthing (v2.1.7, the official release, checked against its signed checksum when the image is built). It stays off until `DARKROOM_SYNCTHING=1` is set. With it on, the init starts Syncthing with its home in `/data/syncthing` (a fresh identity on the first start; an existing Syncthing's keys are never imported), always paused, with automatic upgrades, usage and crash reporting, global and local discovery, relays and NAT traversal off, and its API on a socket inside the container only. Nothing syncs yet: no folder or device is configured, and a later release adds the pairing and resumes what Darkroom approves. Don't publish 22000 or 21027 yet. `check-config` says whether it is on. The way back is to unset the variable and recreate the container; `/data/syncthing` stays, and is backed up with appdata like the secret key, since it holds Syncthing's device key.
+
 ## Moving from the two containers
 
 The database and the generated secret key stay where they are, directly in appdata, and the one container uses the same appdata folder. The browser profiles move from `_browser/` on the share into `browser/` in appdata with a copy that is checked before it is used and never removes the source (design section 9). With Compose:

@@ -14,6 +14,7 @@ from darkroom import config, tls
 TIMEOUT = 15.0
 MAX_REPLY = 4 * 1024 * 1024
 SEND_ONLY = "sendonly"
+ON_SOCKET = "http://localhost"
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 SECRET_FIELDS = frozenset({"apiKey", "password", "encryptionPassword"})
 FOLDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -196,6 +197,11 @@ class Client:
     url: str
     api_key: str = field(repr=False)
     timeout: float = TIMEOUT
+    socket: str = ""
+
+    @classmethod
+    def on_socket(cls, socket_path: str, api_key: str, timeout: float = TIMEOUT) -> Client:
+        return cls(ON_SOCKET, api_key, timeout, socket_path)
 
     def __post_init__(self) -> None:
         try:
@@ -204,10 +210,28 @@ class Client:
                      and address.path in ("", "/") and not address.query and not address.fragment)
         except ValueError:
             valid = False
+        if self.socket and (self.url != ON_SOCKET or not self.socket.startswith("/") or "\x00" in self.socket):
+            valid = False
         if not valid:
             raise SyncthingFailed("the Syncthing address is not valid")
         if not isinstance(self.api_key, str) or not self.api_key or any(not 33 <= ord(character) <= 126 for character in self.api_key):
             raise SyncthingFailed("the Syncthing API key is not usable")
+
+    def exchange(self, method: str, target: str, data: bytes | None, headers: Mapping[str, str]) -> tuple[int, bytes]:
+        try:
+            if self.socket:
+                return tls.unix_request(self.socket, method, target, data=data, headers=headers, timeout=self.timeout, limit=MAX_REPLY + 1)
+            allow_http = config.local_host(urlsplit(self.url).hostname or "")
+            with tls.urlopen(f"{self.url.rstrip('/')}{target}", data=data, headers=headers, method=method, timeout=self.timeout, allow_http=allow_http) as reply:
+                return reply.status, reply.read(MAX_REPLY + 1)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            return status, b""
+        except tls.Refused:
+            raise SyncthingFailed("the request to Syncthing was refused before it was sent") from None
+        except tls.CONNECTION_PROBLEMS as error:
+            raise SyncthingFailed(f"Syncthing could not be reached ({type(error).__name__})") from None
 
     def call(self, method: str, path: str, query: Mapping[str, str] | None = None, body: object | None = None) -> object:
         require_allowed_request(method, path)
@@ -216,21 +240,11 @@ class Client:
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode()
-        url = f"{self.url.rstrip('/')}{path}{'?' + urlencode(query) if query else ''}"
-        allow_http = config.local_host(urlsplit(self.url).hostname or "")
-        try:
-            with tls.urlopen(url, data=data, headers=headers, method=method, timeout=self.timeout, allow_http=allow_http) as reply:
-                raw = reply.read(MAX_REPLY + 1)
-        except urllib.error.HTTPError as error:
-            status = error.code
-            error.close()
-            if status in (401, 403):
-                raise KeyRefused("Syncthing refused the API key", status) from None
-            raise SyncthingFailed(f"Syncthing answered {status}", status) from None
-        except tls.Refused:
-            raise SyncthingFailed("the request to Syncthing was refused before it was sent") from None
-        except tls.CONNECTION_PROBLEMS as error:
-            raise SyncthingFailed(f"Syncthing could not be reached ({type(error).__name__})") from None
+        status, raw = self.exchange(method, f"{path}{'?' + urlencode(query) if query else ''}", data, headers)
+        if status in (401, 403):
+            raise KeyRefused("Syncthing refused the API key", status)
+        if not 200 <= status < 300:
+            raise SyncthingFailed(f"Syncthing answered {status}", status)
         if len(raw) > MAX_REPLY:
             raise SyncthingFailed("Syncthing's answer was too large")
         if not raw.strip():

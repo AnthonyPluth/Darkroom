@@ -5,7 +5,7 @@ import socket
 import ssl
 import urllib.request
 from collections.abc import Mapping
-from http.client import HTTPException, HTTPResponse
+from http.client import HTTPConnection, HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT = 15.0
@@ -42,6 +42,33 @@ def urlopen(url: str, *, data: bytes | None = None, headers: Mapping[str, str] |
     response = opener.open(request, timeout=timeout)
     assert isinstance(response, HTTPResponse)
     return response
+
+
+class UnixConnection(HTTPConnection):
+    def __init__(self, socket_path: str, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stream.settimeout(self.timeout)
+        try:
+            stream.connect(self.socket_path)
+        except OSError:
+            stream.close()
+            raise
+        self.sock = stream
+
+
+def unix_request(socket_path: str, method: str, target: str, *, data: bytes | None = None, headers: Mapping[str, str] | None = None,
+                 timeout: float = DEFAULT_TIMEOUT, limit: int) -> tuple[int, bytes]:
+    connection = UnixConnection(socket_path, timeout)
+    try:
+        connection.request(method, target, body=data, headers=dict(headers or {}))
+        reply = connection.getresponse()
+        return reply.status, reply.read(limit)
+    finally:
+        connection.close()
 
 
 def loopback(port: int, timeout: float) -> Stream:
