@@ -3,7 +3,7 @@
   import { actGet, errMsg } from "$lib/act";
   import type { PixelView, WaitingDevice } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
-  import { idLines, ownDevice, POLL_MS, sentence, type OwnDevice } from "$lib/pairing";
+  import { idLines, NOT_A_DEVICE_ID, ownDevice, POLL_MS, sentence, type OwnDevice } from "$lib/pairing";
   import Field from "../components/Field.svelte";
   import QrCode from "../components/QrCode.svelte";
   import FormError from "./FormError.svelte";
@@ -23,35 +23,50 @@
   let typing = $state(false);
   let typed = $state("");
   let saving = $state(false);
-  let paired = false;
-  let asked = 0;
+  let stopped = false;
+  let reading = false;
+  let readAgain = false;
 
   async function read(): Promise<void> {
-    const order = ++asked;
+    if (reading) {
+      readAgain = true;
+      return;
+    }
+    reading = true;
     try {
       const found = await apiCall<"GET /api/pairing/waiting">("/api/pairing/waiting");
-      if (order !== asked || paired) return;
+      if (stopped) return;
       devices = found.devices;
       listError = "";
     } catch (err) {
-      if (order !== asked || paired) return;
+      if (stopped) return;
       devices = null;
       listError = `Couldn't check for waiting devices: ${sentence(errMsg(err))}`;
+    } finally {
+      reading = false;
+    }
+    if (readAgain && !stopped) {
+      readAgain = false;
+      void read();
     }
   }
 
   onMount(() => {
     void ownDevice().then((found) => {
+      if (stopped) return;
       own = found;
       if (found.kind === "ready") void read();
       else typing = true;
     });
+    return () => {
+      stopped = true;
+    };
   });
 
   $effect(() => {
     if (own.kind !== "ready" || choosing !== null) return;
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void read();
+      if (document.visibilityState === "visible" && !reading) void read();
     }, POLL_MS);
     return () => clearInterval(timer);
   });
@@ -66,7 +81,7 @@
   }
 
   function done(saved: PixelView): void {
-    paired = true;
+    stopped = true;
     onpaired(saved);
   }
 
@@ -90,8 +105,13 @@
 
   async function save(event: SubmitEvent): Promise<void> {
     event.preventDefault();
+    const device = typed.trim();
+    if (!device) {
+      refuse(NOT_A_DEVICE_ID, true);
+      return;
+    }
     const saved = await actGet(
-      () => apiCall<"PATCH /api/pixels/{id}">(`/api/pixels/${target.id}`, { method: "PATCH", body: { syncthing_device_id: typed.trim() } }),
+      () => apiCall<"PATCH /api/pixels/{id}">(`/api/pixels/${target.id}`, { method: "PATCH", body: { syncthing_device_id: device } }),
       { busy: (on) => (saving = on), onError: (message) => refuse(message, true) },
     );
     if (saved) done(saved.pixel);
