@@ -666,7 +666,7 @@ class PairingApiTests(unittest.TestCase):
 
     def test_a_removed_folder_is_released_only_on_explicit_confirmation_by_a_signed_in_person(self):
         path = f"/api/pixels/{self.pixel_id}/release-folder"
-        nothing = (409, {"error": transport.NOTHING_TO_RELEASE})
+        nothing = (409, {"error": "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again"})
         self.assertEqual(self.call("POST", path, {"confirmed": True}), nothing)
         with db.session(self.engine, writing=True) as opened:
             transport.hold_removed(opened, self.pixel_id, 5.0)
