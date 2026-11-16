@@ -141,8 +141,8 @@
   }
 </script>
 
-<div class={["grid min-h-dvh content-start md:content-normal", wide ? "md:grid-cols-[26.25rem_minmax(0,1fr)]" : "md:grid-cols-2"]}>
-  <div class={["flex flex-col gap-4 px-4 pt-6 md:gap-12 md:bg-rail md:py-16", wide ? "md:px-12" : "md:px-16"]}>
+<div class="grid min-h-dvh content-start md:content-normal md:grid-cols-[304px_minmax(0,1fr)]">
+  <div class="flex flex-col gap-4 px-4 pt-6 md:gap-[48px] md:bg-rail md:px-[40px] md:py-[64px]">
     <div class="flex items-center gap-3 text-lg font-bold">
       <span class="block size-3.5 rounded-full bg-accent"></span>Darkroom
     </div>
@@ -167,7 +167,7 @@
       </nav>
     {/if}
   </div>
-  <main bind:this={main} class={["px-4 pt-4 pb-8 md:py-16", wide ? "md:px-10" : "md:px-12"]}>
+  <main bind:this={main} class={["px-4 pt-4 pb-8 md:py-[64px]", wide ? "md:px-[40px]" : "md:px-[48px]"]}>
     <section class="card w-full gap-4 p-5 md:gap-5 md:p-8">
       {#if screen.kind === "loading"}
         <p role="status" class="text-ink-muted">Loading...</p>
