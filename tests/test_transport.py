@@ -172,6 +172,30 @@ class ReconcilerTests(unittest.TestCase):
         self.assertEqual(self.rows()[self.jo_pixel], (False, transport.REMOVED))
         self.assertEqual(self.reconcile(at=NOW + 30).resumed, {self.sam_pixel})
 
+    def test_a_device_id_problem_is_recorded_ahead_of_a_removed_folder_and_the_removal_shows_once_the_id_is_fixed(self):
+        invalid = JO_DEVICE[:-1] + ("A" if JO_DEVICE[-1] != "A" else "B")
+        for problem, device, code in (("invalid", invalid, transport.INVALID_DEVICE), ("shared", SAM_DEVICE, transport.SHARED_DEVICE)):
+            with self.subTest(problem=problem):
+                self.opened.query(Event).delete()
+                self.opened.commit()
+                self.fake.folders.clear()
+                self.fake.requests.clear()
+                identity = self.persisted(self.jo_pixel, JO_DEVICE, type="sendreceive")
+                self.pair(self.jo_pixel, device)
+                for at in (NOW, NOW + 10):
+                    outcome = self.reconcile(at=at)
+                    self.assertIsNone(outcome.failure)
+                    self.assertEqual(self.rows()[self.jo_pixel], (False, code))
+                self.assertNotIn(identity, self.fake.folders)
+                self.assertEqual(self.events(transport.FOLDER_REMOVED), [(f"pixel {self.jo_pixel}", None)])
+                self.pair(self.jo_pixel, JO_DEVICE)
+                self.pair(self.sam_pixel, SAM_DEVICE)
+                for at in (NOW + 20, NOW + 30):
+                    outcome = self.reconcile(at=at)
+                    self.assertEqual(self.rows()[self.jo_pixel], (False, transport.REMOVED))
+                    self.assertNotIn(self.jo_pixel, outcome.resumed)
+                self.assertNotIn(identity, self.fake.folders)
+
     def test_a_persisted_folder_outside_its_pixels_folder_is_removed_before_anything_is_resumed(self):
         for path in (str(self.root / "jo" / "originals"), str(self.root / "_pixels"), str(self.photos.pixel_root(self.sam_pixel)), "/elsewhere"):
             with self.subTest(path=path):
