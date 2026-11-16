@@ -135,6 +135,7 @@ class Outcome:
     failure: str | None = None
     paused: bool = False
     own_device: set[int] = field(default_factory=set)
+    unreported: bool = False
 
     def corrected(self, kind: str, subject: str, detail: str) -> None:
         self.corrections.append((kind, subject, detail))
@@ -346,7 +347,8 @@ def read_reports(client: syncthing.Client, plan: Plan, outcome: Outcome) -> None
             outcome.reports[pixel_id] = Report(connected, None if seen is None else instant(seen.last_seen), completion.completion,
                                                connected and completion.completion >= 100.0 and completion.need_items == 0 and completion.need_deletes == 0)
     except syncthing.SyncthingFailed:
-        monitoring.log("syncthing's reports could not be read; the transport state stays as it was")
+        outcome.unreported = True
+        monitoring.log("syncthing's reports could not be read; the pixels are shown as not connected until they can be")
 
 
 def without_own(plan: Plan, own: str, outcome: Outcome) -> Plan:
@@ -422,6 +424,12 @@ def write_report(row: PixelTransport, pixel: Pixel, report: Report, now: float) 
         pixel.last_sync = now
 
 
+def unknown(row: PixelTransport, since: float) -> None:
+    if row.connected and row.last_seen is None:
+        row.last_seen = since
+    row.connected, row.synced, row.completion = False, False, None
+
+
 def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: bool = True) -> None:
     db.write_lock(opened)
     for kind, subject, detail in outcome.corrections:
@@ -437,12 +445,14 @@ def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: b
         if row is None:
             row = PixelTransport(pixel_id=pixel.id, updated=now)
             opened.add(row)
-        want = plan.wanted.get(pixel.id)
+        want, since = plan.wanted.get(pixel.id), row.updated
         row.paired = pixel.id in outcome.approved and outcome.failure is None
         row.error, row.updated = code_of(want, plan, outcome, checked), now
         report = outcome.reports.get(pixel.id)
         if report is not None:
             write_report(row, pixel, report, now)
+        elif pixel.id in outcome.resumed and outcome.unreported:
+            unknown(row, since)
         elif pixel.id not in outcome.resumed:
             row.connected, row.synced = False, False
     opened.commit()
@@ -451,13 +461,17 @@ def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: b
 def refresh(opened: Session, client: syncthing.Client, plan: Plan, resumed: frozenset[int], now: float) -> None:
     outcome = Outcome(resumed=set(resumed))
     read_reports(client, plan, outcome)
-    if not outcome.reports:
+    if not outcome.reports and not outcome.unreported:
         return
     db.write_lock(opened)
-    for pixel_id, report in sorted(outcome.reports.items()):
-        row, pixel = opened.get(PixelTransport, pixel_id), opened.get(Pixel, pixel_id)
-        if row is not None and pixel is not None:
+    for pixel_id in sorted(outcome.resumed):
+        row, pixel, report = opened.get(PixelTransport, pixel_id), opened.get(Pixel, pixel_id), outcome.reports.get(pixel_id)
+        if row is None or pixel is None:
+            continue
+        if report is not None:
             write_report(row, pixel, report, now)
+        elif outcome.unreported:
+            unknown(row, row.updated)
     opened.commit()
 
 

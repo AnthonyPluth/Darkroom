@@ -503,6 +503,46 @@ class ReconcilerTests(unittest.TestCase):
         self.assertIsNone(tick(NOW + 120))
         self.assertFalse(self.opened.get(PixelTransport, self.jo_pixel, populate_existing=True).connected)
 
+    def connected_and_up_to_date(self):
+        self.fake.connections = {JO_DEVICE: {"connected": True, "type": "tcp-client"}, SAM_DEVICE: {"connected": True, "type": "tcp-client"}}
+        self.fake.stats = {JO_DEVICE: {"lastSeen": "2026-11-10T12:00:00Z"}}
+        self.fake.completions = {(self.folder_id(self.jo_pixel), JO_DEVICE): {"completion": 100, "needItems": 0, "needDeletes": 0},
+                                 (self.folder_id(self.sam_pixel), SAM_DEVICE): {"completion": 100, "needItems": 0, "needDeletes": 0}}
+
+    def shown(self, at):
+        seen = transport_status.overview(self.opened, at)
+        return {pixel_id: (view.state, view.last_seen) for pixel_id, view in seen.pixels.items()}
+
+    def test_reports_that_cannot_be_read_on_the_minute_job_stop_showing_the_pixel_as_connected(self):
+        moving = transport.Transport()
+        self.connected_and_up_to_date()
+        self.assertIsNotNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW))
+        self.assertEqual(self.shown(NOW)[self.jo_pixel], ("connected", 1794312000.0))
+        for failing in ("connections", "device_stats", "completion"):
+            with self.subTest(failing=failing):
+                with mock.patch.object(syncthing.Client, failing, side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+                    self.assertIsNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW + 60))
+                self.opened.expire_all()
+                jo, sam = self.opened.get(PixelTransport, self.jo_pixel), self.opened.get(PixelTransport, self.sam_pixel)
+                self.assertEqual((jo.connected, jo.synced, jo.completion, jo.last_seen), (False, False, None, 1794312000.0))
+                self.assertEqual((sam.connected, sam.synced, sam.completion), (False, False, None))
+                self.assertEqual(self.shown(NOW + 60)[self.jo_pixel], ("not_connected", 1794312000.0))
+                self.assertEqual(self.shown(NOW + 60)[self.sam_pixel], ("not_connected", NOW))
+                self.assertIsNone(moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, NOW + 120))
+                self.opened.expire_all()
+                self.assertEqual(self.shown(NOW + 120)[self.jo_pixel], ("connected", 1794312000.0))
+
+    def test_reports_that_cannot_be_read_during_a_reconcile_stop_showing_the_pixel_as_connected(self):
+        self.connected_and_up_to_date()
+        self.reconcile()
+        self.assertEqual(self.shown(NOW)[self.jo_pixel][0], "connected")
+        with mock.patch.object(syncthing.Client, "connections", side_effect=syncthing.SyncthingFailed("Syncthing answered 500", 500)):
+            self.assertIsNone(self.reconcile(at=NOW + 10).failure)
+        jo = self.opened.get(PixelTransport, self.jo_pixel)
+        self.assertEqual((jo.connected, jo.synced, jo.completion, jo.last_seen, jo.paired), (False, False, None, 1794312000.0, True))
+        self.assertEqual(transport_status.card(self.opened).state, "running")
+        self.assertEqual(self.shown(NOW + 10)[self.jo_pixel], ("not_connected", 1794312000.0))
+
     def test_a_pixel_held_before_the_placed_copy_check_has_run_is_recorded_as_checking(self):
         self.held.add(self.jo_pixel)
         transport.reconcile(self.opened, self.client, self.photos, lambda pixel_id: pixel_id in self.held, None, NOW, checked=False)
