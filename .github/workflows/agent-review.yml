@@ -66,6 +66,7 @@ jobs:
         darkroom_init/**
         .semgrep/**
         SECURITY.md
+        .trivyignore.yaml
         Dockerfile*
         docker-compose.yml
     secrets:
