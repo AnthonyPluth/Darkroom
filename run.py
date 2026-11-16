@@ -518,7 +518,8 @@ def serve() -> int:
         print(f"config: {refused}", file=sys.stderr)
         return 1
     loaded = stored_settings.effective(settings, engine)
-    unusable = [*loaded.problems, *config.refuses_to_start(loaded.settings)]
+    settings = loaded.settings
+    unusable = [*loaded.problems, *config.refuses_to_start(settings)]
     if unusable:
         engine.dispose()
         for line in unusable:
