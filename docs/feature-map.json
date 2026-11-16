@@ -685,16 +685,6 @@
       ]
     },
     {
-      "route": "POST /api/setup/finish",
-      "auth": "setup",
-      "handler": "darkroom.server.api.wizard.finish_setup",
-      "frontend": [],
-      "tests": [
-        "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
-      ]
-    },
-    {
       "route": "POST /internal/browser/jobs/claim",
       "auth": "worker",
       "handler": "darkroom.server.api.browser_internal.claim",
