@@ -95,7 +95,7 @@ jobs:
   fleet-checks:
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
 
   semgrep-rules:
     runs-on: ubuntu-latest   # hosted: small repository

@@ -17,6 +17,6 @@ defaults:
 
 jobs:
   cancel:
-    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
     with:
       groups: '["ci-refs/pull/{0}/merge", "docker-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "control-smoke-{0}"]'

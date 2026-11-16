@@ -33,6 +33,7 @@ INVALID_DEVICE = "device_id_invalid"
 SHARED_DEVICE = "device_id_shared"
 PATH_REFUSED = "folder_path_refused"
 REMOVED = "folder_removed"
+ID_PROBLEMS = (INVALID_DEVICE, SHARED_DEVICE)
 HELD = "held"
 SHARE = "share_check_failed"
 DOWN = "reconcile_failed"
@@ -172,8 +173,8 @@ def plan(opened: Session, photos: Photos, held: Callable[[int], bool], share_pro
         except paths.OutsideRoot:
             path, code = None, code or PATH_REFUSED
         removed = removed_before(opened, pixel_id)
-        wanted[pixel_id] = Wanted(pixel_id, None if code in (INVALID_DEVICE, SHARED_DEVICE) else device, path, held(pixel_id), removed,
-                                  REMOVED if removed else code)
+        wanted[pixel_id] = Wanted(pixel_id, None if code in ID_PROBLEMS else device, path, held(pixel_id), removed,
+                                  REMOVED if removed and code not in ID_PROBLEMS else code)
     return Plan(wanted, tuple(pixel_id for pixel_id, _ in rows), share_problem)
 
 
@@ -386,6 +387,8 @@ def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
         return None
     if outcome.failure is not None:
         return DOWN
+    if want.code in ID_PROBLEMS:
+        return want.code
     if want.pixel_id in outcome.removed:
         return REMOVED
     if want.code is not None:
