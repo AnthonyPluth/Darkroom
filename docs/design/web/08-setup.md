@@ -1,15 +1,15 @@
 # First-run setup wizard (#303, document signed off)
 
-Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards below are drawn from it and are for the owner's visual sign-off.** The boards are not signed off, and nothing is built from them until the owner signs them off on #303 (AGENTS.md, promise 6; decision 1). The owner's answers to the open points on #344, including the three raised by the new order, are recorded under "The owner's decisions" below and are written into this design. The UI is #305. It calls the setup API that is on `main` (#304, `darkroom/server/api/wizard.py` and `darkroom/server/wizard.py`, behind `DARKROOM_WIZARD=1`), as extended by #346, which #305 depends on. The steps are the full list in `docs/design/single-container.md`, section 8; who may open the wizard is the owner's answer 4 there.
+Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards signed off by the owner on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234).** The boards are signed off, so #305 builds to them (AGENTS.md, promise 6; decision 1). The owner's answers to the open points on #344, including the three raised by the new order, are recorded under "The owner's decisions" below and are written into this design. The UI is #305. It calls the setup API that is on `main` (#304, `darkroom/server/api/wizard.py` and `darkroom/server/wizard.py`, behind `DARKROOM_WIZARD=1`), as extended by #346, which #305 depends on. The steps are the full list in `docs/design/single-container.md`, section 8; who may open the wizard is the owner's answer 4 there.
 
 Every name, address and key below is made up.
 
 ## What the owner reviews
 
-The review has two stages (decision 1), and both are recorded on #303. The first is done: the owner signed off this document on 2026-11-16. The second, the boards, is open.
+The review has two stages (decision 1), and both are recorded on #303. Both are done: the owner signed off this document on 2026-11-16, and the boards on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234).
 
 1. **This document** (signed off on 2026-11-16): the steps and their order, every screen and state, the exact copy, every error and empty state, what the wizard may and may not show, how it is turned on and off, and what the API must change (#346). Copy in quotation marks or in the copy tables is word for word; `{placeholders}` are filled at run time.
-2. **The boards** (drawn, awaiting the owner's visual sign-off), drawn from this document in the format of the canvas boards (https://claude.ai/artifact/BvpF7AujGCxiVA9bKvWiUR) with the tokens of `00-tokens.dc.html` only, no new colour or token, and kept in this folder like the others; they are signed off before #303 closes. Desktop boards 1280 wide, phone boards 390 wide, as for #16. Each board stacks the states named for it:
+2. **The boards** (reviewed and signed off by the owner on 2026-11-16), drawn from this document in the format of the canvas boards (https://claude.ai/artifact/BvpF7AujGCxiVA9bKvWiUR) with the tokens of `00-tokens.dc.html` only, no new colour or token, and kept in this folder like the others; they were signed off before #303 closes. Desktop boards 1280 wide, phone boards 390 wide, as for #16. Each board stacks the states named for it:
 
 | Board (desktop and phone) | States drawn |
 | --- | --- |
@@ -329,7 +329,7 @@ The People, account and Pixel routes are not changed: the wizard calls them with
 
 ## The owner's decisions
 
-The owner answered the first draft's open points on #344, and the three that decision 2 raised afterwards (16 to 18). They are recorded here as the owner's decisions. The owner then signed off the document as a whole on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards wait for the owner's visual sign-off.
+The owner answered the first draft's open points on #344, and the three that decision 2 raised afterwards (16 to 18). They are recorded here as the owner's decisions. The owner then signed off the document as a whole on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the owner then signed off the boards on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234), with the drawing choices below.
 
 1. **What is signed off:** accepted as recommended. This document first, then the boards listed above, before #303 closes.
 2. **The steps and their order:** the owner chose to extend the API rather than shorten the wizard: "we should never provide a worse experience just so the tests pass". The wizard keeps section 8's full order, and a passing test does not close it before People, Google accounts and Pixels (#346, which #305 depends on).
@@ -349,3 +349,19 @@ The owner answered the first draft's open points on #344, and the three that dec
 16. **People required:** accepted as recommended. Continue on People needs at least one person; Google accounts and Pixels stay skippable. Not chosen: letting People be skipped too.
 17. **The one change to the Remote browser page:** accepted as recommended. A "Back to setup" link at its top when the page is opened from the wizard (`?from=setup`); this is the only change to board 07. Not chosen: no change, leaving the person to the browser's back button.
 18. **The post-test time limit:** accepted as recommended. After the passing test the wizard stays reachable for 7 days, then closes by itself; it also closes on Finish setup, when the tested session ends, or when another account signs in. Not chosen: no limit beyond the session's own life.
+
+### The boards' drawing choices (decided)
+
+Where this document was silent, the boards made these choices. The owner signed off the boards with all of them on 2026-11-16 (recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234):
+
+1. The People, Google accounts and Pixels steps say "exactly as on boards `03-people-*`", but those boards have no add forms; the forms are drawn as the built People page has them (its modal, fields and copy).
+2. The Pixels step is drawn as this document says, "as built today" (the typed device ID); once the signed-off pairing (#322) is built (#323) the step shows that pairing instead.
+3. The step's own `h1` names the Google accounts and Pixels steps, so their People-page card title is not repeated; People keeps "Persons" above its table.
+4. Desktop button order in one row: primary first, then the secondary ones, the same order as the phone's stack.
+5. Sign-in: a refused Save details shows its line under Save details (where "Saved. Test them below." goes), not under the step's primary button (Test sign-in).
+6. Welcome on desktop shows the step list with no step current; the closed screens show only the brand row, because the browser does not hold the wizard.
+7. Stored settings show the hint "Saved." in place of the field's own hint (Alert emails' From address).
+8. Done's sentence has no singular forms in this document ("{n} Google accounts and {n} Pixels"), so the board uses 2 of each.
+9. Alert emails set in the environment keeps Skip and Back beside Continue, since this document only renames the primary.
+10. The Remote browser's "Back to setup" link (decision 17) is described in a note on the accounts board, not drawn; the board list names no browser board.
+11. "No network" messages use the app's existing "Couldn't reach Darkroom." text, as the pairing boards do.
