@@ -694,15 +694,13 @@ class SchedulerTests(unittest.TestCase):
 
         from darkroom.storage import db
         from darkroom.storage.models import GoogleAccount, MediaItem, PixelPerson
-        from tests.shared import add_person, bound_share, own_database, settings_from
+        from tests.shared import add_person, bound_share, own_database, private_socket_folder, settings_from
 
         self.engine = own_database(self)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name).resolve()
-        socket_folder = tempfile.TemporaryDirectory()
-        self.addCleanup(socket_folder.cleanup)
-        self.socket = Path(socket_folder.name) / "syncthing.sock"
+        self.socket = private_socket_folder(self) / "syncthing.sock"
         self.fake = FakeSyncthing(self, KEY, OWN, str(self.socket))
         self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=str(self.root)), syncthing=True, syncthing_key=KEY)
         (self.root / "jo/originals").mkdir(parents=True)

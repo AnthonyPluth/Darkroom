@@ -63,7 +63,7 @@ def syncthing_key() -> str:
 
 KeyOrigin = Literal["environment", "file", "none"]
 VIEWER_FILES = Path("/usr/share/novnc")
-VIEWER_PORT = 6080
+VIEWER_SOCKET = Path("/run/darkroom/viewer.sock")
 VIEWER_USER = "darkroom"
 SYNCTHING_SOCKET = Path("/run/darkroom/syncthing.sock")
 StoredKind = Literal["text", "address", "list", "secret", "sealed"]

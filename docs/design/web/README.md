@@ -20,6 +20,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
+| `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, signed off 2026-11-16) |
 | `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
 | `08-setup-welcome-desktop.dc.html`, `08-setup-welcome-phone.dc.html` | Setup wizard: Welcome (signed off, #303) |
 | `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup wizard: Setup isn't open, and open in another browser (signed off, #303) |
@@ -27,7 +28,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | Setup wizard: Step 2, Sign-in (signed off, #303) |
 | `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | Setup wizard: After Pocket ID: the server's failure pages (signed off, #303) |
 | `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Setup wizard: Step 3, Immich (signed off, #303) |
-| `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` | Setup wizard: Step 3, Immich, checking the address (#347, drawn for sign-off, **not yet signed off**) |
+| `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` | Setup wizard: Step 3, Immich, checking the address (#347, signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6929740469): the 304 px left pane with 40 px padding on all 11 desktop wizard boards, the card filling the column as built in #363, the Immich check states, refusal status 422, an Immich save before the passing test refused with 409 and contacting nothing, choices B to H as recommended; phone boards, the test-failed desktop board and the add-person dialog unchanged) |
 | `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | Setup wizard: Step 4, People (signed off, #303) |
 | `08-setup-accounts-desktop.dc.html`, `08-setup-accounts-phone.dc.html` | Setup wizard: Step 5, Google accounts (signed off, #303) |
 | `08-setup-pixels-desktop.dc.html`, `08-setup-pixels-phone.dc.html` | Setup wizard: Step 6, Pixels (signed off, #303) |
@@ -203,7 +204,7 @@ Rows 4 and 5 together keep the chip and show both lines. Counts are numbers only
 
 ### The Syncthing card on Status
 
-A card titled "Syncthing", after the People section and before Recent events. Its first line is the title and a chip for Darkroom's Syncthing as a whole, then one sentence; under that, one row per Pixel (name, its chip and line from the table above), or "No Pixel is paired yet." with a link "Open People". It is not drawn with `DARKROOM_SYNCTHING` off. The person card's Pixel row becomes "{Pixel}, synced {ago}" (as board 02 already shows) followed by the per-Pixel chip when it is not `ok`, and "{Pixel}, not synced yet" before the first sync. At desktop width the Syncthing card, the alerts and each person card span the full content column, one person card per row ("Full-width sections" below; awaiting the owner's sign-off).
+A card titled "Syncthing", after the People section and before Recent events. Its first line is the title and a chip for Darkroom's Syncthing as a whole, then one sentence; under that, one row per Pixel (name, its chip and line from the table above), or "No Pixel is paired yet." with a link "Open People". It is not drawn with `DARKROOM_SYNCTHING` off. The person card's Pixel row becomes "{Pixel}, synced {ago}" (as board 02 already shows) followed by the per-Pixel chip when it is not `ok`, and "{Pixel}, not synced yet" before the first sync. At desktop width the Syncthing card, the alerts and each person card span the full content column, one person card per row ("Full-width sections" below; signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6926954882): every card, section and dialog spans the full content column at desktop 1280, phone unchanged; person cards one per row).
 
 | Card state | Chip | Sentence |
 | --- | --- | --- |
@@ -338,9 +339,9 @@ The owner approved all nine as recommended on 2026-11-16, recorded on #322 (http
 8. **Any signed-in member may share a folder again**, after the confirmation, as #350 built it. Not chosen: an owner role, which Darkroom does not have yet.
 9. **A fourth code found while reading the reconciler, `folder_path_refused`** (the Pixel's folder resolves outside the photo share, so no folder is added), also fell through. Decided: a row 2d, warn "Folder refused", "Its folder leads outside the photo share, so Darkroom does not share it.", with no button and no alert, drawn in a later board. Not chosen: leaving it to fall through.
 
-## Full-width sections on the #322 and addendum boards (for the owner's sign-off)
+## Full-width sections on the #322 and addendum boards (signed off)
 
-Status: **drawn for the owner's sign-off, not signed off.** The owner asked for every section of the pairing, Syncthing status and People designs to be full width, not just some of them. Until signed off, the boards as they were stand.
+Status: **signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6926954882): every card, section and dialog spans the full content column at desktop 1280, phone unchanged; person cards one per row.** (The owner's chat answers, recorded on #322: "Make modals full-width too", "One per row", "Sign off".) The owner asked for every section of the pairing, Syncthing status and People designs to be full width, not just some of them. The boards below are the signed-off layout.
 
 The rule: at desktop width (1280, with the same 232 px left rail) every card and section on these boards spans the full content column, the space right of the rail less the page's 40 px padding each side (968 px at 1280), and none is narrower. That is the column boards 02 and 03 already draw and the built shell already has (`Shell.svelte`'s `main`: `flex-1`, `md:px-10`, no maximum width). The phone layout (390) is unchanged. Modal dialogs span the column too (the owner's decision, superseding an earlier "keep them 512 px"): at desktop width each dialog (the Pixel form, the pairing steps, the Share again confirmation) is as wide as the content column, 968 px at 1280, where it was at most 32 rem (512 px). It stays a dialog over the dimmed page, and on a phone it stays full width less 1 rem each side. The QR code keeps its fixed 192 px.
 
@@ -362,22 +363,80 @@ What the build changes:
 - **The addendum's Share again confirmation** (built with #324's Pixel rows) uses the full-width `Modal` too.
 - None of this touches the shell or any other page; the whole app's page layout stays with #16.
 
+## Unpairing a Pixel (addendum to #322, signed off)
+
+Status: **signed off by the owner on 2026-11-16: all 12 drawing choices as recommended (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6929613909); phone confirmation buttons side by side as the built Confirm draws them (owner's chat decision, 2026-11-16).** It adds to "Pairing, Syncthing status and the new alerts" and changes none of its signed-off rows, cards or alerts.
+
+Why: with Darkroom's Syncthing on, the Pixel form shows the paired ID read-only with only "Pair again" (or "Pair"), so there is no way in the app to unpair. A Pixel that is lost, sold or replaced keeps its Syncthing device and its Send Only share of the photos until someone clears the ID with `PATCH /api/pixels/{id} {"syncthing_device_id": null}` by hand. The second review flagged this as access that outlives the device. The backend already does the rest: once the ID is cleared, the reconciler removes the device and the Pixel's folder from Darkroom's Syncthing within 60 s, and deletes no file (`tests/test_transport.py`, "a Pixel that is deleted or unpaired loses its folder and device and no file is deleted"). So this is a UI action on an existing route; no new route.
+
+Boards: `03-people-unpair-desktop.dc.html` and `03-people-unpair-phone.dc.html`, six states stacked: Edit Pixel paired with Unpair, the confirmation, in flight, refused, then the Pixels card and Edit Pixel afterwards. They follow the full-width rule above: at 1280 every card and dialog spans the content column (968 px); the phone layout is as on the other phone boards. Existing tokens, chips, buttons, table and modal only. Names and the device ID are made up.
+
+### The action
+
+- **Where.** In Edit Pixel's read-only Syncthing row, after "Pair again": the ID in mono, then "Pair again" and "Unpair" side by side (on a phone, stacked full width, Pair again first). Shown whenever the Pixel has a saved device ID, whatever its per-Pixel state (including 2a and 2b, where the saved ID is the problem). Not shown when the Pixel is not paired, and not shown with `DARKROOM_SYNCTHING` off, where the form keeps today's typed field and clearing it is the way.
+- **Label.** "Unpair", with the accessible name "Unpair {name}".
+- **Style.** The app's danger-outline secondary button (`btn btn-danger`), as Delete Pixel in the same form: it takes access away, so it is not a plain `btn`, and never primary. The form's own Save stays the only primary.
+- **What it does.** It never applies on Save. Pressing it opens the confirmation the way Delete Pixel does today: the form closes (unsaved edits in it are dropped, as for Delete Pixel) and the existing `Confirm` dialog opens.
+
+### The confirmation
+
+The existing `Confirm` dialog, full width at desktop like every dialog since the full-width redraw.
+
+- Title: "Unpair {name}?"
+- Description (muted, `Confirm`'s message): "Darkroom stops sharing {name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches {name} until it is paired again."
+- Then: "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to {name}: they stay on the Pixel until someone removes them there."
+- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stay side by side as the built `Confirm` lays them out, Cancel left and Unpair right: right-aligned, natural width, 12 px apart (`flex justify-end gap-3`), not stacked and not equal width.
+- **Unpair** sends `PATCH /api/pixels/{id}` with only `{"syncthing_device_id": null}` (no other field), so nothing else in the form is saved by it.
+- **In flight:** both buttons disabled and the dialog can't be dismissed (`Confirm`'s `busy`).
+- **Refused** (any 4xx or 5xx, or no answer): the dialog stays, and the danger-toned `role="alert"` line (`FormError`) above the buttons reads "Couldn't unpair {name}: {message}." with Darkroom's message unchanged, for example "Darkroom is busy with another change; try again in a moment" or "no such Pixel". The line goes at the next press, as `Confirm` does today.
+- **Done:** the dialog closes and the page data reloads.
+
+### Afterwards
+
+- The Pixel has no ID, so it shows row 2 at once: neutral "Not paired", "Pair it to start sending photos.", and the People row gets its "Pair" button before Edit, as an unpaired Pixel has (#322). It does not show a "removing" state for the minute the reconciler takes.
+- Reopened, Edit Pixel's Syncthing row reads "Not paired" with "Pair"; no Unpair.
+- On Status the Pixel is no longer listed as paired in the Syncthing card; with no other paired Pixel the card reads "No Pixel is paired yet." as signed off. No alert opens or closes because of it, and no alert kind is added.
+- Pairing it again is the ordinary pairing step; nothing remembers the old ID.
+
+### Drawing choices and open points (for the owner)
+
+Each is drawn as recommended; the alternative is not drawn.
+
+1. **Placement: in Edit Pixel's Syncthing row, after Pair again.** Recommended, because that row is where the device ID is shown and changed. Alternative: an "Unpair" button in the People row's actions beside Edit (one click closer, but a destructive action in a table row next to Edit, and a row already carries Pair again or Share again in some states).
+2. **Danger-outline secondary (`btn-danger`), not plain secondary.** Recommended: it removes a device's access, like Delete Pixel. Alternative: plain `btn`, keeping danger styling for deletes only (nothing is deleted).
+3. **A confirmation dialog, through the existing `Confirm`.** Recommended: unpairing a phone in use stops its backups until someone re-pairs it at the phone, which is not a one-click undo. Alternative: no dialog, with the "Not paired" row as the only sign.
+4. **The form closes when the confirmation opens** (as Delete Pixel does), and unsaved edits in it are dropped. Alternative: the confirmation over the form and the form back afterwards, which needs a second dialog layer the app does not have.
+5. **The PATCH carries only the device ID**, never the rest of the form. Alternative: clear the field in the form and apply it on Save (one save, but an unpair would wait on, and fail with, unrelated edits).
+6. **Shown for any saved ID, including 2a (not valid) and 2b (shared).** Recommended: in 2b, unpairing the wrong Pixel is a direct fix. Alternative: only for a Pixel whose ID is valid and unique.
+7. **The dialog does not show the device ID.** The form just showed it; the dialog names the Pixel. Alternative: repeat the ID in mono in the dialog.
+8. **"Within a minute" is the only timing promise**, and the row shows Not paired at once, with no "removing" state. When Darkroom's Syncthing is not running (the card is not Running), the device is removed at the reconciler's first run after it starts, before anything syncs, so "within a minute" is not true then. Open: keep one text (recommended, it is the usual case), or swap the first sentence in that case for "Darkroom's Syncthing is not running now. Darkroom removes the device as soon as it is running again, before anything syncs."
+9. **Already-synced copies on the Pixel are out of Darkroom's reach**, said plainly ("they stay on the Pixel until someone removes them there"). For a lost or sold phone this is the honest limit. Alternative: say nothing about the Pixel's copies, or add advice ("Reset a lost or sold Pixel from Google's Find My Device") that Darkroom can't check.
+10. **Darkroom's own copies after unpairing.** The Pixel still exists and still serves its people, so copies for it keep being queued and placed in `_pixels/<pixel>/` and pruned as today; only the sharing stops. This design draws nothing about it. Open: keep it so (recommended; pairing again picks up where it left off), or stop queueing for an unpaired Pixel, which is a backend change outside this design.
+11. **No alert, no event wording on the page.** The PATCH records `pixel_updated` as today; the reconciler's removal is in its own records. Alternative: a dedicated `pixel_unpaired` event shown in Recent events.
+12. **No Unpair on Status**, as Pair and Share again live only on People (decision 4 of the addendum).
+
+### For the build
+
+- `frontend/src/forms/PixelForm.svelte` (as built by #323): the Unpair button in the Syncthing row when `syncthing_device_id` is set and Darkroom's Syncthing is on; an `onunpair` callback like `ondelete`.
+- `frontend/src/pages/People.svelte`: an `unpairPixel` through `ask()` with the copy above. `Confirm` takes one `message`; the build either passes the second paragraph as a second line of text or lets `Confirm` take a body, without changing how other confirmations look.
+- Checks: `PixelForm.svelte.test.ts` (Unpair shown only with an ID and the Syncthing on; it opens the confirmation and saves nothing), a People page test for the PATCH body (`{"syncthing_device_id": null}` only), the refused line, and the row turning to Not paired after reload; `make verify` images at phone and desktop width beside these boards, from a flow that opens Edit on a paired demo Pixel, presses Unpair, then Unpair in the dialog.
+
 ## First-run setup wizard (#303, document signed off)
 
 Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards signed off by the owner on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234).** #303 closes, and #305 builds against the boards, once #344 merges (decision 1 of `08-setup.md`). Every decision the owner made on #344 (1 to 18) is recorded in `08-setup.md`, "The owner's decisions", unchanged.
 
 Boards: `08-setup-{welcome,closed,address,sign-in,test-failed,immich,people,accounts,pixels,alerts,done}-{desktop,phone}.dc.html`, the eleven pairs the document's board list names, each stacking the states that list names for it, in its order. They use the signed-off tokens only (no new colour, size or font) and the parts already built (card, buttons, fields, the danger alert line, chips, and the People page's table and modal on the People, Google accounts and Pixels steps). The copy is the document's, word for word; `{placeholders}` are filled with made-up values (addresses on 192.168.1.20 and example.com, made-up client and device IDs). `08-setup-test-failed-*` draws the server's own pages as `darkroom/server/common.py` renders them today, not the app's style. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
-## Checking Immich's address in the setup wizard (#347, for the owner's sign-off)
+## Checking Immich's address in the setup wizard (#347, signed off)
 
-Status: **drawn for the owner's sign-off, not signed off.** Until it is, the signed-off Immich step (boards `08-setup-immich-*`, which claim no check) stands, and the check is not built into the UI. #347 asks for the check (`POST /api/setup/immich` asks Immich before storing the address) and for its copy and states to be drawn and signed off on #303 first. The wizard API it builds on (#346) is merged (PR #358).
+Status: **signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6929740469): the 304 px left pane with 40 px padding on all 11 desktop wizard boards, the card filling the column as built in #363, the Immich check states, refusal status 422, an Immich save before the passing test refused with 409 and contacting nothing, choices B to H as recommended; phone boards, the test-failed desktop board and the add-person dialog unchanged.** The signed-off Immich step (boards `08-setup-immich-*`) claimed no check; the check now stands as drawn. #347 asks for the check (`POST /api/setup/immich` asks Immich before storing the address) and for its copy and states to be drawn and signed off on #303 first. The wizard API it builds on (#346) is merged (PR #358).
 
-Boards: `08-setup-immich-check-desktop.dc.html` and `08-setup-immich-check-phone.dc.html`, four states: Checking Immich (in flight), then the three refusals (no answer, not Immich, TLS failed). They add to `08-setup-immich-*` and change none of its five states. The only change there is State 4's note, which said "The screen claims no check of Immich (#347)" and now points to the new board. Signed-off tokens and parts only (the card, the field, the primary button disabled as Welcome's "Starting...", the danger alert line). Addresses are made up. The copy, and the amended lines of `08-setup.md` ("Step 3 of 8: Immich", the error table, the API's messages, "What reaches beyond Darkroom" and an addendum to decision 8), are marked "not yet signed off" there.
+Boards: `08-setup-immich-check-desktop.dc.html` and `08-setup-immich-check-phone.dc.html`, four states: Checking Immich (in flight), then the three refusals (no answer, not Immich, TLS failed). They add to `08-setup-immich-*` and change none of its five states. The only change there is State 4's note, which said "The screen claims no check of Immich (#347)" and now points to the new board. Signed-off tokens and parts only (the card, the field, the primary button disabled as Welcome's "Starting...", the danger alert line). Addresses are made up. The copy, and the amended lines of `08-setup.md` ("Step 3 of 8: Immich", the error table, the API's messages, "What reaches beyond Darkroom" and an addendum to decision 8), are signed off there too.
 
 ### What it does
 
 - Save and continue on the Immich step asks Immich's unauthenticated `GET /api/server/ping` at the address typed, through `darkroom/tls.py`, with a short time limit, sending no key, cookie or Darkroom header and following no redirect. It stores the address only on Immich's ping reply (`{"res": "pong"}`).
-- Only after the passing test. The wizard shows the step only then, but the route accepts the claim alone before it (today it stores the address there); see decision J. Before the test nothing is contacted.
+- ~~Only after the passing test. The wizard shows the step only then, but the route accepts the claim alone before it (today it stores the address there); see decision J.~~ Superseded by the owner's answer J below: before the passing test the route refuses the save with a 409, "Immich's address can be saved only after the test sign-in has passed", and contacts nothing.
 - While it runs, the primary button is disabled and reads "Checking Immich...". An earlier error line is cleared on the press.
 - A refusal shows "Couldn't save Immich's address: Immich didn't answer at {address}: {reason}." in the danger line under the button (`role="alert"`), with one of three fixed reasons: "nothing answered there", "the server there isn't Immich", "its TLS connection failed". Nothing is stored, the field keeps what was typed, the page state is not reloaded, and the line stays until the next press.
 - A pass stores the address and goes on to People as today, with no new line.
@@ -385,7 +444,10 @@ Boards: `08-setup-immich-check-desktop.dc.html` and `08-setup-immich-check-phone
 
 ### Decisions for the owner (recommendation first)
 
-A. **The refusal's status code.** #347 says 409. But the wizard already reads a 409 from a save as "set in the environment, the page is out of date" and reloads the page's state (`08-setup.md`'s error table; the built `ImmichStep.svelte` passes `outdated: reload`), so a 409 here would reload the page under the error line. Recommended: **422**, a reply about the address the person typed that cannot be mistaken for the environment's 409 and does not read as Darkroom failing. Not chosen: 409 as the issue says (the UI would have to tell two 409s apart by their message); 502, which the test sign-in uses when the issuer can't be reached (consistent with it, but reads as Darkroom's own failure, and a reverse proxy's 502 looks the same).
+The owner answered A (422), I (the card as built in #363) and J (refuse before the test) after #366 merged; B to H stand as recommended. The owner then signed off the whole, the revision below included, on 2026-11-16 (recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6929740469).
+
+
+A. **The refusal's status code. Owner's answer: 422.** Superseded wherever #366 left it open (`{status}` in `08-setup.md` is now 422). #347 says 409. But the wizard already reads a 409 from a save as "set in the environment, the page is out of date" and reloads the page's state (`08-setup.md`'s error table; the built `ImmichStep.svelte` passes `outdated: reload`), so a 409 here would reload the page under the error line. Recommended: **422**, a reply about the address the person typed that cannot be mistaken for the environment's 409 and does not read as Darkroom failing. Not chosen: 409 as the issue says (the UI would have to tell two 409s apart by their message); 502, which the test sign-in uses when the issuer can't be reached (consistent with it, but reads as Darkroom's own failure, and a reverse proxy's 502 looks the same).
 B. **The in-flight label** "Checking Immich..." Not chosen: "Saving..." (true but hides the wait, which can last the whole time limit).
 C. **The three reasons' wording**, inside #347's fixed "Immich didn't answer at {address}: {reason}" and decision 10's "Couldn't save {what}: {message}.", so the line has two colons. Not chosen: rewording #347's sentence (for example "Couldn't save Immich's address: nothing answered at {address}."), which would change the issue's fixed message.
 D. **What counts as each reason.** No answer: connection refused, the time limit passed, or the name did not resolve. Not Immich: any reply other than Immich's ping reply, a redirect included (not followed, so the check never reaches an address the person did not type). TLS failed: an https:// address whose certificate was not trusted or whose handshake failed. The line never carries the reply's body or headers, a redirect's target, or the certificate or error detail.
@@ -393,11 +455,21 @@ E. **No page reload, field kept, line until the next press**, as the other refus
 F. **No status line when the check passes**: the step moves on, and coming back shows "Saved." as signed off. Not chosen: "Immich answered at {address}." on the People step, which would change the signed-off People board.
 G. **No "Save anyway".** An address Immich doesn't answer at can't be stored from the wizard; `IMMICH_URL` in the environment remains for an Immich that is not up yet. The People step's keys need Immich to answer anyway. Not chosen: a second button that stores without the check.
 H. **Every press checks again**, a stored address too. Not chosen: skipping the check when the address is unchanged.
-I. **Layout.** The README's full-width rule ("Full-width sections") is for the app shell's pages, with the 232 px rail and its content column. The wizard is outside the shell, and its signed-off desktop layout (decision 14) is two columns with the card at most 30 rem. The new states keep that layout, as the other ten wizard board pairs do; making the wizard's card span its column would change every wizard board and is not #347's. Not chosen: widening the card on these boards alone. Phone unchanged.
-J. **A save before the test** (the API only; the wizard never shows the step then). Recommended: refuse it with a 409, as Finish setup refuses before the test, with the message "Immich's address can be saved only after the test sign-in has passed", and contact nothing, so the address is only ever stored checked. Not chosen: storing it unchecked before the test, as today, and checking only after.
+I. **Layout. Owner's answer: as built in #363, the card fills the right column; superseded the text that follows.** ~~The README's full-width rule ("Full-width sections") is for the app shell's pages, with the 232 px rail and its content column. The wizard is outside the shell, and its signed-off desktop layout (decision 14) is two columns with the card at most 30 rem. The new states keep that layout, as the other ten wizard board pairs do; making the wizard's card span its column would change every wizard board and is not #347's. Not chosen: widening the card on these boards alone.~~ Phone unchanged. See "Revision" below.
+J. **A save before the test** (the API only; the wizard never shows the step then). **Owner's answer: as recommended.** Recommended: refuse it with a 409, as Finish setup refuses before the test, with the message "Immich's address can be saved only after the test sign-in has passed", and contact nothing, so the address is only ever stored checked. Not chosen: storing it unchecked before the test, as today, and checking only after.
 
 ### For the build (not copy)
 
 - The time limit: 5 seconds recommended (#347 says "short"). The copy names none.
 - Only `GET /api/server/ping` (Immich's current ping route); an Immich old enough to have only `/api/server-info/ping` reads as "the server there isn't Immich".
 - Tests as #347 lists them, with a loopback fake Immich for each reason, nothing stored on a refusal, the request through `tls.py`, and the negative test that nothing is contacted before the passing test. The wizard's `make verify` flow and the frontend tests gain the in-flight state and one refusal.
+
+### Revision: a narrower left pane on every wizard desktop board (signed off)
+
+Status: **signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6929740469): the 304 px left pane with 40 px padding on all 11 desktop wizard boards, the card filling the column as built in #363, the Immich check states, refusal status 422, an Immich save before the passing test refused with 409 and contacting nothing, choices B to H as recommended; phone boards, the test-failed desktop board and the add-person dialog unchanged.** The owner found the left pane large on desktop and asked to trim it on the whole wizard, and chose answer I above (the card fills the column, as built in #363). The boards below are the signed-off layout.
+
+- **The pane: 304 px (19 rem), with 40 px side padding**, on every wizard desktop board, the steps with lists included. It was half the page (640 px at 1280) on most steps and 420 px on People, Google accounts and Pixels. Why 304: the pane's longest line, "5. Google accounts" with its "Done" tag at 16 px plus the list's 24 px indent, needs about 205 px, and 304 less 80 px of padding leaves 224 px, so no step name wraps; the brand row needs less. Narrower than about 290 px wraps that line; the app shell's 232 px rail is too narrow for the step list at this size.
+- **The card fills the column right of the pane**, inset by the column's padding (48 px, or 40 px on the steps with lists), with no 30 rem or 48 rem cap: 880 px at 1280 (896 px with lists). This supersedes `08-setup.md`'s "at most 30 rem wide (... at most 48 rem ...)" and matches the wizard as built in #363 (its card is `w-full`). Decision 14's two columns stay; only their widths change.
+- **Boards changed** (desktop only; the change is the pane's width and padding and the card's cap, nothing else, and each board's subtitle says so): `08-setup-{welcome,closed,address,sign-in,immich,immich-check,people,accounts,pixels,alerts,done}-desktop.dc.html`. The People step's add-person dialog keeps its 512 px width (the wizard's dialogs are not part of this revision).
+- **Not changed:** every phone board; `08-setup-test-failed-desktop.dc.html`, which draws the server's own failure pages as `darkroom/server/common.py` renders them, not the wizard's pane.
+- **For the build:** #363's wizard (`frontend/src/setup/Setup.svelte`, today `md:grid-cols-2`, or `md:grid-cols-[26.25rem_minmax(0,1fr)]` on the steps with lists) moves to a 19 rem pane with `md:px-10` on every step; `make verify`'s `setup-*` desktop images show it.

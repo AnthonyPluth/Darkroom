@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
 import ssl
+import stat
 import urllib.request
 from collections.abc import Mapping
 from http.client import HTTPConnection, HTTPException, HTTPResponse
+from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT = 15.0
-LOOPBACK = "127.0.0.1"
+SOCKET_FOLDER = Path("/run/darkroom")
 Stream = socket.socket
 
 
@@ -44,35 +47,53 @@ def urlopen(url: str, *, data: bytes | None = None, headers: Mapping[str, str] |
     return response
 
 
+def socket_folder_private(folder: Path) -> bool:
+    try:
+        found = os.lstat(folder)
+    except OSError:
+        return False
+    return stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid() and stat.S_IMODE(found.st_mode) & 0o077 == 0
+
+
+def private_socket(socket_path: str) -> str:
+    folder = SOCKET_FOLDER
+    if not socket_path.startswith("/") or "\x00" in socket_path or os.path.normpath(socket_path) != socket_path or Path(socket_path).parent != folder:
+        raise Refused("an internal socket outside the private socket folder")
+    if not socket_folder_private(folder):
+        raise Refused("the internal socket folder is not private to this user")
+    return socket_path
+
+
+def unix_stream(socket_path: str, timeout: float | None) -> Stream:
+    checked = private_socket(socket_path)
+    stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stream.settimeout(timeout)
+    try:
+        stream.connect(checked)
+    except OSError:
+        stream.close()
+        raise
+    return stream
+
+
 class UnixConnection(HTTPConnection):
     def __init__(self, socket_path: str, timeout: float) -> None:
         super().__init__("localhost", timeout=timeout)
         self.socket_path = socket_path
 
     def connect(self) -> None:
-        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        stream.settimeout(self.timeout)
-        try:
-            stream.connect(self.socket_path)
-        except OSError:
-            stream.close()
-            raise
-        self.sock = stream
+        self.sock = unix_stream(self.socket_path, self.timeout)
 
 
 def unix_request(socket_path: str, method: str, target: str, *, data: bytes | None = None, headers: Mapping[str, str] | None = None,
                  timeout: float = DEFAULT_TIMEOUT, limit: int) -> tuple[int, bytes]:
-    connection = UnixConnection(socket_path, timeout)
+    connection = UnixConnection(private_socket(socket_path), timeout)
     try:
         connection.request(method, target, body=data, headers=dict(headers or {}))
         reply = connection.getresponse()
         return reply.status, reply.read(limit)
     finally:
         connection.close()
-
-
-def loopback(port: int, timeout: float) -> Stream:
-    return socket.create_connection((LOOPBACK, port), timeout=timeout)
 
 
 def hang_up(stream: Stream) -> None:

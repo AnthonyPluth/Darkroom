@@ -15,7 +15,14 @@ SYNCTHING = "DARKROOM_SYNCTHING"
 SYNCTHING_MODULE = "darkroom_init.syncthing"
 FD_VARIABLES = frozenset({TOKEN_FD, VIEWER_FD, SYNCTHING_KEY_FD})
 VIEWER_PLUGIN = "darkroom_init.viewer_auth.SecretOnPipe"
+SOCKETS_MODULE = "darkroom_init.sockets"
 INIT_HOME = str(Path(__file__).resolve().parent.parent)
+SOCKET_FOLDER = Path("/run/darkroom")
+VNC_SOCKET = SOCKET_FOLDER / "vnc.sock"
+VIEWER_SOCKET = SOCKET_FOLDER / "viewer.sock"
+SYNCTHING_SOCKET = SOCKET_FOLDER / "syncthing.sock"
+X11VNC = "/usr/bin/x11vnc"
+WEBSOCKIFY = "/usr/bin/websockify"
 
 APP_SETTINGS = (
     "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO", "DARKROOM_ALERTS_OFF", "DARKROOM_ALLOWED_HOSTS", "DARKROOM_ALLOW_NO_AUTH", "DARKROOM_BROWSER_ROOT", "DARKROOM_DATA_DIR", "DARKROOM_DEMO", "DARKROOM_HOST",
@@ -91,16 +98,22 @@ def syncthing_specs(given: Mapping[str, str], ready: Callable[[], bool] | None) 
     return [Spec("syncthing", ("python3", "-P", "-m", SYNCTHING_MODULE, syncthing_home(given)), syncthing_env(given), ready=ready, recheck=True)]
 
 
+def on_private_socket(socket_path: Path, argv: tuple[str, ...]) -> tuple[str, ...]:
+    return ("python3", "-P", "-m", SOCKETS_MODULE, str(socket_path), *argv)
+
+
 def specs(given: Mapping[str, str], app_ready: Callable[[], bool], display_ready: Callable[[], bool], syncthing_ready: Callable[[], bool] | None = None) -> list[Spec]:
     shown = given.get("DISPLAY", ":99")
-    viewer = display_env(given) | {"PYTHONPATH": INIT_HOME, "PYTHONDONTWRITEBYTECODE": "1"}
+    wrapped = display_env(given) | {"PYTHONPATH": INIT_HOME, "PYTHONDONTWRITEBYTECODE": "1"}
     app_secrets: tuple[Secret, ...] = ("token", "viewer", "syncthing") if syncthing_on(given) else ("token", "viewer")
+    vnc = (X11VNC, "-display", shown, "-unixsock", str(VNC_SOCKET), "-rfbport", "0", "-rfbportv6", "0", "-forever", "-shared", "-nopw", "-noxdamage", "-quiet")
+    viewer = (WEBSOCKIFY, "--web=/usr/share/novnc", "--web-auth", "--auth-plugin", VIEWER_PLUGIN, "--auth-source", PIPE["viewer"], "--unix-listen", str(VIEWER_SOCKET),
+              "--unix-target", str(VNC_SOCKET))
     return [
         *syncthing_specs(given, syncthing_ready),
         Spec("app", ("/app/.venv/bin/python", "run.py", "serve"), app_env(given), "/app", app_secrets, ready=app_ready),
-        Spec("display", ("Xvfb", shown, "-screen", "0", "1280x900x24", "-nolisten", "tcp", "-nolisten", "unix"), display_env(given), quiet=True, ready=display_ready),
-        Spec("vnc", ("x11vnc", "-display", shown, "-localhost", "-rfbport", "5900", "-forever", "-shared", "-nopw", "-noxdamage", "-quiet"), display_env(given), quiet=True),
-        Spec("viewer", ("websockify", "--web=/usr/share/novnc", "--web-auth", "--auth-plugin", VIEWER_PLUGIN, "--auth-source", PIPE["viewer"], "127.0.0.1:6080", "127.0.0.1:5900"),
-             viewer, secrets=("viewer",), quiet=True),
+        Spec("display", ("Xvfb", shown, "-screen", "0", "1280x900x24", "-nolisten", "tcp", "-nolisten", "local"), display_env(given), quiet=True, ready=display_ready),
+        Spec("vnc", on_private_socket(VNC_SOCKET, vnc), wrapped),
+        Spec("viewer", on_private_socket(VIEWER_SOCKET, viewer), wrapped, secrets=("viewer",)),
         Spec("worker", ("/opt/worker/bin/python", "-m", "darkroom_browser"), worker_env(given), "/opt/worker/app", ("token",), strays=True),
     ]
