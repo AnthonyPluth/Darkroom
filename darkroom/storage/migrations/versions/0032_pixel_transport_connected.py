@@ -9,10 +9,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("pixel_transport") as batch:
-        batch.add_column(sa.Column("connected", sa.Boolean(), server_default="0", nullable=False))
+    op.add_column("pixel_transport", sa.Column("connected", sa.Boolean(), server_default="0", nullable=False))
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("pixel_transport") as batch:
-        batch.drop_column("connected")
+    found = sa.inspect(op.get_bind())
+    if "pixel_transport" in found.get_table_names() and "connected" in {column["name"] for column in found.get_columns("pixel_transport")}:
+        op.execute("ALTER TABLE pixel_transport DROP COLUMN connected")
