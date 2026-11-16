@@ -169,6 +169,33 @@ class ReconcilerTests(unittest.TestCase):
                     self.assertNotIn(self.jo_pixel, outcome.resumed)
                 self.assertNotIn(identity, self.fake.folders)
 
+    def test_a_released_folder_is_shared_again_and_removed_again_if_it_is_wrong_again(self):
+        identity = self.persisted(self.jo_pixel, JO_DEVICE, type="sendreceive")
+        self.reconcile()
+        with self.assertRaises(transport.NotRemoved):
+            transport.release_folder(self.opened, self.sam_pixel, NOW + 5)
+        transport.release_folder(self.opened, self.jo_pixel, NOW + 5)
+        self.opened.commit()
+        self.assertEqual(self.events(transport.FOLDER_RELEASED), [(f"pixel {self.jo_pixel}", None)])
+        with self.assertRaises(transport.NotRemoved):
+            transport.release_folder(self.opened, self.jo_pixel, NOW + 6)
+        self.fake.requests.clear()
+        self.held.add(self.jo_pixel)
+        self.assertEqual(self.reconcile(at=NOW + 7).resumed, {self.sam_pixel})
+        self.assertEqual(self.reconcile("the sentinel is missing from the share", at=NOW + 8).resumed, set())
+        self.assertNotIn(identity, self.fake.folders)
+        self.held.clear()
+        outcome = self.reconcile(at=NOW + 10)
+        self.assertEqual(outcome.resumed, {self.jo_pixel, self.sam_pixel})
+        found = self.client.folder(identity)
+        self.assertEqual((found.type, found.path, found.devices - {OWN}), (syncthing.SEND_ONLY, str(self.photos.pixel_root(self.jo_pixel)), {JO_DEVICE}))
+        self.assertEqual(self.rows()[self.jo_pixel], (True, None))
+        self.fake.folders[identity]["type"] = "sendreceive"
+        self.assertEqual(self.reconcile(at=NOW + 20).resumed, {self.sam_pixel})
+        self.assertNotIn(identity, {folder.id for folder in self.client.folders()})
+        self.assertEqual(self.rows()[self.jo_pixel], (False, transport.REMOVED))
+        self.assertEqual(self.reconcile(at=NOW + 30).resumed, {self.sam_pixel})
+
     def test_a_persisted_folder_outside_its_pixels_folder_is_removed_before_anything_is_resumed(self):
         for path in (str(self.root / "jo" / "originals"), str(self.root / "_pixels"), str(self.photos.pixel_root(self.sam_pixel)), "/elsewhere"):
             with self.subTest(path=path):

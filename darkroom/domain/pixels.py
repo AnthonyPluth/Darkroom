@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, dedupe, events, pixel_folder
+from darkroom.providers import syncthing
 from darkroom.storage import db
 from darkroom.storage.models import GoogleAccount, Person, Pixel, PixelCopy, PixelPerson
 
@@ -21,6 +22,34 @@ class NoPeople(ValueError):
 
 class StillHasCopies(ValueError):
     pass
+
+
+class InvalidDevice(ValueError):
+    pass
+
+
+class DeviceTaken(ValueError):
+    pass
+
+
+DEVICE_TAKEN = "that Syncthing device ID is already another Pixel's; a device can be paired with one Pixel only"
+
+
+def canonical_device(value: str) -> str:
+    try:
+        return syncthing.device_id(value)
+    except syncthing.InvalidDeviceId as error:
+        raise InvalidDevice(str(error)) from None
+
+
+def checked_device(opened: Session, pixel_id: int | None, value: str | None, stored: str | None) -> str | None:
+    if value is None or (pixel_id is not None and value == stored):
+        return value
+    device = canonical_device(value)
+    for other_id, other in opened.execute(select(Pixel.id, Pixel.syncthing_device_id).where(Pixel.syncthing_device_id.is_not(None))).all():
+        if other_id != pixel_id and syncthing.is_device_id(other) and syncthing.device_id(other) == device:
+            raise DeviceTaken(DEVICE_TAKEN)
+    return device
 
 
 def get(opened: Session, pixel_id: int) -> Pixel:
@@ -75,7 +104,7 @@ def create(opened: Session, name: str, syncthing_device_id: str | None, account_
     chosen = people_ids if people_ids is not None else [account.default_person_id]
     require_people(opened, chosen)
     before = accounts.served_people(opened, account_id)
-    pixel = Pixel(name=name, syncthing_device_id=syncthing_device_id, google_account_id=account_id, created=now)
+    pixel = Pixel(name=name, syncthing_device_id=checked_device(opened, None, syncthing_device_id, None), google_account_id=account_id, created=now)
     opened.add(pixel)
     opened.flush()
     set_people(opened, pixel.id, chosen)
@@ -91,12 +120,14 @@ def lock(opened: Session, pixel_id: int) -> None:
     except OperationalError as error:
         if not db.is_busy(error):
             raise
-        raise accounts.Busy("Darkroom is busy copying or pruning this Pixel's photos; try again in a moment") from None
+        raise accounts.Busy("Darkroom is busy with another change; try again in a moment") from None
 
 
 def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float) -> Pixel:
     lock(opened, pixel_id)
     pixel = get(opened, pixel_id)
+    typed = fields.get("syncthing_device_id")
+    device = checked_device(opened, pixel.id, typed if isinstance(typed, str) else None, pixel.syncthing_device_id)
     account_id = fields.get("google_account_id", pixel.google_account_id)
     assert isinstance(account_id, int)
     require_account(opened, account_id)
@@ -116,8 +147,7 @@ def update(opened: Session, pixel_id: int, fields: dict[str, object], now: float
     if "name" in fields:
         pixel.name = str(fields["name"])
     if "syncthing_device_id" in fields:
-        value = fields["syncthing_device_id"]
-        pixel.syncthing_device_id = value if isinstance(value, str) else None
+        pixel.syncthing_device_id = device
     opened.flush()
     dedupe.confirm_newly_served(opened, account_id, before)
     if moving or set(chosen) - earlier:

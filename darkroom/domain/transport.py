@@ -23,6 +23,7 @@ SUBJECT = "syncthing"
 CORRECTED = "syncthing_corrected"
 FOLDER_ADDED = "syncthing_folder_added"
 FOLDER_REMOVED = "syncthing_folder_removed"
+FOLDER_RELEASED = "syncthing_folder_released"
 FAILED = "syncthing_reconcile_failed"
 RECOVERED = "syncthing_reconciled"
 PAUSED = "syncthing_transport_paused"
@@ -137,8 +138,24 @@ class Outcome:
         self.corrections.append((kind, subject, detail))
 
 
+class NotRemoved(ValueError):
+    pass
+
+
+NOTHING_TO_RELEASE = "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again"
+
+
 def removed_before(opened: Session, pixel_id: int) -> bool:
-    return opened.execute(select(Event.id).where(Event.type == FOLDER_REMOVED, Event.subject == f"pixel {pixel_id}").limit(1)).first() is not None
+    last = opened.execute(select(Event.type).where(Event.type.in_((FOLDER_REMOVED, FOLDER_RELEASED)), Event.subject == f"pixel {pixel_id}")
+                          .order_by(Event.id.desc()).limit(1)).first()
+    return last is not None and last[0] == FOLDER_REMOVED
+
+
+def release_folder(opened: Session, pixel_id: int, now: float) -> None:
+    db.write_lock(opened)
+    if not removed_before(opened, pixel_id):
+        raise NotRemoved(NOTHING_TO_RELEASE)
+    events.record(opened, now, FOLDER_RELEASED, f"pixel {pixel_id}")
 
 
 def plan(opened: Session, photos: Photos, held: Callable[[int], bool], share_problem: str | None) -> Plan:

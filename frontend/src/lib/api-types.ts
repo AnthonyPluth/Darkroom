@@ -324,6 +324,10 @@ export interface Ok {
   ok: boolean;
 }
 
+export interface OwnDevice {
+  device_id: string;
+}
+
 export interface PartBody {
   event: "attempt" | "progress" | "done" | "failed";
   bytes?: number;
@@ -400,6 +404,11 @@ export interface PixelCreateBody {
   people_ids?: number[];
 }
 
+export interface PixelPairBody {
+  device_id: string;
+  confirmed: boolean;
+}
+
 export interface PixelPatchBody {
   name?: string;
   google_account_id?: number;
@@ -437,6 +446,10 @@ export interface ProgressBody {
 
 export interface ReassignBody {
   person_id: number;
+}
+
+export interface ReleaseFolderBody {
+  confirmed: boolean;
 }
 
 export interface ResolveBody {
@@ -545,6 +558,15 @@ export interface WaitingBody {
   reason: string;
 }
 
+export interface WaitingDevice {
+  device_id: string;
+  name: string;
+}
+
+export interface WaitingDevices {
+  devices: WaitingDevice[];
+}
+
 export interface WorkerJob {
   id: number;
   kind: string;
@@ -577,6 +599,10 @@ export interface Endpoints {
   "POST /api/pixels": { body: PixelCreateBody; reply: PixelReply };
   "PATCH /api/pixels/{id}": { body: PixelPatchBody; reply: PixelReply };
   "DELETE /api/pixels/{id}": { body: never; reply: Ok };
+  "POST /api/pixels/{id}/pair": { body: PixelPairBody; reply: PixelReply };
+  "POST /api/pixels/{id}/release-folder": { body: ReleaseFolderBody; reply: Ok };
+  "GET /api/pairing/device": { body: never; reply: OwnDevice };
+  "GET /api/pairing/waiting": { body: never; reply: WaitingDevices };
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
   "GET /api/browser/view": { body: never; reply: BrowserView };
