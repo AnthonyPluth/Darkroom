@@ -267,6 +267,19 @@ class SingleImageTests(unittest.TestCase):
             self.assertIn(check, script)
         self.assertLess(script.index("the paused instance sent a file"), script.index("probe darkroom resume"))
 
+    def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
+        script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
+        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -eo pipefail\n"))
+        for text in (script, job):
+            self.assertNotRegex(text, r"\|\s*grep\s+-[A-Za-z]*q", "grep -q quits at the first match, so under pipefail docker logs dies of SIGPIPE and a match reads as a miss")
+        self.assertIn('logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"; }', script)
+        self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', script[script.index("fail() {"):script.index("wait_for() {")])
+        cleanup = script.index("docker rm -f darkroom peer >/dev/null 2>&1 || true\ndocker network rm \"$net\" >/dev/null 2>&1 || true\n")
+        self.assertLess(cleanup, script.index('docker network create "$net"'))
+        self.assertLess(script.index('docker network create "$net"'), script.index("docker run -d --name darkroom"))
+
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
