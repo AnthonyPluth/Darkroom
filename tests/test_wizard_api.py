@@ -7,6 +7,8 @@ import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
+from sqlalchemy import delete
+
 import run
 from darkroom import oidc
 from darkroom.server import auth, common, handler, jobs, routes, wizard
@@ -248,7 +250,9 @@ class TestSignInTests(WizardCase):
             self.assertEqual(self.stored(), {})
             self.assertEqual(self.propose(oidc_client_secret=None)["proposal"]["has_client_secret"], True)
             status, headers, body = self.try_sign_in()
-            self.assertEqual((status, headers["Location"], body), (303, "/setup", b""))
+            self.assertEqual(status, 200)
+            self.assertIn("Sign-in works", body.decode())
+            self.assertIn("without a restart", body.decode())
         baked = headers.get_all("Set-Cookie")
         self.assertFalse(any(line.startswith(wizard.CLAIM_COOKIE + "=") for line in baked))
         self.assertIn(f"{wizard.TEST_COOKIE}=; Path=/auth; Max-Age=0", "\n".join(baked))
@@ -276,7 +280,7 @@ class TestSignInTests(WizardCase):
         self.claim()
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["family"], email="kim@example.com", email_verified=False)[0], 403)
-        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 303)
+        self.assertEqual(self.try_sign_in(code="test-code-two-9f8e7d")[0], 200)
         self.assertEqual(self.restarted().oidc_allowed_groups, ("parents",))
 
     def test_a_proposal_changed_during_the_test_saves_nothing(self):
@@ -312,9 +316,13 @@ class TestSignInTests(WizardCase):
         self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": "https://photos.example.com"})[0], 200)
         self.propose()
         self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test"), (409, {"error": setup.ELSEWHERE}))
-        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com"})[0], 403)
+        self.assertEqual(self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com"}),
+                         (403, {"error": "cross-site requests are refused"}))
+        status, reply = self.json_call("POST", "/api/setup/sign-in/test", headers={"Host": "PHOTOS.example.com", "Origin": "https://photos.example.com"})
+        self.assertEqual(status, 200)
+        self.assertTrue(reply["location"].startswith(self.provider.base))
         self.assertEqual(self.json_call("POST", "/api/setup/address", {"public_url": self.base})[0], 200)
-        self.assertEqual(self.try_sign_in()[0], 303)
+        self.assertEqual(self.try_sign_in()[0], 200)
         self.assertEqual(self.restarted().public_url, self.base)
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {}, b"", self.settings), self.base))
         self.assertFalse(wizard.same_address(Request("GET", "/", {}, {"Host": "127.0.0.1"}, b"", self.settings), "http://[::1"))
@@ -335,7 +343,7 @@ class BlankGroupsTests(WizardCase):
         self.propose(oidc_allowed_groups=[], oidc_allowed_emails=["kim@example.com"])
         self.assertEqual(self.try_sign_in(groups=["parents"])[0], 403)
         self.assertEqual(self.stored(), {})
-        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 303)
+        self.assertEqual(self.try_sign_in(code="test-code-kim-5a6b7c", groups=[], email="kim@example.com")[0], 200)
         restarted = self.restarted()
         self.assertEqual((restarted.oidc_allowed_groups, restarted.oidc_allowed_emails), ((), ("kim@example.com",)))
         self.assertTrue(oidc.allowed(restarted, "kim@example.com", True, ()))
@@ -355,7 +363,7 @@ class AfterTestCase(WizardCase):
         state = self.propose()
         self.assertEqual((state["phase"], state["tested_email"]), ("before_test", None))
         status, headers, _ = self.try_sign_in()
-        self.assertEqual(status, 303)
+        self.assertEqual(status, 200)
         self.session = cookies_set(headers)[auth.SESSION_COOKIE]
         self.replies.clear()
 
@@ -445,6 +453,33 @@ class AfterTestTests(AfterTestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.json_call("POST", path, body, cookies=self.pair()), (409, {"error": setup.SETTLED}))
         self.assertNotIn("DARKROOM_PUBLIC_URL", self.stored())
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
+
+    def test_a_test_that_passes_while_a_step_is_saved_settles_that_step(self):
+        with db.session(self.engine) as opened:
+            tested = opened.get(Setting, SETUP_TESTED).value
+            opened.delete(opened.get(Setting, SETUP_TESTED))
+        stored_before = self.stored()
+
+        def passes_meanwhile(request):
+            with db.session(self.engine) as opened:
+                if opened.get(Setting, SETUP_TESTED) is None:
+                    opened.add(Setting(key=SETUP_TESTED, value=tested))
+            return None
+
+        steps = (("/api/setup/address", {"public_url": "http://other.lan:8000"}), ("/api/setup/sign-in", {"oidc_issuer": self.provider.base, "oidc_client_id": CLIENT_ID}),
+                 ("/api/setup/sign-in/test", {}))
+        for path, body in steps:
+            with self.subTest(path=path):
+                with db.session(self.engine) as opened:
+                    opened.execute(delete(Setting).where(Setting.key == SETUP_TESTED))
+                request = Request("POST", path, {}, {"Host": self.base.removeprefix("http://")}, json.dumps(body).encode(), self.settings, self.engine, client="127.0.0.1")
+                handler_of = routes.find("POST", path).handler
+                with mock.patch.object(setup, "after_the_test", side_effect=passes_meanwhile):
+                    response = handler_of(dataclasses.replace(request, settings=handler.with_stored(request)))
+                self.assertEqual((response.status, json.loads(response.body)), (409, {"error": setup.SETTLED}))
+        self.assertEqual(self.stored(), stored_before)
         with db.session(self.engine) as opened:
             self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
 
