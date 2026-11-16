@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -41,6 +41,7 @@ class FakeProvider:
         self.refresh_id_token = True
         self.outage = False
         self.scopes_supported: list[str] | None = ["openid", "email", "profile", "groups", "offline_access"]
+        self.signs_in: dict[str, Any] | None = None
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -64,6 +65,14 @@ class FakeProvider:
                     return self.reply(provider.discovery())
                 if path == "/jwks":
                     return self.reply(provider.jwks())
+                if path == "/authorize" and provider.signs_in is not None:
+                    query = dict(parse_qsl(urlsplit(self.path).query))
+                    target = provider.authorize(query)
+                    self.send_response(302)
+                    self.send_header("Location", target)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return None
                 if path == "/userinfo":
                     provider.userinfo_requests.append(self.headers.get("Authorization"))
                     return self.reply(provider.userinfo(self.headers.get("Authorization")))
@@ -109,6 +118,7 @@ class FakeProvider:
         self.outage = False
         self.userinfo_groups = False
         self.rsa_kid = "rsa-1"
+        self.signs_in = None
 
     def discovery(self) -> dict[str, Any]:
         document: dict[str, Any] = {"issuer": self.issuer_override or self.base, "authorization_endpoint": self.base + "/authorize",
@@ -143,6 +153,12 @@ class FakeProvider:
 
     def issue(self, code: str, **grant: Any) -> None:
         self.issued[code] = grant
+
+    def authorize(self, query: dict[str, str]) -> str:
+        code = "code-" + secrets.token_hex(8)
+        self.issue(code, nonce=query.get("nonce", ""), challenge=query.get("code_challenge", ""), redirect_uri=query.get("redirect_uri", ""), **(self.signs_in or {}))
+        separator = "&" if "?" in query.get("redirect_uri", "") else "?"
+        return f"{query.get('redirect_uri', '')}{separator}{urlencode({'code': code, 'state': query.get('state', '')})}"
 
     def client_ok(self, form: dict[str, str], authorization: str | None) -> bool:
         if not self.client_secret:

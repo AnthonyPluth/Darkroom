@@ -38,6 +38,8 @@ DEMO_SECRET = "demo-secret-key-not-real"
 NO_OUTSIDE = "http://127.0.0.1:9"
 LOOPBACK_ONLY = "127.0.0.1,localhost"
 DEMO_SESSION_FILE = "demo-session.json"
+SETUP_PAGE = "setup"
+SETUP_SERVERS = 2
 BUSY = 1.5
 PR_SET_PDEATHSIG = 1
 
@@ -66,6 +68,18 @@ def clean_env(root: str, base: dict[str, str] | None = None, port: int | None = 
     if port:
         env["DARKROOM_PORT"] = str(port)
     return env
+
+
+def wizard_env(root: str, port: int) -> dict[str, str]:
+    env = clean_env(root, port=port)
+    for name in ("DARKROOM_DEMO", "DARKROOM_PUBLIC_URL"):
+        env.pop(name)
+    env["DARKROOM_WIZARD"] = "1"
+    return env
+
+
+def wants_setup(pages: list[str], flows: list[str]) -> bool:
+    return not flows and (not pages or SETUP_PAGE in pages)
 
 
 def find_faketime(candidates: tuple[str, ...] = FAKETIME_LIBRARIES) -> str | None:
@@ -224,10 +238,14 @@ def resolve_jobs(flag: int | None, env: Mapping[str, str] | None = None, cpus: i
     return jobs
 
 
-def node_command(node: str, frontend: str, urls: list[str], session: str, pages: list[str], flows: list[str]) -> list[str]:
+def node_command(node: str, frontend: str, urls: list[str], session: str, pages: list[str], flows: list[str], setup: list[str] | None = None, sign_in: str = "") -> list[str]:
     command = [node, os.path.join(frontend, "verify", "verify.mjs")]
     for url in urls:
         command += ["--url", url]
+    for url in setup or []:
+        command += ["--setup", url]
+    if sign_in:
+        command += ["--sign-in", sign_in]
     for flow in flows:
         command += ["--flow", flow]
     return [*command, "--session", session, "--out", OUT, "--images", IMAGES, "--now", FROZEN_NOW_ISO, *pages]
@@ -270,6 +288,38 @@ def start_instances(root: str, jobs: int, library: str) -> list[Instance]:
     return started
 
 
+def start_sign_in(root: str, library: str) -> tuple[subprocess.Popen[str], str]:
+    provider = subprocess.Popen([sys.executable, "-m", "tools.verify_sign_in"], cwd=ROOT, env=frozen_env(clean_env(root), library), stdout=subprocess.PIPE, text=True)
+    line = provider.stdout.readline().split() if provider.stdout else []
+    if not line:
+        provider.terminate()
+        raise RuntimeError("the made-up sign-in provider for the setup pages didn't start")
+    return provider, line[0]
+
+
+def start_wizards(root: str, library: str) -> list[Instance]:
+    started: list[Instance] = []
+    try:
+        for i in range(SETUP_SERVERS):
+            folder = os.path.join(root, f"setup-{i + 1}")
+            os.makedirs(data_dir(folder))
+            os.makedirs(photos_root(folder))
+            port = free_port()
+            log = os.path.join(folder, "server.log")
+            with open(log, "w") as out:
+                server = subprocess.Popen(server_command(), env=frozen_env(wizard_env(folder, port), library), cwd=ROOT, stdout=out, stderr=subprocess.STDOUT)
+            started.append(Instance(folder, f"http://127.0.0.1:{port}", server, log))
+        for instance in started:
+            try:
+                wait_ready(instance.url, instance.server)
+            except RuntimeError as e:
+                raise RuntimeError(f"{e}\n{log_tail(instance.log)}") from e
+    except BaseException:
+        stop_instances(started)
+        raise
+    return started
+
+
 def run(pages: list[str], jobs: int | None = None, flows: list[str] | None = None) -> int:
     frontend = os.path.join(ROOT, "frontend")
     if not os.path.isdir(os.path.join(frontend, "node_modules", "@playwright")):
@@ -293,23 +343,33 @@ def run(pages: list[str], jobs: int | None = None, flows: list[str] | None = Non
         return 2
     root = tempfile.mkdtemp(prefix="darkroom-verify-")
     instances: list[Instance] = []
+    wizards: list[Instance] = []
+    provider: subprocess.Popen[str] | None = None
+    sign_in = ""
     try:
         try:
             instances = start_instances(root, count, library)
+            if wants_setup(pages, flows or []):
+                provider, sign_in = start_sign_in(root, library)
+                wizards = start_wizards(root, library)
         except RuntimeError as e:
             print(f"verify: {e}", file=sys.stderr)
             return 2
         urls = [i.url for i in instances]
         print(f"verify: demo data served at {', '.join(urls)}" + (f" ({count} servers, each with its own copy of the data)" if count > 1 else ""))
         session = os.path.join(data_dir(instances[0].root), DEMO_SESSION_FILE)
-        code = subprocess.run(node_command(node, frontend, urls, session, pages, flows or []), cwd=frontend, env=clean_env(instances[0].root)).returncode
-        for instance in instances:
+        command = node_command(node, frontend, urls, session, pages, flows or [], [w.url for w in wizards], sign_in)
+        code = subprocess.run(command, cwd=frontend, env=clean_env(instances[0].root)).returncode
+        for instance in [*instances, *wizards]:
             if instance.server.poll() is not None:
                 print(f"verify: the server at {instance.url} exited with code {instance.server.returncode}\n{log_tail(instance.log)}", file=sys.stderr)
                 code = code or 1
         return code
     finally:
-        stop_instances(instances)
+        stop_instances([*instances, *wizards])
+        if provider is not None:
+            provider.terminate()
+            provider.wait(10)
         shutil.rmtree(root, ignore_errors=True)
 
 

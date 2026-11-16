@@ -267,6 +267,24 @@ class TestSignInTests(WizardCase):
             self.assertEqual((opened.query(User).count(), opened.query(StoredSetting).count()), (1, 5))
             self.assertIsNone(opened.get(Setting, SETUP_SIGN_IN))
 
+    def test_a_browser_that_signs_in_at_the_provider_comes_back_to_the_setup_page_signed_in(self):
+        self.claim()
+        self.propose()
+        self.provider.signs_in = {"sub": "owner-1", "email": "owner@example.com", "groups": ["parents"]}
+        status, reply = self.json_call("POST", "/api/setup/sign-in/test")
+        self.assertEqual(status, 200, reply)
+        target = urlsplit(reply["location"])
+        status, headers, _ = fetch(self.provider.base, "GET", f"{target.path}?{target.query}", {}, None)
+        self.assertEqual(status, 302)
+        back = urlsplit(headers["Location"])
+        self.assertEqual(f"{back.scheme}://{back.netloc}{back.path}", self.base + "/auth/callback")
+        state = parse_qs(target.query)["state"][0]
+        status, headers, body = self.call("GET", f"{back.path}?{back.query}", cookies={wizard.TEST_COOKIE: state, wizard.CLAIM_COOKIE: self.cookie})
+        self.assertEqual((status, headers["Location"], body), (303, "/setup", b""))
+        jar = {wizard.CLAIM_COOKIE: self.cookie, auth.SESSION_COOKIE: cookies_set(headers)[auth.SESSION_COOKIE]}
+        status, state_now = self.json_call("GET", "/api/setup", cookies=jar)
+        self.assertEqual((status, state_now["phase"], state_now["tested_email"]), (200, "after_test", "owner@example.com"))
+
     def test_an_account_the_proposal_does_not_allow_saves_nothing(self):
         self.claim()
         self.propose(oidc_allowed_groups=["admins"])

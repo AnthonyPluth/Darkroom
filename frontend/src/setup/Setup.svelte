@@ -138,7 +138,7 @@
   }
 </script>
 
-<div class={["grid min-h-dvh", wide ? "md:grid-cols-[26.25rem_minmax(0,1fr)]" : "md:grid-cols-2"]}>
+<div class={["grid min-h-dvh content-start md:content-normal", wide ? "md:grid-cols-[26.25rem_minmax(0,1fr)]" : "md:grid-cols-2"]}>
   <div class={["flex flex-col gap-4 px-4 pt-6 md:gap-12 md:bg-rail md:py-16", wide ? "md:px-12" : "md:px-16"]}>
     <div class="flex items-center gap-3 text-lg font-bold">
       <span class="block size-3.5 rounded-full bg-accent"></span>Darkroom
