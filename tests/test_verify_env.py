@@ -335,10 +335,14 @@ class RunTests(unittest.TestCase):
         self.assertFalse(verify.wants_setup(["setups"], []))
         self.assertFalse(verify.wants_setup(["status"], []))
         self.assertFalse(verify.wants_setup([], ["open-people"]))
-        command = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [], ["http://127.0.0.1:7", "http://127.0.0.1:8"], "http://127.0.0.1:9")
+        command = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [], ["http://127.0.0.1:7", "http://127.0.0.1:8"], "http://127.0.0.1:9",
+                                      "http://127.0.0.1:10")
         self.assertEqual([command[i + 1] for i, a in enumerate(command) if a == "--setup"], ["http://127.0.0.1:7", "http://127.0.0.1:8"])
         self.assertEqual(command[command.index("--sign-in") + 1], "http://127.0.0.1:9")
-        self.assertNotIn("--setup", verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], []))
+        self.assertEqual(command[command.index("--immich") + 1], "http://127.0.0.1:10")
+        bare = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [])
+        self.assertNotIn("--setup", bare)
+        self.assertNotIn("--immich", bare)
 
     def test_a_running_verify_is_recognised_by_its_command_line(self):
         self.assertTrue(verify.is_verify(["node", "/r/frontend/verify/verify.mjs", "--url", "x"]))

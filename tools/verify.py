@@ -238,7 +238,8 @@ def resolve_jobs(flag: int | None, env: Mapping[str, str] | None = None, cpus: i
     return jobs
 
 
-def node_command(node: str, frontend: str, urls: list[str], session: str, pages: list[str], flows: list[str], setup: list[str] | None = None, sign_in: str = "") -> list[str]:
+def node_command(node: str, frontend: str, urls: list[str], session: str, pages: list[str], flows: list[str], setup: list[str] | None = None, sign_in: str = "",
+                 immich: str = "") -> list[str]:
     command = [node, os.path.join(frontend, "verify", "verify.mjs")]
     for url in urls:
         command += ["--url", url]
@@ -246,6 +247,8 @@ def node_command(node: str, frontend: str, urls: list[str], session: str, pages:
         command += ["--setup", url]
     if sign_in:
         command += ["--sign-in", sign_in]
+    if immich:
+        command += ["--immich", immich]
     for flow in flows:
         command += ["--flow", flow]
     return [*command, "--session", session, "--out", OUT, "--images", IMAGES, "--now", FROZEN_NOW_ISO, *pages]
@@ -288,13 +291,13 @@ def start_instances(root: str, jobs: int, library: str) -> list[Instance]:
     return started
 
 
-def start_sign_in(root: str, library: str) -> tuple[subprocess.Popen[str], str]:
+def start_sign_in(root: str, library: str) -> tuple[subprocess.Popen[str], str, str]:
     provider = subprocess.Popen([sys.executable, "-m", "tools.verify_sign_in"], cwd=ROOT, env=frozen_env(clean_env(root), library), stdout=subprocess.PIPE, text=True)
     line = provider.stdout.readline().split() if provider.stdout else []
-    if not line:
+    if len(line) < 3:
         provider.terminate()
         raise RuntimeError("the made-up sign-in provider for the setup pages didn't start")
-    return provider, line[0]
+    return provider, line[0], line[2]
 
 
 def start_wizards(root: str, library: str) -> list[Instance]:
@@ -345,12 +348,12 @@ def run(pages: list[str], jobs: int | None = None, flows: list[str] | None = Non
     instances: list[Instance] = []
     wizards: list[Instance] = []
     provider: subprocess.Popen[str] | None = None
-    sign_in = ""
+    sign_in = immich = ""
     try:
         try:
             instances = start_instances(root, count, library)
             if wants_setup(pages, flows or []):
-                provider, sign_in = start_sign_in(root, library)
+                provider, sign_in, immich = start_sign_in(root, library)
                 wizards = start_wizards(root, library)
         except RuntimeError as e:
             print(f"verify: {e}", file=sys.stderr)
@@ -358,7 +361,7 @@ def run(pages: list[str], jobs: int | None = None, flows: list[str] | None = Non
         urls = [i.url for i in instances]
         print(f"verify: demo data served at {', '.join(urls)}" + (f" ({count} servers, each with its own copy of the data)" if count > 1 else ""))
         session = os.path.join(data_dir(instances[0].root), DEMO_SESSION_FILE)
-        command = node_command(node, frontend, urls, session, pages, flows or [], [w.url for w in wizards], sign_in)
+        command = node_command(node, frontend, urls, session, pages, flows or [], [w.url for w in wizards], sign_in, immich)
         code = subprocess.run(command, cwd=frontend, env=clean_env(instances[0].root)).returncode
         for instance in [*instances, *wizards]:
             if instance.server.poll() is not None:

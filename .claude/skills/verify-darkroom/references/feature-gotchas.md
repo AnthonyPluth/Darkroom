@@ -35,5 +35,6 @@ Hand-edited. `tools/user_feature_map.py` merges these into [feature-map.md](feat
 
 ## setup-welcome
 - The `setup-*` images come from `make verify`'s own walk through the wizard, on two empty servers with `DARKROOM_WIZARD=1` and a made-up sign-in provider (`frontend/verify/setup.mjs`), one per width; `make verify PAGES="setup-welcome"` runs the whole walk.
+- The Immich step checks the address with Immich before storing it, so the walk first saves `http://127.0.0.1:9`, where nothing answers (`setup-immich-refused`, the 422 the walk allows in the console), then the made-up Immich that `tools/verify_sign_in.py` starts beside the sign-in provider (`--immich`).
 - The control session's demo server has the wizard off, so `goto setup-welcome` there shows Welcome, and Start setup leads only to "Setup isn't open".
 - The images carry the servers' loopback ports (the Address field and the callback URL), which change on every run.

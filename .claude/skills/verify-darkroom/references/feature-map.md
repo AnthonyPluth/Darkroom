@@ -132,6 +132,7 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Drive it:** `tools/control goto setup-welcome`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-welcome"`.
 - **What usually breaks:**
   - The `setup-*` images come from `make verify`'s own walk through the wizard, on two empty servers with `DARKROOM_WIZARD=1` and a made-up sign-in provider (`frontend/verify/setup.mjs`), one per width; `make verify PAGES="setup-welcome"` runs the whole walk.
+  - The Immich step checks the address with Immich before storing it, so the walk first saves `http://127.0.0.1:9`, where nothing answers (`setup-immich-refused`, the 422 the walk allows in the console), then the made-up Immich that `tools/verify_sign_in.py` starts beside the sign-in provider (`--immich`).
   - The control session's demo server has the wizard off, so `goto setup-welcome` there shows Welcome, and Start setup leads only to "Setup isn't open".
   - The images carry the servers' loopback ports (the Address field and the callback URL), which change on every run.
 
@@ -149,6 +150,11 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 
 - **Reach it:** `/setup`; control `tools/control goto setup-immich`.
 - **Drive it:** `tools/control goto setup-immich`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-immich"`.
+
+## setup-immich-refused (`setup-immich-refused`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-immich-refused`.
+- **Drive it:** `tools/control goto setup-immich-refused`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-immich-refused"`.
 
 ## setup-people (`setup-people`)
 
