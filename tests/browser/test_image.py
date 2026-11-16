@@ -254,11 +254,22 @@ class SingleImageTests(unittest.TestCase):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
         for line in ("dockerfile: Dockerfile.single", f"image: {SINGLE_IMAGE}:${{DARKROOM_TAG:-latest}}", "profiles: [single]", "shm_size: 1g", "cap_drop: [ALL]", "- no-new-privileges:true",
-                     "- seccomp:./deploy/browser/seccomp.json", '- "127.0.0.1:8000:8000"', "- ./data:/data"):
+                     "- seccomp:./deploy/browser/seccomp.json", "- ./data:/data"):
             self.assertIn(line, single)
         self.assertNotIn("working_dir:", single)
         self.assertNotIn("command:", single)
         self.assertFalse([name for name in REMOVED_SETTINGS if f"{name}:" in single])
+
+    def test_the_one_container_runs_on_the_host_network_with_syncthing_on_and_its_web_port_on_loopback(self):
+        single = compose_service("darkroom-single")
+        self.assertRegex(single, r"(?m)^    network_mode: host$")
+        self.assertNotRegex(single, r"(?m)^    ports:", "compose ignores published ports on the host network; the web port's address is DARKROOM_HOST")
+        self.assertRegex(single, r'(?m)^      DARKROOM_HOST: "127\.0\.0\.1"$', "the web port stays on the host's loopback, as the published 127.0.0.1:8000 was")
+        self.assertRegex(single, r"(?m)^      DARKROOM_SYNCTHING: \$\{DARKROOM_SYNCTHING:-1\}$")
+        app = compose_service("darkroom")
+        self.assertNotIn("network_mode", app)
+        self.assertIn('- "127.0.0.1:8000:8000"', app)
+        self.assertNotIn("DARKROOM_SYNCTHING", app)
 
     def test_the_one_container_comes_first_and_no_separate_browser_container_is_left(self):
         compose = (ROOT / "docker-compose.yml").read_text()
@@ -362,11 +373,12 @@ class SecurityScanTests(unittest.TestCase):
 
 
 class UnraidTemplateTests(unittest.TestCase):
-    def test_it_runs_the_published_one_container_image_unprivileged_on_bridge(self):
+    def test_it_runs_the_published_one_container_image_unprivileged_on_the_host_network(self):
         root = template()
         self.assertEqual(root.findtext("Repository"), f"{SINGLE_IMAGE}:latest")
         self.assertEqual(root.findtext("Privileged"), "false")
-        self.assertEqual(root.findtext("Network"), "bridge")
+        self.assertEqual(root.findtext("Network"), "host")
+        self.assertIn("never forward them", root.findtext("Overview"))
         self.assertEqual(root.findtext("PostArgs") or "", "")
 
     def test_its_extra_parameters_are_the_compose_sandbox(self):
@@ -384,10 +396,11 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertFalse([path for path in paths if path and UNRAID_SECCOMP.startswith(path.rstrip("/") + "/")])
         self.assertTrue(UNRAID_SECCOMP.startswith("/boot/config/"))
 
-    def test_it_publishes_8000_only_and_maps_appdata_and_the_share(self):
+    def test_its_ports_are_8000_and_syncthings_and_it_maps_appdata_and_the_share(self):
         configs = list(template().iter("Config"))
         ports = [(config.get("Target"), config.get("Mode"), config.text) for config in configs if config.get("Type") == "Port"]
-        self.assertEqual(ports, [("8000", "tcp", "8000")])
+        self.assertEqual(ports, [("8000", "tcp", "8000"), ("22000", "tcp", "22000"), ("22000", "udp", "22000"), ("21027", "udp", "21027")])
+        self.assertFalse([port for port in ports if port[0] in ("5900", "6080", "8384")])
         paths = {config.get("Target"): (config.get("Mode"), config.get("Required"), config.get("Default")) for config in configs if config.get("Type") == "Path"}
         self.assertEqual(paths, {"/data": ("rw", "true", "/mnt/user/appdata/darkroom"), "/photos": ("rw", "true", "")})
 
@@ -396,7 +409,10 @@ class UnraidTemplateTests(unittest.TestCase):
         names = [config.get("Target") for config in configs]
         self.assertEqual(len(names), len(set(names)))
         environment = set(re.findall(r"^      ([A-Z_]+): ", compose_service("darkroom-single"), re.M))
-        self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER"})
+        self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER", "DARKROOM_HOST"})
+        self.assertNotIn("DARKROOM_HOST", names, "on Unraid the image's 0.0.0.0 stands: bridge networking already published 8000 on every address")
+        syncthing = next(config for config in configs if config.get("Target") == "DARKROOM_SYNCTHING")
+        self.assertEqual((syncthing.get("Default"), syncthing.text), ("1", "1"))
         self.assertRegex(SINGLE, r"(?m)^ENV .*\bDARKROOM_ONE_CONTAINER=1\b", "the image marks itself, so the template and `docker exec` need no variable for it")
         self.assertFalse(set(names) & set(REMOVED_SETTINGS))
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}

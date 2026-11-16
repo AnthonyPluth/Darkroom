@@ -14,8 +14,10 @@ services:
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
     profiles: [single]
-    ports:
-      - "127.0.0.1:8000:8000"
+    # Host networking, for Syncthing's local discovery (decision 7 of docs/design/single-container.md): Syncthing listens on 22000 TCP and UDP and 21027
+    # UDP on every address of the host. DARKROOM_HOST keeps the web port on the host's loopback, as the published port was before: a reverse proxy has
+    # to run on the host or on the host network to reach it (docs/deploy/one-container.md, "Traefik").
+    network_mode: host
     volumes:
       - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
       - ./data:/data
@@ -34,6 +36,8 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-15}
       BROWSER_CHANNEL: ${BROWSER_CHANNEL:-chrome}
       TZ: ${TZ:-UTC}
+      DARKROOM_HOST: "127.0.0.1"
+      DARKROOM_SYNCTHING: ${DARKROOM_SYNCTHING:-1}
       DARKROOM_ONE_CONTAINER: "1"
     shm_size: 1g
     stop_grace_period: 30s
