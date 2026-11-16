@@ -59,10 +59,10 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 
 | Earlier decision or text | Effect of #284 |
 | --- | --- |
-| Two containers, `darkroom` and `darkroom-browser` (SPEC, Deployment and stack; `docs/deploy/browser.md`) | Superseded as the target by one container. Still the deployed layout, and kept as the fallback |
+| Two containers, `darkroom` and `darkroom-browser` (SPEC, Deployment and stack; `docs/deploy/browser.md`) | Superseded by one container, kept as the fallback for one minor release, then removed (#327); rollback is pinning the previous release |
 | Syncthing set up by hand on Unraid as the Pixels' peer, with a hand-written `.stignore` (SPEC phases 1 and 5; #9) | Superseded as the target: Darkroom runs and configures it. The Pixels keep their own Syncthing app |
 | #199 question 2 and question 6, and #216: a transient Send Only folder per Pixel, pruned by Darkroom on the Takeout match, capped by size | Unchanged. Only who configures the transport changes; Syncthing's progress never becomes a reason to prune |
-| A shared `DARKROOM_BROWSER_TOKEN` and the `DARKROOM_URL` and `VNC_URL` settings (`docs/deploy/browser.md`) | Superseded as the target: generated and internal, or gone. They keep working in the fallback layout |
+| A shared `DARKROOM_BROWSER_TOKEN` and the `DARKROOM_URL` and `VNC_URL` settings (`docs/deploy/browser.md`) | Superseded: generated and internal, or gone. Removed with the fallback (#327); `check-config` and the start-up log name them as set and ignored |
 | Promises 1 to 6 (`AGENTS.md`) and the #259 replacement promises | Unchanged |
 
 **Answers of 2026-11-10 to the design's open questions** (#284):

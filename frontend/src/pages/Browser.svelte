@@ -122,7 +122,7 @@
       {:else}
         <div class="flex h-90 flex-col items-center justify-center gap-2 p-5 text-center md:h-130">
           <p class="text-md font-semibold">The remote browser is not set up</p>
-          <p class="max-w-105 text-ink-muted">Set VNC_URL to the address of the browser worker's noVNC view and restart Darkroom.</p>
+          <p class="max-w-105 text-ink-muted">Set DARKROOM_PUBLIC_URL to the address Darkroom is opened at and restart Darkroom.</p>
         </div>
       {/if}
     </section>

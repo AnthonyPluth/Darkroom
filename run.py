@@ -44,6 +44,9 @@ def check_config() -> int:
         print(f"config: {line}", file=sys.stderr)
     if config.ignored_alert_variables():
         print(f"config: warning: {config.IGNORED_VARIABLES_NOTE}", file=sys.stderr)
+    ignored = config.ignored_browser_variables()
+    if ignored:
+        print(f"config: warning: {config.ignored_browser_note(ignored)}", file=sys.stderr)
     unbound = share_warning(loaded)
     if unbound:
         print(f"config: warning: {unbound}", file=sys.stderr)
@@ -504,6 +507,9 @@ def serve() -> int:
         for line in refused:
             print(f"config: {line}", file=sys.stderr)
         return 1
+    ignored = config.ignored_browser_variables()
+    if ignored:
+        monitoring.log(config.ignored_browser_note(ignored), level="warning")
     migrate(settings)
     try:
         Photos(settings.photos_root).share_inbox()

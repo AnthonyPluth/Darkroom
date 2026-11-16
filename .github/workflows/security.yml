@@ -2,7 +2,7 @@ name: Security scans
 
 # The security scans, through fleet's reusable workflow: Semgrep (the registry packs plus Darkroom's own rules in
 # .semgrep/, after their example check), npm audit in frontend/, Trivy over the files, over the service image and (a
-# call each) over the one-container image and the browser worker's image, and zizmor over the workflows. A pull request
+# call of its own) over the one-container image, and zizmor over the workflows. A pull request
 # runs only the scans its change can affect (a change under .github/ runs everything; Trivy's file scan always runs);
 # the weekly run and a manual one scan everything.
 #
@@ -47,10 +47,10 @@ jobs:
       sarif-upload: false
       scorecard: false
 
-  # The same scans called again for each other image, the one container (Dockerfile.single) and the browser worker
-  # (Dockerfile.browser), since fleet's workflow builds and scans one Dockerfile at a time. Their code-paths match no
-  # changed file, so their Semgrep runs only where every scan runs (a change under .github/, the weekly and manual runs),
-  # like their file scan and zizmor, repeating the first call.
+  # The same scans called again for the other image, the one container (Dockerfile.single), since fleet's workflow
+  # builds and scans one Dockerfile at a time. Its code-paths match no changed file, so its Semgrep runs only where
+  # every scan runs (a change under .github/, the weekly and manual runs), like its file scan and zizmor, repeating the
+  # first call.
   single-image:
     permissions:
       contents: read
@@ -64,21 +64,5 @@ jobs:
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       image-paths: ^(Dockerfile\.single|\.dockerignore|pyproject\.toml|poetry\.lock|deploy/single/requirements\.txt|deploy/browser/smoke\.sh)$
       dockerfile: Dockerfile.single
-      sarif-upload: false
-      scorecard: false
-
-  browser-image:
-    permissions:
-      contents: read
-      pull-requests: read      # the pull request's changed files
-      security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
-      actions: read            # Scorecard, which scorecard: false skips
-      id-token: write          # Scorecard, which scorecard: false skips
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
-    with:
-      code-paths: ^$
-      semgrep-paths: darkroom darkroom_browser run.py frontend/src
-      image-paths: ^(Dockerfile\.browser|\.dockerignore|deploy/browser/(requirements\.txt|entrypoint\.sh|smoke\.sh))$
-      dockerfile: Dockerfile.browser
       sarif-upload: false
       scorecard: false
