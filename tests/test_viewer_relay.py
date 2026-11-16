@@ -258,11 +258,17 @@ class RelayRefusalTests(RelayCase):
                 self.assertEqual(self.status_of(self.raw(extra=headers)), 403)
         self.assertEqual(self.fake.connections, 0)
 
+    def static_app(self, built):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        if built:
+            (Path(folder.name) / "index.html").write_text("<!doctype html><title>Darkroom</title>")
+        return mock.patch.object(static, "ROOT", Path(folder.name))
+
     def test_a_request_cannot_name_its_own_target(self):
         decoy = FakeWebsockify(self)
         refused = [
             f"http://127.0.0.1:{decoy.port}/viewer/websockify",
-            f"//127.0.0.1:{decoy.port}/viewer/websockify",
             "/viewer/../websockify",
             "/viewer/%2e%2e/websockify",
             "/viewer/.hidden",
@@ -270,9 +276,15 @@ class RelayRefusalTests(RelayCase):
             "/viewer/vnc.html",
             f"/viewer/127.0.0.1:{decoy.port}",
         ]
-        for target in refused:
-            with self.subTest(target=target):
-                self.assertEqual(self.status_of(self.raw(target=target)), 404)
+        for built in (False, True):
+            with self.static_app(built):
+                for target in refused:
+                    with self.subTest(built=built, target=target):
+                        self.assertEqual(self.status_of(self.raw(target=target)), 404)
+                with self.subTest(built=built, target="//host/viewer/websockify"):
+                    page = self.status_of(self.raw(target=f"/127.0.0.1:{decoy.port}/viewer/websockify"))
+                    self.assertEqual(page, 200 if built else 404)
+                    self.assertEqual(self.status_of(self.raw(target=f"//127.0.0.1:{decoy.port}/viewer/websockify")), page)
         self.assertEqual((self.fake.connections, decoy.connections), (0, 0))
         named = {"Host": f"127.0.0.1:{decoy.port}", "X-Forwarded-Host": f"127.0.0.1:{decoy.port}", "Forwarded": f"host=127.0.0.1:{decoy.port}",
                  "Authorization": "Basic ZXZpbDpldmls", "X-Target": f"127.0.0.1:{decoy.port}"}
