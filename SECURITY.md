@@ -15,6 +15,14 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - Darkroom holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201). Alerts go out only as email to the one owner address through Resend, when it is set up (`docs/deploy/alerts-email.md`).
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner, and in the one container `darkroom_init/supervisor.py`, which starts the processes and checks the display is up).
 
+## Accepted scanner findings
+
+The image scan fails on any CRITICAL or HIGH vulnerability with a fix. A finding that can't be fixed yet and doesn't apply is accepted only in `.trivyignore.yaml` at the repository's root. The list takes effect only once `.github/workflows/security.yml`'s `single-image` call passes it as fleet's `trivy-image-ignore-file` (fleet 4.1.0 and later; until the fleet bump that adds that input is merged, nothing reads the list and the scan still fails). Each entry is limited to one exact path in the image (no wildcards, so the same CVE anywhere else is still reported), quotes the owner's acceptance, carries a one-line reason and an `expired_at` at most 180 days away, after which the finding is reported again and renewing it is a new pull request. `tests/test_trivyignore.py` holds those limits. The image scan reads the list only from the tip of `main`, never from a pull request's checkout, so an entry counts once it has been merged, and the pull request that adds one doesn't benefit from it. Merging is the owner's act by decision, not something the ruleset enforces: Code Owner review is off, so the list's `.github/CODEOWNERS` entry asks for the owner's review without requiring it, and every change to the list gets the Second review. From fleet 4.1.0 neither Trivy scan reads Trivy's own `.trivyignore`, `trivy.yaml` or `trivy-secret.yaml` from the checkout, so this list is the only thing that accepts a finding.
+
+Accepted now:
+
+- CVE-2026-78661 (HIGH, `golang.org/x/net` v0.60.0) in `usr/local/bin/syncthing`, the pinned Syncthing v2.1.7 (#341), until a fixed Syncthing is pinned or 2027-02-14, whichever comes first. The owner accepted it on #341 (https://github.com/AnthonyPluth/Darkroom/issues/341#issuecomment-6926210618): "Add ignore-file support to fleet (Recommended)" and "Since darkroom isn't deployed, let's just merge with these CVEs and fix when fleet bump is merged in so we can keep moving". Why it doesn't apply: the vulnerable `x/net/html` package is not linked into the binary (the binary's Go build info and symbol names list 12 linked `x/net` packages, none of them `html`), Syncthing's API is only on a private `0600` Unix socket, and no Syncthing release with a fixed `x/net` exists yet.
+
 ## Reporting a problem
 
 Open a private security advisory on this repository, or tell the owner directly. Please don't open a public issue with details.

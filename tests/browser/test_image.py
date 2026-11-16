@@ -374,6 +374,28 @@ class SecurityScanTests(unittest.TestCase):
         self.assertIn("      sarif-upload: false\n", single)
         self.assertEqual(call_input(single, "code-paths"), "^$")
 
+    def test_only_the_one_container_image_scan_names_the_accepted_findings(self):
+        service, single, browser = fleet_security_calls()
+        self.assertEqual(call_input(single, "trivy-image-ignore-file"), ".trivyignore.yaml")
+        for call in (service, browser):
+            with self.subTest(call=call.split(":", 1)[0]):
+                self.assertNotIn("trivy-image-ignore-file:", call)
+
+    def test_every_list_of_accepted_findings_is_owned_reviewed_and_explained(self):
+        named = [call_input(call, "trivy-image-ignore-file") for call in fleet_security_calls() if "      trivy-image-ignore-file:" in call]
+        self.assertTrue(named)
+        owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
+        review = (ROOT / ".github/workflows/agent-review.yml").read_text()
+        second_review = review[review.index("      second-review-paths: |\n"):].split("\n    secrets:", 1)[0].splitlines()[1:]
+        security = (ROOT / "SECURITY.md").read_text().splitlines()
+        for name in named:
+            with self.subTest(name):
+                self.assertNotIn("/", name, "the list sits at the repository's root")
+                self.assertTrue((ROOT / name).is_file())
+                self.assertIn(f"        {name}", second_review)
+                self.assertIn(f"/{name} @AnthonyPluth", owners)
+                self.assertIn("## Accepted scanner findings", security)
+
     def test_trivy_scans_the_browser_image_in_its_own_call_not_the_service_images(self):
         service, _, browser = fleet_security_calls()
         image_paths = call_input(browser, "image-paths")

@@ -4,7 +4,8 @@ name: Merge gate
 # fleet's reusable merge gate (its .github/scripts/merge-gate.sh, fetched at the pinned commit). The ruleset on main
 # requires that one status and nothing else. It also merges Dependabot's pull requests once it passes, fleet's pin
 # bumps included (automerge-fleet-bumps, the owner's decision in #82), then starts fleet-sync.yml on main, whose
-# "chore: fleet content" pull request the owner still merges by hand.
+# "chore: fleet content" pull request the owner still merges by hand. It never marks a draft ready for review
+# (auto-ready: false below, the owner's decision): only the owner marks a pull request ready.
 #
 # This caller keeps the triggers (a called workflow can't declare them): each of the pull request's own workflows
 # finishing, CodeQL's default setup included (the last one to finish decides), other apps' checks finishing, and workflow_dispatch with a pull request
@@ -49,7 +50,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -67,3 +68,6 @@ jobs:
       # (beside fleet's default docker.yml and security.yml) to open the content's pull request, merged by hand.
       automerge-fleet-bumps: true
       after-merge-workflows: docker.yml security.yml fleet-sync.yml
+      # Owner decision: fleet 4.0.0's gate marks a passing draft ready by default; Darkroom turns that off. Stacked and
+      # held drafts must stay drafts with no keep-draft label needed, and only the owner marks a pull request ready.
+      auto-ready: false
