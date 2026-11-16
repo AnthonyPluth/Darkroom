@@ -17,6 +17,7 @@ from tests.fakes.syncthing import FakeSyncthing, Received
 
 KEY = "demo-syncthing-key-not-real"
 SOCKET_NAME = "syncthing.sock"
+LONGEST_SOCKET_PATH = 107
 OWN_ID = syncthing.device_id_of_certificate(b"made-up certificate of the demo's Darkroom")
 PHONE_ID = syncthing.device_id_of_certificate(b"made-up certificate of a demo phone waiting to pair")
 PHONE_NAME = "Pixel 9a"
@@ -53,7 +54,11 @@ class DemoSyncthing(FakeSyncthing):
 
 
 def socket_of(data_dir: Path) -> Path:
-    return data_dir / SOCKET_NAME
+    path = data_dir / SOCKET_NAME
+    if len(os.fsencode(path)) <= LONGEST_SOCKET_PATH:
+        return path
+    folder = os.open(data_dir, os.O_RDONLY | os.O_DIRECTORY)
+    return Path(f"/proc/self/fd/{folder}") / SOCKET_NAME
 
 
 def hand_key() -> None:

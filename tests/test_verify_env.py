@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +31,24 @@ REPLACED = {"DARKROOM_SECRET_KEY": "real-secret-canary-3a4b5c6d", "DARKROOM_DATA
 SECRETS = {**NEVER, **REPLACED}
 NEEDED = {"PATH": "/bin", "HOME": "/root", "LANG": "C.UTF-8", "LC_ALL": "C", "PYTHONPATH": "/x", "PLAYWRIGHT_BROWSERS_PATH": "/opt/pw", "VIRTUAL_ENV": "/venv",
           "SSL_CERT_FILE": "/etc/ssl/cert.pem", "XDG_CACHE_HOME": "/cache"}
+
+
+class DemoSocketTests(unittest.TestCase):
+    def test_the_socket_stays_in_the_data_folder_by_its_full_path_when_it_fits(self):
+        self.assertEqual(demo_syncthing.socket_of(Path("/tmp/demo/data")), Path("/tmp/demo/data/syncthing.sock"))
+
+    def test_a_data_folder_too_deep_for_a_unix_socket_is_reached_through_an_open_folder_and_keeps_the_socket(self):
+        with tempfile.TemporaryDirectory() as parent:
+            deep = Path(parent, *(["d" * 40] * 3))
+            deep.mkdir(parents=True)
+            path = demo_syncthing.socket_of(deep)
+            self.addCleanup(os.close, int(path.parent.name))
+            self.assertGreater(len(os.fsencode(deep / demo_syncthing.SOCKET_NAME)), demo_syncthing.LONGEST_SOCKET_PATH)
+            self.assertTrue(path.is_absolute())
+            self.assertLessEqual(len(os.fsencode(path)), demo_syncthing.LONGEST_SOCKET_PATH)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listening:
+                listening.bind(str(path))
+                self.assertTrue((deep / demo_syncthing.SOCKET_NAME).is_socket())
 
 
 class CleanEnvTests(unittest.TestCase):
