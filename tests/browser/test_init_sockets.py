@@ -29,7 +29,7 @@ class ListenerPlanTests(unittest.TestCase):
         argv = self.specs["vnc"].argv
         self.assertEqual(argv[:5], ("python3", "-P", "-m", "darkroom_init.sockets", str(plan.VNC_SOCKET)))
         self.assertEqual(argv[5], "/usr/bin/x11vnc")
-        self.assertEqual((after(argv, "-unixsock"), after(argv, "-rfbport")), (str(plan.VNC_SOCKET), "0"))
+        self.assertEqual((after(argv, "-unixsock"), after(argv, "-rfbport"), after(argv, "-rfbportv6")), (str(plan.VNC_SOCKET), "0", "0"))
         self.assertFalse({"-localhost", "-listen", "-listen6", "-http", "-httpport", "-6"} & set(argv))
 
     def test_websockify_listens_only_on_its_socket_and_reaches_x11vnc_on_its_socket(self):
@@ -187,6 +187,29 @@ class HostProbeTests(unittest.TestCase):
         self.assertEqual(self.run_probe("listeners", LISTENING, 7, 40, 41), 1)
         self.assertEqual(self.run_probe("listeners", LISTENING + 'tcp LISTEN 0 5 127.0.0.1:6080 0.0.0.0:* users:(("python3",pid=43,fd=3))\n', 40, 41, 43), 1)
         self.assertEqual(self.run_probe("listeners", LISTENING, 41), 1)
+
+    def probe_with(self, command, reachable, connected, *hosts):
+        def answers(host, port):
+            return (host, port) in reachable
+
+        with mock.patch.object(host_network, "answers", answers), mock.patch.object(host_network, "unix_answers", lambda path: connected.get(path, "PermissionError")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return host_network.main(command, *hosts)
+
+    def test_from_outside_every_host_must_reach_a_published_port_and_no_internal_one(self):
+        published = {("127.0.0.1", 8000), ("::1", 22000), ("10.0.0.5", 8000)}
+        hosts = ("127.0.0.1", "::1", "10.0.0.5")
+        self.assertEqual(self.probe_with("refused", published, {}, *hosts), 0)
+        self.assertEqual(self.probe_with("refused", set(), {}, *hosts), 1)
+        self.assertEqual(self.probe_with("refused", published - {("10.0.0.5", 8000)}, {}, *hosts), 1)
+        self.assertEqual(self.probe_with("refused", published | {("::1", 5900)}, {}, *hosts), 1)
+        self.assertEqual(self.probe_with("refused", published, {host_network.DISPLAY: "connected"}, *hosts), 1)
+
+    def test_from_inside_the_app_must_answer_and_no_internal_port_on_either_loopback(self):
+        self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000)}, {}), 0)
+        self.assertEqual(self.probe_with("inside", set(), {}), 1)
+        self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000), ("::1", 5900)}, {}), 1)
+        self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000)}, {"/run/darkroom/vnc.sock": "connected"}), 1)
 
     def test_an_abstract_socket_or_a_missing_internal_socket_fails(self):
         self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 42, 43, 44), 0)

@@ -4,6 +4,8 @@ import socket
 import sys
 
 INTERNAL_PORTS = (5900, 6080, 8384)
+CONTROL_PORTS = (8000, 22000)
+LOOPBACKS = ("127.0.0.1", "::1")
 ALLOWED = {8000, 22000, 21027}
 NEEDED = {8000, 22000}
 SOCKETS = ("/run/darkroom/vnc.sock", "/run/darkroom/viewer.sock", "/run/darkroom/syncthing.sock")
@@ -34,18 +36,24 @@ def unix_answers(path):
     return "connected"
 
 
+def reached(hosts):
+    return {host: [port for port in CONTROL_PORTS if answers(host, port)] for host in hosts}
+
+
 def refused(hosts):
     found = {f"{host}:{port}": answers(host, port) for host in hosts for port in INTERNAL_PORTS}
     found["abstract display socket"] = unix_answers(DISPLAY)
-    print(json.dumps(found, sort_keys=True))
-    return 0 if not any(value is True for value in found.values()) and found["abstract display socket"] != "connected" else 1
+    control = reached(hosts)
+    print(json.dumps({"internal": found, "published": control}, sort_keys=True))
+    return 0 if all(control.values()) and not any(value is True for value in found.values()) and found["abstract display socket"] != "connected" else 1
 
 
 def inside():
-    found = {f"127.0.0.1:{port}": answers("127.0.0.1", port) for port in INTERNAL_PORTS}
+    found = {f"{host}:{port}": answers(host, port) for host in LOOPBACKS for port in INTERNAL_PORTS}
     found |= {path: unix_answers(path) for path in SOCKETS}
-    print(json.dumps(found, sort_keys=True))
-    return 0 if not any(value is True for value in found.values()) and all(found[path] == "PermissionError" for path in SOCKETS) else 1
+    control = answers("127.0.0.1", 8000)
+    print(json.dumps({"internal": found, "app": control}, sort_keys=True))
+    return 0 if control and not any(value is True for value in found.values()) and all(found[path] == "PermissionError" for path in SOCKETS) else 1
 
 
 def owned(lines, pids):
