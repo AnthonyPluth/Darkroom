@@ -314,6 +314,27 @@ class SecurityScanTests(unittest.TestCase):
                 self.assertNotRegex("Dockerfile.browser", call_input(call, "image-paths"))
                 self.assertNotRegex("deploy/browser/entrypoint.sh", call_input(call, "image-paths"))
 
+    def test_only_the_one_container_image_scan_names_the_accepted_findings(self):
+        service, single = fleet_security_calls()
+        self.assertEqual(call_input(single, "trivy-image-ignore-file"), ".trivyignore.yaml")
+        self.assertNotIn("trivy-image-ignore-file:", service)
+
+    def test_every_list_of_accepted_findings_is_owned_reviewed_and_explained(self):
+        named = [call_input(call, "trivy-image-ignore-file") for call in fleet_security_calls() if "      trivy-image-ignore-file:" in call]
+        self.assertTrue(named)
+        owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
+        review = (ROOT / ".github/workflows/agent-review.yml").read_text()
+        second_review = review[review.index("      second-review-paths: |\n"):].split("\n    secrets:", 1)[0].splitlines()[1:]
+        security = (ROOT / "SECURITY.md").read_text().splitlines()
+        for name in named:
+            with self.subTest(name):
+                self.assertNotIn("/", name, "the list sits at the repository's root")
+                self.assertTrue((ROOT / name).is_file())
+                self.assertIn(f"        {name}", second_review)
+                self.assertIn(f"/{name} @AnthonyPluth", owners)
+                self.assertIn("## Accepted scanner findings", security)
+
+
 class UnraidTemplateTests(unittest.TestCase):
     def test_it_runs_the_published_one_container_image_unprivileged_on_bridge(self):
         root = template()

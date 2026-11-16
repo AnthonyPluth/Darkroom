@@ -38,7 +38,7 @@ jobs:
       security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
       actions: read            # Scorecard, which scorecard: false skips
       id-token: write          # Scorecard, which scorecard: false skips
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
     with:
       code-paths: ^((darkroom|darkroom_browser|frontend/src|\.semgrep)/|run\.py$)
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
@@ -50,7 +50,8 @@ jobs:
   # The same scans called again for the other image, the one container (Dockerfile.single), since fleet's workflow
   # builds and scans one Dockerfile at a time. Its code-paths match no changed file, so its Semgrep runs only where
   # every scan runs (a change under .github/, the weekly and manual runs), like its file scan and zizmor, repeating the
-  # first call.
+  # first call. Only the one container's image scan takes a list of accepted findings: .trivyignore.yaml, which fleet
+  # reads from main's tip, never from the pull request (SECURITY.md, "Accepted scanner findings").
   single-image:
     permissions:
       contents: read
@@ -58,11 +59,12 @@ jobs:
       security-events: write   # declared by the SARIF upload steps, which sarif-upload: false skips
       actions: read            # Scorecard, which scorecard: false skips
       id-token: write          # Scorecard, which scorecard: false skips
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@b256f95f618d7bebdfe03016e20fdf8b906cd53d   # v3.2.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
     with:
       code-paths: ^$
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       image-paths: ^(Dockerfile\.single|\.dockerignore|pyproject\.toml|poetry\.lock|deploy/single/requirements\.txt|deploy/browser/smoke\.sh)$
       dockerfile: Dockerfile.single
+      trivy-image-ignore-file: .trivyignore.yaml
       sarif-upload: false
       scorecard: false
