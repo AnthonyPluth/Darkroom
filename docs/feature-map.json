@@ -14,7 +14,8 @@
         "tests/test_secretbox.py",
         "tests/test_stored_settings.py",
         "tests/test_tools.py",
-        "tests/test_verify_env.py"
+        "tests/test_verify_env.py",
+        "tests/test_wizard_api.py"
       ]
     },
     {
