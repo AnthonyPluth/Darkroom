@@ -267,7 +267,7 @@ Every variable in `.env.example` and `darkroom/config.py`:
 
 Values the wizard collects live in a new settings table, sealed where secret. Precedence is environment, then the stored value, then the generated or default one, so an existing `.env` keeps working unchanged and an operator can still pin anything. `run.py check-config` reports where each value came from, never the value of a secret.
 
-**First-run wizard: the screens, as a list for sign-off.** Nothing is built until the owner signs off a design in `docs/design/web/`. The design proposed for that sign-off (#303) is [web/08-setup.md](web/08-setup.md); it orders the steps to fit the API as built (#304) and lists where it departs from this list as open points.
+**First-run wizard: the screens, as a list for sign-off.** Nothing is built until the owner signs off a design in `docs/design/web/`. The design proposed for that sign-off (#303) is [web/08-setup.md](web/08-setup.md); it keeps this order, with the owner's answers on #344, and #346 extends the API so that a passing test sign-in no longer closes the wizard before the steps after it.
 
 1. Welcome: what Darkroom has already generated (secret key, browser token, its Pixel-sync identity) and what it will ask for.
 2. Address: confirm the address Darkroom is opened at.

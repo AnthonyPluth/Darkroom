@@ -17,7 +17,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
-| `08-setup.md` | First-run setup wizard: **proposed for sign-off on #303, not signed off**; its boards are drawn once the open points there are answered |
+| `08-setup.md` | First-run setup wizard: **proposed for sign-off on #303, not signed off**. The owner's answers on #344 are recorded in it; its boards are drawn from it before #303 closes. #305 builds it, after #346 extends the API |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
