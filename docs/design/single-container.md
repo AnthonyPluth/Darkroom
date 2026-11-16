@@ -281,7 +281,7 @@ Values the wizard collects live in a new settings table, sealed where secret. Pr
 8. Alerts, optional: the email settings and a test email.
 9. Done: what to back up (the appdata folder, which contains the key), and where the Status page is.
 
-What a person must still supply: the appdata mapping and ports in the template, the identity provider's details, Immich's address and each person's key, each Google sign-in, each Pixel's scan, confirmation and Google Photos switch, and optionally the email settings. Before sign-in exists, the wizard is open to the first visitor from a private address; the first successful sign-in locks it, and a console command reopens it (decision 7).
+What a person must still supply: the appdata mapping and ports in the template, the identity provider's details, Immich's address and each person's key, each Google sign-in, each Pixel's scan, confirmation and Google Photos switch, and optionally the email settings. Before sign-in exists, the wizard is open to the first visitor from a private address who presses Start setup, and a console command clears a lost claim (decision 7). The passing test sign-in signs that account in and keeps the wizard open for the later steps, in the same sitting and without a restart (stored values apply at once), but only to a request with both that browser's claim and the tested account's session, from the same private address conditions (#346). It closes for good at Finish setup, when the tested session ends, when another account signs in, or 7 days after the test; after the test the console command closes it and reopens nothing.
 
 ## 9. Unraid, backup, upgrade and rollback
 
@@ -333,7 +333,7 @@ The questions this design first left open were answered on #284 on 2026-11-10. N
 | 1 | Does the browser move in first, or after Syncthing? | First |
 | 2 | One unix user, or a root init dropping to separate users? | One user for everything; no separate users, groups, second mappings or root init. This was not the design's recommendation; section 5 states what it gives up |
 | 3 | The Chromium seccomp profile on Unraid | Kept, as one manual host step |
-| 4 | Who may open the wizard before sign-in exists? | The first visitor from a private address, until the first successful sign-in |
+| 4 | Who may open the wizard before sign-in exists? | The first visitor from a private address, until the first successful sign-in. Amended on 2026-11-16 (`docs/DECISIONS.md`, "Answers of 2026-11-16 on the first-run wizard"): after the passing test sign-in it stays open to that browser and the tested session until Finish setup, the session ending, another account's sign-in or 7 days |
 | 5 | The generated secret key in appdata beside the database | Yes, with the environment variable as an override |
 | 6 | Volumes | State in appdata, including browser profiles; the working folders on a second mapping |
 | 7 | Syncthing's reach and Unraid networking | Local discovery only, with host networking |

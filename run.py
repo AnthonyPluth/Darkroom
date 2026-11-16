@@ -417,15 +417,16 @@ def bind_share() -> int:
 
 
 REOPENED = "the setup wizard is reopened: the next visitor from a private address may claim it, unless someone has already signed in to this Darkroom"
+CLOSED_AFTER_TEST = "the setup wizard is closed for good: its test sign-in had passed, so nothing was reopened; finish the rest on Darkroom's own pages"
 
 
 def reopen_setup() -> int:
     engine = db.make_engine(db.database_url(config.load()))
     with db.session(engine, writing=True) as opened:
-        wizard.reopen(opened)
+        reopened = wizard.reopen(opened)
     engine.dispose()
-    monitoring.log("setup wizard reopened")
-    print(REOPENED)
+    monitoring.log("setup wizard reopened" if reopened else "setup wizard closed after its test sign-in; nothing reopened")
+    print(REOPENED if reopened else CLOSED_AFTER_TEST)
     return 0
 
 
