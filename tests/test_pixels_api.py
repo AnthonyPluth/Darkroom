@@ -40,7 +40,7 @@ class PixelsApiTests(ApiCase):
     def test_a_pixel_serves_the_accounts_default_person_unless_told_otherwise(self):
         pixel = self.pixel(self.account["id"], syncthing_device_id=FIRST_DEVICE)
         self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], FIRST_DEVICE, self.account["id"]))
-        self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel]})
+        self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel], "syncthing": None})
 
     def test_only_a_pixel_that_starts_serving_someone_new_scans_for_items_to_confirm(self):
         with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:

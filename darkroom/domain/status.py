@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, browser_jobs, index
+from darkroom.domain import accounts, browser_jobs, index, transport_status
 from darkroom.domain.ingest import run
 from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 
@@ -41,7 +41,7 @@ def account_state(account: GoogleAccount) -> dict[str, object]:
 
 
 def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None],
-                  skipped: int) -> dict[str, object]:
+                  skipped: int, syncthing: Mapping[int, dict[str, object]] | None = None) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
     emails = {account.email for account in people_accounts}
@@ -56,18 +56,22 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "unknown_time": counts[2],
         "index_skipped": skipped,
         "accounts": [account_state(account) for account in people_accounts],
-        "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id} for pixel in served_pixels],
+        "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id, "last_sync": pixel.last_sync,
+                    "syncthing": None if syncthing is None else syncthing.get(pixel.id)} for pixel in served_pixels],
         "last_import": last_import(opened, serving),
         "unmatched": unmatched.get(person.slug),
         "alerts": concerning,
     }
 
 
-def overview(opened: Session) -> dict[str, object]:
+def overview(opened: Session, syncthing_on: bool = False, now: float = 0.0) -> dict[str, object]:
     counts = photo_counts(opened)
     alerts_open = open_alerts(opened)
     unmatched = run.unmatched_by_person(opened)
     skipped = index.skipped_by_person(opened)
-    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched, skipped.get(person.id, 0))
+    seen = transport_status.overview(opened, now) if syncthing_on else None
+    per_pixel = None if seen is None else transport_status.pixel_dicts(opened, seen)
+    people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched, skipped.get(person.id, 0), per_pixel)
               for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
-    return {"worker_last_seen": browser_jobs.worker_last_seen(opened), "people": people, "alerts": [alert_dict(alert) for alert in alerts_open]}
+    return {"worker_last_seen": browser_jobs.worker_last_seen(opened), "people": people, "alerts": [alert_dict(alert) for alert in alerts_open],
+            "syncthing": None if seen is None else transport_status.card_dict(opened, seen)}
