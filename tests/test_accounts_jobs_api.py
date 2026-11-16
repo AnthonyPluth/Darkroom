@@ -7,18 +7,19 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom import dates
+from darkroom import config, dates
 from darkroom.domain import browser_jobs, dedupe, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
-from tests.shared import fetch, start_server
+from tests.shared import VIEWER_SECRET, fetch, start_server
 
 TOKEN = "accounts-jobs-worker-token-canary-0123456789abcdef"
+RELAYED = config.relay_address("http://127.0.0.1")
 
 
 class AccountJobsApiTests(ApiCase):
-    extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN, "VNC_URL": "https://browser.example/vnc.html"}
+    extra_env = {"browser_token": TOKEN, "viewer_secret": VIEWER_SECRET}
 
     def setUp(self):
         super().setUp()
@@ -389,7 +390,7 @@ class AccountJobsApiTests(ApiCase):
         self.assertEqual(self.account_view()["session_state"], "needs_sign_in")
         with db.session(self.engine) as opened:
             (alert,) = opened.execute(select(Alert)).scalars().all()
-            self.assertEqual((alert.kind, alert.link, alert.closed), ("sign_in_needed", "https://browser.example/vnc.html", None))
+            self.assertEqual((alert.kind, alert.link, alert.closed), ("sign_in_needed", RELAYED, None))
         self.assertEqual(self.worker(f"/internal/browser/jobs/{job['id']}/done", {"result": {"session_state": "ok"}})[0], 200)
         self.assertEqual(self.account_view()["session_state"], "ok")
         with db.session(self.engine) as opened:
@@ -414,20 +415,20 @@ class AccountJobsApiTests(ApiCase):
 
     def test_the_view_gives_the_viewer_address_and_when_the_worker_was_last_seen(self):
         status, reply = self.call("GET", "/api/browser/view")
-        self.assertEqual((status, reply), (200, {"vnc_url": "https://browser.example/vnc.html", "worker_last_seen": None}))
+        self.assertEqual((status, reply), (200, {"vnc_url": RELAYED, "worker_last_seen": None}))
         self.worker("/internal/browser/jobs/claim")
         self.assertIsInstance(self.call("GET", "/api/browser/view")[1]["worker_last_seen"], float)
 
 
 class ViewWithoutAViewerTests(ApiCase):
-    extra_env = {"VNC_URL": "javascript:alert(1)"}
+    extra_env = {"viewer_secret": VIEWER_SECRET, "DARKROOM_PUBLIC_URL": "javascript:alert(1)"}
 
     def test_an_address_that_is_not_http_is_not_offered(self):
         self.assertEqual(self.call("GET", "/api/browser/view")[1]["vnc_url"], None)
 
 
 class ViewMalformedTests(ApiCase):
-    extra_env = {"VNC_URL": "https://[::1"}
+    extra_env = {"viewer_secret": VIEWER_SECRET, "DARKROOM_PUBLIC_URL": "https://[::1"}
 
     def test_a_malformed_address_is_unavailable_not_an_error(self):
         self.assertEqual(self.call("GET", "/api/browser/view"), (200, {"vnc_url": None, "worker_last_seen": None}))
@@ -446,7 +447,7 @@ class TwoRootsTests(ApiCase):
         appdata = tempfile.TemporaryDirectory()
         self.addCleanup(appdata.cleanup)
         self.browser_root = Path(appdata.name) / "browser"
-        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_BROWSER_ROOT": str(self.browser_root)}
+        self.extra_env = {"browser_token": TOKEN, "DARKROOM_BROWSER_ROOT": str(self.browser_root)}
         super().setUp()
         self.person_id = self.person()["id"]
         self.account_id = self.account(self.person_id)["id"]
@@ -527,7 +528,7 @@ class TwoRootsTests(ApiCase):
 
 class UnsafeBrowserRootTests(ApiCase):
     def setUp(self):
-        self.extra_env = {"DARKROOM_BROWSER_TOKEN": TOKEN}
+        self.extra_env = {"browser_token": TOKEN}
         super().setUp()
 
     def test_a_server_whose_browser_root_is_the_photo_share_never_deletes_an_original(self):

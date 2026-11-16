@@ -11,6 +11,22 @@ from tests.shared import settings_from
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def check_config(case: unittest.TestCase, extra: dict[str, str], *canaries: str) -> tuple[int, str, str]:
+    import contextlib
+    import io
+
+    import run
+    from darkroom.providers import exiftool
+    from tests.privacy import no_leaks
+
+    with tempfile.TemporaryDirectory() as folder:
+        values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_PUBLIC_URL": "https://d.example", "DARKROOM_ALLOW_NO_AUTH": "1"} | extra
+        with no_leaks(case, *canaries) if canaries else contextlib.nullcontext(), contextlib.redirect_stderr(io.StringIO()) as err, \
+                contextlib.redirect_stdout(io.StringIO()) as out, mock.patch.dict(os.environ, values, clear=True), mock.patch.object(exiftool, "version", return_value="13.0"):
+            code = run.main(["check-config"])
+    return code, out.getvalue(), err.getvalue()
+
+
 class ConfigTests(unittest.TestCase):
     def test_every_variable_config_reads_is_in_env_example(self):
         read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text()))
@@ -153,23 +169,75 @@ class AuthProblemTests(unittest.TestCase):
         self.assertEqual(config.refuses_to_start(settings_from(DARKROOM_HOST="0.0.0.0")), [])
         self.assertEqual(config.auth_problems(settings_from(DARKROOM_HOST="0.0.0.0")), ["sign-in is not set up: set OIDC_ISSUER and OIDC_CLIENT_ID (or DARKROOM_ALLOW_NO_AUTH=1 on a local address) so someone can use the web UI"])
 
-    def test_check_config_reports_a_vnc_url_the_viewer_cannot_use(self):
-        for value in ("https://[::1", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/"):
-            with self.subTest(value=value):
-                found = config.vnc_url_problems(settings_from(VNC_URL=value))
-                self.assertEqual(len(found), 1)
-                self.assertIn("VNC_URL", found[0])
-                self.assertNotIn("secret", found[0])
-                self.assertIn("VNC_URL", " ".join(config.problems(settings_from(VNC_URL=value))))
-                self.assertEqual(config.refuses_to_start(settings_from(VNC_URL=value)), [])
-        for value in ("https://browser.example:99999/vnc.html", "https://browser.example:port-canary/", "http://browser.example:-1/"):
+    def test_usable_viewer_url_offers_only_an_http_address_with_a_valid_port_and_no_credentials(self):
+        for value in ("https://[::1", "javascript:alert(1)", "//browser.example/vnc", "https://user:secret@browser.example/",
+                      "https://browser.example:99999/vnc.html", "https://browser.example:port-canary/", "http://browser.example:-1/"):
             with self.subTest(value=value):
                 self.assertIsNone(config.usable_viewer_url(value))
-                self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), ["VNC_URL has a port that is not a number from 0 to 65535"])
-                self.assertIn("VNC_URL has a port", " ".join(config.problems(settings_from(VNC_URL=value))))
-        for value in ("", "https://browser.example:6080/vnc.html?autoconnect=1", "http://127.0.0.1:6080/"):
+        for value in ("https://darkroom.example/viewer/vnc.html?autoconnect=1", "http://127.0.0.1:8000/"):
             with self.subTest(value=value):
-                self.assertEqual(config.vnc_url_problems(settings_from(VNC_URL=value)), [])
+                self.assertEqual(config.usable_viewer_url(value), value)
+
+    def test_check_config_names_each_removed_browser_variable_as_ignored_without_its_value(self):
+        for name in config.REMOVED_BROWSER_VARIABLES:
+            canary = f"{name.lower()}-canary-0123456789abcdef0123456789abcdef"
+            with self.subTest(name=name):
+                code, out, err = check_config(self, {name: canary}, canary)
+                self.assertEqual(code, 0, err)
+                warning = [line for line in err.splitlines() if "set and ignored" in line]
+                self.assertEqual(len(warning), 1, err)
+                self.assertIn(f"config: warning: {name} is set and ignored", warning[0])
+                for other in set(config.REMOVED_BROWSER_VARIABLES) - {name}:
+                    self.assertNotIn(other, warning[0])
+                self.assertNotIn(canary, err + out)
+        code, _, err = check_config(self, {})
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("set and ignored", err)
+
+    def test_check_config_names_every_removed_browser_variable_set_together_once(self):
+        values = {name: f"{name.lower()}-canary-0123456789abcdef0123456789abcdef" for name in config.REMOVED_BROWSER_VARIABLES}
+        code, out, err = check_config(self, values, *values.values())
+        self.assertEqual(code, 0, err)
+        self.assertIn("config: warning: DARKROOM_BROWSER_TOKEN, DARKROOM_URL, VNC_URL, DARKROOM_VNC_SECRET are set and ignored", err)
+        self.assertIn("remove these lines from .env", err)
+        self.assertNotIn("_canary", err + out)
+
+    def test_the_removed_browser_variables_change_no_setting(self):
+        token = "an-environment-token-canary-0123456789abcdef0123"
+        values = {"DARKROOM_BROWSER_TOKEN": token, "VNC_URL": "https://browser.example/vnc.html", "DARKROOM_URL": "http://darkroom:8000",
+                  "DARKROOM_VNC_SECRET": "a-viewer-secret-canary-0123456789abcdef", "DARKROOM_PUBLIC_URL": "https://darkroom.example"}
+        with mock.patch.dict(os.environ, values, clear=True):
+            settings = config.load()
+            self.assertEqual(config.ignored_browser_variables(), config.REMOVED_BROWSER_VARIABLES)
+        self.assertEqual(settings.browser_token, "")
+        self.assertFalse(hasattr(settings, "vnc_url"))
+        self.assertIsNone(config.viewer_link(settings))
+        self.assertNotIn(token, repr(settings))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(config.ignored_browser_variables(), ())
+        for name in config.REMOVED_BROWSER_VARIABLES:
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: "   "}, clear=True):
+                self.assertEqual(config.ignored_browser_variables(), ())
+
+    def test_serve_logs_the_removed_browser_variables_as_ignored_at_start_up_without_their_values(self):
+        import contextlib
+        import io
+
+        import run
+        from tests.privacy import no_leaks
+
+        canary = "a-start-up-token-canary-0123456789abcdef0123"
+        with tempfile.TemporaryDirectory() as folder:
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_BROWSER_TOKEN": canary, "VNC_URL": "https://vnc.canary.example"}
+            with no_leaks(self, canary, "vnc.canary.example"), contextlib.redirect_stderr(io.StringIO()) as err, mock.patch.dict(os.environ, values, clear=True), \
+                    mock.patch.object(run, "migrate", side_effect=SystemExit(7)):
+                with self.assertRaises(SystemExit):
+                    run.main(["serve"])
+        line = next(line for line in err.getvalue().splitlines() if "set and ignored" in line)
+        self.assertIn('"level": "warning"', line)
+        self.assertIn("DARKROOM_BROWSER_TOKEN, VNC_URL are set and ignored", line)
+        self.assertNotIn(canary, err.getvalue())
+        self.assertNotIn("vnc.canary.example", err.getvalue())
 
     def test_the_pixel_folder_cap_is_whole_gigabytes_and_at_least_one_or_darkroom_refuses_to_start(self):
         self.assertEqual(settings_from().pixel_folder_cap_gb, 50)

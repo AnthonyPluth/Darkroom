@@ -132,9 +132,15 @@ def add_person(opened: Session, slug: str, name: str = "") -> int:
     return person.id
 
 
-def settings_from(**values: str) -> config.Settings:
+VIEWER_SECRET = "shared-viewer-secret-canary-0123456789abcdef"
+
+
+def settings_from(browser_token: str = "", viewer_secret: str = "", **values: str) -> config.Settings:
     with mock.patch.dict(os.environ, values, clear=True):
-        return config.load()
+        loaded = config.load()
+    handed = {"browser_token": browser_token} if browser_token else {}
+    handed |= {"viewer_secret": viewer_secret} if viewer_secret else {}
+    return dataclasses.replace(loaded, **handed) if handed else loaded
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
