@@ -62,7 +62,8 @@ class ListenerPlanTests(unittest.TestCase):
 
     def test_the_worker_still_reaches_the_app_on_its_port_with_the_token_on_a_pipe(self):
         worker = self.specs["worker"]
-        self.assertEqual(worker.env["DARKROOM_URL"], "http://127.0.0.1:8000")
+        self.assertEqual(worker.env["DARKROOM_PORT"], "8000")
+        self.assertNotIn("DARKROOM_URL", worker.env)
         self.assertEqual((worker.secrets, worker.env[plan.TOKEN_FD]), (("token",), plan.PIPE["token"]))
 
 
