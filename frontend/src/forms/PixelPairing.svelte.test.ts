@@ -16,12 +16,12 @@ const PHONE: WaitingDevice = { device_id: "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBB
 const OTHER: WaitingDevice = { device_id: "NOTTHIS-MADEUP3-EXAMPLE-ONLYZZZ-YYYYYYY-XXXXXXX-WWWWWWW-VVVVVVV", name: "Pixel" };
 const paired: PixelView = { ...shared, syncthing_device_id: PHONE.device_id };
 
-function mount(routes: Parameters<typeof serve>[0]) {
+function mount(routes: Parameters<typeof serve>[0], pixel: PixelView = shared) {
   const server = serve({ "GET /api/pairing/device": { device_id: OWN }, ...routes });
   vi.stubGlobal("fetch", server.mock);
   const onpaired = vi.fn();
   const onlater = vi.fn();
-  const view = render(PixelPairing, { pixel: shared, onpaired, onlater });
+  const view = render(PixelPairing, { pixel, onpaired, onlater });
   return { server, onpaired, onlater, view };
 }
 
@@ -95,6 +95,45 @@ describe("polling", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(reads()).toBe(5);
   });
+
+  it("asks once at a time when the list is slow, and shows a late answer and a late failure", async () => {
+    vi.useFakeTimers();
+    const answers = [
+      new Response(JSON.stringify({ devices: [PHONE] }), { status: 200 }),
+      new Response(JSON.stringify({ error: "Darkroom's Syncthing could not be reached; try again in a moment" }), { status: 503 }),
+      new Response(JSON.stringify({ devices: [] }), { status: 200 }),
+      new Response(JSON.stringify({ devices: [] }), { status: 200 }),
+    ];
+    const { server } = mount({});
+    const original = server.mock.getMockImplementation();
+    server.mock.mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url !== "/api/pairing/waiting") return original!(url, init);
+      server.calls.push({ key: `GET ${url}`, body: undefined });
+      const answer = answers.shift()!;
+      return new Promise<Response>((resolve) => setTimeout(() => resolve(answer), 12_000));
+    });
+    const reads = () => server.sent("GET /api/pairing/waiting").length;
+    await vi.waitFor(() => expect(reads()).toBe(1));
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(reads()).toBe(1);
+    expect(waiting()).toHaveTextContent("Waiting for Pixel 8 to connect.");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(within(waiting()).getByRole("button", { name: "This is Pixel 8" })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(reads()).toBe(2);
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(reads()).toBe(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't check for waiting devices: Darkroom's Syncthing could not be reached; try again in a moment.");
+    await fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    expect(reads()).toBe(3);
+    await fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    expect(reads()).toBe(3);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(reads()).toBe(4);
+  });
 });
 
 describe("approving", () => {
@@ -165,6 +204,20 @@ describe("typing the ID", () => {
     await userEvent.type(screen.getByLabelText("Syncthing device ID"), "PIXELNA-MADEUP2");
     await userEvent.click(screen.getByRole("button", { name: "Save device ID" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't pair Pixel 8: not a Syncthing device ID.");
+    expect(onpaired).not.toHaveBeenCalled();
+  });
+
+  it("refuses an ID of only spaces without saving, so it can't clear a paired Pixel's ID or say it is paired", async () => {
+    const pairedPixel: PixelView = { ...shared, syncthing_device_id: OTHER.device_id };
+    const { server, onpaired } = mount({ "GET /api/pairing/waiting": { devices: [] }, "PATCH /api/pixels/21": { pixel: shared } }, pairedPixel);
+    await userEvent.click(await screen.findByRole("button", { name: "Type the device ID instead" }));
+    await userEvent.type(screen.getByLabelText("Syncthing device ID"), "   ");
+    await userEvent.click(screen.getByRole("button", { name: "Save device ID" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't pair Pixel 8: not a Syncthing device ID.");
+    expect(server.sent("PATCH /api/pixels/21")).toHaveLength(0);
+    expect(onpaired).not.toHaveBeenCalled();
+    await fireEvent.submit(screen.getByLabelText("Syncthing device ID").closest("form")!);
+    expect(server.sent("PATCH /api/pixels/21")).toHaveLength(0);
     expect(onpaired).not.toHaveBeenCalled();
   });
 

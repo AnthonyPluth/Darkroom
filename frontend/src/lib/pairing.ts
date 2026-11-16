@@ -3,6 +3,8 @@ import { apiCall } from "./contract";
 
 export const POLL_MS = 5000;
 
+export const NOT_A_DEVICE_ID = "not a Syncthing device ID";
+
 export type Pairing = { kind: "off" } | { kind: "on" };
 
 export type OwnDevice = { kind: "loading" } | { kind: "ready"; id: string } | { kind: "not_running" };
