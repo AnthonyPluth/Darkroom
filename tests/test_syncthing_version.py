@@ -13,7 +13,7 @@ from darkroom.server import jobs
 from darkroom.storage import db
 from tests.fakes.syncthing import FakeSyncthing
 from tests.privacy import no_leaks
-from tests.shared import own_database, settings_from
+from tests.shared import own_database, private_socket_folder, settings_from
 
 KEY = "handed-key-canary-0123456789abcdef0123456"
 OWN = "PP2OO7B-2FRGILR-MSIJEZX-6KTCQJN-2VUJME3-NY3V3OD-5XW7TBJ-Y4OF4A2"
@@ -27,9 +27,7 @@ def handed(value):
 
 
 def on_socket(test):
-    folder = tempfile.TemporaryDirectory()
-    test.addCleanup(folder.cleanup)
-    path = Path(folder.name) / "syncthing.sock"
+    path = private_socket_folder(test) / "syncthing.sock"
     return FakeSyncthing(test, KEY, OWN, str(path)), path
 
 
@@ -104,6 +102,20 @@ class ClientOnSocketTests(unittest.TestCase):
         for url, path in ((syncthing.ON_SOCKET, "relative.sock"), (syncthing.ON_SOCKET, "/run/x\x00.sock"), ("http://127.0.0.1:8384", "/run/darkroom/syncthing.sock")):
             with self.subTest(url=url, path=path), self.assertRaisesRegex(syncthing.SyncthingFailed, "^the Syncthing address is not valid$"):
                 syncthing.Client(url, KEY, socket=path)
+
+    def test_a_socket_outside_the_private_folder_or_in_a_folder_others_can_enter_is_never_connected_to(self):
+        fake, path = on_socket(self)
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        outside = FakeSyncthing(self, KEY, OWN, str(Path(elsewhere.name) / "syncthing.sock"))
+        for socket_path in (str(Path(elsewhere.name) / "syncthing.sock"), str(path.parent / "nested" / "syncthing.sock"), str(path.parent / ".." / path.parent.name / "syncthing.sock")):
+            with self.subTest(socket_path=socket_path), self.assertRaisesRegex(syncthing.SyncthingFailed, "refused before it was sent"):
+                syncthing.Client.on_socket(socket_path, KEY).version()
+        path.parent.chmod(0o750)
+        self.addCleanup(path.parent.chmod, 0o700)
+        with self.assertRaisesRegex(syncthing.SyncthingFailed, "refused before it was sent"):
+            syncthing.Client.on_socket(str(path), KEY).version()
+        self.assertEqual((fake.requests, outside.requests), ([], []))
 
 
 class AppSettingTests(unittest.TestCase):

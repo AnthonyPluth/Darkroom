@@ -84,7 +84,7 @@ def upstream_request(request: Request) -> bytes | None:
     if not asks_to_upgrade(request) or not WEBSOCKET_KEY.fullmatch(key) or version != "13" or (protocols and not PROTOCOLS.fullmatch(protocols)):
         return None
     credentials = base64.b64encode(f"{config.VIEWER_USER}:{request.settings.viewer_secret}".encode("ascii")).decode("ascii")
-    lines = [f"GET /{SOCKET_PATH} HTTP/1.1", f"Host: {tls.LOOPBACK}:{config.VIEWER_PORT}", "Upgrade: websocket", "Connection: Upgrade",
+    lines = [f"GET /{SOCKET_PATH} HTTP/1.1", "Host: localhost", "Upgrade: websocket", "Connection: Upgrade",
              f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", *([f"Sec-WebSocket-Protocol: {protocols}"] if protocols else []),
              f"Authorization: Basic {credentials}"]
     return ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
@@ -97,7 +97,10 @@ def upgrade(request: Request, rest: str) -> Response:
     if asked is None:
         return error_response("bad request", 400)
     try:
-        upstream = tls.loopback(config.VIEWER_PORT, CONNECT_SECONDS)
+        upstream = tls.unix_stream(str(config.VIEWER_SOCKET), CONNECT_SECONDS)
+    except tls.Refused:
+        monitoring.log("remote browser view not reached: the private socket folder check failed")
+        return error_response(NOT_RUNNING, 502)
     except OSError:
         monitoring.log("remote browser view not reachable")
         return error_response(NOT_RUNNING, 502)

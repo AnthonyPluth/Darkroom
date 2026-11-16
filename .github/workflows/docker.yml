@@ -110,6 +110,8 @@ jobs:
           docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
       - name: Run the one container with Syncthing on under the deployment sandbox (the pinned release, started paused, its API on a private socket only, nothing synced with a peer until resumed)
         run: bash tests/browser/syncthing_paused.sh darkroom-single:smoke 8767
+      - name: Run the one container with host networking and Syncthing on under the deployment sandbox (5900, 6080 and 8384 refused from the host, from another local user and from another user inside; only 8000, 22000 and 21027 listen; the viewer through the relay and the reconciler on their sockets)
+        run: bash tests/browser/host_network.sh darkroom-single:smoke
 
   publish:
     needs: [build, single]

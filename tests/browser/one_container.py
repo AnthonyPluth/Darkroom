@@ -78,15 +78,32 @@ def kill_worker_under_browser():
     return 1
 
 
+VIEWER_SOCKET = "/run/darkroom/viewer.sock"
+
+
+def tcp_listening():
+    ports = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        for row in Path(table).read_text().splitlines()[1:]:
+            parts = row.split()
+            if parts[3] == "0A":
+                ports.add(int(parts[1].rsplit(":", 1)[1], 16))
+    return sorted(ports)
+
+
 def viewer():
     args = next(p["args"] for p in processes() if any(part.endswith("websockify") for part in p["args"][:2]))
-    status, source = 200, args[args.index("--auth-source") + 1]
-    try:
-        urllib.request.urlopen("http://127.0.0.1:6080/vnc.html", timeout=5).close()
-    except urllib.error.HTTPError as error:
-        status = error.code
-    print(json.dumps({"auth_source": source, "status": status}))
-    return 0 if source.isdigit() and status == 401 and "127.0.0.1:6080" in args else 1
+    source = args[args.index("--auth-source") + 1]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(5)
+        stream.connect(VIEWER_SOCKET)
+        stream.sendall(b"GET /vnc.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        head = stream.recv(4096).split(b"\r\n", 1)[0].split()
+    status = int(head[1]) if len(head) > 1 and head[1].isdigit() else 0
+    listening = tcp_listening()
+    found = {"auth_source": source, "status": status, "unix_listen": args[args.index("--unix-listen") + 1] if "--unix-listen" in args else "", "tcp": listening}
+    print(json.dumps(found))
+    return 0 if source.isdigit() and status == 401 and found["unix_listen"] == VIEWER_SOCKET and not {5900, 6080} & set(listening) else 1
 
 
 def probe_cookie():

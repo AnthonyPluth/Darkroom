@@ -113,15 +113,20 @@ class EntrypointTests(unittest.TestCase):
         self.assertIsNone(started.args("x11vnc"))
         self.assertIsNone(started.args("websockify"))
 
-    def test_the_init_starts_the_same_display_stack_with_the_secret_on_a_pipe_and_the_viewer_on_loopback(self):
+    def test_the_init_starts_the_same_display_stack_on_private_sockets_where_the_fallback_uses_ports(self):
         started = self.start(DARKROOM_VNC_SECRET=SECRET)
         specs = {spec.name: spec for spec in plan.specs({}, bool, bool)}
-        self.assertEqual(list(specs["vnc"].argv[1:]), started.args("x11vnc")[:-1])
-        viewer, entry = list(specs["viewer"].argv), started.args("websockify")
+        vnc, entry_vnc = list(specs["vnc"].argv[5:]), started.args("x11vnc")
+        self.assertEqual(vnc[0], "/usr/bin/x11vnc")
+        self.assertEqual([part for part in vnc[1:] if part.startswith("-") and part not in ("-unixsock", "-rfbport")],
+                         [part for part in entry_vnc if part.startswith("-") and part not in ("-localhost", "-rfbport", "-bg")])
+        self.assertEqual((vnc[vnc.index("-rfbport") + 1], entry_vnc[entry_vnc.index("-rfbport") + 1]), ("0", "5900"))
+        viewer, entry = list(specs["viewer"].argv[5:]), started.args("websockify")
         self.assertEqual(viewer[1:3], entry[:2])
         self.assertEqual((entry[entry.index("--auth-plugin") + 1], viewer[viewer.index("--auth-plugin") + 1]), ("BasicHTTPAuth", "darkroom_init.viewer_auth.SecretOnPipe"))
         self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.PIPE["viewer"])
-        self.assertEqual((entry[-2:], viewer[-2:]), (["6080", "127.0.0.1:5900"], ["127.0.0.1:6080", "127.0.0.1:5900"]))
+        self.assertEqual(entry[-2:], ["6080", "127.0.0.1:5900"])
+        self.assertEqual(viewer[-4:], ["--unix-listen", str(plan.VIEWER_SOCKET), "--unix-target", str(plan.VNC_SOCKET)])
         self.assertEqual(specs["worker"].argv[1:], tuple(started.args("python")))
 
 

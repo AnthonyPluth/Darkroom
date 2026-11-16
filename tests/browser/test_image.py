@@ -250,6 +250,23 @@ class SingleImageTests(unittest.TestCase):
             self.assertIn(check, script)
         self.assertLess(script.index("the paused instance sent a file"), script.index("probe darkroom resume"))
 
+    def test_ci_runs_the_one_container_with_host_networking_and_checks_every_internal_listener_is_closed(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
+        self.assertIn("run: bash tests/browser/host_network.sh darkroom-single:smoke\n", job)
+        self.assertLess(job.index("syncthing_paused.sh"), job.index("host_network.sh"))
+        script = (ROOT / "tests/browser/host_network.sh").read_text()
+        self.assertIn("sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json)", script)
+        self.assertIn('--network host "${sandbox[@]}"', script)
+        self.assertIn("-e DARKROOM_SYNCTHING=1", script)
+        self.assertNotRegex(script, r" -p ")
+        for check in ("check refused 127.0.0.1 ::1", "sudo -u nobody python3 -I - refused", 'docker exec -i -u 4242:4242 "$name" python3 -I - inside', "sudo ss -Hltunp | check listeners",
+                      "sudo ss -Hlxp | check unix-listeners", "probe relay", "syncthing reconciled"):
+            self.assertIn(check, script)
+        probe = (ROOT / "tests/browser/host_network.py").read_text()
+        self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
+        self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
+
     def test_the_init_is_copied_in_and_opt_in_through_the_single_profile(self):
         self.assertLess(SINGLE.index("COPY darkroom_init /opt/init/darkroom_init"), SINGLE.index("USER darkroom"))
         single = compose_service("darkroom-single")
