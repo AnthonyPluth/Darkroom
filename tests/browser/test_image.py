@@ -271,6 +271,16 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn('- "127.0.0.1:8000:8000"', app)
         self.assertNotIn("DARKROOM_SYNCTHING", app)
 
+    def test_the_postgresql_recipe_reaches_the_host_network_service_on_loopback_only(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        recipe = compose[compose.index("  # PostgreSQL instead of the default SQLite"):]
+        self.assertIn("DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom", recipe)
+        self.assertIn("DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom", recipe)
+        published = re.findall(r'^  #     - "([^"]+:5432)"$', recipe, re.M)
+        self.assertEqual(published, ["127.0.0.1:5432:5432"], "PostgreSQL is published on the host's loopback only, never on every address")
+        page = (ROOT / "docs/deploy/postgres.md").read_text()
+        self.assertIn("@127.0.0.1:5432/darkroom", page)
+
     def test_the_one_container_comes_first_and_no_separate_browser_container_is_left(self):
         compose = (ROOT / "docker-compose.yml").read_text()
         self.assertLess(compose.index("  darkroom-single:"), compose.index("  darkroom:"))

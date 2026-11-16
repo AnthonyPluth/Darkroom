@@ -80,8 +80,11 @@ services:
       - no-new-privileges:true
 
   # PostgreSQL instead of the default SQLite (docs/deploy/postgres.md): uncomment this service and the `volumes:` entry at the end of the file, put
-  # DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom and the same password in .env, and add
-  # `depends_on: [postgres]` to darkroom-single (or to darkroom, for the app alone). Nothing moves an existing SQLite database over.
+  # the same password in POSTGRES_PASSWORD and DATABASE_URL in .env, and add `depends_on: [postgres]` to the service that uses it. darkroom-single is on
+  # the host's network, where the name `postgres` does not resolve: it reaches the database on the host's loopback, through the `ports:` entry below
+  # (127.0.0.1 only, never every address), with DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom. The app alone (darkroom) shares
+  # compose's network with it and uses DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom; it needs no `ports:` entry.
+  # Nothing moves an existing SQLite database over.
   # postgres:
   #   image: postgres:17
   #   restart: unless-stopped
@@ -89,6 +92,8 @@ services:
   #     POSTGRES_USER: darkroom
   #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
   #     POSTGRES_DB: darkroom
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
   #   volumes:
   #     - postgres-data:/var/lib/postgresql/data
 
