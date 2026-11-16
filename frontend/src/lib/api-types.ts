@@ -435,12 +435,13 @@ export interface PixelState {
 export interface PixelSyncthing {
   pixel_id: number;
   name: string;
-  state: "not_syncing" | "not_paired" | "checking" | "held" | "waiting" | "not_seen" | "sending" | "connected" | "not_connected";
+  state: "not_syncing" | "not_paired" | "device_id_invalid" | "device_id_shared" | "folder_removed" | "folder_path_refused" | "checking" | "held" | "waiting" | "not_seen" | "sending" | "connected" | "not_connected";
   copies: number;
   files: number;
   days: number;
   completion: number | null;
   last_seen: number | null;
+  others: string[];
 }
 
 export interface PixelView {

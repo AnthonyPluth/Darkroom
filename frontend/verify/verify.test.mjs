@@ -201,7 +201,7 @@ describe("readFlows", () => {
   it("reads every flow of the repository", () => {
     const { flows, error } = readFlows(join(import.meta.dirname, "flows"));
     expect(error).toBeUndefined();
-    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-renewal", "exports", "open-people", "review-item", "sign-out", "status-syncthing"]);
+    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-renewal", "exports", "open-people", "people-share-again", "review-item", "sign-out", "status-syncthing"]);
   });
 
   it("says which file is not JSON or not a flow, instead of ending the process", () => {

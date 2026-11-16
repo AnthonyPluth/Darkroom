@@ -88,7 +88,7 @@ export const failedExport: ExportView = { ...importedExport, id: 37, created_at:
 export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [] };
 
 export const transport = (pixel_id: number, name: string, state: PixelSyncthing["state"], extra: Partial<PixelSyncthing> = {}): PixelSyncthing => ({
-  pixel_id, name, state, copies: 0, files: 0, days: 0, completion: null, last_seen: null, ...extra,
+  pixel_id, name, state, copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [], ...extra,
 });
 
 export const runningCard: SyncthingCard = {

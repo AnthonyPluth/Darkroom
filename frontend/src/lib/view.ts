@@ -1,6 +1,6 @@
 import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus, PixelSyncthing, SyncthingCard } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
-import { ago, count, lasted, onDay } from "./format";
+import { ago, count, joined, lasted, onDay } from "./format";
 
 export function sessionChip(state: string): { tone: Tone; label: string } {
   if (state === "ok") return { tone: "ok", label: "Session ok" };
@@ -58,6 +58,10 @@ export function pixelSyncthing(pixel: PixelSyncthing, now: number): Chipped & { 
   switch (pixel.state) {
     case "not_syncing": return { tone: "neutral", label: "Not syncing", lines: ["Nothing syncs until Syncthing is running again."] };
     case "not_paired": return { tone: "neutral", label: "Not paired", lines: ["Pair it to start sending photos."] };
+    case "device_id_invalid": return { tone: "warn", label: "Device ID not valid", lines: ["Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again."] };
+    case "device_id_shared": return { tone: "warn", label: "Same device ID", lines: [`${joined(pixel.others)} ${pixel.others.length === 1 ? "has" : "have"} the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong.`] };
+    case "folder_removed": return { tone: "warn", label: "Folder removed", lines: ["Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again."] };
+    case "folder_path_refused": return { tone: "warn", label: "Folder refused", lines: ["Its folder leads outside the photo share, so Darkroom does not share it."] };
     case "checking": return { tone: "neutral", label: "Checking", lines: ["Darkroom is checking its folder before sharing it."] };
     case "held": return { tone: "warn", label: "Folder held", lines: heldLines(pixel) };
     case "waiting": return { tone: "neutral", label: "Waiting for the Pixel", lines: ["Paired; the Pixel has not connected yet."] };

@@ -65,6 +65,10 @@ export function names(list: readonly string[], none: string): string {
   return list.length ? list.join(", ") : none;
 }
 
+export function joined(list: readonly string[]): string {
+  return list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+}
+
 export function nowSeconds(): number {
   return Date.now() / 1000;
 }

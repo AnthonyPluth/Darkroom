@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus } from "../test/server";
+import { emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus, transport } from "../test/server";
 import Status from "./Status.svelte";
 
 beforeEach(() => {
@@ -154,6 +154,34 @@ describe("the Status page with Darkroom's Syncthing", () => {
     expect(within(jo).getByText("Folder held")).toBeInTheDocument();
     expect(within(jo).getByText("Pixel 4a, not synced yet")).toBeInTheDocument();
     expect(within(jo).getByText("Waiting for the Pixel")).toBeInTheDocument();
+  });
+
+  it("shows the states with no usable folder on the card and the person card, with no button", async () => {
+    const pixels = [
+      transport(30, "Pixel 3", "device_id_invalid"), transport(31, "Pixel 2", "device_id_shared", { others: ["Pixel 1", "Pixel 0"] }),
+      transport(32, "Pixel 1", "folder_removed"), transport(33, "Pixel 0", "folder_path_refused"),
+    ];
+    const status = {
+      ...syncthingStatus, syncthing: { ...runningCard, pixels },
+      people: syncthingStatus.people.map((person) => person.id === 1 ? { ...person, pixels: [{ id: 32, name: "Pixel 1", google_account_id: 10, last_sync: null, syncthing: pixels[2] }] } : person),
+    };
+    show(routes(status));
+    const card = await screen.findByRole("region", { name: "Syncthing" });
+    for (const text of ["Device ID not valid", "Same device ID", "Folder removed", "Folder refused",
+      "Pixel 1 and Pixel 0 have the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."]) {
+      expect(within(card).getByText(text)).toBeInTheDocument();
+    }
+    expect(within(card).queryByRole("button")).not.toBeInTheDocument();
+    const jo = await screen.findByRole("article", { name: "Jo Example" });
+    expect(within(jo).getByText("Pixel 1, not synced yet")).toBeInTheDocument();
+    expect(within(jo).getByText("Folder removed")).toBeInTheDocument();
+  });
+
+  it("puts one person card per row", async () => {
+    show(routes(syncthingStatus));
+    const jo = await screen.findByRole("article", { name: "Jo Example" });
+    expect(jo.parentElement).toHaveClass("grid");
+    expect(jo.parentElement).not.toHaveClass("md:grid-cols-2");
   });
 
   it("says no Pixel is paired yet, with the way to People", async () => {

@@ -17,7 +17,7 @@ from sqlalchemy import MetaData, select
 import run
 from darkroom import tls
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, browser_jobs, demo, events, exports, renewal, transport_status
+from darkroom.domain import accounts, alerts, browser_jobs, demo, events, exports, renewal, transport, transport_status
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
@@ -77,7 +77,7 @@ class SeededDemo(unittest.TestCase):
     def test_three_people_three_accounts_and_a_shared_pixel(self):
         people = self.rows(Person)
         self.assertEqual([p.slug for p in people], ["avery", "blair", "casey"])
-        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels), (3, 3, 3))
+        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels), (3, 3, 8))
         by_slug = {p.slug: p.id for p in people}
         shared, single, ended = self.rows(GoogleAccount)
         self.assertEqual((ended.default_person_id, ended.session_state), (by_slug["blair"], "ok"))
@@ -88,9 +88,9 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual((shared.default_person_id, single.default_person_id), (by_slug["avery"], by_slug["casey"]))
         self.assertEqual((shared.session_state, single.session_state), ("needs_sign_in", "ok"))
         pixels = self.rows(Pixel)
-        self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id, ended.id])
+        self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id, ended.id, shared.id, single.id, single.id, ended.id, shared.id])
         with db.session(self.engine) as opened:
-            self.assertEqual(opened.query(PixelPerson).count(), 4)
+            self.assertEqual(opened.query(PixelPerson).count(), 9)
 
     def test_every_original_is_indexed_with_and_without_gps_including_a_live_photo_pair(self):
         self.assertEqual(self.summary.failed, 0)
@@ -387,10 +387,23 @@ class DemoSyncthingTests(unittest.TestCase):
     def test_the_seed_holds_one_pixel_connected_one_not_seen_for_four_days_and_one_held(self):
         state, pixels, kinds = self.overview()
         self.assertEqual(state, "running")
-        self.assertEqual(pixels, {"Family Pixel": "connected", "Casey's Pixel": "not_seen", "Blair's Pixel": "held"})
-        self.assertIn("pixel_held", kinds)
+        self.assertEqual(pixels, {"Family Pixel": "connected", "Casey's Pixel": "not_seen", "Blair's Pixel": "held", "Avery's old Pixel": "device_id_invalid",
+                                  "Casey's work Pixel": "device_id_shared", "Casey's spare Pixel": "device_id_shared", "Blair's second Pixel": "folder_removed",
+                                  "Avery's travel Pixel": "folder_path_refused"})
+        self.assertEqual(kinds.count("pixel_held"), 1)
         with db.session(self.engine) as opened:
             self.assertEqual(transport_status.overview(opened, NOON).pixels[2].days, 4)
+
+    def test_a_released_folder_shows_checking_and_running_puts_the_removal_back(self):
+        with db.session(self.engine, writing=True) as opened:
+            pixel_id = opened.query(Pixel).filter(Pixel.name == "Blair's second Pixel").one().id
+            transport.release_folder(opened, pixel_id, NOON)
+            opened.commit()
+        self.assertEqual(self.overview()[1]["Blair's second Pixel"], "checking")
+        self.switch("running")
+        self.assertEqual(self.overview()[1]["Blair's second Pixel"], "folder_removed")
+        with db.session(self.engine) as opened:
+            self.assertTrue(transport.removed_before(opened, pixel_id))
 
     def test_the_flow_can_take_syncthing_down_fail_the_share_check_and_put_it_back(self):
         before = self.overview()

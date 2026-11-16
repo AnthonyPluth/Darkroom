@@ -35,12 +35,14 @@ class AccountState(TypedDict):
 class PixelSyncthing(TypedDict):
     pixel_id: int
     name: str
-    state: Literal["not_syncing", "not_paired", "checking", "held", "waiting", "not_seen", "sending", "connected", "not_connected"]
+    state: Literal["not_syncing", "not_paired", "device_id_invalid", "device_id_shared", "folder_removed", "folder_path_refused", "checking", "held", "waiting", "not_seen",
+                   "sending", "connected", "not_connected"]
     copies: int
     files: int
     days: int
     completion: float | None
     last_seen: float | None
+    others: list[str]
 
 
 class SyncthingCard(TypedDict):

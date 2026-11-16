@@ -8,6 +8,7 @@ from unittest import mock
 from darkroom import tls
 from darkroom.dates import utc_now
 from darkroom.domain import alerts, browser_jobs, demo, events, pixel_check, share_check, syncthing_version, transport
+from darkroom.providers import syncthing
 from darkroom.server import auth
 from darkroom.storage import db
 from darkroom.storage.models import Export, ImportRun, IndexSkip, MediaItem, Pixel, PixelTransport
@@ -15,6 +16,10 @@ from tests.privacy import no_leaks
 from darkroom.storage.paths import Photos
 from tests.api_world import ApiCase
 from tests.shared import fetch, settings_from, start_server
+
+
+def made_up_device(index: int) -> str:
+    return syncthing.device_id_of_certificate(f"made-up certificate of status test pixel {index}".encode())
 
 
 class StatusApiTests(ApiCase):
@@ -136,7 +141,12 @@ class SeededDemoStatusTests(unittest.TestCase):
         self.assertEqual(people["casey"]["alerts"], [])
         card = reply["syncthing"]
         self.assertEqual(card["state"], "running")
-        self.assertEqual({pixel["name"]: pixel["state"] for pixel in card["pixels"]}, {"Family Pixel": "connected", "Casey's Pixel": "not_seen", "Blair's Pixel": "held"})
+        self.assertEqual({pixel["name"]: pixel["state"] for pixel in card["pixels"]}, {"Family Pixel": "connected", "Casey's Pixel": "not_seen", "Blair's Pixel": "held",
+                                                                                         "Avery's old Pixel": "device_id_invalid", "Casey's work Pixel": "device_id_shared",
+                                                                                         "Casey's spare Pixel": "device_id_shared", "Blair's second Pixel": "folder_removed",
+                                                                                         "Avery's travel Pixel": "folder_path_refused"})
+        others = {pixel["name"]: pixel["others"] for pixel in card["pixels"]}
+        self.assertEqual((others["Casey's work Pixel"], others["Casey's spare Pixel"], others["Family Pixel"]), (["Casey's spare Pixel"], ["Casey's work Pixel"], []))
 
 
 class SyncthingStatusApiTests(ApiCase):
@@ -147,7 +157,7 @@ class SyncthingStatusApiTests(ApiCase):
         jo = self.person()
         account = self.account(jo["id"])
         names = ("Unpaired", "Held", "Checking", "Waiting", "Away", "Sending", "Connected", "Recent")
-        self.pixels = {name: self.pixel(account["id"], name, syncthing_device_id=None if name == "Unpaired" else f"MADEUP{index}-DEVICE")["id"]
+        self.pixels = {name: self.pixel(account["id"], name, syncthing_device_id=None if name == "Unpaired" else made_up_device(index))["id"]
                        for index, name in enumerate(names)}
         self.now = utc_now().timestamp()
 
@@ -189,6 +199,53 @@ class SyncthingStatusApiTests(ApiCase):
         self.assertEqual([(pixel["name"], pixel["syncthing"]["state"]) for pixel in person["pixels"]][:2], [("Unpaired", "not_paired"), ("Held", "held")])
         _, listed = self.call("GET", "/api/pixels")
         self.assertEqual({pixel["name"]: pixel["state"] for pixel in listed["syncthing"]}["Sending"], "sending")
+
+    def stored(self, **devices):
+        with db.session(self.engine, writing=True) as opened:
+            for name, device in devices.items():
+                opened.get(Pixel, self.pixels[name]).syncthing_device_id = device
+            opened.commit()
+
+    def errors(self, **codes):
+        with db.session(self.engine, writing=True) as opened:
+            for name, code in codes.items():
+                opened.get(PixelTransport, self.pixels[name]).error = code
+            opened.commit()
+
+    def test_a_pixel_with_no_usable_folder_shows_its_own_state_ahead_of_held_and_checking(self):
+        self.record(transport.RECOVERED, transport.SUBJECT)
+        self.rows()
+        shared = made_up_device(99)
+        self.stored(Held=shared, Checking=shared.lower().replace("-", ""), Waiting=shared, Away="MADEUP-NOT-A-DEVICE-ID")
+        self.errors(Held=transport.SHARED_DEVICE, Checking=transport.SHARED_DEVICE, Waiting=transport.SHARED_DEVICE, Away=transport.INVALID_DEVICE,
+                    Sending=transport.REMOVED, Connected=transport.PATH_REFUSED)
+        self.record(transport.FOLDER_REMOVED, f"pixel {self.pixels['Sending']}")
+        _, reply = self.call("GET", "/api/status")
+        card = reply["syncthing"]
+        self.assertEqual({pixel["name"]: pixel["state"] for pixel in card["pixels"]}, {
+            "Unpaired": "not_paired", "Held": "device_id_shared", "Checking": "device_id_shared", "Waiting": "device_id_shared", "Away": "device_id_invalid",
+            "Sending": "folder_removed", "Connected": "folder_path_refused", "Recent": "not_connected"})
+        others = {pixel["name"]: pixel["others"] for pixel in card["pixels"]}
+        self.assertEqual((others["Held"], others["Checking"], others["Waiting"]), (["Checking", "Waiting"], ["Held", "Waiting"], ["Held", "Checking"]))
+        self.assertEqual({name for name, listed in others.items() if listed}, {"Held", "Checking", "Waiting"})
+        person = {pixel["name"]: pixel["syncthing"]["state"] for pixel in reply["people"][0]["pixels"]}
+        self.assertEqual((person["Away"], person["Sending"]), ("device_id_invalid", "folder_removed"))
+        _, listed = self.call("GET", "/api/pixels")
+        self.assertEqual({pixel["name"]: pixel["others"] for pixel in listed["syncthing"]}["Held"], ["Checking", "Waiting"])
+        self.replies.clear()
+        with no_leaks(self, shared, shared.replace("-", ""), "MADEUP-NOT-A-DEVICE-ID", replies=self.replies):
+            self.call("GET", "/api/status")
+
+    def test_a_fixed_id_or_a_released_folder_shows_checking_until_the_next_reconcile(self):
+        self.record(transport.RECOVERED, transport.SUBJECT)
+        self.rows()
+        self.errors(Held=transport.INVALID_DEVICE, Checking=transport.SHARED_DEVICE, Waiting=transport.REMOVED)
+        self.record(transport.FOLDER_REMOVED, f"pixel {self.pixels['Waiting']}")
+        states = lambda reply: {pixel["name"]: pixel["state"] for pixel in reply["syncthing"]["pixels"]}
+        self.assertEqual(states(self.call("GET", "/api/status")[1])["Waiting"], "folder_removed")
+        self.assertEqual(self.call("POST", f"/api/pixels/{self.pixels['Waiting']}/release-folder", {"confirmed": True}), (200, {"ok": True}))
+        found = states(self.call("GET", "/api/status")[1])
+        self.assertEqual((found["Held"], found["Checking"], found["Waiting"]), ("checking", "checking", "checking"))
 
     def test_each_failure_gives_its_card_state_and_fixed_reason(self):
         self.rows()
@@ -239,7 +296,7 @@ class SyncthingStatusApiTests(ApiCase):
 class SyncthingOffStatusApiTests(ApiCase):
     def test_with_darkrooms_syncthing_off_nothing_about_it_is_sent(self):
         jo = self.person()
-        self.pixel(self.account(jo["id"])["id"], "Pixel A", syncthing_device_id="MADEUP1-DEVICE")
+        self.pixel(self.account(jo["id"])["id"], "Pixel A", syncthing_device_id=made_up_device(1))
         _, reply = self.call("GET", "/api/status")
         self.assertIsNone(reply["syncthing"])
         self.assertIsNone(reply["people"][0]["pixels"][0]["syncthing"])

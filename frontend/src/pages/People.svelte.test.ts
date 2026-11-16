@@ -296,4 +296,81 @@ describe("the People page with Darkroom's Syncthing", () => {
     await userEvent.click(within(unpaired).getByRole("button", { name: "Pair Pixel 8" }));
     expect(await screen.findByRole("dialog", { name: "Edit Pixel" })).toBeInTheDocument();
   });
+
+  it("gives a Pixel whose device ID is not valid or shared a Pair again button before Edit, which opens its form", async () => {
+    show({
+      ...seeded(),
+      "GET /api/pixels": { pixels: [solo, { ...shared, syncthing_device_id: "OLD-ID" }], syncthing: [
+        transport(20, "Pixel 9a", "device_id_invalid"), transport(21, "Pixel 8", "device_id_shared", { others: ["Pixel 7"] })] },
+    });
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    const [invalid, sharing] = within(table).getAllByRole("row").slice(1);
+    const cell = (row: HTMLElement) => row.querySelector('td[data-label="Syncthing"]') as HTMLElement;
+    expect(cell(invalid)).toHaveTextContent(/Device ID not valid\s*Its saved device ID is not a Syncthing device ID, so nothing is shared with it\. Pair it again\./);
+    expect(cell(sharing)).toHaveTextContent(/Same device ID\s*Pixel 7 has the same device ID, so Darkroom shares neither folder\. Pair again whichever one is wrong\./);
+    for (const row of [invalid, sharing]) expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pair again", "Edit"]);
+    await userEvent.click(within(sharing).getByRole("button", { name: "Pair again: Pixel 8" }));
+    expect(await screen.findByRole("dialog", { name: "Edit Pixel" })).toBeInTheDocument();
+  });
+
+  it("gives a refused folder its chip and no button but Edit", async () => {
+    show({ ...seeded(), "GET /api/pixels": { pixels: [solo], syncthing: [transport(20, "Pixel 9a", "folder_path_refused")] } });
+    const row = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    expect(row).toHaveTextContent(/Folder refused\s*Its folder leads outside the photo share, so Darkroom does not share it\./);
+    expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Edit"]);
+  });
+
+  it("shares a removed folder again only after the confirmation, says why a press was refused, and shows Checking once done", async () => {
+    let released = false;
+    let answer: (value: Response) => void = () => {};
+    const server = serve({
+      ...seeded(),
+      "GET /api/pixels": () => ({ pixels: [solo], syncthing: [transport(20, "Pixel 9a", released ? "checking" : "folder_removed")] }),
+    });
+    vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => {
+      if (url !== "/api/pixels/20/release-folder") return server.mock(url, init);
+      server.calls.push({ key: `POST ${url}`, body: JSON.parse(String(init.body)) });
+      return new Promise<Response>((resolve) => (answer = resolve));
+    });
+    render(People);
+    const row = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    expect(row).toHaveTextContent(/Folder removed\s*Darkroom removed its folder because it was changed outside Darkroom\. It stays unshared until you share it again\./);
+    expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Share again", "Edit"]);
+    await userEvent.click(within(row).getByRole("button", { name: "Share again: Pixel 9a's folder" }));
+    const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
+    for (const paragraph of [
+      "Darkroom removed Pixel 9a's folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at Pixel 9a's folder on the photo share.",
+      "If you share it again, Darkroom adds the folder afresh, Send Only, at Pixel 9a's folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on Pixel 9a asks, accept the folder there.",
+      "If the folder is changed outside Darkroom again, Darkroom removes it again.",
+    ]) expect(within(ask).getByText(paragraph)).toBeInTheDocument();
+    expect(within(ask).getAllByRole("button").map((button) => button.textContent)).toEqual(["Cancel", "Share folder again"]);
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toHaveClass("btn-primary");
+    expect(server.sent("POST /api/pixels/20/release-folder")).toHaveLength(0);
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    await waitFor(() => expect(within(ask).getByRole("button", { name: "Cancel" })).toBeDisabled());
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toBeDisabled();
+    expect(server.sent("POST /api/pixels/20/release-folder")[0].body).toEqual({ confirmed: true });
+    answer(new Response(JSON.stringify({ error: "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again" }), { status: 409 }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent(
+      "Couldn't share Pixel 9a's folder again: Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again.");
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toBeEnabled();
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    await waitFor(() => expect(within(ask).queryByRole("alert")).not.toBeInTheDocument());
+    released = true;
+    answer(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const after = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    await waitFor(() => expect(after).toHaveTextContent(/Checking\s*Darkroom is checking its folder before sharing it\./));
+    expect(within(after).getAllByRole("button").map((button) => button.textContent)).toEqual(["Edit"]);
+  });
+
+  it("adds a full stop after a refusal that has none and keeps one that has", async () => {
+    const server = serve({ ...seeded(), "GET /api/pixels": { pixels: [solo], syncthing: [transport(20, "Pixel 9a", "folder_removed")] } });
+    vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => url === "/api/pixels/20/release-folder" ? Promise.reject(new TypeError("offline")) : server.mock(url, init));
+    render(People);
+    await userEvent.click(await screen.findByRole("button", { name: "Share again: Pixel 9a's folder" }));
+    const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent(/^Couldn't share Pixel 9a's folder again: Can't reach Darkroom\. Check your connection and try again\.$/);
+  });
 });

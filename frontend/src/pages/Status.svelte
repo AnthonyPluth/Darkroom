@@ -66,7 +66,7 @@
           <a class="btn btn-primary self-start" href="/people" onclick={(e) => followLink(e, "/people")}>Add the first person</a>
         </div>
       {:else}
-        <div class="grid gap-4 md:grid-cols-2">
+        <div class="grid gap-4">
           {#each data.status.people as person (person.id)}
             <article class="card" aria-label={person.name}>
               <div class="flex items-center justify-between gap-3">

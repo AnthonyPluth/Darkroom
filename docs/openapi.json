@@ -2266,6 +2266,12 @@
           "name": {
             "type": "string"
           },
+          "others": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "pixel_id": {
             "type": "integer"
           },
@@ -2273,6 +2279,10 @@
             "enum": [
               "not_syncing",
               "not_paired",
+              "device_id_invalid",
+              "device_id_shared",
+              "folder_removed",
+              "folder_path_refused",
               "checking",
               "held",
               "waiting",
@@ -2290,6 +2300,7 @@
           "files",
           "last_seen",
           "name",
+          "others",
           "pixel_id",
           "state"
         ],

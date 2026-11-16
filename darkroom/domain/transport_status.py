@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.config import Settings
 from darkroom.domain import alerts, pixel_check, pixel_folder, share_check, syncthing_version, transport
+from darkroom.providers import syncthing
 from darkroom.storage import db
 from darkroom.storage.models import Alert, Event, Pixel, PixelCopy, PixelTransport
 
@@ -22,7 +23,7 @@ HELD_PREFIX = "syncthing:held:"
 KEY_REASONS = (syncthing_version.NO_KEY, syncthing_version.KEY_REFUSED)
 
 CardState = Literal["starting", "running", "down", "settings_failed", "version", "key", "share_check_failed"]
-PixelState = Literal["not_syncing", "not_paired", "checking", "held", "waiting", "not_seen", "sending", "connected", "not_connected"]
+PixelState = Literal["not_syncing", "not_paired", "device_id_invalid", "device_id_shared", "folder_removed", "folder_path_refused", "checking", "held", "waiting", "not_seen", "sending", "connected", "not_connected"]
 
 
 @dataclass(frozen=True)
@@ -40,9 +41,11 @@ class PixelView:
     days: int = 0
     completion: float | None = None
     last_seen: float | None = None
+    others: tuple[str, ...] = ()
 
     def as_dict(self, pixel_id: int, name: str) -> dict[str, object]:
-        return {"pixel_id": pixel_id, "name": name, "state": self.state, "copies": self.copies, "files": self.files, "days": self.days, "completion": self.completion, "last_seen": self.last_seen}
+        return {"pixel_id": pixel_id, "name": name, "state": self.state, "copies": self.copies, "files": self.files, "days": self.days, "completion": self.completion,
+                "last_seen": self.last_seen, "others": list(self.others)}
 
 
 def latest(opened: Session, types: tuple[str, ...], subject: str) -> Event | None:
@@ -90,11 +93,38 @@ def unaccounted(opened: Session) -> dict[int, int]:
     return found
 
 
-def pixel_view(pixel: Pixel, row: PixelTransport | None, running: bool, copies: int, files: int, now: float) -> PixelView:
+def canonical(value: str | None) -> str | None:
+    return syncthing.device_id(value) if value and syncthing.is_device_id(value) else None
+
+
+def same_device(pixels: list[Pixel]) -> dict[int, tuple[str, ...]]:
+    devices = {pixel.id: canonical(pixel.syncthing_device_id) for pixel in pixels}
+    return {pixel.id: tuple(other.name for other in pixels if other.id != pixel.id and devices[other.id] == devices[pixel.id])
+            for pixel in pixels if devices[pixel.id] is not None}
+
+
+def unusable(pixel: Pixel, row: PixelTransport | None, others: tuple[str, ...], released: bool) -> PixelView | None:
+    error = None if row is None else row.error
+    if error == transport.INVALID_DEVICE:
+        return PixelView("checking") if canonical(pixel.syncthing_device_id) is not None else PixelView("device_id_invalid")
+    if error == transport.SHARED_DEVICE:
+        return PixelView("device_id_shared", others=others) if others else PixelView("checking")
+    if error == transport.REMOVED:
+        return PixelView("checking") if released else PixelView("folder_removed")
+    if error == transport.PATH_REFUSED:
+        return PixelView("folder_path_refused")
+    return None
+
+
+def pixel_view(pixel: Pixel, row: PixelTransport | None, running: bool, copies: int, files: int, now: float, others: tuple[str, ...] = (),
+               released: bool = False) -> PixelView:
     if not running:
         return PixelView("not_syncing")
     if not pixel.syncthing_device_id:
         return PixelView("not_paired")
+    found = unusable(pixel, row, others, released)
+    if found is not None:
+        return found
     if row is not None and row.error == transport.HELD and (copies or files):
         return PixelView("held", copies=copies, files=files)
     if row is not None and row.error in (transport.HELD, transport.CHECKING):
@@ -121,8 +151,12 @@ def overview(opened: Session, now: float) -> Overview:
     found = card(opened)
     copies, files = unwritten(opened), unaccounted(opened)
     rows = {row.pixel_id: row for row in opened.execute(select(PixelTransport)).scalars()}
-    views = {pixel.id: pixel_view(pixel, rows.get(pixel.id), found.state == "running", copies.get(pixel.id, 0), files.get(pixel.id, 0), now)
-             for pixel in opened.execute(select(Pixel).order_by(Pixel.id)).scalars()}
+    pixels = list(opened.execute(select(Pixel).order_by(Pixel.id)).scalars())
+    shared = same_device(pixels)
+    released = {pixel_id for pixel_id, row in rows.items() if row.error == transport.REMOVED and not transport.removed_before(opened, pixel_id)}
+    views = {pixel.id: pixel_view(pixel, rows.get(pixel.id), found.state == "running", copies.get(pixel.id, 0), files.get(pixel.id, 0), now, shared.get(pixel.id, ()),
+                                  pixel.id in released)
+             for pixel in pixels}
     return Overview(found, views)
 
 

@@ -50,6 +50,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 
 ### Flows on People
 
+#### `people-share-again`
+
+- **Starts at:** `people`.
+- **Widths:** phone, desktop.
+- **Touches:** `button[aria-label="Share again: Blair's second Pixel's folder"]`, `[role=dialog] button:has-text('Share folder again')`.
+- **Expects to see:** `Darkroom removed its folder because it was changed outside Darkroom.`, `If the folder is changed outside Darkroom again, Darkroom removes it again.`, `Darkroom is checking its folder before sharing it.`, `It stays unshared until you share it again.`.
+- **Drive it:** `tools/control flow people-share-again`; or `poetry run python tools/verify.py run --flow people-share-again`.
+
 #### `sign-out`
 
 - **Starts at:** `people`.

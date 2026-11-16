@@ -233,7 +233,7 @@ describe("renewNow", () => {
 
 describe("pixelSyncthing", () => {
   const now = 100_000;
-  const base = { pixel_id: 1, name: "Pixel 8", copies: 0, files: 0, days: 0, completion: null, last_seen: null };
+  const base = { pixel_id: 1, name: "Pixel 8", copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [] };
 
   it("gives each per-Pixel state its chip and line", () => {
     expect(pixelSyncthing({ ...base, state: "not_syncing" }, now)).toEqual({ tone: "neutral", label: "Not syncing", lines: ["Nothing syncs until Syncthing is running again."] });
@@ -244,6 +244,19 @@ describe("pixelSyncthing", () => {
     expect(pixelSyncthing({ ...base, state: "sending", completion: 99.9 }, now)).toEqual({ tone: "ok", label: "Sending", lines: ["99% sent"] });
     expect(pixelSyncthing({ ...base, state: "connected", completion: 100 }, now)).toEqual({ tone: "ok", label: "Connected", lines: ["Up to date"] });
     expect(pixelSyncthing({ ...base, state: "not_connected", last_seen: now - 7200 }, now)).toEqual({ tone: "neutral", label: "Not connected", lines: ["Last seen 2 hours ago."] });
+  });
+
+  it("gives the three states with no folder and the refused folder a warn chip and their line", () => {
+    expect(pixelSyncthing({ ...base, state: "device_id_invalid" }, now)).toEqual({ tone: "warn", label: "Device ID not valid", lines: ["Its saved device ID is not a Syncthing device ID, so nothing is shared with it. Pair it again."] });
+    expect(pixelSyncthing({ ...base, state: "folder_removed" }, now)).toEqual({ tone: "warn", label: "Folder removed", lines: ["Darkroom removed its folder because it was changed outside Darkroom. It stays unshared until you share it again."] });
+    expect(pixelSyncthing({ ...base, state: "folder_path_refused" }, now)).toEqual({ tone: "warn", label: "Folder refused", lines: ["Its folder leads outside the photo share, so Darkroom does not share it."] });
+  });
+
+  it("names the other Pixels with the same device ID, with has for one and have for more", () => {
+    const shared = { ...base, state: "device_id_shared" as const };
+    expect(pixelSyncthing({ ...shared, others: ["Casey's Pixel"] }, now)).toEqual({ tone: "warn", label: "Same device ID", lines: ["Casey's Pixel has the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."] });
+    expect(pixelSyncthing({ ...shared, others: ["A", "B"] }, now).lines).toEqual(["A and B have the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."]);
+    expect(pixelSyncthing({ ...shared, others: ["A", "B", "C"] }, now).lines).toEqual(["A, B and C have the same device ID, so Darkroom shares neither folder. Pair again whichever one is wrong."]);
   });
 
   it("keeps the Folder held chip and shows both causes, counting one photo and one file in the singular", () => {
