@@ -15,6 +15,14 @@ Darkroom handles a household's private photos and the keys to the services aroun
 - Darkroom holds no APNs key: the APNs provider and its `APNS_*` settings were removed (#201). Alerts go out only as email to the one owner address through Resend, when it is set up (`docs/deploy/alerts-email.md`).
 - Outbound requests go through `darkroom/tls.py`; subprocesses only through `darkroom/providers/exiftool.py` (and the worker's runner, and in the one container `darkroom_init/supervisor.py`, which starts the processes and checks the display is up).
 
+## Accepted scanner findings
+
+The image scan fails on any CRITICAL or HIGH vulnerability with a fix. A finding that can't be fixed yet and doesn't apply is accepted only in `.trivyignore.yaml` at the repository's root, which the `single-image` scan names with fleet's `trivy-image-ignore-file`. Each entry is limited to one exact path in the image (no wildcards, so the same CVE anywhere else is still reported), carries a one-line reason and an `expired_at` at most 180 days away, after which the finding is reported again and renewing it is a new pull request. The image scan reads the list only from the tip of `main`, never from a pull request's checkout, so an entry takes effect once the owner has merged it, and the pull request that adds one doesn't benefit from it. Changes to the list get the Second review and are owned by the owner (`.github/CODEOWNERS`).
+
+Accepted now:
+
+- CVE-2026-78661 (HIGH, `golang.org/x/net` v0.60.0) in `usr/local/bin/syncthing`, the pinned Syncthing v2.1.7 (#341), until 2027-02-14: the vulnerable `x/net/html` package is not linked into the binary, Syncthing's API is only on a private `0600` Unix socket, and no Syncthing release with a fixed `x/net` exists yet.
+
 ## Reporting a problem
 
 Open a private security advisory on this repository, or tell the owner directly. Please don't open a public issue with details.

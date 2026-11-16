@@ -1,0 +1,10 @@
+# Image findings the owner has accepted for a limited time, read by the image scan from main only (SECURITY.md,
+# "Accepted scanner findings"). Each entry names one exact path, says why on one line and expires within 180 days.
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - usr/local/bin/syncthing
+    purls:
+      - pkg:golang/golang.org/x/net
+    statement: "The pinned Syncthing v2.1.7 embeds golang.org/x/net v0.60.0, but the vulnerable x/net/html package is not linked into the binary, its API is only on a private 0600 Unix socket, and no Syncthing release with a fixed x/net exists yet (#341)."
+    expired_at: 2027-02-14
