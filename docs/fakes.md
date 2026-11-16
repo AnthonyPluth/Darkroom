@@ -91,3 +91,7 @@ A missing or wrong key gets `403` with `CSRF Error` (`X-API-Key` or `Authorizati
 ### What it does not cover
 
 `PUT /rest/config`, override, revert, shutdown, events, `/rest/db/status` and `/rest/db/need`, pending folders, the Unix socket, restarts, or any syncing: nothing is scanned, connected or sent.
+
+### In the demo (`tools/demo_syncthing.py`)
+
+`make verify`, `tools/verify.py serve` and `tools/control` run the demo server through `python -m tools.demo_syncthing`, which starts this fake in the server's own process on a Unix socket in the demo's data folder, points Darkroom at it and hands Darkroom its key on a pipe, with `DARKROOM_SYNCTHING=1`. So the demo shows the People page and the Pixel form as they are with Darkroom's Syncthing on. The fake's own device ID and the waiting phone's are made up (`OWN_ID`, `PHONE_ID`). The waiting list is empty at Darkroom's first read and holds one phone ("Pixel 9a") from the second on, so the pairing flow (`frontend/verify/flows/pixel-pairing.json`) shows nobody waiting, then one device; once no Pixel holds the phone's ID any more (the flow deletes the Pixel it paired), the next read is empty again, so the flow runs at both widths on one server.

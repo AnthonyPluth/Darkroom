@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.shared import fetch
+from tools import demo_syncthing
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -123,7 +124,7 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(copied, {"db": "seeded", "log": True})
             self.assertFalse(os.path.exists(data))
             command, env = popen.call_args.args[0], popen.call_args.kwargs["env"]
-            self.assertEqual(command[1:], [os.path.join(verify.ROOT, "run.py"), "serve"])
+            self.assertEqual(command[1:], ["-m", "tools.demo_syncthing"])
             self.assertEqual((env["DARKROOM_DATA_DIR"], env["DARKROOM_PORT"], env["FAKETIME"], env["HTTPS_PROXY"], env["DARKROOM_DEMO"], env["DARKROOM_HOST"]),
                              (os.path.join(data, "data"), "9200", verify.FROZEN_NOW, verify.NO_OUTSIDE, "1", "127.0.0.1"))
             self.assertFalse(set(NEVER) & set(env))
@@ -284,6 +285,15 @@ class FrozenDemoServerTests(unittest.TestCase):
         self.assertTrue(all(p["indexed"] > 0 for p in people), people)
         self.assertEqual(fetch(self.base, "GET", "/api/status")[0], 401)
         self.assertTrue(os.path.isfile(os.path.join(verify.photos_root(self.live), "avery", "originals", "IMG_0001.JPG")))
+
+    def test_the_demo_runs_with_a_fake_syncthing_that_shows_nobody_waiting_then_one_phone(self):
+        status, _, body = fetch(self.base, "GET", "/api/pairing/device", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"device_id": demo_syncthing.OWN_ID}))
+        status, _, body = fetch(self.base, "GET", "/api/pairing/waiting", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"devices": []}))
+        status, _, body = fetch(self.base, "GET", "/api/pairing/waiting", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"devices": [{"device_id": demo_syncthing.PHONE_ID, "name": demo_syncthing.PHONE_NAME}]}))
+        self.assertTrue(os.path.exists(os.path.join(verify.data_dir(self.live), demo_syncthing.SOCKET_NAME)))
 
     def test_z_stopping_the_server_removes_its_copy_of_the_data(self):
         self.stop()

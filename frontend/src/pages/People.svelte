@@ -5,6 +5,7 @@
   import { ago, names, nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
+  import { pairingMode } from "$lib/pairing";
   import { sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import Confirm from "../components/Confirm.svelte";
@@ -14,20 +15,25 @@
   import AccountForm from "../forms/AccountForm.svelte";
   import PersonForm from "../forms/PersonForm.svelte";
   import PixelForm from "../forms/PixelForm.svelte";
+  import PixelPaired from "../forms/PixelPaired.svelte";
+  import PixelPairing from "../forms/PixelPairing.svelte";
 
   type Editing =
     | { kind: "person"; item: PersonView | null }
     | { kind: "account"; item: AccountView | null }
-    | { kind: "pixel"; item: PixelView | null };
+    | { kind: "pixel"; item: PixelView | null }
+    | { kind: "pairing"; item: PixelView }
+    | { kind: "paired"; item: PixelView };
   type Asking = { title: string; message: string; confirm: string; run: () => Promise<unknown> };
 
   const loader = new Loader(async () => {
-    const [people, accounts, pixels] = await Promise.all([
+    const [people, accounts, pixels, pairing] = await Promise.all([
       apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
       apiCall<"GET /api/accounts">("/api/accounts", { failed: "Couldn't load the Google accounts" }),
       apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
+      pairingMode(),
     ]);
-    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, now: nowSeconds() };
+    return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, pairing: pairing.kind === "on", now: nowSeconds() };
   });
 
   let formOpen = $state(false);
@@ -44,6 +50,20 @@
 
   function saved(): void {
     formOpen = false;
+    void loader.load(true);
+  }
+
+  function pair(pixel: PixelView): void {
+    edit({ kind: "pairing", item: pixel });
+  }
+
+  function added(pixel: PixelView): void {
+    editing = { kind: "pairing", item: pixel };
+    void loader.load(true);
+  }
+
+  function paired(pixel: PixelView): void {
+    editing = { kind: "paired", item: pixel };
     void loader.load(true);
   }
 
@@ -66,6 +86,7 @@
   }
 
   function formTitle(next: Editing): string {
+    if (next.kind === "pairing" || next.kind === "paired") return `Pair ${next.item.name}`;
     const noun = next.kind === "person" ? "person" : next.kind === "account" ? "Google account" : "Pixel";
     return next.item ? `Edit ${noun}` : `Add ${noun}`;
   }
@@ -166,13 +187,20 @@
             <td data-label="Google account">{data.accounts.find((a) => a.id === pixel.google_account_id)?.email ?? "Unknown"}</td>
             <td data-label="People served">{names(pixel.people_ids.map((id) => personName(data.people, id)), "No one")}</td>
             <td data-label="Last sync" class:text-ink-muted={pixel.last_sync === null}>{pixel.last_sync === null ? "Not synced yet" : ago(pixel.last_sync, data.now)}</td>
-            <td class="md:text-right"><button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button></td>
+            <td class="md:text-right">
+              <span class="flex flex-wrap justify-end gap-2">
+                {#if data.pairing && !pixel.syncthing_device_id}
+                  <button type="button" class="btn" aria-label="Pair {pixel.name}" onclick={() => pair(pixel)}>Pair</button>
+                {/if}
+                <button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => edit({ kind: "pixel", item: pixel })}>Edit</button>
+              </span>
+            </td>
           </tr>
         {/snippet}
       </Table>
     </section>
 
-    <Modal bind:open={formOpen} title={editing ? formTitle(editing) : ""}>
+    <Modal bind:open={formOpen} title={editing ? formTitle(editing) : ""} description={editing?.kind === "pairing" ? `Connect the Syncthing app on ${editing.item.name} to Darkroom. Nothing is shared until you approve the Pixel here.` : undefined}>
       {#if editing?.kind === "person"}
         {@const person = editing.item}
         <PersonForm {person} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={person ? () => removePerson(person) : undefined} />
@@ -181,7 +209,12 @@
         <AccountForm {account} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={account ? () => removeAccount(account) : undefined} />
       {:else if editing?.kind === "pixel"}
         {@const pixel = editing.item}
-        <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined} />
+        <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined}
+          pairing={data.pairing} onadded={added} onpair={pixel ? () => pair(pixel) : undefined} />
+      {:else if editing?.kind === "pairing"}
+        <PixelPairing pixel={editing.item} onpaired={paired} onlater={() => (formOpen = false)} />
+      {:else if editing?.kind === "paired"}
+        <PixelPaired name={editing.item.name} ondone={() => (formOpen = false)} />
       {/if}
     </Modal>
   {/if}
