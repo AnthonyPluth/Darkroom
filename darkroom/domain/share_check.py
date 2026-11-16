@@ -22,6 +22,7 @@ MISSING = "the sentinel is missing from the share"
 CHANGED = "the sentinel on the share is not the one recorded"
 UNREADABLE = "the sentinel on the share could not be read"
 MOVED = "the share root is not the filesystem it was at startup"
+REBOUND = "the share was bound again and its placed copies have not been checked yet"
 
 
 def sentinel_problem(root: Path, token: str | None) -> str | None:
@@ -70,6 +71,13 @@ class ShareCheck:
         if self.device is None or share.device_of(self.root) != self.device:
             return MOVED
         return sentinel_problem(self.root, token if token is not None else stored_settings.recorded_share(opened))
+
+    def transport_problem(self, opened: Session) -> str | None:
+        token = stored_settings.recorded_share(opened)
+        found = self.problem(opened, token)
+        if found is None and self.passed is not None and token != self.passed:
+            return REBOUND
+        return found
 
     def refusal(self, opened: Session, now: float) -> str | None:
         token = stored_settings.recorded_share(opened)

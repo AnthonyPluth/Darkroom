@@ -198,6 +198,14 @@ class Photos:
     def thumbs(self, person: str) -> Path:
         return self.in_the_inbox(self.person_part(person), ".thumbs")
 
+    def pixel_root(self, pixel_id: int) -> Path:
+        if type(pixel_id) is not int or pixel_id <= 0:
+            raise OutsideRoot("not a valid Pixel")
+        expected = self.root / PIXELS / str(pixel_id)
+        if linked_on_the_way(self.root, (PIXELS, str(pixel_id))) or self.inside(PIXELS, str(pixel_id)) != expected:
+            raise OutsideRoot("the Pixel's folder is a link")
+        return expected
+
     def pixel_folder(self, pixel_id: int, person: str) -> Path:
         if type(pixel_id) is not int or pixel_id <= 0:
             raise OutsideRoot("not a valid Pixel")
