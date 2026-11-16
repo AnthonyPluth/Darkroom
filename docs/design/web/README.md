@@ -20,7 +20,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
-| `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, for the owner's sign-off, **not signed off**) |
+| `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, signed off 2026-11-16) |
 | `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
 | `08-setup-welcome-desktop.dc.html`, `08-setup-welcome-phone.dc.html` | Setup wizard: Welcome (signed off, #303) |
 | `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup wizard: Setup isn't open, and open in another browser (signed off, #303) |
@@ -363,9 +363,9 @@ What the build changes:
 - **The addendum's Share again confirmation** (built with #324's Pixel rows) uses the full-width `Modal` too.
 - None of this touches the shell or any other page; the whole app's page layout stays with #16.
 
-## Unpairing a Pixel (addendum to #322, for the owner's sign-off)
+## Unpairing a Pixel (addendum to #322, signed off)
 
-Status: **drawn for the owner's sign-off, NOT yet signed off.** Nothing here is built until the owner approves it on #322. It adds to "Pairing, Syncthing status and the new alerts" and changes none of its signed-off rows, cards or alerts.
+Status: **signed off by the owner on 2026-11-16: all 12 drawing choices as recommended (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6929613909); phone confirmation buttons side by side as the built Confirm draws them (owner's chat decision, 2026-11-16).** It adds to "Pairing, Syncthing status and the new alerts" and changes none of its signed-off rows, cards or alerts.
 
 Why: with Darkroom's Syncthing on, the Pixel form shows the paired ID read-only with only "Pair again" (or "Pair"), so there is no way in the app to unpair. A Pixel that is lost, sold or replaced keeps its Syncthing device and its Send Only share of the photos until someone clears the ID with `PATCH /api/pixels/{id} {"syncthing_device_id": null}` by hand. The second review flagged this as access that outlives the device. The backend already does the rest: once the ID is cleared, the reconciler removes the device and the Pixel's folder from Darkroom's Syncthing within 60 s, and deletes no file (`tests/test_transport.py`, "a Pixel that is deleted or unpaired loses its folder and device and no file is deleted"). So this is a UI action on an existing route; no new route.
 
@@ -385,7 +385,7 @@ The existing `Confirm` dialog, full width at desktop like every dialog since the
 - Title: "Unpair {name}?"
 - Description (muted, `Confirm`'s message): "Darkroom stops sharing {name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches {name} until it is paired again."
 - Then: "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to {name}: they stay on the Pixel until someone removes them there."
-- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stack full width.
+- Buttons, right-aligned as in `Confirm`: "Cancel" (`btn`) and "Unpair" (`btn btn-danger`, as `Confirm`'s action is for every delete). On a phone they stay side by side as the built `Confirm` lays them out, Cancel left and Unpair right (the phone board draws them at equal width), not stacked.
 - **Unpair** sends `PATCH /api/pixels/{id}` with only `{"syncthing_device_id": null}` (no other field), so nothing else in the form is saved by it.
 - **In flight:** both buttons disabled and the dialog can't be dismissed (`Confirm`'s `busy`).
 - **Refused** (any 4xx or 5xx, or no answer): the dialog stays, and the danger-toned `role="alert"` line (`FormError`) above the buttons reads "Couldn't unpair {name}: {message}." with Darkroom's message unchanged, for example "Darkroom is busy with another change; try again in a moment" or "no such Pixel". The line goes at the next press, as `Confirm` does today.
