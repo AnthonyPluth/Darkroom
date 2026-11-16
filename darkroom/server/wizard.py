@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
@@ -90,6 +90,16 @@ def read_tested(value: str | None) -> Tested | None:
 def someone_else_signed_in(opened: Session, sub: str | None) -> bool:
     others = select(User.sub).limit(1) if sub is None else select(User.sub).where(User.sub != sub).limit(1)
     return opened.scalars(others).first() is not None
+
+
+def hold_setup(opened: Session) -> None:
+    db.write_lock(opened)
+    opened.execute(update(Setting).where(Setting.key == SETUP_LOCKED).values(value=Setting.value))
+
+
+def locked_window(opened: Session, at: float) -> Window:
+    hold_setup(opened)
+    return window(opened, at)
 
 
 def window(opened: Session, at: float) -> Window:
@@ -219,7 +229,7 @@ def finish_test(request: Request, state: str) -> Response:
         return test_page(403, "The test sign-in failed", f"Something was wrong with this sign-in: {error}. Nothing was saved.", request)
     with db.session(engine_of(request), writing=True) as opened:
         moment = now()
-        if window(opened, moment).phase != BEFORE_TEST:
+        if locked_window(opened, moment).phase != BEFORE_TEST:
             return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
         current = load_proposal(opened, settings.secret_key)
         if current is None or current["id"] != fields["id"]:
@@ -243,6 +253,7 @@ def close(opened: Session) -> None:
 
 
 def reopen(opened: Session) -> bool:
+    hold_setup(opened)
     if opened.get(Setting, SETUP_TESTED) is not None:
         close(opened)
         return False

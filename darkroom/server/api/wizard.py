@@ -116,6 +116,10 @@ def tested_already(opened: Session) -> bool:
     return wizard.window(opened, now()).tested is not None
 
 
+def tested_under_lock(opened: Session) -> bool:
+    return wizard.locked_window(opened, now()).tested is not None
+
+
 def after_the_test(request: Request) -> Response | None:
     with db.session(engine_of(request)) as opened:
         tested = tested_already(opened)
@@ -129,7 +133,7 @@ def setup_state(request: Request) -> Annotated[Response, contract.SetupState]:
 def claim_setup(request: Request) -> Annotated[Response, contract.SetupState]:
     token = secrets.token_urlsafe(32)
     with db.session(engine_of(request), writing=True) as opened:
-        found = wizard.window(opened, now())
+        found = wizard.locked_window(opened, now())
         if found.phase == wizard.CLOSED:
             return error_response("sign in required", 401)
         held = found.claim
@@ -149,7 +153,7 @@ def store_all(request: Request, values: dict[str, str], *, settled_by_the_test: 
     if not request.settings.secret_key:
         return error_response(NO_KEY, 503)
     with db.session(engine_of(request), writing=True) as opened:
-        if settled_by_the_test and tested_already(opened):
+        if settled_by_the_test and tested_under_lock(opened):
             return error_response(SETTLED, 409)
         moment = now()
         for variable, value in values.items():
@@ -216,7 +220,7 @@ def propose_sign_in(request: Annotated[Request, contract.SetupSignInBody]) -> An
     if not live.public_url:
         return error_response(NO_ADDRESS, 409)
     with db.session(engine_of(request), writing=True) as opened:
-        if tested_already(opened):
+        if tested_under_lock(opened):
             return error_response(SETTLED, 409)
         earlier = wizard.load_proposal(opened, request.settings.secret_key)
         fields["OIDC_CLIENT_SECRET"] = given_secret if given_secret is not None else (earlier or {}).get("OIDC_CLIENT_SECRET", "")
@@ -235,7 +239,7 @@ def test_sign_in(request: Request) -> Annotated[Response, contract.SetupTestStar
     if not wizard.same_address(request, live.public_url):
         return error_response(ELSEWHERE, 409)
     with db.session(engine_of(request), writing=True) as opened:
-        if tested_already(opened):
+        if tested_under_lock(opened):
             return error_response(SETTLED, 409)
         fields = wizard.load_proposal(opened, request.settings.secret_key)
         if fields is None:
@@ -251,7 +255,7 @@ def test_sign_in(request: Request) -> Annotated[Response, contract.SetupTestStar
 
 def finish_setup(request: Request) -> Annotated[Response, contract.Ok]:
     with db.session(engine_of(request), writing=True) as opened:
-        found = wizard.window(opened, now())
+        found = wizard.locked_window(opened, now())
         if found.phase == wizard.CLOSED:
             return error_response("sign in required", 401)
         if found.phase != wizard.AFTER_TEST:
