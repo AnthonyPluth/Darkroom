@@ -19,7 +19,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
-| `08-setup.md` | First-run setup wizard: **proposed for sign-off on #303, not signed off**. The owner's answers on #344 are recorded in it; its boards are drawn from it before #303 closes. #305 builds it, after #346 extends the API |
+| `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303)**; the boards below are drawn from it and await the owner's visual sign-off. #305 builds it, after #346 extends the API |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
