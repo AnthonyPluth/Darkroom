@@ -77,7 +77,7 @@ class SeededDemo(unittest.TestCase):
     def test_three_people_three_accounts_and_a_shared_pixel(self):
         people = self.rows(Person)
         self.assertEqual([p.slug for p in people], ["avery", "blair", "casey"])
-        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels), (3, 3, 2))
+        self.assertEqual((self.summary.people, self.summary.accounts, self.summary.pixels), (3, 3, 3))
         by_slug = {p.slug: p.id for p in people}
         shared, single, ended = self.rows(GoogleAccount)
         self.assertEqual((ended.default_person_id, ended.session_state), (by_slug["blair"], "ok"))
@@ -88,9 +88,10 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual((shared.default_person_id, single.default_person_id), (by_slug["avery"], by_slug["casey"]))
         self.assertEqual((shared.session_state, single.session_state), ("needs_sign_in", "ok"))
         pixels = self.rows(Pixel)
-        self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id])
+        self.assertEqual([p.google_account_id for p in pixels], [shared.id, single.id, single.id])
+        self.assertEqual([p.syncthing_device_id is None for p in pixels], [False, False, True])
         with db.session(self.engine) as opened:
-            self.assertEqual(opened.query(PixelPerson).count(), 3)
+            self.assertEqual(opened.query(PixelPerson).count(), 4)
 
     def test_every_original_is_indexed_with_and_without_gps_including_a_live_photo_pair(self):
         self.assertEqual(self.summary.failed, 0)
@@ -132,7 +133,7 @@ class SeededDemo(unittest.TestCase):
         for account in self.rows(GoogleAccount):
             self.assertTrue(account.email.endswith("@example.com"), account.email)
         for pixel in self.rows(Pixel):
-            self.assertTrue(pixel.syncthing_device_id.startswith("DEMO-"), pixel.syncthing_device_id)
+            self.assertTrue(pixel.syncthing_device_id is None or pixel.syncthing_device_id.startswith("DEMO-"), pixel.syncthing_device_id)
         for item in self.rows(MediaItem):
             if item.lat is not None:
                 self.assertIn((item.lat, item.lon), demo.OCEANS, item.path)

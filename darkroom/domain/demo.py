@@ -56,6 +56,13 @@ class DemoAccount:
 
 
 @dataclass(frozen=True)
+class DemoPixel:
+    name: str
+    account: str
+    serves: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Shot:
     stem: str
     kind: str
@@ -81,6 +88,8 @@ ACCOUNTS = (
     DemoAccount("casey.photos@example.com", "casey", "Casey's Pixel", "DEMO-CASEY-PIXEL", ("casey",), "ok", 300),
     DemoAccount("blair.photos@example.com", "blair", None, None, (), "ok", -10, RENEWAL_FAILED),
 )
+
+UNPAIRED = (DemoPixel("Casey's new Pixel", "casey.photos@example.com", ("casey",)),)
 
 SHOTS: dict[str, tuple[Shot, ...]] = {
     "avery": (
@@ -285,6 +294,16 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
                           hold_sha1=media.sha1_of(hold)[0]))
 
 
+def seed_unpaired(opened: Session, people: dict[str, Person], spec: DemoPixel, now: float) -> None:
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.email == spec.account)).scalar_one()
+    pixel = Pixel(name=spec.name, syncthing_device_id=None, google_account_id=account.id, created=now - DAY)
+    opened.add(pixel)
+    opened.flush()
+    for slug in spec.serves:
+        opened.add(PixelPerson(pixel_id=pixel.id, person_id=people[slug].id))
+    opened.flush()
+
+
 def seed_download(opened: Session, now: float) -> None:
     owner = opened.execute(select(Person).where(Person.slug == "casey")).scalar_one()
     account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
@@ -308,10 +327,12 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
         originals, indexed, failed = originals + written, indexed + report.new, failed + report.failed
     opened_alerts = sum(seed_account(opened, settings, people, spec, now) for spec in ACCOUNTS)
     opened.flush()
+    for unpaired in UNPAIRED:
+        seed_unpaired(opened, people, unpaired, now)
     seed_import(opened, photos, people, today, now)
     seed_download(opened, now)
     opened.flush()
-    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS), originals, indexed, failed, opened_alerts)
+    return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS) + len(UNPAIRED), originals, indexed, failed, opened_alerts)
 
 
 def sign_in(opened: Session, settings: Settings, now: float) -> str:
