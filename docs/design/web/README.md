@@ -329,17 +329,17 @@ The owner approved all nine as recommended on 2026-11-16, recorded on #322 (http
 
 Status: **drawn for the owner's sign-off, not signed off.** The owner asked for every section of the pairing, Syncthing status and People designs to be full width, not just some of them. Until signed off, the boards as they were stand.
 
-The rule: at desktop width (1280, with the same 232 px left rail) every card and section on these boards spans the full content column, the space right of the rail less the page's 40 px padding each side (968 px at 1280), and none is narrower. That is the column boards 02 and 03 already draw and the built shell already has (`Shell.svelte`'s `main`: `flex-1`, `md:px-10`, no maximum width). The phone layout (390) is unchanged. Modal dialogs stay dialogs: the existing `Modal`, at most 32 rem (512 px) wide, full width less 1 rem each side on a phone, so the Pixel form, the pairing steps and the Share again confirmation keep their width.
+The rule: at desktop width (1280, with the same 232 px left rail) every card and section on these boards spans the full content column, the space right of the rail less the page's 40 px padding each side (968 px at 1280), and none is narrower. That is the column boards 02 and 03 already draw and the built shell already has (`Shell.svelte`'s `main`: `flex-1`, `md:px-10`, no maximum width). The phone layout (390) is unchanged. Modal dialogs stay dialogs (the owner's decision): the existing `Modal`, at most 32 rem (512 px) wide, full width less 1 rem each side on a phone, so the Pixel form, the pairing steps and the Share again confirmation keep their width. On the desktop boards each dialog is drawn centred in a frame that spans the column and stands for the dimmed page behind it (the built `Dialog.Overlay`, `bg-canvas/80`), so no section on a board is narrower than the column; the frame is a drawing convention, not something to build. The QR code keeps its fixed 192 px.
 
 What changed, per board:
 
 | Board | Change |
 | --- | --- |
 | `02-status-syncthing-desktop.dc.html` | The content column's 1040 px cap is gone (column 960 to 968 px, as boards 02 and 03). The person card loses its 520 px cap and spans the column, one card per row. The alerts and the Syncthing card already spanned it. Sub-heading and the person card's note updated. |
-| `03-people-pairing-desktop.dc.html` | The content column's 1040 px cap is gone. The Pixels card already spanned it; the modals are unchanged. Sub-heading updated. |
-| `03-people-pairing-states-desktop.dc.html` | The content column's 1040 px cap is gone. The person card loses its 520 px cap and spans the column. Row 2d added (Alex's Pixel, warn "Folder refused", its line, Edit only) after 2c in the Pixels card and in the Syncthing card. Title, sub-heading and the Pixels card's note updated; the board is 100 px taller. |
-| `03-people-pairing-states-phone.dc.html` | Layout unchanged. Row 2d added as on desktop; title, sub-heading and note updated; the board is 400 px taller. |
-| `02-status-syncthing-phone.dc.html`, `03-people-pairing-phone.dc.html` | Unchanged. |
+| `03-people-pairing-desktop.dc.html` | The content column's 1040 px cap is gone. The Pixels card already spanned it. Each of the 11 dialogs (Add Pixel, Edit Pixel, the pairing steps) is drawn in a full-column frame for the dimmed page, the dialog itself still 512 px. Sub-heading updated; the board is 1800 px taller (8200). |
+| `03-people-pairing-states-desktop.dc.html` | The content column's 1040 px cap is gone. The person card loses its 520 px cap and spans the column. Row 2d added (Alex's Pixel, warn "Folder refused", its line, Edit only) after 2c in the Pixels card and in the Syncthing card. The three Share again dialogs are drawn in full-column frames, as above. The refused example's message ends "so there is nothing to share again." (was "nothing to release"), as "For the build" says. Title, sub-heading and the Pixels card's note updated; the board is 300 px taller (3600). |
+| `03-people-pairing-states-phone.dc.html` | Layout unchanged. Row 2d and the refused example's wording as on desktop; title, sub-heading and note updated; the board is 400 px taller. |
+| `02-status-syncthing-phone.dc.html`, `03-people-pairing-phone.dc.html` | Layout unchanged. Only the sub-heading: "Draft for #322, not signed off" becomes "Signed off on #322 2026-11-16". |
 
 What the build changes:
 
