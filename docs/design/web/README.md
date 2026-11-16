@@ -20,6 +20,18 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off) |
+| `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
+| `08-setup-welcome-desktop.dc.html`, `08-setup-welcome-phone.dc.html` | Setup wizard: Welcome (signed off, #303) |
+| `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup wizard: Setup isn't open, and open in another browser (signed off, #303) |
+| `08-setup-address-desktop.dc.html`, `08-setup-address-phone.dc.html` | Setup wizard: Step 1, Address (signed off, #303) |
+| `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | Setup wizard: Step 2, Sign-in (signed off, #303) |
+| `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | Setup wizard: After Pocket ID: the server's failure pages (signed off, #303) |
+| `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Setup wizard: Step 3, Immich (signed off, #303) |
+| `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | Setup wizard: Step 4, People (signed off, #303) |
+| `08-setup-accounts-desktop.dc.html`, `08-setup-accounts-phone.dc.html` | Setup wizard: Step 5, Google accounts (signed off, #303) |
+| `08-setup-pixels-desktop.dc.html`, `08-setup-pixels-phone.dc.html` | Setup wizard: Step 6, Pixels (signed off, #303) |
+| `08-setup-alerts-desktop.dc.html`, `08-setup-alerts-phone.dc.html` | Setup wizard: Step 7, Alert emails (signed off, #303) |
+| `08-setup-done-desktop.dc.html`, `08-setup-done-phone.dc.html` | Setup wizard: Step 8, Done (signed off, #303) |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
@@ -324,3 +336,10 @@ The owner approved all nine as recommended on 2026-11-16, recorded on #322 (http
 7. **After sharing again the Pixel shows Checking** until the reconciler's next run. Not chosen: keeping "Folder removed" until then.
 8. **Any signed-in member may share a folder again**, after the confirmation, as #350 built it. Not chosen: an owner role, which Darkroom does not have yet.
 9. **A fourth code found while reading the reconciler, `folder_path_refused`** (the Pixel's folder resolves outside the photo share, so no folder is added), also fell through. Decided: a row 2d, warn "Folder refused", "Its folder leads outside the photo share, so Darkroom does not share it.", with no button and no alert, drawn in a later board. Not chosen: leaving it to fall through.
+
+## First-run setup wizard (#303, document signed off)
+
+Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926281385); the boards signed off by the owner on 2026-11-16 (visual sign-off recorded on #303 https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6926640234).** #303 closes, and #305 builds against the boards, once #344 merges (decision 1 of `08-setup.md`). Every decision the owner made on #344 (1 to 18) is recorded in `08-setup.md`, "The owner's decisions", unchanged.
+
+Boards: `08-setup-{welcome,closed,address,sign-in,test-failed,immich,people,accounts,pixels,alerts,done}-{desktop,phone}.dc.html`, the eleven pairs the document's board list names, each stacking the states that list names for it, in its order. They use the signed-off tokens only (no new colour, size or font) and the parts already built (card, buttons, fields, the danger alert line, chips, and the People page's table and modal on the People, Google accounts and Pixels steps). The copy is the document's, word for word; `{placeholders}` are filled with made-up values (addresses on 192.168.1.20 and example.com, made-up client and device IDs). `08-setup-test-failed-*` draws the server's own pages as `darkroom/server/common.py` renders them today, not the app's style. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
+
