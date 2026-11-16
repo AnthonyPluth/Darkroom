@@ -33,6 +33,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **What usually breaks:**
   - Starts on Status and follows the navigation to People: the tab bar at phone width, the sidebar at desktop.
 
+#### `status-syncthing`
+
+- **Starts at:** `status`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Syncthing is running with the settings Darkroom set.`, `Syncthing has not answered for 2 hours.`, `Syncthing down`, `The photo share failed Darkroom's check (the sentinel is missing from the share)`, `Share check failed`.
+- **Drive it:** `tools/control flow status-syncthing`; or `poetry run python tools/verify.py run --flow status-syncthing`.
+
 ## People (`people`)
 
 - **Reach it:** the navigation's People, at `/people`; control `tools/control goto people`.
