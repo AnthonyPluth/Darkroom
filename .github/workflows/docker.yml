@@ -112,6 +112,8 @@ jobs:
           found=0
           bash tests/browser/syncthing_peer.sh darkroom-single:sendreceive 8769 || found=$?
           [ "$found" = 3 ] || { echo "expected the share comparison to fail (exit 3), got $found" >&2; exit 1; }
+      - name: Run the one container with host networking and Syncthing on under the deployment sandbox (5900, 6080 and 8384 refused from the host, from another local user and from another user inside; only 8000, 22000 and 21027 listen; the viewer through the relay and the reconciler on their sockets)
+        run: bash tests/browser/host_network.sh darkroom-single:smoke
 
   publish:
     needs: [build, single]

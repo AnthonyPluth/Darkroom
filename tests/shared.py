@@ -21,7 +21,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom import config
+from darkroom import config, tls
 from darkroom.server import handler
 from darkroom.storage import db
 
@@ -190,3 +190,13 @@ def bound_share(engine: Engine, root: Path, token: str = "a" * 32) -> None:
     with db.session(engine) as opened:
         stored_settings.record_share(opened, token, 1.0)
     share.write_sentinel(root, share.sentinel_content(token))
+
+
+def private_socket_folder(test: unittest.TestCase) -> Path:
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    path = Path(folder.name)
+    patched = mock.patch.object(tls, "SOCKET_FOLDER", path)
+    patched.start()
+    test.addCleanup(patched.stop)
+    return path
