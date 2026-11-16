@@ -86,7 +86,7 @@ def demo_command(root: str) -> list[str]:
 
 
 def server_command() -> list[str]:
-    return [sys.executable, os.path.join(ROOT, "run.py"), "serve"]
+    return [sys.executable, "-m", "tools.demo_syncthing"]
 
 
 def free_port() -> int:
