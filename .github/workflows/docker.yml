@@ -61,7 +61,7 @@ jobs:
 
   single:
     runs-on: ubuntu-latest   # hosted: small repository
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
@@ -98,6 +98,22 @@ jobs:
           docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
       - name: Run the one container with Syncthing on under the deployment sandbox (the pinned release, started paused, its API on a private socket only, nothing synced with a peer until resumed)
         run: bash tests/browser/syncthing_paused.sh darkroom-single:smoke 8767
+      - name: Run the one container with Syncthing on and a made-up Pixel against a hostile peer (the whole share's SHA-1 unchanged by the peer's edits, a removed folder keeps both sides' files, a persisted folder that is not Send Only never runs)
+        run: bash tests/browser/syncthing_peer.sh darkroom-single:smoke 8768
+      - name: Check that the same run fails on its share comparison when a test-only build makes the Pixel's folder Send and Receive
+        run: |
+          docker buildx build --builder default -t darkroom-single:sendreceive - <<'EOF'
+          FROM darkroom-single:smoke
+          USER root
+          RUN sed -i 's/^SEND_ONLY = "sendonly"$/SEND_ONLY = "sendreceive"/' /app/darkroom/providers/syncthing.py \
+              && grep -qx 'SEND_ONLY = "sendreceive"' /app/darkroom/providers/syncthing.py
+          USER darkroom
+          EOF
+          found=0
+          bash tests/browser/syncthing_peer.sh darkroom-single:sendreceive 8769 || found=$?
+          [ "$found" = 3 ] || { echo "expected the share comparison to fail (exit 3), got $found" >&2; exit 1; }
+      - name: Run the one container with host networking and Syncthing on under the deployment sandbox (5900, 6080 and 8384 refused from the host, from another local user and from another user inside; only 8000, 22000 and 21027 listen; the viewer through the relay and the reconciler on their sockets)
+        run: bash tests/browser/host_network.sh darkroom-single:smoke
 
   publish:
     needs: [build, single]
