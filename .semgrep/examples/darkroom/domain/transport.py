@@ -34,3 +34,18 @@ def add_from_the_helper(client, photos, pixel_id):
 def add_what_was_planned(client, want):
     # ok: darkroom-syncthing-folder-path-from-photos
     client.add_folder(want.folder, want.path, [], paused=True)
+    # ok: darkroom-syncthing-folder-path-from-photos
+    client.add_folder(want.folder, path=want.path, devices=[], paused=True)
+
+
+def add_again_where_syncthing_had_it(client):
+    for found in client.folders():
+        # ruleid: darkroom-syncthing-folder-path-from-photos
+        client.add_folder(found.id, found.path, [], paused=True)
+        # ruleid: darkroom-syncthing-folder-path-from-photos
+        client.add_folder(found.id, path=found.path, devices=[], paused=True)
+
+
+def add_a_planned_path_under_another_folder(client, want, found):
+    # ruleid: darkroom-syncthing-folder-path-from-photos
+    client.add_folder(found.id, want.path, [], paused=True)

@@ -203,9 +203,10 @@ def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now
             reconcile(at, True)
 
     if settings.syncthing:
-        reconcile(now, True)
+        scheduler.guarded(Registered("syncthing.reconcile", lambda at: reconcile(at, True), None, None, now), now)
         scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
-        scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now)
+        scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now,
+                        own_thread=True)
     return scheduler
 
 
