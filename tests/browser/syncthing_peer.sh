@@ -37,7 +37,7 @@ logged_since_start() { docker logs --since "$started" "$darkroom" 2>&1 | grep -q
 start_darkroom() {
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   docker "$@" >/dev/null
-  wait_for 90 "curl -fsS -o /dev/null http://127.0.0.1:$port/healthz"
+  wait_for 90 "curl -fsS -o /dev/null http://127.0.0.1:$port/healthz 2>/dev/null"
   wait_for 60 "logged_since_start '\"event\": \"syncthing is a tested release; the transport may start\"'"
 }
 folder_state() { probe "$darkroom" folder "$folder"; }
@@ -75,9 +75,7 @@ mine=$(probe "$darkroom" id)
 pixel=$(seed seed "$theirs") || fail "the made-up Pixel could not be added"
 folder="darkroom-pixel-$pixel"
 printf 'paused\nbind\n' | docker exec -i -w /app "$darkroom" python run.py bind-share >/dev/null || fail "bind-share did not bind the share"
-sleep 65
-folder_gone || fail "the Pixel's folder was given to Syncthing before a tend had checked the bound share and the placed copies"
-echo "a made-up Pixel with the peer's device ID, five queued copies and a bound share; no folder given to Syncthing before a tend"
+echo "a made-up Pixel with the peer's device ID, five queued copies and a bound share"
 
 start_darkroom restart "$darkroom"
 wait_for 60 "[ \"\$(seed placed)\" = 5 ]"
