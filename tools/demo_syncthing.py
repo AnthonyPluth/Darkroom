@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 import run
-from darkroom import config
+from darkroom import config, tls
 from darkroom.providers import syncthing
 from darkroom.storage import db
 from darkroom.storage.models import Pixel
@@ -17,6 +20,7 @@ from tests.fakes.syncthing import FakeSyncthing, Received
 
 KEY = "demo-syncthing-key-not-real"
 SOCKET_NAME = "syncthing.sock"
+SOCKET_FOLDER_NAME = "run"
 LONGEST_SOCKET_PATH = 107
 OWN_ID = syncthing.device_id_of_certificate(b"made-up certificate of the demo's Darkroom")
 PHONE_ID = syncthing.device_id_of_certificate(b"made-up certificate of a demo phone waiting to pair")
@@ -53,12 +57,19 @@ class DemoSyncthing(FakeSyncthing):
         return super().answer(received)
 
 
+def private_folder(folder: Path) -> Path:
+    folder.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    return folder
+
+
 def socket_of(data_dir: Path) -> Path:
-    path = data_dir / SOCKET_NAME
-    if len(os.fsencode(path)) <= LONGEST_SOCKET_PATH:
-        return path
-    folder = os.open(data_dir, os.O_RDONLY | os.O_DIRECTORY)
-    return Path(f"/proc/self/fd/{folder}") / SOCKET_NAME
+    folder = data_dir / SOCKET_FOLDER_NAME
+    if len(os.fsencode(folder / SOCKET_NAME)) <= LONGEST_SOCKET_PATH:
+        return private_folder(folder) / SOCKET_NAME
+    short = Path(tempfile.mkdtemp(prefix="darkroom-demo-"))
+    atexit.register(shutil.rmtree, short, True)
+    return short / SOCKET_NAME
 
 
 def hand_key() -> None:
@@ -74,6 +85,7 @@ def start(data_dir: Path) -> DemoSyncthing:
     path.unlink(missing_ok=True)
     fake = DemoSyncthing(str(path), db.make_engine(db.database_url(config.load())))
     config.SYNCTHING_SOCKET = path
+    tls.SOCKET_FOLDER = path.parent
     hand_key()
     return fake
 
