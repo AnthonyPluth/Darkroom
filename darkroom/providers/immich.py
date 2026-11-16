@@ -4,7 +4,6 @@ import base64
 import binascii
 import contextlib
 import hashlib
-import http.client
 import json
 import re
 import urllib.error
@@ -244,7 +243,7 @@ def check_address(url: str, timeout: float = CHECK_TIMEOUT) -> AddressCheck:
         return "not_immich"
     except tls.Refused:
         return "not_immich"
-    except http.client.HTTPException as error:
+    except tls.NOT_HTTP_REPLIES as error:
         return "no_answer" if isinstance(error, ConnectionError) else "not_immich"
     except tls.CONNECTION_PROBLEMS as error:
         return "tls_failed" if tls.tls_failure(error) else "no_answer"

@@ -21,6 +21,7 @@ class Refused(Exception):
 
 
 CONNECTION_PROBLEMS: tuple[type[Exception], ...] = (OSError, HTTPException)
+NOT_HTTP_REPLIES: tuple[type[Exception], ...] = (HTTPException,)
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
