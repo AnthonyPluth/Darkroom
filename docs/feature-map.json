@@ -326,7 +326,8 @@
       "handler": "darkroom.server.api.pixels.update_pixel",
       "frontend": [
         "frontend/src/forms/PixelForm.svelte",
-        "frontend/src/forms/PixelPairing.svelte"
+        "frontend/src/forms/PixelPairing.svelte",
+        "frontend/src/pages/People.svelte"
       ],
       "tests": [
         "tests/test_every_route.py",

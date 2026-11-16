@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { errMsg } from "$lib/act";
   import type { AccountView, PersonView, PixelView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
   import { ago, names, nowSeconds } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { pairingMode } from "$lib/pairing";
+  import { pairingMode, sentence } from "$lib/pairing";
   import { sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import Confirm from "../components/Confirm.svelte";
@@ -24,7 +25,7 @@
     | { kind: "pixel"; item: PixelView | null }
     | { kind: "pairing"; item: PixelView }
     | { kind: "paired"; item: PixelView };
-  type Asking = { title: string; message: string; confirm: string; run: () => Promise<unknown> };
+  type Asking = { title: string; message: string; detail?: string; confirm: string; run: () => Promise<unknown> };
 
   const loader = new Loader(async () => {
     const [people, accounts, pixels, pairing] = await Promise.all([
@@ -106,6 +107,22 @@
       message: "Only an account with no Pixels and no exports can be deleted.",
       confirm: "Delete account",
       run: () => apiCall<"DELETE /api/accounts/{id}">(`/api/accounts/${account.id}`, { method: "DELETE" }),
+    });
+  }
+
+  function unpairPixel(pixel: PixelView): void {
+    ask({
+      title: `Unpair ${pixel.name}?`,
+      message: `Darkroom stops sharing ${pixel.name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches ${pixel.name} until it is paired again.`,
+      detail: `No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to ${pixel.name}: they stay on the Pixel until someone removes them there.`,
+      confirm: "Unpair",
+      run: async () => {
+        try {
+          return await apiCall<"PATCH /api/pixels/{id}">(`/api/pixels/${pixel.id}`, { method: "PATCH", body: { syncthing_device_id: null } });
+        } catch (err) {
+          throw new Error(`Couldn't unpair ${pixel.name}: ${sentence(errMsg(err))}`, { cause: err });
+        }
+      },
     });
   }
 
@@ -210,7 +227,8 @@
       {:else if editing?.kind === "pixel"}
         {@const pixel = editing.item}
         <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined}
-          pairing={data.pairing} onadded={added} onpair={pixel ? () => pair(pixel) : undefined} />
+          pairing={data.pairing} onadded={added} onpair={pixel ? () => pair(pixel) : undefined}
+          onunpair={pixel?.syncthing_device_id ? () => unpairPixel(pixel) : undefined} />
       {:else if editing?.kind === "pairing"}
         <PixelPairing pixel={editing.item} onpaired={paired} onlater={() => (formOpen = false)} />
       {:else if editing?.kind === "paired"}
@@ -220,6 +238,6 @@
   {/if}
 
   {#if asking}
-    <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} confirm={asking.confirm} run={asking.run} done={removed} />
+    <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} detail={asking.detail} confirm={asking.confirm} run={asking.run} done={removed} />
   {/if}
 </div>
