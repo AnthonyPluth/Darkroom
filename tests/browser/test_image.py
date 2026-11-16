@@ -230,11 +230,20 @@ class SingleImageTests(unittest.TestCase):
 
     def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
-        job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
-        script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
-        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -eo pipefail\n"))
-        for text in (script, job):
-            self.assertNotRegex(text, r"\|\s*grep\s+-[A-Za-z]*q", "grep -q quits at the first match, so under pipefail docker logs dies of SIGPIPE and a match reads as a miss")
+        scripts = {path.name: path.read_text() for path in sorted((ROOT / "tests/browser").glob("*.sh"))}
+        self.assertLessEqual({"syncthing_paused.sh", "syncthing_peer.sh", "one_container.sh"}, set(scripts))
+        for name, text in scripts.items():
+            self.assertRegex(text, r"\A#!/usr/bin/env bash\nset -eu?o pipefail\n", name)
+        for name, text in [*scripts.items(), ("docker.yml", workflow)]:
+            self.assertNotRegex(text, r"\|\s*grep\s+(-[A-Za-z]*[qm]|--quiet|--silent|--max-count)",
+                                f"{name}: grep -q quits at the first match, so under pipefail the producer dies of SIGPIPE and a match reads as a miss")
+        peer = scripts["syncthing_peer.sh"]
+        self.assertIn('logged_since_start() { local logs; logs=$(docker logs --since "$started" "$darkroom" 2>&1) && grep -qF "$1" <<<"$logs"; }', peer)
+        self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', peer[peer.index("logs() {"):peer.index("fail() {")])
+        leftovers = peer.index('docker rm -f "$darkroom" "$peer" >/dev/null 2>&1 || true\ndocker network rm "$net" >/dev/null 2>&1 || true\n', peer.index("trap cleanup EXIT"))
+        self.assertLess(leftovers, peer.index('docker network create "$net"'))
+        self.assertLess(peer.index('docker network create "$net"'), peer.index('docker run -d --name "$peer"'))
+        script = scripts["syncthing_paused.sh"]
         self.assertIn('logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"; }', script)
         self.assertIn('docker container inspect "$name" >/dev/null 2>&1 || continue', script[script.index("fail() {"):script.index("wait_for() {")])
         cleanup = script.index("docker rm -f darkroom peer >/dev/null 2>&1 || true\ndocker network rm \"$net\" >/dev/null 2>&1 || true\n")
