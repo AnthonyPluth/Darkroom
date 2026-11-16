@@ -42,7 +42,7 @@ class EndToEndTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         env = {"DARKROOM_PHOTOS_ROOT": str(self.world.root), "DARKROOM_DATA_DIR": str(self.world.base / "data"), "IMMICH_URL": self.world.fake.url,
-               "IMMICH_ADMIN_KEY": ADMIN_KEY, "DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_ALLOW_NO_AUTH": "1", "TZ": "UTC"}
+               "IMMICH_ADMIN_KEY": ADMIN_KEY, "browser_token": TOKEN, "DARKROOM_ALLOW_NO_AUTH": "1", "TZ": "UTC"}
         self.base, self.settings = start_server(self, settings_from(**env), self.world.engine)
         self.phone = self.bytes_of(1)
         self.canal = self.bytes_of(2)

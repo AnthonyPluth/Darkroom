@@ -6,11 +6,14 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from darkroom import config
 from darkroom.domain import alerts, browser_jobs
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, GoogleAccount
-from tests.shared import add_person, own_database, settings_from
+from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
+
+RELAYED = config.relay_address("https://darkroom.example")
 
 
 def add_account(opened, email="jo.takeout@example.test", slug="jo"):
@@ -27,7 +30,7 @@ class BrowserJobTests(unittest.TestCase):
         photos = tempfile.TemporaryDirectory()
         self.addCleanup(photos.cleanup)
         self.photos = Path(photos.name)
-        self.settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example", VNC_URL="https://browser.example/vnc.html", DARKROOM_PHOTOS_ROOT=photos.name)
+        self.settings = settings_from(DARKROOM_PUBLIC_URL="https://darkroom.example", viewer_secret=VIEWER_SECRET, DARKROOM_PHOTOS_ROOT=photos.name)
         with db.session(self.engine) as opened:
             self.account = add_account(opened)
 
@@ -150,13 +153,13 @@ class BrowserJobTests(unittest.TestCase):
             waiting = browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
             self.assertEqual((waiting.status, waiting.message, waiting.heartbeat), ("waiting_for_user", "sign_in", 6.0))
             self.assertEqual(opened.get(GoogleAccount, self.account).session_state, "needs_sign_in")
-        self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", None)])
+        self.assertEqual(self.open_alerts(), [("sign_in_needed", RELAYED, None)])
         with db.session(self.engine) as opened:
             resumed = browser_jobs.progress(opened, job_id, "signed in", 60.0)
             self.assertEqual(resumed.status, "running")
             account = opened.get(GoogleAccount, self.account)
             self.assertEqual((account.session_state, account.session_checked), ("ok", 60.0))
-        self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 60.0)])
+        self.assertEqual(self.open_alerts(), [("sign_in_needed", RELAYED, 60.0)])
 
     def test_verify_needs_sign_in_attention_and_done_sets_the_session_ok(self):
         job_id = self.enqueue()
@@ -273,7 +276,7 @@ class BrowserJobTests(unittest.TestCase):
             browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 7.0)
             account = opened.get(GoogleAccount, self.account)
             self.assertEqual((account.session_state, opened.get(BrowserJob, job_id).message), ("needs_sign_in", "wrong_account"))
-        self.assertEqual(self.open_alerts(), [("sign_in_needed", "https://browser.example/vnc.html", 7.0), ("wrong_account", "https://browser.example/vnc.html", None)])
+        self.assertEqual(self.open_alerts(), [("sign_in_needed", RELAYED, 7.0), ("wrong_account", RELAYED, None)])
         with db.session(self.engine) as opened:
             self.assertIn("jo.takeout@example.test", opened.execute(select(Alert).where(Alert.kind == "wrong_account")).scalar_one().message)
             browser_jobs.waiting(opened, self.settings, job_id, "wrong_account", 8.0)

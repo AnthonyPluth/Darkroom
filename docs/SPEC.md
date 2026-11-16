@@ -80,7 +80,7 @@ The decisions are the owner's, including the answers of 2026-11-10 to the design
 
 | Area | Target | Text in this spec it supersedes as a target |
 | --- | --- | --- |
-| Packaging | One image and one container: the app, the Takeout worker with Chrome, Xvfb and noVNC, and Syncthing, started and restarted by Darkroom's own init, all as one unprivileged user. The browser moves in first. The separate browser container stays as a fallback for one minor release | "Two containers on Unraid, from one repo" and the `darkroom-browser` row under Deployment and stack; "One container" under the worker's Runtime, which meant the worker's own |
+| Packaging | One image and one container: the app, the Takeout worker with Chrome, Xvfb and noVNC, and Syncthing, started and restarted by Darkroom's own init, all as one unprivileged user. The browser moves in first. The separate browser container stayed as a fallback for one minor release and was then removed (#327) | "Two containers on Unraid, from one repo" and the `darkroom-browser` row under Deployment and stack; "One container" under the worker's Runtime, which meant the worker's own |
 | Pixel transport | Darkroom runs Syncthing and derives its configuration from `pixels` and `pixel_people`: one Send Only folder per Pixel at `_pixels/<pixel id>/`, the `*.xmp` ignore pattern, device IDs learned by a QR scan plus approval in the web UI (never automatic), removal with the Pixel. Local discovery only, host networking on Unraid, a fresh Syncthing identity | The "Syncthing on Unraid" row under Deployment and stack; "Add `*.xmp` to Unraid's `.stignore`"; `.stignore` in phase 1 and "Syncthing as the Pixels' peer" in phase 5 as manual setup. The Pixels keep their own Syncthing app, and Send Only, the size cap, per-destination proof and pruning on the Takeout match (#199, #216) are unchanged |
 | Browser token and addresses | The worker token is generated at every start and handed to the worker inside the container; `DARKROOM_URL` and `VNC_URL` disappear, and the remote browser view is served by the app behind its own sign-in | The token, `DARKROOM_URL` and `VNC_URL` settings in `docs/deploy/browser.md`, and the separate Traefik route for the noVNC view under Runtime notes |
 | Other settings | The secret key is generated; the public address, sign-in details, Immich address and alert email are asked once in a first-run wizard, open to the first visitor from a private address until the first sign-in; environment variables still override | Setting these by hand in `.env` as the only way |
@@ -321,8 +321,7 @@ Same stack and repo conventions as Waypoint and Runway (AnthonyPluth/Waypoint, A
 
 | Component | Runs | Access |
 | --- | --- | --- |
-| `darkroom` | Web UI, API, reconcile and ingest worker, scheduler | `photos/` read-write; Immich's API |
-| `darkroom-browser` | Playwright job runner, Chromium on Xvfb, noVNC | `_inbox/` and `_browser/` read-write |
+| `darkroom-single` | Web UI, API, reconcile and ingest worker, scheduler; the Playwright job runner with Chromium on Xvfb and noVNC, started by its init (the separate `darkroom-browser` container was removed, #327) | `photos/` and appdata read-write; Immich's API |
 | Syncthing on Unraid | Sends each Pixel's transient folder to that Pixel, Send Only | The transient folders, read-only |
 | Immich (existing stack) | Library, search, map, and the backend for the iPhones' Immich app | `photos/` read-only; its own upload storage |
 

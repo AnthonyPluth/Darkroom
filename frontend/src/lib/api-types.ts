@@ -540,6 +540,8 @@ export interface SetupState {
   settings: SetupSetting[];
   redirect_uri: string | null;
   proposal: SetupProposal | null;
+  phase: "before_test" | "after_test";
+  tested_email: string | null;
 }
 
 export interface SetupTestStart {
@@ -625,6 +627,7 @@ export interface Endpoints {
   "POST /api/setup/alerts": { body: SetupAlertsBody; reply: SetupState };
   "POST /api/setup/sign-in": { body: SetupSignInBody; reply: SetupState };
   "POST /api/setup/sign-in/test": { body: never; reply: SetupTestStart };
+  "POST /api/setup/finish": { body: never; reply: Ok };
   "POST /internal/browser/jobs/claim": { body: ClaimBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };
