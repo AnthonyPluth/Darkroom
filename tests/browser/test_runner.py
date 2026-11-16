@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import threading
 import time
@@ -59,7 +60,14 @@ class FakeBrowser:
 
 
 def settings_for(base, photos, poll=0.01):
-    return config.Settings(base, TOKEN, photos, ":99", poll, "test-worker")
+    return config.Settings(8000, TOKEN, photos, ":99", poll, "test-worker")
+
+
+def handed(value):
+    read_end, write_end = os.pipe()
+    os.write(write_end, value.encode())
+    os.close(write_end)
+    return read_end
 
 
 class RunnerAgainstFakeDarkroom(unittest.TestCase):
@@ -106,7 +114,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         appdata = tempfile.TemporaryDirectory()
         self.addCleanup(appdata.cleanup)
         profiles = []
-        settings = config.Settings(self.fake.base, TOKEN, self.photos, ":99", 0.01, "test-worker", Path(appdata.name) / "browser")
+        settings = config.Settings(8000, TOKEN, self.photos, ":99", 0.01, "test-worker", Path(appdata.name) / "browser")
 
         def opens(ctx):
             ctx.browser()
@@ -432,36 +440,36 @@ class ClientTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_the_worker_refuses_to_start_without_a_usable_token(self):
         with tempfile.TemporaryDirectory() as folder:
-            good = config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w")
+            good = config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w")
             self.assertEqual(config.problems(good), [])
-            self.assertEqual(len(config.problems(config.Settings("http://darkroom:8000", "", Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings("http://darkroom:8000", "short", Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings("ftp://darkroom", TOKEN, Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings("http://", TOKEN, Path(folder) / "missing", ":99", 0.0, "w"))), 3)
+            self.assertEqual(len(config.problems(config.Settings(8000, "", Path(folder), ":99", 15.0, "w"))), 1)
+            self.assertEqual(len(config.problems(config.Settings(8000, "short", Path(folder), ":99", 15.0, "w"))), 1)
+            self.assertEqual(len(config.problems(config.Settings(0, TOKEN, Path(folder), ":99", 15.0, "w"))), 1)
+            self.assertEqual(len(config.problems(config.Settings(70000, TOKEN, Path(folder) / "missing", ":99", 0.0, "w"))), 3)
 
     def test_load_reads_the_environment(self):
         from unittest import mock
 
-        with mock.patch.dict("os.environ", {"DARKROOM_URL": "http://d:8000/", "DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": "/p", "POLL_SECONDS": "5", "WORKER_NAME": "w1"}, clear=True):
+        with mock.patch.dict("os.environ", {"DARKROOM_PORT": "8123", "DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "POLL_SECONDS": "5", "WORKER_NAME": "w1"}, clear=True):
             loaded = config.load()
-        self.assertEqual((loaded.darkroom_url, loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), ("http://d:8000", TOKEN, "/p", ":99", 5.0, "w1"))
+        self.assertEqual((config.darkroom_url(loaded), loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), ("http://127.0.0.1:8123", TOKEN, "/p", ":99", 5.0, "w1"))
 
     def test_a_separate_browser_root_is_read_and_must_be_absolute(self):
         from unittest import mock
 
-        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": "/p"}, clear=True):
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p"}, clear=True):
             self.assertIsNone(config.load().browser_root)
-        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": "/p", "BROWSER_ROOT": "/data/browser"}, clear=True):
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "BROWSER_ROOT": "/data/browser"}, clear=True):
             self.assertEqual(config.load().browser_root, Path("/data/browser"))
         with tempfile.TemporaryDirectory() as folder:
-            self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
-            self.assertEqual(config.problems(config.Settings("http://darkroom:8000", TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
+            self.assertEqual(config.problems(config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
+            self.assertEqual(config.problems(config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
             share = Path(folder) / "photos"
             share.mkdir()
             (Path(folder) / "linked").symlink_to(share)
             for root, refused in ((share, True), (share / "jo" / "originals", True), (Path(folder), True), (Path(folder) / "linked", True), (share / "_browser", False)):
                 with self.subTest(root=str(root)):
-                    found = config.problems(config.Settings("http://darkroom:8000", TOKEN, share, ":99", 15.0, "w", root))
+                    found = config.problems(config.Settings(8000, TOKEN, share, ":99", 15.0, "w", root))
                     self.assertEqual(found, ["BROWSER_ROOT must not be PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it"] if refused else [])
 
     def test_the_worker_refuses_to_start_with_a_browser_root_that_is_the_photo_share(self):
@@ -469,7 +477,7 @@ class ConfigTests(unittest.TestCase):
 
         from darkroom_browser import __main__ as entry
 
-        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": folder, "BROWSER_ROOT": folder}, clear=True), \
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": folder, "BROWSER_ROOT": folder}, clear=True), \
                 mock.patch.object(runner.Runner, "run_forever") as loop, no_leaks(self, TOKEN):
             self.assertEqual(entry.main(), 1)
         loop.assert_not_called()
@@ -479,7 +487,7 @@ class ConfigTests(unittest.TestCase):
 
         from darkroom_browser import __main__ as entry
 
-        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": folder, "BROWSER_ROOT": "/data/browser"}, clear=True), \
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": folder, "BROWSER_ROOT": "/data/browser"}, clear=True), \
                 mock.patch.object(runner.Runner, "run_forever", side_effect=KeyboardInterrupt), mock.patch.object(entry.live, "open_context") as opened:
             made = []
             with mock.patch.object(entry, "Runner", side_effect=lambda *args: made.append(args) or runner.Runner(*args)):
@@ -492,7 +500,7 @@ class ConfigTests(unittest.TestCase):
 
         from darkroom_browser import __main__ as entry
 
-        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": "short"}, clear=True), no_leaks(self, TOKEN):
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed("short"))}, clear=True), no_leaks(self, TOKEN):
             self.assertEqual(entry.main(), 1)
 
     def test_main_runs_the_loop_until_interrupted(self):
@@ -500,7 +508,7 @@ class ConfigTests(unittest.TestCase):
 
         from darkroom_browser import __main__ as entry
 
-        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN": TOKEN, "PHOTOS_ROOT": folder}, clear=True), \
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": folder}, clear=True), \
                 mock.patch.object(runner.Runner, "run_forever", side_effect=KeyboardInterrupt), no_leaks(self, TOKEN):
             self.assertEqual(entry.main(), 0)
 
@@ -662,7 +670,7 @@ class RunnerAgainstDarkroom(unittest.TestCase):
         engine = own_database(self)
         photos = tempfile.TemporaryDirectory()
         self.addCleanup(photos.cleanup)
-        env = {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_PHOTOS_ROOT": photos.name, "DARKROOM_PUBLIC_URL": "http://127.0.0.1"}
+        env = {"browser_token": TOKEN, "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_PHOTOS_ROOT": photos.name, "DARKROOM_PUBLIC_URL": "http://127.0.0.1"}
         base, settings = start_server(self, settings_from(**env), engine)
         with db.session(engine) as opened:
             account = add_account(opened)

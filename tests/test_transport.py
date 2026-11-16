@@ -483,6 +483,28 @@ class ReconcilerTests(unittest.TestCase):
         self.assertIsNotNone(tick(NOW + 540))
         self.assertIsNone(tick(NOW + 600))
 
+    def test_the_transport_reconciles_again_when_only_a_folders_ignore_patterns_changed(self):
+        moving = transport.Transport()
+
+        def tick(at):
+            return moving.tick(self.opened, self.client, self.photos, lambda pixel_id: False, None, at)
+
+        identity = self.folder_id(self.jo_pixel)
+        self.assertEqual(tick(NOW).resumed, {self.jo_pixel, self.sam_pixel})
+        self.assertIsNone(tick(NOW + 60))
+        for at, drift in ((NOW + 120, lambda: self.fake.ignores.__setitem__(identity, ["*"])), (NOW + 240, lambda: self.fake.ignores.pop(identity))):
+            drift()
+            self.fake.requests.clear()
+            outcome = tick(at)
+            self.assertIsNotNone(outcome)
+            self.assertIn((transport.CORRECTED, f"pixel {self.jo_pixel}", transport.IGNORES_SET), outcome.corrections)
+            writes = self.writes()
+            paused = writes.index(("PATCH", f"/rest/config/folders/{identity}", mock.ANY))
+            self.assertTrue(writes[paused][2]["paused"])
+            self.assertLess(paused, writes.index(("POST", "/rest/db/ignores", {"ignore": ["*.xmp"]})))
+            self.assertEqual(self.fake.ignores[identity], ["*.xmp"])
+            self.assertIsNone(tick(at + 60))
+
 
 class FolderIdTests(unittest.TestCase):
     def test_only_darkrooms_own_folder_ids_name_a_pixel(self):

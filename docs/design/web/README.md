@@ -27,6 +27,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | Setup wizard: Step 2, Sign-in (signed off, #303) |
 | `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | Setup wizard: After Pocket ID: the server's failure pages (signed off, #303) |
 | `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Setup wizard: Step 3, Immich (signed off, #303) |
+| `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` | Setup wizard: Step 3, Immich, checking the address (#347, drawn for sign-off, **not yet signed off**) |
 | `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | Setup wizard: Step 4, People (signed off, #303) |
 | `08-setup-accounts-desktop.dc.html`, `08-setup-accounts-phone.dc.html` | Setup wizard: Step 5, Google accounts (signed off, #303) |
 | `08-setup-pixels-desktop.dc.html`, `08-setup-pixels-phone.dc.html` | Setup wizard: Step 6, Pixels (signed off, #303) |
@@ -367,3 +368,36 @@ Status: **document signed off by the owner on 2026-11-16 (#344, recorded on #303
 
 Boards: `08-setup-{welcome,closed,address,sign-in,test-failed,immich,people,accounts,pixels,alerts,done}-{desktop,phone}.dc.html`, the eleven pairs the document's board list names, each stacking the states that list names for it, in its order. They use the signed-off tokens only (no new colour, size or font) and the parts already built (card, buttons, fields, the danger alert line, chips, and the People page's table and modal on the People, Google accounts and Pixels steps). The copy is the document's, word for word; `{placeholders}` are filled with made-up values (addresses on 192.168.1.20 and example.com, made-up client and device IDs). `08-setup-test-failed-*` draws the server's own pages as `darkroom/server/common.py` renders them today, not the app's style. They were previewed in a browser at 390 and 1280 wide; no images are committed, as above.
 
+## Checking Immich's address in the setup wizard (#347, for the owner's sign-off)
+
+Status: **drawn for the owner's sign-off, not signed off.** Until it is, the signed-off Immich step (boards `08-setup-immich-*`, which claim no check) stands, and the check is not built into the UI. #347 asks for the check (`POST /api/setup/immich` asks Immich before storing the address) and for its copy and states to be drawn and signed off on #303 first. The wizard API it builds on (#346) is merged (PR #358).
+
+Boards: `08-setup-immich-check-desktop.dc.html` and `08-setup-immich-check-phone.dc.html`, four states: Checking Immich (in flight), then the three refusals (no answer, not Immich, TLS failed). They add to `08-setup-immich-*` and change none of its five states. The only change there is State 4's note, which said "The screen claims no check of Immich (#347)" and now points to the new board. Signed-off tokens and parts only (the card, the field, the primary button disabled as Welcome's "Starting...", the danger alert line). Addresses are made up. The copy, and the amended lines of `08-setup.md` ("Step 3 of 8: Immich", the error table, the API's messages, "What reaches beyond Darkroom" and an addendum to decision 8), are marked "not yet signed off" there.
+
+### What it does
+
+- Save and continue on the Immich step asks Immich's unauthenticated `GET /api/server/ping` at the address typed, through `darkroom/tls.py`, with a short time limit, sending no key, cookie or Darkroom header and following no redirect. It stores the address only on Immich's ping reply (`{"res": "pong"}`).
+- Only after the passing test. The wizard shows the step only then, but the route accepts the claim alone before it (today it stores the address there); see decision J. Before the test nothing is contacted.
+- While it runs, the primary button is disabled and reads "Checking Immich...". An earlier error line is cleared on the press.
+- A refusal shows "Couldn't save Immich's address: Immich didn't answer at {address}: {reason}." in the danger line under the button (`role="alert"`), with one of three fixed reasons: "nothing answered there", "the server there isn't Immich", "its TLS connection failed". Nothing is stored, the field keeps what was typed, the page state is not reloaded, and the line stays until the next press.
+- A pass stores the address and goes on to People as today, with no new line.
+- Set in the environment, Continue checks nothing, as it saves nothing.
+
+### Decisions for the owner (recommendation first)
+
+A. **The refusal's status code.** #347 says 409. But the wizard already reads a 409 from a save as "set in the environment, the page is out of date" and reloads the page's state (`08-setup.md`'s error table; the built `ImmichStep.svelte` passes `outdated: reload`), so a 409 here would reload the page under the error line. Recommended: **422**, a reply about the address the person typed that cannot be mistaken for the environment's 409 and does not read as Darkroom failing. Not chosen: 409 as the issue says (the UI would have to tell two 409s apart by their message); 502, which the test sign-in uses when the issuer can't be reached (consistent with it, but reads as Darkroom's own failure, and a reverse proxy's 502 looks the same).
+B. **The in-flight label** "Checking Immich..." Not chosen: "Saving..." (true but hides the wait, which can last the whole time limit).
+C. **The three reasons' wording**, inside #347's fixed "Immich didn't answer at {address}: {reason}" and decision 10's "Couldn't save {what}: {message}.", so the line has two colons. Not chosen: rewording #347's sentence (for example "Couldn't save Immich's address: nothing answered at {address}."), which would change the issue's fixed message.
+D. **What counts as each reason.** No answer: connection refused, the time limit passed, or the name did not resolve. Not Immich: any reply other than Immich's ping reply, a redirect included (not followed, so the check never reaches an address the person did not type). TLS failed: an https:// address whose certificate was not trusted or whose handshake failed. The line never carries the reply's body or headers, a redirect's target, or the certificate or error detail.
+E. **No page reload, field kept, line until the next press**, as the other refusals on the step. Not chosen: reloading the state, as for the environment's 409.
+F. **No status line when the check passes**: the step moves on, and coming back shows "Saved." as signed off. Not chosen: "Immich answered at {address}." on the People step, which would change the signed-off People board.
+G. **No "Save anyway".** An address Immich doesn't answer at can't be stored from the wizard; `IMMICH_URL` in the environment remains for an Immich that is not up yet. The People step's keys need Immich to answer anyway. Not chosen: a second button that stores without the check.
+H. **Every press checks again**, a stored address too. Not chosen: skipping the check when the address is unchanged.
+I. **Layout.** The README's full-width rule ("Full-width sections") is for the app shell's pages, with the 232 px rail and its content column. The wizard is outside the shell, and its signed-off desktop layout (decision 14) is two columns with the card at most 30 rem. The new states keep that layout, as the other ten wizard board pairs do; making the wizard's card span its column would change every wizard board and is not #347's. Not chosen: widening the card on these boards alone. Phone unchanged.
+J. **A save before the test** (the API only; the wizard never shows the step then). Recommended: refuse it with a 409, as Finish setup refuses before the test, with the message "Immich's address can be saved only after the test sign-in has passed", and contact nothing, so the address is only ever stored checked. Not chosen: storing it unchecked before the test, as today, and checking only after.
+
+### For the build (not copy)
+
+- The time limit: 5 seconds recommended (#347 says "short"). The copy names none.
+- Only `GET /api/server/ping` (Immich's current ping route); an Immich old enough to have only `/api/server-info/ping` reads as "the server there isn't Immich".
+- Tests as #347 lists them, with a loopback fake Immich for each reason, nothing stored on a refusal, the request through `tls.py`, and the negative test that nothing is contacted before the passing test. The wizard's `make verify` flow and the frontend tests gain the in-flight state and one refusal.

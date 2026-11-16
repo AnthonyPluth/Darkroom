@@ -6,13 +6,14 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from darkroom import config
 from darkroom.domain import alerts, browser_jobs, renewal
 from darkroom.server import auth, routes
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
-from tests.shared import fetch, own_database, settings_from, start_server
+from tests.shared import VIEWER_SECRET, fetch, own_database, settings_from, start_server
 from tests.test_browser_jobs import add_account
 
 TOKEN = "worker-token-canary-0123456789abcdef0123456789"
@@ -31,8 +32,8 @@ class WorkerApiServer(unittest.TestCase):
         photos = tempfile.TemporaryDirectory()
         self.addCleanup(photos.cleanup)
         self.photos = Path(photos.name)
-        env = {"DARKROOM_BROWSER_TOKEN": self.token, "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_PHOTOS_ROOT": photos.name,
-               "DARKROOM_PUBLIC_URL": "http://127.0.0.1", "VNC_URL": "https://browser.example/vnc.html", **self.extra_env}
+        env = {"browser_token": self.token, "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_PHOTOS_ROOT": photos.name,
+               "DARKROOM_PUBLIC_URL": "http://127.0.0.1", "viewer_secret": VIEWER_SECRET, **self.extra_env}
         self.base, self.settings = start_server(self, settings_from(**env), self.engine)
         self.replies = []
         with db.session(self.engine) as opened:
@@ -114,7 +115,7 @@ class WorkerRoundTripTests(WorkerApiServer):
         with db.session(self.engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job_id).status, "waiting_for_user")
             alert = opened.execute(select(Alert)).scalar_one()
-            self.assertEqual((alert.kind, alert.link), ("sign_in_needed", "https://browser.example/vnc.html"))
+            self.assertEqual((alert.kind, alert.link), ("sign_in_needed", config.relay_address("http://127.0.0.1")))
 
     def test_failed_with_a_capture_serves_the_files_to_the_owner_only(self):
         job_id = self.enqueue()
@@ -241,15 +242,9 @@ class NoTokenTests(WorkerApiServer):
 
 
 class TokenConfigTests(unittest.TestCase):
-    def test_check_config_flags_a_short_token_and_accepts_a_long_one(self):
-        from darkroom import config
-
-        short = settings_from(DARKROOM_BROWSER_TOKEN="too-short")
-        self.assertTrue(any("DARKROOM_BROWSER_TOKEN" in line for line in config.problems(short)))
-        fine = settings_from(DARKROOM_BROWSER_TOKEN=TOKEN)
-        self.assertFalse(any("DARKROOM_BROWSER_TOKEN" in line for line in config.problems(fine)))
-        unset = settings_from()
-        self.assertFalse(any("DARKROOM_BROWSER_TOKEN" in line for line in config.problems(unset)))
+    def test_the_token_comes_only_from_the_pipe_and_its_usable_shape_is_checked(self):
+        self.assertEqual(settings_from(DARKROOM_BROWSER_TOKEN=TOKEN).browser_token, "")
+        self.assertFalse(any("DARKROOM_BROWSER_TOKEN" in line for line in config.problems(settings_from(DARKROOM_BROWSER_TOKEN="too-short"))))
         self.assertFalse(config.browser_token_usable("a" * 31 + " "))
         self.assertFalse(config.browser_token_usable("é" * 40))
         self.assertTrue(config.browser_token_usable("a" * 32))
