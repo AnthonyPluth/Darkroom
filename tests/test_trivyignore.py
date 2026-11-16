@@ -20,7 +20,7 @@ def entries(text):
     current = None
     listing = None
     for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.split(" #", 1)[0].rstrip() if not raw.lstrip().startswith("#") else ""
+        line = "" if raw.lstrip().startswith("#") else raw.rstrip()
         if not line.strip():
             continue
         if not line.startswith(" "):
