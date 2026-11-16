@@ -17,8 +17,8 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
-| `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (**draft for #322, not signed off**) |
-| `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (**draft for #322, not signed off**) |
+| `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
+| `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
 
 Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar and a bottom tab bar). A page is built only against its board; a web page without a signed-off board here is not built (AGENTS.md, promise 6).
 
@@ -117,9 +117,9 @@ The two alerts that name the button say where it is. "Takeout schedule not renew
 
 `frontend/src/pages/Exports.svelte.test.ts` for each row of the state table, the 409 line and the status line; `frontend/src/lib/view.test.ts` for the state function; `tests/test_alerts` text for the two alerts; `make verify` images at phone and desktop width beside these boards.
 
-## Pairing, Syncthing status and the new alerts (#322, draft for sign-off)
+## Pairing, Syncthing status and the new alerts (#322, signed off)
 
-Status: **draft, not signed off.** The thirteen open points were answered by the owner on PR #345, all as recommended (below); the design is still a draft until the owner signs off #322 itself. Proposed for #322 (single container, step C6 of `docs/design/single-container.md`); nothing here may be built until the owner signs it off on #322 and this status line says so. It covers section 7.4 (pairing), section 7.5 (Syncthing down, settings not applied, version out of range, share check failed, a Pixel held by the placed-copy check, a Pixel not seen for long) and the wording of each new alert kind. The pairing screens are built in #323 on the routes of #321; the Status and People parts and the alerts in #324.
+Status: **signed off by the owner on 2026-11-16: all 13 open points approved as recommended.** Recorded on #322 (https://github.com/AnthonyPluth/Darkroom/issues/322#issuecomment-6924183929). For #322 (single container, step C6 of `docs/design/single-container.md`). It covers section 7.4 (pairing), section 7.5 (Syncthing down, settings not applied, version out of range, share check failed, a Pixel held by the placed-copy check, a Pixel not seen for long) and the wording of each new alert kind. The pairing screens are built in #323 on the routes of #321; the Status and People parts and the alerts in #324.
 
 Boards: `03-people-pairing-desktop.dc.html` and `03-people-pairing-phone.dc.html` (the People page's Pixels card with its new column, then the Pixel form in each pairing state), `02-status-syncthing-desktop.dc.html` and `02-status-syncthing-phone.dc.html` (the new alerts in "Needs you", the person card's Pixel row, and the Syncthing card in each state). They use the signed-off tokens only (no new colour, size or font) and the app shell, chips, buttons, table and modal as built; everything not drawn is as in boards 02 and 03 and the built pages. Device IDs on the boards are made up.
 
@@ -221,7 +221,7 @@ A Pixel held both ways has one alert whose message is the first text followed by
 
 ### The owner's decisions (answered on PR #345, all as recommended)
 
-The owner answered the thirteen open points on pull request #345 and accepted the recommended option for each. These settle the choices below; the design as a whole stays a draft until the owner signs off #322 itself.
+The owner answered the thirteen open points on pull request #345 and accepted the recommended option for each. These settle the choices below; the owner then signed off the design as a whole on #322 on 2026-11-16.
 
 1. **Pairing is a second step of the Pixel form.** Add Pixel saves the details, then the same modal moves to "Pair {name}", because an approval is for a given Pixel (#321). Not chosen: one long form saved at the end.
 2. **The approval is its own step.** "This is {name}", then a separate "Approve this device for {name}?" box with Approve, so nothing is paired on one press. Not chosen: a "The device IDs match" checkbox beside one Approve button.
