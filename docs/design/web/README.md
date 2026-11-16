@@ -119,7 +119,7 @@ The two alerts that name the button say where it is. "Takeout schedule not renew
 
 ## Pairing, Syncthing status and the new alerts (#322, draft for sign-off)
 
-Status: **draft, not signed off.** Proposed for #322 (single container, step C6 of `docs/design/single-container.md`); nothing here may be built until the owner signs it off on #322 and this status line says so. It covers section 7.4 (pairing), section 7.5 (Syncthing down, settings not applied, version out of range, share check failed, a Pixel held by the placed-copy check, a Pixel not seen for long) and the wording of each new alert kind. The pairing screens are built in #323 on the routes of #321; the Status and People parts and the alerts in #324.
+Status: **draft, not signed off.** The thirteen open points were answered by the owner on PR #345, all as recommended (below); the design is still a draft until the owner signs off #322 itself. Proposed for #322 (single container, step C6 of `docs/design/single-container.md`); nothing here may be built until the owner signs it off on #322 and this status line says so. It covers section 7.4 (pairing), section 7.5 (Syncthing down, settings not applied, version out of range, share check failed, a Pixel held by the placed-copy check, a Pixel not seen for long) and the wording of each new alert kind. The pairing screens are built in #323 on the routes of #321; the Status and People parts and the alerts in #324.
 
 Boards: `03-people-pairing-desktop.dc.html` and `03-people-pairing-phone.dc.html` (the People page's Pixels card with its new column, then the Pixel form in each pairing state), `02-status-syncthing-desktop.dc.html` and `02-status-syncthing-phone.dc.html` (the new alerts in "Needs you", the person card's Pixel row, and the Syncthing card in each state). They use the signed-off tokens only (no new colour, size or font) and the app shell, chips, buttons, table and modal as built; everything not drawn is as in boards 02 and 03 and the built pages. Device IDs on the boards are made up.
 
@@ -219,21 +219,23 @@ Each new alert carries only its kind and an id (the Pixel's id for `pixel_held`,
 
 A Pixel held both ways has one alert whose message is the first text followed by "It also has {n} files Darkroom did not put there." Counts take the singular at one ("1 photo", "1 file"). The share check alert opens on the first failed check; `syncthing_down` opens after the set time below, so a restart that recovers within it never alerts.
 
-### Open points (for the owner, each with a recommendation)
+### The owner's decisions (answered on PR #345, all as recommended)
 
-1. **Pairing as a second step of the Pixel form.** Recommended: Add Pixel saves the details, then the same modal moves to "Pair {name}", because an approval is for a given Pixel (#321). Alternative: one long form with the details and the QR code together, saved at the end.
-2. **How the approval is confirmed.** Recommended: "This is {name}" then a separate "Approve this device for {name}?" box with Approve, so nothing is paired on one press. Alternative: a checkbox "The device IDs match" beside a single Approve button.
-3. **Refreshing the waiting list.** Recommended: every 5 seconds while the step is open, plus Check now. Alternative: Check now only.
-4. **The QR code's colours.** Recommended: `canvas` modules on an `ink` tile, the usual dark-on-light that every scanner reads, using existing tokens only. Alternative: light modules on the dark surface, which some phone scanners do not read.
-5. **The name people read.** Recommended: "Syncthing" everywhere in the app. Alternative: "Pixel transport".
-6. **With `DARKROOM_SYNCTHING` off.** Recommended: the pages exactly as today (the typed field in the form, no Syncthing column or card), with only the share check alert new. Alternative: the Syncthing column and card shown with "Set up by hand" and no state.
-7. **Where Syncthing shows on Status.** Recommended: its own card after People and before Recent events, plus the chip after a Pixel's name in the person card when it is not `ok`. Alternative: a line in the page's header sentence and no card.
-8. **The People page column.** Recommended: a "Syncthing" column between People served and Last sync, with a Pair button for an unpaired Pixel. Alternative: the state only inside the Edit form.
-9. **"Not seen for long".** Recommended: 3 days, shown in warn, never alerted. Alternative: 7 days, for a Pixel that is often away from home.
-10. **When Syncthing down alerts.** Recommended: after 1 hour without an answer, the hourly `pixels.tend` rhythm. Alternative: 15 minutes.
-11. **The Pixel's name in `pixel_held`.** Recommended: the message names the Pixel by its Darkroom name (as other alerts name an account or a person; it is not a device ID, a path or a file name), and the email carries only the title anyway. Alternative: "One of your Pixels", with the name only on the People page.
-12. **Buttons on the new alerts.** Recommended: none; each message says what to do, and there is no action Darkroom could take for the person. Alternative: "Open People" on `pixel_held`.
-13. **Kind names.** Recommended: `syncthing_down`, `syncthing_settings_failed`, `syncthing_version`, `share_check_failed`, `pixel_held`, with the key-refused start folded into `syncthing_down`. Alternative: a separate `syncthing_key_refused` kind.
+The owner answered the thirteen open points on pull request #345 and accepted the recommended option for each. These settle the choices below; the design as a whole stays a draft until the owner signs off #322 itself.
+
+1. **Pairing is a second step of the Pixel form.** Add Pixel saves the details, then the same modal moves to "Pair {name}", because an approval is for a given Pixel (#321). Not chosen: one long form saved at the end.
+2. **The approval is its own step.** "This is {name}", then a separate "Approve this device for {name}?" box with Approve, so nothing is paired on one press. Not chosen: a "The device IDs match" checkbox beside one Approve button.
+3. **The waiting list refreshes every 5 seconds** while the step is open, plus Check now. Not chosen: Check now only.
+4. **The QR code is `canvas` modules on an `ink` tile**, existing tokens only. Not chosen: light modules on the dark surface.
+5. **People read "Syncthing"** everywhere in the app. Not chosen: "Pixel transport".
+6. **With `DARKROOM_SYNCTHING` off the pages are exactly as today** (the typed field in the form, no Syncthing column or card); only the share check alert is new. Not chosen: the column and card shown as "Set up by hand".
+7. **Syncthing has its own card on Status**, after People and before Recent events, plus the chip after a Pixel's name in the person card when it is not `ok`. Not chosen: a line in the header sentence.
+8. **People has a "Syncthing" column** between People served and Last sync, with a Pair button for an unpaired Pixel. Not chosen: the state only inside the Edit form.
+9. **"Not seen for long" is 3 days**, shown in warn, never alerted. Not chosen: 7 days.
+10. **`syncthing_down` alerts after 1 hour** without an answer. Not chosen: 15 minutes.
+11. **`pixel_held` names the Pixel by its Darkroom name**; the email carries only the title. Not chosen: "One of your Pixels".
+12. **No button on the new alerts.** Not chosen: "Open People" on `pixel_held`.
+13. **The kinds are `syncthing_down`, `syncthing_settings_failed`, `syncthing_version`, `share_check_failed` and `pixel_held`**, with a key refused at start folded into `syncthing_down`. Not chosen: a separate `syncthing_key_refused`.
 
 ### What the owner reviews, and what the build pull requests carry
 
