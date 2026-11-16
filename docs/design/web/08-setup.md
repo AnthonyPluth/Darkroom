@@ -17,7 +17,7 @@ The review has two stages (decision 1), and both are recorded on #303. Both are 
 | `08-setup-closed-desktop.dc.html`, `08-setup-closed-phone.dc.html` | Setup isn't open; Setup is open in another browser |
 | `08-setup-address-desktop.dc.html`, `08-setup-address-phone.dc.html` | Prefilled with the address in use; edited to another address (the warning line); a refused save; set in the environment |
 | `08-setup-sign-in-desktop.dc.html`, `08-setup-sign-in-phone.dc.html` | No details saved yet (test disabled); details saved with a secret stored (test enabled); unsaved edits (test disabled); a refused save; the test could not start; set in the environment |
-| `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | The server's failure pages after the test: Not allowed (account); Not allowed (not started here); The test sign-in failed; The settings changed; Nothing to test |
+| `08-setup-test-failed-desktop.dc.html`, `08-setup-test-failed-phone.dc.html` | The server's failure pages after the test: Not allowed (account); Not allowed (not started here); The test sign-in failed; The settings changed; Nothing to test; each but "not started here" has a "Back to setup" button (not drawn) |
 | `08-setup-immich-desktop.dc.html`, `08-setup-immich-phone.dc.html` | Arrived from a passing test (the "Sign-in works" status line); empty; stored; a refused save; set in the environment |
 | `08-setup-immich-check-desktop.dc.html`, `08-setup-immich-check-phone.dc.html` (#347, signed off) | Checking Immich (in flight); refused, no answer; refused, not Immich; refused, TLS failed |
 | `08-setup-people-desktop.dc.html`, `08-setup-people-phone.dc.html` | No people yet (Continue disabled); the add-person form open; two people added |
@@ -183,7 +183,7 @@ Test sign-in is enabled only when details are saved (`proposal` is not null) and
 ### After Pocket ID
 
 - **It worked** (#346). The server signs the account in, stores the sign-in settings, and sends the browser back to `/setup`, which opens step 3 with a status line at the top of the card: "Sign-in works. You're signed in as {email}." The server's "Sign-in works" page of #304 is no longer shown.
-- **It failed.** The server answers with its own small page (the `page` helper in `darkroom/server/common.py`, its own style and CSP), as built; the claim still holds and nothing was stored. Their text is the API's, quoted here so that it is part of the sign-off. A "Back to setup" link on them is #349; #305 ships without it, so the person uses the browser's back button or opens `/setup` again.
+- **It failed.** The server answers with its own small page (the `page` helper in `darkroom/server/common.py`, its own style and CSP), as built; the claim still holds and nothing was stored. Their text is the API's, quoted here so that it is part of the sign-off. The four failure pages ("Not allowed" for an account that is not allowed, "The test sign-in failed", "The settings changed" and "Nothing to test") each carry a "Back to setup" button, in the page helper's existing button style, linking to `/setup`; the "This test sign-in did not start here" page has no link. Built in #349 (#374); signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6931512806).
 
 | Result | Title | Text |
 | --- | --- | --- |
@@ -357,7 +357,7 @@ The owner answered the first draft's open points on #344, and the three that dec
 10. **Error wording:** accepted as recommended. The API's message unchanged inside "Couldn't save {what}: {message}.".
 11. **Secret fields:** accepted as recommended. Password fields with no show button, emptied after every save.
 12. **Settings from the environment:** accepted as recommended. The read-only row with no value; the whole alert step as rows when any of its three is in the environment.
-13. **The server's failure pages:** a follow-up issue, #349 (a "Back to setup" link); #305 ships without it.
+13. **The server's failure pages:** a "Back to setup" button (the page helper's existing button style) linking to `/setup` on the four failure pages ("Not allowed", "The test sign-in failed", "The settings changed", "Nothing to test"), and no link on the "This test sign-in did not start here" page. Built in #349 (#374); signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth/Darkroom/issues/303#issuecomment-6931512806).
 14. **The desktop layout:** accepted as recommended. The signed-out page's two columns with the step list on the left. The widths in the recommendation (half-page and 420 px left panels, the card at most 30 rem or 48 rem) are superseded by the signed-off revision in "Desktop (1280)" above: a 304 px left pane and the card filling the column.
 15. **Images for #305:** the wizard mode of `tools/verify.py` is part of #305.
 16. **People required:** accepted as recommended. Continue on People needs at least one person; Google accounts and Pixels stay skippable. Not chosen: letting People be skipped too.
