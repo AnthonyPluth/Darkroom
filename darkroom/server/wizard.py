@@ -29,6 +29,7 @@ CLOSED, UNCLAIMED, CLAIMANT, OTHER = "closed", "unclaimed", "claimant", "other"
 BEFORE_TEST, AFTER_TEST = "before_test", "after_test"
 AFTER_TEST_SECONDS = 7 * 86_400
 SETUP_PAGE = "/setup"
+BACK_TO_SETUP = (SETUP_PAGE, "Back to setup")
 TEST_PATH = SETUP_PAGE + "?proposal="
 
 
@@ -196,8 +197,12 @@ def same_address(request: Request, public_url: str) -> bool:
     return public.scheme in ("http", "https") and bool(host) and public.netloc.lower() == host
 
 
-def test_page(status: int, title: str, message: str, request: Request) -> Response:
-    return page(status, title, message, cookies=(auth.cleared(request.settings, TEST_COOKIE, "/auth"),))
+def test_page(status: int, title: str, message: str, request: Request, link: tuple[str, str] | None = BACK_TO_SETUP) -> Response:
+    return page(status, title, message, link=link, cookies=(auth.cleared(request.settings, TEST_COOKIE, "/auth"),))
+
+
+def not_started_here(request: Request) -> Response:
+    return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request, link=None)
 
 
 def callback(request: Request) -> Response:
@@ -210,7 +215,7 @@ def callback(request: Request) -> Response:
 def finish_test(request: Request, state: str) -> Response:
     settings = request.settings
     if standing(request) != (CLAIMANT, BEFORE_TEST):
-        return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
+        return not_started_here(request)
     live = live_settings(request)
     with db.session(engine_of(request)) as opened:
         fields = load_proposal(opened, settings.secret_key)
@@ -230,7 +235,7 @@ def finish_test(request: Request, state: str) -> Response:
     with db.session(engine_of(request), writing=True) as opened:
         moment = now()
         if locked_window(opened, moment).phase != BEFORE_TEST:
-            return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
+            return not_started_here(request)
         current = load_proposal(opened, settings.secret_key)
         if current is None or current["id"] != fields["id"]:
             return test_page(409, "The settings changed", "The proposed sign-in settings changed during the test, so nothing was saved. Test again.", request)

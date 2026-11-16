@@ -40,7 +40,8 @@
         "tests/test_auth_routes.py",
         "tests/test_every_route.py",
         "tests/test_oidc.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
@@ -597,7 +598,8 @@
       ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
@@ -657,7 +659,8 @@
       ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
@@ -669,7 +672,8 @@
       ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
