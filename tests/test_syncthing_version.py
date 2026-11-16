@@ -149,7 +149,7 @@ class AppSettingTests(unittest.TestCase):
     def test_check_config_the_deploy_page_and_the_example_say_what_syncs_once_it_is_on(self):
         root = Path(__file__).resolve().parent.parent
         page = (root / "docs/deploy/one-container.md").read_text()
-        section = page[page.index("## Syncthing: in the image, off by default"):page.index("## Moving from the two containers")]
+        section = page[page.index("## Syncthing: on by default"):page.index("## Moving from the two containers")]
         example = next(line for line in (root / ".env.example").read_text().splitlines() if line.startswith("# 1 makes the one container's init start"))
         for text in (run.SYNCTHING_ON, section, example):
             with self.subTest(text=text[:40]):
