@@ -18,6 +18,7 @@ from tests.privacy import no_leaks
 
 NOW = test_pixel_folder.NOW
 KEY = "st-transport-canary-key-51c0"
+SECRET = "the-transport-test-secret-key"
 OWN = syncthing.device_id_of_certificate(b"made-up certificate of darkroom in the transport tests")
 JO_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of jo's pixel")
 SAM_DEVICE = syncthing.device_id_of_certificate(b"made-up certificate of sam's pixel")
@@ -946,6 +947,57 @@ class SchedulerAlertTests(unittest.TestCase):
         self.assertEqual(self.open_kinds(), [])
         scheduler.run_one("alerts.tick", 160.0 + 3600)
         self.assertEqual(self.open_kinds(), ["syncthing_down"])
+
+    def store_email_settings(self):
+        from darkroom.storage import db, stored_settings
+
+        with db.session(self.engine) as opened:
+            for variable, plain in (("RESEND_API_KEY", "re_transport-canary-0042"), ("ALERT_EMAIL_FROM", "darkroom@example.test"),
+                                    ("ALERT_EMAIL_TO", "owner@example.test"), ("DARKROOM_PUBLIC_URL", "https://stored.example.test")):
+                stored_settings.store(opened, variable, plain, SECRET, 1.0)
+            opened.commit()
+
+    def queued(self, kind):
+        from darkroom.storage import db
+
+        with db.session(self.engine) as opened:
+            alert = opened.execute(select(Alert).where(Alert.kind == kind, Alert.closed.is_(None))).scalars().one()
+            return alert.push_due, alert.link
+
+    def test_a_share_check_failure_seen_by_a_tend_emails_with_the_settings_stored_after_start_up(self):
+        from darkroom.storage import share
+
+        scheduler = self.serving(dataclasses.replace(self.settings, secret_key=SECRET))
+        scheduler.run_one("pixels.tend", 105.0)
+        self.store_email_settings()
+        (self.root / share.SHARE_SENTINEL_FILE).unlink()
+        scheduler.run_one("pixels.tend", 200.0)
+        self.assertEqual(self.queued("share_check_failed"), (200.0, "https://stored.example.test/"))
+
+    def test_a_held_pixel_seen_by_a_tend_emails_with_the_settings_stored_after_start_up(self):
+        scheduler = self.serving(dataclasses.replace(self.settings, secret_key=SECRET))
+        scheduler.run_one("pixels.tend", 105.0)
+        self.store_email_settings()
+        (self.root / f"_pixels/{self.pixel}/jo/stray.jpg").write_bytes(b"not put there by darkroom")
+        with mock.patch.object(pixel_check.PlacedCopyCheck, "due", return_value=True):
+            scheduler.run_one("pixels.tend", 3700.0)
+        self.assertEqual(self.queued("pixel_held"), (3700.0, "https://stored.example.test/people"))
+
+    def test_syncthing_down_seen_by_the_gate_recheck_emails_with_the_settings_stored_after_start_up(self):
+        from darkroom.server import jobs
+
+        self.fake.status = 500
+        scheduler = self.serving(dataclasses.replace(self.settings, secret_key=SECRET))
+        self.assertFalse(scheduler.syncthing.on)
+        self.store_email_settings()
+        at = 100.0 + jobs.SYNCTHING_RECHECK_SECONDS
+        while "syncthing_down" not in self.open_kinds():
+            self.assertLess(at, 100.0 + 2 * 3600)
+            scheduler.run_one("syncthing.gate", at)
+            at += jobs.SYNCTHING_RECHECK_SECONDS
+        push_due, link = self.queued("syncthing_down")
+        self.assertIsNotNone(push_due)
+        self.assertEqual(link, "https://stored.example.test/")
 
     def test_a_demo_server_with_no_share_bound_starts_no_syncthing_or_tending_jobs_and_records_nothing_about_them(self):
         import dataclasses
