@@ -3,7 +3,7 @@
   "page": "people",
   "steps": [
     { "expect_text": { "selector": "section[aria-label='Pixels']", "text": "Darkroom removed its folder because it was changed outside Darkroom." } },
-    { "click": "button[aria-label=\"Share again: Blair's second Pixel's folder\"]" },
+    { "click": "button[aria-label=\"Share Blair's second Pixel's folder again\"]" },
     { "expect_text": { "selector": "[role=dialog]", "text": "If the folder is changed outside Darkroom again, Darkroom removes it again." } },
     { "screenshot": "confirm" },
     { "click": "[role=dialog] button:has-text('Share folder again')" },

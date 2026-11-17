@@ -43,9 +43,9 @@
             {#if data.transport.pairing && !pixel.syncthing_device_id}
               <button type="button" class="btn" aria-label="Pair {pixel.name}" onclick={() => onpair?.(pixel)}>Pair</button>
             {:else if transport?.state === "device_id_invalid" || transport?.state === "device_id_shared"}
-              <button type="button" class="btn" aria-label="Pair again: {pixel.name}" onclick={() => onpair?.(pixel)}>Pair again</button>
+              <button type="button" class="btn" aria-label="Pair {pixel.name} again" onclick={() => onpair?.(pixel)}>Pair again</button>
             {:else if transport?.state === "folder_removed"}
-              <button type="button" class="btn" aria-label="Share again: {pixel.name}'s folder" onclick={() => onshare?.(pixel)}>Share again</button>
+              <button type="button" class="btn" aria-label="Share {pixel.name}'s folder again" onclick={() => onshare?.(pixel)}>Share again</button>
             {/if}
             <button type="button" class="btn" aria-label="Edit {pixel.name}" onclick={() => onedit(pixel)}>Edit</button>
           </span>

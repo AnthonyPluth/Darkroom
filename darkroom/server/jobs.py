@@ -191,8 +191,9 @@ def pause_transport(scheduler: Scheduler, settings: Settings, opened: Session, r
 
 
 def review_transport(settings: Settings, engine: Engine, at: float) -> None:
+    current = stored_settings.effective(settings, engine).settings
     with db.session(engine, writing=True) as opened:
-        transport_status.review(opened, settings, at)
+        transport_status.review(opened, current, at)
 
 
 def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now: float) -> Scheduler:
