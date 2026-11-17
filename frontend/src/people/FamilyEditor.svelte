@@ -120,7 +120,7 @@
     {@const pixel = editing.item}
     <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined}
       pairing={data.transport?.pairing ?? false} onadded={data.transport ? added : undefined} onpair={data.transport && pixel ? () => pair(pixel) : undefined}
-      onunpair={data.transport && pixel?.syncthing_device_id ? () => unpairPixel(pixel) : undefined} />
+      onunpair={data.transport?.pairing && pixel?.syncthing_device_id ? () => unpairPixel(pixel) : undefined} />
   {:else if editing?.kind === "pairing"}
     <PixelPairing pixel={editing.item} onpaired={paired} onlater={() => (formOpen = false)} />
   {:else if editing?.kind === "paired"}
