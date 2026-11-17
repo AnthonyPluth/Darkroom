@@ -54,7 +54,7 @@ A third service in `docker-compose.yml`, under a `vision` profile so it is opt-i
 
 Why a separate container rather than inside `darkroom`:
 
-- The Edge TPU runtime (`libedgetpu`) and a TFLite interpreter are native libraries with their own Python version constraints (open point 3); keeping them out of the main image keeps the main image on Python 3.14 and its current audit surface.
+- The Edge TPU runtime (`libedgetpu`) and a TFLite interpreter are native libraries with their own Python version constraints (open point 3); keeping them out of the main image keeps the main image on Python 3.15 and its current audit surface.
 - The device passthrough (`/dev/bus/usb` or `/dev/apex_0`) is given to the one container that needs it, not to the one that holds the database, the OIDC secrets and write access to the photo share.
 - A crash or a hung TPU kills only the worker; `darkroom` keeps serving and ingesting.
 
@@ -243,7 +243,7 @@ Each has a recommended default; the pull requests build the default unless the o
 
 1. **Auth for the worker.** Default: a new auth kind `vision` with its own `DARKROOM_VISION_TOKEN`, so the vision and browser workers can't use each other's routes. Alternative: reuse `worker` and the browser token (fewer moving parts, wider blast radius).
 2. **Which Coral, and does passthrough work on this Unraid.** The issue leaves the form factor open. Default: the USB Accelerator (no kernel driver, passes through as `/dev/bus/usb`). Needs the owner to confirm on the real box: the device is seen, the container works without `privileged`, the self-test passes, the latency recorded. For M.2 or PCIe, also the driver plugin on the owner's Unraid version.
-3. **Runtime stack.** The Coral project's own Python packages stopped tracking new Python releases; the Edge TPU runtime still loads as a TFLite delegate from newer interpreters. Default: the vision image uses its own pinned Python and interpreter version (whatever the self-test proves works with `libedgetpu`), independent of the main image's 3.14, built from pinned packages with hashes. Needs hardware to confirm.
+3. **Runtime stack.** The Coral project's own Python packages stopped tracking new Python releases; the Edge TPU runtime still loads as a TFLite delegate from newer interpreters. Default: the vision image uses its own pinned Python and interpreter version (whatever the self-test proves works with `libedgetpu`), independent of the main image's 3.15, built from pinned packages with hashes. Needs hardware to confirm.
 4. **Worker sees pixels or files.** Default: pixels only (a scaled JPEG per job over the internal network, no photo mount). Alternative: a read-only mount of the photo share.
 5. **CPU fallback.** Default: on, one image at a time, at most 2 images a second, so a backfill on the CPU doesn't starve ingest. Alternative: off, so without a Coral nothing runs.
 6. **Tag taxonomy** (the issue's question). Default: store the stock COCO and ImageNet labels as given, and show a short family taxonomy mapped from them in code (the list under "Models and licensing"). Alternative: stock labels only, or a different family list.

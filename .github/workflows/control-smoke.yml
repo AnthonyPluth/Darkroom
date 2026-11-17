@@ -34,6 +34,7 @@ jobs:
     uses: AnthonyPluth/fleet/.github/workflows/verify.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
     with:
       make-target: control-smoke
+      python-version: "3.15"
       timeout-minutes: 20
       node-version-file: frontend/.nvmrc
       # The demo seed reads photos with exiftool and libheif; fleet adds libfaketime (the frozen clock) itself.
