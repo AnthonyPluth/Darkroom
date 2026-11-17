@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from darkroom_browser import capture, monitoring, scrub
+from tests.browser.takeout_pages import MADE_UP_USER, archive
 from tests.browser.test_runner import FakeBrowser
 from tests.privacy import no_leaks
 
@@ -41,6 +42,11 @@ class ScrubTests(unittest.TestCase):
         self.assertIn('<script>[removed]</script>', scrubbed)
         self.assertIn('https://accounts.google.com/signin?[removed]', scrubbed)
         self.assertTrue(scrubbed.startswith("<!-- scrubbed by Darkroom"))
+
+    def test_an_archive_pages_relative_download_uris_lose_their_query_and_the_google_user_id(self):
+        scrubbed = scrub.scrub_html(archive())
+        self.assertNotIn(MADE_UP_USER, scrubbed)
+        self.assertIn('data-download-uri="takeout/download?[removed]"', scrubbed)
 
     def test_ordinary_markup_is_kept(self):
         page = "<html><body><p class='note'>Export 2 of 3 is ready.</p><a href='https://takeout.google.com/manage'>Manage</a></body></html>"

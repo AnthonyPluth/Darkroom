@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import tzinfo
+
 from darkroom_browser import selectors
+from darkroom_browser.config import local_zone
 from darkroom_browser.context import Browser, JobContext
 from darkroom_browser.jobs.session import SIGN_IN_STATES, UnexpectedPage, ensure_signed_in
 from darkroom_browser.pages import takeout
@@ -14,13 +18,14 @@ class ExportsUnreadable(UnexpectedPage):
     pass
 
 
-def open_exports(ctx: JobContext, browser: Browser) -> str:
+def open_page(ctx: JobContext, browser: Browser, url: str, ready: Callable[[str], bool], failure: str) -> str:
+    page = ""
     for _ in range(MAX_ROUNDS):
-        browser.goto(selectors.TAKEOUT_MANAGE_URL)
+        browser.goto(url)
         signed_out = False
         for attempt in range(LIST_POLLS + 1):
             page = browser.content()
-            if takeout.exports_page_ready(page):
+            if ready(page):
                 return page
             if takeout.classify(page) in SIGN_IN_STATES:
                 signed_out = True
@@ -31,7 +36,22 @@ def open_exports(ctx: JobContext, browser: Browser) -> str:
         if not signed_out:
             break
         ensure_signed_in(ctx, browser)
-    raise ExportsUnreadable("Takeout's list of exports did not load")
+    raise ExportsUnreadable(f"{failure}; the page showed {takeout.landmarks(page)}")
+
+
+def open_exports(ctx: JobContext, browser: Browser) -> str:
+    return open_page(ctx, browser, selectors.TAKEOUT_MANAGE_URL, takeout.exports_page_ready, "Takeout's list of exports did not load")
+
+
+def open_archive(ctx: JobContext, browser: Browser, url: str) -> str:
+    return open_page(ctx, browser, url, takeout.archive_page_ready, "an export's own page on Takeout did not load")
+
+
+def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing, zone: tzinfo) -> takeout.ExportListing:
+    if listing.state != "ready":
+        return listing
+    detail = takeout.parse_archive(open_archive(ctx, browser, listing.archive_url), listing.google_id)
+    return takeout.with_archive(listing, detail, zone)
 
 
 def report(listings: list[takeout.ExportListing]) -> dict[str, object]:
@@ -52,9 +72,10 @@ def report(listings: list[takeout.ExportListing]) -> dict[str, object]:
 def check_exports(ctx: JobContext) -> dict[str, object]:
     browser = ctx.browser()
     ensure_signed_in(ctx, browser)
+    zone = local_zone()
     page = open_exports(ctx, browser)
     try:
-        listings = takeout.parse_exports(page)
+        listings = [with_parts(ctx, browser, listing, zone) for listing in takeout.parse_exports(page, ctx.wall(), zone)]
     except takeout.UnreadableExports as error:
         raise ExportsUnreadable(str(error)) from error
     ctx.progress(f"read {len(listings)} exports")

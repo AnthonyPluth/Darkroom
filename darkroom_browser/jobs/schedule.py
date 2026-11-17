@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import calendar
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from darkroom_browser import selectors
-from darkroom_browser.config import env
+from darkroom_browser.config import local_zone
 from darkroom_browser.context import Browser, Cancelled, JobContext
 from darkroom_browser.jobs.session import UnexpectedPage, ensure_signed_in
 from darkroom_browser.pages import takeout
@@ -48,13 +47,6 @@ def shift_months(moment: datetime, months: int) -> datetime:
     year, month = divmod(index, 12)
     month += 1
     return moment.replace(year=year, month=month, day=min(moment.day, calendar.monthrange(year, month)[1]))
-
-
-def local_zone() -> ZoneInfo:
-    try:
-        return ZoneInfo(env("TZ", "UTC"))
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
 
 
 def adopt(ctx: JobContext, existing: takeout.ExistingSchedule) -> dict[str, object]:
