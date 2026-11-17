@@ -3,6 +3,9 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,6 +186,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("FROM darkroom-single:smoke", mutation)
         self.assertIn("bash tests/browser/syncthing_peer.sh darkroom-single:sendreceive 8769 || found=$?", mutation)
         self.assertIn('[ "$found" = 3 ]', mutation)
+        self.assertEqual(re.findall(r"(?m)^(share|peer)_changed=(\d+)$", self.script), [("share", "3"), ("peer", "4")])
 
     def test_the_send_and_receive_build_still_finds_the_line_it_changes(self):
         provider = (ROOT / "darkroom/providers/syncthing.py").read_text()
@@ -197,9 +201,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("-e DARKROOM_SYNCTHING=1", self.script)
         self.assertNotIn("--network host", self.script)
         self.assertNotRegex(self.script, r"-p [^ ]*(22000|21027|8384)")
-        self.assertIn("share_changed=3", self.script)
-        self.assertEqual(self.script.count('exit "$share_changed"'), 2)
-        self.assertNotRegex(self.script, r"exit 3\b")
+        self.assertIn(f"differs={syncthing_host.CHANGED}\n", self.script)
+        self.assertIn("share_changed=3\n", self.script)
+        self.assertIn("peer_changed=4\n", self.script)
+        share = self.script[self.script.index("unchanged() {"):self.script.index("peer_unchanged() {")]
+        peer = self.script[self.script.index("peer_unchanged() {"):self.script.index("\n}\n", self.script.index("peer_unchanged() {"))]
+        self.assertIn('if [ "$found" = "$differs" ]; then echo "$2" >&2; logs; exit "$share_changed"; fi', share)
+        self.assertIn('if [ "$found" = "$differs" ]; then echo "$2" >&2; logs; exit "$peer_changed"; fi', peer)
+        self.assertEqual(self.script.count('exit "$share_changed"'), 1)
+        self.assertEqual(self.script.count('exit "$peer_changed"'), 1)
+        self.assertNotRegex(self.script, r"exit [34]\b")
 
     def test_the_script_compares_the_whole_share_around_each_hostile_step(self):
         for step in ("hostile", "removal", "persisted"):
@@ -212,6 +223,62 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(self.script.index("unchanged hostile"), self.script.index('field "$shown" type'))
         self.assertLess(self.script.index('host retype "$work/data/syncthing/config.xml" "$folder" sendreceive'), self.script.index("start_darkroom start"))
         self.assertLess(self.script.index("docker stop \"$darkroom\""), self.script.index("host retype"))
+
+
+class ComparisonExitCodeTests(unittest.TestCase):
+    def setUp(self):
+        script = (ROOT / "tests/browser/syncthing_peer.sh").read_text()
+        lines = script.splitlines()
+        settings = [line for line in lines if re.fullmatch(r"(differs|share_changed|peer_changed)=\d+", line)]
+        one_liners = [line for line in lines if line.startswith(("fail() {", "snapshot() {"))]
+        blocks = [script[script.index(f"\n{name}() {{\n") + 1:script.index("\n}\n", script.index(f"\n{name}() {{\n")) + 3] for name in ("unchanged", "peer_unchanged")]
+        self.assertEqual((len(settings), len(one_liners)), (3, 2))
+        self.functions = "\n".join([*settings, *one_liners, *blocks])
+        self.work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work)
+        write(self.work / "share/_pixels/1/ci/2026/IMG_0001.jpg")
+        write(self.work / "peer/pixel/ci/2026/IMG_0001.jpg")
+
+    def run_steps(self, between):
+        program = "\n".join([
+            "set -eo pipefail",
+            f"work={self.work}",
+            f"here={ROOT / 'tests/browser'}",
+            f'host() {{ "{sys.executable}" -I "$here/syncthing_host.py" "$@"; }}',
+            "seed() { echo '[]'; }",
+            "logs() { :; }",
+            self.functions,
+            "snapshot step",
+            between,
+            'unchanged step "the share changed"',
+            'peer_unchanged step "the peer changed"',
+        ])
+        return subprocess.run([shutil.which("bash"), "-c", program], capture_output=True, text=True, check=False)
+
+    def test_an_unchanged_share_and_peer_pass(self):
+        self.assertEqual(self.run_steps(":").returncode, 0)
+
+    def test_a_changed_share_exits_3_with_the_step_s_message(self):
+        ran = self.run_steps('printf more >> "$work/share/_pixels/1/ci/2026/IMG_0001.jpg"')
+        self.assertEqual(ran.returncode, 3)
+        self.assertIn("the share changed", ran.stderr)
+        self.assertNotIn("the peer changed", ran.stderr)
+
+    def test_a_changed_peer_exits_4_not_the_share_comparison_s_3(self):
+        ran = self.run_steps('rm "$work/peer/pixel/ci/2026/IMG_0001.jpg"')
+        self.assertEqual(ran.returncode, 4)
+        self.assertIn("the peer changed", ran.stderr)
+
+    def test_a_share_that_cannot_be_compared_fails_with_1_not_3(self):
+        ran = self.run_steps('rm "$work/step.share.json"')
+        self.assertEqual(ran.returncode, 1)
+        self.assertIn("the share could not be compared", ran.stderr)
+
+    def test_the_send_and_receive_step_s_expected_code_is_the_share_comparison_s(self):
+        workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+        expected = re.search(r'\[ "\$found" = (\d+) \]', workflow[workflow.index("darkroom-single:sendreceive 8769"):])
+        ran = self.run_steps('printf more >> "$work/share/_pixels/1/ci/2026/IMG_0001.jpg"; rm "$work/peer/pixel/ci/2026/IMG_0001.jpg"')
+        self.assertEqual(str(ran.returncode), expected.group(1))
 
 
 if __name__ == "__main__":
