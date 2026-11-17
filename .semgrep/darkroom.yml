@@ -17,10 +17,13 @@ rules:
       Open outbound connections only through darkroom/tls.py (in the browser worker, through darkroom_browser/client.py,
       which reaches the app on its private socket). Nothing else imports socket or h2 since the APNs client went (#201),
       so import-linter can no longer protect them; this rule does. It flags every import of socket or h2, every use of
-      an attribute of the socket module (a call or a value), and every reference to http.client's HTTPConnection or
-      HTTPSConnection, under any name it is imported as (a call, a base class, a value, an unbound method such as
-      .connect). The client's import of socket, its one socket open and its OnSocket class line each carry a justified
-      nosemgrep, so these are flagged anywhere else in that file too (#393).
+      an attribute of the socket module (a call or a value), every reference to http.client's HTTPConnection or
+      HTTPSConnection, under any name Semgrep can follow an import to (a call, a base class, a value, an unbound method
+      such as .connect), and every reference to the client's OnSocket other than calling it to make one (a base class,
+      super(OnSocket, ...), a value, an attribute of any module), with every import of OnSocket under another name, so
+      no subclass can reach HTTPConnection.connect and open a TCP connection. The client's import of socket, its one
+      socket open and its OnSocket class line each carry a justified nosemgrep, so these are flagged anywhere else in
+      that file too (#393).
     severity: ERROR
     languages: [python]
     pattern-either:
@@ -36,6 +39,16 @@ rules:
       - pattern: socket.$X
       - pattern: http.client.HTTPConnection
       - pattern: http.client.HTTPSConnection
+      - patterns:
+          - pattern-either:
+              - pattern: OnSocket
+              - pattern: $MODULE.OnSocket
+              - pattern: darkroom_browser.client.OnSocket
+          - pattern-not:
+              patterns:
+                - pattern: $MAKE(...)
+                - focus-metavariable: $MAKE
+      - pattern: from $M import OnSocket as $A
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/tls.py"]
