@@ -97,7 +97,34 @@ mkdir -p "${BACKUP%/*}"                # cp -a does not create a missing parent 
 SANDBOX='--user=99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json'
 ```
 
-`$SANDBOX` is left unquoted where it is used, so it splits into the template's flags. Taking the backup is the same each time:
+`$SANDBOX` is left unquoted where it is used, so it splits into the template's flags.
+
+A made-up Takeout, hand-dropped and imported by the documented route ([runbook](../runbook.md#hand-dropping-an-export)): the Immich reconcile runs for a person only once a Takeout of theirs is imported, and a test account never gets a real one in time. `made_up_takeout` zips the photos of a host folder of made-up photos as a Takeout export (with Google's JSON sidecars), puts it in that person's `_inbox/<person>/manual/` and imports it; the person must have a Google account in Darkroom (name it as a third argument when they have several):
+
+```sh
+made_up_takeout() {  # made_up_takeout <person> <host folder of made-up photos> [<Google account email>]
+  rm -rf "${APPDATA:?}/made-up-takeout" && mkdir -p "$APPDATA/made-up-takeout" && cp "$2"/* "$APPDATA/made-up-takeout"/ && chown -R 99:100 "$APPDATA/made-up-takeout"
+  docker exec -i "$C" python - /data/made-up-takeout "/photos/_inbox/$1/manual" <<'PY'
+import datetime, json, sys, zipfile
+from pathlib import Path
+source, target = Path(sys.argv[1]), Path(sys.argv[2])
+target.mkdir(parents=True, exist_ok=True)
+name = target / f"takeout-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%SZ}-001.zip"
+with zipfile.ZipFile(name, "w") as made:
+    for photo in sorted(source.iterdir()):
+        folder = "Takeout/Google Photos/Photos from 2026"
+        made.write(photo, f"{folder}/{photo.name}")
+        made.writestr(f"{folder}/{photo.name}.supplemental-metadata.json", json.dumps({"title": photo.name, "photoTakenTime": {"timestamp": str(int(photo.stat().st_mtime))}}))
+print(f"wrote {name.name} with {len(made.namelist()) // 2} photos")
+PY
+  docker exec "$C" python run.py import-takeout --person "$1" ${3:+--account "$3"}
+  rm -rf "${APPDATA:?}/made-up-takeout"
+}
+```
+
+Expected: `wrote takeout-<time>-001.zip with N photos`, then `Export <id>: N added, 0 skipped as duplicates, 0 in review, N missing GPS` (an earlier export of the same person is reported as `Export <id> is already imported.` first); the export is then `imported`, which is what the reconcile asks for.
+
+Taking the backup is the same each time:
 
 ```sh
 docker stop "$C"
@@ -115,10 +142,11 @@ Expected: `99:100` on all three (`600` on `secret-key`, which is absent when the
 Set-up, click by click, on a fresh container (`DARKROOM_SYNCTHING=0`):
 
 1. Sign in to Darkroom.
-2. **People**, **Add person**: a made-up name; fill **Immich API key** with a key for a test Immich user.
+2. **People**, **Add person**: a made-up name; fill **Immich user ID** with a test Immich user's ID and **Immich API key** with a key of that user. The Immich reconcile also needs `IMMICH_URL` (and `IMMICH_ADMIN_KEY`) in the template, and the person's **Immich user ID** and **Immich API key** (a key of that same Immich user) on their **Edit** form on **People**; without them it prints `reconcile-immich: <person>: this person has no Immich user and key`.
 3. **People**, **Google accounts**, **Add account**: the test account.
 4. **Exports**, the test account's row, **Connect**; then **Open remote browser** and sign in by hand.
-5. Note what the deployment holds, then take the backup (above).
+5. Import a made-up Takeout for the person, so the reconcile after the restore can run: `made_up_takeout '<person>' '<host folder of made-up photos>'` (Before you start), then `docker exec "$C" python run.py reconcile-immich` once, which must print `<person>: N listed, ...` already before the backup.
+6. Note what the deployment holds, then take the backup (above).
 
 Remove and restore:
 

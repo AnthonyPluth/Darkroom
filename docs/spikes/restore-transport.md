@@ -142,7 +142,46 @@ tended() {  # the transport's log lines since a time, for example tended 10m
 }
 ```
 
-On PostgreSQL, `events` does not apply: run `psql "$DATABASE_URL" -c "select to_timestamp(time), type, subject, detail from events order by id desc limit 30"` wherever `psql` reaches the database (and `select pixel_id, state, count(*) from pixel_copies group by 1, 2` in place of `copies`). Copies are queued only by the Immich reconcile (and a person's one legacy import), never by `python run.py index`, which only indexes what is in `originals/`. So made-up photos reach a Pixel by the real path: upload them to the person's test Immich user with Immich's mobile app (the reconcile takes only phone uploads, assets with the `mobile-app` key and no library), then run the reconcile. It runs only once that person's Takeout is imported ([runbook](../runbook.md#immich-reconcile)). The Pixel's own listing, from a computer with `adb` and USB debugging on the Pixel (or a stand-in's folder with the same `find`):
+On PostgreSQL, `events` does not apply: run `psql "$DATABASE_URL" -c "select to_timestamp(time), type, subject, detail from events order by id desc limit 30"` wherever `psql` reaches the database (and `select pixel_id, state, count(*) from pixel_copies group by 1, 2` in place of `copies`). Copies are queued only by the Immich reconcile (and a person's one legacy import), never by `python run.py index`, which only indexes what is in `originals/`. So made-up photos reach a Pixel by the real path: upload them to the person's test Immich user with Immich's mobile app (the reconcile takes only phone uploads, assets with the `mobile-app` key and no library), then run the reconcile. It runs only once that person's Takeout is imported ([runbook](../runbook.md#immich-reconcile)). 
+
+A made-up Takeout, hand-dropped and imported by the documented route ([runbook](../runbook.md#hand-dropping-an-export)): the Immich reconcile runs for a person only once a Takeout of theirs is imported, and a test account never gets a real one in time. `made_up_takeout` zips the photos of a host folder of made-up photos as a Takeout export (with Google's JSON sidecars), puts it in that person's `_inbox/<person>/manual/` and imports it; the person must have a Google account in Darkroom (name it as a third argument when they have several):
+
+```sh
+made_up_takeout() {  # made_up_takeout <person> <host folder of made-up photos> [<Google account email>]
+  rm -rf "${APPDATA:?}/made-up-takeout" && mkdir -p "$APPDATA/made-up-takeout" && cp "$2"/* "$APPDATA/made-up-takeout"/ && chown -R 99:100 "$APPDATA/made-up-takeout"
+  docker exec -i "$C" python - /data/made-up-takeout "/photos/_inbox/$1/manual" <<'PY'
+import datetime, json, sys, zipfile
+from pathlib import Path
+source, target = Path(sys.argv[1]), Path(sys.argv[2])
+target.mkdir(parents=True, exist_ok=True)
+name = target / f"takeout-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%SZ}-001.zip"
+with zipfile.ZipFile(name, "w") as made:
+    for photo in sorted(source.iterdir()):
+        folder = "Takeout/Google Photos/Photos from 2026"
+        made.write(photo, f"{folder}/{photo.name}")
+        made.writestr(f"{folder}/{photo.name}.supplemental-metadata.json", json.dumps({"title": photo.name, "photoTakenTime": {"timestamp": str(int(photo.stat().st_mtime))}}))
+print(f"wrote {name.name} with {len(made.namelist()) // 2} photos")
+PY
+  docker exec "$C" python run.py import-takeout --person "$1" ${3:+--account "$3"}
+  rm -rf "${APPDATA:?}/made-up-takeout"
+}
+```
+
+Expected: `wrote takeout-<time>-001.zip with N photos`, then `Export <id>: N added, 0 skipped as duplicates, 0 in review, N missing GPS` (an earlier export of the same person is reported as `Export <id> is already imported.` first); the export is then `imported`, which is what the reconcile asks for.
+
+The set-up every item assumes, as commands: the person, their Google account and the Pixel added and paired on **People** (S4's items 6 and 7), then:
+
+```sh
+made_up_takeout '<person>' '<host folder of made-up photos>'      # once per person; other photos than the ones uploaded below
+# upload a few other made-up photos to the person's Immich with Immich's mobile app
+docker exec "$C" python run.py reconcile-immich --person '<person>'   # N queued for the Pixel folder, N above 0
+docker exec -it "$C" python run.py bind-share                      # once; type paused, then bind
+docker restart "$C"; sleep 120; tended 5m; copies                   # "held": 0, and the copies placed
+```
+
+The Immich reconcile also needs `IMMICH_URL` (and `IMMICH_ADMIN_KEY`) in the template, and the person's **Immich user ID** and **Immich API key** (a key of that same Immich user) on their **Edit** form on **People**; without them it prints `reconcile-immich: <person>: this person has no Immich user and key`.
+
+The Pixel's own listing, from a computer with `adb` and USB debugging on the Pixel (or a stand-in's folder with the same `find`):
 
 ```sh
 adb shell 'cd /sdcard/<the folder on the Pixel> && find . -type f ! -path "./.st*" -exec sha1sum {} +' | sort -k2 > pixel-<step>.txt
@@ -325,9 +364,11 @@ Version, date, who ran it:
 
 ### Item 5: the stale restore of section 7.5
 
-(a) Take the backup (on PostgreSQL with its dump, as in "Taking the backup" above). Let a Takeout match prune some placed copies (the made-up photos have to be in the test Google account's library and in a Takeout import), and see the deletions reach the Pixel:
+(a) Take the backup (on PostgreSQL with its dump, as in "Taking the backup" above). Let a Takeout match prune some placed copies, and see the deletions reach the Pixel. A prune needs a Takeout match for the Google account the Pixel uploads to, made after the copy was placed (the reconcile's copies are always-send): either the photos in the test account's real library and a real Takeout, or a second hand-dropped Takeout of the same made-up photos that went up through Immich:
 
 ```sh
+made_up_takeout '<person>' '<the photos uploaded through Immich>' '<email of the Google account the Pixel uploads to>'
+docker restart "$C"; sleep 120
 tended 2h                                        # "pruned" above 0
 share_listing > /tmp/share-pruned.txt            # and the Pixel's listing
 docker stop "$C"; rm -rf "$APPDATA"; cp -a "$BACKUP" "$APPDATA"

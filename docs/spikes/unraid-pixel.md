@@ -140,6 +140,31 @@ PY
 }
 ```
 
+A made-up Takeout, hand-dropped and imported by the documented route ([runbook](../runbook.md#hand-dropping-an-export)): the Immich reconcile runs for a person only once a Takeout of theirs is imported, and a test account never gets a real one in time. `made_up_takeout` zips the photos of a host folder of made-up photos as a Takeout export (with Google's JSON sidecars), puts it in that person's `_inbox/<person>/manual/` and imports it; the person must have a Google account in Darkroom (name it as a third argument when they have several):
+
+```sh
+made_up_takeout() {  # made_up_takeout <person> <host folder of made-up photos> [<Google account email>]
+  rm -rf "${APPDATA:?}/made-up-takeout" && mkdir -p "$APPDATA/made-up-takeout" && cp "$2"/* "$APPDATA/made-up-takeout"/ && chown -R 99:100 "$APPDATA/made-up-takeout"
+  docker exec -i "$C" python - /data/made-up-takeout "/photos/_inbox/$1/manual" <<'PY'
+import datetime, json, sys, zipfile
+from pathlib import Path
+source, target = Path(sys.argv[1]), Path(sys.argv[2])
+target.mkdir(parents=True, exist_ok=True)
+name = target / f"takeout-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%SZ}-001.zip"
+with zipfile.ZipFile(name, "w") as made:
+    for photo in sorted(source.iterdir()):
+        folder = "Takeout/Google Photos/Photos from 2026"
+        made.write(photo, f"{folder}/{photo.name}")
+        made.writestr(f"{folder}/{photo.name}.supplemental-metadata.json", json.dumps({"title": photo.name, "photoTakenTime": {"timestamp": str(int(photo.stat().st_mtime))}}))
+print(f"wrote {name.name} with {len(made.namelist()) // 2} photos")
+PY
+  docker exec "$C" python run.py import-takeout --person "$1" ${3:+--account "$3"}
+  rm -rf "${APPDATA:?}/made-up-takeout"
+}
+```
+
+Expected: `wrote takeout-<time>-001.zip with N photos`, then `Export <id>: N added, 0 skipped as duplicates, 0 in review, N missing GPS` (an earlier export of the same person is reported as `Export <id> is already imported.` first); the export is then `imported`, which is what the reconcile asks for.
+
 `events` reads the `events` table that the Status page also reads; its subjects are ids (`pixel 3`, `share`), never names. With `DATABASE_URL` set it does not apply: run `psql "$DATABASE_URL" -c "select to_timestamp(time), type, subject, detail from events order by id desc limit 30"` wherever `psql` reaches the database instead (and `select pixel_id, state, count(*) from pixel_copies group by 1, 2` in place of `copies`). Never paste `docker inspect` output whole or the whole of `config.xml`: they hold the OIDC secret, the Immich key and Syncthing's API key. The commands below print only the fields they need.
 
 ### Item 1: the seccomp file and the template's extra parameters
@@ -236,11 +261,11 @@ ls -d /mnt/*/appdata/darkroom
 
 Expected: `/mnt/user/appdata/darkroom -> /data`; a FUSE type (`fuseblk` or `fuse`) for the user share; `wal` (Darkroom opens SQLite in WAL mode, which needs shared-memory locking to work on that file system); `ls` shows the pool the folder really lives on (for example `/mnt/cache/appdata/darkroom`) besides `/mnt/user/...`.
 
-Then load it for a few minutes: in one terminal run a write-heavy command while you click through **People** and **Status** in the browser, and in another a second writer:
+Then load it for a few minutes. It needs the person and the Google account of item 2, and a host folder of a few made-up photos. In one terminal run a write-heavy command while you click through **People** and **Status** in the browser, and in another a second writer (each `made_up_takeout` is a new export, so it can be repeated):
 
 ```sh
 docker exec "$C" python run.py index
-docker exec "$C" python run.py reconcile-immich
+made_up_takeout '<person>' '<host folder of made-up photos>'
 ```
 
 then:
@@ -317,7 +342,7 @@ Continue from item 6, with the pairing step still open (or **Pair** on the Pixel
 
 3. On the Pixel, find its own device ID (the app's menu, an entry such as "Show device ID"). In Darkroom, compare it with the waiting entry, press **This is Test Pixel**, then **Approve** in "Approve this device for Test Pixel?".
 4. On the Pixel, accept the folder Darkroom offers (a notification or a banner in the app) and choose where it goes on the Pixel.
-5. Queue a few made-up photos for the Pixel, then place them. Copies are queued only by the Immich reconcile (and a person's one legacy import), never by `python run.py index`, which only indexes what is in `originals/`. So made-up photos reach a Pixel by the real path: upload them to the person's test Immich user with Immich's mobile app (the reconcile takes only phone uploads, assets with the `mobile-app` key and no library), then run the reconcile. It runs only once that person's Takeout is imported ([runbook](../runbook.md#immich-reconcile)). The folder is resumed by the service's own tend, so restart rather than only running the job:
+5. Queue a few made-up photos for the Pixel, then place them. First the reconcile's preconditions: the person's Takeout imported (`made_up_takeout '<person>' '<host folder of made-up photos>'`, from Before you start, once) and their Immich user and key. The Immich reconcile also needs `IMMICH_URL` (and `IMMICH_ADMIN_KEY`) in the template, and the person's **Immich user ID** and **Immich API key** (a key of that same Immich user) on their **Edit** form on **People**; without them it prints `reconcile-immich: <person>: this person has no Immich user and key`. Copies are queued only by the Immich reconcile (and a person's one legacy import), never by `python run.py index`, which only indexes what is in `originals/`. So made-up photos reach a Pixel by the real path: upload them to the person's test Immich user with Immich's mobile app (the reconcile takes only phone uploads, assets with the `mobile-app` key and no library), then run the reconcile. It runs only once that person's Takeout is imported ([runbook](../runbook.md#immich-reconcile)). The folder is resumed by the service's own tend, so restart rather than only running the job:
 
    ```sh
    docker exec "$C" python run.py reconcile-immich --person '<person>'
