@@ -4,12 +4,20 @@ import os
 import platform
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MIN_TOKEN = 32
 
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def local_zone() -> ZoneInfo:
+    try:
+        return ZoneInfo(env("TZ", "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
 
 
 def read_handed(fd: int) -> str:

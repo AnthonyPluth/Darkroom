@@ -11,7 +11,7 @@ from typing import Any
 from darkroom_browser import selectors
 from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure
 from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
-from darkroom_browser.jobs.status import open_exports
+from darkroom_browser.jobs.status import open_archive
 from darkroom_browser.pages import takeout
 
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
@@ -138,13 +138,12 @@ def part_link(href: str) -> str:
 
 def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int) -> dict[int, str]:
     try:
-        listings = takeout.parse_exports(open_exports(ctx, browser))
+        detail = takeout.parse_archive(open_archive(ctx, browser, takeout.archive_url(google_id)), google_id)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
-    found = [listing for listing in listings if listing.google_id == google_id]
-    if not found or found[0].state != "ready":
+    if detail.state != "ready":
         raise DownloadFailed("Takeout no longer lists this export as ready to download")
-    links = {part.number: part.href for part in found[0].parts}
+    links = {part.number: part.href for part in detail.parts}
     if sorted(links) != list(range(1, count + 1)):
         raise DownloadFailed(f"Takeout lists {len(links)} parts for an export Darkroom expects {count} parts from")
     return links

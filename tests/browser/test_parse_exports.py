@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 from darkroom_browser.pages import takeout
 from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, NNBSP, SIZES, archive, archive_url, completed_row, download_href,
                                          expired_row, in_progress_row, part_item, part_names, row, summary)
-from tests.snapshots import snapshot_pending
 
 NEW_YORK = ZoneInfo("America/New_York")
 NOW = datetime(2026, 11, 17, 14, 55, tzinfo=NEW_YORK).timestamp()
@@ -20,7 +19,6 @@ def listed(page, now=NOW, zone=NEW_YORK):
     return takeout.parse_exports(page, now, zone)
 
 
-@snapshot_pending
 class SummaryPageTests(unittest.TestCase):
     def test_the_summary_page_lists_a_completed_and_an_expired_export(self):
         completed, gone = listed(summary(completed_row(), expired_row()))
@@ -98,7 +96,6 @@ class SummaryPageTests(unittest.TestCase):
             self.assertFalse(takeout.exports_page_ready(text))
 
 
-@snapshot_pending
 class SummaryReadyTests(unittest.TestCase):
     def test_a_summary_with_exports_is_loaded(self):
         self.assertTrue(takeout.exports_page_ready(summary(completed_row(), expired_row())))
@@ -116,7 +113,6 @@ class SummaryReadyTests(unittest.TestCase):
                 self.assertEqual(listed(page), [])
 
 
-@snapshot_pending
 class ArchivePageTests(unittest.TestCase):
     def test_a_completed_archive_lists_its_parts_with_exact_sizes_and_links(self):
         detail = takeout.parse_archive(archive(), COMPLETED_ID)
@@ -178,7 +174,6 @@ class ArchivePageTests(unittest.TestCase):
                 takeout.archive_url(bad)
 
 
-@snapshot_pending
 class MergeTests(unittest.TestCase):
     def test_the_archive_adds_its_parts_and_keeps_the_lists_precise_times(self):
         export = takeout.with_archive(listed(summary(completed_row()))[0], takeout.parse_archive(archive(), COMPLETED_ID), NEW_YORK)
@@ -197,7 +192,6 @@ class MergeTests(unittest.TestCase):
                 takeout.with_archive(listing, takeout.parse_archive(page, COMPLETED_ID), NEW_YORK)
 
 
-@snapshot_pending
 class LandmarkTests(unittest.TestCase):
     def test_known_headings_are_named_and_others_only_counted(self):
         page = "<html><head><title>Google Takeout</title></head><body><h1>Summary</h1><h2>Status</h2><h2>Hello Jo Example</h2><h3>jo@example.test</h3></body></html>"

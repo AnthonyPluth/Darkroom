@@ -8,7 +8,6 @@ from tests.browser.scripted import ScriptedBrowser, context_for
 from tests.browser.takeout_pages import COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, SIZES, archive, archive_url, completed_row, expired_row, in_progress_row, summary
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN, VERIFY
 from tests.browser.test_parse_exports import NOW, at
-from tests.snapshots import snapshot_pending
 
 EXPORTS = summary(completed_row(), in_progress_row(), expired_row())
 ARCHIVE = archive_url(COMPLETED_ID)
@@ -31,7 +30,6 @@ def site(listing=EXPORTS, detail=None):
             ARCHIVE: detail if isinstance(detail, list) else [detail or archive()]}
 
 
-@snapshot_pending
 class StatusJobTests(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch.dict(os.environ, {"TZ": "America/New_York"})

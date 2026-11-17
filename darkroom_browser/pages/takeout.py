@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, time, tzinfo
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
@@ -124,15 +124,35 @@ def signed_in_email(page: str) -> str | None:
     return found.group(1).lower() if found is not None else None
 
 
+
+
 ExportState = Literal["in_progress", "ready", "expired"]
-LIST_TAGS = ("ul", "ol", "div", "section")
 SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
 SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(kb|mb|gb|tb)\b")
-PART_NUMBER = re.compile(r"\bpart\s+(\d{1,4})\b")
-EMPTY_LIST_PHRASES = ("no exports", "haven't created any exports", "have not created any exports")
-IN_PROGRESS_PHRASES = ("in progress", "being created", "creating your export", "we're creating")
 MAX_EXPORTS = 100
 MAX_PARTS = 200
+SUMMARY_PHRASE = "the status of the requests you've made"
+EMPTY_SUMMARY_PHRASES = ("haven't made any requests", "have not made any requests", "no requests")
+STATE_WORDS: dict[str, ExportState] = {"completed": "ready", "expired": "expired", "in progress": "in_progress"}
+ARCHIVE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+ARCHIVE_HREF = re.compile(re.escape(selectors.TAKEOUT_ARCHIVE_URL) + r"([A-Za-z0-9_-]{1,128})")
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
+MONTH_DAY = r"([a-z]+) (\d{1,2})"
+CLOCK = r"(\d{1,2}):(\d{2}) ?([ap])\.?m\.?"
+RELATIVE = re.compile(r"created (\d{1,3}|an?|one) (second|minute|hour|day|week)s? ago")
+UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400}
+JUST_NOW = ("created just now", "created moments ago", "created a moment ago")
+CREATED = re.compile(rf"created {MONTH_DAY}(?:, (\d{{4}}))?(?:,? (?:at )?{CLOCK})?")
+AVAILABLE = re.compile(rf"available until {MONTH_DAY}, (\d{{4}})(?:,? (?:at )?{CLOCK})?")
+CALENDAR_DATE = re.compile(rf"{MONTH_DAY}, (\d{{4}})")
+FUTURE_SLACK = 3600.0
+YEARS_BACK = 8
+SUMMARY_FIELD = re.compile(r"(overall status|creation date|expiration date): (.+)")
+PARTS_HEADING = "data backup to a download link"
+PART_LABEL = re.compile(r"download part (\d{1,4}) of (\d{1,4})")
+KNOWN_HEADINGS = ("google takeout", "summary", "status", "your exports", "your latest export", "create a new export", "manage your exports", "your google data",
+                  "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account")
+MAX_LANDMARKS = 8
 
 
 class UnreadableExports(ValueError):
@@ -152,100 +172,182 @@ class ExportListing:
     state: ExportState
     expires_at: float | None
     parts: tuple[ListedPart, ...]
+    archive_url: str
+
+
+@dataclass(frozen=True)
+class ArchiveDetail:
+    state: ExportState
+    created_on: date
+    expires_on: date | None
+    parts: tuple[ListedPart, ...]
+
+
+def plain(text: str) -> str:
+    return SPACES.sub(" ", text.replace(" ", " ").replace("\xa0", " ").replace("’", "'")).strip().lower()
+
+
+def archive_url(google_id: str) -> str:
+    if not ARCHIVE_ID.fullmatch(google_id):
+        raise UnreadableExports("the export id is not one Takeout uses")
+    return selectors.TAKEOUT_ARCHIVE_URL + google_id
 
 
 @dataclass
-class RawLink:
-    href: str
-    label: str
+class SummaryRow:
+    google_id: str
+    chunks: list[str]
 
 
-@dataclass
-class RawItem:
-    attributes: dict[str, str]
-    text: list[str]
-    times: dict[str, str]
-    links: list[RawLink]
-
-
-def has_role(attributes: dict[str, str], role: str) -> bool:
-    return attributes.get("role", "").lower() == role
-
-
-class ExportPageReader(HTMLParser):
+class SkippingReader(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.items: list[RawItem] = []
-        self.list_stack: list[tuple[str, bool]] = []
-        self.current: RawItem | None = None
-        self.item_tag: str | None = None
-        self.item_depth = 0
         self.skip = 0
-        self.link: RawLink | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attributes = {name: value or "" for name, value in attrs}
         if tag in ("script", "style"):
             self.skip += 1
-            return
-        if self.current is not None:
-            self.read_inside(tag, attributes)
-            return
-        if tag in ("ul", "ol") or (tag in LIST_TAGS and has_role(attributes, "list")):
-            self.list_stack.append((tag, True))
-            return
-        if self.list_stack and (tag == "li" or has_role(attributes, "listitem")):
-            self.current = RawItem(attributes, [], {}, [])
-            self.item_tag = tag
-            self.item_depth = 1
-        elif tag in LIST_TAGS:
-            self.list_stack.append((tag, False))
-
-    def read_inside(self, tag: str, attributes: dict[str, str]) -> None:
-        assert self.current is not None
-        if tag not in VOID_TAGS:
-            self.item_depth += 1
-        if tag == "time" and attributes.get(selectors.EXPORT_TIME_ATTRIBUTE) and attributes.get("datetime"):
-            self.current.times[attributes[selectors.EXPORT_TIME_ATTRIBUTE]] = attributes["datetime"]
-        if tag == "a" and attributes.get("href"):
-            self.link = RawLink(attributes["href"], attributes.get("aria-label", ""))
-            self.current.links.append(self.link)
+        elif not self.skip:
+            self.opened(tag, {name: value or "" for name, value in attrs})
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("script", "style"):
             self.skip = max(0, self.skip - 1)
-            return
-        if self.current is not None:
-            if tag not in VOID_TAGS:
-                self.item_depth -= 1
-            if tag == "a":
-                self.link = None
-            if self.item_depth == 0:
-                self.items.append(self.current)
-                self.current = None
-            return
-        if tag in LIST_TAGS and self.list_stack and self.list_stack[-1][0] == tag:
-            self.list_stack.pop()
+        elif not self.skip:
+            self.closed(tag)
 
     def handle_data(self, data: str) -> None:
-        if self.skip or self.current is None:
+        if not self.skip and data.strip():
+            self.text(data)
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        return None
+
+    def closed(self, tag: str) -> None:
+        return None
+
+    def text(self, data: str) -> None:
+        return None
+
+
+class SummaryReader(SkippingReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[SummaryRow] = []
+        self.current: SummaryRow | None = None
+        self.chunks: list[str] = []
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        if tag != "a" or self.current is not None:
             return
-        self.current.text.append(data)
-        if self.link is not None:
-            self.link.label += " " + data
+        found = ARCHIVE_HREF.fullmatch(attributes.get("href", "").strip())
+        if found is not None:
+            self.current = SummaryRow(found.group(1), [])
+
+    def closed(self, tag: str) -> None:
+        if tag == "a" and self.current is not None:
+            self.rows.append(self.current)
+            self.current = None
+
+    def text(self, data: str) -> None:
+        self.chunks.append(plain(data))
+        if self.current is not None:
+            self.current.chunks.append(plain(data))
 
 
-VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "wbr", "area", "base", "col", "embed", "source", "track"})
+def read_summary(page: str) -> SummaryReader:
+    reader = SummaryReader()
+    reader.feed(page)
+    reader.close()
+    return reader
 
 
-def read_instant(raw: str) -> float:
+def is_summary(reader: SummaryReader) -> bool:
+    return any(chunk.startswith(SUMMARY_PHRASE) for chunk in reader.chunks)
+
+
+def says_empty(reader: SummaryReader) -> bool:
+    return any(phrase in chunk for chunk in reader.chunks for phrase in EMPTY_SUMMARY_PHRASES)
+
+
+def wall_clock(month: str, day: str, year: int, clock: tuple[str | None, str | None, str | None], zone: tzinfo) -> datetime:
+    if month not in MONTHS:
+        raise ValueError(month)
+    hour_text, minute_text, meridiem = clock
+    hour, minute = 0, 0
+    if hour_text is not None and minute_text is not None:
+        hour, minute = int(hour_text), int(minute_text)
+        if not 1 <= hour <= 12:
+            raise ValueError(hour_text)
+        hour = hour % 12 + (12 if meridiem == "p" else 0)
+    return datetime(year, MONTHS.index(month) + 1, int(day), hour, minute, tzinfo=zone)
+
+
+def nearest_past(month: str, day: str, clock: tuple[str | None, str | None, str | None], now: float, zone: tzinfo) -> float:
+    this_year = datetime.fromtimestamp(now, zone).year
+    for year in range(this_year, this_year - YEARS_BACK, -1):
+        try:
+            moment = wall_clock(month, day, year, clock, zone).timestamp()
+        except ValueError:
+            continue
+        if moment <= now + FUTURE_SLACK:
+            return moment
+    raise ValueError(month)
+
+
+def created_at(chunk: str, now: float, zone: tzinfo) -> float:
+    if chunk in JUST_NOW:
+        return now
+    relative = RELATIVE.fullmatch(chunk)
+    if relative is not None:
+        count = int(relative.group(1)) if relative.group(1).isdigit() else 1
+        return now - count * UNIT_SECONDS[relative.group(2)]
+    found = CREATED.fullmatch(chunk)
+    if found is None:
+        raise ValueError(chunk)
+    month, day, year = found.group(1), found.group(2), found.group(3)
+    clock = (found.group(4), found.group(5), found.group(6))
+    if year is None:
+        return nearest_past(month, day, clock, now, zone)
+    return wall_clock(month, day, int(year), clock, zone).timestamp()
+
+
+def available_until(chunk: str, zone: tzinfo) -> float:
+    found = AVAILABLE.fullmatch(chunk)
+    if found is None:
+        raise ValueError(chunk)
+    return wall_clock(found.group(1), found.group(2), int(found.group(3)), (found.group(4), found.group(5), found.group(6)), zone).timestamp()
+
+
+def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
+    states = [STATE_WORDS[chunk] for chunk in row.chunks if chunk in STATE_WORDS]
+    if len(states) != 1:
+        raise UnreadableExports("an export on Takeout's summary is in a state that was not recognised")
+    created = [chunk for chunk in row.chunks if chunk.startswith("created ")]
+    available = [chunk for chunk in row.chunks if chunk.startswith("available until ")]
+    if len(created) != 1 or len(available) > 1:
+        raise UnreadableExports("an export on Takeout's summary has no readable creation date")
     try:
-        moment = datetime.fromisoformat(raw.strip())
+        created_moment = created_at(created[0], now, zone)
+        expires = available_until(available[0], zone) if available else None
     except ValueError:
-        raise UnreadableExports("an export on the exports page has a date that could not be read") from None
-    if moment.tzinfo is None:
-        raise UnreadableExports("an export on the exports page has a date with no time zone")
-    return moment.timestamp()
+        raise UnreadableExports("an export on Takeout's summary has a date that could not be read") from None
+    return ExportListing(row.google_id, created_moment, states[0], expires, (), archive_url(row.google_id))
+
+
+def parse_exports(page: str, now: float, zone: tzinfo) -> list[ExportListing]:
+    reader = read_summary(page)
+    if not is_summary(reader):
+        raise UnreadableExports("the page is not Takeout's summary of exports")
+    listings = [listing_of(row, now, zone) for row in reader.rows]
+    if len(listings) > MAX_EXPORTS or len({listing.google_id for listing in listings}) != len(listings):
+        raise UnreadableExports("Takeout's summary lists exports that could not be told apart")
+    return listings
+
+
+def exports_page_ready(page: str) -> bool:
+    reader = read_summary(page)
+    return is_summary(reader) and (bool(reader.rows) or says_empty(reader))
 
 
 def size_in_bytes(text: str) -> int | None:
@@ -262,78 +364,192 @@ def download_link(href: str) -> str | None:
     return cleaned if DOWNLOAD_HREF.fullmatch(cleaned) else None
 
 
-def listed_parts(item: RawItem) -> tuple[ListedPart, ...]:
-    parts: list[ListedPart] = []
-    for link in item.links:
-        href = download_link(link.href)
-        if href is None:
+@dataclass
+class PartItem:
+    links: list[tuple[str, str]]
+    sizes: list[str]
+    chunks: list[str]
+
+
+class ArchiveReader(SkippingReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chunks: list[str] = []
+        self.items: list[PartItem] = []
+        self.heading: list[str] | None = None
+        self.in_parts = False
+        self.current: PartItem | None = None
+        self.depth = 0
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        if tag == "h2":
+            self.heading, self.in_parts = [], False
+        if self.current is not None:
+            self.depth += tag == "li"
+            if tag == "a" and attributes.get("href"):
+                self.current.links.append((attributes["href"], plain(attributes.get("aria-label", ""))))
+            if "data-size" in attributes:
+                self.current.sizes.append(attributes["data-size"].strip())
+        elif tag == "li" and self.in_parts:
+            self.current, self.depth = PartItem([], [], []), 1
+
+    def closed(self, tag: str) -> None:
+        if tag == "h2" and self.heading is not None:
+            self.in_parts = plain(" ".join(self.heading)).startswith(PARTS_HEADING)
+            self.heading = None
+        if tag == "li" and self.current is not None:
+            self.depth -= 1
+            if self.depth == 0:
+                self.items.append(self.current)
+                self.current = None
+
+    def text(self, data: str) -> None:
+        self.chunks.append(plain(data))
+        if self.heading is not None:
+            self.heading.append(data)
+        if self.current is not None:
+            self.current.chunks.append(plain(data))
+
+
+def read_archive(page: str) -> ArchiveReader:
+    reader = ArchiveReader()
+    reader.feed(page)
+    reader.close()
+    return reader
+
+
+def summary_fields(chunks: list[str]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for chunk in chunks:
+        found = SUMMARY_FIELD.fullmatch(chunk)
+        if found is None:
             continue
-        label = SPACES.sub(" ", html.unescape(link.label)).lower().replace("\u2019", "'")
-        numbered = PART_NUMBER.search(label)
-        number = int(numbered.group(1)) if numbered is not None else len(parts) + 1
-        size = size_in_bytes(label)
-        if size is None:
-            raise UnreadableExports("a download link on the exports page has no readable size")
-        parts.append(ListedPart(number, size, href))
-    if len({part.number for part in parts}) != len(parts) or len(parts) > MAX_PARTS:
-        raise UnreadableExports("an export on the exports page has parts that could not be told apart")
-    return tuple(sorted(parts))
+        if fields.setdefault(found.group(1), found.group(2)) != found.group(2):
+            raise UnreadableExports("an export's page on Takeout shows two different summaries")
+    return fields
 
 
-def export_id(item: RawItem, parts: tuple[ListedPart, ...]) -> str:
-    named = item.attributes.get(selectors.EXPORT_ID_ATTRIBUTE, "").strip()
-    if named:
-        return named
-    for part in parts:
-        found = EXPORT_PARAMETER.search(part.href)
-        if found is not None:
-            return found.group(1)
-    raise UnreadableExports("an export on the exports page has no identifier")
+def numbered_link(item: PartItem) -> list[tuple[str, re.Match[str]]]:
+    return [(href, found) for href, label in item.links if (found := PART_LABEL.fullmatch(label)) is not None]
 
 
-def export_state(text: str, parts: tuple[ListedPart, ...]) -> ExportState:
-    if parts:
-        return "ready"
-    if re.search(r"\bexpired\b", text):
-        return "expired"
-    if any(phrase in text for phrase in IN_PROGRESS_PHRASES):
-        return "in_progress"
-    raise UnreadableExports("an export on the exports page is in a state that was not recognised")
+def part_of(item: PartItem, google_id: str) -> tuple[ListedPart, int]:
+    numbered = numbered_link(item)
+    if len(numbered) != 1:
+        raise UnreadableExports("a download on an export's page on Takeout has no readable part number")
+    raw, label = numbered[0]
+    href = download_link(raw)
+    owner = None if href is None else EXPORT_PARAMETER.search(href)
+    if href is None or owner is None or owner.group(1) != google_id:
+        raise UnreadableExports("a download link on an export's page on Takeout is not one Darkroom can use")
+    exact = set(item.sizes)
+    if len(exact) == 1 and (value := exact.pop()).isdigit():
+        size: int | None = int(value)
+    else:
+        size = size_in_bytes(" ".join(item.chunks))
+    if size is None:
+        raise UnreadableExports("a download on an export's page on Takeout has no readable size")
+    return ListedPart(int(label.group(1)), size, href), int(label.group(2))
 
 
-def is_export(item: RawItem) -> bool:
-    return bool(item.times) or any(download_link(link.href) is not None for link in item.links) or selectors.EXPORT_ID_ATTRIBUTE in item.attributes
+def archive_parts(items: list[PartItem], google_id: str) -> tuple[ListedPart, ...]:
+    read = [part_of(item, google_id) for item in items if item.links]
+    parts = sorted(part for part, _ in read)
+    totals = {total for _, total in read}
+    if len(parts) > MAX_PARTS or totals != {len(parts)} or [part.number for part in parts] != list(range(1, len(parts) + 1)):
+        raise UnreadableExports("an export's page on Takeout lists parts that could not be told apart")
+    return tuple(parts)
 
 
-def listing_of(item: RawItem) -> ExportListing:
-    text = SPACES.sub(" ", html.unescape(" ".join(item.text))).lower().replace("\u2019", "'")
-    parts = listed_parts(item)
-    created = item.times.get(selectors.EXPORT_CREATED_TIME)
-    if created is None:
-        raise UnreadableExports("an export on the exports page has no creation date")
-    expires = item.times.get(selectors.EXPORT_EXPIRES_TIME)
-    return ExportListing(export_id(item, parts), read_instant(created), export_state(text, parts), None if expires is None else read_instant(expires), parts)
+def calendar_date(text: str) -> date:
+    found = CALENDAR_DATE.fullmatch(text)
+    if found is None:
+        raise ValueError(text)
+    return wall_clock(found.group(1), found.group(2), int(found.group(3)), (None, None, None), UTC).date()
 
 
-def parse_exports(page: str) -> list[ExportListing]:
-    if "manage your exports" not in visible_text(page):
-        raise UnreadableExports("the page is not Takeout's list of exports")
-    reader = ExportPageReader()
-    reader.feed(page)
-    reader.close()
-    listings = [listing_of(item) for item in reader.items if is_export(item)]
-    if len(listings) > MAX_EXPORTS or len({listing.google_id for listing in listings}) != len(listings):
-        raise UnreadableExports("the exports page lists exports that could not be told apart")
-    return listings
+def parse_archive(page: str, google_id: str) -> ArchiveDetail:
+    reader = read_archive(page)
+    fields = summary_fields(reader.chunks)
+    state = STATE_WORDS.get(fields.get("overall status", ""))
+    if state is None:
+        raise UnreadableExports("an export's page on Takeout is in a state that was not recognised")
+    try:
+        created_on = calendar_date(fields.get("creation date", ""))
+        expires = fields.get("expiration date")
+        expires_on = None if expires is None else calendar_date(expires)
+    except ValueError:
+        raise UnreadableExports("an export's page on Takeout has a date that could not be read") from None
+    parts = archive_parts(reader.items, google_id) if state == "ready" else ()
+    if state == "ready" and not parts:
+        raise UnreadableExports("a completed export's page on Takeout lists no parts")
+    return ArchiveDetail(state, created_on, expires_on, parts)
 
 
-def exports_page_ready(page: str) -> bool:
-    text = visible_text(page).replace("\u2019", "'")
-    if "manage your exports" not in text:
+def archive_page_ready(page: str) -> bool:
+    reader = read_archive(page)
+    status = next((found.group(2) for chunk in reader.chunks if (found := SUMMARY_FIELD.fullmatch(chunk)) and found.group(1) == "overall status"), None)
+    if status is None:
         return False
-    if any(phrase in text for phrase in EMPTY_LIST_PHRASES):
-        return True
-    reader = ExportPageReader()
+    return STATE_WORDS.get(status) != "ready" or any(numbered_link(item) for item in reader.items)
+
+
+def with_archive(listing: ExportListing, detail: ArchiveDetail, zone: tzinfo) -> ExportListing:
+    if detail.state != listing.state:
+        raise UnreadableExports("an export's page on Takeout and the summary disagree about its state")
+    listed_on = datetime.fromtimestamp(listing.created_at, zone).date()
+    if abs((listed_on - detail.created_on).days) > 1:
+        raise UnreadableExports("an export's page on Takeout and the summary disagree about when it was created")
+    expires = listing.expires_at
+    if expires is None and detail.expires_on is not None:
+        expires = datetime.combine(detail.expires_on, time(), zone).timestamp()
+    return replace(listing, expires_at=expires, parts=detail.parts)
+
+
+class LandmarkReader(SkippingReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title: str | None = None
+        self.headings: list[str] = []
+        self.open: str | None = None
+        self.words: list[str] = []
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        if tag in ("title", "h1", "h2") and self.open is None:
+            self.open, self.words = tag, []
+
+    def closed(self, tag: str) -> None:
+        if tag != self.open:
+            return
+        text = plain(" ".join(self.words))
+        if tag == "title":
+            self.title = text if self.title is None else self.title
+        else:
+            self.headings.append(text)
+        self.open = None
+
+    def text(self, data: str) -> None:
+        if self.open is not None:
+            self.words.append(data)
+
+
+def known_heading(text: str) -> str | None:
+    return next((known for known in KNOWN_HEADINGS if text == known or text.startswith(known + " ")), None)
+
+
+def landmarks(page: str) -> str:
+    reader = LandmarkReader()
     reader.feed(page)
     reader.close()
-    return any(is_export(item) for item in reader.items)
+    said: list[str] = []
+    if reader.title is not None:
+        title = known_heading(reader.title)
+        said.append("an unrecognised title" if title is None else f"title '{title}'")
+    named = [known for known in map(known_heading, reader.headings) if known is not None][:MAX_LANDMARKS]
+    others = len(reader.headings) - len(named)
+    if named:
+        heading = f"heading{'s' if len(named) > 1 else ''} " + ", ".join(f"'{name}'" for name in named)
+        said.append(heading + (f" and {others} other{'s' if others > 1 else ''}" if others else ""))
+    elif others:
+        said.append(f"{others} other heading{'s' if others > 1 else ''}")
+    return "; ".join(said) or "no title or headings"
