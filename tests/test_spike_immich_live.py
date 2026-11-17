@@ -57,6 +57,8 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("v3.3.6", text)
         self.assertIn("`asset.upload`", text)
         self.assertIn("XMP date won", text)
+        self.assertIn("Quota has been exceeded", text)
+        self.assertIn("no asset.read access", text)
         created = [line.split()[2] for line in printed.splitlines() if line.startswith("created ")]
         stored = {asset.id: asset for asset in self.fake.state.assets}
         self.assertEqual(sorted(created), sorted(stored))
@@ -127,6 +129,35 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.fake.requests(), [])
         self.assertIn("public https", immich_live.check_address("https://photos.example.com", True))
 
+    def test_weak_or_absent_evidence_never_passes(self):
+        def server_error(method, path, slug):
+            own = {asset.id for asset in self.fake.state.assets if asset.owner_id == USER_B}
+            if slug == "b" and method == "GET" and path.startswith("/api/assets/") and path.split("/")[3] not in own:
+                return 500
+            return 500 if slug == "q" and (method, path) == ("POST", "/api/assets") else None
+        self.fake.state.intercept = server_error
+        code, printed, text = self.run_harness(IMMICH_LIVE_KEY_B=KEY_B, IMMICH_LIVE_QUOTA_KEY=KEY_Q)
+        self.assertEqual(code, 1, printed)
+        self.assertEqual(self.row(text, "binding"), "not verified")
+        self.assertIn("500", text.split("| Owner binding")[1].splitlines()[0])
+        self.assertEqual(self.row(text, "quota"), "not verified")
+        self.assertEqual(self.row(text, "two_users"), "pass")
+
+    def test_an_extraction_that_never_completes_fails_its_rows(self):
+        self.fake.state.extraction_delay = 1e9
+        code, printed, text = self.run_harness("--large-video-mb", "0.2", "--extraction-timeout", "0.3")
+        self.assertEqual(code, 1, printed)
+        for key in ("extract", "video"):
+            self.assertEqual(self.row(text, key), "fail", key)
+        self.assertIn("timed out after 0.3 s", text)
+
+    def test_a_missing_field_fails_the_rows_that_need_it(self):
+        self.fake.state.drop_fields = ("libraryId", "type", "livePhotoVideoId")
+        code, printed, text = self.run_harness()
+        self.assertEqual(code, 1, printed)
+        for key in ("new", "raw", "live", "no_delete"):
+            self.assertEqual(self.row(text, key), "fail", key)
+
     def test_only_the_harness_routes_can_be_sent(self):
         asset = "/api/assets/0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a"
         for method, path in (("DELETE", "/api/assets"), ("DELETE", asset), ("PUT", asset), ("PUT", "/api/assets"), ("POST", "/api/trash/restore"),
@@ -143,6 +174,8 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.row(text, "video"), "pass")
         self.assertEqual(self.run_harness("--large-video-mb", "1000")[0], 2)
         self.assertEqual(self.run_harness("--phase", "after-trash")[0], 2)
+        (self.folder / "broken.md").write_text("```json immich-live-data\n{not json\n```\n")
+        self.assertEqual(self.run_harness("--phase", "after-trash", "--append-results", str(self.folder / "broken.md"))[0], 2)
         self.assertEqual(self.run_harness(IMMICH_LIVE_KEY_A="")[0], 2)
 
     def test_the_after_trash_phase_reports_the_trashed_duplicate_without_restoring_it(self):
@@ -150,7 +183,7 @@ class HarnessTests(unittest.TestCase):
         trash_me = next(asset for asset in self.fake.state.assets if asset.name.endswith("-trash-me.jpg"))
         code, printed, _ = self.run_harness("--phase", "after-trash", "--append-results", str(self.folder / "result.md"), out="t.md")
         self.assertEqual(code, 1)
-        self.assertIn("1 failed", printed)
+        self.assertIn("1 failed or not verified", printed)
         trash_me.trashed = True
         code, printed, text = self.run_harness("--phase", "after-trash", "--append-results", str(self.folder / "result.md"), out="t.md")
         self.assertEqual(code, 0, printed)

@@ -70,7 +70,7 @@ class FakeAsset:
         }
         if self.exif is not None and time.monotonic() >= self.ready_at:
             found["exifInfo"] = self.exif
-            found["duration"] = "0:00:00.30000" if self.kind == "VIDEO" else "0:00:00.00000"
+            found["duration"] = 300 if self.kind == "VIDEO" else None
         return found
 
 
@@ -118,6 +118,8 @@ class State:
     admins: tuple[str, ...] = ()
     quotas: dict[str, int] = field(default_factory=dict)
     extraction_delay: float = 0.0
+    intercept: Callable[[str, str, str], int | None] | None = None
+    drop_fields: tuple[str, ...] = ()
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -201,10 +203,12 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
         def asset(self, person: FakePerson, parts: list[str]) -> None:
             found = next((a for a in state.assets if a.id == parts[3] and a.owner_id == person.user_id), None)
-            if found is None:
+            if found is None and any(a.id == parts[3] for a in state.assets):
+                self.reply(400, {"message": "Not found or no asset.read access"})
+            elif found is None:
                 self.reply(404, {"message": "Not found"})
             elif len(parts) == 4:
-                self.reply(200, found.json())
+                self.reply(200, {k: v for k, v in found.json().items() if k not in state.drop_fields})
             elif parts[4] == "metadata":
                 self.reply(200, [{"key": key, "value": {}} for key in found.metadata])
             elif parts[4] == "original":
@@ -225,7 +229,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if not role:
                 self.reply(401, {"message": "Invalid API key"})
                 return
-            if self.command == "GET" and path == "/api/users/me":
+            if person is not None and state.intercept is not None and (forced := state.intercept(self.command, path, person.slug)):
+                self.reply(forced, {"message": "Injected failure"})
+            elif self.command == "GET" and path == "/api/users/me":
                 self.users_me(role, person)
             elif self.command == "GET" and path == "/api/api-keys/me" and person is not None:
                 self.reply(200, {"permissions": list(state.permissions)})

@@ -34,6 +34,8 @@ EXACT_ROUTES = frozenset({("GET", "/api/server/about"), ("GET", "/api/users/me")
 ASSET_ROUTE = re.compile(r"/api/assets/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:/original\?edited=false)?")
 MAX_VIDEO_MB = 256
 CHUNK = 1024 * 1024
+DENIED = (400, "Not found or no asset.read access")
+QUOTA = (400, "Quota has been exceeded!")
 DATA_START, DATA_END = "```json immich-live-data", "```"
 ROWS = (
     ("grants", "Server version and the key's exact grants (refused before any upload if broader or an admin user)", ""),
@@ -64,7 +66,9 @@ class Refused(Exception):
 
 
 class Failed(Exception):
-    pass
+    def __init__(self, text: str, status: int | None = None, reply: str = "") -> None:
+        super().__init__(text)
+        self.status, self.reply = status, reply
 
 
 def allowed(method: str, path: str) -> None:
@@ -90,23 +94,14 @@ def check_address(url: str, allow_public: bool) -> str:
     return "public https address, allowed by --allow-public-address"
 
 
-def trust_proxy_bundle() -> None:
-    if not os.environ.get("SSL_CERT_FILE"):
-        bundle = os.environ.get("CURL_CA_BUNDLE") or os.environ.get("REQUESTS_CA_BUNDLE")
-        if bundle:
-            os.environ["SSL_CERT_FILE"] = bundle
-
-
 @dataclass
 class Api:
     url: str
     key: str = field(repr=False)
     timeout: float = 300.0
-    sent: list[tuple[str, str]] = field(default_factory=list, repr=False)
 
     def open(self, method: str, path: str, data: bytes | None, headers: dict[str, str] | None) -> Any:
         allowed(method, path)
-        self.sent.append((method, path.split("?", 1)[0]))
         sent = {"Accept": "application/json", "x-api-key": self.key, **(headers or {})}
         host = urlsplit(self.url).hostname or ""
         return tls.urlopen(self.url.rstrip("/") + path, method=method, data=data, headers=sent, timeout=self.timeout, allow_http=config.local_host(host))
@@ -196,10 +191,8 @@ def xmp(taken: datetime | None, lat: float | None, lon: float | None, descriptio
 
 
 def dng(seed: str) -> bytes:
-    rng = random.Random(seed)
-    image = Image.new("RGB", (32, 24), (rng.randrange(256), rng.randrange(256), rng.randrange(256)))
     out = io.BytesIO()
-    image.save(out, "TIFF", tiffinfo={50706: b"\x01\x04\x00\x00", 271: "Darkroom spike", 272: "Generated"})
+    Image.new("RGB", (32, 24), tuple(random.Random(seed).randbytes(3))).save(out, "TIFF", tiffinfo={50706: b"\x01\x04\x00\x00", 271: "Darkroom spike", 272: "Generated"})
     return out.getvalue()
 
 
@@ -265,7 +258,7 @@ class Run:
         body = immich.MultipartUpload(immich.UploadSource(io.BytesIO(data), len(data), sha1(data)), name, taken, taken, side, live)
         status, found = account.api.call("POST", "/api/assets", raw=b"".join(body), headers=body.headers)
         if status not in (200, 201):
-            raise Failed(f"upload of {label} answered {status} ({message(found)})")
+            raise Failed(f"upload of {label} answered {status} ({message(found)})", status, message(found))
         try:
             result = immich.upload_result(status, found)
         except immich.ImmichFailed as error:
@@ -320,6 +313,9 @@ class Run:
                 return found, None
             time.sleep(self.poll_seconds)
 
+    def waited(self, delay: float | None) -> str:
+        return f"after {delay} s" if delay is not None else f"extraction timed out after {self.extraction_timeout:g} s"
+
     def step(self, row: str, action: Callable[[], tuple[str, str]]) -> None:
         try:
             self.rows[row] = action()
@@ -347,7 +343,7 @@ def near(value: object, wanted: float) -> bool:
 
 def matches(found: dict[str, Any], taken: datetime, lat: float, lon: float, description: str | None = None) -> bool:
     values = exif_values(found)
-    return (instant(values["dateTimeOriginal"]) == taken and near(values["latitude"], lat) and near(values["longitude"], lon)
+    return (instant(values["dateTimeOriginal"]) == taken and bool(values["timeZone"]) and near(values["latitude"], lat) and near(values["longitude"], lon)
             and (description is None or values["description"] == description))
 
 
@@ -398,6 +394,7 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
         ids.update(exif=result.asset_id, xmp=bare.asset_id)
         run.verify(a, result.asset_id, exif_bytes)
         run.verify(a, bare.asset_id, bare_bytes)
+        run.verify(a, run.shared["asset"], jpeg(f"{run.run_id}-shared"))
         return "pass", f"201 created `{result.asset_id}` and `{bare.asset_id}`; owner = key's user, `libraryId: null`; unedited download SHA-1 {sha1(exif_bytes)[:12]}… / {len(exif_bytes)} bytes and {sha1(bare_bytes)[:12]}… / {len(bare_bytes)} bytes equal the input"
     run.step("new", new)
 
@@ -408,17 +405,21 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
         found_xmp, xmp_delay = run.wait(a, ids["xmp"], lambda f: matches(f, xmp_taken, 12.25, 45.75, described))
         conflict_taken = datetime(2020, 1, 1, 12, 0, tzinfo=UTC)
         conflict = run.upload(a, "conflict", "jpg", jpeg(f"{run.run_id}-conflict", exif_of(datetime(2020, 1, 1, 10, 0, tzinfo=UTC), 1.0, 1.0)), xmp(conflict_taken, 2.0, 2.0, described))
-        found_conflict, _ = run.wait(a, conflict.asset_id, lambda f: exif_values(f)["dateTimeOriginal"] is not None)
-        winner = {instant(exif_values(found_conflict)["dateTimeOriginal"]) == conflict_taken: "XMP", instant(exif_values(found_conflict)["dateTimeOriginal"]) == datetime(2020, 1, 1, 10, 0, tzinfo=UTC): "EXIF"}.get(True, "neither")
-        detail = (f"EXIF-only: {exif_values(found_exif)} after {exif_delay}s; XMP-only: {exif_values(found_xmp)} after {xmp_delay}s; "
-                  f"conflicting EXIF 10:00Z vs XMP 12:00Z: {winner} date won ({exif_values(found_conflict)['dateTimeOriginal']})")
-        return ("pass" if exif_delay is not None and xmp_delay is not None else "fail"), detail
+        found_conflict, conflict_delay = run.wait(a, conflict.asset_id, lambda f: exif_values(f)["dateTimeOriginal"] is not None)
+        winner = {conflict_taken: "XMP", datetime(2020, 1, 1, 10, 0, tzinfo=UTC): "EXIF"}.get(instant(exif_values(found_conflict)["dateTimeOriginal"]), "neither")
+        delays = [run.waited(d) for d in (exif_delay, xmp_delay, conflict_delay)]
+        detail = (f"EXIF-only: {exif_values(found_exif)} {delays[0]}; XMP-only: {exif_values(found_xmp)} {delays[1]}; "
+                  f"conflicting EXIF 10:00Z vs XMP 12:00Z: {winner} date won ({exif_values(found_conflict)['dateTimeOriginal']}) {delays[2]}")
+        return ("pass" if None not in (exif_delay, xmp_delay, conflict_delay) and winner != "neither" else "fail"), detail
     run.step("extract", extract)
 
     def dup_sidecar() -> tuple[str, str]:
         if "exif" not in ids:
             raise Failed("no asset from the new-original step")
-        before = exif_values(run.asset(a, ids["exif"]))
+        first = run.asset(a, ids["exif"])
+        if not matches(first, exif_taken, 10.5, -20.25):
+            return "not verified", "the first asset's metadata had not been extracted, so survival cannot be judged"
+        before = exif_values(first)
         again = run.upload(a, "exif-again", "jpg", exif_bytes, xmp(None, 33.0, 33.0, f"{MARKER} {run.run_id} second sidecar"))
         if (again.status, again.asset_id) != ("duplicate", ids["exif"]):
             raise Failed(f"expected 200 duplicate of the first asset, got {again.status}")
@@ -441,9 +442,11 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
             list(pool.map(one, range(3)))
         found = run.by_checksum(a, data)
         statuses = sorted(r.status for r in results)
-        if len(found) != 1 or any(r.asset_id != found[0] for r in results):
-            raise Failed(f"expected one asset for the checksum, found {len(found)}; statuses {statuses}, errors {errors}")
+        if len(found) != 1 or errors or statuses != ["created", "duplicate", "duplicate"] or any(r.asset_id != found[0] for r in results):
+            raise Failed(f"expected one created and two duplicates of one asset; found {len(found)}, statuses {statuses}, errors {errors}")
         check = run.bulk_check(a, data)
+        if (check.get("action"), check.get("reason"), check.get("assetId")) != ("reject", "duplicate", found[0]):
+            raise Failed(f"the bulk check answered {check.get('action')}/{check.get('reason')} without that ID")
         run.verify(a, found[0], data)
         return "pass", f"3 simultaneous uploads: {statuses}, errors {errors}; checksum search finds one asset; bulk check {check.get('action')}/{check.get('reason')} with that ID"
     run.step("concurrent", concurrent)
@@ -453,7 +456,7 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
         run.upload(a, "lost", "jpg", data)
         check = run.bulk_check(a, data)
         found = run.by_checksum(a, data)
-        if check.get("action") != "reject" or len(found) != 1 or check.get("assetId") != found[0]:
+        if check.get("action") != "reject" or check.get("reason") != "duplicate" or len(found) != 1 or check.get("assetId") != found[0]:
             raise Failed(f"reconcile did not find exactly one asset (bulk check {check.get('action')}, search {len(found)})")
         run.verify(a, found[0], data)
         retry = run.upload(a, "lost", "jpg", data)
@@ -479,6 +482,8 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
         raw_bytes, jpg_bytes = dng(f"{run.run_id}-raw"), jpeg(f"{run.run_id}-raw-jpg")
         raw_up, jpg_up = run.upload(a, "pair", "dng", raw_bytes), run.upload(a, "pair", "jpg", jpg_bytes)
         found_raw, found_jpg = run.verify(a, raw_up.asset_id, raw_bytes), run.verify(a, jpg_up.asset_id, jpg_bytes)
+        if (found_raw.get("type"), found_jpg.get("type")) != ("IMAGE", "IMAGE") or raw_up.asset_id == jpg_up.asset_id:
+            raise Failed(f"expected two distinct IMAGE assets, got types {found_raw.get('type')}/{found_jpg.get('type')}")
         return "pass", f"two assets, bytes verified; types {found_raw.get('type')}/{found_jpg.get('type')}; stack {bool(found_raw.get('stack') or found_jpg.get('stack'))}"
     run.step("raw", raw)
 
@@ -489,8 +494,8 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
             up = run.upload(a, "large-video", "avi", data)
             took = round(time.monotonic() - started, 1)
             run.verify(a, up.asset_id, data)
-            found, delay = run.wait(a, up.asset_id, lambda f: str(f.get("duration") or "0:00:00.00000") not in ("0:00:00.00000", "0:00:00"))
-            return "pass", f"{len(data)} bytes uploaded in {took}s, bytes verified; duration `{found.get('duration')}` after {delay}s"
+            found, delay = run.wait(a, up.asset_id, lambda f: type(f.get("duration")) is int and f["duration"] > 0)
+            return ("pass" if delay is not None else "fail"), f"{len(data)} bytes uploaded in {took}s, bytes verified; duration `{found.get('duration')}` ms {run.waited(delay)}"
         run.step("video", video)
 
 
@@ -506,10 +511,12 @@ def two_accounts(run: Run, b: Account, data: bytes, a_asset: str, a_owner: str) 
     def binding() -> tuple[str, str]:
         if owner_hash(b.user_id) == a_owner:
             raise Failed("both keys belong to the same user")
-        status, _ = b.api.call("GET", f"/api/assets/{a_asset}")
+        status, found = b.api.call("GET", f"/api/assets/{a_asset}")
         if status == 200:
             raise Failed("the second user could read the first user's asset")
-        return "pass", f"keys belong to different non-admin users; each asset's owner is its uploader; the other user's asset answered {status}"
+        if (status, message(found)) != DENIED:
+            return "not verified", f"the other user's asset answered {status} ({message(found)}), not Immich's 400 access denial"
+        return "pass", f"keys belong to different non-admin users; each asset's owner is its uploader; the other user's asset answered 400 ({DENIED[1]})"
     run.step("binding", binding)
 
 
@@ -520,8 +527,10 @@ def optional_keys(run: Run, url: str, account: Account | None, revoked_key: str)
             try:
                 run.upload(account, "quota", "jpg", data)
             except Failed as error:
-                after = run.bulk_check(account, data)
-                return ("pass" if after.get("action") == "accept" else "fail"), f"{account.quota}; {error}; nothing was stored for those bytes: {after.get('action') == 'accept'}"
+                if (error.status, error.reply) != QUOTA:
+                    return "not verified", f"{account.quota}; the upload failed without Immich's quota refusal: {error}"
+                stored = run.bulk_check(account, data).get("action") != "accept"
+                return ("fail" if stored else "pass"), f"{account.quota}; {error}; the bytes were {'stored anyway' if stored else 'not stored'}"
             return "fail", f"{account.quota}; the upload was accepted"
         run.step("quota", quota)
     if revoked_key:
@@ -544,19 +553,20 @@ def after_trash(run: Run, a: Account, previous: dict[str, Any]) -> None:
         check = run.bulk_check(a, data)
         up = run.upload(a, "trash-me-again", "jpg", data)
         after = run.asset(a, asset_id)
+        if check.get("action") not in ("accept", "reject") or not isinstance(after.get("isTrashed"), bool):
+            raise Failed("the bulk check or the trashed asset's state was missing from Immich's answers")
         return "pass", (f"bulk check {check.get('action')}/{check.get('reason')}, isTrashed {check.get('isTrashed')}; upload {up.status} "
                         f"{'with the trashed ID' if up.asset_id == asset_id else 'with a new ID'}; trashed asset still trashed: {after.get('isTrashed') is True}")
     run.step("trashed", trashed)
 
 
 def load_data(path: Path) -> dict[str, Any]:
-    text = path.read_text()
-    start = text.rfind(DATA_START)
-    end = text.find(DATA_END, start + len(DATA_START)) if start >= 0 else -1
-    if start < 0 or end < 0:
-        raise Refused("the earlier result has no data block")
-    found = json.loads(text[start + len(DATA_START):end])
-    if not isinstance(found, dict) or not isinstance(found.get("run_id"), str):
+    block = re.findall(re.escape(DATA_START) + r"\n(.*?)\n" + re.escape(DATA_END), path.read_text(), re.S)
+    try:
+        found = json.loads(block[-1]) if block else None
+    except ValueError:
+        found = None
+    if not isinstance(found, dict) or not isinstance(found.get("run_id"), str) or not isinstance(found.get("version"), str):
         raise Refused("the earlier result's data block is not valid")
     return found
 
@@ -568,7 +578,7 @@ def merged(previous: dict[str, Any], rows: dict[str, tuple[str, str]]) -> dict[s
             continue
         old = result.get(key)
         if old and old[0] != "not run":
-            status = "fail" if "fail" in (status, old[0]) else status
+            status = next((s for s in ("fail", "not verified") if s in (status, old[0])), status)
             detail = f"{old[1]}; then {detail}"
         result[key] = (status, detail)
     return result
@@ -593,7 +603,7 @@ def report(run: Run, previous: dict[str, Any] | None) -> tuple[str, int]:
               "| Account | File name | Asset ID |", "| --- | --- | --- |"]
     lines += [f"| {c['account']} | `{c['file']}` | `{c['id']}` |" for c in created]
     lines += ["", DATA_START, json.dumps(data, indent=1), DATA_END, ""]
-    return "\n".join(lines), sum(1 for status, _ in rows.values() if status == "fail")
+    return "\n".join(lines), sum(1 for status, _ in rows.values() if status in ("fail", "not verified"))
 
 
 def redact(text: str, secrets: list[str]) -> str:
@@ -627,7 +637,8 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
         if (args.phase == "main") != (args.append_results is None):
             raise Refused("--append-results goes with --phase second-account or after-trash, and only with them")
         address = check_address(url, args.allow_public_address)
-        trust_proxy_bundle()
+        if not os.environ.get("SSL_CERT_FILE") and (bundle := os.environ.get("CURL_CA_BUNDLE") or os.environ.get("REQUESTS_CA_BUNDLE")):
+            os.environ["SSL_CERT_FILE"] = bundle
         previous = load_data(args.append_results) if args.append_results else None
         run = Run(previous["run_id"] if previous else uuid.uuid4().hex[:8], poll_seconds=poll_seconds,
                   extraction_timeout=args.extraction_timeout, address=address, version=previous["version"] if previous else "")
@@ -644,7 +655,6 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
         if args.phase == "main":
             shared = jpeg(f"{run.run_id}-shared")
             first = run.upload(a, "shared", "jpg", shared)
-            run.verify(a, first.asset_id, shared)
             run.shared = {"asset": first.asset_id, "owner": owner_hash(a.user_id)}
             run.upload(a, "trash-me", "jpg", jpeg(f"{run.run_id}-trash-me"))
             single_account(run, a, args.large_video_mb)
@@ -661,7 +671,7 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
             after_trash(run, a, previous)
         text, failed = report(run, previous)
         args.out.write_text(redact(text, secrets))
-        print(redact(f"wrote {args.out}: {len(run.created)} assets created, {failed} failed", secrets), file=out)
+        print(redact(f"wrote {args.out}: {len(run.created)} assets created, {failed} failed or not verified", secrets), file=out)
         code = 1 if failed else 0
     except Refused as error:
         print(redact(f"refused: {error}", secrets), file=out)
