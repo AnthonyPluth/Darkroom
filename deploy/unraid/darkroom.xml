@@ -1,15 +1,15 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>darkroom</Name>
-  <Repository>ghcr.io/anthonypluth/darkroom-single:latest</Repository>
-  <Registry>https://github.com/AnthonyPluth/Darkroom/pkgs/container/darkroom-single</Registry>
+  <Repository>ghcr.io/anthonypluth/darkroom:latest</Repository>
+  <Registry>https://github.com/AnthonyPluth/Darkroom/pkgs/container/darkroom</Registry>
   <Network>host</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/AnthonyPluth/Darkroom/issues</Support>
   <Project>https://github.com/AnthonyPluth/Darkroom</Project>
-  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json of a release at /boot/config/darkroom/seccomp.json on the server, set Repository to that release's tag instead of latest, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). It runs on the host network, for Darkroom's Syncthing and its local discovery: port 8000 and Syncthing's 22000 (TCP and UDP) and 21027 (UDP) listen on every address of the server. Keep them off the internet and never forward them.</Overview>
+  <Overview>Darkroom in one container: the app, the Takeout browser worker and Darkroom's Syncthing together, under the image's init. Before the first start, put deploy/browser/seccomp.json of a release at /boot/config/darkroom/seccomp.json on the server, set Repository to that release's tag instead of latest, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). It runs on the host network, for Darkroom's Syncthing and its local discovery: port 8000 and Syncthing's 22000 (TCP and UDP) and 21027 (UDP) listen on every address of the server. Keep them off the internet and never forward them.</Overview>
   <Category>MediaApp:Photos</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/AnthonyPluth/Darkroom/main/deploy/unraid/darkroom.xml</TemplateURL>

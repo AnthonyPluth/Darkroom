@@ -1,8 +1,8 @@
 name: Security scans
 
 # The security scans, through fleet's reusable workflow: Semgrep (the registry packs plus Darkroom's own rules in
-# .semgrep/, after their example check), npm audit in frontend/, Trivy over the files, over the service image and (a
-# call of its own) over the one-container image, and zizmor over the workflows. A pull request
+# .semgrep/, after their example check), npm audit in frontend/, Trivy over the files and (a call of its own) over the
+# image, and zizmor over the workflows. A pull request
 # runs only the scans its change can affect (a change under .github/ runs everything; Trivy's file scan always runs);
 # the weekly run and a manual one scan everything.
 #
@@ -43,15 +43,14 @@ jobs:
       code-paths: ^((darkroom|darkroom_browser|frontend/src|\.semgrep)/|run\.py$)
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
       web-dirs: frontend
-      image-paths: ^(Dockerfile|\.dockerignore|pyproject\.toml|poetry\.lock)$
       sarif-upload: false
       scorecard: false
 
-  # The same scans called again for the other image, the one container (Dockerfile.single), since fleet's workflow
-  # builds and scans one Dockerfile at a time. Its code-paths match no changed file, so its Semgrep runs only where
-  # every scan runs (a change under .github/, the weekly and manual runs), like its file scan and zizmor, repeating the
-  # first call. Only the one container's image scan takes a list of accepted findings: .trivyignore.yaml, which fleet
-  # reads from main's tip, never from the pull request (SECURITY.md, "Accepted scanner findings").
+  # The same scans called again for the image (Dockerfile, the one container), which the first call leaves out (no
+  # image-paths). Its code-paths match no changed file, so its Semgrep runs only where every scan runs (a change under
+  # .github/, the weekly and manual runs), like its file scan and zizmor, repeating the first call. Its image scan takes
+  # a list of accepted findings: .trivyignore.yaml, which fleet reads from main's tip, never from the pull request
+  # (SECURITY.md, "Accepted scanner findings").
   single-image:
     permissions:
       contents: read
@@ -63,8 +62,8 @@ jobs:
     with:
       code-paths: ^$
       semgrep-paths: darkroom darkroom_browser run.py frontend/src
-      image-paths: ^(Dockerfile\.single|\.dockerignore|pyproject\.toml|poetry\.lock|deploy/single/requirements\.txt|deploy/browser/smoke\.sh)$
-      dockerfile: Dockerfile.single
+      image-paths: ^(Dockerfile|\.dockerignore|pyproject\.toml|poetry\.lock|deploy/single/requirements\.txt|deploy/browser/smoke\.sh)$
+      dockerfile: Dockerfile
       trivy-image-ignore-file: .trivyignore.yaml
       sarif-upload: false
       scorecard: false

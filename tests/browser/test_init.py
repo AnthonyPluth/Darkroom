@@ -78,9 +78,8 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(plan.worker_env(given)["PHOTOS_ROOT"], "/share")
 
     def test_the_one_container_image_keeps_the_browser_state_in_appdata(self):
-        image = (ROOT / "Dockerfile.single").read_text()
+        image = (ROOT / "Dockerfile").read_text()
         self.assertIn("DARKROOM_BROWSER_ROOT=/data/browser", image)
-        self.assertNotIn("BROWSER_ROOT", (ROOT / "Dockerfile").read_text())
 
     def test_the_display_stack_gets_almost_nothing(self):
         self.assertEqual(plan.display_env(GIVEN), {"PATH": "/usr/local/bin:/usr/bin:/bin", "DISPLAY": ":99", "HOME": "/home/darkroom", "LANG": "C.UTF-8"})

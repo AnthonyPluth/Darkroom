@@ -50,7 +50,7 @@ flowchart LR
 
 ### A separate container, `darkroom-vision`
 
-A third service in `docker-compose.yml`, under a `vision` profile so it is opt-in like `darkroom-browser`. Its code is a new package `darkroom_vision/` that, like `darkroom_browser/`, never imports `darkroom` and is never imported by it (an import-linter contract), and talks to `darkroom` only through one client module over the internal API.
+A third service in `docker-compose.yml`, under a `vision` profile so it is opt-in, as the separate browser container once was. Its code is a new package `darkroom_vision/` that, like `darkroom_browser/`, never imports `darkroom` and is never imported by it (an import-linter contract), and talks to `darkroom` only through one client module over the internal API.
 
 Why a separate container rather than inside `darkroom`:
 

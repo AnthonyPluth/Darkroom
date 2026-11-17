@@ -1,6 +1,6 @@
 # The browser worker
 
-The browser worker runs inside the one container ([one-container.md](one-container.md)), started by its init next to the app. The separate `darkroom-browser` container, its image and its settings (`DARKROOM_BROWSER_TOKEN`, `DARKROOM_URL`, `VNC_URL`, `DARKROOM_VNC_SECRET`) were removed (#327): when one of those is still set, `python run.py check-config` and the start-up log name it as set and ignored, and never show its value. To go back to the two containers, pin the previous release ([one-container.md](one-container.md#going-back-to-the-two-containers)).
+The browser worker runs inside the one container ([one-container.md](one-container.md)), started by its init next to the app. The separate browser container, its image and its settings (`DARKROOM_BROWSER_TOKEN`, `DARKROOM_URL`, `VNC_URL`, `DARKROOM_VNC_SECRET`) were removed (#327): when one of those is still set, `python run.py check-config` and the start-up log name it as set and ignored, and never show its value. To go back to the two containers, pin the previous release ([one-container.md](one-container.md#going-back-to-the-two-containers)).
 
 The worker is a stateless executor: the app owns the job queue in its database and the worker claims jobs over the internal API with a token the init generates at every start and hands to both on a pipe, runs them in Chromium on a virtual display, and reports back. Its state is the per-account browser profiles and failure captures in appdata (`/data/browser`), backed up with the rest of appdata.
 
@@ -14,7 +14,7 @@ The Remote browser page gives the viewer the available window height. Use **Full
 
 **Connect** checks that Takeout is signed in to the expected Google account and saves that session; it does not create an export or a schedule. Once Connect finishes, use **Create schedule** on the Exports page. A download or schedule job waiting for sign-in resumes its own work after the account is confirmed. Account-switch links and sign-in URLs in Takeout's scripts do not count as a sign-in form; the worker still verifies the signed-in account's email before finishing Connect.
 
-Google can refuse a sign-in in the remote viewer with "This browser or app may not be secure". Playwright's defaults mark the browser as automated (the `--enable-automation` flag, `navigator.webdriver`) and its bundled Chromium is Chromium for Testing, not Google Chrome. The image installs Google Chrome stable at build time (`python -m playwright install --with-deps chrome`, the pinned Playwright's own installer, as root; Chrome for Linux is amd64 only, which is the platform the image is published for) and `darkroom_browser/launch.py` starts it with `channel="chrome"`, without `--enable-automation` and with `--disable-blink-features=AutomationControlled`. Nothing else changes: no stealth plugin, no user-agent or fingerprint patch, and the worker still never types a password or a 2FA code (`selectors.TYPEABLE`); you sign in by hand in the viewer. The worker passes `chromium_sandbox=True` (Playwright's default is off, and then it adds `--no-sandbox` itself), so the browser's sandbox runs and depends on the user namespaces `seccomp.json` allows; `seccomp.json` allows namespace creation and the `chroot` call Chromium uses to isolate the sandbox; `cap_drop: [ALL]` stays in place. If Chrome does not start, the worker logs a `chrome_launch_failed` event (the error's type and a fixed reason code, never its raw output) to the container's log (`docker compose logs darkroom-single`) and falls back to Chromium; look for that line when sign-in is still refused, since Chromium is the browser Google refuses. If Chromium also fails, a `chromium_launch_failed` event carries its reason, and the failed job shows a fixed troubleshooting message. A profile that Chrome has opened may not open cleanly in a later Chromium fallback; back up the profile before trying a fresh one.
+Google can refuse a sign-in in the remote viewer with "This browser or app may not be secure". Playwright's defaults mark the browser as automated (the `--enable-automation` flag, `navigator.webdriver`) and its bundled Chromium is Chromium for Testing, not Google Chrome. The image installs Google Chrome stable at build time (`python -m playwright install --with-deps chrome`, the pinned Playwright's own installer, as root; Chrome for Linux is amd64 only, which is the platform the image is published for) and `darkroom_browser/launch.py` starts it with `channel="chrome"`, without `--enable-automation` and with `--disable-blink-features=AutomationControlled`. Nothing else changes: no stealth plugin, no user-agent or fingerprint patch, and the worker still never types a password or a 2FA code (`selectors.TYPEABLE`); you sign in by hand in the viewer. The worker passes `chromium_sandbox=True` (Playwright's default is off, and then it adds `--no-sandbox` itself), so the browser's sandbox runs and depends on the user namespaces `seccomp.json` allows; `seccomp.json` allows namespace creation and the `chroot` call Chromium uses to isolate the sandbox; `cap_drop: [ALL]` stays in place. If Chrome does not start, the worker logs a `chrome_launch_failed` event (the error's type and a fixed reason code, never its raw output) to the container's log (`docker compose logs darkroom`) and falls back to Chromium; look for that line when sign-in is still refused, since Chromium is the browser Google refuses. If Chromium also fails, a `chromium_launch_failed` event carries its reason, and the failed job shows a fixed troubleshooting message. A profile that Chrome has opened may not open cleanly in a later Chromium fallback; back up the profile before trying a fresh one.
 
 `BROWSER_CHANNEL` (default `chrome`) chooses the browser: `chromium` (or empty) uses the bundled Chromium. When Chrome is not in the image (a build on another platform skips it) or fails to launch, the worker falls back to the bundled Chromium instead of failing the job.
 
@@ -43,7 +43,7 @@ With the sandbox on, Chrome and Chromium both fail to start when the host blocks
 The earlier allowlist omitted `chroot`, which Chromium uses after entering its user namespace: namespace creation alone was not enough. The image CI now launches a real page in both browsers with the deployment seccomp profile, all capabilities dropped, and `no-new-privileges` enabled. Run the same check locally after a build:
 
 ```sh
-docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin ghcr.io/anthonypluth/darkroom-single:latest bash /opt/worker/app/smoke.sh
+docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin ghcr.io/anthonypluth/darkroom:latest bash /opt/worker/app/smoke.sh
 ```
 
 For `sandbox_unavailable`, apply the current seccomp profile when recreating the container (on Unraid, the template's Extra Parameters name `/boot/config/darkroom/seccomp.json`; copy the release's profile there) and check the host's `kernel.unprivileged_userns_clone` (where present) and `user.max_user_namespaces` (must be above 0). The worker does not disable the browser sandbox to work around a host restriction.
@@ -61,7 +61,7 @@ For `profile_in_use`, stop every worker that can open that account's profile. Ba
 
 ### Users and the shared group
 
-The image defaults to uid 99 and gid 100, matching Unraid's `nobody:users`; compose uses `user: "${PUID:-99}:${PGID:-100}"` and the Unraid template `--user=99:100`. The image reuses an existing group with that GID, rather than failing when `users` already exists. Custom IDs are build arguments (`PUID`, `PGID`): build the image with `docker compose --profile single up -d --build darkroom-single` and use a matching runtime user. The folders remain private to their owner and group, but other host processes belonging to Unraid's `users` group can access group-writable files.
+The image defaults to uid 99 and gid 100, matching Unraid's `nobody:users`; compose uses `user: "${PUID:-99}:${PGID:-100}"` and the Unraid template `--user=99:100`. The image reuses an existing group with that GID, rather than failing when `users` already exists. Custom IDs are build arguments (`PUID`, `PGID`): build the image with `docker compose up -d --build` and use a matching runtime user. The folders remain private to their owner and group, but other host processes belonging to Unraid's `users` group can access group-writable files.
 
 - Darkroom makes `_inbox`, `_inbox/.downloads`, each person's `_inbox/<person>/` and `manual/`, and each export's `_inbox/<person>/export-<id>/` (when the worker asks for its download plan) with mode `2770`: owner and group can read, write and enter, and nobody else can even list them, so what the inbox holds is never readable outside the group. The setgid bit keeps every folder made under them in the configured primary group (100 by default). The mode is set with `chmod` after `mkdir`, so it doesn't depend on the umask. When the app starts it gives the folders it owns under `_inbox` (`_inbox`, `.downloads` and each person's inbox) that group and mode, so a share set up before this change is fixed on the next start.
 - The worker runs with umask `007` and makes `.downloads/<account id>/`, any missing export folder and `.partial/` with mode `2770` too, and sets each finished part to `0660`, so the app can read the parts, unpack them and remove the export folder, and deleting an account can remove `.downloads/<account id>/`.
@@ -87,20 +87,20 @@ Chromium's download folder stays under the working root's `_inbox/.downloads/<ac
 Profiles left on the share by the two containers (`_browser/`) are moved into appdata on the release before the one that removed those containers ([one-container.md](one-container.md#moving-from-the-two-containers)). The command that copies them stays, for that move and the way back. It runs inside the image, as Darkroom's user under the same sandbox, with the container stopped:
 
 ```sh
-docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /photos/_browser --target /data/browser
+docker compose run --rm --no-deps -w /app darkroom python run.py copy-browser-state --source /photos/_browser --target /data/browser
 ```
 
 and back to the share, setting the old `_browser/` aside:
 
 ```sh
-docker compose --profile single run --rm --no-deps -w /app darkroom-single python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
+docker compose run --rm --no-deps -w /app darkroom python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
 ```
 
 On Unraid, run it with the template's flags and paths (the share and appdata paths are yours), with the container stopped:
 
 ```sh
 docker run --rm --user 99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json \
-  -v /mnt/user/appdata/darkroom:/data -v /mnt/user/photos:/photos -w /app ghcr.io/anthonypluth/darkroom-single:<release> \
+  -v /mnt/user/appdata/darkroom:/data -v /mnt/user/photos:/photos -w /app ghcr.io/anthonypluth/darkroom:<release> \
   python run.py copy-browser-state --source /photos/_browser --target /data/browser
 ```
 
@@ -112,8 +112,8 @@ It copies the source into a new hidden folder next to the target (`.browser.copy
 
 ## Running a `noop` job end to end
 
-1. Start the one container: `docker compose --profile single up -d darkroom-single`. The init generates the browser token; nothing is set by hand.
-2. `docker compose logs -f darkroom-single` should show `browser worker ready`.
+1. Start the one container: `docker compose up -d`. The init generates the browser token; nothing is set by hand.
+2. `docker compose logs -f darkroom` should show `browser worker ready`.
 3. Queue a job while signed in to Darkroom: `POST /api/browser/jobs` with `{"account_id": <id>, "kind": "noop"}` (or `GET /api/browser/jobs` to watch it).
 4. Within `POLL_SECONDS` the job goes `queued → running → done`, its result reads `{"ok": true, "kind": "noop", "playwright": "1.49.1"}` (a `null` means the package is missing from the image) and `GET /api/status` shows `worker_last_seen`.
 5. A job whose worker disappears is marked `failed` after the lease (`LEASE_SECONDS`, 3 minutes without a heartbeat) and a "Darkroom needs a look" alert opens. The worker gives up first: when Darkroom has acknowledged no heartbeat for 2 minutes (`GIVE_UP_SECONDS`), or Chromium fails to close, the worker logs it and exits with code 3, taking Chromium with it, and the init restarts it. It never reports a job finished while its browser may still be open, so deleting the account (which removes `browser/<id>`) waits for that job.

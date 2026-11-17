@@ -371,7 +371,7 @@ class PlanAndMainTests(unittest.TestCase):
     def test_the_init_and_the_app_agree_on_the_socket_and_the_home_is_under_appdata(self):
         self.assertEqual(syncthing.SOCKET, app_config.SYNCTHING_SOCKET)
         self.assertEqual(plan.syncthing_home({}), "/data/syncthing")
-        image = (ROOT / "Dockerfile.single").read_text()
+        image = (ROOT / "Dockerfile").read_text()
         self.assertIn("mkdir -p /data /photos /tmp/.X11-unix /run/darkroom", image)
         self.assertIn("&& chmod 0700 /run/darkroom", image)
         self.assertIn("COPY --from=syncthing /syncthing /usr/local/bin/syncthing", image)
