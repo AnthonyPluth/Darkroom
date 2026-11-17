@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { animationsRunning, auditPage } from "./a11y.mjs";
 import { planVisits, runPool, summarize, urlsOf } from "./jobs.mjs";
 import { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer } from "./routes.mjs";
+import { SETUP_PAGE, isSetupPage, setupVisit, wantsSetup } from "./setup.mjs";
 
 export { LOOPBACK_HOSTS, ROUTES, SIGNED_OUT_PAGES, allowedRequest, httpUrlOf, routeOf, sameServer };
 
@@ -25,7 +26,9 @@ export async function prepareContext(ctx, now) {
 export const loadedWhen = (signedIn) => (signedIn ? "networkidle" : "load");
 export const SETTLE_MS = 300;
 export const FROZEN_NOW = "2026-06-15T12:00:00Z";
-export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser"];
+export const PAGES = ["sign-in", "status", "people", "exports", "imports", "review", "browser", "setup-welcome", "setup-address", "setup-sign-in", "setup-immich", "setup-immich-refused", "setup-people", "setup-accounts", "setup-pixels", "setup-alerts", "setup-done", "setup-closed"];
+export const SETUP_PAGES = PAGES.filter(isSetupPage);
+export const DEMO_PAGES = PAGES.filter((n) => !isSetupPage(n));
 export const SESSION_FILE = "demo-session.json";
 export const LOADING = "[role=status]:has-text('Loading')";
 
@@ -60,17 +63,19 @@ export const signIn = (ctx, base, cookie) => ctx.addCookies([{ ...cookie, url: b
 
 export const hostOf = (url) => { try { return new URL(url).host || url; } catch { return "an address that is not a URL"; } };
 
-export async function blockWebSockets(ctx, base, report) {
-  await ctx.routeWebSocket((url) => !allowedRequest(httpUrlOf(url.href), base), (socket) => {
+export const allowedFor = (url, base, also = []) => allowedRequest(url, base) || also.some((other) => allowedRequest(url, other));
+
+export async function blockWebSockets(ctx, base, report, also = []) {
+  await ctx.routeWebSocket((url) => !allowedFor(httpUrlOf(url.href), base, also), (socket) => {
     report(hostOf(socket.url()));
     return socket.close();
   });
 }
 
-export async function blockOtherHosts(ctx, base) {
+export async function blockOtherHosts(ctx, base, also = []) {
   const blocked = [];
-  await blockWebSockets(ctx, base, (host) => blocked.push(host));
-  await ctx.route((url) => !allowedRequest(url.href, base), (route) => {
+  await blockWebSockets(ctx, base, (host) => blocked.push(host), also);
+  await ctx.route((url) => !allowedFor(url.href, base, also), (route) => {
     blocked.push(hostOf(route.request().url()));
     return route.abort("blockedbyclient");
   });
@@ -80,7 +85,7 @@ export async function blockOtherHosts(ctx, base) {
 const ACTIONS = { goto: "string", click: "string", click_if_present: "string", hover: "string", select: "object", fill: "object", press: "object", upload: "object", download: "object", scroll_to: "string", sign_out: "boolean", reload: "boolean", demo_post: "object", wait_for: "string", expect_text: "object", screenshot: "string" };
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-export const unknownPages = (names) => names.filter((n) => !PAGES.includes(n));
+export const unknownPages = (names) => names.filter((n) => !PAGES.includes(n) && n !== SETUP_PAGE);
 
 export function flowProblems(flow) {
   const out = [];
@@ -192,12 +197,12 @@ export async function prepareBrowserPreview(ctx, base, now) {
   await ctx.route(viewer, (route) => route.fulfill({ contentType: "text/html", body: readFileSync(new URL("./browser-preview.html", import.meta.url), "utf8") }));
 }
 
-export async function visit(env, label, viewport, work, { audit = true, reducedMotion = "no-preference", allowConsole = [], signedIn = true, browserPreview = false } = {}) {
+export async function visit(env, label, viewport, work, { audit = true, reducedMotion = "no-preference", allowConsole = [], signedIn = true, browserPreview = false, also = [] } = {}) {
   const { browser, now, images, out, base, cookie } = env;
   const ctx = await browser.newContext(contextOptions(viewport, { reducedMotion }));
   try {
     await prepareContext(ctx, now);
-    const blocked = await blockOtherHosts(ctx, base);
+    const blocked = await blockOtherHosts(ctx, base, also);
     if (browserPreview) await prepareBrowserPreview(ctx, base, now);
     if (signedIn && cookie) await signIn(ctx, base, cookie);
     const page = await ctx.newPage();
@@ -210,7 +215,7 @@ export async function visit(env, label, viewport, work, { audit = true, reducedM
     page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
     page.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
     page.on("response", (r) => { if (r.status() >= 500) problems.push(`${where}: ${r.status()} from ${r.request().method()} ${new URL(r.url()).pathname}`); });
-    page.on("requestfailed", (r) => { if (r.failure()?.errorText !== "net::ERR_ABORTED" && allowedRequest(r.url(), base)) notes.push(`${where}: request failed (${r.failure()?.errorText}) ${new URL(r.url()).pathname}`); });
+    page.on("requestfailed", (r) => { if (r.failure()?.errorText !== "net::ERR_ABORTED" && allowedFor(r.url(), base, also)) notes.push(`${where}: request failed (${r.failure()?.errorText}) ${new URL(r.url()).pathname}`); });
     const files = [];
     const shot = async (name, dir = images) => {
       if (!writesImage(viewport)) return;
@@ -318,6 +323,19 @@ export function commitImages(staging, images, replaceAll, copy = copyFileSync) {
   rmSync(old, { recursive: true, force: true });
 }
 
+export async function runSetup({ setupUrls, signIn, immich, now, staging, out, from }) {
+  const browser = await chromium.launch(launchOptions());
+  try {
+    const outcomes = [];
+    for (const [i, viewport] of IMAGE_VIEWPORTS.entries()) {
+      const env = { browser, base: setupUrls[i], cookie: null, now, images: staging, out };
+      const result = await setupVisit(visit, env, { label: SETUP_PAGE, viewport, signIn, immich });
+      outcomes.push({ ...result, visit: { kind: "page", name: SETUP_PAGE, viewport, index: from + i }, worker: 0 });
+    }
+    return outcomes;
+  } finally { await browser.close(); }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const opt = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args.splice(i, 2)[1]; };
@@ -331,6 +349,9 @@ async function main() {
   const flowsDir = opt("--flows", join(here, "flows"));
   const sessionFile = opt("--session", process.env.DARKROOM_VERIFY_SESSION);
   const only = optAll("--flow").flatMap(urlsOf);
+  const setupUrls = optAll("--setup").flatMap(urlsOf);
+  const signIn = opt("--sign-in", "");
+  const immich = opt("--immich", "");
   if (!urls.length) { console.error("verify: no server address (--url or DARKROOM_VERIFY_URL)"); process.exit(2); }
   if (!sessionFile) { console.error("verify: no demo session file (--session or DARKROOM_VERIFY_SESSION)"); process.exit(2); }
   const unknown = unknownPages(args);
@@ -341,7 +362,9 @@ async function main() {
   if (missing.length) { console.error(`verify: no such flow: ${missing.join(", ")}`); process.exit(2); }
   let cookie;
   try { cookie = sessionCookie(sessionFile); } catch (e) { console.error(`verify: couldn't read the demo session (${e.message})`); process.exit(2); }
-  const pages = args.length ? args : PAGES;
+  const pages = (args.length ? args : PAGES).filter((n) => n !== SETUP_PAGE && !isSetupPage(n));
+  const setup = wantsSetup(args, args.length > 0, only.length > 0);
+  if (setup && (setupUrls.length < IMAGE_VIEWPORTS.length || !signIn || !immich)) { console.error(`verify: the setup pages need ${IMAGE_VIEWPORTS.length} setup servers (--setup), a sign-in provider (--sign-in) and a made-up Immich (--immich)`); process.exit(2); }
   const flows = only.length ? everyFlow.filter((f) => only.includes(f.name)) : everyFlow;
   const visits = planVisits({ pages, flows, viewports: DEFAULT_VIEWPORTS, ownPages: [], filtered: args.length > 0 || only.length > 0, flowsOnly: only.length > 0 });
 
@@ -357,6 +380,7 @@ async function main() {
     work: (v, env) => runVisit(env, v),
     release: (env) => env.browser.close(),
   });
+  if (setup) outcomes.push(...await runSetup({ setupUrls, signIn, immich, now, staging, out, from: visits.length }));
   const { problems, notes, results } = summarize({ outcomes, failures, urls });
   const seconds = Math.round((Date.now() - started) / 1000);
 

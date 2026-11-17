@@ -2,6 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIGNED_OUT } from "$lib/api";
 import { router } from "$lib/nav.svelte";
 import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo, transport } from "../test/server";
 import People from "./People.svelte";
@@ -279,6 +280,12 @@ describe("the People page with Darkroom's Syncthing", () => {
     expect(within(table).queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
   });
 
+  it("asks whether Darkroom's Syncthing pairs, which the setup wizard's Pixels step never does", async () => {
+    const server = show(withSyncthing());
+    await screen.findByRole("table", { name: "Pixels" });
+    expect(server.sent("GET /api/pairing/device")).toHaveLength(1);
+  });
+
   it("puts a Syncthing column between People served and Last sync, with each Pixel's chip and line", async () => {
     show(withSyncthing());
     const table = await screen.findByRole("table", { name: "Pixels" });
@@ -517,6 +524,17 @@ describe("unpairing a Pixel with Darkroom's Syncthing on", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
     await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: no such Pixel\.$/));
     expect(screen.getByRole("dialog", { name: "Unpair Pixel 8?" })).toBeInTheDocument();
+  });
+
+  it("signs out on a 401 and says so in the dialog", async () => {
+    const heard = vi.fn();
+    window.addEventListener(SIGNED_OUT, heard);
+    show({ ...pixels(() => false), "PATCH /api/pixels/21": reply(401, { error: "sign in required" }) });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: You're signed out\. Sign in again to keep going\.$/);
+    expect(heard).toHaveBeenCalledOnce();
+    window.removeEventListener(SIGNED_OUT, heard);
   });
 
   it("says when Darkroom can't be reached", async () => {

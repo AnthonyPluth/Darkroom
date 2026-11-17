@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.server import auth
-from darkroom.server.common import Principal, Request, Response, engine_of, first_query, header, now, page
+from darkroom.server.common import Principal, Request, Response, engine_of, first_query, header, now, page, redirect
 from darkroom.storage import db, secretbox, stored_settings
 from darkroom.storage.models import Setting, User
 from darkroom.storage.settings_keys import SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN, SETUP_TESTED
@@ -28,7 +28,9 @@ REOPENED_KEYS = (SETUP_CLAIM, SETUP_LOCKED, SETUP_SIGN_IN)
 CLOSED, UNCLAIMED, CLAIMANT, OTHER = "closed", "unclaimed", "claimant", "other"
 BEFORE_TEST, AFTER_TEST = "before_test", "after_test"
 AFTER_TEST_SECONDS = 7 * 86_400
-TEST_PATH = "/setup?proposal="
+SETUP_PAGE = "/setup"
+BACK_TO_SETUP = (SETUP_PAGE, "Back to setup")
+TEST_PATH = SETUP_PAGE + "?proposal="
 
 
 @dataclass(frozen=True)
@@ -195,8 +197,12 @@ def same_address(request: Request, public_url: str) -> bool:
     return public.scheme in ("http", "https") and bool(host) and public.netloc.lower() == host
 
 
-def test_page(status: int, title: str, message: str, request: Request) -> Response:
-    return page(status, title, message, cookies=(auth.cleared(request.settings, TEST_COOKIE, "/auth"),))
+def test_page(status: int, title: str, message: str, request: Request, link: tuple[str, str] | None = BACK_TO_SETUP) -> Response:
+    return page(status, title, message, link=link, cookies=(auth.cleared(request.settings, TEST_COOKIE, "/auth"),))
+
+
+def not_started_here(request: Request) -> Response:
+    return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request, link=None)
 
 
 def callback(request: Request) -> Response:
@@ -209,7 +215,7 @@ def callback(request: Request) -> Response:
 def finish_test(request: Request, state: str) -> Response:
     settings = request.settings
     if standing(request) != (CLAIMANT, BEFORE_TEST):
-        return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
+        return not_started_here(request)
     live = live_settings(request)
     with db.session(engine_of(request)) as opened:
         fields = load_proposal(opened, settings.secret_key)
@@ -229,7 +235,7 @@ def finish_test(request: Request, state: str) -> Response:
     with db.session(engine_of(request), writing=True) as opened:
         moment = now()
         if locked_window(opened, moment).phase != BEFORE_TEST:
-            return test_page(403, "Not allowed", "This test sign-in did not start here, so nothing was saved.", request)
+            return not_started_here(request)
         current = load_proposal(opened, settings.secret_key)
         if current is None or current["id"] != fields["id"]:
             return test_page(409, "The settings changed", "The proposed sign-in settings changed during the test, so nothing was saved. Test again.", request)
@@ -243,9 +249,7 @@ def finish_test(request: Request, state: str) -> Response:
         opened.add(Setting(key=SETUP_TESTED, value=json.dumps(tested)))
     rechecks = oidc.seal_refresh_token(tested_settings, refresh_token) is not None
     monitoring.log("test sign-in passed; the sign-in settings are stored, the account is signed in and setup continues", rechecks=rechecks)
-    return page(200, "Sign-in works", "Darkroom stored these sign-in settings and signed you in; sign-in works now, without a restart. "
-                "Setup stays open in this browser for the remaining steps until you finish it, sign out, or 7 days pass.", ("/", "Open Darkroom"),
-                (auth.session_cookie(tested_settings, token, life), auth.cleared(settings, TEST_COOKIE, "/auth")))
+    return redirect(SETUP_PAGE, (auth.session_cookie(tested_settings, token, life), auth.cleared(settings, TEST_COOKIE, "/auth")))
 
 
 def close(opened: Session) -> None:
