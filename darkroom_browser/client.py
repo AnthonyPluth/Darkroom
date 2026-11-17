@@ -3,7 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import socket
+import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket.connect opens (#393)
 import stat
 from pathlib import Path
 from typing import Any
@@ -51,7 +51,7 @@ class OnSocket(http.client.HTTPConnection):
         self.socket_path = socket_path
 
     def connect(self) -> None:
-        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # nosemgrep: darkroom-no-raw-sockets -- the one socket the client opens, to the app's private Unix socket (#393)
         stream.settimeout(self.timeout)
         try:
             stream.connect(self.socket_path)

@@ -115,6 +115,11 @@ allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
     "darkroom.tls -> http",
+    # The worker may not import darkroom.tls, so its client reaches the app through http.client.HTTPConnection on the
+    # app's private Unix socket (#392). Import-linter records an outside package only by its top-level name, so
+    # "-> http.client" matches nothing and "-> http" is as narrow as the tool allows; ssl stays protected. What this
+    # ignore lets through, Semgrep checks in that file: darkroom-no-raw-sockets flags any other HTTPConnection or
+    # HTTPSConnection, subclass of one, or use of the socket module, and darkroom-raw-urlopen any urlopen (#393).
     "darkroom_browser.client -> http",
 ]
 broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."
