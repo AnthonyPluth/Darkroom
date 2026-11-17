@@ -2,6 +2,18 @@
 
 Spike S5a of the [single-container design](../design/single-container.md) (section 12, tracking issue #284, spike issue #312). It is meant to rehearse, on a fresh one container built from main and before Syncthing is involved, the backup, restore and rollback of section 9: appdata restored alone, the browser-profile copy interrupted and repeated, a rollback after the one container has done browser work, and the secret key supplied from outside appdata, each on SQLite and on PostgreSQL. It is the owner's rehearsal, with a low-value Google test account, and this page was written from the record alone (#387): nothing was run for it.
 
+## How to report back
+
+Run an item's commands from [Commands for each item](#commands-for-each-item) (or follow its steps), fill in its `Result:` block and paste the block into a comment on #387, and we will fold it in. Several items can go in one comment, and one that was not run can say so. Say which database and which key each result is for (item 5). Before pasting, replace every account, address, host name and file name with the words this page uses ("the test account", "a made-up capture"): the repository is public.
+
+```text
+Spike S5a (docs/spikes/restore-app-browser.md), item <number>, <SQLite or PostgreSQL>, <generated or external key>
+Version, date, who ran it: <release tag>, <date>, <who>
+Pass or fail: <pass / fail / not run, and why>
+Result:
+<the output the item asks for, pasted, with the replacements above>
+```
+
 ## Result in one paragraph
 
 No result is recorded. #312 was closed as completed on 2026-11-16 with no comment, no linked pull request and no write-up, and nothing in the repository holds one. #351 (D1), merged a minute before #312 was closed, says "the owner steps S5a (#312, the restore rehearsal) and the scoped #54 re-scan are still open; the owner chose to proceed because nothing is deployed". [docs/deploy/one-container.md](../deploy/one-container.md#before-the-first-deploy) still says the backup, restore and rollback are "the documented procedure, not a rehearsed one". Every item below is therefore NOT VERIFIED, and section 9 still describes no combination of database and key as supported by a rehearsal. Parts of the procedure were exercised by an agent in a throwaway Docker daemon and by the test suite (next section), without a Google sign-in, without PostgreSQL and without the external key. The second half of this page is what the owner has to run and record.
@@ -30,6 +42,26 @@ To be recorded by the owner. Placeholders in angle brackets.
 | PostgreSQL | `<version>` (CI runs `postgres:17`) |
 | Browser | `BROWSER_CHANNEL` and the Chrome or Chromium version in the image |
 
+With the variables of [Before you start](#before-you-start) set:
+
+```sh
+docker version --format '{{.Server.Version}}'
+docker inspect --format '{{.Config.Image}}' "$C"
+docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE"
+curl -fsS http://127.0.0.1:8000/healthz; echo
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$C" | grep -E '^BROWSER_CHANNEL='
+docker exec "$C" /opt/google/chrome/chrome --version
+docker exec "$C" sh -c 'ls -d /ms-playwright/chromium-*'
+docker exec <postgres container> psql -U <postgres user> -tAc 'show server_version'   # PostgreSQL only
+```
+
+`/healthz` answers `{"ok": true, "version": ...}` with the release. Keep the `grep` on the `BROWSER_CHANNEL` line: without it the command prints every variable, secrets included.
+
+```text
+Result:
+Version, date, who ran it:
+```
+
 ## What the owner runs, and what to record
 
 Use a low-value Google test account and made-up photos only. Write down no account, address or file name: say "the test account", "a made-up capture". Each run starts from a fresh one container with `DARKROOM_SYNCTHING=0` (Syncthing is S5b). `<appdata>` is the appdata folder on the host and `<backup>` a copy of it; in the container `python run.py` runs from `/app`.
@@ -45,6 +77,179 @@ Taking the backup, the same each time: stop the container, `cp -a <appdata> <bac
 | 5 | Each of the above on SQLite and on PostgreSQL, with the generated and the external key | Items 1 to 3 with the generated key on SQLite, then on PostgreSQL (`DATABASE_URL`); item 4 on each | A row per combination in a results table here, and any combination not run named as not supported (section 9 says none is described as supported before its rehearsal) |
 
 A defect found during the rehearsal becomes its own issue (#312's out of scope) and is linked from this page.
+
+## Commands for each item
+
+Each item below has what to run, what a pass and a fail look like (taken from the code and the tests, not from a run), and an empty block to fill in and paste ([How to report back](#how-to-report-back)). The commands are for the Unraid terminal (as root); with compose, `docker compose exec darkroom` takes the place of `docker exec "$C"` and `./data` that of `$APPDATA`. Every log line Darkroom writes is one JSON object with its keys sorted, so the commands grep for `"event": "<name>"`; a refusal to start is a plain `config: ...` line.
+
+### Before you start
+
+Set these in every new terminal (the values in angle brackets are yours; the examples are made up):
+
+```sh
+C='<container>'                      # the container's name on the Docker tab
+TAG='<release tag>'                  # the tag in the template's Repository, for example v1.2.3
+IMAGE="ghcr.io/anthonypluth/darkroom:$TAG"
+APPDATA=/mnt/user/appdata/darkroom   # the template's Appdata path
+SHARE='<photo share path>'           # the template's Photo share path, for example /mnt/user/photos
+BACKUP=/mnt/user/backups/darkroom-s5a   # where the copy of appdata goes, outside appdata
+SANDBOX='--user=99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json'
+```
+
+`$SANDBOX` is left unquoted where it is used, so it splits into the template's flags. Taking the backup is the same each time:
+
+```sh
+docker stop "$C"
+rm -rf "$BACKUP" && cp -a "$APPDATA" "$BACKUP"
+stat -c '%u:%g %a %n' "$BACKUP" "$BACKUP/secret-key" "$BACKUP/darkroom.db"
+(cd "$APPDATA" && find . -type f | wc -l); (cd "$BACKUP" && find . -type f | wc -l)
+docker exec <postgres container> pg_dump -U <postgres user> -Fc darkroom > "$BACKUP.dump"   # PostgreSQL only, still stopped
+docker start "$C"
+```
+
+Expected: `99:100` on all three (`600` on `secret-key`, which is absent when the key is external, item 4), and the two counts equal. The `pg_dump` line names your PostgreSQL container, user and database.
+
+### Item 1: appdata restored alone onto a fresh one container
+
+Set-up, click by click, on a fresh container (`DARKROOM_SYNCTHING=0`):
+
+1. Sign in to Darkroom.
+2. **People**, **Add person**: a made-up name; fill **Immich API key** with a key for a test Immich user.
+3. **People**, **Google accounts**, **Add account**: the test account.
+4. **Exports**, the test account's row, **Connect**; then **Open remote browser** and sign in by hand.
+5. Note what the deployment holds, then take the backup (above).
+
+Remove and restore:
+
+```sh
+docker stop "$C"
+docker rm "$C"                         # or Docker tab, the icon, Remove (leave the image)
+rm -rf "$APPDATA"                      # only once the counts above matched
+cp -a "$BACKUP" "$APPDATA"
+stat -c '%u:%g %n' "$APPDATA" "$APPDATA/secret-key"
+```
+
+On PostgreSQL also restore the dump into an empty database (`dropdb` and `createdb -O <darkroom role>` in your PostgreSQL container, then `docker exec -i <postgres container> pg_restore -U <postgres user> -d darkroom < "$BACKUP.dump"`). Then Docker tab, **Add Container**, **Template**: `darkroom` under the user templates (it keeps the variables you set), check them, **Apply**. Then:
+
+```sh
+sleep 60
+docker logs "$C" 2>&1 | grep -E '^config: |"event": "(init started|secret key generated|serving|child exited; restarting it)"' | tail -n 10
+docker exec "$C" python run.py check-config 2>&1 | grep -E '^(Secret key|Syncthing):|^config:'
+docker exec "$C" python run.py reconcile-immich
+ls "$APPDATA/browser"
+```
+
+Pass: `{"event": "serving", "port": 8000}`, no `secret key generated` (a new key would mean the file was not restored) and no `config:` line; `check-config` prints `Secret key: from the secret-key file in DARKROOM_DATA_DIR.`; `reconcile-immich` prints a line per person (`<person>: N listed, N stored ...`) and no `reconcile-immich: <person>: <error>`; `ls` lists the test account's numeric folder (its account id). Fail: `serve` refuses (`config: there is no secret key ...` or `config: ... is stored sealed but cannot be read with this secret key ...`, with `child exited; restarting it` repeating).
+
+Then in the browser:
+
+1. Reload Darkroom in the window that was signed in before: it stays signed in (the existing session). Open a private window and sign in again (a new session).
+2. **Exports**, **Check exports now**, then **Browser**: record whether the test account shows **Session ok** or Google asks for a sign-in (**Sign-in needed**).
+3. Last, delete the account: **People**, **Google accounts**, the test account's **Edit**, **Delete account**, and confirm. Then `ls "$APPDATA/browser"`: its numeric folder is gone. Restore the backup again before the next item.
+
+```text
+Result:
+Version, date, who ran it:
+```
+
+### Item 2: the profile copy interrupted part-way, then repeated
+
+Start with profiles in the share's `_browser/` and no `browser/` in appdata (the command refuses a target that exists unless `--set-aside` is given). Move appdata's aside if there is one, outside appdata:
+
+```sh
+docker stop "$C"
+test -e "$APPDATA/browser" && mv "$APPDATA/browser" /mnt/user/appdata/darkroom-browser-aside
+(cd "$SHARE/_browser" && find . -type f -exec sha1sum {} + | sort -k2 | sha1sum)   # note this hash
+docker run -d --name darkroom-copy $SANDBOX -v "$APPDATA:/data" -v "$SHARE:/photos" "$IMAGE" \
+  python run.py copy-browser-state --source /photos/_browser --target /data/browser
+sleep 1; docker kill darkroom-copy; docker logs darkroom-copy; docker rm darkroom-copy
+ls -A "$APPDATA" | grep -F '.browser.copying-'; test -e "$APPDATA/browser" && echo "browser: present" || echo "browser: absent"
+(cd "$SHARE/_browser" && find . -type f -exec sha1sum {} + | sort -k2 | sha1sum)   # the same hash
+```
+
+Pass: the log is empty or partial (no `Copied and verified`), one `.browser.copying-<random>` folder, `browser: absent`, and the share's hash unchanged. If the log already says `Copied and verified`, the copy beat the kill: `rm -rf "$APPDATA/browser"` (a copy; the source is untouched) and run it again with `sleep 0.2`.
+
+Then repeat it, with the hidden folder still there:
+
+```sh
+docker run --rm $SANDBOX -v "$APPDATA:/data" -v "$SHARE:/photos" "$IMAGE" \
+  python run.py copy-browser-state --source /photos/_browser --target /data/browser
+rm -rf "$APPDATA"/.browser.copying-*
+(cd "$SHARE/_browser" && find . -type f -exec sha1sum {} + | sort -k2 | sha1sum)
+docker start "$C"
+```
+
+Pass: first `copy-browser-state: 1 unfinished earlier copy folder(s) next to the target, which you may remove by hand: /data/.browser.copying-...` (it reports the folder and does not refuse because of it), then `Copied and verified N files in N folders into /data/browser; left out N browser lock links. The source was not changed.`; the share's hash still the same. Then **Exports**, **Check exports now**, and **Browser**: the test account still **Session ok**. Fail: a copy refused, a different hash, or `browser/` present after the kill.
+
+```text
+Result:
+Version, date, who ran it:
+```
+
+### Item 3: a rollback after the one container has added an account and written a capture
+
+On v3.16.0, the last release with both layouts. Its own page names its images and the steps; read it rather than this one for that release:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/AnthonyPluth/Darkroom/v3.16.0/docs/deploy/one-container.md | less   # "Going back to the two containers"
+```
+
+1. On v3.16.0's one container: **People**, **Add account**, a second test account, signed in through **Exports**, **Connect** and the remote browser.
+2. Make one job fail so it writes a capture (for example **Connect** and close the sign-in without finishing it, or let it time out); its failure page shows the capture.
+3. Stop the container and copy the profiles back with v3.16.0's one-container image (the one its page names, not `ghcr.io/anthonypluth/darkroom`):
+
+   ```sh
+   docker stop "$C"
+   docker run --rm $SANDBOX -v "$APPDATA:/data" -v "$SHARE:/photos" -w /app <v3.16.0's one-container image> \
+     python run.py copy-browser-state --source /data/browser --target /photos/_browser --set-aside
+   ls -d "$SHARE"/_browser.before-*
+   ```
+
+4. Start that release's two containers as its page says, with autostart off on the one container.
+
+Pass: `Copied and verified ... The source was not changed.` and `The folder that was at /photos/_browser is now /photos/_browser.before-<time>.` (`<time>` as `YYYYMMDDTHHMMSSZ`, v3.16.0 prints the same lines); nothing deleted; the two containers show the second account signed in and the capture on its failure page. If v3.16.0's container is started on a database a later release migrated, record its refusal (expected: Alembic cannot locate the newer revision, and it does not start). From the current release, the way back is restoring the backup taken before upgrading past v3.16.0, which discards everything since.
+
+```text
+Result:
+Version, date, who ran it:
+```
+
+### Item 4: the key supplied from outside appdata
+
+Generate a test key (never one in use), put it in the template's **DARKROOM_SECRET_KEY** (shown in the Edit page's Advanced View) on a fresh container, and set up as item 1:
+
+```sh
+openssl rand -base64 32
+ls -l "$APPDATA/secret-key" 2>/dev/null || echo "no secret-key file"
+docker exec "$C" python run.py check-config 2>&1 | grep -E '^Secret key:'
+```
+
+Expected: `no secret-key file` and `Secret key: from DARKROOM_SECRET_KEY.`. Keep the key with the backup. Take the backup and restore it as in item 1, then start the restored container once with the variable empty:
+
+```sh
+sleep 30
+docker logs "$C" 2>&1 | grep -E '^config: |"event": "child exited; restarting it"' | tail -n 3
+docker exec "$C" python run.py check-config 2>&1 | grep -E '^config:|^Secret key:'
+curl -fsS http://127.0.0.1:8000/healthz || echo "healthz: no answer"
+```
+
+Pass without the key: `config: there is no secret key, but sealed values are already stored (an Immich key, a sign-in session, a stored setting or RESEND_API_KEY), and Darkroom will not make a new key ...`, the init restarting the app (`child exited; restarting it`, `"code": 1`), `check-config` saying the same, and `healthz: no answer`; no `secret-key` file appears. Then put the same key back in the variable, Apply, and record item 1's checks (with `Secret key: from DARKROOM_SECRET_KEY.`). Fail: Darkroom starts without the key, or writes a new `secret-key` file.
+
+```text
+Result:
+Version, date, who ran it:
+```
+
+### Item 5: each of the above on SQLite and on PostgreSQL, with the generated and the external key
+
+Fill in a row per combination run; a combination not run stays "not run" and is not supported.
+
+| Database | Key | Item 1 | Item 2 | Item 3 | Item 4 | Version, date, who ran it |
+| --- | --- | --- | --- | --- | --- | --- |
+| SQLite | generated | not run | not run | not run | n/a | |
+| SQLite | external | n/a | n/a | n/a | not run | |
+| PostgreSQL | generated | not run | not run | not run | n/a | |
+| PostgreSQL | external | n/a | n/a | n/a | not run | |
 
 ## What this changes in the design
 
