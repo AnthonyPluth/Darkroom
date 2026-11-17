@@ -110,6 +110,7 @@ class State:
     slow_seconds: float = SLOW_SECONDS
     assets: list[FakeAsset] = field(default_factory=list)
     requests: list[tuple[str, str]] = field(default_factory=list)
+    user_agents: list[str] = field(default_factory=list)
     page_size: int = 250
     searches: int = 0
     on_search: Callable[[int], None] | None = None
@@ -219,6 +220,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
         def route(self, path: str) -> None:
             with state.lock:
                 state.requests.append((self.command, path))
+                state.user_agents.append(self.headers.get("User-Agent", ""))
             if self.command == "GET" and path == "/api/server/ping":
                 self.reply(200, {"res": "pong"})
                 return
@@ -361,6 +363,10 @@ class FakeImmich:
     def requests(self) -> list[tuple[str, str]]:
         with self.state.lock:
             return list(self.state.requests)
+
+    def user_agents(self) -> list[str]:
+        with self.state.lock:
+            return list(self.state.user_agents)
 
     def scans(self) -> list[Scan]:
         with self.state.lock:

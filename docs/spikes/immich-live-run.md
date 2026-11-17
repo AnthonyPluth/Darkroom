@@ -31,6 +31,8 @@ poetry run python -m tools.spikes.immich_live --out immich-live-result.md
 
 `IMMICH_URL` is `scheme://host[:port]` only. A private, LAN or loopback address is accepted as is. **A public address is refused unless `--allow-public-address` is given, and then only over https. Use that flag only for a production server with the disposable accounts above**, never for one where the keys could belong to a real person's library.
 
+A server behind a WAF that blocks unknown clients answers every request with 403 and Cloudflare error 1010 (`browser_signature_banned`). The harness identifies itself as `immich-spike/1.0`; the server's owner may need to allow that User-Agent or the runner's address.
+
 The run takes a few minutes: most of it is waiting for Immich's metadata extraction (each wait is bounded by `--extraction-timeout`, 180 seconds by default). The large-video test is off by default; `--large-video-mb 64` turns it on with a generated video of about that size (at most 256).
 
 ### From a session behind a credential-injecting proxy
