@@ -21,7 +21,7 @@ FROM python:3.15-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH
 
-# zlib1g is named so the image gets Debian's patched build (1:1.3.dfsg+really1.3.1-1+deb13u1) before python:3.14-slim
+# zlib1g is named so the image gets Debian's patched build (1:1.3.dfsg+really1.3.1-1+deb13u1) before python:3.15-slim
 # is rebuilt with it; the scan fails on CVE-2026-76844 and CVE-2026-85091 until then.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 zlib1g \

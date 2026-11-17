@@ -9,6 +9,7 @@ from darkroom.domain.syncthing_version import TESTED_FROM, TESTED_UP_TO, named
 ROOT = Path(__file__).resolve().parent.parent.parent
 SINGLE = (ROOT / "Dockerfile.single").read_text()
 SINGLE_REQUIREMENTS = (ROOT / "deploy/single/requirements.txt").read_text()
+APP_PYTHON = re.search(r"^FROM python:(\d+\.\d+)-slim AS deps$", (ROOT / "Dockerfile").read_text(), re.M).group(1)
 SANDBOX = "--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json"
 SINGLE_IMAGE = "ghcr.io/anthonypluth/darkroom-single"
 UNRAID_SECCOMP = "/boot/config/darkroom/seccomp.json"
@@ -105,15 +106,25 @@ class SingleImageTests(unittest.TestCase):
         block = requirement_blocks(SINGLE_REQUIREMENTS)["greenlet"]
         self.assertTrue(block.startswith(f"greenlet=={version} "))
         wheels = dict(re.findall(r'file = "(greenlet-[^"]+\.whl)", hash = "sha256:([0-9a-f]{64})"', locked))
+        tag = "cp" + APP_PYTHON.replace(".", "")
         expected = {
-            wheels[f"greenlet-{version}-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"],
-            wheels[f"greenlet-{version}-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl"],
+            wheels[f"greenlet-{version}-{tag}-{tag}-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"],
+            wheels[f"greenlet-{version}-{tag}-{tag}-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl"],
         }
         self.assertEqual(set(re.findall(r"--hash=sha256:([0-9a-f]{64})", block)), expected)
 
+    def test_the_repository_names_the_one_python_the_images_run(self):
+        self.assertEqual(re.findall(r"^FROM (python:\S+)", (ROOT / "Dockerfile").read_text(), re.M), [f"python:{APP_PYTHON}-slim"] * 2)
+        pyproject = (ROOT / "pyproject.toml").read_text()
+        self.assertIn(f'requires-python = ">={APP_PYTHON},<4.0"', pyproject)
+        self.assertIn(f'target-version = "py{APP_PYTHON.replace(".", "")}"', pyproject)
+        self.assertIn(f'python_version = "{APP_PYTHON}"', pyproject)
+        self.assertIn(f'default: "{APP_PYTHON}"', (ROOT / ".github/actions/setup-python-poetry/action.yml").read_text())
+        self.assertIn(f"PYTHON_VERSION={APP_PYTHON}\n", (ROOT / ".claude/hooks/fleet.conf").read_text())
+
     def test_the_worker_has_its_own_venv_on_the_apps_python(self):
         bases = re.findall(r"^FROM (\S+)", SINGLE, re.M)
-        self.assertEqual(bases, ["node:22-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim"])
+        self.assertEqual(bases, ["node:22-slim", *[f"python:{APP_PYTHON}-slim"] * 4])
         self.assertIn("python -m venv /opt/worker", SINGLE)
         self.assertIn("COPY --from=worker-deps /opt/worker /opt/worker", SINGLE)
         self.assertIn("COPY --from=deps /app/.venv ./.venv", SINGLE)

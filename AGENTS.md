@@ -22,7 +22,7 @@ A broken boundary fails `make lint`: move the code to where its import is allowe
 
 ## Commands
 
-Python goes through Poetry (Python 3.14). `make setup` installs the dependencies; the image also needs `exiftool` (`libimage-exiftool-perl`).
+Python goes through Poetry (Python 3.15). `make setup` installs the dependencies; the image also needs `exiftool` (`libimage-exiftool-perl`).
 
 - `make check`: each tool once: ruff, mypy, import-linter, Darkroom's own Semgrep rules, the feature map's and API contract's checks, the fleet checks, the Python tests in parallel with the coverage floor, and the web app's checks (`make frontend-check`).
 - `make lint`: ruff, mypy, import-linter, the no-comments check and Darkroom's Semgrep rules (`.semgrep/darkroom.yml`, run with `semgrep`; install it with `pipx install semgrep==1.146.0` or `uv tool install semgrep==1.146.0` on a Python it supports).
@@ -61,7 +61,7 @@ Python goes through Poetry (Python 3.14). `make setup` installs the dependencies
 - **Skills have two homes.** fleet's skills are under `.claude/skills/fleet-*` and are changed in fleet; the app's own are under `.claude/skills/`; skills go nowhere else (`fleet checks` checks it: `skill-homes`).
 <!-- fleet:end working-in-a-container -->
 - **Some checks only run in CI**: the Semgrep registry packs, npm audit, Trivy, pip-audit, the image build and its `/healthz` smoke test, and zizmor's online checks (locally, `poetry run zizmor --offline .github`).
-- **The hook is configured, not edited.** The session-start hook is fleet's (`.claude/hooks/fleet-session-start.sh`, vendored); what it installs here is in `.claude/hooks/fleet.conf` (Python 3.14, the web app's packages, exiftool and libfaketime).
+- **The hook is configured, not edited.** The session-start hook is fleet's (`.claude/hooks/fleet-session-start.sh`, vendored); what it installs here is in `.claude/hooks/fleet.conf` (Python 3.15, the web app's packages, exiftool and libfaketime).
 
 ## Start from the feature map
 
