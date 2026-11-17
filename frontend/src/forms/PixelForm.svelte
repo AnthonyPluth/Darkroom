@@ -7,7 +7,7 @@
   import Field from "../components/Field.svelte";
   import FormError from "./FormError.svelte";
 
-  let { pixel, accounts, people, onsaved, oncancel, ondelete, pairing = false, onadded, onpair }: {
+  let { pixel, accounts, people, onsaved, oncancel, ondelete, pairing = false, onadded, onpair, onunpair }: {
     pixel: PixelView | null;
     accounts: AccountView[];
     people: PersonView[];
@@ -17,6 +17,7 @@
     pairing?: boolean;
     onadded?: (pixel: PixelView) => void;
     onpair?: () => void;
+    onunpair?: () => void;
   } = $props();
 
   const first = untrack(() => pixel);
@@ -85,7 +86,12 @@
         <p class="font-mono text-sm break-all">
           {#each idLines(first.syncthing_device_id) as line, i (i)}<span class="block">{line}</span>{/each}
         </p>
-        <button type="button" class="btn self-start" onclick={onpair}>Pair again</button>
+        <span class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+          <button type="button" class="btn w-full md:w-auto" onclick={onpair}>Pair again</button>
+          {#if onunpair}
+            <button type="button" class="btn btn-danger w-full md:w-auto" aria-label="Unpair {first.name}" onclick={onunpair}>Unpair</button>
+          {/if}
+        </span>
       {:else}
         <p>Not paired</p>
         <button type="button" class="btn self-start" onclick={onpair}>Pair</button>

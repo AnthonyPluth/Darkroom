@@ -383,6 +383,21 @@ describe("after the test sign-in", () => {
     expect(server.calls.filter((call) => call.key.includes("/api/pairing"))).toEqual([]);
   });
 
+  it("offers no Unpair in the Pixels step, even for a Pixel with a device ID, and asks nothing of pairing", async () => {
+    sessionStorage.setItem("darkroom.setup.step", "pixels");
+    const server = show({
+      "GET /api/setup": after(immich),
+      ...family([jo], [familyAccount], [solo, shared]),
+      "GET /api/pairing/device": { device_id: "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG" },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 9a" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    expect(within(dialog).getByRole("textbox", { name: "Syncthing device ID (optional)" })).toHaveValue("AAA-111");
+    expect(within(dialog).queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Pair/ })).not.toBeInTheDocument();
+    expect(server.calls.filter((call) => call.key.includes("/api/pairing") || !call.key.startsWith("GET "))).toEqual([]);
+  });
+
   it("keeps the wizard's dialogs at their signed-off 512 px, not the People page's full width", async () => {
     sessionStorage.setItem("darkroom.setup.step", "people");
     show({ "GET /api/setup": after(immich), ...family([jo], [familyAccount], [solo]) });

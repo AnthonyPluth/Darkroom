@@ -104,7 +104,7 @@ describe("with Darkroom's Syncthing on", () => {
   function paired(pixel: PixelView | null, routes: Parameters<typeof serve>[0] = {}) {
     const server = serve(routes);
     vi.stubGlobal("fetch", server.mock);
-    const handlers = { onsaved: vi.fn(), onadded: vi.fn(), onpair: vi.fn() };
+    const handlers = { onsaved: vi.fn(), onadded: vi.fn(), onpair: vi.fn(), onunpair: vi.fn() };
     render(PixelForm, { pixel, accounts: [joAccount, familyAccount], people: everyone, oncancel: vi.fn(), pairing: true, ...handlers });
     return { server, ...handlers };
   }
@@ -137,5 +137,33 @@ describe("with Darkroom's Syncthing on", () => {
     expect(within(row).getByText("Not paired")).toBeInTheDocument();
     await userEvent.click(within(row).getByRole("button", { name: "Pair" }));
     expect(onpair).toHaveBeenCalledOnce();
+  });
+
+  it("offers Unpair beside Pair again for a paired Pixel; it hands on to the confirmation and saves nothing", async () => {
+    const { server, onunpair, onsaved } = paired({ ...solo, syncthing_device_id: DEVICE });
+    const row = screen.getByRole("group", { name: "Syncthing" });
+    const buttons = within(row).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Pair again", "Unpair"]);
+    const unpair = within(row).getByRole("button", { name: "Unpair Pixel 9a" });
+    expect(unpair).toHaveClass("btn", "btn-danger");
+    expect(unpair).not.toHaveClass("btn-primary");
+    await userEvent.click(unpair);
+    expect(onunpair).toHaveBeenCalledOnce();
+    expect(onsaved).not.toHaveBeenCalled();
+    expect(server.calls).toHaveLength(0);
+  });
+
+  it("offers no Unpair for a Pixel that is not paired", () => {
+    paired(shared);
+    expect(screen.queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("with Darkroom's Syncthing off", () => {
+  it("keeps the typed field and offers no Unpair, even with an ID and an unpair handler", () => {
+    vi.stubGlobal("fetch", serve({}).mock);
+    render(PixelForm, { pixel: solo, accounts: [joAccount], people: everyone, onsaved: vi.fn(), oncancel: vi.fn(), onunpair: vi.fn() });
+    expect(screen.getByLabelText("Syncthing device ID (optional)")).toHaveValue("AAA-111");
+    expect(screen.queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
   });
 });

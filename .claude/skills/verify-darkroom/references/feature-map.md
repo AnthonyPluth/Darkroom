@@ -67,6 +67,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Console errors it expects:** `the server responded with a status of 409 (Conflict)`.
 - **Drive it:** `tools/control flow pixel-pairing`; or `poetry run python tools/verify.py run --flow pixel-pairing`.
 
+#### `pixel-unpair`
+
+- **Starts at:** `people`.
+- **Widths:** phone, desktop.
+- **Touches:** `section[aria-label='Pixels'] >> role=button[name='Add Pixel']`, `role=dialog >> role=textbox[name='Name']`, `role=dialog >> role=button[name='Add Pixel']`, `role=dialog >> role=button[name='Check now']`, `role=dialog >> role=button[name='This is Pixel 6']`, `role=dialog >> role=button[name='Approve']`, `role=dialog >> role=button[name='Done']`, `role=button[name="Pair Casey's new Pixel"]`, `role=dialog >> role=button[name='Pair later']`, `role=button[name='Edit Pixel 6']`, `role=dialog >> role=button[name='Unpair Pixel 6']`, `role=dialog[name='Unpair Pixel 6?'] >> role=button[name='Unpair']`, `role=dialog >> role=button[name='Delete Pixel']`, `role=dialog[name='Delete Pixel 6?'] >> role=button[name='Delete Pixel']`.
+- **Expects to see:** `Darkroom is sharing Pixel 6's folder with it.`, `No photo or file is deleted.`, `Not paired`.
+- **Drive it:** `tools/control flow pixel-unpair`; or `poetry run python tools/verify.py run --flow pixel-unpair`.
+
 #### `sign-out`
 
 - **Starts at:** `people`.

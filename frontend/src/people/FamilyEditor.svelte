@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AccountView, PersonView, PixelView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
+  import { sentence } from "$lib/pairing";
   import Confirm from "../components/Confirm.svelte";
   import Modal from "../components/Modal.svelte";
   import AccountForm from "../forms/AccountForm.svelte";
@@ -10,7 +11,7 @@
   import PixelPairing from "../forms/PixelPairing.svelte";
   import { formTitle, type Editing, type Family } from "./family";
 
-  type Asking = { title: string; message: string; more?: string[]; confirm: string; primary?: boolean; refused?: (message: string) => string; run: () => Promise<unknown> };
+  type Asking = { title: string; message: string; detail?: string; more?: string[]; confirm: string; primary?: boolean; refused?: (message: string) => string; run: () => Promise<unknown> };
 
   let { data, onchanged, wide = false }: { data: Family; onchanged: () => void; wide?: boolean } = $props();
 
@@ -72,6 +73,17 @@
     });
   }
 
+  function unpairPixel(pixel: PixelView): void {
+    ask({
+      title: `Unpair ${pixel.name}?`,
+      message: `Darkroom stops sharing ${pixel.name}'s folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches ${pixel.name} until it is paired again.`,
+      detail: `No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to ${pixel.name}: they stay on the Pixel until someone removes them there.`,
+      confirm: "Unpair",
+      refused: (m) => `Couldn't unpair ${pixel.name}: ${sentence(m)}`,
+      run: () => apiCall<"PATCH /api/pixels/{id}">(`/api/pixels/${pixel.id}`, { method: "PATCH", body: { syncthing_device_id: null } }),
+    });
+  }
+
   export function shareAgain(pixel: PixelView): void {
     ask({
       title: `Share ${pixel.name}'s folder again?`,
@@ -107,7 +119,8 @@
   {:else if editing?.kind === "pixel"}
     {@const pixel = editing.item}
     <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined}
-      pairing={data.transport?.pairing ?? false} onadded={data.transport ? added : undefined} onpair={data.transport && pixel ? () => pair(pixel) : undefined} />
+      pairing={data.transport?.pairing ?? false} onadded={data.transport ? added : undefined} onpair={data.transport && pixel ? () => pair(pixel) : undefined}
+      onunpair={data.transport && pixel?.syncthing_device_id ? () => unpairPixel(pixel) : undefined} />
   {:else if editing?.kind === "pairing"}
     <PixelPairing pixel={editing.item} onpaired={paired} onlater={() => (formOpen = false)} />
   {:else if editing?.kind === "paired"}
@@ -116,5 +129,5 @@
 </Modal>
 
 {#if asking}
-  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} {wide} run={asking.run} done={removed} />
+  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} detail={asking.detail} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} {wide} run={asking.run} done={removed} />
 {/if}
