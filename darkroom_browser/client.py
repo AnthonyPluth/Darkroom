@@ -45,7 +45,7 @@ def checked_socket(socket_path: Path, folder: Path) -> str:
     return text
 
 
-class OnSocket(http.client.HTTPConnection):
+class OnSocket(http.client.HTTPConnection):  # nosemgrep: darkroom-no-raw-sockets -- the worker's one HTTP connection, which connect sends over the app's private Unix socket
     def __init__(self, socket_path: str, timeout: float) -> None:
         super().__init__("localhost", timeout=timeout)
         self.socket_path = socket_path

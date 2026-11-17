@@ -5,7 +5,7 @@ import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, 
 
 
 # ok: darkroom-no-raw-sockets
-class OnSocket(http.client.HTTPConnection):
+class OnSocket(http.client.HTTPConnection):  # nosemgrep: darkroom-no-raw-sockets -- the worker's one HTTP connection, which connect sends over the app's private Unix socket
     def __init__(self, socket_path: str, timeout: float) -> None:
         # ok: darkroom-no-raw-sockets
         super().__init__("localhost", timeout=timeout)
@@ -65,3 +65,20 @@ def connect_later(host: str) -> object:
 # ruleid: darkroom-no-raw-sockets
 class ElsewhereOnTcp(http.client.HTTPConnection):
     pass
+
+
+def connection_taken_as_a_value(host: str) -> object:
+    # ruleid: darkroom-no-raw-sockets
+    make = http.client.HTTPConnection
+    return make(host)
+
+
+# ruleid: darkroom-no-raw-sockets
+class OnSocket(http.client.HTTPConnection):
+    pass
+
+
+class TcpUnderOnSocket(OnSocket):
+    def connect(self) -> None:
+        # ruleid: darkroom-no-raw-sockets
+        http.client.HTTPConnection.connect(self)
