@@ -15,18 +15,18 @@ from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
-from darkroom_browser import selectors
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import SIGNED_IN, VERIFY
-from tests.browser.test_parse_exports import page, ready
+from tests.browser.takeout_pages import COMPLETED_ID, archive, archive_url
 from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = 1_793_750_400.0
-SIZES = ((1, "40 KB"), (2, "40 KB"), (3, "40 KB"))
-EXPORTS = page(ready(parts=SIZES))
+SIZES = (40 * 1024, 40 * 1024, 40 * 1024)
+ARCHIVE = archive_url(COMPLETED_ID)
+EXPORT_PAGE = archive(sizes=SIZES)
 
 
 class DomainReporter:
@@ -71,17 +71,19 @@ class DownloadBrowser:
         self.verifying = 0
         self.verify_reads = verify_reads
         self.downloaded = []
+        self.visited = []
         self.closed = False
 
     def goto(self, url):
         self.url = url
+        self.visited.append(url)
         self.verifying = 0
 
     def content(self):
         if self.verifying:
             self.verifying -= 1
             return VERIFY
-        return EXPORTS if self.url == selectors.TAKEOUT_MANAGE_URL else SIGNED_IN
+        return EXPORT_PAGE if self.url == ARCHIVE else SIGNED_IN
 
     def click(self, selector):
         raise AssertionError("the download job only clicks through download_to")
@@ -134,7 +136,7 @@ class DownloadWorld(unittest.TestCase):
             opened.add(account)
             opened.flush()
             self.account = account.id
-            listing = [exports.Listed("aaaa-1111", NOW - 600, "ready", NOW + 7 * 86400, tuple(exports.ListedPart(n, 40 * 1024) for n, _ in SIZES))]
+            listing = [exports.Listed(COMPLETED_ID, NOW - 600, "ready", NOW + 7 * 86400, tuple(exports.ListedPart(n, size) for n, size in enumerate(SIZES, start=1)))]
             exports.reconcile(opened, account, listing, NOW)
             self.export = opened.execute(select(Export)).scalar_one().id
         self.reporter = DomainReporter(self.engine, self.settings)
@@ -230,7 +232,7 @@ class DownloadJobTests(DownloadWorld):
         (self.folder() / ".partial" / "takeout-left-over-002.zip").write_bytes(b"half")
         self.fail(job_id)
         with db.session(self.engine) as opened:
-            self.assertEqual(exports.reconcile(opened, opened.get(GoogleAccount, self.account), [exports.Listed("aaaa-1111", NOW - 600, "ready", NOW + 7 * 86400, tuple(exports.ListedPart(n, 40 * 1024) for n, _ in SIZES))], NOW).requeued, 1)
+            self.assertEqual(exports.reconcile(opened, opened.get(GoogleAccount, self.account), [exports.Listed(COMPLETED_ID, NOW - 600, "ready", NOW + 7 * 86400, tuple(exports.ListedPart(n, size) for n, size in enumerate(SIZES, start=1)))], NOW).requeued, 1)
         second = DownloadBrowser(["ok", "ok"])
         job_id, result = self.run_job(second)
         self.assertEqual(second.downloaded, [2, 3])
@@ -259,13 +261,27 @@ class DownloadJobTests(DownloadWorld):
 
     def test_an_export_takeout_no_longer_lists_stops_the_job(self):
         browser = DownloadBrowser(["ok"])
-        browser.content = lambda: page(ready(export_id="other-9")) if browser.url == selectors.TAKEOUT_MANAGE_URL else SIGNED_IN
+        browser.content = lambda: archive(status="Expired", items=[]) if browser.url == ARCHIVE else SIGNED_IN
         with self.assertRaisesRegex(download.DownloadFailed, "no longer lists this export"):
             self.run_job(browser)
 
+    def test_the_links_come_from_the_exports_own_page_on_takeout(self):
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(set(browser.visited), {"https://takeout.google.com/", ARCHIVE})
+
+    def test_an_export_id_that_is_not_a_plain_id_opens_nothing(self):
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).google_id = "../settings"
+        browser = DownloadBrowser(["ok"])
+        with self.assertRaisesRegex(download.DownloadFailed, "export id"):
+            self.run_job(browser)
+        self.assertNotIn("https://takeout.google.com/manage/archive/../settings", browser.visited)
+        self.assertEqual(browser.downloaded, [])
+
     def test_takeout_listing_fewer_parts_than_darkroom_expects_stops_the_job(self):
         browser = DownloadBrowser(["ok"])
-        browser.content = lambda: page(ready(parts=SIZES[:2])) if browser.url == selectors.TAKEOUT_MANAGE_URL else SIGNED_IN
+        browser.content = lambda: archive(sizes=SIZES[:2]) if browser.url == ARCHIVE else SIGNED_IN
         with self.assertRaisesRegex(download.DownloadFailed, "Takeout lists 2 parts"):
             self.run_job(browser)
         self.assertEqual(browser.downloaded, [])
