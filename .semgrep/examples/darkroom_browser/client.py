@@ -23,6 +23,20 @@ def reach_the_app(path: str) -> object:
     return OnSocket(path, 30.0)
 
 
+def ask_the_app(path: str, body: bytes) -> tuple[int, bytes]:
+    # ok: darkroom-no-raw-sockets
+    connection = OnSocket(path, 30.0)
+    try:
+        # ok: darkroom-no-raw-sockets
+        connection.request("POST", "/internal/worker/lease", body=body)
+        # ok: darkroom-no-raw-sockets
+        reply = connection.getresponse()
+        return reply.status, reply.read()
+    finally:
+        # ok: darkroom-no-raw-sockets
+        connection.close()
+
+
 def second_socket(host: str) -> object:
     # ruleid: darkroom-no-raw-sockets
     stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -78,7 +92,35 @@ class OnSocket(http.client.HTTPConnection):
     pass
 
 
+# ruleid: darkroom-no-raw-sockets
 class TcpUnderOnSocket(OnSocket):
     def connect(self) -> None:
         # ruleid: darkroom-no-raw-sockets
         http.client.HTTPConnection.connect(self)
+
+
+# ruleid: darkroom-no-raw-sockets
+class Tcp(OnSocket):
+    def connect(self) -> None:
+        # ruleid: darkroom-no-raw-sockets
+        super(OnSocket, self).connect()
+
+
+# ruleid: darkroom-no-raw-sockets
+class Child(OnSocket):
+    pass
+
+
+# ruleid: darkroom-no-raw-sockets
+SameClass = OnSocket
+
+
+class ChildOfTheAlias(SameClass):
+    def __init__(self, host: str) -> None:
+        super().__init__("/run/darkroom/worker-api.sock", 30.0)
+        self.host = host
+
+
+def made_on_the_fly() -> type:
+    # ruleid: darkroom-no-raw-sockets
+    return type("OnTcp", (OnSocket,), {})
