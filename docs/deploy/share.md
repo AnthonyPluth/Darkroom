@@ -25,7 +25,7 @@ An existing deployment has no sentinel, so from this version on placing and prun
 
 Otherwise it shows what it found (the root, what it is mounted from, how many entries are at the root and files under `_pixels/`, how many copies are recorded as placed) and asks two things, each answered by typing a word:
 
-- `paused`: that the outside Syncthing is paused for every folder under `_pixels/`, because an empty replacement would otherwise reach each Pixel as deletions;
+- `paused`: with an outside Syncthing configured by hand, that it is paused for every folder under `_pixels/`; with Darkroom's own Syncthing (`DARKROOM_SYNCTHING=1` in the one container), which Darkroom keeps paused for every Pixel while the share has no sentinel, that no other Syncthing (Unraid's Syncthing app, or one on the host) serves `_pixels/` on the server. Either way, because an empty replacement would otherwise reach each Pixel as deletions;
 - `bind`: to write a new sentinel and record it.
 
 Any other answer writes nothing. On `bind` it records a new random identity in the `stored_settings` table (as `share_sentinel`, which no environment variable sets), writes it to `.darkroom-share` at the share root (create-only, mode 0600), and records a `share_bound` event. If the file cannot be written the command says so and removes the file it had just created (never one that was put in its place); placing and pruning stay stopped and the command can be run again.

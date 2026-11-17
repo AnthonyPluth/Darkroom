@@ -78,7 +78,8 @@ start_darkroom run -d --name "$darkroom" --network "$net" "${sandbox[@]}" --shm-
 mine=$(probe "$darkroom" id)
 pixel=$(seed seed "$theirs") || fail "the made-up Pixel could not be added"
 folder="darkroom-pixel-$pixel"
-printf 'paused\nbind\n' | docker exec -i -w /app "$darkroom" python run.py bind-share >/dev/null || fail "bind-share did not bind the share"
+bound=$(printf 'paused\nbind\n' | docker exec -i -w /app "$darkroom" python run.py bind-share) || fail "bind-share did not bind the share"
+grep -qF "Syncthing is Darkroom's own" <<<"$bound" || fail "bind-share did not word its prompt for Darkroom's own Syncthing"
 echo "a made-up Pixel with the peer's device ID, five queued copies and a bound share"
 
 start_darkroom restart "$darkroom"
