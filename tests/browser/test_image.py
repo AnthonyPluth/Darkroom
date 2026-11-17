@@ -325,13 +325,14 @@ class SingleImageTests(unittest.TestCase):
         self.assertFalse((ROOT / "deploy/browser/requirements.txt").exists())
 
     def test_nothing_outside_the_history_names_the_removed_image_or_its_profile(self):
+        checklists = {"docs/spikes/restore-app-browser.md", "docs/spikes/restore-transport.md", "docs/spikes/unraid-pixel.md"}
         history = {"docs/DECISIONS.md", "docs/HANDOFF.md", "docs/design/single-container.md", "docs/deploy/one-container.md", "tests/browser/test_image.py"}
         roots = [ROOT / name for name in (".github", ".claude/agents", ".claude/hooks", ".claude/skills", "darkroom", "darkroom_browser", "darkroom_init", "deploy", "docs", "frontend/src", "tests", "tools")]
         files = [path for root in roots for path in root.rglob("*") if path.is_file()] + [path for path in (ROOT, ROOT / ".claude") for path in path.iterdir() if path.is_file()]
         named = []
         for path in files:
             relative = path.relative_to(ROOT).as_posix()
-            if relative in history or relative.startswith(("docs/spikes/", "docs/backlog/")) or "__pycache__" in relative or path.suffix in (".png", ".sqlite"):
+            if relative in history or (relative.startswith("docs/spikes/") and relative not in checklists) or relative.startswith("docs/backlog/") or "__pycache__" in relative or path.suffix in (".png", ".sqlite"):
                 continue
             text = path.read_text(errors="ignore")
             named += [f"{relative}: {gone}" for gone in ("darkroom-single", "Dockerfile.single", "--profile single", "profiles: [single]") if gone in text]

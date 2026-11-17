@@ -25,7 +25,7 @@ To be recorded by the owner. Placeholders in angle brackets.
 | Piece | Version |
 | --- | --- |
 | Host | `<Unraid or other>`, Docker `<version>` |
-| Darkroom image | `ghcr.io/anthonypluth/darkroom-single:<release tag>` built from main at `<commit>`, its digest |
+| Darkroom image | `ghcr.io/anthonypluth/darkroom:<release tag>` built from main at `<commit>`, its digest |
 | For item 3 | the newest `v3` release's tag, and the image tags it pulls |
 | PostgreSQL | `<version>` (CI runs `postgres:17`) |
 | Browser | `BROWSER_CHANNEL` and the Chrome or Chromium version in the image |
