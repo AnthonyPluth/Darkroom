@@ -6,7 +6,19 @@
 
 Source inspection targets Immich v3.3.6. The [request DTO](https://github.com/immich-app/immich/blob/v3.3.6/server/src/dtos/asset-media.dto.ts) declares `assetData`, optional `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, optional `filename` and `livePhotoVideoId`. This first codec supports that subset; it does not synthesize capture metadata, favourites, visibility or generic key-value metadata.
 
-The [upload controller](https://github.com/immich-app/immich/blob/v3.3.6/server/src/controllers/asset-media.controller.ts) declares 201 for a created asset and 200 for a duplicate. The [response DTO](https://github.com/immich-app/immich/blob/v3.3.6/server/src/dtos/asset-media-response.dto.ts) contains a UUIDv4 ID and `created`/`duplicate` status. The [service](https://github.com/immich-app/immich/blob/v3.3.6/server/src/services/asset-media.service.ts) uses `dto.filename || file.originalName` for the original name. These are source facts, not live upload results; [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) remains unverified.
+The [upload controller](https://github.com/immich-app/immich/blob/v3.3.6/server/src/controllers/asset-media.controller.ts) declares 201 for a created asset and 200 for a duplicate. The [response DTO](https://github.com/immich-app/immich/blob/v3.3.6/server/src/dtos/asset-media-response.dto.ts) contains a UUIDv4 ID and `created`/`duplicate` status. The [service](https://github.com/immich-app/immich/blob/v3.3.6/server/src/services/asset-media.service.ts) uses `dto.filename || file.originalName` for the original name. These were source facts when the codec was written.
+
+## Live result
+
+The live spike harness builds its uploads with this codec and reads them with `upload_result`. On 2026-11-17, against Immich **v3.4.1** with disposable users and generated media ([results](../design/immich-managed-storage.md#live-spike-result-2026-11-17-immich-v341)):
+
+- A new original plus sidecar answered 201 `created`; a duplicate, including one with a new sidecar, answered 200 `duplicate` with the existing ID. These are exactly the two pairs `upload_result` accepts.
+- The field order (timestamps, `livePhotoVideoId`, `assetData`, `sidecarData`, then `filename`) was accepted, and the sidecar was read: XMP-only date, offset and GPS were extracted, and on a conflict the XMP date won over EXIF.
+- A duplicate's new sidecar left the existing asset's metadata unchanged, so a duplicate result never establishes enrichment.
+- A trashed asset's duplicate answered 200 `duplicate` with the trashed ID, and the asset stayed trashed. `upload_result` accepts it like any duplicate; only the read-back (owner, `libraryId: null`, untrashed, checksum) can establish usability.
+- A still sent with `livePhotoVideoId` linked to the video, which became `hidden`.
+
+Large bodies, proxy limits, quota and revoked-key responses were not run and stay open on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266).
 
 ## Bounded body construction
 

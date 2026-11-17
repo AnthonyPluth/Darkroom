@@ -25,22 +25,22 @@ Until cutover, `PHOTOS_ROOT` must still point to a dedicated Darkroom share, **n
 
 ## 2. API spike and evidence
 
-Evidence has three levels: **prior live observation**, **pinned API/source inspection**, and **unverified on a live server**. Source inspection is not an upload test. The existing [#202 reconcile spike](immich-reconcile.md) observed a server running v3.3.6; it made read-only requests and does not prove upload behaviour. No live upload or metadata mutation was performed for this design: this session has no configured Immich test endpoint or credentials.
+Evidence has three levels: **prior live observation**, **pinned API/source inspection**, and **unverified on a live server**. Source inspection is not an upload test. The existing [#202 reconcile spike](immich-reconcile.md) observed a server running v3.3.6; it made read-only requests and does not prove upload behaviour. No live upload or metadata mutation was performed while this design was written. The live upload spike was run afterwards, on 2026-11-17 against Immich v3.4.1; its results are in [Live spike result](#live-spike-result-2026-11-17-immich-v341) below, and the "Live upload status" column now says what it confirmed.
 
 The source/API inspection for this design used Immich **v3.3.6**, including its OpenAPI `info.version`. Re-check the deployed version and its schema before implementation; accepting a newer image tag is not a compatibility check.
 
 | Question | Finding and evidence | Live upload status |
 | --- | --- | --- |
-| Upload destination | OpenAPI and `AssetMediaService.uploadAsset`: `POST /api/assets`, multipart, permission `asset.upload`; new assets use the authenticated user's ID and `libraryId: null` | Unverified |
-| Required fields | `AssetMediaCreateDto`: `assetData`, `fileCreatedAt`, `fileModifiedAt`; optional `filename`, `sidecarData`, `livePhotoVideoId`, `metadata`, `visibility`, `duration`, `isFavorite`. This version has no required `deviceId` or `deviceAssetId` | Unverified |
-| Success response | OpenAPI/controller: 201 for a new asset, 200 for a duplicate; JSON is `{id, status}`, with `status` equal to `created` or `duplicate` | Unverified |
-| Duplicate scope | Service/repository upload lookup uses `auth.user.id` and `libraryId: null`; bulk check uses that owner ID but does not filter external libraries. An admin key is not an upload-on-behalf-of-another-user mechanism | Unverified across two real users |
-| Preflight | `POST /api/assets/bulk-upload-check`, permission `asset.upload`, accepts client IDs plus base64 or hex SHA-1. Results contain `action` and may contain `assetId`, `reason`, `isTrashed`. It can return an external-library match, so rejection is not managed-custody proof and must not suppress a required migration upload | Unverified |
-| Original verification | #202 downloaded one original whose SHA-1 equalled the decoded base64 `checksum`; the API exposes `GET /api/assets/{id}` and `GET /api/assets/{id}/original` | Prior live read of one asset; new uploads and larger resources unverified |
-| Sidecar handling | Upload service registers `sidecarData` as an XMP file and queues metadata extraction. Metadata service merges sidecar tags over media tags and gives sidecar dates precedence | Unverified end to end, including offset, GPS, description and conflicting EXIF |
-| Duplicate plus new sidecar | Duplicate handling returns the existing ID and queues incoming files for deletion; it does not establish that the existing asset received the sidecar or its metadata | Metadata enrichment on duplicates remains unverified and is a release gate |
-| Extraction timing | Upload service queues extraction after creating the asset. A 201 response or `hasMetadata` alone is not proof that all expected fields were extracted | Completion timing and polling behaviour unverified |
-| Compound media | Upload DTO accepts `livePhotoVideoId`; #202 observed separate still/video assets and checksums | Creation, retry and linking of a complete Live Photo unverified; RAW/JPEG and edited variants unverified |
+| Upload destination | OpenAPI and `AssetMediaService.uploadAsset`: `POST /api/assets`, multipart, permission `asset.upload`; new assets use the authenticated user's ID and `libraryId: null` | Confirmed on v3.4.1: owner is the key's user, `libraryId: null` |
+| Required fields | `AssetMediaCreateDto`: `assetData`, `fileCreatedAt`, `fileModifiedAt`; optional `filename`, `sidecarData`, `livePhotoVideoId`, `metadata`, `visibility`, `duration`, `isFavorite`. This version has no required `deviceId` or `deviceAssetId` | Confirmed on v3.4.1 for `assetData`, `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, `filename` and `livePhotoVideoId` (the subset Darkroom's codec sends); the other optional fields were not sent |
+| Success response | OpenAPI/controller: 201 for a new asset, 200 for a duplicate; JSON is `{id, status}`, with `status` equal to `created` or `duplicate` | Confirmed on v3.4.1: 201 `created`, 200 `duplicate` |
+| Duplicate scope | Service/repository upload lookup uses `auth.user.id` and `libraryId: null`; bulk check uses that owner ID but does not filter external libraries. An admin key is not an upload-on-behalf-of-another-user mechanism | Confirmed across two non-admin users on v3.4.1; the external-library side was not run |
+| Preflight | `POST /api/assets/bulk-upload-check`, permission `asset.upload`, accepts client IDs plus base64 or hex SHA-1. Results contain `action` and may contain `assetId`, `reason`, `isTrashed`. It can return an external-library match, so rejection is not managed-custody proof and must not suppress a required migration upload | Confirmed on v3.4.1 for managed duplicates: `reject`/`duplicate` with the existing ID, and `isTrashed: true` for a trashed one; an external-library match was not run |
+| Original verification | #202 downloaded one original whose SHA-1 equalled the decoded base64 `checksum`; the API exposes `GET /api/assets/{id}` and `GET /api/assets/{id}/original` | Confirmed on v3.4.1 for new small uploads (SHA-1 and size of the unedited download equal the input); large video not run |
+| Sidecar handling | Upload service registers `sidecarData` as an XMP file and queues metadata extraction. Metadata service merges sidecar tags over media tags and gives sidecar dates precedence | Confirmed on v3.4.1 for date, offset and GPS from EXIF only and from XMP only; on a conflict the XMP date won. Description was not reported in the result |
+| Duplicate plus new sidecar | Duplicate handling returns the existing ID and queues incoming files for deletion; it does not establish that the existing asset received the sidecar or its metadata | Confirmed on v3.4.1: a duplicate with a new sidecar leaves the existing asset's metadata unchanged. Enrichment of an existing asset stays a release gate |
+| Extraction timing | Upload service queues extraction after creating the asset. A 201 response or `hasMetadata` alone is not proof that all expected fields were extracted | About 0.1 s for small generated images on v3.4.1; large-media and async delays not run |
+| Compound media | Upload DTO accepts `livePhotoVideoId`; #202 observed separate still/video assets and checksums | Confirmed on v3.4.1: Live Photo pairing after an interruption between the halves; RAW/JPEG are two unstacked IMAGE assets. Edited variants not run |
 
 Pinned sources checked for this design:
 
@@ -68,6 +68,50 @@ Use a disposable instance or dedicated test users, generated media and narrowly 
 | Revoked key, quota exhaustion, extraction delay and metadata mismatch | Import stays pending or failed with its source retained; retries and alerts do not claim success |
 
 Existing-asset enrichment needs its own result. The pinned API describes `PUT /api/assets/{id}` with date, GPS and description fields, but marks it deprecated; generic asset key/value metadata is not proof that timeline EXIF fields are updated. Determine the supported endpoint for the deployed version, its missing-value and concurrent-edit behaviour, permission and recovery path. If the API cannot protect a concurrent user edit, leave enrichment for review instead of writing from a stale missing-field snapshot. **Do not enable enrichment or clear its held sources until this is verified and approved.** This is not a proposal to overwrite an original or silently drop Google-only metadata.
+
+### Live spike result (2026-11-17, Immich v3.4.1)
+
+The owner ran `tools/spikes/immich_live.py` ([how](../spikes/immich-live-run.md)) on 2026-11-17 against a production server reporting **v3.4.1**, with two empty, disposable, non-admin users and generated media only; no real photo or account was touched. Each key had exactly `user.read`, `server.about`, `asset.read`, `asset.download` and `asset.upload`, which the harness requires. It ran in three phases (main, after one asset was trashed in the web UI, and as the second user), merged into one result posted on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266). The harness's expected denial and quota messages come from the v3.3.6 source; the rows that ran matched them on v3.4.1. The raw data (asset IDs, owner hashes) stays with the owner and is not recorded here. **12 rows passed, 7 were not run, none failed** (the five not-run lines below hold seven rows).
+
+| #266 evidence | Result | Observed on v3.4.1 |
+| --- | --- | --- |
+| Server version and the key's exact grants | pass | Exactly the five grants; both users non-admin |
+| New original plus sidecar | pass | 201 `created`; owner is the key's user; `libraryId: null`; the unedited download's SHA-1 and size equal the input |
+| Extraction, EXIF-first and XMP missing-field values, offset and GPS | pass | EXIF only: instant, `timeZone: UTC+2` and GPS as written. XMP only: instant, a named zone and GPS as written. Conflicting EXIF and XMP dates: **the XMP date won**. Extraction took about 0.1 s |
+| Duplicate upload with a new sidecar | pass | 200 `duplicate` with the existing ID; the existing asset's metadata unchanged |
+| Concurrent duplicate uploads | pass | 3 at once: one 201 `created`, two 200 `duplicate`, no errors; checksum search finds one asset; bulk check `reject`/`duplicate` with that ID |
+| Lost response, reconciled by checksum before a retry | pass | Bulk check and `POST /api/search/metadata` by checksum found the one asset; the retry was a 200 `duplicate` |
+| Same bytes owned by two users | pass | The second user's upload was 201 `created` with its own ID and owner |
+| Owner binding | pass | Each asset's owner is its uploader; the other user's asset answered `400 Not found or no asset.read access` |
+| Trashed duplicate | pass | Bulk check `reject`/`duplicate` with `isTrashed: true`; the upload answered 200 `duplicate` with the trashed ID; the asset stayed trashed |
+| Live Photo pairing, interrupted between uploads | pass | The video was found again by checksum before the still was sent; the still's `livePhotoVideoId` is the video; the video's visibility is `hidden` |
+| RAW/JPEG pair | pass | Two distinct assets, both type `IMAGE`, bytes verified, not stacked |
+| Managed imports need no `asset.delete` or admin grant | pass | Every upload step passed with only the five grants; the harness sends no delete, trash, restore or update request |
+| Partner-visible assets | not run | The disposable users have no partner sharing |
+| Offline or external-library duplicate | not run | Needs an admin key, which the harness refuses |
+| Edited representations; existing-asset metadata enrichment | not run | Need `asset.update`, which the harness refuses |
+| Large video and async extraction delay | not run | Opt-in (`--large-video-mb`), not turned on |
+| Quota error; revoked-key error | not run | Need extra keys that a single-key setup could not provide |
+
+Other findings:
+
+- The server sits behind a WAF (Cloudflare) that answers Python's default `Python-urllib` User-Agent with 403, error 1010. The harness sends its own User-Agent since #409; Darkroom's Immich provider now does too (below).
+- Video `duration` was read as an integer number of milliseconds, not a `H:MM:SS` string. Nothing in the provider reads it yet; a future tier-2 duration match must use milliseconds.
+- An asset the key cannot read answers 400, not 404, and by the pinned source so does a missing ID. The existing phone-upload reconcile treats only a 404 for a still's Live Photo video as "waiting", so against a real server such a still fails the person's run instead ([#412](https://github.com/AnthonyPluth/Darkroom/issues/412)).
+- A trashed duplicate answers the upload like any other duplicate. The upload response alone therefore never shows usability: the read-back in section 3, step 5 (which refuses a trashed asset) is what decides.
+
+**Confirmed** by this run: upload destination, owner binding and `libraryId: null` for new assets; 201/200 with `created`/`duplicate` (what `upload_result` accepts); the codec's field order with a sidecar and `livePhotoVideoId`; per-owner duplicate scope; checksum reconciliation through bulk check and metadata search after a lost response; trashed duplicates reported by bulk check and returned, still trashed, by upload; XMP missing-field values and XMP-over-EXIF date precedence; Live Photo resumability and its link and hidden video; RAW/JPEG kept apart; no `asset.delete` or admin grant needed.
+
+**Still open**: partner-visible assets; external-library and offline duplicates; edited representations; the supported existing-asset enrichment path (a duplicate does not enrich, so enrichment needs `asset.update` and the separate review above); large video, proxy body size and async extraction delay; quota and revoked-key errors; description and unknown-offset handling, which the result does not report; and a pinned v3.4.1 source and schema check, since the source inspection above is of v3.3.6.
+
+### Before imports can be enabled
+
+1. Run the seven rows that were not run, on disposable users or a disposable instance, and record them on #266: partner-visible, offline/external-library, edited representations and enrichment, large video with extraction delay, quota, revoked key.
+2. Settle the key's grants. The run used exactly `user.read`, `server.about`, `asset.read`, `asset.download` and `asset.upload`; the managed reader today accepts only the four read grants and only v3.3.6 (`MANAGED_VERSION`), so it refuses this key and this server. Supporting v3.4.1 and an upload grant is a reviewed change of its own ([#411](https://github.com/AnthonyPluth/Darkroom/issues/411)). `asset.update` is added only with the approved enrichment path; `asset.delete` and admin grants never.
+3. Before inbox cleanup (step 5), separately record a successful restore of the Immich database and media and of Darkroom's database and secrets, and a backup recovery point within the retention window, as #266 and section 4 require. This spike is not that evidence.
+4. Record the owner's acceptance of remote deletion races (section 4): another Immich client can remove an asset after Darkroom's last read.
+
+Until all four are done, imports, uploads, cleanup and migration stay disabled.
 
 ## 3. Import and verification protocol
 
@@ -188,7 +232,7 @@ Parity is per owner and required resource: verify IDs, decoded checksums, read-b
 | Ownership | Immich owns the library; Darkroom has no second permanent photo library | Owner decision recorded in #259 |
 | API deletion and quality | No automatic Immich deletion/replacement; distinct-byte quality conflicts require owner resolution. Automatic winner-only removal needs a separate policy | Owner approved; sign-off recorded on #259 |
 | Successful-import retention | 14 days after verified completion; unresolved items are pinned with alerts and backpressure, never expired by age alone | Owner approved; sign-off recorded on #259 |
-| Metadata and API compatibility | Complete the live spike, including duplicate enrichment and the deployed version's supported update path | Unverified; blocks enabling the relevant workflow |
+| Metadata and API compatibility | Complete the live spike, including duplicate enrichment and the deployed version's supported update path | Partly verified: 12 of 19 live rows passed on v3.4.1 (2026-11-17, section 2); 7 not run, enrichment unverified; blocks enabling the relevant workflow |
 | Pixel flow | Preserve destination proof/cap/late-phone rules, fetch originals by API, and prevent Takeout upload loops | Owner approved; sign-off recorded on #259 |
 | Migration/rollback | No automatic source-directory deletion; keep old files/database through a rehearsed rollback window, with an explicit boundary after native writes | Owner approved; sign-off recorded on #259 |
 | Copy-of-record boundary | Accept the loss of an independent Darkroom copy after retention and the non-atomic boundary with other Immich clients; require tested Immich backup/restore | Owner approved; sign-off recorded on #259 |
