@@ -121,6 +121,7 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn(f'python_version = "{APP_PYTHON}"', pyproject)
         self.assertIn(f'default: "{APP_PYTHON}"', (ROOT / ".github/actions/setup-python-poetry/action.yml").read_text())
         self.assertIn(f"PYTHON_VERSION={APP_PYTHON}\n", (ROOT / ".claude/hooks/fleet.conf").read_text())
+        self.assertIn(f'python-version: "{APP_PYTHON}"', (ROOT / ".github/workflows/control-smoke.yml").read_text())
 
     def test_the_worker_has_its_own_venv_on_the_apps_python(self):
         bases = re.findall(r"^FROM (\S+)", SINGLE, re.M)
