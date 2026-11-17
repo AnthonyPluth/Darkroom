@@ -206,6 +206,7 @@ ROWS_ELSEWHERE = {
     "dot segments above the root": ("../../other/manage/archive/{}", None, MANAGE_PAGE + "/x/"),
     "a base on another host": ("./manage/archive/{}", "https://other.example/", MANAGE_PAGE),
     "a scheme-relative base": ("./manage/archive/{}", "//other.example/", MANAGE_PAGE),
+    "a base with a backslash that browsers read as a slash": ("./manage/archive/{}", "/\\other.example/", MANAGE_PAGE),
     "a page that is not on takeout": ("./manage/archive/{}", None, "https://accounts.google.com/manage"),
 }
 
