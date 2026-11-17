@@ -140,6 +140,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn('if [ "$(dpkg --print-architecture)" = "amd64" ]; then /opt/worker/bin/python -m playwright install --with-deps chrome; fi', SINGLE)
         self.assertNotIn("firefox", SINGLE)
         self.assertNotIn("webkit", SINGLE)
+
+    def test_the_playwright_driver_has_libatomic_before_it_runs(self):
+        runtime = SINGLE[SINGLE.index("AS runtime"):]
+        apt = runtime[runtime.index("apt-get install"):runtime.index("rm -rf /var/lib/apt/lists/*")]
+        self.assertIn(" libatomic1 ", apt)
+        self.assertLess(runtime.index("libatomic1"), runtime.index("playwright install"))
         self.assertNotIn("--no-sandbox", SINGLE)
         self.assertNotRegex(SINGLE, r"curl[^\n]*\|\s*(ba)?sh")
 
