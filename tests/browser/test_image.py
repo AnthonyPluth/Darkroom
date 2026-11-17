@@ -5,6 +5,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from darkroom.domain.syncthing_version import TESTED_FROM, TESTED_UP_TO, named
+from darkroom_init import plan
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SINGLE = (ROOT / "Dockerfile.single").read_text()
@@ -227,6 +228,16 @@ class SingleImageTests(unittest.TestCase):
         probe = (ROOT / "tests/browser/host_network.py").read_text()
         self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
         self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
+
+    def test_the_worker_page_describes_the_internal_listeners_as_the_init_starts_them(self):
+        page = (ROOT / "docs/deploy/browser.md").read_text()
+        inside = page[page.index("## What runs inside"):page.index("## Google Chrome")]
+        for socket_path in (plan.VNC_SOCKET, plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET):
+            self.assertIn(f"`{socket_path}`", inside)
+        for flag in ("-rfbport 0", "-rfbportv6 0", "-nolisten tcp -nolisten local", "mode `0700`", "tests/browser/host_network.sh"):
+            self.assertIn(flag, inside)
+        self.assertNotIn("-localhost", inside)
+        self.assertNotRegex(inside, r"127\.0\.0\.1:6080|port 5900")
 
     def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
