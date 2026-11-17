@@ -23,6 +23,11 @@ const seeded = () => ({
   "GET /api/pixels": { pixels: [solo, shared], syncthing: null },
 });
 
+function expectFullWidth(dialog: HTMLElement): void {
+  expect(dialog).toHaveClass("md:left-68", "md:right-10", "md:w-auto", "md:translate-x-0");
+  expect(dialog).not.toHaveClass("max-w-lg");
+}
+
 function show(routes: Parameters<typeof serve>[0]) {
   const server = serve(routes);
   vi.stubGlobal("fetch", server.mock);
@@ -118,6 +123,26 @@ describe("forms in dialogs", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(server.sent("POST /api/people")[0].body).toEqual({ name: "Kai" });
     expect(await screen.findByText("Kai")).toBeInTheDocument();
+  });
+
+  it("opens every dialog at the People page's full width", async () => {
+    show(seeded());
+    await userEvent.click(await screen.findByRole("button", { name: "Add person" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add person" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Sam Example" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Edit person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Edit person" })).getByRole("button", { name: "Delete person" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Delete Sam Example?" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Delete Sam Example?" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add Google account" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add Google account" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add Pixel" }));
   });
 
   it("keeps the dialog open and says what the server refused", async () => {
@@ -348,6 +373,7 @@ describe("the People page with Darkroom's Syncthing", () => {
     expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Share again", "Edit"]);
     await userEvent.click(within(row).getByRole("button", { name: "Share again: Pixel 9a's folder" }));
     const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
+    expectFullWidth(ask);
     for (const paragraph of [
       "Darkroom removed Pixel 9a's folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at Pixel 9a's folder on the photo share.",
       "If you share it again, Darkroom adds the folder afresh, Send Only, at Pixel 9a's folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on Pixel 9a asks, accept the folder there.",
@@ -397,6 +423,7 @@ describe("pairing a Pixel with Darkroom's Syncthing on", () => {
     expect(screen.queryByRole("button", { name: "Pair Pixel 9a" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Pair Pixel 8" }));
     const dialog = await screen.findByRole("dialog", { name: "Pair Pixel 8" });
+    expectFullWidth(dialog);
     expect(dialog).toHaveAccessibleDescription("Connect the Syncthing app on Pixel 8 to Darkroom. Nothing is shared until you approve the Pixel here.");
     expect(within(dialog).getByRole("img", { name: "QR code of Darkroom's device ID" })).toBeInTheDocument();
   });
@@ -414,6 +441,7 @@ describe("pairing a Pixel with Darkroom's Syncthing on", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
     expect(await within(dialog).findByText("Darkroom is sharing Pixel 7's folder with it.")).toBeInTheDocument();
     expect(within(dialog).getByText("Paired")).toBeInTheDocument();
+    expectFullWidth(dialog);
     expect(within(dialog).getByText("In Google Photos on the Pixel, turn on backup for that folder.")).toBeInTheDocument();
     await waitFor(() => expect(server.sent("GET /api/pixels")).toHaveLength(3));
     await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));

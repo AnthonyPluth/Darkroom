@@ -30,6 +30,11 @@ function stepItem(name: string): HTMLElement {
   return found;
 }
 
+function expectSignedOffWidth(dialog: HTMLElement): void {
+  expect(dialog).toHaveClass("max-w-lg", "left-1/2", "-translate-x-1/2");
+  for (const wide of ["md:left-68", "md:right-10", "md:w-auto", "md:translate-x-0"]) expect(dialog).not.toHaveClass(wide);
+}
+
 function show(routes: Parameters<typeof serve>[0]) {
   const server = serve(routes);
   vi.stubGlobal("fetch", server.mock);
@@ -316,6 +321,7 @@ describe("after the test sign-in", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Add person" }));
     expect(await screen.findByRole("table", { name: "Persons" })).toHaveTextContent("Jo Example");
     expect(server.sent("POST /api/people")).toHaveLength(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Google accounts" })).toBeInTheDocument();
   });
@@ -375,6 +381,34 @@ describe("after the test sign-in", () => {
     expect(within(dialog).getByRole("textbox", { name: "Syncthing device ID (optional)" })).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Pair" })).not.toBeInTheDocument();
     expect(server.calls.filter((call) => call.key.includes("/api/pairing"))).toEqual([]);
+  });
+
+  it("keeps the wizard's dialogs at their signed-off 512 px, not the People page's full width", async () => {
+    sessionStorage.setItem("darkroom.setup.step", "people");
+    show({ "GET /api/setup": after(immich), ...family([jo], [familyAccount], [solo]) });
+    await userEvent.click(await screen.findByRole("button", { name: "Add person" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Add person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add person" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Jo Example" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Edit person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Edit person" })).getByRole("button", { name: "Delete person" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Delete Jo Example?" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Delete Jo Example?" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add account" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Add Google account" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add Google account" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Add Pixel" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add Pixel" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 9a" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete Pixel" }));
+    expectSignedOffWidth(await screen.findByRole("dialog", { name: "Delete Pixel 9a?" }));
   });
 
   it("keeps alert emails off when skipped, and shows a refused finish", async () => {

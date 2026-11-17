@@ -62,6 +62,6 @@
       />
     </section>
 
-    <FamilyEditor bind:this={editor} {data} onchanged={() => void loader.load(true)} />
+    <FamilyEditor bind:this={editor} {data} wide onchanged={() => void loader.load(true)} />
   {/if}
 </div>

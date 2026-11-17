@@ -12,7 +12,7 @@
 
   type Asking = { title: string; message: string; more?: string[]; confirm: string; primary?: boolean; refused?: (message: string) => string; run: () => Promise<unknown> };
 
-  let { data, onchanged }: { data: Family; onchanged: () => void } = $props();
+  let { data, onchanged, wide = false }: { data: Family; onchanged: () => void; wide?: boolean } = $props();
 
   let formOpen = $state(false);
   let editing = $state<Editing | null>(null);
@@ -97,7 +97,7 @@
   }
 </script>
 
-<Modal bind:open={formOpen} title={editing ? formTitle(editing) : ""} description={editing?.kind === "pairing" ? `Connect the Syncthing app on ${editing.item.name} to Darkroom. Nothing is shared until you approve the Pixel here.` : undefined}>
+<Modal bind:open={formOpen} {wide} title={editing ? formTitle(editing) : ""} description={editing?.kind === "pairing" ? `Connect the Syncthing app on ${editing.item.name} to Darkroom. Nothing is shared until you approve the Pixel here.` : undefined}>
   {#if editing?.kind === "person"}
     {@const person = editing.item}
     <PersonForm {person} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={person ? () => removePerson(person) : undefined} />
@@ -116,5 +116,5 @@
 </Modal>
 
 {#if asking}
-  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} run={asking.run} done={removed} />
+  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} {wide} run={asking.run} done={removed} />
 {/if}
