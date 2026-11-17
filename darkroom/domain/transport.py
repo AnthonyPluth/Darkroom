@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 
@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import dates, monitoring
-from darkroom.domain import events
+from darkroom.domain import events, syncthing_version
 from darkroom.providers import syncthing
 from darkroom.storage import db, paths
 from darkroom.storage.models import Event, Pixel, PixelTransport
@@ -23,10 +23,11 @@ SUBJECT = "syncthing"
 CORRECTED = "syncthing_corrected"
 FOLDER_ADDED = "syncthing_folder_added"
 FOLDER_REMOVED = "syncthing_folder_removed"
+FOLDER_RELEASED = "syncthing_folder_released"
 FAILED = "syncthing_reconcile_failed"
 RECOVERED = "syncthing_reconciled"
 PAUSED = "syncthing_transport_paused"
-OUTCOMES = (FAILED, RECOVERED, PAUSED)
+OUTCOMES = (FAILED, RECOVERED, PAUSED, syncthing_version.EVENT)
 
 INVALID_DEVICE = "device_id_invalid"
 SHARED_DEVICE = "device_id_shared"
@@ -34,6 +35,7 @@ PATH_REFUSED = "folder_path_refused"
 REMOVED = "folder_removed"
 ID_PROBLEMS = (INVALID_DEVICE, SHARED_DEVICE)
 HELD = "held"
+CHECKING = "checking"
 SHARE = "share_check_failed"
 DOWN = "reconcile_failed"
 
@@ -132,13 +134,31 @@ class Outcome:
     reports: dict[int, Report] = field(default_factory=dict)
     failure: str | None = None
     paused: bool = False
+    own_device: set[int] = field(default_factory=set)
+    unreported: bool = False
 
     def corrected(self, kind: str, subject: str, detail: str) -> None:
         self.corrections.append((kind, subject, detail))
 
 
+class NotRemoved(ValueError):
+    pass
+
+
+NOTHING_TO_RELEASE = "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again"
+
+
 def removed_before(opened: Session, pixel_id: int) -> bool:
-    return opened.execute(select(Event.id).where(Event.type == FOLDER_REMOVED, Event.subject == f"pixel {pixel_id}").limit(1)).first() is not None
+    last = opened.execute(select(Event.type).where(Event.type.in_((FOLDER_REMOVED, FOLDER_RELEASED)), Event.subject == f"pixel {pixel_id}")
+                          .order_by(Event.id.desc()).limit(1)).first()
+    return last is not None and last[0] == FOLDER_REMOVED
+
+
+def release_folder(opened: Session, pixel_id: int, now: float) -> None:
+    db.write_lock(opened)
+    if not removed_before(opened, pixel_id):
+        raise NotRemoved(NOTHING_TO_RELEASE)
+    events.record(opened, now, FOLDER_RELEASED, f"pixel {pixel_id}")
 
 
 def plan(opened: Session, photos: Photos, held: Callable[[int], bool], share_problem: str | None) -> Plan:
@@ -327,13 +347,23 @@ def read_reports(client: syncthing.Client, plan: Plan, outcome: Outcome) -> None
             outcome.reports[pixel_id] = Report(connected, None if seen is None else instant(seen.last_seen), completion.completion,
                                                connected and completion.completion >= 100.0 and completion.need_items == 0 and completion.need_deletes == 0)
     except syncthing.SyncthingFailed:
-        monitoring.log("syncthing's reports could not be read; the transport state stays as it was")
+        outcome.unreported = True
+        monitoring.log("syncthing's reports could not be read; the pixels are shown as not connected until they can be")
+
+
+def without_own(plan: Plan, own: str, outcome: Outcome) -> Plan:
+    outcome.own_device = {want.pixel_id for want in plan.wanted.values() if want.device == own}
+    if not outcome.own_device:
+        return plan
+    wanted = {pixel_id: replace(want, device=None, code=INVALID_DEVICE) if pixel_id in outcome.own_device else want for pixel_id, want in plan.wanted.items()}
+    return Plan(wanted, plan.pixels, plan.share_problem)
 
 
 def apply(opened: Session, client: syncthing.Client, plan: Plan, now: float) -> Outcome:
     outcome = Outcome()
     try:
         own = client.own_device_id()
+        plan = without_own(plan, own, outcome)
         present = correct_folders(opened, client, plan, own, outcome, now)
         correct_devices(client, plan, own, outcome)
         add_folders(client, plan, present, outcome)
@@ -359,17 +389,19 @@ def last_outcome(opened: Session) -> tuple[str, str | None] | None:
 def record_outcome(opened: Session, kind: str, detail: str | None, now: float) -> None:
     last = last_outcome(opened)
     if kind == RECOVERED:
-        if last is not None and last[0] != RECOVERED:
+        if last is None or last[0] != RECOVERED:
             events.record(opened, now, RECOVERED, SUBJECT)
     elif last != (kind, detail):
         events.record(opened, now, kind, SUBJECT, detail)
 
 
-def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
+def code_of(want: Wanted | None, plan: Plan, outcome: Outcome, checked: bool = True) -> str | None:
     if want is None:
         return None
     if outcome.failure is not None:
         return DOWN
+    if want.pixel_id in outcome.own_device:
+        return INVALID_DEVICE
     if want.code in ID_PROBLEMS:
         return want.code
     if want.pixel_id in outcome.removed:
@@ -378,10 +410,27 @@ def code_of(want: Wanted | None, plan: Plan, outcome: Outcome) -> str | None:
         return want.code
     if plan.share_problem is not None:
         return SHARE
-    return HELD if want.held else None
+    if not want.held:
+        return None
+    return HELD if checked else CHECKING
 
 
-def record(opened: Session, plan: Plan, outcome: Outcome, now: float) -> None:
+def write_report(row: PixelTransport, pixel: Pixel, report: Report, now: float) -> None:
+    row.connected = report.connected
+    row.last_seen = report.last_seen if report.last_seen is not None else row.last_seen
+    row.completion = report.completion
+    row.synced = report.synced
+    if report.synced:
+        pixel.last_sync = now
+
+
+def unknown(row: PixelTransport, since: float) -> None:
+    if row.connected and row.last_seen is None:
+        row.last_seen = since
+    row.connected, row.synced, row.completion = False, False, None
+
+
+def record(opened: Session, plan: Plan, outcome: Outcome, now: float, checked: bool = True) -> None:
     db.write_lock(opened)
     for kind, subject, detail in outcome.corrections:
         events.record(opened, now, kind, subject, detail)
@@ -396,24 +445,42 @@ def record(opened: Session, plan: Plan, outcome: Outcome, now: float) -> None:
         if row is None:
             row = PixelTransport(pixel_id=pixel.id, updated=now)
             opened.add(row)
-        want = plan.wanted.get(pixel.id)
+        want, since = plan.wanted.get(pixel.id), row.updated
         row.paired = pixel.id in outcome.approved and outcome.failure is None
-        row.error, row.updated = code_of(want, plan, outcome), now
+        row.error, row.updated = code_of(want, plan, outcome, checked), now
         report = outcome.reports.get(pixel.id)
         if report is not None:
-            row.last_seen = report.last_seen if report.last_seen is not None else row.last_seen
-            row.completion = report.completion
-            if report.synced:
-                pixel.last_sync = now
+            write_report(row, pixel, report, now)
+        elif pixel.id in outcome.resumed and outcome.unreported:
+            unknown(row, since)
+        elif pixel.id not in outcome.resumed:
+            row.connected, row.synced = False, False
+    opened.commit()
+
+
+def refresh(opened: Session, client: syncthing.Client, plan: Plan, resumed: frozenset[int], now: float) -> None:
+    outcome = Outcome(resumed=set(resumed))
+    read_reports(client, plan, outcome)
+    if not outcome.reports and not outcome.unreported:
+        return
+    db.write_lock(opened)
+    for pixel_id in sorted(outcome.resumed):
+        row, pixel, report = opened.get(PixelTransport, pixel_id), opened.get(Pixel, pixel_id), outcome.reports.get(pixel_id)
+        if row is None or pixel is None:
+            continue
+        if report is not None:
+            write_report(row, pixel, report, now)
+        elif outcome.unreported:
+            unknown(row, row.updated)
     opened.commit()
 
 
 def reconcile(opened: Session, client: syncthing.Client, photos: Photos, held: Callable[[int], bool], share_problem: str | None, now: float,
-              found: Plan | None = None) -> Outcome:
+              found: Plan | None = None, checked: bool = True) -> Outcome:
     wanted = found if found is not None else plan(opened, photos, held, share_problem)
     opened.commit()
     outcome = apply(opened, client, wanted, now)
-    record(opened, wanted, outcome, now)
+    record(opened, wanted, outcome, now, checked)
     monitoring.log("syncthing reconciled", corrected=len(outcome.corrections), approved=len(outcome.approved), resumed=len(outcome.resumed),
                    paused=outcome.paused, failed=outcome.failure is not None)
     return outcome
@@ -424,7 +491,7 @@ def pause(opened: Session, client: syncthing.Client, reason: str, now: float) ->
     db.write_lock(opened)
     record_outcome(opened, PAUSED, reason, now)
     for row in opened.execute(select(PixelTransport)).scalars().all():
-        row.paired, row.error, row.updated = False, SHARE, now
+        row.paired, row.connected, row.error, row.updated = False, False, SHARE, now
     opened.commit()
     monitoring.log("syncthing transport paused: the share check failed")
 
@@ -442,23 +509,26 @@ class Transport:
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     approved: tuple[object, ...] | None = None
     seen: tuple[object, ...] | None = field(default=None, repr=False)
+    resumed: frozenset[int] = frozenset()
 
     def unchanged(self, client: syncthing.Client) -> bool:
         return self.seen is not None and observed(client) == self.seen
 
     def tick(self, opened: Session, client: syncthing.Client, photos: Photos, held: Callable[[int], bool], share_problem: str | None, now: float,
-             force: bool = False) -> Outcome | None:
+             force: bool = False, checked: bool = True) -> Outcome | None:
         with self.lock:
             found = plan(opened, photos, held, share_problem)
             opened.commit()
             if not force and found.fingerprint() == self.approved and self.unchanged(client):
+                refresh(opened, client, found, self.resumed, now)
                 return None
-            outcome = reconcile(opened, client, photos, held, share_problem, now, found)
+            outcome = reconcile(opened, client, photos, held, share_problem, now, found, checked)
             self.approved = found.fingerprint() if outcome.failure is None else None
             self.seen = observed(client) if outcome.failure is None else None
+            self.resumed = frozenset(outcome.resumed)
             return outcome
 
     def pause(self, opened: Session, client: syncthing.Client, reason: str, now: float) -> None:
         with self.lock:
-            self.approved, self.seen = None, None
+            self.approved, self.seen, self.resumed = None, None, frozenset()
             pause(opened, client, reason, now)

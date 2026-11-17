@@ -3,11 +3,15 @@
   import FormError from "../forms/FormError.svelte";
   import Modal from "./Modal.svelte";
 
-  let { open = $bindable(false), title, message, confirm, run, done }: {
+  let { open = $bindable(false), title, message, more = [], confirm, primary = false, refused = (m: string) => m, wide = false, run, done }: {
     open?: boolean;
     title: string;
     message: string;
+    more?: string[];
     confirm: string;
+    primary?: boolean;
+    refused?: (message: string) => string;
+    wide?: boolean;
     run: () => Promise<unknown>;
     done: () => void;
   } = $props();
@@ -21,17 +25,18 @@
 
   async function go(): Promise<void> {
     error = "";
-    const ok = await act(run, { busy: (on) => (busy = on), onError: (m) => (error = m) });
+    const ok = await act(run, { busy: (on) => (busy = on), onError: (m) => (error = refused(m)) });
     if (ok) done();
   }
 </script>
 
-<Modal bind:open {title} description={message} dismissible={!busy}>
+<Modal bind:open {title} description={message} dismissible={!busy} {wide}>
   <div class="flex flex-col gap-4">
+    {#each more as paragraph (paragraph)}<p class="text-ink-muted">{paragraph}</p>{/each}
     <FormError message={error} />
     <div class="flex justify-end gap-3">
       <button type="button" class="btn" disabled={busy} onclick={() => (open = false)}>Cancel</button>
-      <button type="button" class="btn btn-danger" disabled={busy} onclick={go}>{confirm}</button>
+      <button type="button" class="btn {primary ? 'btn-primary' : 'btn-danger'}" disabled={busy} onclick={go}>{confirm}</button>
     </div>
   </div>
 </Modal>

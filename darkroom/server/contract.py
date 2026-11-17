@@ -32,10 +32,32 @@ class AccountState(TypedDict):
     schedule_end: float | None
 
 
+class PixelSyncthing(TypedDict):
+    pixel_id: int
+    name: str
+    state: Literal["not_syncing", "not_paired", "device_id_invalid", "device_id_shared", "folder_removed", "folder_path_refused", "checking", "held", "waiting", "not_seen",
+                   "sending", "connected", "not_connected"]
+    copies: int
+    files: int
+    days: int
+    completion: float | None
+    last_seen: float | None
+    others: list[str]
+
+
+class SyncthingCard(TypedDict):
+    state: Literal["starting", "running", "down", "settings_failed", "version", "key", "share_check_failed"]
+    reason: str | None
+    since: float | None
+    pixels: list[PixelSyncthing]
+
+
 class PixelState(TypedDict):
     id: int
     name: str
     google_account_id: int
+    last_sync: float | None
+    syncthing: PixelSyncthing | None
 
 
 class PersonStatus(TypedDict):
@@ -57,10 +79,15 @@ class Status(TypedDict):
     worker_last_seen: float | None
     people: list[PersonStatus]
     alerts: list[AlertView]
+    syncthing: SyncthingCard | None
 
 
 class Ok(TypedDict):
     ok: bool
+
+
+class DemoSyncthingBody(TypedDict):
+    state: Literal["running", "down", "share_check_failed"]
 
 
 class PersonView(TypedDict):
@@ -146,6 +173,7 @@ class PixelView(TypedDict):
 
 class Pixels(TypedDict):
     pixels: list[PixelView]
+    syncthing: list[PixelSyncthing] | None
 
 
 class PixelReply(TypedDict):
@@ -164,6 +192,28 @@ class PixelPatchBody(TypedDict):
     google_account_id: NotRequired[int]
     syncthing_device_id: NotRequired[str | None]
     people_ids: NotRequired[list[int]]
+
+
+class PixelPairBody(TypedDict):
+    device_id: str
+    confirmed: bool
+
+
+class ReleaseFolderBody(TypedDict):
+    confirmed: bool
+
+
+class OwnDevice(TypedDict):
+    device_id: str
+
+
+class WaitingDevice(TypedDict):
+    device_id: str
+    name: str
+
+
+class WaitingDevices(TypedDict):
+    devices: list[WaitingDevice]
 
 
 class EventView(TypedDict):

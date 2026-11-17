@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonView, PixelView } from "$lib/api-types";
@@ -95,5 +95,47 @@ describe("editing a Pixel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(server.sent("PATCH /api/pixels/21")[0].body).toEqual({ name: "Pixel 8", google_account_id: 10, syncthing_device_id: null, people_ids: [2] });
     expect(screen.getByRole("button", { name: "Delete Pixel" })).toBeInTheDocument();
+  });
+});
+
+describe("with Darkroom's Syncthing on", () => {
+  const DEVICE = "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE";
+
+  function paired(pixel: PixelView | null, routes: Parameters<typeof serve>[0] = {}) {
+    const server = serve(routes);
+    vi.stubGlobal("fetch", server.mock);
+    const handlers = { onsaved: vi.fn(), onadded: vi.fn(), onpair: vi.fn() };
+    render(PixelForm, { pixel, accounts: [joAccount, familyAccount], people: everyone, oncancel: vi.fn(), pairing: true, ...handlers });
+    return { server, ...handlers };
+  }
+
+  it("adds a Pixel without a device ID and hands it on to be paired", async () => {
+    const { server, onadded, onsaved } = paired(null, { "POST /api/pixels": reply(201, { pixel: shared }) });
+    expect(screen.queryByLabelText(/Syncthing device ID/)).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Name"), "Pixel 8");
+    await userEvent.click(screen.getByRole("button", { name: "Add Pixel" }));
+    expect(server.sent("POST /api/pixels")[0].body).toEqual({ name: "Pixel 8", google_account_id: 10, people_ids: [1] });
+    expect(onadded).toHaveBeenCalledWith(shared);
+    expect(onsaved).not.toHaveBeenCalled();
+  });
+
+  it("shows a paired Pixel's ID read-only on two lines with Pair again, and keeps it when saving", async () => {
+    const { server, onpair, onsaved } = paired({ ...solo, syncthing_device_id: DEVICE }, { "PATCH /api/pixels/20": { pixel: solo } });
+    const row = screen.getByRole("group", { name: "Syncthing" });
+    expect(within(row).getByText("PIXELNA-MADEUP2-EXAMPLE-ONLYAAA")).toBeInTheDocument();
+    expect(within(row).getByText("BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE")).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole("button", { name: "Pair again" }));
+    expect(onpair).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(server.sent("PATCH /api/pixels/20")[0].body).toEqual({ name: "Pixel 9a", google_account_id: 10, people_ids: [1] });
+    expect(onsaved).toHaveBeenCalledOnce();
+  });
+
+  it("says an unpaired Pixel is not paired and offers Pair", async () => {
+    const { onpair } = paired(shared);
+    const row = screen.getByRole("group", { name: "Syncthing" });
+    expect(within(row).getByText("Not paired")).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole("button", { name: "Pair" }));
+    expect(onpair).toHaveBeenCalledOnce();
   });
 });

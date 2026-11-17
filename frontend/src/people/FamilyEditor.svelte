@@ -6,11 +6,13 @@
   import AccountForm from "../forms/AccountForm.svelte";
   import PersonForm from "../forms/PersonForm.svelte";
   import PixelForm from "../forms/PixelForm.svelte";
+  import PixelPaired from "../forms/PixelPaired.svelte";
+  import PixelPairing from "../forms/PixelPairing.svelte";
   import { formTitle, type Editing, type Family } from "./family";
 
-  type Asking = { title: string; message: string; confirm: string; run: () => Promise<unknown> };
+  type Asking = { title: string; message: string; more?: string[]; confirm: string; primary?: boolean; refused?: (message: string) => string; run: () => Promise<unknown> };
 
-  let { data, onchanged }: { data: Family; onchanged: () => void } = $props();
+  let { data, onchanged, wide = false }: { data: Family; onchanged: () => void; wide?: boolean } = $props();
 
   let formOpen = $state(false);
   let editing = $state<Editing | null>(null);
@@ -24,6 +26,20 @@
 
   function saved(): void {
     formOpen = false;
+    onchanged();
+  }
+
+  export function pair(pixel: PixelView): void {
+    edit({ kind: "pairing", item: pixel });
+  }
+
+  function added(pixel: PixelView): void {
+    editing = { kind: "pairing", item: pixel };
+    onchanged();
+  }
+
+  function paired(pixel: PixelView): void {
+    editing = { kind: "paired", item: pixel };
     onchanged();
   }
 
@@ -56,6 +72,21 @@
     });
   }
 
+  export function shareAgain(pixel: PixelView): void {
+    ask({
+      title: `Share ${pixel.name}'s folder again?`,
+      message: `Darkroom removed ${pixel.name}'s folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at ${pixel.name}'s folder on the photo share.`,
+      more: [
+        `If you share it again, Darkroom adds the folder afresh, Send Only, at ${pixel.name}'s folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on ${pixel.name} asks, accept the folder there.`,
+        "If the folder is changed outside Darkroom again, Darkroom removes it again.",
+      ],
+      confirm: "Share folder again",
+      primary: true,
+      refused: (m) => `Couldn't share ${pixel.name}'s folder again: ${m.replace(/\.$/, "")}.`,
+      run: () => apiCall<"POST /api/pixels/{id}/release-folder">(`/api/pixels/${pixel.id}/release-folder`, { method: "POST", body: { confirmed: true } }),
+    });
+  }
+
   function removePixel(pixel: PixelView): void {
     ask({
       title: `Delete ${pixel.name}?`,
@@ -66,7 +97,7 @@
   }
 </script>
 
-<Modal bind:open={formOpen} title={editing ? formTitle(editing) : ""}>
+<Modal bind:open={formOpen} {wide} title={editing ? formTitle(editing) : ""} description={editing?.kind === "pairing" ? `Connect the Syncthing app on ${editing.item.name} to Darkroom. Nothing is shared until you approve the Pixel here.` : undefined}>
   {#if editing?.kind === "person"}
     {@const person = editing.item}
     <PersonForm {person} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={person ? () => removePerson(person) : undefined} />
@@ -75,10 +106,15 @@
     <AccountForm {account} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={account ? () => removeAccount(account) : undefined} />
   {:else if editing?.kind === "pixel"}
     {@const pixel = editing.item}
-    <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined} />
+    <PixelForm {pixel} accounts={data.accounts} people={data.people} onsaved={saved} oncancel={() => (formOpen = false)} ondelete={pixel ? () => removePixel(pixel) : undefined}
+      pairing={data.transport?.pairing ?? false} onadded={data.transport ? added : undefined} onpair={data.transport && pixel ? () => pair(pixel) : undefined} />
+  {:else if editing?.kind === "pairing"}
+    <PixelPairing pixel={editing.item} onpaired={paired} onlater={() => (formOpen = false)} />
+  {:else if editing?.kind === "paired"}
+    <PixelPaired name={editing.item.name} ondone={() => (formOpen = false)} />
   {/if}
 </Modal>
 
 {#if asking}
-  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} confirm={asking.confirm} run={asking.run} done={removed} />
+  <Confirm bind:open={confirmOpen} title={asking.title} message={asking.message} more={asking.more} confirm={asking.confirm} primary={asking.primary} refused={asking.refused} {wide} run={asking.run} done={removed} />
 {/if}

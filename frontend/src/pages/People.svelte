@@ -9,7 +9,7 @@
   import PersonTable from "../people/PersonTable.svelte";
   import PixelTable from "../people/PixelTable.svelte";
 
-  const loader = new Loader(loadFamily);
+  const loader = new Loader(() => loadFamily({ transport: true }));
   let editor: FamilyEditor | undefined = $state();
 
   onMount(() => void loader.load());
@@ -53,9 +53,15 @@
         <h2 class="text-md font-semibold">Pixels</h2>
         <button type="button" class="btn" disabled={data.accounts.length === 0} onclick={() => editor?.edit({ kind: "pixel", item: null })}>Add Pixel</button>
       </div>
-      <PixelTable {data} empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."} onedit={(item) => editor?.edit({ kind: "pixel", item })} />
+      <PixelTable
+        {data}
+        empty={data.accounts.length === 0 ? "Add a Google account first." : "No Pixels yet."}
+        onedit={(item) => editor?.edit({ kind: "pixel", item })}
+        onpair={(item) => editor?.pair(item)}
+        onshare={(item) => editor?.shareAgain(item)}
+      />
     </section>
 
-    <FamilyEditor bind:this={editor} {data} onchanged={() => void loader.load(true)} />
+    <FamilyEditor bind:this={editor} {data} wide onchanged={() => void loader.load(true)} />
   {/if}
 </div>

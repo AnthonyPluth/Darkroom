@@ -128,6 +128,16 @@
       ]
     },
     {
+      "route": "POST /api/demo/syncthing",
+      "auth": "session",
+      "handler": "darkroom.server.api.demo.syncthing_state",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_status_api.py"
+      ]
+    },
+    {
       "route": "GET /api/people",
       "auth": "session",
       "handler": "darkroom.server.api.people.list_people",
@@ -302,7 +312,8 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
-        "tests/test_served_people_guard.py"
+        "tests/test_served_people_guard.py",
+        "tests/test_status_api.py"
       ]
     },
     {
@@ -318,7 +329,8 @@
         "tests/test_every_route.py",
         "tests/test_people_api.py",
         "tests/test_pixels_api.py",
-        "tests/test_served_people_guard.py"
+        "tests/test_served_people_guard.py",
+        "tests/test_status_api.py"
       ]
     },
     {
@@ -326,10 +338,12 @@
       "auth": "session",
       "handler": "darkroom.server.api.pixels.update_pixel",
       "frontend": [
-        "frontend/src/forms/PixelForm.svelte"
+        "frontend/src/forms/PixelForm.svelte",
+        "frontend/src/forms/PixelPairing.svelte"
       ],
       "tests": [
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
       ]
     },
     {
@@ -340,7 +354,58 @@
         "frontend/src/people/FamilyEditor.svelte"
       ],
       "tests": [
-        "tests/test_every_route.py"
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/pixels/{id}/pair",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.pair_pixel",
+      "frontend": [
+        "frontend/src/forms/PixelPairing.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "POST /api/pixels/{id}/release-folder",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.release_folder",
+      "frontend": [
+        "frontend/src/people/FamilyEditor.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py"
+      ]
+    },
+    {
+      "route": "GET /api/pairing/device",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.own_device",
+      "frontend": [
+        "frontend/src/lib/pairing.ts"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py",
+        "tests/test_verify_env.py"
+      ]
+    },
+    {
+      "route": "GET /api/pairing/waiting",
+      "auth": "session",
+      "handler": "darkroom.server.api.pixels.waiting_devices",
+      "frontend": [
+        "frontend/src/forms/PixelPairing.svelte"
+      ],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_pixels_api.py",
+        "tests/test_verify_env.py"
       ]
     },
     {

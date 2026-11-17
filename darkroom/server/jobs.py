@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport
+from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
 from darkroom.domain.ingest import cleanup, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
@@ -180,7 +180,8 @@ def reconcile_transport(scheduler: Scheduler, settings: Settings, opened: Sessio
     problem = share_problem(scheduler, opened)
     if problem is not None:
         scheduler.placed_copies = pixel_check.PlacedCopyCheck()
-    return scheduler.transport.tick(opened, client, photos, lambda pixel_id: scheduler.placed_copies.held(opened, pixel_id), problem, at, force)
+    return scheduler.transport.tick(opened, client, photos, lambda pixel_id: scheduler.placed_copies.held(opened, pixel_id), problem, at, force,
+                                    checked=scheduler.placed_copies.ran)
 
 
 def pause_transport(scheduler: Scheduler, settings: Settings, opened: Session, reason: str, at: float) -> None:
@@ -189,7 +190,14 @@ def pause_transport(scheduler: Scheduler, settings: Settings, opened: Session, r
         scheduler.transport.pause(opened, client, reason, at)
 
 
+def review_transport(settings: Settings, engine: Engine, at: float) -> None:
+    with db.session(engine, writing=True) as opened:
+        transport_status.review(opened, settings, at)
+
+
 def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now: float) -> Scheduler:
+    if settings.demo:
+        return scheduler
     scheduler.syncthing = check_syncthing(settings, engine, now)
     photos = Photos(settings.photos_root)
 
@@ -201,9 +209,11 @@ def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now
         if scheduler.syncthing is not None and not scheduler.syncthing.on:
             scheduler.syncthing = check_syncthing(settings, engine, at, scheduler.syncthing)
             reconcile(at, True)
+            review_transport(settings, engine, at)
 
     if settings.syncthing:
         scheduler.guarded(Registered("syncthing.reconcile", lambda at: reconcile(at, True), None, None, now), now)
+        scheduler.guarded(Registered("syncthing.alerts", lambda at: review_transport(settings, engine, at), None, None, now), now)
         scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
         scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now,
                         own_thread=True)
@@ -241,6 +251,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     def tick_alerts(at: float) -> None:
         current = live()
         with db.session(engine, writing=True) as opened:
+            transport_status.review(opened, current, at)
             downloads.watch_expiry(opened, current, at)
             renewal.reword_ended(opened, current, at)
             alerts.tick(opened, current, at)
@@ -312,6 +323,10 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         return False
 
     def tend_pixels(at: float) -> None:
+        tend(at)
+        review_transport(settings, engine, at)
+
+    def tend(at: float) -> None:
         photos = share_photos
         with db.session(engine) as opened:
             if share_stopped(opened, at):
@@ -354,5 +369,6 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)
     scheduler.daily_at("cleanup", CLEANUP_HOUR, clean_inbox, now=now)
     scheduler.every("immich.reconcile", IMMICH_RECONCILE_SECONDS, reconcile_immich, now=now, own_thread=True)
-    scheduler.every("pixels.tend", PIXEL_TEND_SECONDS, tend_pixels, now=now, own_thread=True)
+    if not settings.demo:
+        scheduler.every("pixels.tend", PIXEL_TEND_SECONDS, tend_pixels, now=now, own_thread=True)
     return scheduler

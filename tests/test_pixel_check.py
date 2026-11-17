@@ -11,8 +11,10 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 
-from darkroom.domain import pixel_check, pixel_folder
-from darkroom.storage.models import Event, PixelCopy
+from darkroom.domain import pixel_check, pixel_folder, transport
+from darkroom.providers import syncthing
+from darkroom.storage.models import Event, Pixel, PixelCopy
+from tests.fakes.syncthing import FakeSyncthing
 from tests import test_pixel_folder
 from tests.privacy import no_leaks
 
@@ -434,6 +436,35 @@ class PlacedCopyCheckTests(unittest.TestCase):
         self.assertFalse(placed_copies.held(self.opened, self.jo_pixel))
         self.assertFalse(placed_copies.due(self.opened, self.photos, NOW + 400))
         self.assertEqual(self.events(pixel_check.UNACCOUNTED), ["files 4", "files 0"])
+
+    def test_a_narrowed_run_for_another_pixel_keeps_the_stray_files_hold_and_its_folder_unshared(self):
+        own, jo_device, sam_device = (syncthing.device_id_of_certificate(f"made-up certificate of {name} in the narrowed check test".encode())
+                                      for name in ("darkroom", "jo's pixel", "sam's pixel"))
+        fake = FakeSyncthing(self, "narrowed-check-key", own)
+        client = syncthing.Client(fake.url, "narrowed-check-key", timeout=5.0)
+        self.opened.get(Pixel, self.jo_pixel).syncthing_device_id = jo_device
+        self.opened.get(Pixel, self.sam_pixel).syncthing_device_id = sam_device
+        self.opened.commit()
+        self.placed()
+        theirs = self.item(self.sam)
+        pixel_folder.queue(self.opened, theirs, NOW)
+        self.tend(at=NOW + 20)
+        self.strays()
+        placed_copies = pixel_check.PlacedCopyCheck()
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 100).unaccounted, {self.jo_pixel: 4})
+        listed = placed_copies.listed[self.jo_pixel]
+        self.copy_path(self.sam_pixel, theirs).unlink()
+        self.assertEqual(placed_copies.run(self.opened, self.photos, NOW + 101).requeued, 1)
+        self.assertEqual(placed_copies.scope(self.opened, self.photos, NOW + 200), frozenset({self.sam_pixel}))
+        narrowed = placed_copies.run(self.opened, self.photos, NOW + 200)
+        self.assertEqual(narrowed.unaccounted, {})
+        self.assertTrue(placed_copies.held(self.opened, self.jo_pixel))
+        self.assertEqual(placed_copies.unaccounted, {self.jo_pixel: 4})
+        self.assertEqual(placed_copies.listed, {self.jo_pixel: listed})
+        outcome = transport.reconcile(self.opened, client, self.photos, lambda pixel_id: placed_copies.held(self.opened, pixel_id), None, NOW + 201)
+        self.assertIsNone(outcome.failure)
+        self.assertNotIn(self.jo_pixel, outcome.resumed)
+        self.assertNotIn(transport.folder_of(self.jo_pixel), fake.folders)
 
     def test_files_matching_nothing_are_rehashed_at_most_daily_until_the_folder_changes_and_hold_the_pixel_throughout(self):
         self.placed()

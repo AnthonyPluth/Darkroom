@@ -33,6 +33,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **What usually breaks:**
   - Starts on Status and follows the navigation to People: the tab bar at phone width, the sidebar at desktop.
 
+#### `status-syncthing`
+
+- **Starts at:** `status`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Syncthing is running with the settings Darkroom set.`, `Syncthing has not answered for 2 hours.`, `Syncthing down`, `The photo share failed Darkroom's check (the sentinel is missing from the share)`, `Share check failed`.
+- **Drive it:** `tools/control flow status-syncthing`; or `poetry run python tools/verify.py run --flow status-syncthing`.
+
 ## People (`people`)
 
 - **Reach it:** the navigation's People, at `/people`; control `tools/control goto people`.
@@ -42,6 +49,23 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
   - Forms here change demo data only; `reset` puts it back. Put no real email, name or Immich key in one.
 
 ### Flows on People
+
+#### `people-share-again`
+
+- **Starts at:** `people`.
+- **Widths:** phone, desktop.
+- **Touches:** `button[aria-label="Share again: Blair's second Pixel's folder"]`, `[role=dialog] button:has-text('Share folder again')`.
+- **Expects to see:** `Darkroom removed its folder because it was changed outside Darkroom.`, `If the folder is changed outside Darkroom again, Darkroom removes it again.`, `Darkroom is checking its folder before sharing it.`, `It stays unshared until you share it again.`.
+- **Drive it:** `tools/control flow people-share-again`; or `poetry run python tools/verify.py run --flow people-share-again`.
+
+#### `pixel-pairing`
+
+- **Starts at:** `people`.
+- **Widths:** phone, desktop.
+- **Touches:** `section[aria-label='Pixels'] >> role=button[name='Add Pixel']`, `role=dialog >> role=textbox[name='Name']`, `role=dialog >> role=button[name='Add Pixel']`, `role=dialog >> role=button[name='Check now']`, `role=dialog >> role=button[name='This is Pixel 9a']`, `role=dialog >> role=button[name='Approve']`, `role=dialog >> role=button[name='Done']`, `role=button[name="Pair Casey's new Pixel"]`, `role=dialog >> role=button[name="This is Casey's new Pixel"]`, `role=dialog >> role=button[name='Pair later']`, `role=button[name='Edit Pixel 9a']`, `role=dialog >> role=button[name='Delete Pixel']`, `role=dialog[name='Delete Pixel 9a?'] >> role=button[name='Delete Pixel']`.
+- **Expects to see:** `Waiting for Pixel 9a to connect. Darkroom checks again every few seconds.`, `Approve this device for Pixel 9a?`, `Darkroom is sharing Pixel 9a's folder with it.`, `Couldn't pair Casey's new Pixel: that Syncthing device ID is already another Pixel's`.
+- **Console errors it expects:** `the server responded with a status of 409 (Conflict)`.
+- **Drive it:** `tools/control flow pixel-pairing`; or `poetry run python tools/verify.py run --flow pixel-pairing`.
 
 #### `sign-out`
 

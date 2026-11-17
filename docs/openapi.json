@@ -566,6 +566,22 @@
         ],
         "type": "object"
       },
+      "DemoSyncthingBody": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "running",
+              "down",
+              "share_check_failed"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
       "DoneBody": {
         "additionalProperties": false,
         "properties": {
@@ -1732,6 +1748,18 @@
         ],
         "type": "object"
       },
+      "OwnDevice": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id"
+        ],
+        "type": "object"
+      },
       "PartBody": {
         "additionalProperties": false,
         "properties": {
@@ -2104,6 +2132,22 @@
         ],
         "type": "object"
       },
+      "PixelPairBody": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmed",
+          "device_id"
+        ],
+        "type": "object"
+      },
       "PixelPatchBody": {
         "additionalProperties": false,
         "properties": {
@@ -2154,14 +2198,111 @@
           "id": {
             "type": "integer"
           },
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "syncthing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PixelSyncthing"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "google_account_id",
           "id",
-          "name"
+          "last_sync",
+          "name",
+          "syncthing"
+        ],
+        "type": "object"
+      },
+      "PixelSyncthing": {
+        "additionalProperties": false,
+        "properties": {
+          "completion": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "copies": {
+            "type": "integer"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "others": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pixel_id": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "not_syncing",
+              "not_paired",
+              "device_id_invalid",
+              "device_id_shared",
+              "folder_removed",
+              "folder_path_refused",
+              "checking",
+              "held",
+              "waiting",
+              "not_seen",
+              "sending",
+              "connected",
+              "not_connected"
+            ]
+          }
+        },
+        "required": [
+          "completion",
+          "copies",
+          "days",
+          "files",
+          "last_seen",
+          "name",
+          "others",
+          "pixel_id",
+          "state"
         ],
         "type": "object"
       },
@@ -2226,10 +2367,24 @@
               "$ref": "#/components/schemas/PixelView"
             },
             "type": "array"
+          },
+          "syncthing": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PixelSyncthing"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
-          "pixels"
+          "pixels",
+          "syncthing"
         ],
         "type": "object"
       },
@@ -2254,6 +2409,18 @@
         },
         "required": [
           "person_id"
+        ],
+        "type": "object"
+      },
+      "ReleaseFolderBody": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirmed"
         ],
         "type": "object"
       },
@@ -2729,6 +2896,16 @@
             },
             "type": "array"
           },
+          "syncthing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncthingCard"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "worker_last_seen": {
             "anyOf": [
               {
@@ -2743,7 +2920,57 @@
         "required": [
           "alerts",
           "people",
+          "syncthing",
           "worker_last_seen"
+        ],
+        "type": "object"
+      },
+      "SyncthingCard": {
+        "additionalProperties": false,
+        "properties": {
+          "pixels": {
+            "items": {
+              "$ref": "#/components/schemas/PixelSyncthing"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "starting",
+              "running",
+              "down",
+              "settings_failed",
+              "version",
+              "key",
+              "share_check_failed"
+            ]
+          }
+        },
+        "required": [
+          "pixels",
+          "reason",
+          "since",
+          "state"
         ],
         "type": "object"
       },
@@ -2756,6 +2983,37 @@
         },
         "required": [
           "reason"
+        ],
+        "type": "object"
+      },
+      "WaitingDevice": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "WaitingDevices": {
+        "additionalProperties": false,
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/WaitingDevice"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
         ],
         "type": "object"
       },
@@ -3147,6 +3405,37 @@
         "x-auth": "session"
       }
     },
+    "/api/demo/syncthing": {
+      "post": {
+        "operationId": "syncthing_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoSyncthingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/events": {
       "get": {
         "operationId": "recent_events",
@@ -3367,6 +3656,48 @@
         "x-auth": "session"
       }
     },
+    "/api/pairing/device": {
+      "get": {
+        "operationId": "own_device",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnDevice"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pairing/waiting": {
+      "get": {
+        "operationId": "waiting_devices",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitingDevices"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
     "/api/people": {
       "get": {
         "operationId": "list_people",
@@ -3555,6 +3886,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels/{id}/pair": {
+      "post": {
+        "operationId": "pair_pixel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PixelPairBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PixelReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/pixels/{id}/release-folder": {
+      "post": {
+        "operationId": "release_folder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleaseFolderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
                 }
               }
             },

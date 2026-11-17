@@ -1,7 +1,9 @@
 import json
 import os
+import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+from darkroom import tls
+from darkroom.providers import syncthing
+from darkroom.storage import db
 from tests.shared import fetch
+from tools import demo_syncthing
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -31,6 +37,41 @@ NEEDED = {"PATH": "/bin", "HOME": "/root", "LANG": "C.UTF-8", "LC_ALL": "C", "PY
           "SSL_CERT_FILE": "/etc/ssl/cert.pem", "XDG_CACHE_HOME": "/cache"}
 
 
+class DemoSocketTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.parent = Path(folder.name)
+        patched = mock.patch.object(tls, "SOCKET_FOLDER", tls.SOCKET_FOLDER)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def assert_reachable_only_from_a_private_folder(self, path: Path) -> None:
+        self.assertLessEqual(len(os.fsencode(path)), demo_syncthing.LONGEST_SOCKET_PATH)
+        self.assertEqual(stat.S_IMODE(os.lstat(path.parent).st_mode), 0o700)
+        fake = demo_syncthing.DemoSyncthing(str(path), db.make_engine(f"sqlite:///{self.parent / 'demo.db'}"))
+        self.addCleanup(fake.server.server_close)
+        self.addCleanup(fake.server.shutdown)
+        tls.SOCKET_FOLDER = path.parent
+        self.assertEqual(syncthing.Client.on_socket(str(path), demo_syncthing.KEY).own_device_id(), demo_syncthing.OWN_ID)
+
+    def test_the_socket_is_in_a_private_folder_in_the_data_folder_that_the_internal_socket_check_accepts(self):
+        data = self.parent / "data"
+        data.mkdir()
+        path = demo_syncthing.socket_of(data)
+        self.assertEqual(path, data / "run" / demo_syncthing.SOCKET_NAME)
+        self.assert_reachable_only_from_a_private_folder(path)
+
+    def test_a_data_folder_too_deep_for_a_unix_socket_gets_a_short_private_folder_instead(self):
+        deep = Path(self.parent, *(["d" * 40] * 3))
+        deep.mkdir(parents=True)
+        path = demo_syncthing.socket_of(deep)
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        self.assertGreater(len(os.fsencode(deep / "run" / demo_syncthing.SOCKET_NAME)), demo_syncthing.LONGEST_SOCKET_PATH)
+        self.assertFalse(path.is_relative_to(deep))
+        self.assert_reachable_only_from_a_private_folder(path)
+
+
 class CleanEnvTests(unittest.TestCase):
     def test_the_demo_server_gets_an_allowlist_never_a_credential_or_the_real_data_settings(self):
         env = verify.clean_env("/tmp/demo", {**SECRETS, **NEEDED})
@@ -47,7 +88,7 @@ class CleanEnvTests(unittest.TestCase):
         env = verify.clean_env("/tmp/demo", {"PATH": "/bin"})
         self.assertEqual(env, {"PATH": "/bin", "DARKROOM_DEMO": "1", "DARKROOM_HOST": "127.0.0.1", "DARKROOM_DATA_DIR": "/tmp/demo/data",
                                "DARKROOM_PHOTOS_ROOT": "/tmp/demo/photos", "DARKROOM_PUBLIC_URL": "http://127.0.0.1", "DARKROOM_SECRET_KEY": verify.DEMO_SECRET,
-                               "PYTHONUNBUFFERED": "1", "HTTP_PROXY": verify.NO_OUTSIDE, "HTTPS_PROXY": verify.NO_OUTSIDE, "http_proxy": verify.NO_OUTSIDE,
+                               "DARKROOM_SYNCTHING": "1", "PYTHONUNBUFFERED": "1", "HTTP_PROXY": verify.NO_OUTSIDE, "HTTPS_PROXY": verify.NO_OUTSIDE, "http_proxy": verify.NO_OUTSIDE,
                                "https_proxy": verify.NO_OUTSIDE, "NO_PROXY": verify.LOOPBACK_ONLY, "no_proxy": verify.LOOPBACK_ONLY})
         with_port = verify.clean_env("/tmp/demo", {}, port=8123)
         self.assertEqual((with_port["DARKROOM_PORT"], with_port["DARKROOM_PUBLIC_URL"]), ("8123", "http://127.0.0.1:8123"))
@@ -123,7 +164,7 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(copied, {"db": "seeded", "log": True})
             self.assertFalse(os.path.exists(data))
             command, env = popen.call_args.args[0], popen.call_args.kwargs["env"]
-            self.assertEqual(command[1:], [os.path.join(verify.ROOT, "run.py"), "serve"])
+            self.assertEqual(command[1:], ["-m", "tools.demo_syncthing"])
             self.assertEqual((env["DARKROOM_DATA_DIR"], env["DARKROOM_PORT"], env["FAKETIME"], env["HTTPS_PROXY"], env["DARKROOM_DEMO"], env["DARKROOM_HOST"]),
                              (os.path.join(data, "data"), "9200", verify.FROZEN_NOW, verify.NO_OUTSIDE, "1", "127.0.0.1"))
             self.assertFalse(set(NEVER) & set(env))
@@ -284,6 +325,15 @@ class FrozenDemoServerTests(unittest.TestCase):
         self.assertTrue(all(p["indexed"] > 0 for p in people), people)
         self.assertEqual(fetch(self.base, "GET", "/api/status")[0], 401)
         self.assertTrue(os.path.isfile(os.path.join(verify.photos_root(self.live), "avery", "originals", "IMG_0001.JPG")))
+
+    def test_the_demo_runs_with_a_fake_syncthing_that_shows_nobody_waiting_then_one_phone(self):
+        status, _, body = fetch(self.base, "GET", "/api/pairing/device", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"device_id": demo_syncthing.OWN_ID}))
+        status, _, body = fetch(self.base, "GET", "/api/pairing/waiting", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"devices": []}))
+        status, _, body = fetch(self.base, "GET", "/api/pairing/waiting", self.session())
+        self.assertEqual((status, json.loads(body)), (200, {"devices": [{"device_id": demo_syncthing.PHONE_ID, "name": demo_syncthing.PHONE_NAME}]}))
+        self.assertTrue(os.path.exists(os.path.join(verify.data_dir(self.live), demo_syncthing.SOCKET_FOLDER_NAME, demo_syncthing.SOCKET_NAME)))
 
     def test_z_stopping_the_server_removes_its_copy_of_the_data(self):
         self.stop()
