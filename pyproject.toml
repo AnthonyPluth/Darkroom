@@ -5,7 +5,7 @@ description = "Brings the household's phone photos together on Unraid: originals
 readme = "README.md"
 requires-python = ">=3.15,<4.0"
 dependencies = [
-    "sqlalchemy (>=2.0,<3.0)",
+    "sqlalchemy (>=2.1.9,<3.0)",
     "alembic (>=1.13,<2.0)",
     "psycopg[binary] (>=3.2,<4.0)",
     "pyjwt[crypto] (>=2.8,<3.0)",
@@ -16,19 +16,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright (>=1.48,<2.0)"]
+browser = ["playwright (>=1.65.2,<2.0)"]
 
 [tool.poetry]
 package-mode = false
 
 [tool.poetry.group.dev.dependencies]
-ruff = "0.17.3"
+ruff = "0.17.4"
 mypy = "2.4.1"
-coverage = "7.17.0"
+coverage = "7.17.2"
 unittest-parallel = "1.8.6"
 pip-audit = "2.10.1"
-zizmor = "1.31.1"
-import-linter = "2.15"
+zizmor = "1.32.0"
+import-linter = "2.16"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

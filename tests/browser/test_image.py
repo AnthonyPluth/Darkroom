@@ -77,19 +77,20 @@ class BrowserImageTests(unittest.TestCase):
 
     def test_every_requirement_is_pinned_with_hashes(self):
         blocks = list(requirement_blocks(SINGLE_REQUIREMENTS).values())
-        self.assertEqual({block.split()[0].split("==")[0] for block in blocks}, {"playwright", "greenlet", "pyee", "typing-extensions"})
+        self.assertEqual({block.split()[0].split("==")[0] for block in blocks}, {"playwright", "greenlet"})
         for block in blocks:
             with self.subTest(block=block.split()[0]):
                 self.assertRegex(block.split()[0], r"^[a-z][a-z0-9-]*==\d+\.\d+\.\d+$")
                 self.assertRegex(block, r"--hash=sha256:[0-9a-f]{64}")
 
     def test_the_pyproject_extra_admits_the_pinned_version(self):
-        pinned = re.search(r"^playwright==(\d+)\.(\d+)\.", SINGLE_REQUIREMENTS, re.M)
-        major, minor = int(pinned.group(1)), int(pinned.group(2))
-        extra = re.search(r'browser = \["playwright \(>=(\d+)\.(\d+),<(\d+)\.0\)"\]', (ROOT / "pyproject.toml").read_text())
+        pinned = re.search(r"^playwright==(\d+\.\d+\.\d+) ", SINGLE_REQUIREMENTS, re.M)
+        version = tuple(int(part) for part in pinned.group(1).split("."))
+        extra = re.search(r'browser = \["playwright \(>=(\d+\.\d+(?:\.\d+)?),<(\d+)\.0\)"\]', (ROOT / "pyproject.toml").read_text())
         self.assertIsNotNone(extra)
-        self.assertGreaterEqual((major, minor), (int(extra.group(1)), int(extra.group(2))))
-        self.assertLess(major, int(extra.group(3)))
+        floor = tuple(int(part) for part in extra.group(1).split("."))
+        self.assertGreaterEqual(version, floor + (0,) * (3 - len(floor)))
+        self.assertLess(version[0], int(extra.group(2)))
 
 class SingleImageTests(unittest.TestCase):
     def test_the_worker_venv_pins_playwright_and_the_build_checks_that_version(self):
@@ -154,6 +155,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertNotIn("webkit", SINGLE)
         self.assertNotIn("--no-sandbox", SINGLE)
         self.assertNotRegex(SINGLE, r"curl[^\n]*\|\s*(ba)?sh")
+
+    def test_the_playwright_driver_has_libatomic_before_it_runs(self):
+        runtime = SINGLE[SINGLE.index("AS runtime"):]
+        apt = runtime[runtime.index("apt-get install"):runtime.index("rm -rf /var/lib/apt/lists/*")]
+        self.assertIn(" libatomic1 ", apt)
+        self.assertLess(runtime.index("libatomic1"), runtime.index("playwright install"))
 
     def test_it_serves_the_app_on_8000_only_under_tini(self):
         self.assertEqual(re.findall(r"^EXPOSE .*$", SINGLE, re.M), ["EXPOSE 8000"])

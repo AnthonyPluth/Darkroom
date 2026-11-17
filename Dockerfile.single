@@ -22,7 +22,7 @@ FROM python:3.15-slim AS worker-deps
 COPY deploy/single/requirements.txt /tmp/requirements.txt
 RUN python -m venv /opt/worker \
     && /opt/worker/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
-    && /opt/worker/bin/python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.64.1'" \
+    && /opt/worker/bin/python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.65.2'" \
     && /opt/worker/bin/python -m pip uninstall -y pip
 
 FROM python:3.15-slim AS syncthing
@@ -49,11 +49,12 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 zlib1g \
-       xvfb x11-utils x11vnc novnc websockify tini \
+       xvfb x11-utils x11vnc novnc websockify tini libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall -y pip
 
 COPY --from=worker-deps /opt/worker /opt/worker
+# Playwright's bundled Node driver (1.65 on) links libatomic.so.1, and it runs before --with-deps installs anything.
 RUN /opt/worker/bin/python -m playwright install --with-deps --no-shell chromium \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then /opt/worker/bin/python -m playwright install --with-deps chrome; fi \
     && rm -rf /var/lib/apt/lists/*
