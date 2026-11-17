@@ -46,7 +46,7 @@ class SocketFolderTests(unittest.TestCase):
 
         self.assertEqual(tls.SOCKET_FOLDER, Path("/run/darkroom"))
         self.assertEqual(tls.SOCKET_FOLDER, plan.SOCKET_FOLDER)
-        image = (Path(__file__).resolve().parent.parent / "Dockerfile.single").read_text()
+        image = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
         self.assertIn("&& chmod 0700 /run/darkroom", image)
 
 

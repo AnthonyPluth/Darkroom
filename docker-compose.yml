@@ -1,19 +1,16 @@
 services:
-  # The default: the one container, the app and the browser worker together (docs/deploy/one-container.md). Start it by name, with
-  # `docker compose --profile single up -d darkroom-single`: without the name, compose also starts `darkroom` below. Never run both layouts at once.
-  # Set DARKROOM_TAG to the release the checkout is at (for example v1.2.3): every service's image takes it, so the image and ./deploy/browser/seccomp.json
-  # come from the same release. Unset, every service pulls latest, as before.
-  darkroom-single:
+  # Darkroom: one container, the app, the browser worker and Darkroom's Syncthing under the image's init (docs/deploy/one-container.md). `docker compose up -d`
+  # starts it. Set DARKROOM_TAG to the release the checkout is at (for example v1.2.3): the image takes it, so the image and ./deploy/browser/seccomp.json
+  # come from the same release. Unset, compose pulls latest.
+  darkroom:
     build:
       context: .
-      dockerfile: Dockerfile.single
       args:
         PUID: ${PUID:-99}
         PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom-single:${DARKROOM_TAG:-latest}
+    image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-99}:${PGID:-100}"
-    profiles: [single]
     # Host networking, for Syncthing's local discovery (decision 7 of docs/design/single-container.md): Syncthing listens on 22000 TCP and UDP and 21027
     # UDP on every address of the host. DARKROOM_HOST keeps the web port on the host's loopback, as the published port was before: a reverse proxy has
     # to run on the host or on the host network to reach it (docs/deploy/one-container.md, "Traefik"). The browser worker never uses that port: it reaches
@@ -47,44 +44,10 @@ services:
       - no-new-privileges:true
       - seccomp:./deploy/browser/seccomp.json
 
-  # The app alone, without the browser worker: no Google sign-in, Takeout download or remote browser view. `docker compose up -d` starts it. The separate
-  # browser container that once ran beside it is gone (#327); for the whole service, run darkroom-single above.
-  darkroom:
-    build:
-      context: .
-      args:
-        PUID: ${PUID:-99}
-        PGID: ${PGID:-100}
-    image: ghcr.io/anthonypluth/darkroom:${DARKROOM_TAG:-latest}
-    restart: unless-stopped
-    user: "${PUID:-99}:${PGID:-100}"
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos
-      - ./data:/data
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      DARKROOM_SECRET_KEY: ${DARKROOM_SECRET_KEY:-}
-      DARKROOM_PUBLIC_URL: ${DARKROOM_PUBLIC_URL:-}
-      OIDC_ISSUER: ${OIDC_ISSUER:-}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_ALLOWED_GROUPS: ${OIDC_ALLOWED_GROUPS:-parents}
-      IMMICH_URL: ${IMMICH_URL:-}
-      IMMICH_ADMIN_KEY: ${IMMICH_ADMIN_KEY:-}
-      TZ: ${TZ:-UTC}
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-
   # PostgreSQL instead of the default SQLite (docs/deploy/postgres.md): uncomment this service and the `volumes:` entry at the end of the file, put
-  # the same password in POSTGRES_PASSWORD and DATABASE_URL in .env, and add `depends_on: [postgres]` to the service that uses it. darkroom-single is on
-  # the host's network, where the name `postgres` does not resolve: it reaches the database on the host's loopback, through the `ports:` entry below
-  # (127.0.0.1 only, never every address), with DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom. The app alone (darkroom) shares
-  # compose's network with it and uses DATABASE_URL=postgresql://darkroom:CHANGE-ME@postgres:5432/darkroom; it needs no `ports:` entry.
+  # the same password in POSTGRES_PASSWORD and DATABASE_URL in .env, and add `depends_on: [postgres]` to darkroom. darkroom is on the host's network,
+  # where the name `postgres` does not resolve: it reaches the database on the host's loopback, through the `ports:` entry below (127.0.0.1 only, never
+  # every address), with DATABASE_URL=postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom.
   # Nothing moves an existing SQLite database over.
   # postgres:
   #   image: postgres:17

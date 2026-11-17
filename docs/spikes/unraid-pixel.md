@@ -29,7 +29,7 @@ To be recorded by the owner. Placeholders in angle brackets.
 | --- | --- |
 | Unraid | `<Unraid OS version>`, `<amd64>` |
 | Docker on Unraid | `<docker version>`, cgroup `<v1 or v2>` (`stat -fc %T /sys/fs/cgroup`) |
-| Darkroom image | `ghcr.io/anthonypluth/darkroom-single:<release tag>`, its digest |
+| Darkroom image | `ghcr.io/anthonypluth/darkroom:<release tag>`, its digest |
 | Seccomp profile | `deploy/browser/seccomp.json` of the same release, at `/boot/config/darkroom/seccomp.json` |
 | Darkroom's Syncthing | the version `/rest/system/version` reports (v2.1.7 is pinned) |
 | Pixel | original Pixel, Android `<version>` |
@@ -72,4 +72,4 @@ If item 6 or 7 fails because the Pixel's app is too old for v2.1.7, that is a de
 | --- | --- | --- |
 | Every item in the table above | No result recorded on #311 or anywhere else; it needs the owner's Unraid server and an original Pixel | The owner's run of the table, recorded on this page |
 | Override against the real Pixel (S3's open item) | Needs the Pixel, and Darkroom has no override: section 7.5's "make the Pixel match" is not built (no override call in `darkroom/providers/syncthing.py`) | Only if it is built: after item 7, run it once with a made-up extra file on the Pixel and record that the file is deleted (S3 section 7) |
-| aarch64 | `darkroom-single` is published for amd64 only (#340) | Not needed unless the server is ever arm64 |
+| aarch64 | `darkroom` is published for amd64 only (#340) | Not needed unless the server is ever arm64 |

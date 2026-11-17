@@ -56,7 +56,7 @@ class ListenerPlanTests(unittest.TestCase):
             self.assertEqual(spec.env["PYTHONPATH"], plan.INIT_HOME)
             self.assertFalse(spec.quiet)
             self.assertTrue(sockets.in_folder(Path(spec.argv[4])))
-        image = (ROOT / "Dockerfile.single").read_text()
+        image = (ROOT / "Dockerfile").read_text()
         self.assertIn("chown darkroom /data /home/darkroom /run/darkroom", image)
         self.assertIn("&& chmod 0700 /run/darkroom", image)
 

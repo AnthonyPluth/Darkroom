@@ -25,7 +25,7 @@ To be recorded by the owner. Placeholders in angle brackets.
 | Piece | Version |
 | --- | --- |
 | Host | `<Unraid or other>`, Docker `<version>` |
-| Darkroom image | `ghcr.io/anthonypluth/darkroom-single:<release tag>`, its digest |
+| Darkroom image | `ghcr.io/anthonypluth/darkroom:<release tag>`, its digest |
 | Darkroom's Syncthing | the version `/rest/system/version` reports (v2.1.7 is pinned) |
 | The Pixel | an original Pixel with `<Syncthing app and version>`, or a second Syncthing `<version>` standing in for one (say which, per item) |
 | PostgreSQL | `<version>` |

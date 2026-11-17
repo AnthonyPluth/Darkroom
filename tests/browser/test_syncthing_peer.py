@@ -179,12 +179,12 @@ class WorkflowTests(unittest.TestCase):
         self.script = (ROOT / "tests/browser/syncthing_peer.sh").read_text()
 
     def test_image_ci_runs_the_hostile_peer_after_the_paused_check_and_then_the_send_and_receive_build_that_must_fail_on_the_share(self):
-        run = "run: bash tests/browser/syncthing_peer.sh darkroom-single:smoke 8768"
+        run = "run: bash tests/browser/syncthing_peer.sh darkroom:smoke 8768"
         self.assertIn(run, self.job)
         self.assertLess(self.job.index("syncthing_paused.sh"), self.job.index(run))
         mutation = self.job[self.job.index(run):]
-        self.assertIn("FROM darkroom-single:smoke", mutation)
-        self.assertIn("bash tests/browser/syncthing_peer.sh darkroom-single:sendreceive 8769 || found=$?", mutation)
+        self.assertIn("FROM darkroom:smoke", mutation)
+        self.assertIn("bash tests/browser/syncthing_peer.sh darkroom:sendreceive 8769 || found=$?", mutation)
         self.assertIn('[ "$found" = 3 ]', mutation)
         self.assertEqual(re.findall(r"(?m)^(share|peer)_changed=(\d+)$", self.script), [("share", "3"), ("peer", "4")])
 
@@ -276,7 +276,7 @@ class ComparisonExitCodeTests(unittest.TestCase):
 
     def test_the_send_and_receive_step_s_expected_code_is_the_share_comparison_s(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
-        expected = re.search(r'\[ "\$found" = (\d+) \]', workflow[workflow.index("darkroom-single:sendreceive 8769"):])
+        expected = re.search(r'\[ "\$found" = (\d+) \]', workflow[workflow.index("darkroom:sendreceive 8769"):])
         ran = self.run_steps('printf more >> "$work/share/_pixels/1/ci/2026/IMG_0001.jpg"; rm "$work/peer/pixel/ci/2026/IMG_0001.jpg"')
         self.assertEqual(str(ran.returncode), expected.group(1))
 

@@ -37,14 +37,14 @@ jobs:
         if: github.event_name != 'pull_request'
         run: tools/fleet next-version
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
-      - name: Build the service image
+      - name: Build the image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
         with:
           context: .
           load: true
           tags: darkroom:smoke
           cache-from: type=gha
-      - name: Check the service image answers /healthz
+      - name: Check the image answers /healthz
         run: |
           docker run -d --name smoke -p 8765:8000 darkroom:smoke
           for i in $(seq 1 30); do
@@ -56,7 +56,6 @@ jobs:
         env:
           PHOTOS_ROOT: /tmp/photos
         run: |
-          docker compose --profile single config --quiet
           docker compose config --quiet
 
   single:
@@ -67,53 +66,52 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
-      - name: Build the one-container image
+      - name: Build the image for the one container's checks
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
         with:
           context: .
-          file: Dockerfile.single
           load: true
-          tags: darkroom-single:smoke
+          tags: darkroom:smoke
           cache-from: type=gha
-      - name: Check the one-container image's default command (the init) answers /healthz with the deployment sandbox
+      - name: Check the image's default command (the init) answers /healthz with the deployment sandbox
         run: |
-          docker run -d --name single --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json -p 8765:8000 darkroom-single:smoke
+          docker run -d --name single --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json -p 8765:8000 darkroom:smoke
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8765/healthz; then docker rm -f single; exit 0; fi
             sleep 1
           done
           docker logs single; exit 1
-      - name: Launch Chrome and Chromium in the one-container image with the deployment sandbox
+      - name: Launch Chrome and Chromium in the image with the deployment sandbox
         run: |
-          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin darkroom-single:smoke bash -c 'test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh'
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin darkroom:smoke bash -c 'test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh'
       - name: Copy browser profiles across mounts with the deployment sandbox, where cp -a is refused
         run: |
-          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom-single:smoke bash /probe.sh
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom:smoke bash /probe.sh
       - name: Run the one container's default command with the deployment sandbox (a noop job, the viewer through the relay, the worker killed under its browser, no secret in any process)
         run: |
-          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 darkroom-single:smoke
+          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 darkroom:smoke
           bash tests/browser/one_container.sh init 8766
           docker exec init test ! -e /data/syncthing
           docker stop init
           docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
       - name: Run the one container with Syncthing on under the deployment sandbox (the pinned release, started paused, its API on a private socket only, nothing synced with a peer until resumed)
-        run: bash tests/browser/syncthing_paused.sh darkroom-single:smoke 8767
+        run: bash tests/browser/syncthing_paused.sh darkroom:smoke 8767
       - name: Run the one container with Syncthing on and a made-up Pixel against a hostile peer (the whole share's SHA-1 unchanged by the peer's edits, a removed folder keeps both sides' files, a persisted folder that is not Send Only never runs)
-        run: bash tests/browser/syncthing_peer.sh darkroom-single:smoke 8768
+        run: bash tests/browser/syncthing_peer.sh darkroom:smoke 8768
       - name: Check that the same run fails on its share comparison when a test-only build makes the Pixel's folder Send and Receive
         run: |
-          docker buildx build --builder default -t darkroom-single:sendreceive - <<'EOF'
-          FROM darkroom-single:smoke
+          docker buildx build --builder default -t darkroom:sendreceive - <<'EOF'
+          FROM darkroom:smoke
           USER root
           RUN sed -i 's/^SEND_ONLY = "sendonly"$/SEND_ONLY = "sendreceive"/' /app/darkroom/providers/syncthing.py \
               && grep -qx 'SEND_ONLY = "sendreceive"' /app/darkroom/providers/syncthing.py
           USER darkroom
           EOF
           found=0
-          bash tests/browser/syncthing_peer.sh darkroom-single:sendreceive 8769 || found=$?
+          bash tests/browser/syncthing_peer.sh darkroom:sendreceive 8769 || found=$?
           [ "$found" = 3 ] || { echo "expected the share comparison to fail (exit 3; the peer comparison exits 4 and any other failure 1), got $found" >&2; exit 1; }
       - name: Run the one container with host networking and Syncthing on under the deployment sandbox (5900, 6080 and 8384 refused from the host, from another local user and from another user inside; only 8000, 22000 and 21027 listen; the viewer through the relay and the reconciler on their sockets)
-        run: bash tests/browser/host_network.sh darkroom-single:smoke
+        run: bash tests/browser/host_network.sh darkroom:smoke
 
   publish:
     needs: [build, single]
@@ -127,11 +125,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      - name: Image names (registry names must be lowercase)
-        run: |
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom" >> "$GITHUB_ENV"
-          echo "SINGLE_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom-single" >> "$GITHUB_ENV"
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
+      - name: Image name (registry names must be lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/darkroom" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550   # v4.8.0
         with:
@@ -146,25 +141,22 @@ jobs:
         run: |
           v="${VERSION#v}"
           IFS=. read -r major minor patch <<< "$v"
-          for name in IMAGE SINGLE_IMAGE; do
-            image="${!name}"
-            {
-              echo "${name,,}<<EOF"
-              echo "$image:$v"
-              echo "$image:v$v"
-              if [ "$NEWEST" = true ]; then
-                echo "$image:latest"
-                echo "$image:$major.$minor"
-                echo "$image:$major"
-              fi
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          done
-      - name: Push the service image
+          {
+            echo "image<<EOF"
+            echo "$IMAGE:$v"
+            echo "$IMAGE:v$v"
+            if [ "$NEWEST" = true ]; then
+              echo "$IMAGE:latest"
+              echo "$IMAGE:$major.$minor"
+              echo "$IMAGE:$major"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Push the image (amd64 only, the platform its checks run on)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image }}
           labels: |
@@ -173,19 +165,6 @@ jobs:
             org.opencontainers.image.version=${{ needs.build.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Push the one-container image (amd64 only, the platform its checks run on)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.single
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.tags.outputs.single_image }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.build.outputs.version }}
-          cache-from: type=gha
       - name: Tag and publish the release
         if: needs.build.outputs.new == 'true'
         env:
