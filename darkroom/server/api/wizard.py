@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc, validate
+from darkroom.providers import immich
 from darkroom.server import auth, contract, wizard
 from darkroom.server.common import Request, Response, engine_of, error_response, json_response, now
 from darkroom.storage import db, secretbox, stored_settings
@@ -23,6 +24,8 @@ ELSEWHERE = ("the test sign-in comes back to DARKROOM_PUBLIC_URL, which is not t
 NO_ADDRESS = "confirm the address Darkroom is opened at first, so the sign-in can come back to it"
 SETTLED = "the address and the sign-in are settled by the passing test sign-in; change them in Darkroom's environment"
 NOT_TESTED = "setup can finish only after the test sign-in has passed"
+IMMICH_NOT_TESTED = "Immich's address can be saved only after the test sign-in has passed"
+IMMICH_REASONS = {"no_answer": "nothing answered there", "not_immich": "the server there isn't Immich", "tls_failed": "its TLS connection failed"}
 
 
 def from_environment(request: Request, *variables: str) -> Response | None:
@@ -176,10 +179,19 @@ def set_immich(request: Annotated[Request, contract.SetupImmichBody]) -> Annotat
     refused = from_environment(request, "IMMICH_URL")
     if refused is not None:
         return refused
+    if not request.settings.secret_key:
+        return error_response(NO_KEY, 503)
+    with db.session(engine_of(request)) as opened:
+        if not tested_already(opened):
+            return error_response(IMMICH_NOT_TESTED, 409)
     try:
         immich_url = address(validate.json_object(request.body, limit=MAX_BODY), "immich_url", with_path=True)
     except validate.Invalid as error:
         return error_response(str(error), 400)
+    found = immich.check_address(immich_url)
+    if found != "answered":
+        monitoring.log("setup could not confirm Immich's address", reason=found)
+        return error_response(f"Immich didn't answer at {immich_url}: {IMMICH_REASONS[found]}", 422)
     return store_all(request, {"IMMICH_URL": immich_url})
 
 

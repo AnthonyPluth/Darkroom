@@ -40,7 +40,8 @@
         "tests/test_auth_routes.py",
         "tests/test_every_route.py",
         "tests/test_oidc.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
@@ -142,8 +143,8 @@
       "handler": "darkroom.server.api.people.list_people",
       "frontend": [
         "frontend/src/pages/Imports.svelte",
-        "frontend/src/pages/People.svelte",
-        "frontend/src/pages/Review.svelte"
+        "frontend/src/pages/Review.svelte",
+        "frontend/src/people/family.ts"
       ],
       "tests": [
         "tests/api_world.py",
@@ -192,7 +193,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.people.delete_person",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/FamilyEditor.svelte"
       ],
       "tests": [
         "tests/test_every_route.py"
@@ -205,7 +206,7 @@
       "frontend": [
         "frontend/src/pages/Browser.svelte",
         "frontend/src/pages/Exports.svelte",
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/family.ts"
       ],
       "tests": [
         "tests/api_world.py",
@@ -248,7 +249,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.accounts.delete_account",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/FamilyEditor.svelte"
       ],
       "tests": [
         "tests/test_every_route.py"
@@ -303,7 +304,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.pixels.list_pixels",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/family.ts"
       ],
       "tests": [
         "tests/api_world.py",
@@ -350,7 +351,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.pixels.delete_pixel",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/FamilyEditor.svelte"
       ],
       "tests": [
         "tests/test_every_route.py",
@@ -374,7 +375,7 @@
       "auth": "session",
       "handler": "darkroom.server.api.pixels.release_folder",
       "frontend": [
-        "frontend/src/pages/People.svelte"
+        "frontend/src/people/FamilyEditor.svelte"
       ],
       "tests": [
         "tests/test_every_route.py",
@@ -657,17 +658,22 @@
       "route": "GET /api/setup",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.setup_state",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/Setup.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
       "route": "POST /api/setup/claim",
       "auth": "setup-claim",
       "handler": "darkroom.server.api.wizard.claim_setup",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/Setup.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_wizard_api.py"
@@ -677,7 +683,9 @@
       "route": "POST /api/setup/address",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.set_address",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/AddressStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_wizard_api.py"
@@ -687,7 +695,9 @@
       "route": "POST /api/setup/immich",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.set_immich",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/ImmichStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_wizard_api.py"
@@ -697,7 +707,9 @@
       "route": "POST /api/setup/alerts",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.set_alerts",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/AlertsStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_wizard_api.py"
@@ -707,27 +719,35 @@
       "route": "POST /api/setup/sign-in",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.propose_sign_in",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/SignInStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
       "route": "POST /api/setup/sign-in/test",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.test_sign_in",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/SignInStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
-        "tests/test_wizard_api.py"
+        "tests/test_wizard_api.py",
+        "tests/test_wizard_failure_pages.py"
       ]
     },
     {
       "route": "POST /api/setup/finish",
       "auth": "setup",
       "handler": "darkroom.server.api.wizard.finish_setup",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/setup/DoneStep.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_wizard_api.py"

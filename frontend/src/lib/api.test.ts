@@ -73,6 +73,13 @@ describe("api", () => {
     expect(heard).toHaveBeenCalledOnce();
     window.removeEventListener(SIGNED_OUT, heard);
   });
+
+  it("reads a 401's body to the end, so the request finishes and the page can go idle", async () => {
+    const answer = new Response(JSON.stringify({ error: "sign in required" }), { status: 401 });
+    fetchMock.mockReturnValue(Promise.resolve(answer));
+    await expect(api("/api/x")).rejects.toMatchObject({ status: 401 });
+    expect(answer.bodyUsed).toBe(true);
+  });
 });
 
 describe("signInUrl", () => {

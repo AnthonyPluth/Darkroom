@@ -279,6 +279,12 @@ describe("the People page with Darkroom's Syncthing", () => {
     expect(within(table).queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
   });
 
+  it("asks whether Darkroom's Syncthing pairs, which the setup wizard's Pixels step never does", async () => {
+    const server = show(withSyncthing());
+    await screen.findByRole("table", { name: "Pixels" });
+    expect(server.sent("GET /api/pairing/device")).toHaveLength(1);
+  });
+
   it("puts a Syncthing column between People served and Last sync, with each Pixel's chip and line", async () => {
     show(withSyncthing());
     const table = await screen.findByRole("table", { name: "Pixels" });

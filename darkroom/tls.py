@@ -21,11 +21,16 @@ class Refused(Exception):
 
 
 CONNECTION_PROBLEMS: tuple[type[Exception], ...] = (OSError, HTTPException)
+NOT_HTTP_REPLIES: tuple[type[Exception], ...] = (HTTPException,)
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise Refused("redirects are not followed")
+
+
+def tls_failure(error: BaseException) -> bool:
+    return isinstance(error, ssl.SSLError) or isinstance(getattr(error, "reason", None), ssl.SSLError)
 
 
 def client_context(cafile: str | None = None) -> ssl.SSLContext:

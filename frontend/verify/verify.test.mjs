@@ -84,8 +84,10 @@ describe("flowProblems", () => {
   });
 
   it("has the app's pages, each with a route", () => {
-    expect(PAGES).toEqual(["sign-in", "status", "people", "exports", "imports", "review", "browser"]);
+    expect(PAGES.slice(0, 7)).toEqual(["sign-in", "status", "people", "exports", "imports", "review", "browser"]);
+    expect(PAGES.slice(7).every((name) => name.startsWith("setup-"))).toBe(true);
     expect(Object.keys(ROUTES)).toEqual(PAGES);
+    expect(routeOf("setup-done")).toBe("/setup");
     expect(SIGNED_OUT_PAGES).toEqual(["sign-in"]);
     expect([routeOf("status"), routeOf("people"), routeOf("sign-in"), routeOf("exports")]).toEqual(["/", "/people", "/", "/exports"]);
     expect([loadedWhen(true), loadedWhen(false)]).toEqual(["networkidle", "load"]);
