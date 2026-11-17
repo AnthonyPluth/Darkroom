@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, tzinfo
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
-from urllib.parse import urljoin, urlsplit
 
 from darkroom_browser import selectors
 
@@ -187,31 +186,67 @@ class ArchiveDetail:
 
 ASCII_SPACE = " \t\n\r\f"
 LINK_TRICKS = re.compile(r"[\x00-\x20\x7f\\]")
+SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+TAKEOUT_ROOT = "https://" + selectors.TAKEOUT_HOST + "/"
+
+
+def without_dot_segments(path: str) -> str:
+    segments = path.split("/")[1:]
+    kept: list[str] = []
+    for index, segment in enumerate(segments):
+        if segment == "..":
+            kept = kept[:-1]
+        elif segment != ".":
+            kept.append(segment)
+        if segment in (".", "..") and index == len(segments) - 1:
+            kept.append("")
+    return "/" + "/".join(kept)
+
+
+def path_and_tail(rest: str) -> tuple[str, str]:
+    cut = min((rest.find(mark) for mark in "?#" if mark in rest), default=len(rest))
+    return rest[:cut], rest[cut:]
+
+
+def joined(link: str, against: str | None) -> str | None:
+    if SCHEME.match(link):
+        absolute = link
+    elif link.startswith("//"):
+        absolute = "https:" + link
+    elif against is None or link.startswith(("?", "#")):
+        return None
+    elif link.startswith("/"):
+        absolute = TAKEOUT_ROOT[:-1] + link
+    else:
+        folder, _ = path_and_tail(against[len(TAKEOUT_ROOT) - 1:])
+        absolute = TAKEOUT_ROOT[:-1] + folder[:folder.rfind("/") + 1] + link
+    if not absolute.startswith(TAKEOUT_ROOT):
+        return None
+    path, tail = path_and_tail(absolute[len(TAKEOUT_ROOT) - 1:])
+    return TAKEOUT_ROOT[:-1] + without_dot_segments(path) + tail
 
 
 def resolved(href: str, address: str, base: str | None) -> str | None:
     link = href.strip(ASCII_SPACE)
-    against = address
+    if not link or LINK_TRICKS.search(link) or LINK_TRICKS.search(address):
+        return None
+    against = address if address.startswith(TAKEOUT_ROOT) else None
     if base is not None and (base_link := base.strip(ASCII_SPACE)):
         if LINK_TRICKS.search(base_link):
             return None
-        against = urljoin(address, base_link)
-    if not link or LINK_TRICKS.search(link):
-        return None
-    target = urljoin(against, link)
-    parts = urlsplit(target)
-    if parts.scheme != "https" or parts.netloc != selectors.TAKEOUT_HOST:
-        return None
-    return target
+        against = joined(base_link, against)
+        if against is None:
+            return None
+    return joined(link, against)
 
 
 def is_relative(href: str) -> bool:
     link = href.strip(ASCII_SPACE)
-    return bool(link) and not link.startswith("#") and not urlsplit(link).scheme
+    return bool(link) and not link.startswith("#") and SCHEME.match(link) is None
 
 
 def on_takeout(address: str) -> str:
-    return "page address on Takeout" if resolved(address, address, None) is not None else "page address not on Takeout"
+    return "page address on Takeout" if address.startswith(TAKEOUT_ROOT) and not LINK_TRICKS.search(address) else "page address not on Takeout"
 
 
 def plain(text: str) -> str:

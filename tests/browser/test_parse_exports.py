@@ -208,6 +208,10 @@ ROWS_ELSEWHERE = {
     "a scheme-relative base": ("./manage/archive/{}", "//other.example/", MANAGE_PAGE),
     "a base with a backslash that browsers read as a slash": ("./manage/archive/{}", "/\\other.example/", MANAGE_PAGE),
     "a page that is not on takeout": ("./manage/archive/{}", None, "https://accounts.google.com/manage"),
+    "a malformed bracketed host": ("https://[x]/manage/archive/{}", None, MANAGE_PAGE),
+    "an unclosed bracketed host": ("//[/manage/archive/{}", None, MANAGE_PAGE),
+    "a malformed bracketed base": ("./manage/archive/{}", "http://[::1", MANAGE_PAGE),
+    "a malformed bracketed page address": ("./manage/archive/{}", None, "https://[::1/manage"),
 }
 
 
@@ -233,6 +237,16 @@ class RelativeLinkTests(unittest.TestCase):
         hostile_first = summary(row(href=f"./manage/archive/{COMPLETED_ID}"), base="https://other.example/").replace("<title>", f'<base href="{LIVE_BASE}"><title>', 1)
         self.assertEqual(listed(hostile_first), [])
 
+    def test_a_malformed_link_elsewhere_on_the_page_is_only_counted(self):
+        page = summary(row(href=f"./manage/archive/{COMPLETED_ID}"), base=LIVE_BASE).replace('<a href="#main">', '<a href="http://[::1">x</a><a href="//[">y</a><a href="#main">')
+        self.assertEqual([each.google_id for each in listed(page)], [COMPLETED_ID])
+        self.assertTrue(takeout.exports_page_ready(page, MANAGE_PAGE))
+        self.assertEqual(takeout.summary_findings(page, MANAGE_PAGE),
+                         "summary text found; export links 1 of 8 links (2 relative, 1 naming an export's page); no empty-list sentence; a base address; page address on Takeout")
+        archived = archive(base=LIVE_BASE).replace("<header>", '<header><a href="http://[::1" aria-label="Download part 1 of 3">x</a>')
+        self.assertEqual(len(takeout.parse_archive(archived, ARCHIVE_PAGE, COMPLETED_ID).parts), 3)
+        self.assertEqual(takeout.archive_findings(archived, ARCHIVE_PAGE), "overall status found; numbered download links 3 (3 usable, 0 relative); a base address; page address on Takeout")
+
     def test_a_base_inside_a_script_is_not_the_pages_base(self):
         page = summary(row(href=f"./manage/archive/{COMPLETED_ID}")).replace('var trap = "', 'var trap = "<base href=\\"https://other.example/\\">')
         self.assertEqual([each.google_id for each in listed(page)], [COMPLETED_ID])
@@ -257,6 +271,9 @@ PARTS_ELSEWHERE = {
     "up to another path": ("../../../elsewhere/download?{query}", None, ARCHIVE_PAGE),
     "a base on another host": ("takeout/download?{query}", "https://other.example/", ARCHIVE_PAGE),
     "a javascript link": ("javascript:void(0)//takeout/download?{query}", None, ARCHIVE_PAGE),
+    "a malformed bracketed host": ("https://[x]/takeout/download?{query}", None, ARCHIVE_PAGE),
+    "an unclosed bracketed host": ("//[/takeout/download?{query}", None, ARCHIVE_PAGE),
+    "a malformed bracketed base": ("takeout/download?{query}", "http://[::1", ARCHIVE_PAGE),
 }
 
 

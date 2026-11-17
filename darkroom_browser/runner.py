@@ -18,13 +18,16 @@ JOIN_SECONDS = 40.0
 GIVE_UP_SECONDS = 120.0
 ABANDONED_EXIT = 3
 SCHEDULE_KINDS = ("schedule", "renew")
+MAX_MESSAGE = 500
+CUT = "..."
 
 OpenBrowser = Callable[[Path], Browser]
 
 
 def failure_message(error: BaseException) -> str:
     name = type(error).__name__
-    return f"{name}: {error}" if isinstance(error, JobFailure) else name
+    said = f"{name}: {error}" if isinstance(error, JobFailure) else name
+    return said if len(said) <= MAX_MESSAGE else said[:MAX_MESSAGE - len(CUT)] + CUT
 
 
 def unrecorded_message(error: BaseException) -> str:

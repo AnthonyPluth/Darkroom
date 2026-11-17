@@ -42,7 +42,7 @@ def open_page(ctx: JobContext, browser: Browser, url: str, ready: Callable[[str,
         if not signed_out:
             break
         ensure_signed_in(ctx, browser)
-    raise ExportsUnreadable(f"{failure}; found {findings(page, address)}; the page showed {takeout.landmarks(page)}")
+    raise ExportsUnreadable(f"{failure}; {findings(page, address)}; the page showed {takeout.landmarks(page)}")
 
 
 def open_exports(ctx: JobContext, browser: Browser) -> Loaded:
