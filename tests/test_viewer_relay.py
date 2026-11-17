@@ -628,8 +628,8 @@ class ViewerSecretTests(unittest.TestCase):
     def test_the_relay_and_the_init_agree_on_the_upstream(self):
         viewer_spec = next(spec for spec in plan.specs({}, bool, bool) if spec.name == "viewer")
         self.assertEqual(viewer_spec.argv[viewer_spec.argv.index("--unix-listen") + 1], str(config.VIEWER_SOCKET))
-        self.assertEqual((config.VIEWER_SOCKET, config.SYNCTHING_SOCKET), (plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET))
-        self.assertEqual({config.VIEWER_SOCKET.parent, config.SYNCTHING_SOCKET.parent, plan.SOCKET_FOLDER}, {tls.SOCKET_FOLDER})
+        self.assertEqual((config.VIEWER_SOCKET, config.SYNCTHING_SOCKET, config.WORKER_SOCKET), (plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET, plan.WORKER_SOCKET))
+        self.assertEqual({config.VIEWER_SOCKET.parent, config.SYNCTHING_SOCKET.parent, config.WORKER_SOCKET.parent, plan.SOCKET_FOLDER}, {tls.SOCKET_FOLDER})
         self.assertIn(f"--web={config.VIEWER_FILES}", viewer_spec.argv)
         self.assertEqual(config.VIEWER_USER, viewer_auth.VIEWER_USER)
         self.assertEqual(VIEWER_CSP, CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'"))

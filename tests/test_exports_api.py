@@ -9,7 +9,7 @@ from darkroom.domain import browser_jobs
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount
 from tests.api_world import ApiCase
-from tests.shared import fetch
+from tests.shared import worker_fetch
 
 TOKEN = "exports-api-worker-token-canary-0123456789abcdef"
 DAY = 86400.0
@@ -33,7 +33,7 @@ class ExportsApiTests(ApiCase):
 
     def worker(self, path, body=None):
         headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        status, _, reply = worker_fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
         return status, json.loads(reply)
 
     def listing(self, *exports):
@@ -93,7 +93,7 @@ class ExportsApiTests(ApiCase):
         job_id = self.claimed_status_job()
         body = json.dumps({"result": self.listing({**self.ready(), "parts": [{"number": 1, "bytes": 123456789}]})}).replace("123456789", "1" + "0" * 5000)
         headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, "POST", f"/internal/browser/jobs/{job_id}/done", headers, body.encode())
+        status, _, reply = worker_fetch(self.base, "POST", f"/internal/browser/jobs/{job_id}/done", headers, body.encode())
         self.assertEqual(status, 400, reply)
         with db.session(self.engine) as opened:
             self.assertEqual(opened.execute(select(ExportPart)).scalars().all(), [])

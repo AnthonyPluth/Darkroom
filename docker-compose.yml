@@ -16,7 +16,8 @@ services:
     profiles: [single]
     # Host networking, for Syncthing's local discovery (decision 7 of docs/design/single-container.md): Syncthing listens on 22000 TCP and UDP and 21027
     # UDP on every address of the host. DARKROOM_HOST keeps the web port on the host's loopback, as the published port was before: a reverse proxy has
-    # to run on the host or on the host network to reach it (docs/deploy/one-container.md, "Traefik").
+    # to run on the host or on the host network to reach it (docs/deploy/one-container.md, "Traefik"). The browser worker never uses that port: it reaches
+    # the app only on a private socket in /run/darkroom inside the container (SECURITY.md, "The worker's API is on a private socket").
     network_mode: host
     volumes:
       - ${PHOTOS_ROOT:?set PHOTOS_ROOT to the photo share}:/photos

@@ -7,7 +7,7 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design. Work is tracked as GitHub 
 ## Running it
 
 ```text
-make setup          # Python 3.14 + Poetry; exiftool must be installed too
+make setup          # Python 3.15 + Poetry; exiftool must be installed too
 make check          # lint, checks, tests with the coverage floor
 python run.py check-config
 python run.py serve # GET /healthz

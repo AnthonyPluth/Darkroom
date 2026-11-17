@@ -2,8 +2,9 @@
 import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIGNED_OUT } from "$lib/api";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo } from "../test/server";
+import { emptyStatus, familyAccount, joAccount, jo, reply, sam, serve, shared, solo, transport } from "../test/server";
 import People from "./People.svelte";
 
 beforeEach(() => {
@@ -20,8 +21,13 @@ afterEach(() => {
 const seeded = () => ({
   "GET /api/people": { people: [jo, sam] },
   "GET /api/accounts": { accounts: [joAccount, familyAccount] },
-  "GET /api/pixels": { pixels: [solo, shared] },
+  "GET /api/pixels": { pixels: [solo, shared], syncthing: null },
 });
+
+function expectFullWidth(dialog: HTMLElement): void {
+  expect(dialog).toHaveClass("md:left-68", "md:right-10", "md:w-auto", "md:translate-x-0");
+  expect(dialog).not.toHaveClass("max-w-lg");
+}
 
 function show(routes: Parameters<typeof serve>[0]) {
   const server = serve(routes);
@@ -32,7 +38,7 @@ function show(routes: Parameters<typeof serve>[0]) {
 
 describe("the People page with no data", () => {
   it("asks for a person first, then an account, and disables what can't be added yet", async () => {
-    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("Add a person first.")).toBeInTheDocument();
     expect(screen.getByText("Add a Google account first.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
@@ -41,7 +47,7 @@ describe("the People page with no data", () => {
   });
 
   it("says no accounts or Pixels yet once there is a person", async () => {
-    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [] }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
     expect(await screen.findByText("No Google accounts yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
@@ -118,6 +124,26 @@ describe("forms in dialogs", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(server.sent("POST /api/people")[0].body).toEqual({ name: "Kai" });
     expect(await screen.findByText("Kai")).toBeInTheDocument();
+  });
+
+  it("opens every dialog at the People page's full width", async () => {
+    show(seeded());
+    await userEvent.click(await screen.findByRole("button", { name: "Add person" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add person" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Sam Example" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Edit person" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Edit person" })).getByRole("button", { name: "Delete person" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Delete Sam Example?" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Delete Sam Example?" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add Google account" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Add Google account" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
+    expectFullWidth(await screen.findByRole("dialog", { name: "Add Pixel" }));
   });
 
   it("keeps the dialog open and says what the server refused", async () => {
@@ -261,5 +287,298 @@ describe("when loading fails", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("table", { name: "Persons" })).toBeInTheDocument();
+  });
+});
+
+describe("the People page with Darkroom's Syncthing", () => {
+  const ON = { "GET /api/pairing/device": { device_id: "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG" }, "GET /api/pairing/waiting": { devices: [] } };
+  const withSyncthing = () => ({
+    ...seeded(),
+    ...ON,
+    "GET /api/pixels": { pixels: [solo, shared], syncthing: [transport(20, "Pixel 9a", "connected", { completion: 100 }), transport(21, "Pixel 8", "not_paired")] },
+  });
+
+  it("has no Syncthing column or Pair button when Syncthing is off", async () => {
+    show(seeded());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Last sync", ""]);
+    expect(within(table).queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
+  });
+
+  it("asks whether Darkroom's Syncthing pairs, which the setup wizard's Pixels step never does", async () => {
+    const server = show(withSyncthing());
+    await screen.findByRole("table", { name: "Pixels" });
+    expect(server.sent("GET /api/pairing/device")).toHaveLength(1);
+  });
+
+  it("puts a Syncthing column between People served and Last sync, with each Pixel's chip and line", async () => {
+    show(withSyncthing());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Syncthing", "Last sync", ""]);
+    const [paired, unpaired] = within(table).getAllByRole("row").slice(1);
+    const cell = (row: HTMLElement) => row.querySelector('td[data-label="Syncthing"]') as HTMLElement;
+    expect(cell(paired)).toHaveTextContent(/Connected\s*Up to date/);
+    expect(cell(unpaired)).toHaveTextContent(/Not paired\s*Pair it to start sending photos\./);
+    expect(within(paired).queryByRole("button", { name: "Pair Pixel 9a" })).not.toBeInTheDocument();
+  });
+
+  it("gives an unpaired Pixel a Pair button before Edit, which opens the pairing step", async () => {
+    show(withSyncthing());
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    const unpaired = within(table).getAllByRole("row")[2];
+    expect(within(unpaired).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pair", "Edit"]);
+    await userEvent.click(within(unpaired).getByRole("button", { name: "Pair Pixel 8" }));
+    expect(await screen.findByRole("dialog", { name: "Pair Pixel 8" })).toBeInTheDocument();
+  });
+
+  it("gives a Pixel whose device ID is not valid or shared a Pair again button before Edit, which opens the pairing step", async () => {
+    show({
+      ...seeded(),
+      ...ON,
+      "GET /api/pixels": { pixels: [solo, { ...shared, syncthing_device_id: "OLD-ID" }], syncthing: [
+        transport(20, "Pixel 9a", "device_id_invalid"), transport(21, "Pixel 8", "device_id_shared", { others: ["Pixel 7"] })] },
+    });
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    const [invalid, sharing] = within(table).getAllByRole("row").slice(1);
+    const cell = (row: HTMLElement) => row.querySelector('td[data-label="Syncthing"]') as HTMLElement;
+    expect(cell(invalid)).toHaveTextContent(/Device ID not valid\s*Its saved device ID is not a Syncthing device ID, so nothing is shared with it\. Pair it again\./);
+    expect(cell(sharing)).toHaveTextContent(/Same device ID\s*Pixel 7 has the same device ID, so Darkroom shares neither folder\. Pair again whichever one is wrong\./);
+    for (const row of [invalid, sharing]) expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pair again", "Edit"]);
+    await userEvent.click(within(sharing).getByRole("button", { name: "Pair Pixel 8 again" }));
+    const dialog = await screen.findByRole("dialog", { name: "Pair Pixel 8" });
+    expect(within(dialog).getByRole("img", { name: "QR code of Darkroom's device ID" })).toBeInTheDocument();
+  });
+
+  it("gives a refused folder its chip and no button but Edit", async () => {
+    show({ ...seeded(), "GET /api/pixels": { pixels: [solo], syncthing: [transport(20, "Pixel 9a", "folder_path_refused")] } });
+    const row = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    expect(row).toHaveTextContent(/Folder refused\s*Its folder leads outside the photo share, so Darkroom does not share it\./);
+    expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Edit"]);
+  });
+
+  it("shares a removed folder again only after the confirmation, says why a press was refused, and shows Checking once done", async () => {
+    let released = false;
+    let answer: (value: Response) => void = () => {};
+    const server = serve({
+      ...seeded(),
+      "GET /api/pixels": () => ({ pixels: [solo], syncthing: [transport(20, "Pixel 9a", released ? "checking" : "folder_removed")] }),
+    });
+    vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => {
+      if (url !== "/api/pixels/20/release-folder") return server.mock(url, init);
+      server.calls.push({ key: `POST ${url}`, body: JSON.parse(String(init.body)) });
+      return new Promise<Response>((resolve) => (answer = resolve));
+    });
+    render(People);
+    const row = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    expect(row).toHaveTextContent(/Folder removed\s*Darkroom removed its folder because it was changed outside Darkroom\. It stays unshared until you share it again\./);
+    expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Share again", "Edit"]);
+    await userEvent.click(within(row).getByRole("button", { name: "Share Pixel 9a's folder again" }));
+    const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
+    expectFullWidth(ask);
+    for (const paragraph of [
+      "Darkroom removed Pixel 9a's folder from its Syncthing because the folder was changed outside Darkroom: it was no longer Send Only, or no longer at Pixel 9a's folder on the photo share.",
+      "If you share it again, Darkroom adds the folder afresh, Send Only, at Pixel 9a's folder, as soon as the photo share passes its check and the folder is not held. If the Syncthing app on Pixel 9a asks, accept the folder there.",
+      "If the folder is changed outside Darkroom again, Darkroom removes it again.",
+    ]) expect(within(ask).getByText(paragraph)).toBeInTheDocument();
+    expect(within(ask).getAllByRole("button").map((button) => button.textContent)).toEqual(["Cancel", "Share folder again"]);
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toHaveClass("btn-primary");
+    expect(server.sent("POST /api/pixels/20/release-folder")).toHaveLength(0);
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    await waitFor(() => expect(within(ask).getByRole("button", { name: "Cancel" })).toBeDisabled());
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toBeDisabled();
+    expect(server.sent("POST /api/pixels/20/release-folder")[0].body).toEqual({ confirmed: true });
+    answer(new Response(JSON.stringify({ error: "Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again" }), { status: 409 }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent(
+      "Couldn't share Pixel 9a's folder again: Darkroom has not removed this Pixel's Syncthing folder, so there is nothing to share again.");
+    expect(within(ask).getByRole("button", { name: "Share folder again" })).toBeEnabled();
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    await waitFor(() => expect(within(ask).queryByRole("alert")).not.toBeInTheDocument());
+    released = true;
+    answer(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const after = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
+    await waitFor(() => expect(after).toHaveTextContent(/Checking\s*Darkroom is checking its folder before sharing it\./));
+    expect(within(after).getAllByRole("button").map((button) => button.textContent)).toEqual(["Edit"]);
+  });
+
+  it("adds a full stop after a refusal that has none and keeps one that has", async () => {
+    const server = serve({ ...seeded(), "GET /api/pixels": { pixels: [solo], syncthing: [transport(20, "Pixel 9a", "folder_removed")] } });
+    vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => url === "/api/pixels/20/release-folder" ? Promise.reject(new TypeError("offline")) : server.mock(url, init));
+    render(People);
+    await userEvent.click(await screen.findByRole("button", { name: "Share Pixel 9a's folder again" }));
+    const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
+    await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
+    expect(await within(ask).findByRole("alert")).toHaveTextContent(/^Couldn't share Pixel 9a's folder again: Can't reach Darkroom\. Check your connection and try again\.$/);
+  });
+});
+
+describe("pairing a Pixel with Darkroom's Syncthing on", () => {
+  const OWN = "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG";
+  const PHONE = { device_id: "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE", name: "Pixel 7" };
+  const added = { ...shared, id: 22, name: "Pixel 7" };
+  const on = () => ({ ...seeded(), "GET /api/pairing/device": { device_id: OWN }, "GET /api/pairing/waiting": { devices: [PHONE] } });
+
+  it("offers Pair only on an unpaired Pixel, and opens the modal straight at the pairing step", async () => {
+    show(on());
+    expect(await screen.findByRole("button", { name: "Pair Pixel 8" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pair Pixel 9a" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Pair Pixel 8" }));
+    const dialog = await screen.findByRole("dialog", { name: "Pair Pixel 8" });
+    expectFullWidth(dialog);
+    expect(dialog).toHaveAccessibleDescription("Connect the Syncthing app on Pixel 8 to Darkroom. Nothing is shared until you approve the Pixel here.");
+    expect(within(dialog).getByRole("img", { name: "QR code of Darkroom's device ID" })).toBeInTheDocument();
+  });
+
+  it("adds a Pixel, moves the same modal on to pairing it, and closes once it is paired", async () => {
+    const server = show({ ...on(), "POST /api/pixels": reply(201, { pixel: added }), "POST /api/pixels/22/pair": { pixel: { ...added, syncthing_device_id: PHONE.device_id } } });
+    await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
+    let dialog = await screen.findByRole("dialog", { name: "Add Pixel" });
+    expect(within(dialog).queryByLabelText(/Syncthing device ID/)).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Pixel 7");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add Pixel" }));
+    dialog = await screen.findByRole("dialog", { name: "Pair Pixel 7" });
+    await waitFor(() => expect(server.sent("GET /api/pixels")).toHaveLength(2));
+    await userEvent.click(await within(dialog).findByRole("button", { name: "This is Pixel 7" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
+    expect(await within(dialog).findByText("Darkroom is sharing Pixel 7's folder with it.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Paired")).toBeInTheDocument();
+    expectFullWidth(dialog);
+    expect(within(dialog).getByText("In Google Photos on the Pixel, turn on backup for that folder.")).toBeInTheDocument();
+    await waitFor(() => expect(server.sent("GET /api/pixels")).toHaveLength(3));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("leaves an unpaired Pixel behind when pairing is put off", async () => {
+    show(on());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Pair" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Pair Pixel 8" })).getByRole("button", { name: "Pair later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("keeps today's form and no Pair button with Darkroom's Syncthing off", async () => {
+    show({ ...seeded(), "GET /api/pairing/device": reply(409, { error: "Darkroom's Syncthing is off" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    expect(within(await screen.findByRole("dialog", { name: "Edit Pixel" })).getByLabelText("Syncthing device ID (optional)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
+  });
+
+  it("still offers pairing when Darkroom's Syncthing is on but not answering", async () => {
+    show({ ...seeded(), "GET /api/pairing/device": reply(503, { error: "Darkroom's Syncthing could not be reached" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Pair Pixel 8" }));
+    expect(await screen.findByLabelText("Syncthing device ID")).toBeInTheDocument();
+  });
+});
+
+describe("unpairing a Pixel with Darkroom's Syncthing on", () => {
+  const OWN = "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG";
+  const DEVICE = "PIXELNA-MADEUP2-EXAMPLE-ONLYAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE";
+  const pixel8 = { ...shared, syncthing_device_id: DEVICE };
+  const FIRST = "Darkroom stops sharing Pixel 8's folder with this device and removes the device from its Syncthing within a minute. Nothing new reaches Pixel 8 until it is paired again.";
+  const SECOND = "No photo or file is deleted. Darkroom's copies stay on the photo share, and Darkroom does not touch the copies already synced to Pixel 8: they stay on the Pixel until someone removes them there.";
+
+  function pixels(after: () => boolean) {
+    return {
+      "GET /api/people": { people: [jo, sam] },
+      "GET /api/accounts": { accounts: [joAccount, familyAccount] },
+      "GET /api/pixels": () => ({ pixels: [solo, after() ? shared : pixel8] }),
+      "GET /api/pairing/device": { device_id: OWN },
+      "GET /api/pairing/waiting": { devices: [] },
+    };
+  }
+
+  async function openConfirm() {
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const form = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    await userEvent.type(within(form).getByLabelText("Name"), " renamed");
+    await userEvent.click(within(form).getByRole("button", { name: "Unpair Pixel 8" }));
+    return screen.findByRole("dialog", { name: "Unpair Pixel 8?" });
+  }
+
+  it("offers no Unpair in Edit Pixel when Darkroom's Syncthing is off, even for a Pixel with a device ID", async () => {
+    show({ ...pixels(() => false), "GET /api/pairing/device": reply(409, { error: "Darkroom's Syncthing is off" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const form = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    expect(within(form).getByLabelText("Name")).toBeInTheDocument();
+    expect(within(form).queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+  });
+
+  it("closes the form, asks first, and Cancel changes nothing", async () => {
+    const server = show(pixels(() => false));
+    const dialog = await openConfirm();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit Pixel" })).not.toBeInTheDocument());
+    expectFullWidth(dialog);
+    expect(dialog).toHaveAccessibleDescription(FIRST);
+    expect(within(dialog).getByText(SECOND)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/PIXELNA/)).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Unpair"]);
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toHaveClass("btn", "btn-danger");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.calls.filter((c) => !c.key.startsWith("GET "))).toHaveLength(0);
+  });
+
+  it("sends only the cleared device ID, then shows the Pixel as not paired with Pair", async () => {
+    let done = false;
+    const server = show({ ...pixels(() => done), "PATCH /api/pixels/21": () => { done = true; return { pixel: shared }; } });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(server.sent("PATCH /api/pixels/21").map((c) => c.body)).toEqual([{ syncthing_device_id: null }]);
+    expect(await screen.findByRole("button", { name: "Pair Pixel 8" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit Pixel 8" }));
+    const row = within(await screen.findByRole("dialog", { name: "Edit Pixel" })).getByRole("group", { name: "Syncthing" });
+    expect(within(row).getByText("Not paired")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Pair" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+  });
+
+  it("disables both buttons and can't be dismissed while the unpair is in flight", async () => {
+    let answer: (r: Response) => void = () => {};
+    const server = show(pixels(() => false));
+    const dialog = await openConfirm();
+    const base = server.mock.getMockImplementation()!;
+    server.mock.mockImplementation((url: string, init: RequestInit = {}) =>
+      init.method === "PATCH" ? new Promise<Response>((resolve) => (answer = resolve)) : base(url, init));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Unpair Pixel 8?" })).toBeInTheDocument();
+    answer(new Response(JSON.stringify({ pixel: shared }), { status: 200 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("stays open with Darkroom's refusal unchanged, and the line goes at the next press", async () => {
+    let attempt = 0;
+    show({ ...pixels(() => false), "PATCH /api/pixels/21": () => (attempt++ === 0 ? reply(503, { error: "Darkroom is busy with another change; try again in a moment" }) : reply(404, { error: "no such Pixel." })) });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: Darkroom is busy with another change; try again in a moment\.$/);
+    expect(within(dialog).getByRole("button", { name: "Unpair" })).toBeEnabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: no such Pixel\.$/));
+    expect(screen.getByRole("dialog", { name: "Unpair Pixel 8?" })).toBeInTheDocument();
+  });
+
+  it("signs out on a 401 and says so in the dialog", async () => {
+    const heard = vi.fn();
+    window.addEventListener(SIGNED_OUT, heard);
+    show({ ...pixels(() => false), "PATCH /api/pixels/21": reply(401, { error: "sign in required" }) });
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^Couldn't unpair Pixel 8: You're signed out\. Sign in again to keep going\.$/);
+    expect(heard).toHaveBeenCalledOnce();
+    window.removeEventListener(SIGNED_OUT, heard);
+  });
+
+  it("says when Darkroom can't be reached", async () => {
+    show(pixels(() => false));
+    const dialog = await openConfirm();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Couldn't unpair Pixel 8: Can't reach Darkroom. Check your connection and try again.");
   });
 });

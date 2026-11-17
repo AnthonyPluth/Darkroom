@@ -10,6 +10,7 @@ from darkroom_init import plan
 ROOT = Path(__file__).resolve().parent.parent.parent
 SINGLE = (ROOT / "Dockerfile.single").read_text()
 SINGLE_REQUIREMENTS = (ROOT / "deploy/single/requirements.txt").read_text()
+APP_PYTHON = re.search(r"^FROM python:(\d+\.\d+)-slim AS deps$", (ROOT / "Dockerfile").read_text(), re.M).group(1)
 SANDBOX = "--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json"
 SINGLE_IMAGE = "ghcr.io/anthonypluth/darkroom-single"
 UNRAID_SECCOMP = "/boot/config/darkroom/seccomp.json"
@@ -107,15 +108,26 @@ class SingleImageTests(unittest.TestCase):
         block = requirement_blocks(SINGLE_REQUIREMENTS)["greenlet"]
         self.assertTrue(block.startswith(f"greenlet=={version} "))
         wheels = dict(re.findall(r'file = "(greenlet-[^"]+\.whl)", hash = "sha256:([0-9a-f]{64})"', locked))
+        tag = "cp" + APP_PYTHON.replace(".", "")
         expected = {
-            wheels[f"greenlet-{version}-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"],
-            wheels[f"greenlet-{version}-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl"],
+            wheels[f"greenlet-{version}-{tag}-{tag}-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"],
+            wheels[f"greenlet-{version}-{tag}-{tag}-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl"],
         }
         self.assertEqual(set(re.findall(r"--hash=sha256:([0-9a-f]{64})", block)), expected)
 
+    def test_the_repository_names_the_one_python_the_images_run(self):
+        self.assertEqual(re.findall(r"^FROM (python:\S+)", (ROOT / "Dockerfile").read_text(), re.M), [f"python:{APP_PYTHON}-slim"] * 2)
+        pyproject = (ROOT / "pyproject.toml").read_text()
+        self.assertIn(f'requires-python = ">={APP_PYTHON},<4.0"', pyproject)
+        self.assertIn(f'target-version = "py{APP_PYTHON.replace(".", "")}"', pyproject)
+        self.assertIn(f'python_version = "{APP_PYTHON}"', pyproject)
+        self.assertIn(f'default: "{APP_PYTHON}"', (ROOT / ".github/actions/setup-python-poetry/action.yml").read_text())
+        self.assertIn(f"PYTHON_VERSION={APP_PYTHON}\n", (ROOT / ".claude/hooks/fleet.conf").read_text())
+        self.assertIn(f'python-version: "{APP_PYTHON}"', (ROOT / ".github/workflows/control-smoke.yml").read_text())
+
     def test_the_worker_has_its_own_venv_on_the_apps_python(self):
         bases = re.findall(r"^FROM (\S+)", SINGLE, re.M)
-        self.assertEqual(bases, ["node:22-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim", "python:3.14-slim"])
+        self.assertEqual(bases, ["node:22-slim", *[f"python:{APP_PYTHON}-slim"] * 4])
         self.assertIn("python -m venv /opt/worker", SINGLE)
         self.assertIn("COPY --from=worker-deps /opt/worker /opt/worker", SINGLE)
         self.assertIn("COPY --from=deps /app/.venv ./.venv", SINGLE)
@@ -141,14 +153,14 @@ class SingleImageTests(unittest.TestCase):
         self.assertIn('if [ "$(dpkg --print-architecture)" = "amd64" ]; then /opt/worker/bin/python -m playwright install --with-deps chrome; fi', SINGLE)
         self.assertNotIn("firefox", SINGLE)
         self.assertNotIn("webkit", SINGLE)
+        self.assertNotIn("--no-sandbox", SINGLE)
+        self.assertNotRegex(SINGLE, r"curl[^\n]*\|\s*(ba)?sh")
 
     def test_the_playwright_driver_has_libatomic_before_it_runs(self):
         runtime = SINGLE[SINGLE.index("AS runtime"):]
         apt = runtime[runtime.index("apt-get install"):runtime.index("rm -rf /var/lib/apt/lists/*")]
         self.assertIn(" libatomic1 ", apt)
         self.assertLess(runtime.index("libatomic1"), runtime.index("playwright install"))
-        self.assertNotIn("--no-sandbox", SINGLE)
-        self.assertNotRegex(SINGLE, r"curl[^\n]*\|\s*(ba)?sh")
 
     def test_it_serves_the_app_on_8000_only_under_tini(self):
         self.assertEqual(re.findall(r"^EXPOSE .*$", SINGLE, re.M), ["EXPOSE 8000"])
@@ -235,16 +247,20 @@ class SingleImageTests(unittest.TestCase):
         probe = (ROOT / "tests/browser/host_network.py").read_text()
         self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
         self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
+        self.assertIn(f'"{plan.WORKER_SOCKET}"', probe)
+        self.assertIn('worker_route == 404', probe)
+        smoke = (ROOT / "tests/browser/one_container.sh").read_text()
+        self.assertIn('[ "$(worker_route)" = 404 ]', smoke)
 
     def test_the_worker_page_describes_the_internal_listeners_as_the_init_starts_them(self):
         page = (ROOT / "docs/deploy/browser.md").read_text()
         inside = page[page.index("## What runs inside"):page.index("## Google Chrome")]
-        for socket_path in (plan.VNC_SOCKET, plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET):
+        for socket_path in (plan.VNC_SOCKET, plan.VIEWER_SOCKET, plan.SYNCTHING_SOCKET, plan.WORKER_SOCKET):
             self.assertIn(f"`{socket_path}`", inside)
         for flag in ("-rfbport 0", "-rfbportv6 0", "-nolisten tcp -nolisten local", "mode `0700`", "tests/browser/host_network.sh"):
             self.assertIn(flag, inside)
         self.assertNotIn("-localhost", inside)
-        self.assertNotRegex(inside, r"127\.0\.0\.1:6080|port 5900")
+        self.assertNotRegex(inside, r"127\.0\.0\.1:6080|port 5900|127\.0\.0\.1:<DARKROOM_PORT>")
 
     def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()

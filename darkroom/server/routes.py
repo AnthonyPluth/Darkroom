@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth, viewer, wizard
-from darkroom.server.api import accounts, browser, browser_internal, exports, imports, people, pixels, review, status
+from darkroom.server.api import accounts, browser, browser_internal, demo, exports, imports, people, pixels, review, status
 from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request, Response
 
@@ -29,6 +29,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/api/me", auth.me, "session"),
     Route("GET", "/api/status", status.status, "session"),
     Route("GET", "/api/events", status.recent_events, "session"),
+    Route("POST", "/api/demo/syncthing", demo.syncthing_state, "session"),
     Route("GET", "/api/people", people.list_people, "session"),
     Route("POST", "/api/people", people.create_person, "session"),
     Route("PATCH", "/api/people/{id}", people.update_person, "session"),
@@ -45,6 +46,10 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/pixels", pixels.create_pixel, "session"),
     Route("PATCH", "/api/pixels/{id}", pixels.update_pixel, "session"),
     Route("DELETE", "/api/pixels/{id}", pixels.delete_pixel, "session"),
+    Route("POST", "/api/pixels/{id}/pair", pixels.pair_pixel, "session"),
+    Route("POST", "/api/pixels/{id}/release-folder", pixels.release_folder, "session"),
+    Route("GET", "/api/pairing/device", pixels.own_device, "session"),
+    Route("GET", "/api/pairing/waiting", pixels.waiting_devices, "session"),
     Route("GET", "/api/browser/jobs", browser.list_jobs, "session"),
     Route("POST", "/api/browser/jobs", browser.enqueue, "session"),
     Route("GET", "/api/browser/view", browser.view, "session"),

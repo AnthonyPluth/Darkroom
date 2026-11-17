@@ -25,7 +25,6 @@ READY_SECONDS = 60.0
 RECHECK_SECONDS = 1.0
 KILL_SECONDS = 1.0
 TICK_SECONDS = 0.2
-LISTEN = "0A"
 
 
 class CommandFailed(OSError):
@@ -75,15 +74,6 @@ def adopted_by(parent: int, proc: Path = Path("/proc")) -> list[int]:
 
 def group_alive(pgid: int, proc: Path = Path("/proc")) -> bool:
     return any(group == pgid and state != "Z" for _, state, _, group in processes(proc))
-
-
-def listening(port: int, proc: Path = Path("/proc")) -> bool:
-    wanted = f":{port:04X}"
-    for table in ("net/tcp", "net/tcp6"):
-        with contextlib.suppress(OSError):
-            if any(parts[1].endswith(wanted) and parts[3] == LISTEN for parts in (row.split() for row in (proc / table).read_text().splitlines()[1:])):
-                return True
-    return False
 
 
 def display_ready(given: Mapping[str, str]) -> Callable[[], bool]:

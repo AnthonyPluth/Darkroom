@@ -66,6 +66,7 @@ VIEWER_FILES = Path("/usr/share/novnc")
 VIEWER_SOCKET = Path("/run/darkroom/viewer.sock")
 VIEWER_USER = "darkroom"
 SYNCTHING_SOCKET = Path("/run/darkroom/syncthing.sock")
+WORKER_SOCKET = Path("/run/darkroom/worker-api.sock")
 StoredKind = Literal["text", "address", "list", "secret", "sealed"]
 
 
@@ -129,6 +130,7 @@ class Settings:
     browser_root: Path | None = None
     syncthing: bool = False
     syncthing_key: str = field(default="", repr=False)
+    alerts_off: tuple[str, ...] = ()
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -190,6 +192,7 @@ def load() -> Settings:
         browser_root=Path(env("DARKROOM_BROWSER_ROOT")) if env("DARKROOM_BROWSER_ROOT") else None,
         syncthing=env_flag("DARKROOM_SYNCTHING"),
         syncthing_key=syncthing_key(),
+        alerts_off=env_list("DARKROOM_ALERTS_OFF"),
     )
 
 
@@ -362,7 +365,18 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings))
+    return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings)
+            + alerts_off_problems(settings))
+
+
+SWITCHABLE_ALERTS = ("syncthing_down", "syncthing_settings_failed", "syncthing_version", "share_check_failed", "pixel_held")
+
+
+def alerts_off_problems(settings: Settings) -> list[str]:
+    unknown = [kind for kind in settings.alerts_off if kind not in SWITCHABLE_ALERTS]
+    if not unknown:
+        return []
+    return [f"DARKROOM_ALERTS_OFF names {len(unknown)} unknown alert kind{'' if len(unknown) == 1 else 's'}; it takes only {', '.join(SWITCHABLE_ALERTS)}"]
 
 
 SYNCTHING_TWO_CONTAINERS = ("DARKROOM_SYNCTHING=1 does nothing outside the one container: only the one container's init starts Darkroom's Syncthing, "

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import os
+import socket
 import sqlite3
 import tempfile
 import threading
@@ -159,11 +161,35 @@ def fetch(base: str, method: str, path: str, headers: dict[str, str] | None = No
             return error.code, error.headers, error.read()
 
 
-def start_server(test: unittest.TestCase, settings: config.Settings, engine: Engine | None = None) -> tuple[str, config.Settings]:
-    server = handler.make_server(settings, host="127.0.0.1", port=0, engine=engine or own_database(test))
-    base = f"http://127.0.0.1:{server.server_address[1]}"
-    bound = dataclasses.replace(settings, public_url=settings.public_url or base)
-    server.RequestHandlerClass.settings = bound
+WORKER_SOCKETS: dict[str, Path] = {}
+
+
+class OnSocket(http.client.HTTPConnection):
+    def __init__(self, socket_path: Path) -> None:
+        super().__init__("localhost", timeout=10)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(str(self.socket_path))
+
+
+def worker_socket_of(base: str) -> Path:
+    return WORKER_SOCKETS[base]
+
+
+def worker_fetch(base: str, method: str, path: str, headers: dict[str, str] | None = None, body: bytes | None = None) -> tuple[int, Message, bytes]:
+    connection = OnSocket(worker_socket_of(base))
+    try:
+        connection.request(method, path, body=body, headers=headers or {})
+        reply = connection.getresponse()
+        return reply.status, reply.headers, reply.read()
+    finally:
+        connection.close()
+
+
+def serve_in_thread(test: unittest.TestCase, server: handler.ThreadingHTTPServer | handler.WorkerSocketServer) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -173,6 +199,22 @@ def start_server(test: unittest.TestCase, settings: config.Settings, engine: Eng
         thread.join(timeout=5)
 
     test.addCleanup(stop)
+
+
+def start_server(test: unittest.TestCase, settings: config.Settings, engine: Engine | None = None) -> tuple[str, config.Settings]:
+    engine = engine or own_database(test)
+    server = handler.make_server(settings, host="127.0.0.1", port=0, engine=engine)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    bound = dataclasses.replace(settings, public_url=settings.public_url or base)
+    server.RequestHandlerClass.settings = bound
+    serve_in_thread(test, server)
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    socket_path = Path(folder.name) / config.WORKER_SOCKET.name
+    with mock.patch.object(tls, "SOCKET_FOLDER", Path(folder.name)):
+        worker = handler.make_worker_server(bound, socket_path, engine)
+    serve_in_thread(test, worker)
+    WORKER_SOCKETS[base] = socket_path
     return base, bound
 
 

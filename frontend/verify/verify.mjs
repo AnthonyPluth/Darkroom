@@ -82,7 +82,7 @@ export async function blockOtherHosts(ctx, base, also = []) {
   return blocked;
 }
 
-const ACTIONS = { goto: "string", click: "string", click_if_present: "string", hover: "string", select: "object", fill: "object", press: "object", upload: "object", download: "object", scroll_to: "string", sign_out: "boolean", reload: "boolean", wait_for: "string", expect_text: "object", screenshot: "string" };
+const ACTIONS = { goto: "string", click: "string", click_if_present: "string", hover: "string", select: "object", fill: "object", press: "object", upload: "object", download: "object", scroll_to: "string", sign_out: "boolean", reload: "boolean", demo_post: "object", wait_for: "string", expect_text: "object", screenshot: "string" };
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const unknownPages = (names) => names.filter((n) => !PAGES.includes(n) && n !== SETUP_PAGE);
@@ -96,6 +96,7 @@ export function flowProblems(flow) {
     if (keys.length !== 1 || !(keys[0] in ACTIONS)) out.push(`step ${i + 1} must have exactly one of ${Object.keys(ACTIONS).join(", ")}`);
     else if (typeof s[keys[0]] !== ACTIONS[keys[0]]) out.push(`step ${i + 1}: ${keys[0]} takes a ${ACTIONS[keys[0]]}`);
     else if (keys[0] === "screenshot" && !/^[\w-]+$/.test(s.screenshot)) out.push(`step ${i + 1}: a screenshot name is letters, digits, - or _ (it becomes a file name)`);
+    else if (keys[0] === "demo_post" && !demoPostOk(s.demo_post)) out.push(`step ${i + 1}: demo_post needs a path under /api/demo/ and a body object`);
     else if (keys[0] === "download" && (typeof s.download?.selector !== "string" || !/^[\w-]+$/.test(s.download?.name ?? ""))) out.push(`step ${i + 1}: download needs a selector and a name of letters, digits, - or _`);
   }
   if (flow?.page !== undefined && !PAGES.includes(flow.page)) out.push(`unknown page ${flow.page}`);
@@ -107,6 +108,8 @@ export function flowProblems(flow) {
   return out;
 }
 
+export const demoPostOk = (post) => typeof post?.path === "string" && /^\/api\/demo\/[\w/-]+$/.test(post.path) && typeof post.body === "object" && post.body !== null;
+
 export async function runStep(page, step, shot, saveDownload, onSignOut) {
   const timeout = step.timeout ?? 10000;
   if ("sign_out" in step) {
@@ -115,6 +118,9 @@ export async function runStep(page, step, shot, saveDownload, onSignOut) {
     await page.reload({ waitUntil: "load", timeout });
   } else if ("reload" in step) {
     await page.reload({ waitUntil: "domcontentloaded", timeout });
+  } else if ("demo_post" in step) {
+    const reply = await page.request.post(new URL(step.demo_post.path, page.url()).href, { data: step.demo_post.body, timeout });
+    if (!reply.ok()) throw new Error(`${step.demo_post.path} answered ${reply.status()}`);
   } else if ("goto" in step) {
     await page.goto(step.goto.startsWith("/") ? new URL(step.goto, page.url()).href : step.goto);
   } else if ("click" in step) {

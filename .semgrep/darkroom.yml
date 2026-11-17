@@ -14,8 +14,9 @@ rules:
 
   - id: darkroom-no-raw-sockets
     message: >-
-      Open outbound connections only through darkroom/tls.py. Nothing imports socket or h2 since the APNs client went
-      (#201), so import-linter can no longer protect them; this rule does.
+      Open outbound connections only through darkroom/tls.py (in the browser worker, through darkroom_browser/client.py,
+      which reaches the app on its private socket). Nothing else imports socket or h2 since the APNs client went (#201),
+      so import-linter can no longer protect them; this rule does.
     severity: ERROR
     languages: [python]
     patterns:
@@ -29,7 +30,7 @@ rules:
           regex: ^(socket|h2)(\..*)?$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/tls.py"]
+      exclude: ["/darkroom/tls.py", "/darkroom_browser/client.py"]
 
   - id: darkroom-subprocess-only-exiftool
     message: >-

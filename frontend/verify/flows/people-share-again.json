@@ -1,0 +1,17 @@
+{
+  "name": "people-share-again",
+  "page": "people",
+  "steps": [
+    { "expect_text": { "selector": "section[aria-label='Pixels']", "text": "Darkroom removed its folder because it was changed outside Darkroom." } },
+    { "click": "button[aria-label=\"Share Blair's second Pixel's folder again\"]" },
+    { "expect_text": { "selector": "[role=dialog]", "text": "If the folder is changed outside Darkroom again, Darkroom removes it again." } },
+    { "screenshot": "confirm" },
+    { "click": "[role=dialog] button:has-text('Share folder again')" },
+    { "expect_text": { "selector": "section[aria-label='Pixels']", "text": "Darkroom is checking its folder before sharing it." } },
+    { "screenshot": "checking" },
+    { "demo_post": { "path": "/api/demo/syncthing", "body": { "state": "running" } } },
+    { "reload": true },
+    { "expect_text": { "selector": "section[aria-label='Pixels']", "text": "It stays unshared until you share it again." } },
+    { "screenshot": "back" }
+  ]
+}

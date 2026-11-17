@@ -6,6 +6,7 @@ import dataclasses
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 from sqlalchemy import Engine
@@ -496,11 +497,24 @@ def run_demo(folder: str | None) -> int:
         print(f"demo: {error}; nothing was left under {folder}, so the same folder can be used again", file=sys.stderr)
         return 1
     print(f"Seeded {summary.people} made-up people with {summary.accounts} Google accounts, {summary.pixels} Pixels, "
-          f"{summary.originals} originals ({summary.indexed} indexed, {summary.failed} failed) and {summary.alerts} open alert.")
+          f"{summary.originals} originals ({summary.indexed} indexed, {summary.failed} failed) and {summary.alerts} open alert{'' if summary.alerts == 1 else 's'}.")
     print(f"Serve it with: DARKROOM_DEMO=1 DARKROOM_DATA_DIR={settings.data_dir} DARKROOM_PHOTOS_ROOT={settings.photos_root} python run.py serve")
     print(f"The demo member's session cookie is in {session_file} (the browser driver of a later issue sets it for you); "
           f"or add DARKROOM_ALLOW_NO_AUTH=1 instead of DARKROOM_DEMO=1 to browse as the local owner.")
     return 1 if summary.failed else 0
+
+
+def serve_worker_api(settings: config.Settings, engine: Engine) -> handler.WorkerSocketServer | None:
+    if not settings.one_container:
+        return None
+    try:
+        server = handler.make_worker_server(settings, engine=engine)
+    except (handler.SocketRefused, OSError) as error:
+        monitoring.log("the browser worker's API is not served", reason=str(error) if isinstance(error, handler.SocketRefused) else type(error).__name__, level="warning")
+        return None
+    threading.Thread(target=server.serve_forever, name="worker-api", daemon=True).start()
+    monitoring.log("serving the browser worker's API on its private socket")
+    return server
 
 
 def serve() -> int:
@@ -536,12 +550,16 @@ def serve() -> int:
     scheduler = jobs.for_serving(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
+    worker_api = serve_worker_api(settings, engine)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         scheduler.stop()
         server.server_close()
+        if worker_api is not None:
+            worker_api.shutdown()
+            worker_api.server_close()
     return 0
 
 

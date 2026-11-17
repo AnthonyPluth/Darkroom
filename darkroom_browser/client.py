@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import http.client
 import json
-import urllib.error
-import urllib.request
+import os
+import socket
+import stat
+from pathlib import Path
 from typing import Any
 
 TIMEOUT = 30.0
 MAX_REPLY = 1024 * 1024
+SOCKET_FOLDER = Path("/run/darkroom")
+APP_SOCKET = SOCKET_FOLDER / "worker-api.sock"
 
 
 class Unreachable(Exception):
@@ -23,33 +28,70 @@ class LeaseLost(Refused):
     pass
 
 
-class NoRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: Any, msg: Any, headers: Any, newurl: Any) -> Any:
-        raise Unreachable("darkroom redirected; the worker follows no redirects")
+def folder_is_private(folder: Path) -> bool:
+    try:
+        found = os.lstat(folder)
+    except OSError:
+        return False
+    return stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid() and stat.S_IMODE(found.st_mode) & 0o077 == 0
+
+
+def checked_socket(socket_path: Path, folder: Path) -> str:
+    text = str(socket_path)
+    if not socket_path.is_absolute() or "\x00" in text or os.path.normpath(text) != text or socket_path.parent != folder:
+        raise Unreachable("the app's socket is not directly in the private socket folder")
+    if not folder_is_private(folder):
+        raise Unreachable("the private socket folder is not private to this user")
+    return text
+
+
+class OnSocket(http.client.HTTPConnection):
+    def __init__(self, socket_path: str, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stream.settimeout(self.timeout)
+        try:
+            stream.connect(self.socket_path)
+        except OSError:
+            stream.close()
+            raise
+        self.sock = stream
 
 
 class Client:
-    def __init__(self, base_url: str, token: str, timeout: float = TIMEOUT) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, socket_path: Path, token: str, timeout: float = TIMEOUT, folder: Path | None = None) -> None:
+        self.socket_path = socket_path
+        self.folder = SOCKET_FOLDER if folder is None else folder
         self.token = token
         self.timeout = timeout
-        self.opener = urllib.request.build_opener(NoRedirects())
+
+    def exchange(self, path: str, data: bytes) -> tuple[int, bytes]:
+        connection = OnSocket(checked_socket(self.socket_path, self.folder), self.timeout)
+        try:
+            try:
+                connection.request("POST", path, body=data, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            except (BrokenPipeError, ConnectionResetError):
+                if connection.sock is None:
+                    raise
+            reply = connection.getresponse()
+            return reply.status, reply.read(MAX_REPLY)
+        except (OSError, http.client.HTTPException) as error:
+            raise Unreachable(type(error).__name__) from None
+        finally:
+            connection.close()
 
     def post(self, path: str, body: dict[str, object]) -> dict[str, Any]:
-        request = urllib.request.Request(self.base_url + path, data=json.dumps(body).encode(), method="POST",
-                                         headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
-        try:
-            with self.opener.open(request, timeout=self.timeout) as response:
-                raw = response.read(MAX_REPLY)
-        except urllib.error.HTTPError as error:
-            with error:
-                detail = error.read(MAX_REPLY)
-            message = self.error_text(detail)
-            if error.code in (404, 409):
-                raise LeaseLost(error.code, message) from None
-            raise Refused(error.code, message) from None
-        except (urllib.error.URLError, OSError, TimeoutError) as error:
-            raise Unreachable(type(error).__name__) from None
+        status, raw = self.exchange(path, json.dumps(body).encode())
+        if 300 <= status < 400:
+            raise Unreachable("darkroom redirected; the worker follows no redirects")
+        if not 200 <= status < 300:
+            message = self.error_text(raw)
+            if status in (404, 409):
+                raise LeaseLost(status, message)
+            raise Refused(status, message)
         parsed = json.loads(raw or b"{}")
         if not isinstance(parsed, dict):
             raise Unreachable("darkroom answered something other than a JSON object")

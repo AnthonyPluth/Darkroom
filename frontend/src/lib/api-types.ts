@@ -112,6 +112,10 @@ export interface Decisions {
   page_size: number;
 }
 
+export interface DemoSyncthingBody {
+  state: "running" | "down" | "share_check_failed";
+}
+
 export interface DoneBody {
   result?: Record<string, unknown>;
 }
@@ -324,6 +328,10 @@ export interface Ok {
   ok: boolean;
 }
 
+export interface OwnDevice {
+  device_id: string;
+}
+
 export interface PartBody {
   event: "attempt" | "progress" | "done" | "failed";
   bytes?: number;
@@ -400,6 +408,11 @@ export interface PixelCreateBody {
   people_ids?: number[];
 }
 
+export interface PixelPairBody {
+  device_id: string;
+  confirmed: boolean;
+}
+
 export interface PixelPatchBody {
   name?: string;
   google_account_id?: number;
@@ -415,6 +428,20 @@ export interface PixelState {
   id: number;
   name: string;
   google_account_id: number;
+  last_sync: number | null;
+  syncthing: PixelSyncthing | null;
+}
+
+export interface PixelSyncthing {
+  pixel_id: number;
+  name: string;
+  state: "not_syncing" | "not_paired" | "device_id_invalid" | "device_id_shared" | "folder_removed" | "folder_path_refused" | "checking" | "held" | "waiting" | "not_seen" | "sending" | "connected" | "not_connected";
+  copies: number;
+  files: number;
+  days: number;
+  completion: number | null;
+  last_seen: number | null;
+  others: string[];
 }
 
 export interface PixelView {
@@ -429,6 +456,7 @@ export interface PixelView {
 
 export interface Pixels {
   pixels: PixelView[];
+  syncthing: PixelSyncthing[] | null;
 }
 
 export interface ProgressBody {
@@ -437,6 +465,10 @@ export interface ProgressBody {
 
 export interface ReassignBody {
   person_id: number;
+}
+
+export interface ReleaseFolderBody {
+  confirmed: boolean;
 }
 
 export interface ResolveBody {
@@ -539,10 +571,27 @@ export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
   alerts: AlertView[];
+  syncthing: SyncthingCard | null;
+}
+
+export interface SyncthingCard {
+  state: "starting" | "running" | "down" | "settings_failed" | "version" | "key" | "share_check_failed";
+  reason: string | null;
+  since: number | null;
+  pixels: PixelSyncthing[];
 }
 
 export interface WaitingBody {
   reason: string;
+}
+
+export interface WaitingDevice {
+  device_id: string;
+  name: string;
+}
+
+export interface WaitingDevices {
+  devices: WaitingDevice[];
 }
 
 export interface WorkerJob {
@@ -561,6 +610,7 @@ export interface Endpoints {
   "GET /api/me": { body: never; reply: Me };
   "GET /api/status": { body: never; reply: Status };
   "GET /api/events": { body: never; reply: Events };
+  "POST /api/demo/syncthing": { body: DemoSyncthingBody; reply: Ok };
   "GET /api/people": { body: never; reply: People };
   "POST /api/people": { body: PersonCreateBody; reply: PersonReply };
   "PATCH /api/people/{id}": { body: PersonPatchBody; reply: PersonReply };
@@ -577,6 +627,10 @@ export interface Endpoints {
   "POST /api/pixels": { body: PixelCreateBody; reply: PixelReply };
   "PATCH /api/pixels/{id}": { body: PixelPatchBody; reply: PixelReply };
   "DELETE /api/pixels/{id}": { body: never; reply: Ok };
+  "POST /api/pixels/{id}/pair": { body: PixelPairBody; reply: PixelReply };
+  "POST /api/pixels/{id}/release-folder": { body: ReleaseFolderBody; reply: Ok };
+  "GET /api/pairing/device": { body: never; reply: OwnDevice };
+  "GET /api/pairing/waiting": { body: never; reply: WaitingDevices };
   "GET /api/browser/jobs": { body: never; reply: BrowserJobs };
   "POST /api/browser/jobs": { body: EnqueueBody; reply: BrowserJobReply };
   "GET /api/browser/view": { body: never; reply: BrowserView };

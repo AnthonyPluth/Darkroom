@@ -1,22 +1,28 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { act } from "$lib/act";
+  import { actGet } from "$lib/act";
   import type { AccountView, PersonView, PixelView } from "$lib/api-types";
   import { apiCall } from "$lib/contract";
+  import { idLines } from "$lib/pairing";
   import Field from "../components/Field.svelte";
   import FormError from "./FormError.svelte";
 
-  let { pixel, accounts, people, onsaved, oncancel, ondelete }: {
+  let { pixel, accounts, people, onsaved, oncancel, ondelete, pairing = false, onadded, onpair, onunpair }: {
     pixel: PixelView | null;
     accounts: AccountView[];
     people: PersonView[];
     onsaved: () => void;
     oncancel: () => void;
     ondelete?: () => void;
+    pairing?: boolean;
+    onadded?: (pixel: PixelView) => void;
+    onpair?: () => void;
+    onunpair?: () => void;
   } = $props();
 
   const first = untrack(() => pixel);
   const known = untrack(() => accounts);
+  const paired = untrack(() => pairing);
   const defaultOf = (accountId: number): number[] => {
     const found = known.find((a) => a.id === accountId);
     return found ? [found.default_person_id] : [];
@@ -46,15 +52,18 @@
       error = "Choose at least one person this Pixel serves.";
       return;
     }
-    const body = { name, google_account_id: accountId, syncthing_device_id: syncthing.trim() || null, people_ids: [...served].sort((a, b) => a - b) };
-    const saved = await act(
+    const peopleIds = [...served].sort((a, b) => a - b);
+    const body = paired ? { name, google_account_id: accountId, people_ids: peopleIds } : { name, google_account_id: accountId, syncthing_device_id: syncthing.trim() || null, people_ids: peopleIds };
+    const saved = await actGet(
       () =>
         first
           ? apiCall<"PATCH /api/pixels/{id}">(`/api/pixels/${first.id}`, { method: "PATCH", body })
           : apiCall<"POST /api/pixels">("/api/pixels", { method: "POST", body }),
       { busy: (on) => (busy = on), onError: (message) => (error = message) },
     );
-    if (saved) onsaved();
+    if (!saved) return;
+    if (!first && paired && onadded) onadded(saved.pixel);
+    else onsaved();
   }
 </script>
 
@@ -64,11 +73,31 @@
       <input id={field.id} class="input" name="name" required maxlength="100" bind:value={name} />
     {/snippet}
   </Field>
-  <Field label="Syncthing device ID (optional)">
-    {#snippet children(field)}
-      <input id={field.id} class="input font-mono" name="syncthing_device_id" maxlength="80" bind:value={syncthing} />
-    {/snippet}
-  </Field>
+  {#if !paired}
+    <Field label="Syncthing device ID (optional)">
+      {#snippet children(field)}
+        <input id={field.id} class="input font-mono" name="syncthing_device_id" maxlength="80" bind:value={syncthing} />
+      {/snippet}
+    </Field>
+  {:else if first}
+    <div class="flex flex-col gap-1.5" role="group" aria-labelledby="pixel-syncthing">
+      <span id="pixel-syncthing" class="font-semibold">Syncthing</span>
+      {#if first.syncthing_device_id}
+        <p class="font-mono text-sm break-all">
+          {#each idLines(first.syncthing_device_id) as line, i (i)}<span class="block">{line}</span>{/each}
+        </p>
+        <span class="flex flex-col gap-2 md:flex-row md:flex-wrap">
+          <button type="button" class="btn w-full md:w-auto" onclick={onpair}>Pair again</button>
+          {#if onunpair}
+            <button type="button" class="btn btn-danger w-full md:w-auto" aria-label="Unpair {first.name}" onclick={onunpair}>Unpair</button>
+          {/if}
+        </span>
+      {:else}
+        <p>Not paired</p>
+        <button type="button" class="btn self-start" onclick={onpair}>Pair</button>
+      {/if}
+    </div>
+  {/if}
   <Field label="Google account" hint="Everything this Pixel uploads lands in this account.">
     {#snippet children(field)}
       <select id={field.id} aria-describedby={field.describedby} class="input" name="google_account_id" bind:value={accountId} onchange={pickAccount}>

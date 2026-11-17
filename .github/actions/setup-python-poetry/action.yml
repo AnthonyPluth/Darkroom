@@ -6,7 +6,7 @@ description: Python, Poetry (cached) and the project's dependencies (cached virt
 inputs:
   python-version:
     description: The Python to install (Darkroom supports only the one the Dockerfile runs).
-    default: "3.14"
+    default: "3.15"
   poetry-version:
     description: The Poetry to install.
     default: "2.5.1"

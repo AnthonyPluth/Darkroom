@@ -12,7 +12,7 @@ from darkroom.domain import browser_jobs, dedupe, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Export, GoogleAccount, MediaItem
 from tests.api_world import ApiCase
-from tests.shared import VIEWER_SECRET, fetch, start_server
+from tests.shared import VIEWER_SECRET, fetch, worker_fetch, start_server
 
 TOKEN = "accounts-jobs-worker-token-canary-0123456789abcdef"
 RELAYED = config.relay_address("http://127.0.0.1")
@@ -28,7 +28,7 @@ class AccountJobsApiTests(ApiCase):
 
     def worker(self, path, body=None):
         headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        status, _, reply = worker_fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
         return status, json.loads(reply)
 
     def account_view(self):
@@ -454,7 +454,7 @@ class TwoRootsTests(ApiCase):
 
     def worker(self, path, body=None):
         headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        status, _, reply = worker_fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
         return status, json.loads(reply)
 
     def failed_with_capture(self, root):
