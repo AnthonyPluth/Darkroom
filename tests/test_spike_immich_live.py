@@ -46,6 +46,13 @@ class HarnessTests(unittest.TestCase):
             self.assertFalse(any(word in path for word in ("trash", "restore", "jobs", "libraries", "admin")), path)
             self.assertNotIn(path, ("/api/users", "/api/server/ping"))
 
+    def test_every_request_carries_the_harness_user_agent(self):
+        code, printed, text = self.run_harness()
+        self.assertEqual(code, 0, printed + text)
+        agents = self.fake.user_agents()
+        self.assertTrue(agents)
+        self.assertEqual(set(agents), {"immich-spike/1.0"})
+
     def test_the_happy_path_with_both_keys_passes_and_reports_what_it_created(self):
         self.fake.state.quotas[USER_Q] = 10
         code, printed, text = self.run_harness(IMMICH_LIVE_KEY_B=KEY_B, IMMICH_LIVE_QUOTA_KEY=KEY_Q, IMMICH_LIVE_REVOKED_KEY="canary-revoked-5e4d")

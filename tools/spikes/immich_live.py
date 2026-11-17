@@ -28,6 +28,7 @@ from darkroom import config, tls
 from darkroom.providers import immich
 
 MARKER = "darkroom-spike"
+USER_AGENT = "immich-spike/1.0"
 GRANTS = frozenset({"user.read", "server.about", "asset.read", "asset.download", "asset.upload"})
 EXACT_ROUTES = frozenset({("GET", "/api/server/about"), ("GET", "/api/users/me"), ("GET", "/api/api-keys/me"),
                           ("POST", "/api/assets"), ("POST", "/api/assets/bulk-upload-check"), ("POST", "/api/search/metadata")})
@@ -102,7 +103,7 @@ class Api:
 
     def open(self, method: str, path: str, data: bytes | None, headers: dict[str, str] | None) -> Any:
         allowed(method, path)
-        sent = {"Accept": "application/json", "x-api-key": self.key, **(headers or {})}
+        sent = {"Accept": "application/json", "User-Agent": USER_AGENT, "x-api-key": self.key, **(headers or {})}
         host = urlsplit(self.url).hostname or ""
         return tls.urlopen(self.url.rstrip("/") + path, method=method, data=data, headers=sent, timeout=self.timeout, allow_http=config.local_host(host))
 
