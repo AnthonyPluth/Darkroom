@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, tzinfo
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
+from urllib.parse import urljoin, urlsplit
 
 from darkroom_browser import selectors
 
@@ -163,6 +164,7 @@ class ListedPart(NamedTuple):
     number: int
     bytes: int
     href: str
+    link: str
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,35 @@ class ArchiveDetail:
     created_on: date
     expires_on: date | None
     parts: tuple[ListedPart, ...]
+
+
+ASCII_SPACE = " \t\n\r\f"
+LINK_TRICKS = re.compile(r"[\x00-\x20\x7f\\]")
+
+
+def resolved(href: str, address: str, base: str | None) -> str | None:
+    link = href.strip(ASCII_SPACE)
+    against = address
+    if base is not None and (base_link := base.strip(ASCII_SPACE)):
+        if LINK_TRICKS.search(base_link):
+            return None
+        against = urljoin(address, base_link)
+    if not link or LINK_TRICKS.search(link):
+        return None
+    target = urljoin(against, link)
+    parts = urlsplit(target)
+    if parts.scheme != "https" or parts.netloc != selectors.TAKEOUT_HOST:
+        return None
+    return target
+
+
+def is_relative(href: str) -> bool:
+    link = href.strip(ASCII_SPACE)
+    return bool(link) and not link.startswith("#") and not urlsplit(link).scheme
+
+
+def on_takeout(address: str) -> str:
+    return "page address on Takeout" if resolved(address, address, None) is not None else "page address not on Takeout"
 
 
 def plain(text: str) -> str:
@@ -203,12 +234,19 @@ class SkippingReader(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.skip = 0
+        self.base: str | None = None
+        self.links: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ("script", "style"):
             self.skip += 1
         elif not self.skip:
-            self.opened(tag, {name: value or "" for name, value in attrs})
+            attributes = {name: value or "" for name, value in attrs}
+            if tag == "base" and self.base is None and "href" in attributes:
+                self.base = attributes["href"]
+            if tag == "a" and attributes.get("href"):
+                self.links.append(attributes["href"])
+            self.opened(tag, attributes)
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("script", "style"):
@@ -230,23 +268,27 @@ class SkippingReader(HTMLParser):
         return None
 
 
+@dataclass
+class AnchorText:
+    href: str
+    chunks: list[str]
+
+
 class SummaryReader(SkippingReader):
     def __init__(self) -> None:
         super().__init__()
+        self.anchors: list[AnchorText] = []
         self.rows: list[SummaryRow] = []
-        self.current: SummaryRow | None = None
+        self.current: AnchorText | None = None
         self.chunks: list[str] = []
 
     def opened(self, tag: str, attributes: dict[str, str]) -> None:
-        if tag != "a" or self.current is not None:
-            return
-        found = ARCHIVE_HREF.fullmatch(attributes.get("href", "").strip())
-        if found is not None:
-            self.current = SummaryRow(found.group(1), [])
+        if tag == "a" and self.current is None and attributes.get("href"):
+            self.current = AnchorText(attributes["href"], [])
 
     def closed(self, tag: str) -> None:
         if tag == "a" and self.current is not None:
-            self.rows.append(self.current)
+            self.anchors.append(self.current)
             self.current = None
 
     def text(self, data: str) -> None:
@@ -255,10 +297,20 @@ class SummaryReader(SkippingReader):
             self.current.chunks.append(plain(data))
 
 
-def read_summary(page: str) -> SummaryReader:
+def archive_id(href: str, address: str, base: str | None) -> str | None:
+    target = resolved(href, address, base)
+    found = None if target is None else ARCHIVE_HREF.fullmatch(target)
+    return None if found is None else found.group(1)
+
+
+def read_summary(page: str, address: str) -> SummaryReader:
     reader = SummaryReader()
     reader.feed(page)
     reader.close()
+    for anchor in reader.anchors:
+        google_id = archive_id(anchor.href, address, reader.base)
+        if google_id is not None:
+            reader.rows.append(SummaryRow(google_id, anchor.chunks))
     return reader
 
 
@@ -335,8 +387,8 @@ def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
     return ExportListing(row.google_id, created_moment, states[0], expires, (), archive_url(row.google_id))
 
 
-def parse_exports(page: str, now: float, zone: tzinfo) -> list[ExportListing]:
-    reader = read_summary(page)
+def parse_exports(page: str, address: str, now: float, zone: tzinfo) -> list[ExportListing]:
+    reader = read_summary(page, address)
     if not is_summary(reader):
         raise UnreadableExports("the page is not Takeout's summary of exports")
     listings = [listing_of(row, now, zone) for row in reader.rows]
@@ -345,9 +397,23 @@ def parse_exports(page: str, now: float, zone: tzinfo) -> list[ExportListing]:
     return listings
 
 
-def exports_page_ready(page: str) -> bool:
-    reader = read_summary(page)
+def exports_page_ready(page: str, address: str) -> bool:
+    reader = read_summary(page, address)
     return is_summary(reader) and (bool(reader.rows) or says_empty(reader))
+
+
+def base_finding(base: str | None) -> str:
+    return "no base address" if base is None else "a base address"
+
+
+def summary_findings(page: str, address: str) -> str:
+    reader = read_summary(page, address)
+    summary = "summary text found" if is_summary(reader) else "summary text not found"
+    relative = sum(map(is_relative, reader.links))
+    naming = sum("archive/" in link for link in reader.links)
+    links = f"export links {len(reader.rows)} of {len(reader.links)} links ({relative} relative, {naming} naming an export's page)"
+    empty = "an empty-list sentence" if says_empty(reader) else "no empty-list sentence"
+    return "; ".join((summary, links, empty, base_finding(reader.base), on_takeout(address)))
 
 
 def size_in_bytes(text: str) -> int | None:
@@ -359,9 +425,9 @@ DOWNLOAD_HREF = re.compile(r"https://" + re.escape(selectors.DOWNLOAD_HOST) + r"
 EXPORT_PARAMETER = re.compile(r"[?&]j=([^&#\s]+)")
 
 
-def download_link(href: str) -> str | None:
-    cleaned = html.unescape(href).strip()
-    return cleaned if DOWNLOAD_HREF.fullmatch(cleaned) else None
+def download_link(href: str, address: str, base: str | None) -> str | None:
+    target = resolved(href, address, base)
+    return target if target is not None and DOWNLOAD_HREF.fullmatch(target) else None
 
 
 @dataclass
@@ -433,12 +499,12 @@ def numbered_link(item: PartItem) -> list[tuple[str, re.Match[str]]]:
     return [(href, found) for href, label in item.links if (found := PART_LABEL.fullmatch(label)) is not None]
 
 
-def part_of(item: PartItem, google_id: str) -> tuple[ListedPart, int]:
+def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> tuple[ListedPart, int]:
     numbered = numbered_link(item)
     if len(numbered) != 1:
         raise UnreadableExports("a download on an export's page on Takeout has no readable part number")
     raw, label = numbered[0]
-    href = download_link(raw)
+    href = download_link(raw, address, base)
     owner = None if href is None else EXPORT_PARAMETER.search(href)
     if href is None or owner is None or owner.group(1) != google_id:
         raise UnreadableExports("a download link on an export's page on Takeout is not one Darkroom can use")
@@ -449,11 +515,11 @@ def part_of(item: PartItem, google_id: str) -> tuple[ListedPart, int]:
         size = size_in_bytes(" ".join(item.chunks))
     if size is None:
         raise UnreadableExports("a download on an export's page on Takeout has no readable size")
-    return ListedPart(int(label.group(1)), size, href), int(label.group(2))
+    return ListedPart(int(label.group(1)), size, href, raw), int(label.group(2))
 
 
-def archive_parts(items: list[PartItem], google_id: str) -> tuple[ListedPart, ...]:
-    read = [part_of(item, google_id) for item in items if item.links]
+def archive_parts(reader: ArchiveReader, google_id: str, address: str) -> tuple[ListedPart, ...]:
+    read = [part_of(item, google_id, address, reader.base) for item in reader.items if item.links]
     parts = sorted(part for part, _ in read)
     totals = {total for _, total in read}
     if len(parts) > MAX_PARTS or totals != {len(parts)} or [part.number for part in parts] != list(range(1, len(parts) + 1)):
@@ -468,7 +534,7 @@ def calendar_date(text: str) -> date:
     return wall_clock(found.group(1), found.group(2), int(found.group(3)), (None, None, None), UTC).date()
 
 
-def parse_archive(page: str, google_id: str) -> ArchiveDetail:
+def parse_archive(page: str, address: str, google_id: str) -> ArchiveDetail:
     reader = read_archive(page)
     fields = summary_fields(reader.chunks)
     state = STATE_WORDS.get(fields.get("overall status", ""))
@@ -480,18 +546,31 @@ def parse_archive(page: str, google_id: str) -> ArchiveDetail:
         expires_on = None if expires is None else calendar_date(expires)
     except ValueError:
         raise UnreadableExports("an export's page on Takeout has a date that could not be read") from None
-    parts = archive_parts(reader.items, google_id) if state == "ready" else ()
+    parts = archive_parts(reader, google_id, address) if state == "ready" else ()
     if state == "ready" and not parts:
         raise UnreadableExports("a completed export's page on Takeout lists no parts")
     return ArchiveDetail(state, created_on, expires_on, parts)
 
 
+def overall_status(reader: ArchiveReader) -> str | None:
+    return next((found.group(2) for chunk in reader.chunks if (found := SUMMARY_FIELD.fullmatch(chunk)) and found.group(1) == "overall status"), None)
+
+
 def archive_page_ready(page: str) -> bool:
     reader = read_archive(page)
-    status = next((found.group(2) for chunk in reader.chunks if (found := SUMMARY_FIELD.fullmatch(chunk)) and found.group(1) == "overall status"), None)
+    status = overall_status(reader)
     if status is None:
         return False
     return STATE_WORDS.get(status) != "ready" or any(numbered_link(item) for item in reader.items)
+
+
+def archive_findings(page: str, address: str) -> str:
+    reader = read_archive(page)
+    status = "overall status not found" if overall_status(reader) is None else "overall status found"
+    numbered = [href for item in reader.items for href, _ in numbered_link(item)]
+    usable = sum(download_link(href, address, reader.base) is not None for href in numbered)
+    links = f"numbered download links {len(numbered)} ({usable} usable, {sum(map(is_relative, numbered))} relative)"
+    return "; ".join((status, links, base_finding(reader.base), on_takeout(address)))
 
 
 def with_archive(listing: ExportListing, detail: ArchiveDetail, zone: tzinfo) -> ExportListing:

@@ -41,6 +41,9 @@ class Live:
         assert isinstance(text, str)
         return text
 
+    def current_url(self) -> str:
+        return str(self.page.url)
+
     def click(self, selector: str) -> None:
         self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
 

@@ -138,6 +138,8 @@ forbidden_modules = ["urllib", "http", "socket", "ssl"]
 ignore_imports = [
     "darkroom_browser.runner -> darkroom_browser.client",
     "darkroom_browser.__main__ -> darkroom_browser.client",
+    # The Takeout parser resolves a page's links the way the browser does with urllib.parse (import-linter names only the top package); it splits and joins strings and opens nothing, and Semgrep's darkroom-raw-urlopen still flags any urlopen.
+    "darkroom_browser.pages.takeout -> urllib",
 ]
 broken_contract_guidance = "Call darkroom through darkroom_browser.client.Client."
 
