@@ -114,6 +114,15 @@ for at, kind, subject, detail in db.execute(f"select time, type, subject, coales
 PY
 }
 
+copies() {  # the Pixel copies by Pixel and state, from Darkroom's SQLite database (read only)
+  docker exec -i "$C" python - <<'PY'
+import sqlite3
+db = sqlite3.connect("file:/data/darkroom.db?mode=ro", uri=True)
+for pixel, state, count in db.execute("select pixel_id, state, count(*) from pixel_copies group by pixel_id, state order by pixel_id, state"):
+    print(f"pixel {pixel}: {count} {state}")
+PY
+}
+
 syncthing_version() {  # asks Darkroom's Syncthing on its socket inside the container
   docker exec -i "$C" python - <<'PY'
 import http.client, json, socket
@@ -131,7 +140,7 @@ PY
 }
 ```
 
-`events` reads the `events` table that the Status page also reads; its subjects are ids (`pixel 3`, `share`), never names. With `DATABASE_URL` set it does not apply: run `psql "$DATABASE_URL" -c "select to_timestamp(time), type, subject, detail from events order by id desc limit 30"` wherever `psql` reaches the database instead. Never paste `docker inspect` output whole or the whole of `config.xml`: they hold the OIDC secret, the Immich key and Syncthing's API key. The commands below print only the fields they need.
+`events` reads the `events` table that the Status page also reads; its subjects are ids (`pixel 3`, `share`), never names. With `DATABASE_URL` set it does not apply: run `psql "$DATABASE_URL" -c "select to_timestamp(time), type, subject, detail from events order by id desc limit 30"` wherever `psql` reaches the database instead (and `select pixel_id, state, count(*) from pixel_copies group by 1, 2` in place of `copies`). Never paste `docker inspect` output whole or the whole of `config.xml`: they hold the OIDC secret, the Immich key and Syncthing's API key. The commands below print only the fields they need.
 
 ### Item 1: the seccomp file and the template's extra parameters
 
@@ -308,15 +317,16 @@ Continue from item 6, with the pairing step still open (or **Pair** on the Pixel
 
 3. On the Pixel, find its own device ID (the app's menu, an entry such as "Show device ID"). In Darkroom, compare it with the waiting entry, press **This is Test Pixel**, then **Approve** in "Approve this device for Test Pixel?".
 4. On the Pixel, accept the folder Darkroom offers (a notification or a banner in the app) and choose where it goes on the Pixel.
-5. Put a few made-up photos in that person's `originals/` if there are none, then queue and place them (the folder is resumed by the service's own tend, so restart rather than only running the job):
+5. Queue a few made-up photos for the Pixel, then place them. Copies are queued only by the Immich reconcile (and a person's one legacy import), never by `python run.py index`, which only indexes what is in `originals/`. So made-up photos reach a Pixel by the real path: upload them to the person's test Immich user with Immich's mobile app (the reconcile takes only phone uploads, assets with the `mobile-app` key and no library), then run the reconcile. It runs only once that person's Takeout is imported ([runbook](../runbook.md#immich-reconcile)). The folder is resumed by the service's own tend, so restart rather than only running the job:
 
    ```sh
-   docker exec "$C" python run.py index
+   docker exec "$C" python run.py reconcile-immich --person '<person>'
+   copies                                       # the Pixel's "queued" count above 0 before you wait for it
    docker restart "$C"
    sleep 120; docker logs --since 5m "$C" 2>&1 | grep -E '"event": "(placed copies checked|pixel folders tended|syncthing reconciled)"' | tail -n 6
    ```
 
-Pass: before approval the Pixel is listed as waiting, the established count is `0` and the Pixel has no folder from Darkroom; after it, the `syncthing reconciled` lines show `"approved": 1` (the Pixel's folder read back as Darkroom set it) and `"failed": false`, the Pixel accepts the folder and receives the made-up photos, `pixel folders tended` shows `"held": 0`, the waiting entry is gone, and the Pixel's row on **People** reaches **Connected** ("Up to date"). Record whether the name in the waiting list is the one the app presents. Fail: a folder or a connection before approval, or the Pixel never appears.
+Pass: before approval the Pixel is listed as waiting, the established count is `0` and the Pixel has no folder from Darkroom; after it, the `syncthing reconciled` lines show `"approved": 1` (the Pixel's folder read back as Darkroom set it) and `"failed": false`, `reconcile-immich` prints `N queued for the Pixel folder` with N above 0 and `copies` shows them `queued`, then `placed` after the restart; the Pixel accepts the folder and receives the made-up photos, `pixel folders tended` shows `"held": 0`, the waiting entry is gone, and the Pixel's row on **People** reaches **Connected** ("Up to date"). Record whether the name in the waiting list is the one the app presents. Fail: a folder or a connection before approval, or the Pixel never appears.
 
 ```text
 Result:
