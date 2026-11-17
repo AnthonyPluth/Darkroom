@@ -32,11 +32,16 @@ python -m tests.fakes.immich --port 2283 --state state.json
 | `GET /api/libraries` | one library per person (`id`, `ownerId`, `importPaths`, `exclusionPatterns`); a person key sees only its own, the admin key sees all |
 | `POST /api/libraries/{id}/scan` | `204` for the admin key, recorded in order; `403` for a person key; `404` for an unknown library |
 
+| `POST /api/assets` | multipart upload for a person key with `asset.upload` in `state.permissions`: `201 {"id", "status": "created"}`, or `200` `duplicate` with the existing ID for the same owner and checksum; `400` past `state.quotas[user_id]`; a `livePhotoVideoId` links the still and hides the video |
+| `POST /api/assets/bulk-upload-check` | `accept`, or `reject`/`duplicate` with `assetId` and `isTrashed`, for the key's own assets by checksum |
+
+An uploaded asset gets `exifInfo` (date, `timeZone`, GPS, description: EXIF read with Pillow, then the XMP sidecar's values over it) and a `duration` once `state.extraction_delay` seconds have passed; a duplicate upload keeps the existing asset's values. `POST /api/search/metadata` also filters by `checksum`. `state.admins` makes a person's `/api/users/me` say `isAdmin`. These answers are what source inspection of Immich v3.3.6 suggests, not live results: `tools/spikes/immich_live.py` is tested against them (`tests/test_spike_immich_live.py`) and #266's live run is what checks them.
+
 A missing or wrong key gets `401`. Modes, set with `fake.mode(name)` or `POST /__fake/mode {"mode": ...}`: `ok`, `down` (drops the connection), `slow` (delays each answer), `401`, `500`.
 
 ### What it does not cover
 
-Assets, search, thumbnails, uploads, sidecar handling, scan progress, jobs, or anything Waypoint's photos epic needs. Scans finish at once and change nothing.
+Thumbnails, real metadata extraction, trash and restore, partner sharing, scan progress, jobs, or anything Waypoint's photos epic needs. Scans finish at once and change nothing.
 
 ## Fake Resend (`tests/fakes/resend.py`)
 
