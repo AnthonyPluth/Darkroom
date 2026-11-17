@@ -204,6 +204,7 @@ ROWS_ELSEWHERE = {
     "a tab that browsers drop": ("/\t/other.example/manage/archive/{}", None, MANAGE_PAGE),
     "dot segments out of the archive path": ("./manage/archive/../../settings/{}", LIVE_BASE, MANAGE_PAGE),
     "dot segments above the root": ("../../other/manage/archive/{}", None, MANAGE_PAGE + "/x/"),
+    "a trailing dot segment": ("/manage/archive/x/../{}/..", None, MANAGE_PAGE),
     "a base on another host": ("./manage/archive/{}", "https://other.example/", MANAGE_PAGE),
     "a scheme-relative base": ("./manage/archive/{}", "//other.example/", MANAGE_PAGE),
     "a base with a backslash that browsers read as a slash": ("./manage/archive/{}", "/\\other.example/", MANAGE_PAGE),
