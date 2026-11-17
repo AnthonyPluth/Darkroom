@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import email.parser
+import email.policy
 import hashlib
+import io
 import json
+import re
+import uuid
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from PIL import ExifTags, Image
 
 HOST = "127.0.0.1"
 MODES = ("ok", "down", "slow", "401", "500")
@@ -50,14 +58,46 @@ class FakeAsset:
     trashed: bool = False
     metadata: tuple[str, ...] = ("mobile-app",)
     checksum: str | None = None
+    exif: dict[str, object] | None = None
+    ready_at: float = 0.0
 
     def json(self) -> dict[str, object]:
         checksum = self.checksum or base64.b64encode(hashlib.sha1(self.data, usedforsecurity=False).digest()).decode()
-        return {
+        found: dict[str, object] = {
             "id": self.id, "ownerId": self.owner_id, "libraryId": self.library_id, "checksum": checksum, "type": self.kind,
             "originalFileName": self.name, "visibility": self.visibility, "livePhotoVideoId": self.live_video_id,
             "isTrashed": self.trashed, "isOffline": False, "updatedAt": self.updated_at,
         }
+        if self.exif is not None and time.monotonic() >= self.ready_at:
+            found["exifInfo"] = self.exif
+            found["duration"] = "0:00:00.30000" if self.kind == "VIDEO" else "0:00:00.00000"
+        return found
+
+
+def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
+    found: dict[str, object] = {"dateTimeOriginal": None, "timeZone": None, "latitude": None, "longitude": None, "description": None}
+    try:
+        exif = Image.open(io.BytesIO(data)).getexif()
+    except OSError:
+        exif = Image.Exif()
+    tags, gps = exif.get_ifd(ExifTags.IFD.Exif), exif.get_ifd(ExifTags.IFD.GPSInfo)
+    if ExifTags.Base.DateTimeOriginal in tags:
+        offset = tags.get(ExifTags.Base.OffsetTimeOriginal, "+00:00")
+        taken = datetime.strptime(tags[ExifTags.Base.DateTimeOriginal] + offset, "%Y:%m:%d %H:%M:%S%z")
+        found.update(dateTimeOriginal=taken.astimezone(UTC).isoformat().replace("+00:00", "Z"), timeZone=f"UTC{offset}")
+    if 2 in gps and 4 in gps:
+        lat, lon = (sum(float(p) / 60 ** n for n, p in enumerate(gps[i])) for i in (2, 4))
+        found.update(latitude=-lat if gps.get(1) == "S" else lat, longitude=-lon if gps.get(3) == "W" else lon)
+    text = (sidecar or b"").decode("utf-8", "replace")
+    if taken_text := re.search(r'exif:DateTimeOriginal="([^"]+)"', text):
+        taken = datetime.fromisoformat(taken_text.group(1))
+        found.update(dateTimeOriginal=taken.astimezone(UTC).isoformat().replace("+00:00", "Z"), timeZone=f"UTC{taken.strftime('%z')}")
+    for name, tag in (("latitude", "GPSLatitude"), ("longitude", "GPSLongitude")):
+        if value := re.search(rf'exif:{tag}="(\d+),([\d.]+)([NSEW])"', text):
+            found[name] = (int(value.group(1)) + float(value.group(2)) / 60) * (-1 if value.group(3) in "SW" else 1)
+    if description := re.search(r'<rdf:li xml:lang="x-default">([^<]*)</rdf:li>', text):
+        found["description"] = description.group(1)
+    return found
 
 
 @dataclass
@@ -75,6 +115,9 @@ class State:
     on_search: Callable[[int], None] | None = None
     version: str = VERSION
     permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
+    admins: tuple[str, ...] = ()
+    quotas: dict[str, int] = field(default_factory=dict)
+    extraction_delay: float = 0.0
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -149,7 +192,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 state.on_search(state.searches)
             window = asked.get("filter", {}).get("updatedAt", {})
             found = [a for a in state.assets if a.owner_id == person.user_id and not a.trashed
-                     and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")]
+                     and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
+                     and asked.get("checksum") in (None, a.json()["checksum"])]
             start = int(asked.get("cursor") or 0)
             size = min(int(asked.get("size", 250)), state.page_size)
             end = start + size
@@ -188,6 +232,10 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             elif self.command == "GET" and path == "/api/libraries":
                 visible = state.people if person is None else [person]
                 self.reply(200, [library_json(p) for p in visible])
+            elif self.command == "POST" and path == "/api/assets" and person is not None:
+                self.upload(person)
+            elif self.command == "POST" and path == "/api/assets/bulk-upload-check" and person is not None:
+                self.bulk_check(person)
             elif self.command == "POST" and path == "/api/search/metadata" and person is not None:
                 self.search(person, self.body)
             elif self.command == "GET" and path.startswith("/api/assets/") and person is not None:
@@ -197,11 +245,56 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             else:
                 self.reply(404, {"message": "Cannot " + self.command + " " + path})
 
+        def upload(self, person: FakePerson) -> None:
+            if "asset.upload" not in state.permissions:
+                self.reply(403, {"message": "Missing required permission: asset.upload"})
+                return
+            message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+                b"Content-Type: " + self.headers.get("Content-Type", "").encode() + b"\r\n\r\n" + self.body)
+            fields = {part.get_param("name", header="content-disposition"): part.get_payload(decode=True) for part in message.iter_parts()}
+            data, sidecar = fields.get("assetData"), fields.get("sidecarData")
+            if not data or not fields.get("fileCreatedAt"):
+                self.reply(400, {"message": "assetData and fileCreatedAt are required"})
+                return
+            checksum = base64.b64encode(hashlib.sha1(data, usedforsecurity=False).digest()).decode()
+            with state.lock:
+                existing = next((a for a in state.assets if a.owner_id == person.user_id and a.library_id is None and a.json()["checksum"] == checksum), None)
+                if existing is not None:
+                    self.reply(200, {"id": existing.id, "status": "duplicate"})
+                    return
+                used = sum(len(a.data) for a in state.assets if a.owner_id == person.user_id)
+                if person.user_id in state.quotas and used + len(data) > state.quotas[person.user_id]:
+                    self.reply(400, {"message": "Quota has been exceeded!"})
+                    return
+                name = (fields.get("filename") or b"").decode()
+                kind = "VIDEO" if name.lower().endswith((".avi", ".mp4", ".mov")) else "IMAGE"
+                asset = FakeAsset(str(uuid.uuid4()), person.user_id, data, name=name, kind=kind, exif=extract(data, sidecar),
+                                  ready_at=time.monotonic() + state.extraction_delay, metadata=())
+                video_id = (fields.get("livePhotoVideoId") or b"").decode()
+                video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
+                if video_id and video is None:
+                    self.reply(400, {"message": "Live photo video not found"})
+                    return
+                if video is not None:
+                    asset.live_video_id, video.visibility = video.id, "hidden"
+                state.assets.append(asset)
+            self.reply(201, {"id": asset.id, "status": "created"})
+
+        def bulk_check(self, person: FakePerson) -> None:
+            results = []
+            for item in json.loads(self.body or b"{}").get("assets", []):
+                found = next((a for a in state.assets if a.owner_id == person.user_id and a.json()["checksum"] == item.get("checksum")), None)
+                results.append({"id": item.get("id"), "action": "reject", "reason": "duplicate", "assetId": found.id, "isTrashed": found.trashed}
+                               if found else {"id": item.get("id"), "action": "accept"})
+            self.reply(200, {"results": results})
+
         def users_me(self, role: str, person: FakePerson | None) -> None:
             if person is None:
                 self.reply(200, {"id": "admin", "name": "Admin", "email": "admin@fake.invalid", "isAdmin": True})
             else:
-                self.reply(200, {"id": person.user_id, "name": person.name or person.slug, "email": person.email or f"{person.slug}@fake.invalid", "isAdmin": False})
+                self.reply(200, {"id": person.user_id, "name": person.name or person.slug, "email": person.email or f"{person.slug}@fake.invalid",
+                             "isAdmin": person.slug in state.admins, "quotaSizeInBytes": state.quotas.get(person.user_id),
+                             "quotaUsageInBytes": sum(len(a.data) for a in state.assets if a.owner_id == person.user_id)})
 
         def scan(self, role: str, library_id: str) -> None:
             if role != "admin":
