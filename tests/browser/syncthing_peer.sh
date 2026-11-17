@@ -9,7 +9,9 @@ sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt sec
 net=syncthing-peer
 darkroom=st-darkroom
 peer=st-peer
+differs=3
 share_changed=3
+peer_changed=4
 work=$(mktemp -d)
 started=""
 
@@ -50,14 +52,14 @@ unchanged() {
   seed copies > "$work/$1.copies.after.json"
   local found=0
   host compare "$work/$1.share.json" "$work/$1.share.after.json" "$work/$1.copies.json" "$work/$1.copies.after.json" || found=$?
-  if [ "$found" = "$share_changed" ]; then echo "$2" >&2; logs; exit "$share_changed"; fi
+  if [ "$found" = "$differs" ]; then echo "$2" >&2; logs; exit "$share_changed"; fi
   [ "$found" = 0 ] || fail "the share could not be compared"
 }
 peer_unchanged() {
   host snapshot "$work/peer/pixel" > "$work/$1.peer.after.json"
   local found=0
   host compare "$work/$1.peer.json" "$work/$1.peer.after.json" || found=$?
-  if [ "$found" = "$share_changed" ]; then echo "$2" >&2; logs; exit "$share_changed"; fi
+  if [ "$found" = "$differs" ]; then echo "$2" >&2; logs; exit "$peer_changed"; fi
   [ "$found" = 0 ] || fail "the peer's folder could not be compared"
 }
 
