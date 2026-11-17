@@ -24,6 +24,13 @@ Source inspection is pinned to Immich v3.3.6:
 
 Generated fake-server tests cover successful reads, per-operation revalidation, no administrative fallback, revoked/reassigned keys, excessive or malformed grants, invalid versions and IDs, rejected operations before dispatch, invalid custody, original checksum failures and credential canaries. Existing Immich tests cover the legacy workflow.
 
-No disposable Immich endpoint or credentials are configured here. These are source and fake-server results, not live upload/metadata/compound-media verification. [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) remains the live validation gate. Production managed writes, cleanup and migration remain disabled. Backup/restore and current recovery-point coverage must be implemented and validated before any source cleanup.
+No disposable Immich endpoint or credentials are configured here. These are source and fake-server results. [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) remains the live validation gate.
+
+The live spike was run on 2026-11-17 against Immich **v3.4.1** with two disposable non-admin users and generated media; the results table is in the [design, section 2](../design/immich-managed-storage.md#live-spike-result-2026-11-17-immich-v341) (12 rows passed, 7 not run). What it means for this reader:
+
+- Confirmed: a person key reads only its own user's assets; another user's asset answers `400 Not found or no asset.read access`, which `ManagedReader.get_asset` turns into a failure. New uploads have `libraryId: null` and the uploader as owner, which is what the custody check requires. Unedited downloads matched the input SHA-1 and size.
+- Not yet usable on that server: `MANAGED_VERSION` is `v3.3.6`, so `check_access` refuses v3.4.1, and the run's key also held `asset.upload`, which `MANAGED_READ_PERMISSIONS` refuses. Accepting a newer version or an upload grant is the reviewed extension described above, not a constant to bump; it is tracked in [#411](https://github.com/AnthonyPluth/Darkroom/issues/411).
+- The provider sent urllib's default User-Agent, which a WAF in front of a self-hosted Immich (Cloudflare error 1010) refuses. Every provider request, including the address check, now sends `User-Agent: Darkroom`, held by `tests/test_immich.py` against the fake's banned-agent mode.
+- Partner-visible, offline and external-library assets were not run, so the reader's refusal of them is still fake-server evidence only. Production managed writes, cleanup and migration remain disabled. Backup/restore and current recovery-point coverage must be implemented and validated before any source cleanup.
 
 Rollback removes the unused managed reader and its new allowlist entries. No database, asset or filesystem migration needs reversing, and no uploaded asset should be deleted as compensation.

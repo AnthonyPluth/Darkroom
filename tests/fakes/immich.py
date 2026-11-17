@@ -121,6 +121,7 @@ class State:
     extraction_delay: float = 0.0
     intercept: Callable[[str, str, str], int | None] | None = None
     drop_fields: tuple[str, ...] = ()
+    refused_agents: tuple[str, ...] = ()
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -221,6 +222,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             with state.lock:
                 state.requests.append((self.command, path))
                 state.user_agents.append(self.headers.get("User-Agent", ""))
+            if any(self.headers.get("User-Agent", "").startswith(refused) for refused in state.refused_agents):
+                self.reply(403, {"message": "error code: 1010"})
+                return
             if self.command == "GET" and path == "/api/server/ping":
                 self.reply(200, {"res": "pong"})
                 return

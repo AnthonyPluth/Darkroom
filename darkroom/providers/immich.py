@@ -25,6 +25,7 @@ PHONE_KEY = "mobile-app"
 PING_PATH = "/api/server/ping"
 CHECK_TIMEOUT = 5.0
 CHECK_LIMIT = 4096
+USER_AGENT = "Darkroom"
 AddressCheck = Literal["answered", "no_answer", "not_immich", "tls_failed"]
 MANAGED_VERSION = "v3.3.6"
 MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
@@ -236,7 +237,7 @@ def check_address(url: str, timeout: float = CHECK_TIMEOUT) -> AddressCheck:
     require_allowed_request("GET", PING_PATH)
     host = urlsplit(url).hostname or ""
     try:
-        with tls.urlopen(f"{url}{PING_PATH}", headers={"Accept": "application/json"}, timeout=timeout, allow_http=config.local_host(host)) as response:
+        with tls.urlopen(f"{url}{PING_PATH}", headers={"Accept": "application/json", "User-Agent": USER_AGENT}, timeout=timeout, allow_http=config.local_host(host)) as response:
             raw = response.read(CHECK_LIMIT + 1)
     except urllib.error.HTTPError as error:
         error.close()
@@ -283,7 +284,7 @@ class Client:
     def open(self, method: str, path: str, key: str, body: object | None = None) -> contextlib.AbstractContextManager[Any]:
         require_allowed_request(method, path)
         host = urlsplit(self.url).hostname or ""
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if key:
             headers["x-api-key"] = key
         data = b"" if method == "POST" else None
