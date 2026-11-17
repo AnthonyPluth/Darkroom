@@ -93,6 +93,7 @@ IMAGE="ghcr.io/anthonypluth/darkroom:$TAG"
 APPDATA=/mnt/user/appdata/darkroom   # the template's Appdata path
 SHARE='<photo share path>'           # the template's Photo share path, for example /mnt/user/photos
 BACKUP=/mnt/user/backups/darkroom-s5a   # where the copy of appdata goes, outside appdata
+mkdir -p "${BACKUP%/*}"                # cp -a does not create a missing parent folder
 SANDBOX='--user=99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json'
 ```
 

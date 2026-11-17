@@ -91,6 +91,7 @@ IMAGE="ghcr.io/anthonypluth/darkroom:$TAG"
 APPDATA=/mnt/user/appdata/darkroom   # the template's Appdata path
 SHARE='<photo share path>'           # the template's Photo share path, for example /mnt/user/photos
 BACKUP=/mnt/user/backups/darkroom-s5b   # where the copy of appdata goes, outside appdata
+mkdir -p "${BACKUP%/*}"                # cp -a does not create a missing parent folder
 PIXEL='<pixel id>'                   # the folder name under $SHARE/_pixels/ (ls "$SHARE/_pixels")
 SANDBOX='--user=99:100 --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=/boot/config/darkroom/seccomp.json'
 
@@ -147,12 +148,22 @@ docker exec <postgres container> pg_dump -U <postgres user> -Fc darkroom > "$BAC
 docker start "$C"
 ```
 
+With `DATABASE_URL` set (PostgreSQL), the database is not in appdata ([postgres.md](../deploy/postgres.md)): copying appdata back restores `/data/syncthing` and the key but leaves the database as it is now. Wherever a step below puts the backup back, restore the dump taken at the same stopped point too, before starting the container, with the standard PostgreSQL tool (`--clean` drops the current tables first):
+
+```sh
+restore_dump() {  # PostgreSQL only: put the database back to the dump taken with the backup; the container must be stopped
+  docker exec -i <postgres container> pg_restore -U <postgres user> -d darkroom --clean --if-exists --no-owner < "$BACKUP.dump"
+}
+```
+
 ### Item 1: the Pixel's pairing survives a restore of appdata
 
 ```sh
 sha256sum "$APPDATA/syncthing/cert.pem"; share_listing > /tmp/share-before.txt   # and the Pixel's listing
 docker stop "$C" && rm -rf "$BACKUP" && cp -a "$APPDATA" "$BACKUP"
+docker exec <postgres container> pg_dump -U <postgres user> -Fc darkroom > "$BACKUP.dump"   # PostgreSQL only
 docker rm "$C"; rm -rf "$APPDATA"; cp -a "$BACKUP" "$APPDATA"
+restore_dump                                     # PostgreSQL only
 # Docker tab, Add Container, Template: darkroom under the user templates, Apply
 sleep 120
 sha256sum "$APPDATA/syncthing/cert.pem"
@@ -173,7 +184,7 @@ Version, date, who ran it:
 share_listing > /tmp/share-before.txt   # and the Pixel's listing
 docker stop "$C"
 NEW='<replacement share path>'         # a different, empty folder or mount, for example /mnt/user/photos-replacement
-mkdir -p "$NEW" && chown 99:100 "$NEW"
+mkdir -p "$NEW/<person>/originals" && chown -R 99:100 "$NEW"   # rsync does not create the missing <person>/ parent
 rsync -a '<the share backup>/<person>/originals/' "$NEW/<person>/originals/"   # each person's originals/ only
 ls -A "$NEW"                           # no .darkroom-share, no _pixels
 ```
@@ -274,15 +285,17 @@ Version, date, who ran it:
 docker exec "$C" python run.py index
 docker logs --since 10m "$C" 2>&1 | grep -F '"event": "pixel folders tended"' | tail -n 1   # must not show them placed yet
 docker stop "$C" && rm -rf "$BACKUP" && cp -a "$APPDATA" "$BACKUP"
+docker exec <postgres container> pg_dump -U <postgres user> -Fc darkroom > "$BACKUP.dump"   # PostgreSQL only
 docker start "$C"; sleep 120; tended 5m          # the start's tend places them
 docker stop "$C"
 rm -f "$APPDATA/darkroom.db-wal" "$APPDATA/darkroom.db-shm"
 cp -a "$BACKUP"/darkroom.db* "$APPDATA"/        # SQLite: the database and its WAL files only
+restore_dump                                     # PostgreSQL only, in place of the two lines above
 docker start "$C"; sleep 120; tended 5m
 events pixel_copy_adopted pixel_files_unaccounted | head -n 20
 ```
 
-On PostgreSQL restore the dump instead of the files (keep `/data/syncthing` and the share as they are). Then one stray file that matches nothing, and a restart to run the check:
+On PostgreSQL, `restore_dump` takes the place of the two SQLite lines (keep `/data/syncthing` and the share as they are). Then one stray file that matches nothing, and a restart to run the check:
 
 ```sh
 head -c 4000 /dev/urandom > "$SHARE/_pixels/$PIXEL/<person>/made-up-stray.jpg"; chown 99:100 "$SHARE/_pixels/$PIXEL/<person>/made-up-stray.jpg"
@@ -301,12 +314,14 @@ Version, date, who ran it:
 
 ### Item 5: the stale restore of section 7.5
 
-(a) Take the backup. Let a Takeout match prune some placed copies (the made-up photos have to be in the test Google account's library and in a Takeout import), and see the deletions reach the Pixel:
+(a) Take the backup (on PostgreSQL with its dump, as in "Taking the backup" above). Let a Takeout match prune some placed copies (the made-up photos have to be in the test Google account's library and in a Takeout import), and see the deletions reach the Pixel:
 
 ```sh
 tended 2h                                        # "pruned" above 0
 share_listing > /tmp/share-pruned.txt            # and the Pixel's listing
-docker stop "$C"; rm -rf "$APPDATA"; cp -a "$BACKUP" "$APPDATA"; docker start "$C"
+docker stop "$C"; rm -rf "$APPDATA"; cp -a "$BACKUP" "$APPDATA"
+restore_dump                                     # PostgreSQL only: without it the pruned copies stay pruned and nothing is found missing
+docker start "$C"
 sleep 120; tended 5m
 events pixel_copy_missing pixel_copy_replaced | head -n 20
 share_listing > /tmp/share-after.txt; compare /tmp/share-pruned.txt /tmp/share-after.txt
