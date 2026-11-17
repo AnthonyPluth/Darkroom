@@ -22,7 +22,7 @@ FROM python:3.14-slim AS worker-deps
 COPY deploy/single/requirements.txt /tmp/requirements.txt
 RUN python -m venv /opt/worker \
     && /opt/worker/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
-    && /opt/worker/bin/python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.64.1'" \
+    && /opt/worker/bin/python -c "import playwright.sync_api; from importlib import metadata; assert metadata.version('playwright') == '1.65.2'" \
     && /opt/worker/bin/python -m pip uninstall -y pip
 
 FROM python:3.14-slim AS syncthing
