@@ -10,15 +10,16 @@ rules:
       - pattern: urllib.request.build_opener(...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/tls.py", "/darkroom_browser/client.py"]
+      exclude: ["/darkroom/tls.py"]
 
   - id: darkroom-no-raw-sockets
     message: >-
       Open outbound connections only through darkroom/tls.py (in the browser worker, through darkroom_browser/client.py,
       which reaches the app on its private socket). Nothing else imports socket or h2 since the APNs client went (#201),
-      so import-linter can no longer protect them; this rule does, on the import and on every call into socket. The
-      client's one socket is allowed line by line, by a justified nosemgrep on its import and on its one socket open,
-      so any other socket in that file is still flagged (#393).
+      so import-linter can no longer protect them; this rule does. It flags every import of socket or h2, every use of
+      an attribute of the socket module (a call or a value), and every http.client HTTPConnection or HTTPSConnection
+      built directly or subclassed by a class other than the client's OnSocket. The client's own import and its one
+      socket open each carry a justified nosemgrep, so these are flagged anywhere else in that file too (#393).
     severity: ERROR
     languages: [python]
     pattern-either:
@@ -31,7 +32,20 @@ rules:
           - metavariable-regex:
               metavariable: $M
               regex: ^(socket|h2)(\..*)?$
-      - pattern: socket.$F(...)
+      - pattern: socket.$X
+      - pattern: http.client.HTTPConnection(...)
+      - pattern: http.client.HTTPSConnection(...)
+      - patterns:
+          - pattern-either:
+              - pattern: |
+                  class $C(..., http.client.HTTPConnection, ...):
+                      ...
+              - pattern: |
+                  class $C(..., http.client.HTTPSConnection, ...):
+                      ...
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(?!OnSocket$)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/tls.py"]
