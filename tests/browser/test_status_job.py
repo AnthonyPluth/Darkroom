@@ -4,8 +4,10 @@ from unittest import mock
 
 from darkroom_browser import selectors
 from darkroom_browser.jobs import REGISTRY, session, status
+from darkroom_browser.pages import takeout
 from tests.browser.scripted import ScriptedBrowser, context_for
-from tests.browser.takeout_pages import COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, SIZES, archive, archive_url, completed_row, expired_row, in_progress_row, summary
+from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, LIVE_BASE, SIZES, archive, archive_url, completed_row, expired_row, in_progress_row,
+                                         items_linked, row, summary)
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN, VERIFY
 from tests.browser.test_parse_exports import NOW, at
 
@@ -14,14 +16,16 @@ ARCHIVE = archive_url(COMPLETED_ID)
 
 
 class SiteBrowser(ScriptedBrowser):
-    def __init__(self, site):
+    def __init__(self, site, landing=None):
         super().__init__([SIGNED_IN])
         self.site = {url: list(pages) for url, pages in site.items()}
+        self.landing = landing or {}
         self.at = None
 
     def goto(self, url):
         super().goto(url)
         self.at = url
+        self.address = self.landing.get(url, url)
         self.pages, self.reads = list(self.site.get(url, [SIGNED_IN])), 0
 
 
@@ -86,14 +90,59 @@ class StatusJobTests(unittest.TestCase):
     def test_a_list_that_never_loads_fails_saying_what_was_seen(self):
         with self.assertRaises(status.ExportsUnreadable) as raised:
             self.run_job(SiteBrowser(site(UNKNOWN)))
-        self.assertEqual(str(raised.exception), "Takeout's list of exports did not load; the page showed an unrecognised title; 1 other heading")
+        self.assertEqual(str(raised.exception), "Takeout's list of exports did not load; summary text not found; export links 0 of 0 links (0 relative, 0 naming an export's page); "
+                                                "no empty-list sentence; no base address; page address on Takeout; the page showed an unrecognised title; 1 other heading")
 
     def test_the_old_manage_page_or_a_bare_summary_is_named_in_the_failure(self):
         old = "<html><head><title>Google Takeout</title></head><body><h1>Your Google data</h1><h2>Manage your exports</h2><ul></ul></body></html>"
-        for page, seen in ((old, "title 'google takeout'; headings 'your google data', 'manage your exports'"), (summary(), "title 'google takeout'; headings 'summary', 'status'")):
+        bare = summary()
+        old_found = "summary text not found; export links 0 of 0 links (0 relative, 0 naming an export's page); no empty-list sentence; no base address; page address on Takeout"
+        bare_found = "summary text found; export links 0 of 5 links (0 relative, 0 naming an export's page); no empty-list sentence; no base address; page address on Takeout"
+        for page, found, seen in ((old, old_found, "title 'google takeout'; headings 'your google data', 'manage your exports'"),
+                                  (bare, bare_found, "title 'google takeout'; headings 'summary', 'status'")):
             with self.subTest(seen=seen), self.assertRaises(status.ExportsUnreadable) as raised:
                 self.run_job(SiteBrowser(site(page)))
-            self.assertEqual(str(raised.exception), f"Takeout's list of exports did not load; the page showed {seen}")
+            self.assertEqual(str(raised.exception), f"Takeout's list of exports did not load; {found}; the page showed {seen}")
+
+    def test_the_live_pages_relative_links_are_read_against_the_browsers_address(self):
+        listing = summary(*(row(google_id, state, created, None, href=f"./manage/archive/{google_id}") for google_id, state, created in
+                            ((COMPLETED_ID, "Completed", "Created 1 hour ago"), (IN_PROGRESS_ID, "In progress", "Created 5 minutes ago"),
+                             (EXPIRED_ID, "Expired", "Created November 9, 2:45\u202fPM"))), base=LIVE_BASE)
+        detail = archive(items=items_linked("takeout/download?{query}"), base=LIVE_BASE)
+        for landed in (selectors.TAKEOUT_MANAGE_URL, selectors.TAKEOUT_MANAGE_URL + "/"):
+            with self.subTest(landed=landed):
+                result, _, _ = self.run_job(SiteBrowser(site(listing, detail), {selectors.TAKEOUT_MANAGE_URL: landed}))
+                self.assertEqual([(each["google_id"], len(each["parts"])) for each in result["exports"]], [(COMPLETED_ID, 3), (IN_PROGRESS_ID, 0), (EXPIRED_ID, 0)])
+
+    def test_without_a_base_the_links_follow_the_address_the_browser_landed_on(self):
+        listing = summary(row(href=f"./manage/archive/{COMPLETED_ID}"))
+        result, _, _ = self.run_job(SiteBrowser(site(listing)))
+        self.assertEqual([each["google_id"] for each in result["exports"]], [COMPLETED_ID])
+        with self.assertRaises(status.ExportsUnreadable) as raised:
+            self.run_job(SiteBrowser(site(listing), {selectors.TAKEOUT_MANAGE_URL: selectors.TAKEOUT_MANAGE_URL + "/"}))
+        self.assertIn("summary text found; export links 0 of 6 links (1 relative, 1 naming an export's page); no empty-list sentence; no base address; page address on Takeout",
+                      str(raised.exception))
+        self.assertNotIn(COMPLETED_ID, str(raised.exception))
+
+    def test_part_links_relative_to_the_archives_own_address_are_refused(self):
+        with self.assertRaises(status.ExportsUnreadable) as raised:
+            self.run_job(SiteBrowser(site(detail=archive(items=items_linked("takeout/download?{query}")))))
+        self.assertIn("not one Darkroom can use", str(raised.exception))
+        self.assertNotIn("user=", str(raised.exception))
+
+    def test_the_longest_failure_message_fits_what_darkroom_records(self):
+        from darkroom.server.api.browser_internal import MAX_MESSAGE
+        from darkroom_browser import runner
+
+        headings = "".join(f"<h2>{heading}</h2>" for heading in sorted(takeout.KNOWN_HEADINGS, key=len, reverse=True)) + "<h2>other</h2>" * 99_999
+        links = '<a href="./archive/x">archive/</a>' * 99_999
+        page = f"<html><head><title>{max(takeout.KNOWN_HEADINGS, key=len)}</title></head><body>{headings}{links}</body></html>"
+        for broken, landing in (({selectors.TAKEOUT_MANAGE_URL: [page]}, {selectors.TAKEOUT_MANAGE_URL: "https://other.example/"}), ({ARCHIVE: [page]}, {})):
+            with self.subTest(broken=list(broken)), self.assertRaises(status.ExportsUnreadable) as raised:
+                self.run_job(SiteBrowser({**site(), **broken}, landing))
+            said = runner.failure_message(raised.exception)
+            self.assertLessEqual(len(said), MAX_MESSAGE)
+            self.assertTrue(said.startswith("ExportsUnreadable: "))
 
     def test_waiting_for_the_list_takes_the_poll_count(self):
         _, clock, _ = self.run_job(SiteBrowser(site([UNKNOWN] * 3 + [EXPORTS])))
@@ -104,7 +153,8 @@ class StatusJobTests(unittest.TestCase):
     def test_an_archive_page_that_never_loads_fails_saying_what_was_seen(self):
         with self.assertRaises(status.ExportsUnreadable) as raised:
             self.run_job(SiteBrowser(site(detail=archive(loading=True))))
-        self.assertEqual(str(raised.exception), "an export's own page on Takeout did not load; the page showed title 'google takeout'; headings 'google photos', 'summary'")
+        self.assertEqual(str(raised.exception), "an export's own page on Takeout did not load; overall status not found; numbered download links 0 (0 usable, 0 relative); "
+                                                "no base address; page address on Takeout; the page showed title 'google takeout'; headings 'google photos', 'summary'")
 
     def test_an_unreadable_export_fails_without_page_text(self):
         for page, detail in ((summary(completed_row(state="CANARY-PAGE-TEXT")), None), (EXPORTS, archive(created="CANARY-PAGE-TEXT"))):

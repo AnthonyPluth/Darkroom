@@ -138,12 +138,12 @@ def part_link(href: str) -> str:
 
 def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int) -> dict[int, str]:
     try:
-        detail = takeout.parse_archive(open_archive(ctx, browser, takeout.archive_url(google_id)), google_id)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
         raise DownloadFailed("Takeout no longer lists this export as ready to download")
-    links = {part.number: part.href for part in detail.parts}
+    links = {part.number: part.link for part in detail.parts}
     if sorted(links) != list(range(1, count + 1)):
         raise DownloadFailed(f"Takeout lists {len(links)} parts for an export Darkroom expects {count} parts from")
     return links

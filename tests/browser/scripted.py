@@ -44,9 +44,14 @@ class ScriptedBrowser:
         self.missing: set[str] = set()
         self.after_click = after_click or {}
         self.closed = False
+        self.address = "about:blank"
 
     def goto(self, url: str) -> None:
         self.visited.append(url)
+        self.address = url
+
+    def current_url(self) -> str:
+        return self.address
 
     def content(self) -> str:
         page = self.pages[min(self.reads, len(self.pages) - 1)]

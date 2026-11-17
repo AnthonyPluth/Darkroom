@@ -19,7 +19,7 @@ from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import SIGNED_IN, VERIFY
-from tests.browser.takeout_pages import COMPLETED_ID, archive, archive_url
+from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked
 from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +71,7 @@ class DownloadBrowser:
         self.verifying = 0
         self.verify_reads = verify_reads
         self.downloaded = []
+        self.selectors = []
         self.visited = []
         self.closed = False
 
@@ -78,6 +79,9 @@ class DownloadBrowser:
         self.url = url
         self.visited.append(url)
         self.verifying = 0
+
+    def current_url(self):
+        return self.url or "about:blank"
 
     def content(self):
         if self.verifying:
@@ -95,6 +99,7 @@ class DownloadBrowser:
         return None
 
     def download_to(self, selector, folder, progress=None):
+        self.selectors.append(selector)
         number = int(re.search(r"i=(\d+)", selector).group(1)) + 1
         self.downloaded.append(number)
         outcome = self.script.pop(0)
@@ -269,6 +274,22 @@ class DownloadJobTests(DownloadWorld):
         browser = DownloadBrowser(["ok", "ok", "ok"])
         self.run_job(browser)
         self.assertEqual(set(browser.visited), {"https://takeout.google.com/", ARCHIVE})
+
+    def test_relative_part_links_are_checked_resolved_and_clicked_as_the_page_writes_them(self):
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        page = archive(sizes=SIZES, items=items_linked("takeout/download?{query}", sizes=SIZES), base=LIVE_BASE)
+        browser.content = lambda: page if browser.url == ARCHIVE else SIGNED_IN
+        _, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.selectors, [f'a[href="takeout/download?j={COMPLETED_ID}&i={index}&user={MADE_UP_USER}"]' for index in range(3)])
+
+    def test_part_links_that_resolve_off_takeouts_download_path_download_nothing(self):
+        browser = DownloadBrowser(["ok"])
+        page = archive(sizes=SIZES, items=items_linked("takeout/download?{query}", sizes=SIZES))
+        browser.content = lambda: page if browser.url == ARCHIVE else SIGNED_IN
+        with self.assertRaisesRegex(download.DownloadFailed, "not one Darkroom can use"):
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [])
 
     def test_an_export_id_that_is_not_a_plain_id_opens_nothing(self):
         with db.session(self.engine) as opened:
@@ -578,6 +599,15 @@ class SharedFolderTests(unittest.TestCase):
         live.Live(mock.Mock(), context, mock.Mock(), None, profile).close()
         self.assertEqual(seen, [0o700])
         self.assertEqual(mode_of(profile), 0o770)
+
+    def test_the_live_browser_reports_the_address_it_landed_on(self):
+        from unittest import mock
+
+        from darkroom_browser import live
+
+        page = mock.Mock()
+        page.url = "https://takeout.google.com/manage/"
+        self.assertEqual(live.Live(page).current_url(), "https://takeout.google.com/manage/")
 
     def test_closing_still_reports_the_browsers_error_when_sharing_the_folder_fails(self):
         from unittest import mock

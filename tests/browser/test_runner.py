@@ -735,6 +735,17 @@ class FailureMessageTests(unittest.TestCase):
         self.assertEqual(runner.failure_message(session.WrongAccount("a different account")), "WrongAccount: a different account")
         self.assertEqual(runner.failure_message(TimeoutError("waiting for selector https://takeout.example/secret")), "TimeoutError")
 
+    def test_a_long_failure_is_cut_to_what_darkroom_records(self):
+        from darkroom.server.api.browser_internal import MAX_MESSAGE
+        from darkroom_browser.jobs import status
+
+        self.assertEqual(runner.MAX_MESSAGE, MAX_MESSAGE)
+        said = runner.failure_message(status.ExportsUnreadable("x" * 2 * MAX_MESSAGE))
+        self.assertEqual(len(said), MAX_MESSAGE)
+        self.assertTrue(said.startswith("ExportsUnreadable: xxx"))
+        self.assertTrue(said.endswith("..."))
+        self.assertEqual(runner.failure_message(status.ExportsUnreadable("x" * (MAX_MESSAGE - 19))), "ExportsUnreadable: " + "x" * (MAX_MESSAGE - 19))
+
 
 class RegistryTests(unittest.TestCase):
     def test_the_registry_holds_noop_and_find_names_the_missing_kind(self):

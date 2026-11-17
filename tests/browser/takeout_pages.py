@@ -7,6 +7,12 @@ IN_PROGRESS_ID = "0a1b2c3d-3333-4aaa-8bbb-000000000003"
 MADE_UP_USER = "100000000000000000001"
 ROW_LABEL = "See the details and actions available for this archive, including downloads"
 GB = 1024**3
+LIVE_BASE = "https://takeout.google.com/"
+MANAGE_PAGE = "https://takeout.google.com/manage"
+
+
+def base_tag(base: str | None) -> str:
+    return "" if base is None else f'<base href="{base}">'
 
 
 def archive_url(google_id: str) -> str:
@@ -34,12 +40,12 @@ def in_progress_row(google_id: str = IN_PROGRESS_ID, created: str = "Created 5 m
     return row(google_id, "In progress", created, None)
 
 
-def summary(*rows: str, scheduled: bool = True, body: str | None = None) -> str:
+def summary(*rows: str, scheduled: bool = True, body: str | None = None, base: str | None = None) -> str:
     banner = ('<div class="PEJjGd">You have 11 more scheduled exports</div><div scheduled-job-id="0a1b2c3d-9999-4aaa-8bbb-000000000009">'
               '<p>Export 2 of 12 will start on December 17, 2026</p></div><button aria-label="Cancel scheduled exports" data-job-id="0a1b2c3d-9999-4aaa-8bbb-000000000009">'
               '<i aria-hidden="true">cancel</i><span>Cancel scheduled exports</span></button>') if scheduled else ""
     listed = f'<h2 class="CrwUZc">Status</h2><ul class="OZ7tnf" jsname="archivelist">{"".join(rows)}</ul><hr>' if body is None else body
-    return f"""<!doctype html><html lang="en"><head><title>Google Takeout</title><script nonce="">var trap = "<a href='https://takeout.google.com/manage/archive/trap-id'>Completed</a>";</script></head>
+    return f"""<!doctype html><html lang="en"><head>{base_tag(base)}<title>Google Takeout</title><script nonce="">var trap = "<a href='https://takeout.google.com/manage/archive/trap-id'>Completed</a>";</script></head>
 <body><a href="#main">Skip to main content</a><header><a aria-label="Google Account: Jo Example (jo@example.test)" href="https://accounts.google.com/SignOutOptions">Account</a></header>
 <div role="navigation"><button aria-label="Back to previous page"></button><h1 class="cdaFgf" jsname="r4nke" tabindex="-1">Summary</h1></div>
 <div role="main"><c-wiz><div><div>The status of the requests you’ve made within the last 30 days</div><div>{banner}</div><div><div><div>{listed}</div></div></div>
@@ -53,8 +59,14 @@ def part_names(count: int) -> list[str]:
     return names
 
 
-def download_href(google_id: str, index: int, user: str = MADE_UP_USER) -> str:
-    return f"https://takeout.google.com/takeout/download?j={google_id}&amp;i={index}&amp;user={user}"
+def download_href(google_id: str, index: int, user: str = MADE_UP_USER, form: str = "https://takeout.google.com/takeout/download?{query}") -> str:
+    return form.format(query=f"j={google_id}&amp;i={index}&amp;user={user}")
+
+
+def items_linked(form: str, google_id: str = COMPLETED_ID, sizes: tuple[int, ...] | None = None) -> list[str]:
+    sizes = sizes or SIZES
+    names = part_names(len(sizes))
+    return [part_item(google_id, index, len(sizes), size, names[index], href=download_href(google_id, index, form=form)) for index, size in enumerate(sizes)]
 
 
 def part_item(google_id: str, index: int, count: int, size: int, filename: str, href: str | None = None, size_attribute: bool = True,
@@ -77,7 +89,7 @@ def latest_export_card(google_id: str) -> str:
 
 
 def archive(google_id: str = COMPLETED_ID, status: str = "Completed", created: str = "November 17, 2026", expires: str | None = "November 24, 2026",
-            sizes: tuple[int, ...] = SIZES, items: list[str] | None = None, stacked: bool = False, loading: bool = False) -> str:
+            sizes: tuple[int, ...] = SIZES, items: list[str] | None = None, stacked: bool = False, loading: bool = False, base: str | None = None) -> str:
     names = part_names(len(sizes))
     parts = items if items is not None else [part_item(google_id, index, len(sizes), size, names[index]) for index, size in enumerate(sizes)]
     zips = ", ".join(f"{name} (Number of times already downloaded: 0)" for name in names)
@@ -95,7 +107,7 @@ def archive(google_id: str = COMPLETED_ID, status: str = "Completed", created: s
     section = "" if loading else (f'<div><h2><div>Data backup to a download link</div><p><div>Your total request size is 1,101.78 GB. This request has been divided into {len(sizes)} files.</div>'
                                   f'<div>Avoid downloading your data backup onto public computers or saving them where others can see them.</div></p></h2><ul>{"".join(parts)}</ul><hr></div>')
     before = latest_export_card(google_id) if stacked else ""
-    return f"""<!doctype html><html lang="en"><head><title>Google Takeout</title><script>var x = 'Overall status: Expired';</script></head>
+    return f"""<!doctype html><html lang="en"><head>{base_tag(base)}<title>Google Takeout</title><script>var x = 'Overall status: Expired';</script></head>
 <body><header><a aria-label="Google Account: Jo Example (jo@example.test)" href="https://accounts.google.com/SignOutOptions">Account</a></header>{before}
 <div role="navigation" data-back-url="manage"><button aria-label="Back to previous page"></button><h1 jsname="r4nke" tabindex="-1"><c-wiz>Google Photos</c-wiz></h1></div>
 <div role="main"><c-wiz><div><div data-export-type="1" data-download-quota-exceeded="false" data-job-id="{google_id}" data-retry-archive-count="0"><div><div><div>
