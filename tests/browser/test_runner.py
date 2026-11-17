@@ -509,13 +509,45 @@ class ClientTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         client = Client(socket_path, TOKEN, folder=Path(folder.name))
-        for status, body in ((302, b""), (200, b"[1]")):
+        for status, body, reason in ((302, b"", "redirected"), (200, b"[1]", "other than a JSON object")):
             replies.append((status, body))
-            with self.subTest(status=status), self.assertRaises(Unreachable):
+            with self.subTest(status=status), self.assertRaisesRegex(Unreachable, reason):
                 client.claim("w")
         replies.append((200, b""))
         self.assertIsNone(client.claim("w"))
         self.assertEqual(Client(socket_path, TOKEN).folder, app_client.SOCKET_FOLDER)
+
+
+class EarlyAnswerTests(unittest.TestCase):
+    def serve(self, answer):
+        import socketserver
+
+        class Early(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(64)
+                answer(self.request)
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        socket_path = Path(folder.name) / "worker-api.sock"
+        server = socketserver.UnixStreamServer(str(socket_path), Early)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return Client(socket_path, TOKEN, folder=Path(folder.name))
+
+    def test_an_answer_sent_before_the_body_was_read_is_still_read(self):
+        body = b'{"error": "this job is no longer running"}'
+        client = self.serve(lambda stream: stream.sendall(b"HTTP/1.1 409 Conflict\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" % (len(body), body)))
+        with self.assertRaises(LeaseLost) as lost:
+            client.part(1, 1, {"pad": "x" * 4_000_000})
+        self.assertEqual((lost.exception.status, str(lost.exception)), (409, "darkroom answered 409: this job is no longer running"))
+
+    def test_a_server_that_hangs_up_without_answering_is_unreachable(self):
+        client = self.serve(lambda stream: None)
+        with self.assertRaises(Unreachable):
+            client.part(1, 1, {"pad": "x" * 4_000_000})
 
 
 class ConfigTests(unittest.TestCase):

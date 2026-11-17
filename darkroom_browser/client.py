@@ -71,7 +71,11 @@ class Client:
     def exchange(self, path: str, data: bytes) -> tuple[int, bytes]:
         connection = OnSocket(checked_socket(self.socket_path, self.folder), self.timeout)
         try:
-            connection.request("POST", path, body=data, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            try:
+                connection.request("POST", path, body=data, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            except (BrokenPipeError, ConnectionResetError):
+                if connection.sock is None:
+                    raise
             reply = connection.getresponse()
             return reply.status, reply.read(MAX_REPLY)
         except (OSError, http.client.HTTPException) as error:
