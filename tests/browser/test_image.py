@@ -225,6 +225,9 @@ class SingleImageTests(unittest.TestCase):
         for check in ("check refused 127.0.0.1 ::1", "sudo -u nobody python3 -I - refused", 'docker exec -i -u 4242:4242 "$name" python3 -I - inside', "sudo ss -Hltunp | check listeners",
                       "sudo ss -Hlxp | check unix-listeners", "probe relay", "syncthing reconciled"):
             self.assertIn(check, script)
+        probe = (ROOT / "tests/browser/host_network.py").read_text()
+        self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
+        self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
 
     def test_the_worker_page_describes_the_internal_listeners_as_the_init_starts_them(self):
         page = (ROOT / "docs/deploy/browser.md").read_text()
@@ -235,9 +238,6 @@ class SingleImageTests(unittest.TestCase):
             self.assertIn(flag, inside)
         self.assertNotIn("-localhost", inside)
         self.assertNotRegex(inside, r"127\.0\.0\.1:6080|port 5900")
-        probe = (ROOT / "tests/browser/host_network.py").read_text()
-        self.assertIn("INTERNAL_PORTS = (5900, 6080, 8384)", probe)
-        self.assertIn("ALLOWED = {8000, 22000, 21027}", probe)
 
     def test_the_syncthing_script_reads_whole_logs_before_matching_and_starts_from_no_leftover_containers(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
