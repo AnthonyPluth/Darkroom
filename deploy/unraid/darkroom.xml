@@ -3,13 +3,13 @@
   <Name>darkroom</Name>
   <Repository>ghcr.io/anthonypluth/darkroom-single:latest</Repository>
   <Registry>https://github.com/AnthonyPluth/Darkroom/pkgs/container/darkroom-single</Registry>
-  <Network>bridge</Network>
+  <Network>host</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/AnthonyPluth/Darkroom/issues</Support>
   <Project>https://github.com/AnthonyPluth/Darkroom</Project>
-  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json of a release at /boot/config/darkroom/seccomp.json on the server, set Repository to that release's tag instead of latest, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). Port 8000 is published on every address of the server: keep it off the internet and never forward it.</Overview>
+  <Overview>Darkroom in one container: the app and the Takeout browser worker together. Before the first start, put deploy/browser/seccomp.json of a release at /boot/config/darkroom/seccomp.json on the server, set Repository to that release's tag instead of latest, and make the appdata folder owned by 99:100 (docs/deploy/one-container.md). It runs on the host network, for Darkroom's Syncthing and its local discovery: port 8000 and Syncthing's 22000 (TCP and UDP) and 21027 (UDP) listen on every address of the server. Keep them off the internet and never forward them.</Overview>
   <Category>MediaApp:Photos</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/AnthonyPluth/Darkroom/main/deploy/unraid/darkroom.xml</TemplateURL>
@@ -20,7 +20,10 @@
   <DonateText/>
   <DonateLink/>
   <Requires>The seccomp profile at /boot/config/darkroom/seccomp.json, copied by hand from deploy/browser/seccomp.json of the same release (docs/deploy/one-container.md).</Requires>
-  <Config Name="Web UI" Target="8000" Default="8000" Mode="tcp" Description="Darkroom's web UI and API, including the remote browser view. The only port the container needs." Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="Web UI" Target="8000" Default="8000" Mode="tcp" Description="Darkroom's web UI and API, including the remote browser view. On the host network it listens on 8000 of every address of the server." Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="Syncthing" Target="22000" Default="22000" Mode="tcp" Description="Darkroom's Syncthing, which the Pixels connect to. On the host network it listens on 22000 of every address of the server; never forward it." Type="Port" Display="always" Required="true" Mask="false">22000</Config>
+  <Config Name="Syncthing (QUIC)" Target="22000" Default="22000" Mode="udp" Description="Darkroom's Syncthing over QUIC. On the host network it listens on 22000 of every address of the server; never forward it." Type="Port" Display="always" Required="true" Mask="false">22000</Config>
+  <Config Name="Syncthing discovery" Target="21027" Default="21027" Mode="udp" Description="Syncthing's local discovery, which announces Darkroom's Syncthing on the LAN. On the host network it listens on 21027 of every address of the server; never forward it." Type="Port" Display="always" Required="true" Mask="false">21027</Config>
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/darkroom" Mode="rw" Description="The database, the generated secret key and the browser profiles. Back this folder up with the container stopped." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/darkroom</Config>
   <Config Name="Photo share" Target="/photos" Default="" Mode="rw" Description="The photo share: the people's folders, _inbox and _pixels." Type="Path" Display="always" Required="true" Mask="false"/>
   <Config Name="DARKROOM_PUBLIC_URL" Target="DARKROOM_PUBLIC_URL" Default="" Mode="" Description="The address people open Darkroom at, for links in alerts and the sign-in redirect." Type="Variable" Display="always" Required="false" Mask="false"/>
@@ -31,6 +34,7 @@
   <Config Name="IMMICH_URL" Target="IMMICH_URL" Default="" Mode="" Description="Immich's address." Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="IMMICH_ADMIN_KEY" Target="IMMICH_ADMIN_KEY" Default="" Mode="" Description="An Immich admin API key, for the external-library rescans." Type="Variable" Display="always" Required="false" Mask="true"/>
   <Config Name="DARKROOM_SECRET_KEY" Target="DARKROOM_SECRET_KEY" Default="" Mode="" Description="Leave empty: Darkroom generates the key into the appdata folder on first start. Set it only to keep the key apart from appdata." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="DARKROOM_SYNCTHING" Target="DARKROOM_SYNCTHING" Default="1" Mode="" Description="1 runs Darkroom's own Syncthing, which sends each Pixel its folder; 0 turns it off." Type="Variable" Display="always" Required="false" Mask="false">1</Config>
   <Config Name="POLL_SECONDS" Target="POLL_SECONDS" Default="15" Mode="" Description="How often the idle browser worker asks for a job." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
   <Config Name="BROWSER_CHANNEL" Target="BROWSER_CHANNEL" Default="chrome" Mode="" Description="chrome: Google Chrome; chromium: always the bundled Chromium." Type="Variable" Display="advanced" Required="false" Mask="false">chrome</Config>
 </Container>

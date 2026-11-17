@@ -9,6 +9,12 @@ export const PAGES: readonly Page[] = [
   { path: "/browser", label: "Browser" },
 ];
 
+export const SETUP_PATH = "/setup";
+
+export function onSetupPage(path: string): boolean {
+  return path.replace(/\/+$/, "") === SETUP_PATH;
+}
+
 export function pageFor(path: string): Page | null {
   const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
   return PAGES.find((page) => page.path === trimmed) ?? null;

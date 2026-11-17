@@ -8,6 +8,8 @@ Darkroom keeps its index and decisions in SQLite by default (`darkroom.db` in th
 | `sqlite:///path/to/file.db` | SQLite in a file of your choosing |
 | `postgresql://user:password@host:5432/database` | PostgreSQL; `postgres://` and `postgresql+psycopg://` mean the same (Darkroom uses the `psycopg` driver, which the image already contains) |
 
+With Docker Compose, the commented `postgres` service in `docker-compose.yml` is the recipe. The one container (`darkroom-single`) runs on the host's network, where compose's service name `postgres` does not resolve, so it reaches the database on the host's loopback: the recipe publishes PostgreSQL on `127.0.0.1:5432` only (never on every address), and `DATABASE_URL` is `postgresql://darkroom:CHANGE-ME@127.0.0.1:5432/darkroom`. The app alone (`darkroom`) stays on compose's network and uses `@postgres:5432`. Port 5432 must then be free on the host's loopback.
+
 Any other kind of database is refused at start with a message naming what Darkroom supports. A password with special characters must be percent-encoded in the URL.
 
 What is not done for you:

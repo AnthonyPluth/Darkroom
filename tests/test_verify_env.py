@@ -317,6 +317,33 @@ class RunTests(unittest.TestCase):
         self.assertEqual(command[command.index("--now") + 1], verify.FROZEN_NOW_ISO)
         self.assertEqual((command[command.index("--flow") + 1], command[-1]), ("open-people", "status"))
 
+    def test_the_setup_servers_run_the_wizard_without_demo_mode_or_an_address(self):
+        with mock.patch.dict(os.environ, {**SECRETS, **NEEDED}, clear=True):
+            env = verify.wizard_env("/tmp/setup-1", 4321)
+        self.assertEqual(env["DARKROOM_WIZARD"], "1")
+        self.assertNotIn("DARKROOM_DEMO", env)
+        self.assertNotIn("DARKROOM_PUBLIC_URL", env)
+        self.assertEqual((env["DARKROOM_HOST"], env["DARKROOM_PORT"], env["DARKROOM_DATA_DIR"]), ("127.0.0.1", "4321", "/tmp/setup-1/data"))
+        self.assertFalse(set(NEVER) & set(env))
+        for name, value in SECRETS.items():
+            self.assertNotIn(value, env.values(), name)
+
+    def test_the_setup_pages_run_unless_only_flows_or_other_pages_are_asked_for(self):
+        self.assertTrue(verify.wants_setup([], []))
+        self.assertTrue(verify.wants_setup(["status", "setup"], []))
+        self.assertTrue(verify.wants_setup(["setup-done"], []))
+        self.assertFalse(verify.wants_setup(["setups"], []))
+        self.assertFalse(verify.wants_setup(["status"], []))
+        self.assertFalse(verify.wants_setup([], ["open-people"]))
+        command = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [], ["http://127.0.0.1:7", "http://127.0.0.1:8"], "http://127.0.0.1:9",
+                                      "http://127.0.0.1:10")
+        self.assertEqual([command[i + 1] for i, a in enumerate(command) if a == "--setup"], ["http://127.0.0.1:7", "http://127.0.0.1:8"])
+        self.assertEqual(command[command.index("--sign-in") + 1], "http://127.0.0.1:9")
+        self.assertEqual(command[command.index("--immich") + 1], "http://127.0.0.1:10")
+        bare = verify.node_command("node", "/r/frontend", ["http://127.0.0.1:1"], "/d/s.json", [], [])
+        self.assertNotIn("--setup", bare)
+        self.assertNotIn("--immich", bare)
+
     def test_a_running_verify_is_recognised_by_its_command_line(self):
         self.assertTrue(verify.is_verify(["node", "/r/frontend/verify/verify.mjs", "--url", "x"]))
         self.assertTrue(verify.is_verify(["python", "tools/verify.py", "run", "status"]))

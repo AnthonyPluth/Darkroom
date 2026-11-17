@@ -1,3 +1,5 @@
+import { ignoreFailure } from "./act";
+
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly data: Record<string, unknown> = {}) { super(message); }
 }
@@ -37,6 +39,7 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
   try { res = await fetch(path, init); }
   catch (err) { throw err instanceof TypeError ? new ApiError(OFFLINE, 0) : err; }
   if (res.status === 401) {
+    await res.text().catch(ignoreFailure);
     window.dispatchEvent(new Event(SIGNED_OUT));
     throw new ApiError(SESSION_ENDED, 401);
   }

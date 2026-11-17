@@ -10,7 +10,7 @@ import urllib.error
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
 
@@ -22,6 +22,10 @@ PAGE_SIZE = 250
 MAX_PASSES = 5
 DOWNLOAD_CHUNK = 1024 * 1024
 PHONE_KEY = "mobile-app"
+PING_PATH = "/api/server/ping"
+CHECK_TIMEOUT = 5.0
+CHECK_LIMIT = 4096
+AddressCheck = Literal["answered", "no_answer", "not_immich", "tls_failed"]
 MANAGED_VERSION = "v3.3.6"
 MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
 READ_ROUTES = frozenset({("GET", "/api/server/ping"), ("GET", "/api/server/about"), ("GET", "/api/users/me"),
@@ -226,6 +230,30 @@ def asset_path(asset_id: str) -> str:
     if not asset_id or "/" in asset_id or "?" in asset_id:
         raise ImmichFailed("not an asset id")
     return f"/api/assets/{quote(asset_id, safe='')}"
+
+
+def check_address(url: str, timeout: float = CHECK_TIMEOUT) -> AddressCheck:
+    require_allowed_request("GET", PING_PATH)
+    host = urlsplit(url).hostname or ""
+    try:
+        with tls.urlopen(f"{url}{PING_PATH}", headers={"Accept": "application/json"}, timeout=timeout, allow_http=config.local_host(host)) as response:
+            raw = response.read(CHECK_LIMIT + 1)
+    except urllib.error.HTTPError as error:
+        error.close()
+        return "not_immich"
+    except tls.Refused:
+        return "not_immich"
+    except tls.NOT_HTTP_REPLIES as error:
+        return "no_answer" if isinstance(error, ConnectionError) else "not_immich"
+    except tls.CONNECTION_PROBLEMS as error:
+        return "tls_failed" if tls.tls_failure(error) else "no_answer"
+    if len(raw) > CHECK_LIMIT:
+        return "not_immich"
+    try:
+        found = json.loads(raw)
+    except ValueError:
+        return "not_immich"
+    return "answered" if isinstance(found, dict) and found.get("res") == "pong" else "not_immich"
 
 
 @dataclass(frozen=True)
