@@ -16,7 +16,7 @@ from darkroom.server.common import json_response
 from darkroom.storage import db
 from darkroom.storage.models import AuthSession, User
 from tests.privacy import no_leaks
-from tests.shared import fetch, own_database, settings_from, start_server
+from tests.shared import fetch, own_database, settings_from, start_server, worker_fetch
 from tests.test_auth_routes import SignedInServer
 from tests.test_every_route import PUBLIC
 
@@ -156,7 +156,8 @@ class DemoSessionTests(DemoSessionCase):
         for route in [r for r in routes.ROUTES if r.auth not in ("session", "public", *routes.SETUP_KINDS)]:
             with self.subTest(route=f"{route.method} {route.path}"):
                 for headers in (self.cookie, {"Authorization": f"Bearer {self.token}"}):
-                    self.assertEqual(fetch(base, route.method, route.path, headers, b"{}")[0], 401)
+                    self.assertEqual(fetch(base, route.method, route.path, headers, b"{}")[0], 404)
+                    self.assertEqual(worker_fetch(base, route.method, route.path, headers, b"{}")[0], 401)
 
     def test_logout_ends_the_demo_session_and_the_login_page_explains_demo_mode(self):
         base = self.server(self.demo)

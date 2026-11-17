@@ -115,6 +115,7 @@ allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
     "darkroom.tls -> http",
+    "darkroom_browser.client -> http",
 ]
 broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."
 

@@ -60,10 +60,13 @@ class ListenerPlanTests(unittest.TestCase):
         self.assertIn("chown darkroom /data /home/darkroom /run/darkroom", image)
         self.assertIn("&& chmod 0700 /run/darkroom", image)
 
-    def test_the_worker_still_reaches_the_app_on_its_port_with_the_token_on_a_pipe(self):
+    def test_the_worker_reaches_the_app_on_its_socket_not_a_port_with_the_token_on_a_pipe(self):
         worker = self.specs["worker"]
-        self.assertEqual(worker.env["DARKROOM_PORT"], "8000")
-        self.assertNotIn("DARKROOM_URL", worker.env)
+        self.assertFalse({"DARKROOM_PORT", "DARKROOM_URL"} & set(worker.env))
+        self.assertTrue(sockets.in_folder(plan.WORKER_SOCKET))
+        app = self.specs["app"]
+        self.assertEqual(app.argv, ("/app/.venv/bin/python", "run.py", "serve"))
+        self.assertEqual(app.env[plan.ONE_CONTAINER], "1")
         self.assertEqual((worker.secrets, worker.env[plan.TOKEN_FD]), (("token",), plan.PIPE["token"]))
 
 
@@ -172,6 +175,7 @@ tcp   LISTEN 0 128  0.0.0.0:22    0.0.0.0:* users:(("sshd",pid=7,fd=3))
 UNIX = """u_str LISTEN 0 32   /run/darkroom/vnc.sock 11 * 0 users:(("x11vnc",pid=42,fd=8))
 u_str LISTEN 0 100  /run/darkroom/viewer.sock 12 * 0 users:(("python3",pid=43,fd=3))
 u_str LISTEN 0 4096 /run/darkroom/syncthing.sock 13 * 0 users:(("syncthing",pid=40,fd=7))
+u_str LISTEN 0 5    /run/darkroom/worker-api.sock 16 * 0 users:(("python",pid=41,fd=7))
 u_str LISTEN 0 4096 /tmp/.X11-unix/X99 14 * 0 users:(("Xvfb",pid=44,fd=6))
 u_str LISTEN 0 4096 @/tmp/.X11-unix/X0 15 * 0 users:(("Xorg",pid=8,fd=6))
 """
@@ -188,12 +192,12 @@ class HostProbeTests(unittest.TestCase):
         self.assertEqual(self.run_probe("listeners", LISTENING + 'tcp LISTEN 0 5 127.0.0.1:6080 0.0.0.0:* users:(("python3",pid=43,fd=3))\n', 40, 41, 43), 1)
         self.assertEqual(self.run_probe("listeners", LISTENING, 41), 1)
 
-    def probe_with(self, command, reachable, connected, *hosts):
+    def probe_with(self, command, reachable, connected, *hosts, worker_route=404):
         def answers(host, port):
             return (host, port) in reachable
 
         with mock.patch.object(host_network, "answers", answers), mock.patch.object(host_network, "unix_answers", lambda path: connected.get(path, "PermissionError")), \
-                contextlib.redirect_stdout(io.StringIO()):
+                mock.patch.object(host_network, "worker_route_status", lambda host: worker_route), contextlib.redirect_stdout(io.StringIO()):
             return host_network.main(command, *hosts)
 
     def test_from_outside_every_host_must_reach_a_published_port_and_no_internal_one(self):
@@ -210,12 +214,39 @@ class HostProbeTests(unittest.TestCase):
         self.assertEqual(self.probe_with("inside", set(), {}), 1)
         self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000), ("::1", 5900)}, {}), 1)
         self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000)}, {"/run/darkroom/vnc.sock": "connected"}), 1)
+        self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000)}, {"/run/darkroom/worker-api.sock": "connected"}), 1)
+        for answered in (401, 200, "ConnectionRefusedError"):
+            with self.subTest(worker_route=answered):
+                self.assertEqual(self.probe_with("inside", {("127.0.0.1", 8000)}, {}, worker_route=answered), 1)
+
+    def test_the_worker_route_probe_reads_the_status_the_web_port_gives(self):
+        import http.server
+        import threading
+
+        class Answer(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(404 if self.path == host_network.WORKER_ROUTE and self.headers["Authorization"].startswith("Bearer ") else 500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                return None
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Answer)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.assertEqual(host_network.worker_route_status("127.0.0.1", server.server_address[1]), 404)
+        server.shutdown()
+        server.server_close()
+        self.assertEqual(host_network.worker_route_status("127.0.0.1", server.server_address[1]), "ConnectionRefusedError")
 
     def test_an_abstract_socket_or_a_missing_internal_socket_fails(self):
-        self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 42, 43, 44), 0)
-        self.assertEqual(self.run_probe("unix-listeners", UNIX, 8, 40, 42, 43, 44), 1)
-        self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 42, 44), 1)
-        self.assertEqual(self.run_probe("unix-listeners", UNIX.replace("/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99"), 40, 42, 43, 44), 1)
+        self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 41, 42, 43, 44), 0)
+        self.assertEqual(self.run_probe("unix-listeners", UNIX, 8, 40, 41, 42, 43, 44), 1)
+        self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 41, 42, 44), 1)
+        self.assertEqual(self.run_probe("unix-listeners", UNIX, 40, 42, 43, 44), 1)
+        self.assertEqual(self.run_probe("unix-listeners", UNIX.replace("/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99"), 40, 41, 42, 43, 44), 1)
 
 
 if __name__ == "__main__":

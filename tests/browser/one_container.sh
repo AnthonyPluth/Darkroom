@@ -19,6 +19,9 @@ job_done() { [ "$(probe status "$1")" = done ]; }
 field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"; }
 
 wait_for 60 healthy
+worker_route() { curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$port/internal/browser/jobs/claim"; }
+[ "$(worker_route)" = 404 ] || fail "the worker's routes answer on the web port; they belong only on the private socket"
+echo "the worker's routes answer 404 on the web port"
 wait_for 60 '[ "$(field "$(probe)" workers | tr -cd , | wc -c)" = 0 ] && [ "$(field "$(probe)" workers)" != "[]" ]'
 probe viewer || fail "websockify is not locked with a secret given on a pipe"
 probe csp || fail "the shipped noVNC does not load under the viewer's policy through the relay"

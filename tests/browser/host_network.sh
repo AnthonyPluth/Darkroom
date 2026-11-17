@@ -33,13 +33,14 @@ echo "the remote browser view comes through the relay to x11vnc over the private
 outside=$(hostname -I | awk '{print $1}')
 check refused 127.0.0.1 ::1 "$outside" || fail "an internal listener answers from outside the container with host networking"
 sudo -u nobody python3 -I - refused 127.0.0.1 ::1 "$outside" < "$here/host_network.py" || fail "an internal listener answers another local user"
-docker exec -i -u 4242:4242 "$name" python3 -I - inside < "$here/host_network.py" || fail "an internal listener or socket answers another user inside the container"
+docker exec -i -u 4242:4242 "$name" python3 -I - inside < "$here/host_network.py" || fail "an internal listener or socket answers another user inside the container, or the worker's routes answer on 8000"
 echo "5900, 6080 and 8384 are refused from the host, from another local user and from another user inside the container; the display has no abstract socket"
+echo "the worker's routes answer 404 on 8000 and its socket in /run/darkroom refuses another user inside the container"
 
 pids=$(container_pids)
 sudo ss -Hltunp | check listeners $pids || fail "something other than 8000, 22000 and 21027 listens, or 8000 or 22000 does not"
-sudo ss -Hlxp | check unix-listeners $pids || fail "a listener of the container is an abstract socket, or an internal socket is missing"
-echo "only 8000, 22000 and 21027 listen; every internal listener is a socket in /run/darkroom"
+sudo ss -Hlxp | check unix-listeners $pids || fail "a listener of the container is an abstract socket, or an internal socket (the worker's API among them) is missing"
+echo "only 8000, 22000 and 21027 listen; every internal listener, the worker's API included, is a socket in /run/darkroom"
 
 probe scan || fail "a secret-shaped value is in a process's environment or command line with host networking"
 docker rm -f "$name" >/dev/null

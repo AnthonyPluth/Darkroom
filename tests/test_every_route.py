@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from darkroom.server import auth, routes
-from tests.shared import fetch, own_database, settings_from, start_server
+from tests.shared import fetch, own_database, settings_from, start_server, worker_fetch
 
 PUBLIC = {"GET /healthz", "GET /auth/login", "GET /auth/callback", "GET /auth/signed-out"}
 BEARER_KINDS = {"worker"}
@@ -121,8 +121,25 @@ class EveryRouteTests(unittest.TestCase):
     def test_bearer_routes_answer_401_without_a_token(self):
         for route in (route for route in routes.ROUTES if route.auth in BEARER_KINDS):
             with self.subTest(route=f"{route.method} {route.path}"):
-                status, _, _ = fetch(self.base, route.method, route.path, {}, None if route.method == "GET" else b"{}")
+                status, _, _ = worker_fetch(self.base, route.method, route.path, {}, None if route.method == "GET" else b"{}")
                 self.assertEqual(status, 401)
+
+    def test_the_worker_socket_answers_404_to_every_other_route_and_page(self):
+        found = [route for route in routes.ROUTES if route.auth != "worker"]
+        self.assertTrue(found)
+        sent = {"Authorization": f"Bearer {WORKER_TOKEN}", "Cookie": "darkroom_session=some-session-token", "Origin": "https://darkroom.example"}
+        for method, path in (*((route.method, route.path) for route in found), ("GET", "/"), ("GET", "/assets/app.js"), ("GET", "/internal/browser/jobs/claim")):
+            with self.subTest(route=f"{method} {path}"):
+                status, _, body = worker_fetch(self.base, method, path, sent, None if method == "GET" else b"{}")
+                self.assertEqual((status, json.loads(body)), (404, {"error": "not found"}))
+
+    def test_worker_routes_answer_404_on_the_tcp_listener_even_with_the_token(self):
+        found = [route for route in routes.ROUTES if route.auth == "worker"]
+        self.assertTrue(found)
+        for route in found:
+            with self.subTest(route=f"{route.method} {route.path}"):
+                status, _, body = fetch(self.base, route.method, route.path, {"Authorization": f"Bearer {WORKER_TOKEN}", "Content-Type": "application/json"}, b"{}")
+                self.assertEqual((status, json.loads(body)), (404, {"error": "not found"}))
 
     def test_the_worker_token_is_never_accepted_on_session_routes(self):
         found = [route for route in routes.ROUTES if route.auth in BROWSER_KINDS]
@@ -142,7 +159,7 @@ class EveryRouteTests(unittest.TestCase):
             for headers in ({"Cookie": "darkroom_session=some-session-token"}, {"Cookie": f"darkroom_session={WORKER_TOKEN}"},
                             {"Authorization": f"Bearer {WORKER_TOKEN[:-1]}"}, {"Authorization": WORKER_TOKEN}, {"X-Worker-Token": WORKER_TOKEN}):
                 with self.subTest(route=f"{route.method} {route.path}", headers=headers):
-                    status, _, body = fetch(self.base, route.method, route.path, headers, None if route.method == "GET" else b"{}")
+                    status, _, body = worker_fetch(self.base, route.method, route.path, headers, None if route.method == "GET" else b"{}")
                     self.assertEqual(status, 401)
                     self.assertEqual(json.loads(body), {"error": "sign in required"})
 
@@ -207,13 +224,13 @@ class NoAuthModeTests(unittest.TestCase):
     def test_the_host_check_leaves_worker_routes_to_their_token(self):
         for route in (route for route in routes.ROUTES if route.auth == "worker"):
             with self.subTest(route=f"{route.method} {route.path}"):
-                status, _, _ = fetch(self.base, route.method, route.path, {"Host": "rebound.example"}, b"{}")
+                status, _, _ = worker_fetch(self.base, route.method, route.path, {"Host": "rebound.example"}, b"{}")
                 self.assertEqual(status, 401)
 
     def test_the_local_owner_shortcut_never_opens_worker_or_device_routes(self):
         for route in (route for route in routes.ROUTES if route.auth == "worker"):
             with self.subTest(route=f"{route.method} {route.path}"):
-                status, _, _ = fetch(self.base, route.method, route.path, {"Cookie": "darkroom_session=anything"}, b"{}")
+                status, _, _ = worker_fetch(self.base, route.method, route.path, {"Cookie": "darkroom_session=anything"}, b"{}")
                 self.assertEqual(status, 401)
 
 

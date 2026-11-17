@@ -1,3 +1,4 @@
+import http.client
 import json
 import re
 import socket
@@ -8,7 +9,8 @@ CONTROL_PORTS = (8000, 22000)
 LOOPBACKS = ("127.0.0.1", "::1")
 ALLOWED = {8000, 22000, 21027}
 NEEDED = {8000, 22000}
-SOCKETS = ("/run/darkroom/vnc.sock", "/run/darkroom/viewer.sock", "/run/darkroom/syncthing.sock")
+SOCKETS = ("/run/darkroom/vnc.sock", "/run/darkroom/viewer.sock", "/run/darkroom/syncthing.sock", "/run/darkroom/worker-api.sock")
+WORKER_ROUTE = "/internal/browser/jobs/claim"
 DISPLAY = "\0/tmp/.X11-unix/X99"
 OWNER = re.compile(r"pid=(\d+),")
 
@@ -36,6 +38,17 @@ def unix_answers(path):
     return "connected"
 
 
+def worker_route_status(host, port=8000):
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("POST", WORKER_ROUTE, body=b"{}", headers={"Authorization": "Bearer " + "x" * 43, "Content-Type": "application/json"})
+        return connection.getresponse().status
+    except OSError as error:
+        return type(error).__name__
+    finally:
+        connection.close()
+
+
 def reached(hosts):
     return {host: [port for port in CONTROL_PORTS if answers(host, port)] for host in hosts}
 
@@ -52,8 +65,9 @@ def inside():
     found = {f"{host}:{port}": answers(host, port) for host in LOOPBACKS for port in INTERNAL_PORTS}
     found |= {path: unix_answers(path) for path in SOCKETS}
     control = answers("127.0.0.1", 8000)
-    print(json.dumps({"internal": found, "app": control}, sort_keys=True))
-    return 0 if control and not any(value is True for value in found.values()) and all(found[path] == "PermissionError" for path in SOCKETS) else 1
+    worker_route = worker_route_status("127.0.0.1")
+    print(json.dumps({"internal": found, "app": control, "worker route on 8000": worker_route}, sort_keys=True))
+    return 0 if control and worker_route == 404 and not any(value is True for value in found.values()) and all(found[path] == "PermissionError" for path in SOCKETS) else 1
 
 
 def owned(lines, pids):

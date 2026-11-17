@@ -180,7 +180,7 @@ Each iPhone backs up and clears its photos with Immich's own iOS app; Darkroom d
 
 ### Rotating the worker token
 
-The one container's init generates a new browser token at every start and hands it to the app and the worker on pipes, so restarting the container rotates it; there is nothing to set. `DARKROOM_BROWSER_TOKEN`, from the separate browser container that is gone (#327), is ignored: `python run.py check-config` and the start-up log name it as set and ignored, never with its value, so remove it from `.env`, along with `DARKROOM_URL`, `VNC_URL` and `DARKROOM_VNC_SECRET`.
+The one container's init generates a new browser token at every start and hands it to the app and the worker on pipes, so restarting the container rotates it; there is nothing to set. The worker sends it only over the private socket `/run/darkroom/worker-api.sock` inside the container, never to a port, so what else listens on the host's loopback (port 8000 included) cannot receive it; there is no port to keep free for the worker's sake (`SECURITY.md`, "The worker's API is on a private socket"). If the log has `the browser worker's API is not served`, the socket folder in the container is not private to the container's user (or something is mounted over `/run/darkroom`): remove that mount and recreate the container from the image. `DARKROOM_BROWSER_TOKEN`, from the separate browser container that is gone (#327), is ignored: `python run.py check-config` and the start-up log name it as set and ignored, never with its value, so remove it from `.env`, along with `DARKROOM_URL`, `VNC_URL` and `DARKROOM_VNC_SECRET`.
 
 ### The secret key
 

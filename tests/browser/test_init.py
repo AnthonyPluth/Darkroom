@@ -29,7 +29,7 @@ from darkroom_init import plan, supervisor, viewer_auth
 from tests.browser import one_container
 from tests.browser.test_runner import FakeBrowser
 from tests.privacy import no_leaks
-from tests.shared import own_database, start_server
+from tests.shared import own_database, start_server, worker_socket_of
 from tests.test_browser_jobs import add_account
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -66,8 +66,8 @@ class PlanTests(unittest.TestCase):
         read = set(re.findall(r'env\("([A-Z0-9_]+)"', (ROOT / "darkroom_browser/config.py").read_text())) | {"TZ", "BROWSER_CHANNEL"}
         env = plan.worker_env(GIVEN)
         self.assertEqual(read - set(env) - set(plan.WORKER_SETTINGS), set())
-        self.assertEqual(env["DARKROOM_PORT"], "8123")
-        self.assertEqual(plan.worker_env({})["DARKROOM_PORT"], "8000")
+        self.assertNotIn("DARKROOM_PORT", env)
+        self.assertNotIn("DARKROOM_PORT", plan.worker_env({}))
         self.assertEqual((env["PHOTOS_ROOT"], env["DISPLAY"], env["TZ"], env["POLL_SECONDS"]), ("/share", ":99", "Europe/Paris", "5"))
         self.assertFalse({*APP_SECRETS, "DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "DARKROOM_URL", "HOSTNAME"} & set(env))
 
@@ -264,7 +264,7 @@ class OrphanTests(unittest.TestCase):
                  {"pid": 328, "ppid": 300, "args": [], "comm": "chrome"}, {"pid": 339, "ppid": 328, "args": [], "comm": "chrome"}, {"pid": 150, "ppid": 7, "args": [], "comm": "chrome"}]
         self.assertEqual(one_container.pids(every), {"workers": [277], "browsers": [328, 339, 150], "strays": [150]})
 
-    def test_adopted_processes_and_listening_ports_are_read_from_proc(self):
+    def test_adopted_processes_are_read_from_proc(self):
         with tempfile.TemporaryDirectory() as folder:
             proc = Path(folder)
             for pid, stat in ((10, "10 (python3) S 7 10"), (11, "11 (a) b) S 8 11"), (12, "12 (x) Z 7 12"), (13, "broken")):
@@ -272,9 +272,6 @@ class OrphanTests(unittest.TestCase):
                 (proc / str(pid) / "stat").write_text(stat)
             self.assertEqual(sorted(supervisor.adopted_by(7, proc)), [10, 12])
             self.assertEqual([supervisor.group_alive(group, proc) for group in (10, 11, 12, 99)], [True, True, False, False])
-            (proc / "net").mkdir()
-            (proc / "net/tcp").write_text("  sl  local_address rem_address   st\n   0: 00000000:1F40 00000000:0000 0A\n   1: 0100007F:1F41 0100007F:9999 01\n")
-            self.assertEqual([supervisor.listening(port, proc) for port in (8000, 8001)] + [supervisor.listening(8000, proc / "missing")], [True, False, False])
 
 
 class ViewerAuthTests(unittest.TestCase):
@@ -306,9 +303,27 @@ class InitMainTests(unittest.TestCase):
         self.assertNotEqual(held["token"], held["viewer"])
         self.assertTrue(all(len(value) == 43 and app_config.browser_token_usable(value) for value in held.values()))
         self.assertEqual([call.args for call in prctl.call_args_list], [(supervisor.PR_SET_DUMPABLE, 0), (supervisor.PR_SET_CHILD_SUBREAPER, 1)])
-        with mock.patch.object(supervisor, "listening", return_value=False) as listening:
-            self.assertFalse(supervisor.display_ready({"DISPLAY": ":12345"})() or init_main.app_ready({"DARKROOM_PORT": "nope"})())
-        listening.assert_called_once_with(8000)
+        with mock.patch.object(init_main.sockets, "accepting", return_value=False) as accepting:
+            self.assertFalse(supervisor.display_ready({"DISPLAY": ":12345"})() or init_main.app_ready())
+        accepting.assert_called_once_with(plan.WORKER_SOCKET, plan.SOCKET_FOLDER)
+
+    def test_the_app_is_ready_only_when_its_worker_socket_accepts_never_when_something_holds_its_port(self):
+        import socket
+
+        with tempfile.TemporaryDirectory() as folder, socket.create_server(("127.0.0.1", 0)) as stand_in:
+            private = Path(folder)
+            self.assertNotEqual(stand_in.getsockname()[1], 0)
+            with mock.patch.object(plan, "SOCKET_FOLDER", private), mock.patch.object(plan, "WORKER_SOCKET", private / "worker-api.sock"), \
+                    mock.patch.dict(os.environ, {"DARKROOM_PORT": str(stand_in.getsockname()[1])}):
+                ready = init_main.app_ready
+                self.assertFalse(ready())
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as app:
+                    app.bind(str(private / "worker-api.sock"))
+                    app.listen()
+                    self.assertTrue(ready())
+                    private.chmod(0o755)
+                    self.assertFalse(ready())
+                    private.chmod(0o700)
 
     def test_the_display_is_ready_when_xdpyinfo_answers_on_its_display_with_the_display_stack_environment(self):
         with mock.patch.object(supervisor.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)) as ran:
@@ -341,14 +356,13 @@ class TokenOnPipeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN": TOKEN, "DARKROOM_URL": "http://darkroom:8000"}, clear=True):
             worker = worker_config.load()
             self.assertEqual((app_config.load().browser_token, worker.token), ("", ""))
-            self.assertEqual(worker_config.darkroom_url(worker), "http://127.0.0.1:8000")
             self.assertIn("no browser token was handed on DARKROOM_BROWSER_TOKEN_FD; the worker starts only under the one container's init", worker_config.problems(worker))
         for raw in ("1", "x", "999999"):
             with self.subTest(raw=raw), mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN_FD": raw, "DARKROOM_BROWSER_TOKEN": TOKEN}, clear=True):
                 self.assertEqual((app_config.load().browser_token, worker_config.load().token), ("", ""))
         for port in ("0", "70000", "80x", "123456"):
             with self.subTest(port=port), mock.patch.dict(os.environ, {"DARKROOM_PORT": port}, clear=True):
-                self.assertIn("DARKROOM_PORT must be the app's port, a number from 1 to 65535", worker_config.problems(worker_config.load()))
+                self.assertFalse(any("DARKROOM_PORT" in problem for problem in worker_config.problems(worker_config.load())))
 
     def test_a_worker_and_the_app_both_given_the_token_on_pipes_run_a_noop_job_without_logging_it(self):
         engine = own_database(self)
@@ -364,8 +378,8 @@ class TokenOnPipeTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "DARKROOM_PORT": base.rsplit(":", 1)[1], "PHOTOS_ROOT": photos.name}, clear=True):
                 worker = worker_config.load()
             self.assertEqual(worker_config.problems(worker), [])
-            self.assertEqual(worker_config.darkroom_url(worker), base)
-            self.assertTrue(runner.Runner(worker, Client(worker_config.darkroom_url(worker), worker.token), lambda folder: FakeBrowser(), sleep=lambda seconds: None).tick())
+            socket_path = worker_socket_of(base)
+            self.assertTrue(runner.Runner(worker, Client(socket_path, worker.token, folder=socket_path.parent), lambda folder: FakeBrowser(), sleep=lambda seconds: None).tick())
         with db.session(engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job).status, "done")
 

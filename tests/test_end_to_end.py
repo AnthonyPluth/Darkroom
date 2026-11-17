@@ -10,7 +10,7 @@ from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Event, Export, GoogleAccount, ImportRun, MediaItem
 from tests.import_world import ADMIN_KEY, DAY, NOW, World
-from tests.shared import fetch, settings_from, start_server
+from tests.shared import worker_fetch, settings_from, start_server
 from tests.takeout_fixtures import TakeoutBuilder
 
 TOKEN = "end-to-end-worker-token-0123456789abcdef0123456789"
@@ -60,7 +60,7 @@ class EndToEndTests(unittest.TestCase):
 
     def worker(self, path, body=None):
         headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
+        status, _, reply = worker_fetch(self.base, "POST", path, headers, json.dumps(body or {}).encode())
         self.assertEqual(status, 200, (path, reply))
         return json.loads(reply)
 

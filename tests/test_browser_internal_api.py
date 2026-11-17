@@ -1,19 +1,25 @@
+import io
 import json
 import os
+import socket
+import stat
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom import config
 from darkroom.domain import alerts, browser_jobs, renewal
-from darkroom.server import auth, routes
+import run
+from darkroom.server import auth, handler, routes
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
-from tests.shared import VIEWER_SECRET, fetch, own_database, settings_from, start_server
+from tests.shared import VIEWER_SECRET, fetch, own_database, private_socket_folder, serve_in_thread, settings_from, start_server, worker_fetch
 from tests.test_browser_jobs import add_account
 
 TOKEN = "worker-token-canary-0123456789abcdef0123456789"
@@ -41,7 +47,7 @@ class WorkerApiServer(unittest.TestCase):
 
     def worker(self, method, path, body=None, token=None):
         headers = {"Authorization": f"Bearer {token or self.token}", "Content-Type": "application/json"}
-        status, _, reply = fetch(self.base, method, path, headers, json.dumps(body if body is not None else {}).encode())
+        status, _, reply = worker_fetch(self.base, method, path, headers, json.dumps(body if body is not None else {}).encode())
         self.replies.append(reply)
         return status, json.loads(reply) if reply else None
 
@@ -183,7 +189,7 @@ class WorkerRoundTripTests(WorkerApiServer):
     def test_bad_bodies_and_ids_are_refused(self):
         job_id = self.enqueue()
         self.claim()
-        status, _, _ = fetch(self.base, "POST", f"/internal/browser/jobs/{job_id}/progress", {"Authorization": f"Bearer {TOKEN}"}, b"not json")
+        status, _, _ = worker_fetch(self.base, "POST", f"/internal/browser/jobs/{job_id}/progress", {"Authorization": f"Bearer {TOKEN}"}, b"not json")
         self.assertEqual(status, 400)
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/progress", {"message": "x" * 501})[0], 400)
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/progress", {})[0], 400)
@@ -206,12 +212,12 @@ class WorkerTokenTests(WorkerApiServer):
             for header in ({"Authorization": TOKEN}, {"Authorization": f"Basic {TOKEN}"}, {"Authorization": f"Bearer {TOKEN} extra"}, {"Authorization": "Bearer " + "x" * 2000},
                            {"Cookie": f"{auth.SESSION_COOKIE}={TOKEN}"}, {"X-Worker-Token": TOKEN}):
                 with self.subTest(header=header):
-                    status, _, _ = fetch(self.base, "POST", "/internal/browser/jobs/claim", header, b"{}")
+                    status, _, _ = worker_fetch(self.base, "POST", "/internal/browser/jobs/claim", header, b"{}")
                     self.assertEqual(status, 401)
             self.assertEqual(self.worker("POST", "/internal/browser/jobs/claim")[0], 200)
 
     def test_the_worker_token_is_not_a_session_and_cross_site_rules_do_not_apply_to_it(self):
-        status, _, _ = fetch(self.base, "POST", "/internal/browser/jobs/claim", {"Authorization": f"Bearer {TOKEN}", "Origin": "https://evil.example"}, b"{}")
+        status, _, _ = worker_fetch(self.base, "POST", "/internal/browser/jobs/claim", {"Authorization": f"Bearer {TOKEN}", "Origin": "https://evil.example"}, b"{}")
         self.assertEqual(status, 200)
 
     def test_every_worker_and_session_route_is_in_the_table(self):
@@ -237,8 +243,67 @@ class NoTokenTests(WorkerApiServer):
     def test_an_unset_token_refuses_every_worker_request(self):
         for header in ({}, {"Authorization": "Bearer "}, {"Authorization": "Bearer x"}):
             with self.subTest(header=header):
-                status, _, _ = fetch(self.base, "POST", "/internal/browser/jobs/claim", header, b"{}")
+                status, _, _ = worker_fetch(self.base, "POST", "/internal/browser/jobs/claim", header, b"{}")
                 self.assertEqual(status, 401)
+
+
+class WorkerSocketTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = private_socket_folder(self)
+        self.socket_path = self.folder / config.WORKER_SOCKET.name
+        self.engine = own_database(self)
+        self.settings = settings_from(browser_token=TOKEN, DARKROOM_ONE_CONTAINER="1", DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_PUBLIC_URL="http://127.0.0.1")
+
+    def claim_over(self, socket_path, token=TOKEN):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+            stream.settimeout(10)
+            stream.connect(str(socket_path))
+            stream.sendall(f"POST /internal/browser/jobs/claim HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}".encode())
+            return b"".join(iter(lambda: stream.recv(65536), b"")).split(b"\r\n", 1)[0]
+
+    def test_the_worker_api_listens_only_on_a_0600_socket_in_the_private_folder_and_clears_a_stale_one(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale:
+            stale.bind(str(self.socket_path))
+        server = handler.make_worker_server(self.settings, self.socket_path, self.engine)
+        serve_in_thread(self, server)
+        self.assertEqual(stat.S_IMODE(os.lstat(self.socket_path).st_mode), handler.SOCKET_MODE)
+        with no_leaks(self, TOKEN, database=self.engine):
+            self.assertEqual(self.claim_over(self.socket_path), b"HTTP/1.0 200 OK")
+            self.assertEqual(self.claim_over(self.socket_path, "x" * 40), b"HTTP/1.0 401 Unauthorized")
+
+    def test_the_worker_api_refuses_a_folder_others_can_enter_a_socket_elsewhere_and_a_file_in_its_place(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        for socket_path in (Path(outside.name) / config.WORKER_SOCKET.name, self.folder / "inner" / config.WORKER_SOCKET.name, Path("worker-api.sock")):
+            with self.subTest(socket_path=str(socket_path)), self.assertRaises(handler.SocketRefused):
+                handler.make_worker_server(self.settings, socket_path, self.engine)
+        self.socket_path.write_text("not a socket")
+        with self.assertRaisesRegex(handler.SocketRefused, "something other than a socket"):
+            handler.make_worker_server(self.settings, self.socket_path, self.engine)
+        self.assertEqual(self.socket_path.read_text(), "not a socket")
+        self.socket_path.unlink()
+        self.folder.chmod(0o750)
+        self.addCleanup(self.folder.chmod, 0o700)
+        with self.assertRaisesRegex(handler.SocketRefused, "not private"):
+            handler.make_worker_server(self.settings, self.socket_path, self.engine)
+        self.assertFalse(self.socket_path.exists())
+
+    def test_serve_starts_the_worker_api_only_in_the_one_container_and_carries_on_without_it_when_refused(self):
+        with mock.patch.object(config, "WORKER_SOCKET", self.socket_path):
+            self.assertIsNone(run.serve_worker_api(settings_from(browser_token=TOKEN), self.engine))
+            self.assertFalse(self.socket_path.exists())
+            served = run.serve_worker_api(self.settings, self.engine)
+            self.assertIsNotNone(served)
+            self.addCleanup(served.server_close)
+            self.addCleanup(served.shutdown)
+            self.assertEqual(self.claim_over(self.socket_path), b"HTTP/1.0 200 OK")
+        logged = io.StringIO()
+        for broken in (handler.SocketRefused("the internal socket folder is not private to this user"), PermissionError("denied")):
+            with self.subTest(broken=type(broken).__name__), mock.patch.object(handler, "make_worker_server", side_effect=broken), redirect_stderr(logged):
+                self.assertIsNone(run.serve_worker_api(self.settings, self.engine))
+        self.assertIn("the internal socket folder is not private to this user", logged.getvalue())
+        self.assertIn("PermissionError", logged.getvalue())
+        self.assertNotIn("denied", logged.getvalue())
 
 
 class TokenConfigTests(unittest.TestCase):
