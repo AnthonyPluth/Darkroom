@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import os
+import socketserver
+import stat
 from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import Engine
 from sqlalchemy.exc import OperationalError
 
-from darkroom import monitoring
+from darkroom import config, monitoring, tls
 from darkroom.config import Settings, no_auth_allowed
 from darkroom.server import auth, routes, static, wizard
 from darkroom.server.common import CSP, Principal, Request, Response, asks_for_websocket, error_response, header, viewer_url
@@ -41,8 +45,15 @@ def authenticate(route: routes.Route, request: Request) -> Principal | None:
     return check(request) if check is not None else None
 
 
+def on_its_listener(found: tuple[routes.Route, dict[str, str]] | None, request: Request) -> bool:
+    for_the_worker = found is not None and found[0].auth == "worker"
+    return for_the_worker == request.worker_socket
+
+
 def dispatch(request: Request) -> Response:
     found = routes.match(request.method, request.path)
+    if not on_its_listener(found, request):
+        return error_response("not found", 404)
     if found is None:
         if request.method == "GET" and not request.path.startswith(("/api/", "/internal/")):
             return static.serve(request.path, vnc_url=viewer_url(request.settings) or "")
@@ -101,6 +112,10 @@ def safe_dispatch(request: Request) -> Response:
 class Handler(BaseHTTPRequestHandler):
     settings: Settings
     engine: Engine | None = None
+    worker_socket = False
+
+    def peer(self) -> str:
+        return str(self.client_address[0])
 
     def handle_any(self) -> None:
         parts = urlsplit(self.path)
@@ -112,7 +127,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reject(400 if length < 0 else 413)
             return
         request = Request(self.command, parts.path, parse_qs(parts.query), dict(self.headers.items()),
-                          self.rfile.read(length) if length else b"", self.settings, self.engine, client=str(self.client_address[0]), target=self.path)
+                          self.rfile.read(length) if length else b"", self.settings, self.engine, client=self.peer(), target=self.path,
+                          worker_socket=self.worker_socket)
         self.answer(safe_dispatch(request))
 
     def answer(self, response: Response) -> None:
@@ -164,3 +180,52 @@ class Server(ThreadingHTTPServer):
 def make_server(settings: Settings, host: str | None = None, port: int | None = None, engine: Engine | None = None) -> ThreadingHTTPServer:
     bound = type("BoundHandler", (Handler,), {"settings": settings, "engine": engine or db.make_engine(db.database_url(settings))})
     return Server((host or settings.host, settings.port if port is None else port), bound)
+
+
+SOCKET_MODE = 0o600
+
+
+class SocketRefused(Exception):
+    pass
+
+
+class WorkerHandler(Handler):
+    worker_socket = True
+
+    def peer(self) -> str:
+        return ""
+
+
+class WorkerSocketServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+    def __init__(self, socket_path: str, handler: type[WorkerHandler]) -> None:
+        self.socket_path = socket_path
+        super().__init__(socket_path, handler)
+
+    def server_bind(self) -> None:
+        super().server_bind()
+        os.chmod(self.socket_path, SOCKET_MODE)
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        monitoring.report()
+
+
+def clear_stale_socket(socket_path: str) -> None:
+    try:
+        found = os.lstat(socket_path)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(found.st_mode):
+        raise SocketRefused("something other than a socket is where the worker's socket goes")
+    os.unlink(socket_path)
+
+
+def make_worker_server(settings: Settings, socket_path: Path | None = None, engine: Engine | None = None) -> WorkerSocketServer:
+    try:
+        checked = tls.private_socket(str(config.WORKER_SOCKET if socket_path is None else socket_path))
+    except tls.Refused as refused:
+        raise SocketRefused(str(refused)) from None
+    clear_stale_socket(checked)
+    bound = type("BoundWorkerHandler", (WorkerHandler,), {"settings": settings, "engine": engine or db.make_engine(db.database_url(settings))})
+    return WorkerSocketServer(checked, bound)

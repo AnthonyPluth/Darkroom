@@ -6,6 +6,7 @@ import dataclasses
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 from sqlalchemy import Engine
@@ -503,6 +504,19 @@ def run_demo(folder: str | None) -> int:
     return 1 if summary.failed else 0
 
 
+def serve_worker_api(settings: config.Settings, engine: Engine) -> handler.WorkerSocketServer | None:
+    if not settings.one_container:
+        return None
+    try:
+        server = handler.make_worker_server(settings, engine=engine)
+    except (handler.SocketRefused, OSError) as error:
+        monitoring.log("the browser worker's API is not served", reason=str(error) if isinstance(error, handler.SocketRefused) else type(error).__name__, level="warning")
+        return None
+    threading.Thread(target=server.serve_forever, name="worker-api", daemon=True).start()
+    monitoring.log("serving the browser worker's API on its private socket")
+    return server
+
+
 def serve() -> int:
     settings = config.load()
     refused = config.refuses_to_start(settings)
@@ -536,12 +550,16 @@ def serve() -> int:
     scheduler = jobs.for_serving(settings, engine, utc_now().timestamp())
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
+    worker_api = serve_worker_api(settings, engine)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         scheduler.stop()
         server.server_close()
+        if worker_api is not None:
+            worker_api.shutdown()
+            worker_api.server_close()
     return 0
 
 

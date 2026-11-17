@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import stat
 import sys
 from pathlib import Path
@@ -43,6 +44,18 @@ def prepare(socket_path: Path, folder: Path = SOCKET_FOLDER) -> None:
     if not private:
         raise Refused("the folder for the internal sockets is not private to the container's user")
     clear_stale_socket(socket_path)
+
+
+def accepting(socket_path: Path, folder: Path = SOCKET_FOLDER, timeout: float = 2.0) -> bool:
+    try:
+        if not in_folder(socket_path, folder) or not private_folder(folder):
+            return False
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+            stream.settimeout(timeout)
+            stream.connect(str(socket_path))
+    except OSError:
+        return False
+    return True
 
 
 def main(argv: list[str], folder: Path = SOCKET_FOLDER) -> int:

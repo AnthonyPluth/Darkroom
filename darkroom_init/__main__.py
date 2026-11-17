@@ -4,17 +4,16 @@ import os
 import secrets
 import signal
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
-from darkroom_init import plan, supervisor, syncthing
+from darkroom_init import plan, sockets, supervisor, syncthing
 
 TOKEN_BYTES = 32
 
 
-def app_ready(given: Mapping[str, str]) -> Callable[[], bool]:
-    port = given.get("DARKROOM_PORT", "8000")
-    return lambda: supervisor.listening(int(port) if port.isascii() and port.isdigit() else 8000)
+def app_ready() -> bool:
+    return sockets.accepting(plan.WORKER_SOCKET, plan.SOCKET_FOLDER)
 
 
 def main(given: Mapping[str, str] | None = None) -> int:
@@ -25,7 +24,7 @@ def main(given: Mapping[str, str] | None = None) -> int:
     if plan.syncthing_on(given):
         held["syncthing"] = secrets.token_urlsafe(TOKEN_BYTES)
     ready = syncthing.key_rotated(Path(plan.syncthing_home(given)), held)
-    running = supervisor.Supervisor(plan.specs(given, app_ready(given), supervisor.display_ready(given), ready), held, adopt_orphans=adopt)
+    running = supervisor.Supervisor(plan.specs(given, app_ready, supervisor.display_ready(given), ready), held, adopt_orphans=adopt)
     signal.signal(signal.SIGTERM, running.stop)
     signal.signal(signal.SIGINT, running.stop)
     supervisor.log("init started", orphans_adopted=int(adopt))

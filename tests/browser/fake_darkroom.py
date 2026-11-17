@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import json
+import socketserver
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 
 TOKEN = "fake-darkroom-worker-token-canary-0123456789abcdef"
+SOCKET_NAME = "worker-api.sock"
 
 
 class FakeDarkroom:
-    def __init__(self, token: str = TOKEN) -> None:
+    def __init__(self, token: str = TOKEN, on_tcp: bool = False, folder: Path | None = None) -> None:
         self.token = token
         self.queue: list[dict[str, Any]] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.seen: list[str] = []
         self.lost: set[int] = set()
         self.outage = False
         self.lock = threading.Lock()
@@ -33,6 +38,8 @@ class FakeDarkroom:
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
+                with fake.lock:
+                    fake.seen.append(self.headers.get("Authorization") or "")
                 if self.headers.get("Authorization") != f"Bearer {fake.token}":
                     self.reply({"error": "sign in required"}, 401)
                     return
@@ -53,8 +60,20 @@ class FakeDarkroom:
                         fake.lost.add(job_id)
                     self.reply({"job": {"id": job_id, "kind": "noop", "account": "1", "payload": {}}})
 
-        self.server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.server: socketserver.BaseServer
+        self.base = ""
+        self.held: tempfile.TemporaryDirectory[str] | None = None
+        if on_tcp:
+            self.server = HTTPServer(("127.0.0.1", 0), Handler)
+            self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+            self.port = int(self.server.server_address[1])
+        else:
+            if folder is None:
+                self.held = tempfile.TemporaryDirectory()
+                folder = Path(self.held.name)
+            self.folder = folder
+            self.socket_path = folder / SOCKET_NAME
+            self.server = socketserver.UnixStreamServer(str(self.socket_path), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def start(self) -> FakeDarkroom:
@@ -62,9 +81,13 @@ class FakeDarkroom:
         return self
 
     def stop(self) -> None:
-        self.server.shutdown()
+        if self.thread.is_alive():
+            self.server.shutdown()
+            self.thread.join(timeout=5)
         self.server.server_close()
-        self.thread.join(timeout=5)
+        if self.held is not None:
+            self.held.cleanup()
+            self.held = None
 
     def enqueue(self, job_id: int, kind: str = "noop", account: str = "1", payload: dict[str, Any] | None = None) -> None:
         self.queue.append({"id": job_id, "kind": kind, "account": account, "payload": payload or {}})

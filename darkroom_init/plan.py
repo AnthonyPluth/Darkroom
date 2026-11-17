@@ -21,6 +21,7 @@ SOCKET_FOLDER = Path("/run/darkroom")
 VNC_SOCKET = SOCKET_FOLDER / "vnc.sock"
 VIEWER_SOCKET = SOCKET_FOLDER / "viewer.sock"
 SYNCTHING_SOCKET = SOCKET_FOLDER / "syncthing.sock"
+WORKER_SOCKET = SOCKET_FOLDER / "worker-api.sock"
 X11VNC = "/usr/bin/x11vnc"
 WEBSOCKIFY = "/usr/bin/websockify"
 
@@ -75,7 +76,6 @@ def worker_env(given: Mapping[str, str]) -> dict[str, str]:
     photos = given.get("DARKROOM_PHOTOS_ROOT", "/photos")
     fixed = {
         "PATH": f"/opt/worker/bin:{SYSTEM_PATH}",
-        "DARKROOM_PORT": given.get("DARKROOM_PORT", "8000"),
         "PHOTOS_ROOT": photos,
         "BROWSER_ROOT": given.get("DARKROOM_BROWSER_ROOT") or f"{photos.rstrip('/')}/_browser",
         "DISPLAY": given.get("DISPLAY", ":99"),

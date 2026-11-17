@@ -66,6 +66,7 @@ VIEWER_FILES = Path("/usr/share/novnc")
 VIEWER_SOCKET = Path("/run/darkroom/viewer.sock")
 VIEWER_USER = "darkroom"
 SYNCTHING_SOCKET = Path("/run/darkroom/syncthing.sock")
+WORKER_SOCKET = Path("/run/darkroom/worker-api.sock")
 StoredKind = Literal["text", "address", "list", "secret", "sealed"]
 
 

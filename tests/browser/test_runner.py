@@ -14,11 +14,13 @@ from sqlalchemy import select, update
 from darkroom.domain import browser_jobs, renewal
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
+from darkroom_browser import __main__ as worker_main
+from darkroom_browser import client as app_client
 from darkroom_browser import config, context, runner
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from tests.browser.fake_darkroom import TOKEN, FakeDarkroom
 from tests.privacy import no_leaks
-from tests.shared import own_database, settings_from, start_server
+from tests.shared import fetch, own_database, settings_from, start_server, worker_socket_of
 from tests.test_browser_jobs import add_account
 
 
@@ -59,8 +61,12 @@ class FakeBrowser:
         self.closed = True
 
 
-def settings_for(base, photos, poll=0.01):
-    return config.Settings(8000, TOKEN, photos, ":99", poll, "test-worker")
+def settings_for(photos, poll=0.01):
+    return config.Settings(TOKEN, photos, ":99", poll, "test-worker")
+
+
+def client_of(fake, token=TOKEN):
+    return Client(fake.socket_path, token, folder=fake.folder)
 
 
 def handed(value):
@@ -88,8 +94,8 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         return browser
 
     def make_runner(self, registry, heartbeat=0.05, give_up=30.0):
-        settings = settings_for(self.fake.base, self.photos)
-        return runner.Runner(settings, Client(self.fake.base, TOKEN), self.open_browser, registry, sleep=self.sleeps.append, heartbeat_seconds=heartbeat,
+        settings = settings_for(self.photos)
+        return runner.Runner(settings, client_of(self.fake), self.open_browser, registry, sleep=self.sleeps.append, heartbeat_seconds=heartbeat,
                              give_up_seconds=give_up, abandon=self.abandoned.set)
 
     def reported(self):
@@ -114,7 +120,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         appdata = tempfile.TemporaryDirectory()
         self.addCleanup(appdata.cleanup)
         profiles = []
-        settings = config.Settings(8000, TOKEN, self.photos, ":99", 0.01, "test-worker", Path(appdata.name) / "browser")
+        settings = config.Settings(TOKEN, self.photos, ":99", 0.01, "test-worker", Path(appdata.name) / "browser")
 
         def opens(ctx):
             ctx.browser()
@@ -125,7 +131,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
             return FakeBrowser()
 
         self.fake.enqueue(25)
-        worker = runner.Runner(settings, Client(self.fake.base, TOKEN), open_browser, {"noop": opens}, sleep=self.sleeps.append, heartbeat_seconds=0.05, abandon=self.abandoned.set)
+        worker = runner.Runner(settings, client_of(self.fake), open_browser, {"noop": opens}, sleep=self.sleeps.append, heartbeat_seconds=0.05, abandon=self.abandoned.set)
         self.assertEqual(worker.run_job(self.fake.queue.pop(0)), "done")
         self.assertEqual(profiles, [Path(appdata.name) / "browser" / "1" / "profile"])
 
@@ -184,7 +190,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
 
     def test_the_worker_gives_up_well_inside_darkrooms_lease(self):
         self.assertLessEqual(runner.GIVE_UP_SECONDS + 2 * runner.HEARTBEAT_SECONDS, browser_jobs.LEASE_SECONDS)
-        worker = runner.Runner(settings_for(self.fake.base, self.photos), Client(self.fake.base, TOKEN), self.open_browser, {})
+        worker = runner.Runner(settings_for(self.photos), client_of(self.fake), self.open_browser, {})
         self.assertIs(worker.abandon, runner.exit_now)
         with mock.patch.object(runner.os, "_exit") as exits:
             runner.exit_now()
@@ -366,7 +372,7 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.fake.stop()
         self.assertFalse(worker.tick())
         self.assertEqual(self.sleeps, [runner.BACKOFF_SECONDS, runner.BACKOFF_SECONDS])
-        wrong = runner.Runner(settings_for(self.fake.base, self.photos), Client(self.fake.base, "x" * 40), self.open_browser, {}, sleep=self.sleeps.append)
+        wrong = runner.Runner(settings_for(self.photos), client_of(self.fake, "x" * 40), self.open_browser, {}, sleep=self.sleeps.append)
         self.assertFalse(wrong.tick())
 
     def test_run_forever_stops_when_asked(self):
@@ -395,16 +401,75 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertEqual(len(self.fake.bodies("failed")), 1)
 
 
+class OnlyTheAppSocketTests(unittest.TestCase):
+    def private_folder(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        return Path(folder.name)
+
+    def test_a_stand_in_on_the_old_loopback_address_gets_no_token_and_hands_the_worker_no_job(self):
+        stand_in = FakeDarkroom(on_tcp=True).start()
+        self.addCleanup(stand_in.stop)
+        stand_in.enqueue(7)
+        folder, photos = self.private_folder(), self.private_folder()
+        ticks, opened = [], []
+        env = {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "DARKROOM_PORT": str(stand_in.port), "PHOTOS_ROOT": str(photos), "POLL_SECONDS": "1"}
+        with mock.patch.dict("os.environ", env, clear=True), mock.patch.object(app_client, "SOCKET_FOLDER", folder, create=True), \
+                mock.patch.object(app_client, "APP_SOCKET", folder / "worker-api.sock", create=True), \
+                mock.patch.object(runner.Runner, "run_forever", lambda worker: ticks.append(worker.tick())), \
+                mock.patch.object(worker_main.live, "open_context", lambda *args, **kwargs: opened.append(args) or FakeBrowser()), mock.patch.object(worker_main.os, "umask"):
+            self.assertEqual(worker_main.main(), 0)
+        self.assertEqual((stand_in.seen, [job["id"] for job in stand_in.queue], opened, ticks), ([], [7], [], [False]))
+
+    def test_a_socket_in_a_folder_others_can_enter_gets_no_token(self):
+        folder = self.private_folder()
+        fake = FakeDarkroom(folder=folder).start()
+        self.addCleanup(fake.stop)
+        fake.enqueue(3)
+        for mode in (0o750, 0o705, 0o777):
+            with self.subTest(mode=oct(mode)):
+                folder.chmod(mode)
+                with self.assertRaises(Unreachable):
+                    Client(fake.socket_path, TOKEN, folder=folder).claim("w")
+        folder.chmod(0o700)
+        self.assertEqual((fake.seen, [job["id"] for job in fake.queue]), ([], [3]))
+        self.assertEqual(Client(fake.socket_path, TOKEN, folder=folder).claim("w")["id"], 3)
+
+    def test_a_socket_outside_the_private_folder_or_a_folder_that_is_a_link_gets_no_token(self):
+        folder = self.private_folder()
+        inner = folder / "inner"
+        inner.mkdir(mode=0o700)
+        fake = FakeDarkroom(folder=inner).start()
+        self.addCleanup(fake.stop)
+        link = folder / "link"
+        link.symlink_to(inner)
+        for socket_path, private in ((fake.socket_path, folder), (link / "worker-api.sock", link), (Path("worker-api.sock"), Path(".")),
+                                     (inner / ".." / "inner" / "worker-api.sock", inner), (fake.socket_path, folder / "missing")):
+            with self.subTest(socket_path=str(socket_path), folder=str(private)), self.assertRaises(Unreachable):
+                Client(socket_path, TOKEN, folder=private).claim("w")
+        self.assertEqual(fake.seen, [])
+
+    def test_the_worker_reaches_the_app_only_on_the_socket_the_init_and_the_app_use(self):
+        from darkroom import config as darkroom_config
+        from darkroom_init import plan
+
+        self.assertEqual(app_client.APP_SOCKET, Path("/run/darkroom/worker-api.sock"))
+        self.assertEqual({app_client.APP_SOCKET, plan.WORKER_SOCKET, darkroom_config.WORKER_SOCKET}, {app_client.APP_SOCKET})
+        self.assertEqual(app_client.SOCKET_FOLDER, plan.SOCKET_FOLDER)
+        self.assertNotIn("DARKROOM_PORT", plan.worker_env({"DARKROOM_PORT": "8000"}))
+        self.assertFalse(hasattr(config, "darkroom_url"))
+
+
 class ClientTests(unittest.TestCase):
     def test_errors_are_typed_by_status(self):
         fake = FakeDarkroom().start()
         self.addCleanup(fake.stop)
-        client = Client(fake.base, TOKEN)
+        client = client_of(fake)
         fake.lost.add(1)
         with self.assertRaises(LeaseLost):
             client.heartbeat(1)
         with self.assertRaises(Refused) as refused:
-            Client(fake.base, "wrong" * 8).claim("w")
+            client_of(fake, "wrong" * 8).claim("w")
         self.assertEqual(refused.exception.status, 401)
         fake.outage = True
         with self.assertRaises(Refused):
@@ -415,44 +480,59 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(Client.error_text(b"not json"), "unreadable error")
         self.assertEqual(Client.error_text(b"[1]"), "unknown error")
 
-    def test_the_client_follows_no_redirects(self):
-        from http.server import BaseHTTPRequestHandler, HTTPServer
+    def test_the_client_follows_no_redirects_and_wants_a_json_object(self):
+        import socketserver
+        from http.server import BaseHTTPRequestHandler
 
-        class Redirecting(BaseHTTPRequestHandler):
+        replies = []
+
+        class Odd(BaseHTTPRequestHandler):
             def do_POST(self):
-                self.send_response(302)
-                self.send_header("Location", "https://evil.example/")
-                self.send_header("Content-Length", "0")
+                status, body = replies.pop(0)
+                self.send_response(status)
+                if status == 302:
+                    self.send_header("Location", "https://evil.example/")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
+                if body:
+                    self.wfile.write(body)
 
             def log_message(self, format, *args):
                 return None
 
-        server = HTTPServer(("127.0.0.1", 0), Redirecting)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        socket_path = Path(folder.name) / "worker-api.sock"
+        server = socketserver.UnixStreamServer(str(socket_path), Odd)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        with self.assertRaises(Unreachable):
-            Client(f"http://127.0.0.1:{server.server_address[1]}", TOKEN).claim("w")
+        client = Client(socket_path, TOKEN, folder=Path(folder.name))
+        for status, body in ((302, b""), (200, b"[1]")):
+            replies.append((status, body))
+            with self.subTest(status=status), self.assertRaises(Unreachable):
+                client.claim("w")
+        replies.append((200, b""))
+        self.assertIsNone(client.claim("w"))
+        self.assertEqual(Client(socket_path, TOKEN).folder, app_client.SOCKET_FOLDER)
 
 
 class ConfigTests(unittest.TestCase):
     def test_the_worker_refuses_to_start_without_a_usable_token(self):
         with tempfile.TemporaryDirectory() as folder:
-            good = config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w")
+            good = config.Settings(TOKEN, Path(folder), ":99", 15.0, "w")
             self.assertEqual(config.problems(good), [])
-            self.assertEqual(len(config.problems(config.Settings(8000, "", Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings(8000, "short", Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings(0, TOKEN, Path(folder), ":99", 15.0, "w"))), 1)
-            self.assertEqual(len(config.problems(config.Settings(70000, TOKEN, Path(folder) / "missing", ":99", 0.0, "w"))), 3)
+            self.assertEqual(len(config.problems(config.Settings("", Path(folder), ":99", 15.0, "w"))), 1)
+            self.assertEqual(len(config.problems(config.Settings("short", Path(folder), ":99", 15.0, "w"))), 1)
+            self.assertEqual(len(config.problems(config.Settings(TOKEN, Path(folder) / "missing", ":99", 0.0, "w"))), 2)
 
     def test_load_reads_the_environment(self):
         from unittest import mock
 
         with mock.patch.dict("os.environ", {"DARKROOM_PORT": "8123", "DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "POLL_SECONDS": "5", "WORKER_NAME": "w1"}, clear=True):
             loaded = config.load()
-        self.assertEqual((config.darkroom_url(loaded), loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), ("http://127.0.0.1:8123", TOKEN, "/p", ":99", 5.0, "w1"))
+        self.assertEqual((loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), (TOKEN, "/p", ":99", 5.0, "w1"))
 
     def test_a_separate_browser_root_is_read_and_must_be_absolute(self):
         from unittest import mock
@@ -462,14 +542,14 @@ class ConfigTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "BROWSER_ROOT": "/data/browser"}, clear=True):
             self.assertEqual(config.load().browser_root, Path("/data/browser"))
         with tempfile.TemporaryDirectory() as folder:
-            self.assertEqual(config.problems(config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
-            self.assertEqual(config.problems(config.Settings(8000, TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
+            self.assertEqual(config.problems(config.Settings(TOKEN, Path(folder), ":99", 15.0, "w", Path("/data/browser"))), [])
+            self.assertEqual(config.problems(config.Settings(TOKEN, Path(folder), ":99", 15.0, "w", Path("browser"))), ["BROWSER_ROOT must be an absolute path"])
             share = Path(folder) / "photos"
             share.mkdir()
             (Path(folder) / "linked").symlink_to(share)
             for root, refused in ((share, True), (share / "jo" / "originals", True), (Path(folder), True), (Path(folder) / "linked", True), (share / "_browser", False)):
                 with self.subTest(root=str(root)):
-                    found = config.problems(config.Settings(8000, TOKEN, share, ":99", 15.0, "w", root))
+                    found = config.problems(config.Settings(TOKEN, share, ":99", 15.0, "w", root))
                     self.assertEqual(found, ["BROWSER_ROOT must not be PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it"] if refused else [])
 
     def test_the_worker_refuses_to_start_with_a_browser_root_that_is_the_photo_share(self):
@@ -647,6 +727,7 @@ class ContextTests(unittest.TestCase):
 
     def test_paths_and_cancellation(self):
         reporter = FakeDarkroom()
+        self.addCleanup(reporter.stop)
         ctx = context.JobContext(5, "noop", "2", {}, Path("/photos"), reporter, lambda folder: FakeBrowser())
         self.assertEqual(ctx.profile_dir(), Path("/photos/_browser/2/profile"))
         self.assertEqual(ctx.failure_dir(), Path("/photos/_browser/2/failures/5"))
@@ -672,15 +753,18 @@ class RunnerAgainstDarkroom(unittest.TestCase):
         self.addCleanup(photos.cleanup)
         env = {"browser_token": TOKEN, "DARKROOM_ALLOW_NO_AUTH": "1", "DARKROOM_PHOTOS_ROOT": photos.name, "DARKROOM_PUBLIC_URL": "http://127.0.0.1"}
         base, settings = start_server(self, settings_from(**env), engine)
+        socket_path = worker_socket_of(base)
         with db.session(engine) as opened:
             account = add_account(opened)
             first = browser_jobs.enqueue(opened, account, "noop", None, 1.0).id
             second = browser_jobs.enqueue(opened, account, "noop", None, 2.0).id
         sleeps = []
-        worker = runner.Runner(settings_for(base, Path(photos.name)), Client(base, TOKEN), lambda folder: FakeBrowser(), sleep=sleeps.append)
+        worker = runner.Runner(settings_for(Path(photos.name)), Client(socket_path, TOKEN, folder=socket_path.parent), lambda folder: FakeBrowser(), sleep=sleeps.append)
         with no_leaks(self, TOKEN, database=engine):
+            self.assertEqual(fetch(base, "POST", "/internal/browser/jobs/claim", {"Authorization": f"Bearer {TOKEN}"}, b"{}")[0], 404)
             self.assertTrue(worker.tick())
-            stuck = runner.Runner(settings_for(base, Path(photos.name)), Client(base, TOKEN), lambda folder: FakeBrowser(), {"noop": lambda ctx: {}}, sleep=sleeps.append)
+            stuck = runner.Runner(settings_for(Path(photos.name)), Client(socket_path, TOKEN, folder=socket_path.parent), lambda folder: FakeBrowser(), {"noop": lambda ctx: {}},
+                                  sleep=sleeps.append)
             claimed = stuck.client.claim("stuck-worker")
             self.assertEqual(claimed["id"], second)
             self.assertFalse(worker.tick())

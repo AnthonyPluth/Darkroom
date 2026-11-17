@@ -56,6 +56,7 @@ class Request:
     params: Mapping[str, str] = field(default_factory=dict)
     target: str = ""
     client: str = ""
+    worker_socket: bool = False
 
 
 @dataclass(frozen=True)
