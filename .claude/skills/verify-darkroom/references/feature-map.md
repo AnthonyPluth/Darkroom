@@ -125,3 +125,63 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Touches:** `button:has-text('Full screen')`, `button:has-text('Exit full screen')`.
 - **Expects to see:** `Remote browser`, `Exit full screen`, `Full screen`.
 - **Drive it:** `tools/control flow browser-fullscreen`; or `poetry run python tools/verify.py run --flow browser-fullscreen`.
+
+## setup-welcome (`setup-welcome`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-welcome`.
+- **Drive it:** `tools/control goto setup-welcome`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-welcome"`.
+- **What usually breaks:**
+  - The `setup-*` images come from `make verify`'s own walk through the wizard, on two empty servers with `DARKROOM_WIZARD=1` and a made-up sign-in provider (`frontend/verify/setup.mjs`), one per width; `make verify PAGES="setup-welcome"` runs the whole walk.
+  - The Immich step checks the address with Immich before storing it, so the walk first saves `http://127.0.0.1:9`, where nothing answers (`setup-immich-refused`, the 422 the walk allows in the console), then the made-up Immich that `tools/verify_sign_in.py` starts beside the sign-in provider (`--immich`).
+  - The control session's demo server has the wizard off, so `goto setup-welcome` there shows Welcome, and Start setup leads only to "Setup isn't open".
+  - The images carry the servers' loopback ports (the Address field and the callback URL), which change on every run.
+
+## setup-address (`setup-address`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-address`.
+- **Drive it:** `tools/control goto setup-address`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-address"`.
+
+## setup-sign-in (`setup-sign-in`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-sign-in`.
+- **Drive it:** `tools/control goto setup-sign-in`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-sign-in"`.
+
+## setup-immich (`setup-immich`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-immich`.
+- **Drive it:** `tools/control goto setup-immich`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-immich"`.
+
+## setup-immich-refused (`setup-immich-refused`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-immich-refused`.
+- **Drive it:** `tools/control goto setup-immich-refused`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-immich-refused"`.
+
+## setup-people (`setup-people`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-people`.
+- **Drive it:** `tools/control goto setup-people`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-people"`.
+
+## setup-accounts (`setup-accounts`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-accounts`.
+- **Drive it:** `tools/control goto setup-accounts`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-accounts"`.
+
+## setup-pixels (`setup-pixels`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-pixels`.
+- **Drive it:** `tools/control goto setup-pixels`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-pixels"`.
+
+## setup-alerts (`setup-alerts`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-alerts`.
+- **Drive it:** `tools/control goto setup-alerts`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-alerts"`.
+
+## setup-done (`setup-done`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-done`.
+- **Drive it:** `tools/control goto setup-done`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-done"`.
+
+## setup-closed (`setup-closed`)
+
+- **Reach it:** `/setup`; control `tools/control goto setup-closed`.
+- **Drive it:** `tools/control goto setup-closed`, `tools/control snapshot --text`, then `click`/`type`/`press`; `tools/control viewport phone|desktop`; batch check `make verify PAGES="setup-closed"`.

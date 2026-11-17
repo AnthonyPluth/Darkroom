@@ -156,3 +156,23 @@ describe("the Remote browser page", () => {
     await vi.waitFor(() => expect(server.sent("GET /api/browser/view")).toHaveLength(2));
   });
 });
+
+describe("the Remote browser page opened from setup", () => {
+  afterEach(() => history.replaceState(null, "", "/"));
+
+  it("shows a way back to setup only when opened from it", async () => {
+    const routes = { "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995 }, "GET /api/accounts": { accounts: [familyAccount] }, "GET /api/browser/jobs": { jobs: [] } };
+    history.replaceState(null, "", "/browser?from=setup");
+    show(routes);
+    expect(screen.getByRole("link", { name: "Back to setup" })).toHaveAttribute("href", "/setup");
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to setup" })).toBeInTheDocument();
+  });
+
+  it("has no way back to setup otherwise", async () => {
+    history.replaceState(null, "", "/browser");
+    show({ "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995 }, "GET /api/accounts": { accounts: [] }, "GET /api/browser/jobs": { jobs: [] } });
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Back to setup" })).not.toBeInTheDocument();
+  });
+});
