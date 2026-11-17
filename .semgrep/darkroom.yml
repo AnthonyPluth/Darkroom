@@ -16,21 +16,25 @@ rules:
     message: >-
       Open outbound connections only through darkroom/tls.py (in the browser worker, through darkroom_browser/client.py,
       which reaches the app on its private socket). Nothing else imports socket or h2 since the APNs client went (#201),
-      so import-linter can no longer protect them; this rule does.
+      so import-linter can no longer protect them; this rule does, on the import and on every call into socket. The
+      client's one socket is allowed line by line, by a justified nosemgrep on its import and on its one socket open,
+      so any other socket in that file is still flagged (#393).
     severity: ERROR
     languages: [python]
-    patterns:
-      - pattern-either:
-          - pattern: import $M
-          - pattern: import $M as $A
-          - pattern: from $M import $X
-          - pattern: from $M import $X as $A
-      - metavariable-regex:
-          metavariable: $M
-          regex: ^(socket|h2)(\..*)?$
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: import $M
+              - pattern: import $M as $A
+              - pattern: from $M import $X
+              - pattern: from $M import $X as $A
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(socket|h2)(\..*)?$
+      - pattern: socket.$F(...)
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
-      exclude: ["/darkroom/tls.py", "/darkroom_browser/client.py"]
+      exclude: ["/darkroom/tls.py"]
 
   - id: darkroom-subprocess-only-exiftool
     message: >-
