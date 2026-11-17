@@ -497,6 +497,14 @@ describe("unpairing a Pixel with Darkroom's Syncthing on", () => {
     return screen.findByRole("dialog", { name: "Unpair Pixel 8?" });
   }
 
+  it("offers no Unpair in Edit Pixel when Darkroom's Syncthing is off, even for a Pixel with a device ID", async () => {
+    show({ ...pixels(() => false), "GET /api/pairing/device": reply(409, { error: "Darkroom's Syncthing is off" }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Pixel 8" }));
+    const form = await screen.findByRole("dialog", { name: "Edit Pixel" });
+    expect(within(form).getByLabelText("Name")).toBeInTheDocument();
+    expect(within(form).queryByRole("button", { name: /Unpair/ })).not.toBeInTheDocument();
+  });
+
   it("closes the form, asks first, and Cancel changes nothing", async () => {
     const server = show(pixels(() => false));
     const dialog = await openConfirm();
