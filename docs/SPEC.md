@@ -171,6 +171,8 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 **Time zones**
 
 - Store every capture time as UTC plus an offset. Use the EXIF offset when present, otherwise look it up from the GPS position, otherwise mark it unknown.
+- A Takeout item whose EXIF has a wall-clock time but no offset and no position, and whose sidecar has a `photoTakenTime` instant (#437): the two agree when the wall clock minus the instant is a whole number of quarter hours, give or take 2 seconds of rounding, between −12:00 and +14:00 (the offsets in use today, half- and quarter-hour zones included). Then that difference is the offset (`time_source` `sidecar_offset`), the EXIF wall clock is kept and the instant is that wall clock at that offset; the difference wins over an offset looked up from the sidecar's position. Otherwise the two disagree (a scan dated by the scanner, a date changed in Google) and are never mixed: the record keeps the EXIF wall clock with no instant and no offset (`unknown`), so the dedupe tiers and the `google-only/YYYY/MM/` folder use the wall clock alone, and the sidecar stays in `sidecar_json`. Nothing guesses a zone.
+- For a still, a `CreateDate` without a `DateTimeOriginal` or `CreationDate` (what a scanner or an editor writes) is no capture date when the sidecar has an instant: the sidecar's time is used, and the placed copy's XMP gets that date.
 - Waypoint needs this to match photos to trips that cross time zones.
 
 ## Legacy library import (#217)
