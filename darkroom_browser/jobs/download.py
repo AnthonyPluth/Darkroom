@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from darkroom_browser import selectors
+from darkroom_browser.config import local_zone
 from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, PartClick
 from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
 from darkroom_browser.jobs.status import open_archive
@@ -153,7 +154,7 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
 
 def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id, needed)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id, needed, zone=local_zone())
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":

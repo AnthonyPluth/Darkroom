@@ -2,8 +2,9 @@ import itertools
 import json
 import unittest
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from darkroom_browser.pages import takeout, takeout_data
 from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, MANAGE_PAGE, SIZES, archive, callback, completed_row, detail_blocks, downloaded_page_parts,
@@ -472,6 +473,99 @@ class ArchiveReconcileTests(unittest.TestCase):
     def test_the_download_job_reads_the_same_page_without_a_clock(self):
         found = takeout.parse_archive(detail_page(), ARCHIVE_PAGE, COMPLETED_ID, 1)
         self.assertEqual(([part.google_downloads for part in found.parts], found.unused), ([0, 0, 0], None))
+
+
+BRISBANE = ZoneInfo("Australia/Brisbane")
+LOS_ANGELES = ZoneInfo("America/Los_Angeles")
+
+
+def ms(*when, zone):
+    return int(datetime(*when, tzinfo=zone).timestamp() * 1000)
+
+
+def zoned(zone, created_ms, expires_ms, created="November 17, 2026", expires=None, now=None):
+    now = now if now is not None else created_ms / 1000 + 3600
+    export = completed(created_ms=created_ms, expires_ms=expires_ms)
+    listing = takeout.parse_exports(summary(completed_row(created="Created 1 hour ago", available=None)), MANAGE_PAGE, now, zone)[0]
+    page = detail_page(export, page=archive(created=created, expires=expires))
+    found = takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, now=now, zone=zone)
+    return found, (takeout.with_archive(listing, found, zone) if found.unused is None else None)
+
+
+class ZoneTests(unittest.TestCase):
+    def test_an_embedded_expiry_keeps_its_instant_whatever_the_workers_zone(self):
+        cases = {
+            "ahead of UTC, the UTC date the day before": (BRISBANE, ms(2026, 11, 17, 9, 0, zone=BRISBANE), ms(2026, 11, 24, 8, 0, zone=BRISBANE), date(2026, 11, 24)),
+            "behind UTC, the UTC date the day after": (LOS_ANGELES, ms(2026, 11, 17, 9, 0, zone=LOS_ANGELES), ms(2026, 11, 24, 20, 0, zone=LOS_ANGELES), date(2026, 11, 24)),
+            "the night daylight saving ends": (NEW_YORK, ms(2026, 10, 26, 12, 0, zone=NEW_YORK), ms(2026, 11, 1, 1, 30, zone=NEW_YORK), date(2026, 11, 1)),
+            "late on the day daylight saving ends": (NEW_YORK, ms(2026, 10, 26, 12, 0, zone=NEW_YORK), ms(2026, 11, 1, 23, 30, zone=NEW_YORK), date(2026, 11, 1)),
+            "the night daylight saving starts": (NEW_YORK, ms(2026, 3, 2, 12, 0, zone=NEW_YORK), ms(2026, 3, 8, 3, 30, zone=NEW_YORK), date(2026, 3, 8)),
+        }
+        for name, (zone, created_ms, expires_ms, local_day) in cases.items():
+            with self.subTest(name):
+                found, merged = zoned(zone, created_ms, expires_ms, created=datetime.fromtimestamp(created_ms / 1000, zone).strftime("%B %d, %Y"))
+                self.assertIsNone(found.unused)
+                self.assertEqual((found.expires_at, found.expires_on), (expires_ms / 1000, local_day))
+                self.assertEqual(merged.expires_at, expires_ms / 1000)
+
+    def test_an_export_is_not_expired_early_or_late_when_the_utc_date_differs(self):
+        from darkroom.domain import exports
+        from darkroom_browser.jobs import status
+
+        expires_ms = ms(2026, 11, 24, 8, 0, zone=BRISBANE)
+        _, merged = zoned(BRISBANE, ms(2026, 11, 17, 9, 0, zone=BRISBANE), expires_ms)
+        (item,) = exports.listing_from_result(status.report([merged]))
+        self.assertEqual(item.expires_at, expires_ms / 1000)
+        self.assertFalse(exports.is_late(item, expires_ms / 1000 - 3600))
+        self.assertTrue(exports.is_late(item, expires_ms / 1000))
+
+    def test_the_pages_dates_are_compared_with_the_embedded_times_on_the_workers_calendar(self):
+        created_ms = ms(2026, 11, 17, 7, 0, zone=BRISBANE)
+        expires_ms = ms(2026, 11, 24, 8, 0, zone=BRISBANE)
+        found, _ = zoned(BRISBANE, created_ms, expires_ms, created="November 18, 2026", expires="November 25, 2026")
+        self.assertEqual((found.unused, found.created_on, found.expires_on), (None, date(2026, 11, 17), date(2026, 11, 24)))
+        found, _ = zoned(BRISBANE, created_ms, expires_ms, created="November 19, 2026")
+        self.assertEqual(found.unused, f"it and the page disagree about the {takeout.ABOUT_CREATED}")
+        found, _ = zoned(LOS_ANGELES, ms(2026, 11, 17, 20, 0, zone=LOS_ANGELES), ms(2026, 11, 24, 20, 0, zone=LOS_ANGELES), created="November 16, 2026",
+                         expires="November 23, 2026")
+        self.assertEqual((found.unused, found.created_on, found.expires_on), (None, date(2026, 11, 17), date(2026, 11, 24)))
+        found, _ = zoned(LOS_ANGELES, ms(2026, 11, 17, 20, 0, zone=LOS_ANGELES), ms(2026, 11, 24, 20, 0, zone=LOS_ANGELES), expires="November 22, 2026")
+        self.assertEqual(found.unused, f"it and the page disagree about the {takeout.ABOUT_EXPIRY}")
+
+    def test_the_list_compares_and_keeps_instants_in_any_zone(self):
+        for zone in (BRISBANE, LOS_ANGELES, NEW_YORK):
+            with self.subTest(zone=str(zone)):
+                now = datetime(2026, 11, 17, 23, 30, tzinfo=zone).timestamp()
+                created_ms = int((now - 3600) * 1000) + 30_000
+                expires_ms = int(datetime(2026, 11, 24, 23, 30, tzinfo=zone).timestamp() * 1000)
+                page = list_page(completed(created_ms=created_ms, expires_ms=expires_ms), rows=(completed_row(available="Available until November 24, 2026 at 11:30 PM"),))
+                found = takeout.read_exports(page, MANAGE_PAGE, now, zone)
+                self.assertIsNone(found.unused)
+                self.assertEqual((found.listings[0].created_at, found.listings[0].expires_at), (created_ms / 1000, expires_ms / 1000))
+
+    def test_a_page_whose_text_dates_cannot_be_read_takes_the_local_dates_and_instant(self):
+        expires_ms = ms(2026, 11, 24, 8, 0, zone=BRISBANE)
+        found, merged = zoned(BRISBANE, ms(2026, 11, 17, 7, 0, zone=BRISBANE), expires_ms, created="Novembre 17", expires="24/11/2026")
+        self.assertEqual((found.created_on, found.expires_on, found.expires_at, merged.expires_at), (date(2026, 11, 17), date(2026, 11, 24), expires_ms / 1000, expires_ms / 1000))
+
+    def test_the_download_job_reading_an_incomplete_page_compares_dates_on_the_workers_calendar(self):
+        from darkroom_browser.jobs import download
+
+        unreadable = part_item(COMPLETED_ID, 0, 3, SIZES[0], NAMES[0], label="", index_attribute=False, downloaded=True)
+        items = [unreadable, *[part_item(COMPLETED_ID, index, 3, SIZES[index], NAMES[index]) for index in (1, 2)]]
+        export = completed(created_ms=ms(2026, 11, 17, 7, 0, zone=BRISBANE), expires_ms=ms(2026, 11, 24, 8, 0, zone=BRISBANE), parts=embedded_parts(downloaded=(1,)))
+        page = detail_page(export, page=archive(created="November 18, 2026", items=items))
+        self.assertEqual([part.number for part in takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, 2, zone=BRISBANE).parts], [2, 3])
+        with self.assertRaises(takeout.UnreadableExports):
+            takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, 2, zone=UTC)
+        with mock.patch.dict("os.environ", {"TZ": "Australia/Brisbane"}), mock.patch.object(download, "open_archive", return_value=(page, ARCHIVE_PAGE)):
+            self.assertEqual(sorted(download.part_links(mock.Mock(), mock.Mock(), COMPLETED_ID, 3, 2)), [2, 3])
+
+    def test_without_embedded_data_the_pages_date_is_read_as_before(self):
+        listing = takeout.parse_exports(summary(completed_row(available=None)), MANAGE_PAGE, NOW, NEW_YORK)[0]
+        found = takeout.parse_archive(archive(), ARCHIVE_PAGE, COMPLETED_ID, now=NOW, zone=NEW_YORK)
+        self.assertEqual((found.expires_at, found.expires_on), (None, date(2026, 11, 24)))
+        self.assertEqual(takeout.with_archive(listing, found, NEW_YORK).expires_at, at(2026, 11, 24, 0, 0))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 import os
 import unittest
+from datetime import datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from darkroom_browser import selectors
 from darkroom_browser.jobs import REGISTRY, session, status
@@ -259,6 +261,13 @@ class EmbeddedDataStatusTests(unittest.TestCase):
         self.assertEqual(len(result["exports"]), 3)
         self.assertEqual(reporter.kinds("progress"), ["read 3 exports; Takeout's embedded data was not used on the list of exports (it was nested too deeply); "
                                                       "Takeout's embedded data was not used on an export's page (it was not plain data)"])
+
+    def test_an_export_pages_embedded_expiry_is_reported_as_its_instant_in_a_zone_ahead_of_utc(self):
+        expires = datetime(2026, 11, 24, 8, 0, tzinfo=ZoneInfo("Australia/Brisbane")).timestamp()
+        with mock.patch.dict(os.environ, {"TZ": "Australia/Brisbane"}):
+            ctx, _, _ = context_for(SiteBrowser(site(summary(completed_row(available=None)), data.detail_page(data.completed(expires_ms=int(expires * 1000))))), wall=NOW)
+            result = status.check_exports(ctx)
+        self.assertEqual(result["exports"][0]["expires_at"], expires)
 
     def test_the_same_reason_on_many_pages_is_said_once(self):
         self.assertEqual(status.read_message(2, ["a", "b", "a", "a"]), "read 2 exports; a; b")

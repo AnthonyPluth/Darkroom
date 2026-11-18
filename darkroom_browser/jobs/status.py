@@ -60,7 +60,7 @@ def open_archive(ctx: JobContext, browser: Browser, url: str) -> Loaded:
 def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing, zone: tzinfo, unused: list[str]) -> takeout.ExportListing:
     if listing.state != "ready":
         return listing
-    detail = takeout.parse_archive(*open_archive(ctx, browser, listing.archive_url), listing.google_id, now=ctx.wall())
+    detail = takeout.parse_archive(*open_archive(ctx, browser, listing.archive_url), listing.google_id, now=ctx.wall(), zone=zone)
     if detail.unused is not None:
         unused.append(takeout.unused_note("an export's page", detail.unused))
     return takeout.with_archive(listing, detail, zone)

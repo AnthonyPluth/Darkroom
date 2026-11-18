@@ -260,6 +260,7 @@ class ArchiveDetail:
     parts: tuple[ListedPart, ...]
     unreadable: int = 0
     unused: str | None = None
+    expires_at: float | None = None
 
 
 ASCII_SPACE = " \t\n\r\f"
@@ -1002,8 +1003,8 @@ def matched_parts(reads: list[ReadPart], unread: int, parts: tuple[takeout_data.
                  for read, found in matched)
 
 
-def utc_date(moment: float) -> date:
-    return datetime.fromtimestamp(moment, UTC).date()
+def local_date(moment: float, zone: tzinfo) -> date:
+    return datetime.fromtimestamp(moment, zone).date()
 
 
 def days_apart(first: date | None, second: date | None) -> bool:
@@ -1011,22 +1012,22 @@ def days_apart(first: date | None, second: date | None) -> bool:
 
 
 def embedded_archive(state: ExportState, created_on: date | None, expires_on: date | None, reads: list[ReadPart], unread: int,
-                     export: takeout_data.EmbeddedExport | None) -> ArchiveDetail:
+                     export: takeout_data.EmbeddedExport | None, zone: tzinfo) -> ArchiveDetail:
     if export is None:
         raise Disagreement(ABOUT_ID)
     if not parts_fit_state(state, export):
         raise Disagreement(ABOUT_COUNT)
     parts = matched_parts(reads, unread, export.parts) if state == "ready" and export.parts is not None else ()
-    embedded_created = utc_date(export.created_at)
-    embedded_expiry = None if export.expires_at is None else utc_date(export.expires_at)
+    embedded_created = local_date(export.created_at, zone)
+    embedded_expiry = None if export.expires_at is None else local_date(export.expires_at, zone)
     if days_apart(created_on, embedded_created):
         raise Disagreement(ABOUT_CREATED)
     if days_apart(expires_on, embedded_expiry):
         raise Disagreement(ABOUT_EXPIRY)
-    return ArchiveDetail(state, embedded_created, embedded_expiry or expires_on, parts, unread)
+    return ArchiveDetail(state, embedded_created, embedded_expiry or expires_on, parts, unread, expires_at=export.expires_at)
 
 
-def parse_archive(page: str, address: str, google_id: str, needed: int | None = None, now: float | None = None) -> ArchiveDetail:
+def parse_archive(page: str, address: str, google_id: str, needed: int | None = None, now: float | None = None, zone: tzinfo = UTC) -> ArchiveDetail:
     reader = read_archive(page)
     fields = summary_fields(reader.chunks)
     state = STATE_WORDS.get(fields.get("overall status", ""))
@@ -1045,7 +1046,7 @@ def parse_archive(page: str, address: str, google_id: str, needed: int | None = 
     if embedded.unused is not None:
         return replace(page_detail, unused=embedded.unused)
     try:
-        return embedded_archive(state, created_on, expires_on, reads, unread, embedded.exports.get(google_id))
+        return embedded_archive(state, created_on, expires_on, reads, unread, embedded.exports.get(google_id), zone)
     except Disagreement as error:
         if unreadable or created_on is None or unread:
             raise UnreadableExports(error.refusal) from error
@@ -1079,7 +1080,7 @@ def with_archive(listing: ExportListing, detail: ArchiveDetail, zone: tzinfo) ->
     listed_on = datetime.fromtimestamp(listing.created_at, zone).date()
     if abs((listed_on - detail.created_on).days) > 1:
         raise UnreadableExports("an export's page on Takeout and the summary disagree about when it was created")
-    expires = listing.expires_at
+    expires = listing.expires_at if listing.expires_at is not None else detail.expires_at
     if expires is None and detail.expires_on is not None:
         expires = datetime.combine(detail.expires_on, time(), zone).timestamp()
     return replace(listing, expires_at=expires, parts=detail.parts)
