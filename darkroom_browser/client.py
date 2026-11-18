@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
-import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket.connect opens (#393)
+import re
+import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket opens when it is made (#393)
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, final
 
 TIMEOUT = 30.0
 MAX_REPLY = 1024 * 1024
@@ -45,20 +47,50 @@ def checked_socket(socket_path: Path, folder: Path) -> str:
     return text
 
 
-class OnSocket(http.client.HTTPConnection):  # nosemgrep: darkroom-no-raw-sockets -- the worker's one HTTP connection, which connect sends over the app's private Unix socket
-    def __init__(self, socket_path: str, timeout: float) -> None:
-        super().__init__("localhost", timeout=timeout)
-        self.socket_path = socket_path
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+HEADER_VALUE = re.compile(r"[\t\x20-\x7e]*")
+REQUEST_PATH = re.compile(r"/[\x21-\x7e]*")
 
-    def connect(self) -> None:
+
+@final
+class OnSocket:
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("OnSocket is the worker's one connection to the app's private socket and takes no subclass")
+
+    def __init__(self, socket_path: str, timeout: float) -> None:
         stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # nosemgrep: darkroom-no-raw-sockets -- the one socket the client opens, to the app's private Unix socket (#393)
-        stream.settimeout(self.timeout)
         try:
-            stream.connect(self.socket_path)
+            stream.settimeout(timeout)
+            stream.connect(socket_path)
         except OSError:
             stream.close()
             raise
         self.sock = stream
+        self.method = "POST"
+        self.reply: http.client.HTTPResponse | None = None
+
+    def request(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
+        if not HEADER_NAME.fullmatch(method):
+            raise ValueError("the request's method is not a token")
+        if not REQUEST_PATH.fullmatch(path):
+            raise http.client.InvalidURL("the request's path is not an absolute path of visible ASCII")
+        lines = [f"{method} {path} HTTP/1.1", "Host: localhost", "Accept-Encoding: identity", f"Content-Length: {len(body)}"]
+        for name, value in headers.items():
+            if not HEADER_NAME.fullmatch(name) or not HEADER_VALUE.fullmatch(value):
+                raise ValueError("a request header is not a token and a line of visible ASCII")
+            lines.append(f"{name}: {value}")
+        self.method = method
+        self.sock.sendall("\r\n".join(lines).encode("ascii") + b"\r\n\r\n" + body)
+
+    def getresponse(self) -> http.client.HTTPResponse:
+        self.reply = http.client.HTTPResponse(self.sock, method=self.method)
+        self.reply.begin()
+        return self.reply
+
+    def close(self) -> None:
+        if self.reply is not None:
+            self.reply.close()
+        self.sock.close()
 
 
 class Client:
@@ -69,13 +101,14 @@ class Client:
         self.timeout = timeout
 
     def exchange(self, path: str, data: bytes) -> tuple[int, bytes]:
-        connection = OnSocket(checked_socket(self.socket_path, self.folder), self.timeout)
+        socket_path = checked_socket(self.socket_path, self.folder)
         try:
-            try:
+            connection = OnSocket(socket_path, self.timeout)
+        except OSError as error:
+            raise Unreachable(type(error).__name__) from None
+        try:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 connection.request("POST", path, body=data, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
-            except (BrokenPipeError, ConnectionResetError):
-                if connection.sock is None:
-                    raise
             reply = connection.getresponse()
             return reply.status, reply.read(MAX_REPLY)
         except (OSError, http.client.HTTPException) as error:
