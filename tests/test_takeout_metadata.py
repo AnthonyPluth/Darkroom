@@ -91,6 +91,29 @@ class CandidateTests(unittest.TestCase):
         found = self.build(path, parsed(40.7, -74.0, taken=-86400))
         self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes), (-86400.0, "sidecar", -300))
 
+    def test_a_video_quicktime_date_stays_its_utc_instant_and_takes_the_offset_of_the_sidecar_position(self):
+        path = fixtures.make_video(self.root / "v.mp4", quicktime_utc="2019:07:04 12:30:15")
+        found = self.build(path, parsed(40.7, -74.0, taken=TAKEN + 3600))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "quicktime_utc", -240, "2019-07-04T08:30:15"))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (40.7, -74.0, "google"))
+
+    def test_a_video_quicktime_date_without_any_position_has_no_offset_and_no_wall_clock(self):
+        path = fixtures.make_video(self.root / "v.mp4", quicktime_utc="2019:07:04 12:30:15")
+        found = self.build(path, parsed())
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "quicktime_utc", None, None))
+
+    def test_a_video_with_its_own_position_gives_the_takeout_and_phone_sides_the_same_time(self):
+        path = fixtures.make_video(self.root / "v.mp4", quicktime_utc="2019:07:04 12:30:15", gps=(40.7, -74.0))
+        found = self.build(path, parsed(10.0, 20.0, taken=TAKEN + 3600))
+        phone = media.fingerprint(path, exiftool.read([path])[path])
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "quicktime_utc", -240, "2019-07-04T08:30:15"))
+        self.assertEqual((phone.captured_utc, phone.time_source, phone.offset_minutes, phone.captured_local), (found.captured_utc, found.time_source, found.offset_minutes, found.captured_local))
+
+    def test_an_apple_video_keeps_its_own_offset(self):
+        path = fixtures.make_video(self.root / "v.mov", creation="2019:07:04 08:30:15-04:00")
+        found = self.build(path, parsed(10.0, 20.0, taken=TAKEN + 3600))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "exif_offset", -240, "2019-07-04T08:30:15"))
+
     def test_the_raw_sidecar_is_kept(self):
         path = fixtures.make_jpeg(self.root / "a.jpg")
         side = parsed(40.7, -74.0)

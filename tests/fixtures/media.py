@@ -74,11 +74,15 @@ def make_pixel_bomb(path: Path, width: int = 40_000, height: int = 40_000) -> Pa
     return path
 
 
-def make_video(path: Path, creation: str | None = None) -> Path:
+def make_video(path: Path, creation: str | None = None, quicktime_utc: str | None = None, gps: tuple[float, float] | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(TINY_VIDEO, path)
     if creation:
         set_tags(path, {"QuickTime:CreateDate": creation, "Keys:CreationDate": creation})
+    if quicktime_utc:
+        set_tags(path, {"QuickTime:CreateDate": quicktime_utc})
+    if gps:
+        set_tags(path, {"UserData:GPSCoordinates": f"{gps[0]}, {gps[1]}"})
     return path
 
 
