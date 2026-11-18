@@ -315,6 +315,8 @@ class DownloadPartPlan(TypedDict):
     filename: str | None
     downloads_used: int
     attempts: int
+    max_downloads: int
+    max_attempts: int
 
 
 class DownloadPlan(TypedDict):
@@ -330,7 +332,7 @@ class PartBody(TypedDict):
     event: Literal["attempt", "progress", "done", "failed"]
     bytes: NotRequired[int]
     filename: NotRequired[str]
-    reason: NotRequired[Literal["corrupt", "wrong_size", "not_started", "interrupted", "bad_name"]]
+    reason: NotRequired[Literal["corrupt", "wrong_size", "not_started", "interrupted", "bad_name", "asked_to_verify"]]
 
 
 class PartReply(TypedDict):

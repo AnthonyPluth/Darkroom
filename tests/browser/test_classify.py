@@ -61,5 +61,131 @@ class ClassifyTests(unittest.TestCase):
                 self.assertEqual(takeout.classify(SIGNED_IN + form), takeout.SIGN_IN_NEEDED)
 
 
+NAME_CANARY = "Jocanary Quillfeather"
+EMAIL_CANARY = "quill.canary0913@example.test"
+TOKEN_CANARY = "AHWqTUcanaryToken4471"
+REAUTH_URL = f"https://accounts.google.com/v3/signin/challenge/pwd?TL={TOKEN_CANARY}&continue=https%3A%2F%2Ftakeout.google.com"
+REAUTH_UNWORDED = f"""<html><head><title>{NAME_CANARY}</title></head><body><h1>{NAME_CANARY}</h1><div><span>{EMAIL_CANARY}</span></div>
+<p>Weiter</p><button>Weiter</button></body></html>"""
+REAUTH_WELCOME = f"""<html><head><title>Google Accounts</title></head><body><h1>Hi {NAME_CANARY}</h1>
+<div data-email="{EMAIL_CANARY}" id="profileIdentifier">{EMAIL_CANARY}</div><button>Next</button></body></html>"""
+SECRET_FIELD_ONLY = f"""<html><body><form method="post" action="/x?{TOKEN_CANARY}"><input type="hidden" name="TL" value="{TOKEN_CANARY}">
+<input name="Passwd" autocomplete="current-password"></form></body></html>"""
+SECRET_INPUT = '<html><body><div role="dialog"><input TYPE="Password" aria-label="x"></div></body></html>'
+ODD_PAGE = f"<html><head><title>{NAME_CANARY}</title></head><body><h1>Something went wrong</h1><h2>{EMAIL_CANARY}</h2><p>{TOKEN_CANARY}</p></body></html>"
+TAKEOUT_ADDRESS = "https://takeout.google.com/manage/archive/x"
+
+
+class ClassifyAfterAClickTests(unittest.TestCase):
+    def test_any_page_on_googles_accounts_host_is_one_the_owner_must_act_on_whatever_it_says(self):
+        for page in (REAUTH_UNWORDED, UNKNOWN, ""):
+            with self.subTest(page=page[:30]):
+                self.assertEqual(takeout.classify_at(page, REAUTH_URL), takeout.VERIFY_ITS_YOU)
+        self.assertEqual(takeout.classify_at(REAUTH_UNWORDED, "https://ACCOUNTS.google.com/"), takeout.VERIFY_ITS_YOU)
+
+    def test_a_password_field_alone_is_enough_on_any_host(self):
+        for page in (SECRET_FIELD_ONLY, SECRET_INPUT, SIGNED_IN.replace("</main>", SECRET_INPUT + "</main>")):
+            for address in (TAKEOUT_ADDRESS, "https://other.example/", "about:blank"):
+                with self.subTest(page=page[:30], address=address):
+                    self.assertEqual(takeout.classify_at(page, address), takeout.VERIFY_ITS_YOU)
+
+    def test_a_password_field_inside_a_script_does_not_count(self):
+        page = SIGNED_IN.replace("</head>", '<script>const f = \'<input type="password">\';</script></head>')
+        self.assertEqual(takeout.classify_at(page, TAKEOUT_ADDRESS), takeout.SIGNED_IN)
+
+    def test_a_greeting_or_identity_chip_off_takeout_asks_for_the_owner(self):
+        self.assertEqual(takeout.classify_at(REAUTH_WELCOME, "https://other.example/"), takeout.VERIFY_ITS_YOU)
+        self.assertEqual(takeout.classify_at("<html><body><h1>Welcome</h1><button>Next</button></body></html>", "https://other.example/"), takeout.VERIFY_ITS_YOU)
+
+    def test_re_authentication_wording_asks_for_the_owner(self):
+        for wording in ("Enter your password", "To continue, first verify it’s you", "Confirm your password"):
+            with self.subTest(wording=wording):
+                self.assertEqual(takeout.classify_at(f"<html><body><p>{wording}</p></body></html>", "https://other.example/"), takeout.VERIFY_ITS_YOU)
+
+    def test_the_existing_phrases_and_forms_still_decide_first(self):
+        self.assertEqual(takeout.classify_at(VERIFY, TAKEOUT_ADDRESS), takeout.VERIFY_ITS_YOU)
+        self.assertEqual(takeout.classify_at(SIGN_IN_NEEDED, TAKEOUT_ADDRESS), takeout.SIGN_IN_NEEDED)
+
+    def test_takeouts_own_signed_in_page_with_its_account_chip_stays_signed_in(self):
+        page = SIGNED_IN.replace("</nav>", f'<div data-email="{EMAIL_CANARY}">J</div></nav>')
+        self.assertEqual(takeout.classify_at(page, TAKEOUT_ADDRESS), takeout.SIGNED_IN)
+        self.assertEqual(takeout.classify_at(UNKNOWN, TAKEOUT_ADDRESS), takeout.UNKNOWN)
+        self.assertEqual(takeout.classify_at(ODD_PAGE, "https://www.google.com/sorry"), takeout.UNKNOWN)
+
+    def test_hosts_are_told_apart_by_the_real_host_only(self):
+        cases = {
+            "https://takeout.google.com/manage": "takeout",
+            REAUTH_URL: "accounts",
+            "https://accounts.google.com.evil.example/": "other",
+            "https://evil.example/?next=https://accounts.google.com/": "other",
+            "https://accounts.google.com@evil.example/": "other",
+            "https://jo@accounts.google.com/": "other",
+            "http://accounts.google.com/": "other",
+            "https://accounts.google.com\\@evil.example/": "other",
+            "chrome-error://chromewebdata/": "other",
+            "https://[::1/": "other",
+            "about:blank": "none",
+            "": "none",
+            "  ": "none",
+        }
+        for address, category in cases.items():
+            with self.subTest(address=address):
+                self.assertEqual(takeout.host_category(address), category)
+
+    def test_what_a_click_led_to_is_said_in_fixed_words_without_page_text(self):
+        said = takeout.click_findings(ODD_PAGE, REAUTH_URL, 2, False)
+        self.assertEqual(said, "another tab: page host accounts; no password field; an unrecognised title; 2 other headings; 2 tabs open")
+        self.assertEqual(takeout.click_findings(SECRET_FIELD_ONLY, TAKEOUT_ADDRESS, 1, True), "the job's own tab: page host takeout; a password field; no title or headings; 1 tab open")
+        self.assertEqual(takeout.click_findings("", "", 0, True), "the job's own tab: page host none; no password field; no title or headings; 0 tabs open")
+        for page in (ODD_PAGE, REAUTH_WELCOME, REAUTH_UNWORDED, SECRET_FIELD_ONLY):
+            said = takeout.click_findings(page, REAUTH_URL, 1, True)
+            for canary in (NAME_CANARY, NAME_CANARY.lower(), EMAIL_CANARY, TOKEN_CANARY, "quillfeather", "challenge"):
+                self.assertNotIn(canary, said)
+
+
+PART = "https://takeout.google.com/takeout/download?j=export-1&i=0&user=made-up"
+
+
+class DownloadOfThePartTests(unittest.TestCase):
+    REDIRECTED = "https://takeout-download.usercontent.google.com/download/takeout-20261102T031000Z-001.zip"
+
+    def test_a_download_naming_this_export_and_part_on_a_google_download_host_is_this_parts(self):
+        for url in (PART, "https://takeout.google.com/takeout/download?i=0&j=export-1", self.REDIRECTED + "?j=export-1&i=0&user=made-up",
+                    "https://storage.googleusercontent.com/x/takeout-001.zip?j=export-1&i=0", "https://google.com/x?j=export-1&i=0",
+                    "https://TAKEOUT-DOWNLOAD.usercontent.google.com:443/x?j=export-1&i=0"):
+            with self.subTest(url=url):
+                self.assertTrue(takeout.download_of_part(url, PART))
+
+    def test_a_download_naming_another_export_or_part_is_not(self):
+        for url in ("https://takeout.google.com/takeout/download?j=export-1&i=1&user=made-up", "https://takeout.google.com/takeout/download?j=export-2&i=0",
+                    self.REDIRECTED + "?j=export-1&i=1", self.REDIRECTED + "?j=export-2&i=0", self.REDIRECTED + "?i=0", self.REDIRECTED + "?j=export-1",
+                    "https://takeout.google.com/takeout/download?j=export-1&i=0&%6a=export-2", "https://takeout.google.com/takeout/download?j=export-1&i=0&i=1"):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, PART))
+
+    def test_a_download_without_ids_is_not_kept_whatever_its_name(self):
+        for url in (self.REDIRECTED, "https://takeout-download.usercontent.google.com/download/some-opaque-path", "https://takeout.google.com/takeout/download"):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, PART))
+
+    def test_a_host_that_is_not_one_of_googles_is_not_even_with_this_parts_ids(self):
+        for url in ("https://other.example/download/takeout-001.zip?j=export-1&i=0", "https://evilgoogle.com/x?j=export-1&i=0",
+                    "https://google.com.other.example/x?j=export-1&i=0", "https://xgoogleusercontent.com/x?j=export-1&i=0",
+                    "https://googleusercontent.com.other.example/x?j=export-1&i=0", "https://other.example/google.com?j=export-1&i=0",
+                    "https://127.0.0.1/x?j=export-1&i=0", "https://google.com./x?j=export-1&i=0"):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, PART))
+
+    def test_an_address_that_is_not_plain_https_or_is_off_takeouts_download_path_is_not(self):
+        for url in ("http://takeout-download.usercontent.google.com/x?j=export-1&i=0", "https://takeout.google.com/settings?j=export-1&i=0",
+                    "https://accounts.google.com/x?j=export-1&i=0", "https://ACCOUNTS.google.com/x?j=export-1&i=0",
+                    "https://takeout.google.com\\@other.example/takeout/download?j=export-1&i=0",
+                    "https://user@takeout-download.usercontent.google.com/x?j=export-1&i=0", "https://takeout-download.usercontent.google.com:8443/x?j=export-1&i=0",
+                    "", None, 7):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, PART))
+        self.assertFalse(takeout.download_of_part(PART, "https://takeout.google.com/takeout/download?j=export-1"))
+
+
 if __name__ == "__main__":
     unittest.main()

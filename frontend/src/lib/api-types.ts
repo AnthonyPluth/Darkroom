@@ -127,6 +127,8 @@ export interface DownloadPartPlan {
   filename: string | null;
   downloads_used: number;
   attempts: number;
+  max_downloads: number;
+  max_attempts: number;
 }
 
 export interface DownloadPlan {
@@ -336,7 +338,7 @@ export interface PartBody {
   event: "attempt" | "progress" | "done" | "failed";
   bytes?: number;
   filename?: string;
-  reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name";
+  reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name" | "asked_to_verify";
 }
 
 export interface PartReply {

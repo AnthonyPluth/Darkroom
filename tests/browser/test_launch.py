@@ -169,6 +169,13 @@ class OpenContextTests(unittest.TestCase):
         self.assertEqual(fake.stopped, 1)
         self.assertEqual(json.loads(log)["reason"], "browser_exited")
 
+    def test_open_context_watches_every_tab_for_downloads_with_handlers_playwright_can_wrap(self):
+        fake = WatchingPlaywright()
+        result, _ = self.open(fake)
+        self.assertNotIsInstance(result, Exception, result)
+        self.assertEqual(fake.context.handlers, ["page"])
+        self.assertEqual((fake.page.handlers, fake.popup.handlers), (["download"], ["download"]))
+
     def test_launch_failure_reaches_the_job_without_private_browser_output(self):
         private = "canary@example.invalid /private/profile token=canary-value"
         fake = FakePlaywright([LaunchError("No usable sandbox! " + private), LaunchError("Failed to move to new namespace " + private)])
@@ -179,6 +186,27 @@ class OpenContextTests(unittest.TestCase):
         self.assertEqual([json.loads(line)["reason"] for line in log.splitlines()], ["sandbox_unavailable"] * 2)
         for value in ("canary", "/private/profile"):
             self.assertNotIn(value, log + failure_message(result))
+
+
+class WrappingTarget:
+    def __init__(self):
+        self.handlers = []
+        self.pages = []
+
+    def on(self, event, handler):
+        from tests.browser.test_late_download import as_playwright_wraps
+
+        as_playwright_wraps(handler)
+        self.handlers.append(event)
+
+
+class WatchingPlaywright(FakePlaywright):
+    def __init__(self):
+        super().__init__([None])
+        self.page = WrappingTarget()
+        self.popup = WrappingTarget()
+        self.context = WrappingTarget()
+        self.context.pages = [self.page, self.popup]
 
 
 if __name__ == "__main__":

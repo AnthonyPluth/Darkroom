@@ -183,7 +183,8 @@ NUMBERS_DISAGREE = "a download on an export's page on Takeout shows part numbers
 DOWNLOADED_DISAGREE = "a download on an export's page on Takeout says both that it was and was not downloaded already"
 TOLD_APART = "an export's page on Takeout lists parts that could not be told apart"
 KNOWN_HEADINGS = ("google takeout", "summary", "status", "your exports", "your latest export", "create a new export", "manage your exports", "your google data",
-                  "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account")
+                  "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account", "confirm it's you",
+                  "welcome", "verify your identity", "enter your password", "google accounts")
 MAX_LANDMARKS = 8
 
 
@@ -598,6 +599,7 @@ def size_in_bytes(text: str) -> int | None:
 DOWNLOAD_HREF = re.compile(r"https://" + re.escape(selectors.DOWNLOAD_HOST) + r"/takeout/download(?:[?#].*)?")
 SINGLE_PARAMETERS = ("j", "i", "user")
 PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+GOOGLE_DOWNLOAD_DOMAINS = ("google.com", "googleusercontent.com")
 
 
 def single_parameters(href: str) -> dict[str, str] | None:
@@ -617,6 +619,27 @@ def single_parameters(href: str) -> dict[str, str] | None:
 def export_id_of(href: str) -> str | None:
     found = single_parameters(href)
     return None if found is None else found.get("j")
+
+
+def googles_download_host(url: str) -> bool:
+    authority = AUTHORITY.fullmatch(url)
+    if authority is None or "@" in authority.group(1):
+        return False
+    host, _, port = authority.group(1).lower().partition(":")
+    if port not in ("", "443") or host == selectors.ACCOUNTS_HOST:
+        return False
+    return host in GOOGLE_DOWNLOAD_DOMAINS or host.endswith(tuple("." + domain for domain in GOOGLE_DOWNLOAD_DOMAINS))
+
+
+def download_of_part(url: object, href: str) -> bool:
+    if not isinstance(url, str) or LINK_TRICKS.search(url) or not googles_download_host(url):
+        return False
+    if host_category(url) == "takeout" and DOWNLOAD_HREF.fullmatch(url) is None:
+        return False
+    got, wanted = single_parameters(url), single_parameters(href)
+    if got is None or wanted is None or wanted.get("j") is None or wanted.get("i") is None:
+        return False
+    return got.get("j") == wanted["j"] and got.get("i") == wanted["i"]
 
 
 def download_link(href: str, address: str, base: str | None) -> str | None:
@@ -935,10 +958,15 @@ def known_heading(text: str) -> str | None:
     return next((known for known in KNOWN_HEADINGS if text == known or text.startswith(known + " ")), None)
 
 
-def landmarks(page: str) -> str:
+def read_landmarks(page: str) -> LandmarkReader:
     reader = LandmarkReader()
     reader.feed(page)
     reader.close()
+    return reader
+
+
+def landmarks(page: str) -> str:
+    reader = read_landmarks(page)
     said: list[str] = []
     if reader.title is not None:
         title = known_heading(reader.title)
@@ -951,3 +979,75 @@ def landmarks(page: str) -> str:
     elif others:
         said.append(f"{others} other heading{'s' if others > 1 else ''}")
     return "; ".join(said) or "no title or headings"
+
+
+HostCategory = Literal["takeout", "accounts", "other", "none"]
+REAUTH_PHRASES = ("enter your password", "confirm your password", "re-enter your password", "type your password", "to continue, first verify it's you")
+GREETINGS = ("welcome", "hi ")
+IDENTITY_ATTRIBUTES = ("data-email", "data-identifier", "data-profile-identifier")
+IDENTITY_IDS = ("profileidentifier", "identifier-chip")
+AUTHORITY = re.compile(r"https://([^/?#]*)(?:[/?#].*)?", re.IGNORECASE | re.DOTALL)
+
+
+def host_category(address: str) -> HostCategory:
+    link = address.strip(ASCII_SPACE)
+    if not link or link.lower().startswith("about:"):
+        return "none"
+    found = AUTHORITY.fullmatch(link)
+    if found is None or LINK_TRICKS.search(link):
+        return "other"
+    host, _, port = found.group(1).lower().partition(":")
+    if "@" in found.group(1) or (port and not port.isdigit()):
+        return "other"
+    if host == selectors.TAKEOUT_HOST:
+        return "takeout"
+    return "accounts" if host == selectors.ACCOUNTS_HOST else "other"
+
+
+class OwnerFieldReader(SkippingReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.secret_field = False
+        self.identity = False
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        lowered = {name.lower(): value.lower() for name, value in attributes.items()}
+        if tag == "input" and (lowered.get("type", "").strip() == "password" or lowered.get("name", "").strip() == "passwd"):
+            self.secret_field = True
+        if any(name in lowered for name in IDENTITY_ATTRIBUTES) or lowered.get("id", "") in IDENTITY_IDS:
+            self.identity = True
+
+
+def owner_fields(page: str) -> OwnerFieldReader:
+    reader = OwnerFieldReader()
+    reader.feed(page)
+    reader.close()
+    return reader
+
+
+def greets_someone(page: str) -> bool:
+    reader = read_landmarks(page)
+    return any(heading == "welcome" or heading.startswith(GREETINGS) for heading in reader.headings)
+
+
+def classify_at(page: str, address: str) -> str:
+    state = classify(page)
+    if state in (SIGN_IN_NEEDED, VERIFY_ITS_YOU):
+        return state
+    host = host_category(address)
+    fields = owner_fields(page)
+    if host == "accounts" or fields.secret_field:
+        return VERIFY_ITS_YOU
+    if state == SIGNED_IN:
+        return state
+    if any(phrase in visible_text(page) for phrase in REAUTH_PHRASES):
+        return VERIFY_ITS_YOU
+    if host != "takeout" and (fields.identity or greets_someone(page)):
+        return VERIFY_ITS_YOU
+    return state
+
+
+def click_findings(page: str, address: str, tabs: int, own_tab: bool) -> str:
+    field = "a password field" if owner_fields(page).secret_field else "no password field"
+    which = "the job's own tab" if own_tab else "another tab"
+    return f"{which}: page host {host_category(address)}; {field}; {landmarks(page)}; {tabs} tab{'' if tabs == 1 else 's'} open"

@@ -8,6 +8,20 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+@dataclass(frozen=True)
+class Look:
+    address: str
+    page: str
+    primary: bool
+
+
+@dataclass(frozen=True)
+class PartClick:
+    selector: str
+    href: str
+    number: int
+
+
 class Browser(Protocol):
     def goto(self, url: str) -> None: ...
 
@@ -24,6 +38,12 @@ class Browser(Protocol):
     def link_targets(self, selector: str) -> list[str]: ...
 
     def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path: ...
+
+    def tabs(self) -> list[Look]: ...
+
+    def download_started(self) -> bool: ...
+
+    def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path: ...
 
     def screenshot(self, path: Path) -> None: ...
 

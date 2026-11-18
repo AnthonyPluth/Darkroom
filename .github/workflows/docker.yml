@@ -92,9 +92,9 @@ jobs:
       - name: Launch Chrome and Chromium in the image with the deployment sandbox
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -w /opt/worker/app -e PATH=/opt/worker/bin:/usr/local/bin:/usr/bin:/bin darkroom:smoke bash -c 'test -x /opt/google/chrome/chrome && bash /opt/worker/app/smoke.sh'
-      - name: Check that the image's Chromium resolves Takeout's links to the addresses the parser checked, with the deployment sandbox (tests/browser/test_chromium_links.py, which skips where there is no Chromium)
+      - name: Check that the image's Chromium resolves Takeout's links to the addresses the parser checked, with the deployment sandbox (tests/browser/test_chromium_links.py, which skips where there is no Chromium), and that the worker's real open_context records downloads on every tab (tests/browser/test_chromium_downloads.py)
         run: |
-          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke /opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke /opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links tests.browser.test_chromium_downloads
       - name: Copy browser profiles across mounts with the deployment sandbox, where cp -a is refused
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom:smoke bash /probe.sh
