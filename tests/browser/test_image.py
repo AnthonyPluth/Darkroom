@@ -175,8 +175,11 @@ class SingleImageTests(unittest.TestCase):
         self.assertNotIn("file:", job)
         self.assertIn("tags: darkroom:smoke", job)
         run_lines = [line.strip() for line in job.splitlines() if line.strip().startswith("docker run")]
-        self.assertEqual(len(run_lines), 4)
-        healthz, smoke, copy, init = run_lines
+        self.assertEqual(len(run_lines), 5)
+        healthz, smoke, links, copy, init = run_lines
+        self.assertIn(f"{SANDBOX} --shm-size=1g", links)
+        self.assertIn('-v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke', links)
+        self.assertTrue(links.endswith("/opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links"), "the image's own worker venv and Chromium run the link test, and it may not skip")
         self.assertIn(SANDBOX, copy)
         self.assertIn("--tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100", copy)
         self.assertTrue(copy.endswith("-w /app darkroom:smoke bash /probe.sh"))

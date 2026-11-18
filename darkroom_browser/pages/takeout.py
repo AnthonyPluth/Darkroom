@@ -463,7 +463,27 @@ def size_in_bytes(text: str) -> int | None:
 
 
 DOWNLOAD_HREF = re.compile(r"https://" + re.escape(selectors.DOWNLOAD_HOST) + r"/takeout/download(?:[?#].*)?")
-EXPORT_PARAMETER = re.compile(r"[?&]j=([^&#\s]+)")
+SINGLE_PARAMETERS = ("j", "i", "user")
+PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def single_parameters(href: str) -> dict[str, str] | None:
+    query = href.partition("#")[0].partition("?")[2]
+    found: dict[str, str] = {}
+    for pair in query.split("&"):
+        name, _, value = pair.partition("=")
+        decoded = PERCENT_ESCAPE.sub(lambda escape: chr(int(escape.group(1), 16)), name)
+        if decoded not in SINGLE_PARAMETERS:
+            continue
+        if name != decoded or decoded in found:
+            return None
+        found[decoded] = value
+    return found
+
+
+def export_id_of(href: str) -> str | None:
+    found = single_parameters(href)
+    return None if found is None else found.get("j")
 
 
 def download_link(href: str, address: str, base: str | None) -> str | None:
@@ -546,8 +566,7 @@ def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> t
         raise UnreadableExports("a download on an export's page on Takeout has no readable part number")
     raw, label = numbered[0]
     href = download_link(raw, address, base)
-    owner = None if href is None else EXPORT_PARAMETER.search(href.partition("#")[0])
-    if href is None or owner is None or owner.group(1) != google_id:
+    if href is None or export_id_of(href) != google_id:
         raise UnreadableExports("a download link on an export's page on Takeout is not one Darkroom can use")
     exact = set(item.sizes)
     if len(exact) == 1 and (value := exact.pop()).isdigit():
