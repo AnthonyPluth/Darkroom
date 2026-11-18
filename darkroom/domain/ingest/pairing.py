@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -132,22 +132,48 @@ def scan(root: Path) -> dict[Path, list[str]]:
     return folders
 
 
+def is_media(name: str) -> bool:
+    return Path(name).suffix.lower() in MEDIA_SUFFIXES
+
+
+def is_sidecar(name: str) -> bool:
+    return name.lower().endswith(".json") and name not in NON_MEDIA_JSON
+
+
+def digests_of(folders: dict[Path, list[str]], hashing: Digest) -> dict[Path, str]:
+    found: dict[Path, str] = {}
+    for folder, files in folders.items():
+        for name in files:
+            if not is_media(name):
+                continue
+            try:
+                found[folder / name] = hashing(folder / name)
+            except paths.OutsideRoot:
+                continue
+    return found
+
+
 def pair(staging_root: Path, hashing: Digest = paths.plain_sha1) -> PairingReport:
     folders = scan(staging_root)
+    return pair_names(folders.items(), digests_of(folders, hashing))
+
+
+def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[Path, str],
+               earlier_sidecars: Mapping[Path, Iterable[str]] | None = None) -> PairingReport:
+    earlier = earlier_sidecars or {}
     report = PairingReport()
     found_copies: dict[str, list[tuple[Path, Path | None]]] = {}
     used: set[Path] = set()
     json_files: list[Path] = []
-    for folder, files in folders.items():
-        sidecars: Sidecars = {name: folder / name for name in files if name.lower().endswith(".json") and name not in NON_MEDIA_JSON}
-        json_files.extend(sidecars.values())
+    for folder, listed in folders:
+        files = list(listed)
+        own: Sidecars = {name: folder / name for name in files if is_sidecar(name)}
+        json_files.extend(own.values())
+        sidecars: Sidecars = {name: folder / name for name in earlier.get(folder, ()) if is_sidecar(name)} | own
         for name in files:
             path = folder / name
-            if path.suffix.lower() not in MEDIA_SUFFIXES:
-                continue
-            try:
-                sha1 = hashing(path)
-            except paths.OutsideRoot:
+            sha1 = digests.get(path) if is_media(name) else None
+            if sha1 is None:
                 continue
             found = sidecar_for(path, sidecars)
             if found is not None:

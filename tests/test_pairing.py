@@ -1,4 +1,7 @@
+import hashlib
+import itertools
 import os
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -17,11 +20,80 @@ def unzip(manifest, target):
     return target
 
 
+def is_media(name):
+    return Path(name).suffix.lower() in pairing.MEDIA_SUFFIXES
+
+
+def sha1_of(data):
+    return hashlib.sha1(data, usedforsecurity=False).hexdigest()
+
+
+def listed_from_disk(root):
+    folders, digests = [], {}
+    if os.path.islink(root):
+        return folders, digests
+    for folder, names, files in os.walk(root):
+        names[:] = sorted(name for name in names if not name.startswith("."))
+        kept = []
+        for name in files:
+            found = os.lstat(os.path.join(folder, name))
+            if stat.S_ISREG(found.st_mode) and found.st_nlink == 1:
+                kept.append(name)
+                if is_media(name):
+                    digests[Path(folder) / name] = sha1_of(Path(folder, name).read_bytes())
+        folders.append((Path(folder), kept))
+    return folders, digests
+
+
+def listed_from_zips(manifest, staging, numbers=None):
+    by_folder, digests = {}, {}
+    for number, part in enumerate(manifest.parts):
+        if numbers is not None and number not in numbers:
+            continue
+        with zipfile.ZipFile(part) as archive:
+            for entry in archive.namelist():
+                path = staging / entry
+                by_folder.setdefault(path.parent, []).append(path.name)
+                if is_media(path.name):
+                    digests[path] = sha1_of(archive.read(entry))
+    return list(by_folder.items()), digests
+
+
+def mixed_export(root, seed, parts):
+    builder = TakeoutBuilder(root, seed=seed, parts=parts)
+    last = parts - 1
+    builder.photo("IMG_0101.JPG", part=0, sidecar_part=last)
+    builder.photo("IMG_0102.HEIC", form="supplemental", part=last, sidecar_part=0)
+    builder.photo("IMG_0103.JPG", form="truncated", part=1 % parts)
+    builder.photo("a_very_long_original_file_name_from_a_camera_roll_0104.JPG", form="limit", part=last)
+    builder.photo("IMG_0105.JPG", form=None, part=0)
+    shared = builder.image_bytes(".JPG")
+    builder.photo("IMG_0106.JPG", data=shared, part=0)
+    builder.add("IMG_0106.JPG", shared, "Family trip", last, "json", 0, None, "")
+    builder.add("IMG_0106(1).JPG", shared, "Weekend", 1 % parts, None, None, None, "", sidecar_name="IMG_0106.JPG(1).json")
+    builder.numbered_duplicate("IMG_0107", ".JPG", part=1 % parts)
+    builder.photo("IMG_0108.JPG", part=0)
+    builder.add("IMG_0108-edited.JPG", builder.image_bytes(".JPG"), "Photos from 2019", last, None, None, None, "")
+    builder.live_photo("IMG_0109", part=last)
+    builder.add("IMG_0109.MOV", builder.video_bytes(), "Holiday", 0, "json", last, None, "")
+    builder.photo("IMG_0110.JPG", year=2020, data=shared, part=last)
+    builder.orphan_sidecar("IMG_9998.JPG", part=0)
+    builder.orphan_sidecar("IMG_9997.JPG", year=2020, part=last)
+    builder.non_media(part=1 % parts)
+    return builder.build()
+
+
 class PairingTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
+
+    def pair(self, staging, hashing=pairing.paths.plain_sha1):
+        report = pairing.pair(staging, hashing)
+        folders, digests = listed_from_disk(staging)
+        self.assertEqual(pairing.pair_names(folders, digests), report)
+        return report
 
     def staged(self, builder):
         manifest = builder.build()
@@ -35,7 +107,7 @@ class PairingTests(unittest.TestCase):
         builder = TakeoutBuilder(self.root / f"export-{form}")
         builder.photo(name, form=form)
         manifest, staging = self.staged(builder)
-        item = self.only(pairing.pair(staging), name)
+        item = self.only(self.pair(staging), name)
         return item.sidecar.name if item.sidecar else None, manifest
 
     def test_each_rule_pairs_its_form(self):
@@ -58,7 +130,7 @@ class PairingTests(unittest.TestCase):
         builder = TakeoutBuilder(self.root / "dup")
         builder.numbered_duplicate("IMG_0001", ".JPG")
         _, staging = self.staged(builder)
-        report = pairing.pair(staging)
+        report = self.pair(staging)
         self.assertEqual(self.only(report, "IMG_0001(1).JPG").sidecar.name, "IMG_0001.JPG(1).json")
         self.assertEqual(self.only(report, "IMG_0001.JPG").sidecar.name, "IMG_0001.JPG.json")
 
@@ -67,7 +139,7 @@ class PairingTests(unittest.TestCase):
         folder.mkdir()
         (folder / "IMG_0001(1).JPG").write_bytes(b"x")
         (folder / "IMG_0001.JPG.json").write_text("{}")
-        report = pairing.pair(folder)
+        report = self.pair(folder)
         self.assertIsNone(self.only(report, "IMG_0001(1).JPG").sidecar)
         self.assertEqual([p.name for p in report.orphan_sidecars], ["IMG_0001.JPG.json"])
 
@@ -76,13 +148,13 @@ class PairingTests(unittest.TestCase):
         folder.mkdir()
         (folder / "IMG_0001(1).JPG").write_bytes(b"x")
         (folder / "IMG_0001.JPG.supplemental-metadata(1).json").write_text("{}")
-        self.assertEqual(self.only(pairing.pair(folder), "IMG_0001(1).JPG").sidecar.name, "IMG_0001.JPG.supplemental-metadata(1).json")
+        self.assertEqual(self.only(self.pair(folder), "IMG_0001(1).JPG").sidecar.name, "IMG_0001.JPG.supplemental-metadata(1).json")
 
     def test_an_edited_copy_shares_its_originals_sidecar_and_is_flagged(self):
         builder = TakeoutBuilder(self.root / "edit")
         builder.edited("IMG_0009", ".JPG")
         _, staging = self.staged(builder)
-        report = pairing.pair(staging)
+        report = self.pair(staging)
         original, edit = self.only(report, "IMG_0009.JPG"), self.only(report, "IMG_0009-edited.JPG")
         self.assertEqual(edit.sidecar, original.sidecar)
         self.assertEqual(edit.edited_of, original.path)
@@ -93,7 +165,7 @@ class PairingTests(unittest.TestCase):
         folder.mkdir()
         (folder / "IMG_1-edited.JPG").write_bytes(b"x")
         (folder / "IMG_1.JPG.json").write_text("{}")
-        item = self.only(pairing.pair(folder), "IMG_1-edited.JPG")
+        item = self.only(self.pair(folder), "IMG_1-edited.JPG")
         self.assertEqual(item.sidecar.name, "IMG_1.JPG.json")
         self.assertIsNone(item.edited_of)
 
@@ -102,7 +174,7 @@ class PairingTests(unittest.TestCase):
         builder.live_photo("IMG_0010")
         builder.live_photo("IMG_0011", still_extension=".JPG", video_extension=".MP4", video_sidecar=False)
         _, staging = self.staged(builder)
-        report = pairing.pair(staging)
+        report = self.pair(staging)
         video = self.only(report, "IMG_0010.MOV")
         self.assertEqual(video.live_pair_of, self.only(report, "IMG_0010.HEIC").path)
         self.assertEqual(video.sidecar.name, "IMG_0010.MOV.json")
@@ -115,14 +187,14 @@ class PairingTests(unittest.TestCase):
         builder = TakeoutBuilder(self.root / "solo")
         builder.add("clip.MP4", builder.video_bytes(), "Photos from 2019", 0, "json", None, None, "")
         _, staging = self.staged(builder)
-        self.assertIsNone(self.only(pairing.pair(staging), "clip.MP4").live_pair_of)
+        self.assertIsNone(self.only(self.pair(staging), "clip.MP4").live_pair_of)
 
     def test_year_and_album_copies_collapse_into_one_item(self):
         builder = TakeoutBuilder(self.root / "album")
         builder.photo("IMG_0012.JPG", album="Family trip")
         builder.photo("IMG_0013.JPG", album="Family trip", year=2020)
         _, staging = self.staged(builder)
-        report = pairing.pair(staging)
+        report = self.pair(staging)
         item = self.only(report, "IMG_0012.JPG")
         self.assertEqual(len(report.items), 2)
         self.assertEqual(item.albums, ["Family trip"])
@@ -138,7 +210,7 @@ class PairingTests(unittest.TestCase):
         (folder / "Photos from 2019" / "IMG_1.JPG").write_bytes(b"same")
         (folder / "Family" / "IMG_1(1).JPG").write_bytes(b"same")
         (folder / "Family" / "IMG_1.JPG(1).json").write_text("{}")
-        report = pairing.pair(folder)
+        report = self.pair(folder)
         (item,) = report.items
         self.assertEqual((item.albums, item.in_year_folder, len(item.copies)), (["Family"], True, 2))
         self.assertEqual(item.sidecar.name, "IMG_1.JPG(1).json")
@@ -148,20 +220,20 @@ class PairingTests(unittest.TestCase):
         folder.mkdir()
         (folder / "a.JPG").write_bytes(b"same")
         (folder / "b.JPG").write_bytes(b"same")
-        self.assertEqual(len(pairing.pair(folder).items), 2)
+        self.assertEqual(len(self.pair(folder).items), 2)
 
     def test_a_video_with_two_possible_stills_is_left_unpaired(self):
         folder = self.root / "ambiguous"
         folder.mkdir()
         for name, data in (("IMG_1.HEIC", b"a"), ("IMG_1.JPG", b"b"), ("IMG_1.MOV", b"c")):
             (folder / name).write_bytes(data)
-        self.assertIsNone(self.only(pairing.pair(folder), "IMG_1.MOV").live_pair_of)
+        self.assertIsNone(self.only(self.pair(folder), "IMG_1.MOV").live_pair_of)
 
     def test_an_album_only_item_has_no_year_copy(self):
         folder = self.root / "only"
         (folder / "Holiday").mkdir(parents=True)
         (folder / "Holiday" / "a.JPG").write_bytes(b"x")
-        item = self.only(pairing.pair(folder), "a.JPG")
+        item = self.only(self.pair(folder), "a.JPG")
         self.assertEqual((item.albums, item.in_year_folder), (["Holiday"], False))
 
     def test_different_bytes_with_the_same_name_stay_separate(self):
@@ -169,12 +241,12 @@ class PairingTests(unittest.TestCase):
         for year, data in (("2019", b"one"), ("2020", b"two")):
             (folder / f"Photos from {year}").mkdir(parents=True)
             (folder / f"Photos from {year}" / "IMG_1.JPG").write_bytes(data)
-        self.assertEqual(len(pairing.pair(folder).items), 2)
+        self.assertEqual(len(self.pair(folder).items), 2)
 
     def test_standard_export_matches_the_manifest(self):
         manifest = standard_export(self.root / "std")
         staging = unzip(manifest, self.root / "stage")
-        report = pairing.pair(staging)
+        report = self.pair(staging)
         for media_path, expected in manifest.pairings.items():
             item = self.only(report, Path(media_path).name)
             if Path(media_path).name.endswith("-edited.JPG"):
@@ -190,7 +262,7 @@ class PairingTests(unittest.TestCase):
 
     def test_non_media_files_are_neither_items_nor_orphans(self):
         manifest = standard_export(self.root / "std2")
-        report = pairing.pair(unzip(manifest, self.root / "stage2"))
+        report = self.pair(unzip(manifest, self.root / "stage2"))
         names = {i.path.name for i in report.items} | {p.name for p in report.orphan_sidecars}
         for stray in manifest.non_media:
             self.assertNotIn(Path(stray).name, names)
@@ -199,11 +271,11 @@ class PairingTests(unittest.TestCase):
         manifest = standard_export(self.root / "std3")
         staging = unzip(manifest, self.root / "stage3")
         before = sorted((str(p), p.stat().st_mtime_ns) for p in staging.rglob("*"))
-        pairing.pair(staging)
+        self.pair(staging)
         self.assertEqual(sorted((str(p), p.stat().st_mtime_ns) for p in staging.rglob("*")), before)
 
     def test_a_missing_folder_gives_an_empty_report(self):
-        report = pairing.pair(self.root / "nowhere")
+        report = self.pair(self.root / "nowhere")
         self.assertEqual((report.items, report.orphan_sidecars, report.unpaired_media), ([], [], []))
 
     def test_links_in_the_staging_folder_are_left_out(self):
@@ -217,12 +289,12 @@ class PairingTests(unittest.TestCase):
         (staging / "IMG_2.JPG").symlink_to(outside / "secret.jpg")
         (staging / "IMG_1.JPG.json").symlink_to(outside / "secret.jpg.json")
         (staging / "hop").symlink_to(outside, target_is_directory=True)
-        report = pairing.pair(self.root / "stage-links")
+        report = self.pair(self.root / "stage-links")
         self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
         self.assertIsNone(report.items[0].sidecar)
         self.assertEqual(report.orphan_sidecars, [])
         (self.root / "linked-stage").symlink_to(self.root / "stage-links", target_is_directory=True)
-        self.assertEqual(pairing.pair(self.root / "linked-stage").items, [])
+        self.assertEqual(self.pair(self.root / "linked-stage").items, [])
 
     def test_a_hard_linked_file_in_the_staging_folder_is_left_out(self):
         outside = self.root / "outside-hard"
@@ -232,7 +304,7 @@ class PairingTests(unittest.TestCase):
         staging.mkdir(parents=True)
         (staging / "IMG_1.JPG").write_bytes(b"a staged photo")
         os.link(outside / "secret.jpg", staging / "IMG_2.JPG")
-        report = pairing.pair(self.root / "stage-hard")
+        report = self.pair(self.root / "stage-hard")
         self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
 
     def test_a_file_that_becomes_a_link_before_it_is_hashed_is_left_out(self):
@@ -247,8 +319,76 @@ class PairingTests(unittest.TestCase):
                 path.symlink_to(staging / "IMG_1.JPG")
             return pairing.paths.plain_sha1(path)
 
-        report = pairing.pair(self.root / "stage-swap", hashing)
+        report = self.pair(self.root / "stage-swap", hashing)
         self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
+
+
+class PairingNamesTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+
+    def exports(self):
+        for parts in (1, 2, 3):
+            yield f"standard-{parts}", standard_export(self.root / f"standard-{parts}", seed=parts, parts=parts)
+        for parts, seed in ((2, 7), (3, 8), (4, 9), (5, 10)):
+            yield f"mixed-{parts}", mixed_export(self.root / f"mixed-{parts}", seed, parts)
+
+    def test_names_from_the_zips_give_exactly_the_walkers_report(self):
+        for label, manifest in self.exports():
+            with self.subTest(export=label):
+                staging = unzip(manifest, self.root / f"stage-{label}")
+                folders, digests = listed_from_zips(manifest, staging)
+                expected = pairing.pair(staging)
+                self.assertGreater(len(expected.items), 10)
+                self.assertTrue(expected.orphan_sidecars)
+                self.assertEqual(pairing.pair_names(folders, digests), expected)
+
+    def test_the_order_folders_come_in_does_not_change_the_report(self):
+        manifest = mixed_export(self.root / "order", 11, 3)
+        staging = unzip(manifest, self.root / "stage-order")
+        folders, digests = listed_from_zips(manifest, staging)
+        expected = pairing.pair(staging)
+        for order in itertools.islice(itertools.permutations(folders), 24):
+            shuffled = [(folder, list(reversed(names))) for folder, names in order]
+            self.assertEqual(pairing.pair_names(shuffled, digests), expected)
+
+    def test_a_media_name_without_a_digest_is_left_out(self):
+        folder = self.root / "f"
+        report = pairing.pair_names([(folder, ["a.JPG", "b.JPG", "b.JPG.json"])], {folder / "a.JPG": "1"})
+        self.assertEqual([item.path.name for item in report.items], ["a.JPG"])
+        self.assertEqual(report.orphan_sidecars, [folder / "b.JPG.json"])
+
+    def test_a_sidecar_from_an_earlier_part_pairs_and_is_not_an_orphan(self):
+        folder = self.root / YEAR
+        report = pairing.pair_names([(folder, ["IMG_1.JPG", "IMG_1-edited.JPG", "IMG_2.JPG", "IMG_2.JPG.json"])],
+                                    {folder / "IMG_1.JPG": "1", folder / "IMG_1-edited.JPG": "2", folder / "IMG_2.JPG": "3"},
+                                    {folder: ["IMG_1.JPG.supplemental-metadata.json", "IMG_2.JPG.supplemental-metadata.json", "IMG_3.JPG.json"]})
+        sidecars = {item.path.name: item.sidecar for item in report.items}
+        self.assertEqual(sidecars["IMG_1.JPG"], folder / "IMG_1.JPG.supplemental-metadata.json")
+        self.assertEqual(sidecars["IMG_1-edited.JPG"], folder / "IMG_1.JPG.supplemental-metadata.json")
+        self.assertEqual(sidecars["IMG_2.JPG"], folder / "IMG_2.JPG.json")
+        self.assertEqual(report.orphan_sidecars, [])
+        self.assertEqual(report.unpaired_media, [])
+
+    def test_an_earlier_sidecar_in_another_folder_does_not_pair(self):
+        folder, other = self.root / YEAR, self.root / f"{GOOGLE_PHOTOS}/Family"
+        report = pairing.pair_names([(folder, ["IMG_1.JPG"])], {folder / "IMG_1.JPG": "1"}, {other: ["IMG_1.JPG.json"]})
+        self.assertIsNone(report.items[0].sidecar)
+
+    def test_a_later_part_paired_with_earlier_sidecars_finds_the_sidecar_the_whole_export_would(self):
+        manifest = mixed_export(self.root / "split", 12, 3)
+        staging = unzip(manifest, self.root / "stage-split")
+        whole = {item.path: item.sidecar for item in pairing.pair(staging).items if len(item.copies) == 1}
+        earlier_folders, _ = listed_from_zips(manifest, staging, {0, 1})
+        earlier = dict(earlier_folders)
+        folders, digests = listed_from_zips(manifest, staging, {2})
+        report = pairing.pair_names(folders, digests, earlier)
+        compared = [item for item in report.items if item.path in whole]
+        self.assertTrue(any(item.sidecar is not None and item.sidecar.name in earlier.get(item.path.parent, []) for item in compared))
+        for item in compared:
+            self.assertEqual(item.sidecar, whole[item.path], item.path.name)
 
 
 if __name__ == "__main__":
