@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, time, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
@@ -137,14 +137,32 @@ STATE_WORDS: dict[str, ExportState] = {"completed": "ready", "expired": "expired
 ARCHIVE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 ARCHIVE_HREF = re.compile(re.escape(selectors.TAKEOUT_ARCHIVE_URL) + r"([A-Za-z0-9_-]{1,128})")
 MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
-MONTH_DAY = r"([a-z]+) (\d{1,2})"
-CLOCK = r"(\d{1,2}):(\d{2}) ?([ap])\.?m\.?"
-RELATIVE = re.compile(r"created (\d{1,3}|an?|one) (second|minute|hour|day|week)s? ago")
-UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400}
-JUST_NOW = ("created just now", "created moments ago", "created a moment ago")
-CREATED = re.compile(rf"created {MONTH_DAY}(?:, (\d{{4}}))?(?:,? (?:at )?{CLOCK})?")
-AVAILABLE = re.compile(rf"available until {MONTH_DAY}, (\d{{4}})(?:,? (?:at )?{CLOCK})?")
-CALENDAR_DATE = re.compile(rf"{MONTH_DAY}, (\d{{4}})")
+MONTH_NUMBERS = {name: number for number, name in enumerate(MONTHS, start=1)} | {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12}
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+WEEKDAY_NUMBERS = {name: number for number, name in enumerate(WEEKDAYS)} | {
+    "mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3, "thurs": 3, "fri": 4, "sat": 5, "sun": 6}
+MONTH_NAME = "(?:" + "|".join(sorted(MONTH_NUMBERS, key=len, reverse=True)) + r")\.?"
+WEEKDAY_NAME = "(?:" + "|".join(sorted(WEEKDAY_NUMBERS, key=len, reverse=True)) + r")\.?"
+CLOCK = r"(?:,? (?:at )?(?P<hour>\d{1,2}):(?P<minute>\d{2})(?: ?(?P<meridiem>[ap])\.?m\.?)?)?"
+CALENDAR = re.compile(rf"(?:(?P<weekday>{WEEKDAY_NAME}),? )?(?:(?P<month>{MONTH_NAME}) (?P<day>\d{{1,2}})|(?P<day_first>\d{{1,2}}) (?P<month_after>{MONTH_NAME}))(?:,? (?P<year>\d{{4}}))?{CLOCK}")
+RELATIVE = re.compile(r"(?P<count>\d{1,3}|an?|one) (?P<unit>second|minute|hour|day|week|month|year)s? ago")
+DAY_WORD = re.compile(rf"(?P<word>today|yesterday){CLOCK}")
+WEEKDAY_ONLY = re.compile(rf"(?P<weekday>{WEEKDAY_NAME}){CLOCK}")
+UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400, "month": 30 * 86400, "year": 365 * 86400}
+JUST_NOW = ("just now", "moments ago", "a moment ago")
+CREATED = re.compile(r"created (?:on )?(.+)")
+AVAILABLE = re.compile(r"available until (?:on )?(.+)")
+MERIDIEMS = ("am", "pm", "a.m.", "p.m.", "a.m", "p.m")
+SHAPE_WORDS = frozenset(("created", "available", "until", "at", "on", "in", "ago", "yesterday", "today", "just", "now", "moment", "moments", "a", "an", "one",
+                         "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years",
+                         "am", "pm", "p", "m", "completed", "expired", "progress", *MONTH_NUMBERS, *WEEKDAY_NUMBERS))
+SHAPE_PIECE = re.compile(r"(\d+)|([^\W\d_]+)|([ ,.:/-]+)|(.)", re.DOTALL)
+SHAPE_LIMIT = 60
+LONGEST_DIGITS = 4
+MAX_SHAPED_ROWS = 2
+MAX_SHAPED_CHUNKS = 6
+DATE_UNREADABLE = "an export on Takeout's summary has a date that could not be read"
 FUTURE_SLACK = 3600.0
 YEARS_BACK = 8
 SUMMARY_FIELD = re.compile(r"(overall status|creation date|expiration date): (.+)")
@@ -157,6 +175,12 @@ MAX_LANDMARKS = 8
 
 class UnreadableExports(ValueError):
     pass
+
+
+class UnreadableRowDates(ValueError):
+    def __init__(self, shapes: list[str]) -> None:
+        super().__init__("an export's dates could not be read")
+        self.shapes = shapes
 
 
 class ListedPart(NamedTuple):
@@ -191,6 +215,7 @@ TAKEOUT_ROOT = "https://" + selectors.TAKEOUT_HOST + "/"
 SINGLE_DOT = re.compile(r"\.|%2[eE]")
 DOUBLE_DOT = re.compile(r"(?:\.|%2[eE]){2}")
 ENCODED_TRICKS = re.compile(r"%(?:2[fF]|5[cC]|25)")
+INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff]")
 
 
 def without_dot_segments(path: str) -> str:
@@ -256,7 +281,7 @@ def on_takeout(address: str) -> str:
 
 
 def plain(text: str) -> str:
-    return SPACES.sub(" ", text.replace(" ", " ").replace("\xa0", " ").replace("’", "'")).strip().lower()
+    return SPACES.sub(" ", INVISIBLE.sub("", text).replace(" ", " ").replace("\xa0", " ").replace("’", "'")).strip().lower()
 
 
 def archive_url(google_id: str) -> str:
@@ -363,53 +388,136 @@ def says_empty(reader: SummaryReader) -> bool:
     return any(phrase in chunk for chunk in reader.chunks for phrase in EMPTY_SUMMARY_PHRASES)
 
 
-def wall_clock(month: str, day: str, year: int, clock: tuple[str | None, str | None, str | None], zone: tzinfo) -> datetime:
-    if month not in MONTHS:
-        raise ValueError(month)
-    hour_text, minute_text, meridiem = clock
-    hour, minute = 0, 0
-    if hour_text is not None and minute_text is not None:
-        hour, minute = int(hour_text), int(minute_text)
-        if not 1 <= hour <= 12:
+def shape(text: str) -> str:
+    pieces: list[str] = []
+    for digits, word, kept, _other in SHAPE_PIECE.findall(text):
+        if digits:
+            piece = "9" * len(digits) if len(digits) <= LONGEST_DIGITS else "9+"
+        elif word:
+            piece = word.lower() if word.lower() in SHAPE_WORDS else "?"
+        else:
+            piece = kept or "?"
+        if not (piece == "?" and pieces and pieces[-1] == "?"):
+            pieces.append(piece)
+    said = "".join(pieces)
+    return said if len(said) <= SHAPE_LIMIT else said[:SHAPE_LIMIT - 3] + "..."
+
+
+def quoted(texts: list[str]) -> str:
+    return ", ".join(f"'{shape(text)}'" for text in texts)
+
+
+def clock_of(found: re.Match[str]) -> time:
+    hour_text, minute_text, meridiem = found["hour"], found["minute"], found["meridiem"]
+    if hour_text is None or minute_text is None:
+        return time()
+    hour, minute = int(hour_text), int(minute_text)
+    if meridiem is None:
+        if len(hour_text) != 2:
             raise ValueError(hour_text)
-        hour = hour % 12 + (12 if meridiem == "p" else 0)
-    return datetime(year, MONTHS.index(month) + 1, int(day), hour, minute, tzinfo=zone)
+        return time(hour, minute)
+    if not 1 <= hour <= 12:
+        raise ValueError(hour_text)
+    return time(hour % 12 + (12 if meridiem == "p" else 0), minute)
 
 
-def nearest_past(month: str, day: str, clock: tuple[str | None, str | None, str | None], now: float, zone: tzinfo) -> float:
+def named(table: dict[str, int], name: str) -> int:
+    number = table.get(name.removesuffix("."))
+    if number is None:
+        raise ValueError(name)
+    return number
+
+
+def at_day(day: date, found: re.Match[str], zone: tzinfo) -> float:
+    return datetime.combine(day, clock_of(found), zone).timestamp()
+
+
+def on_calendar(found: re.Match[str], year: int, zone: tzinfo) -> datetime:
+    month = named(MONTH_NUMBERS, found["month"] or found["month_after"])
+    return datetime.combine(date(year, month, int(found["day"] or found["day_first"])), clock_of(found), zone)
+
+
+def on_its_weekday(found: re.Match[str], moment: datetime) -> float:
+    if found["weekday"] is not None and named(WEEKDAY_NUMBERS, found["weekday"]) != moment.weekday():
+        raise ValueError(found["weekday"])
+    return moment.timestamp()
+
+
+def nearest_past(found: re.Match[str], now: float, zone: tzinfo) -> datetime:
     this_year = datetime.fromtimestamp(now, zone).year
     for year in range(this_year, this_year - YEARS_BACK, -1):
         try:
-            moment = wall_clock(month, day, year, clock, zone).timestamp()
+            moment = on_calendar(found, year, zone)
         except ValueError:
             continue
-        if moment <= now + FUTURE_SLACK:
+        if moment.timestamp() <= now + FUTURE_SLACK:
             return moment
-    raise ValueError(month)
+    raise ValueError(found.string)
+
+
+def latest_weekday(found: re.Match[str], now: float, zone: tzinfo) -> float:
+    weekday, today = named(WEEKDAY_NUMBERS, found["weekday"]), datetime.fromtimestamp(now, zone).date()
+    for back in range(8):
+        day = today - timedelta(days=back)
+        if day.weekday() == weekday and (moment := at_day(day, found, zone)) <= now + FUTURE_SLACK:
+            return moment
+    raise ValueError(found.string)
+
+
+def created_when(when: str, now: float, zone: tzinfo) -> float:
+    if when in JUST_NOW:
+        return now
+    if (relative := RELATIVE.fullmatch(when)) is not None:
+        count = int(relative["count"]) if relative["count"].isdigit() else 1
+        return now - count * UNIT_SECONDS[relative["unit"]]
+    if (word := DAY_WORD.fullmatch(when)) is not None:
+        today = datetime.fromtimestamp(now, zone).date()
+        return at_day(today - timedelta(days=word["word"] == "yesterday"), word, zone)
+    if (dated := CALENDAR.fullmatch(when)) is not None:
+        return on_its_weekday(dated, nearest_past(dated, now, zone) if dated["year"] is None else on_calendar(dated, int(dated["year"]), zone))
+    if (weekday := WEEKDAY_ONLY.fullmatch(when)) is not None:
+        return latest_weekday(weekday, now, zone)
+    raise ValueError(when)
 
 
 def created_at(chunk: str, now: float, zone: tzinfo) -> float:
-    if chunk in JUST_NOW:
-        return now
-    relative = RELATIVE.fullmatch(chunk)
-    if relative is not None:
-        count = int(relative.group(1)) if relative.group(1).isdigit() else 1
-        return now - count * UNIT_SECONDS[relative.group(2)]
     found = CREATED.fullmatch(chunk)
     if found is None:
         raise ValueError(chunk)
-    month, day, year = found.group(1), found.group(2), found.group(3)
-    clock = (found.group(4), found.group(5), found.group(6))
-    if year is None:
-        return nearest_past(month, day, clock, now, zone)
-    return wall_clock(month, day, int(year), clock, zone).timestamp()
+    moment = created_when(found.group(1), now, zone)
+    if moment > now + FUTURE_SLACK:
+        raise ValueError(chunk)
+    return moment
+
+
+def dated(text: str, zone: tzinfo) -> float:
+    found = CALENDAR.fullmatch(text)
+    if found is None or found["year"] is None:
+        raise ValueError(text)
+    return on_its_weekday(found, on_calendar(found, int(found["year"]), zone))
 
 
 def available_until(chunk: str, zone: tzinfo) -> float:
     found = AVAILABLE.fullmatch(chunk)
     if found is None:
         raise ValueError(chunk)
-    return wall_clock(found.group(1), found.group(2), int(found.group(3)), (found.group(4), found.group(5), found.group(6)), zone).timestamp()
+    return dated(found.group(1), zone)
+
+
+def row_dates(row: SummaryRow, created: str, available: str | None, now: float, zone: tzinfo) -> tuple[float, float | None]:
+    unreadable: list[str] = []
+    try:
+        created_moment = created_at(created, now, zone)
+    except ValueError:
+        unreadable.append(created)
+    try:
+        expires = None if available is None else available_until(available, zone)
+    except ValueError:
+        unreadable.append(available or "")
+    unreadable += [chunk for chunk in row.chunks if chunk in MERIDIEMS]
+    if unreadable:
+        raise UnreadableRowDates(unreadable)
+    return created_moment, expires
 
 
 def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
@@ -419,12 +527,8 @@ def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
     created = [chunk for chunk in row.chunks if chunk.startswith("created ")]
     available = [chunk for chunk in row.chunks if chunk.startswith("available until ")]
     if len(created) != 1 or len(available) > 1:
-        raise UnreadableExports("an export on Takeout's summary has no readable creation date")
-    try:
-        created_moment = created_at(created[0], now, zone)
-        expires = available_until(available[0], zone) if available else None
-    except ValueError:
-        raise UnreadableExports("an export on Takeout's summary has a date that could not be read") from None
+        raise UnreadableExports(f"an export on Takeout's summary has no readable creation date: {quoted(row.chunks[:MAX_SHAPED_CHUNKS])}")
+    created_moment, expires = row_dates(row, created[0], available[0] if available else None, now, zone)
     return ExportListing(row.google_id, created_moment, states[0], expires, (), archive_url(row.google_id))
 
 
@@ -432,7 +536,16 @@ def parse_exports(page: str, address: str, now: float, zone: tzinfo) -> list[Exp
     reader = read_summary(page, address)
     if not is_summary(reader):
         raise UnreadableExports("the page is not Takeout's summary of exports")
-    listings = [listing_of(row, now, zone) for row in reader.rows]
+    listings: list[ExportListing] = []
+    unreadable: list[list[str]] = []
+    for row in reader.rows:
+        try:
+            listings.append(listing_of(row, now, zone))
+        except UnreadableRowDates as error:
+            unreadable.append(error.shapes)
+    if unreadable:
+        shown = "; ".join(quoted(chunks[:MAX_SHAPED_CHUNKS]) for chunks in unreadable[:MAX_SHAPED_ROWS])
+        raise UnreadableExports(f"{DATE_UNREADABLE} ({len(unreadable)} of {len(reader.rows)} exports): {shown}")
     if len(listings) > MAX_EXPORTS or len({listing.google_id for listing in listings}) != len(listings):
         raise UnreadableExports("Takeout's summary lists exports that could not be told apart")
     return listings
@@ -588,10 +701,20 @@ def archive_parts(reader: ArchiveReader, google_id: str, address: str) -> tuple[
 
 
 def calendar_date(text: str) -> date:
-    found = CALENDAR_DATE.fullmatch(text)
-    if found is None:
-        raise ValueError(text)
-    return wall_clock(found.group(1), found.group(2), int(found.group(3)), (None, None, None), UTC).date()
+    return datetime.fromtimestamp(dated(text, UTC), UTC).date()
+
+
+def field_date(fields: dict[str, str], name: str, required: bool, unreadable: list[str]) -> date | None:
+    text = fields.get(name)
+    if text is None:
+        if required:
+            unreadable.append(f"no {name}")
+        return None
+    try:
+        return calendar_date(text)
+    except ValueError:
+        unreadable.append(f"{name} '{shape(text)}'")
+        return None
 
 
 def parse_archive(page: str, address: str, google_id: str) -> ArchiveDetail:
@@ -600,12 +723,11 @@ def parse_archive(page: str, address: str, google_id: str) -> ArchiveDetail:
     state = STATE_WORDS.get(fields.get("overall status", ""))
     if state is None:
         raise UnreadableExports("an export's page on Takeout is in a state that was not recognised")
-    try:
-        created_on = calendar_date(fields.get("creation date", ""))
-        expires = fields.get("expiration date")
-        expires_on = None if expires is None else calendar_date(expires)
-    except ValueError:
-        raise UnreadableExports("an export's page on Takeout has a date that could not be read") from None
+    unreadable: list[str] = []
+    created_on = field_date(fields, "creation date", True, unreadable)
+    expires_on = field_date(fields, "expiration date", False, unreadable)
+    if unreadable or created_on is None:
+        raise UnreadableExports("an export's page on Takeout has a date that could not be read: " + ", ".join(unreadable))
     parts = archive_parts(reader, google_id, address) if state == "ready" else ()
     if state == "ready" and not parts:
         raise UnreadableExports("a completed export's page on Takeout lists no parts")

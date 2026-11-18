@@ -144,6 +144,20 @@ class StatusJobTests(unittest.TestCase):
             self.assertLessEqual(len(said), MAX_MESSAGE)
             self.assertTrue(said.startswith("ExportsUnreadable: "))
 
+    def test_the_longest_date_shapes_fit_what_darkroom_records_without_being_cut(self):
+        from darkroom.server.api.browser_internal import MAX_MESSAGE
+
+        words = " ".join(sorted(takeout.SHAPE_WORDS, key=len, reverse=True)) * 50
+        rows = [row(google_id=f"id-{number}", created=f"Created {words}", available=f"Available until {words}") for number in range(takeout.MAX_EXPORTS)]
+        no_date = [row(created="Created</div>" + f"<div>{words}</div>" * 50)]
+        for broken, failure in (({selectors.TAKEOUT_MANAGE_URL: [summary(*rows)]}, "a date that could not be read"),
+                                ({selectors.TAKEOUT_MANAGE_URL: [summary(*no_date)]}, "no readable creation date"),
+                                ({ARCHIVE: [archive(created=words, expires=words)]}, "a date that could not be read")):
+            with self.subTest(failure=failure), self.assertRaises(status.ExportsUnreadable) as raised:
+                self.run_job(SiteBrowser({**site(), **broken}))
+            self.assertIn(failure, str(raised.exception))
+            self.assertLessEqual(len(f"ExportsUnreadable: {raised.exception}"), MAX_MESSAGE)
+
     def test_waiting_for_the_list_takes_the_poll_count(self):
         _, clock, _ = self.run_job(SiteBrowser(site([UNKNOWN] * 3 + [EXPORTS])))
         self.assertEqual(clock.slept, [status.LIST_POLL_SECONDS] * 3)
