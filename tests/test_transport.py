@@ -229,7 +229,7 @@ class ReconcilerTests(unittest.TestCase):
         self.assertEqual(seen.card.state, "running")
         self.assertEqual(seen.pixels[self.jo_pixel].state, "held")
         self.assertNotEqual(seen.pixels[self.sam_pixel].state, "not_syncing")
-        transport_status.review(self.opened, dataclasses.replace(config.load(), syncthing=True), NOW, None)
+        transport_status.review(self.opened, config.load(), NOW, None)
         self.assertEqual([(alert.kind, alert.subject) for alert in self.opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars()],
                          [("pixel_held", f"pixel {self.jo_pixel}")])
         self.reconcile(at=NOW + 10)
@@ -748,7 +748,7 @@ class SchedulerTests(unittest.TestCase):
         self.root = Path(folder.name).resolve()
         self.socket = private_socket_folder(self) / "syncthing.sock"
         self.fake = FakeSyncthing(self, KEY, OWN, str(self.socket))
-        self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=str(self.root)), syncthing=True, syncthing_key=KEY)
+        self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=str(self.root)), syncthing_key=KEY)
         (self.root / "jo/originals").mkdir(parents=True)
         (self.root / "jo/originals/a.jpg").write_bytes(b"photo")
         with db.session(self.engine) as opened:
@@ -877,14 +877,9 @@ class SchedulerTests(unittest.TestCase):
         scheduler.run_one("pixels.tend", 7300.0)
         self.assertFalse(self.folder()["paused"])
 
-    def test_with_syncthing_off_or_its_gate_off_the_reconciler_never_calls_syncthing(self):
-        import dataclasses
-
+    def test_with_its_gate_off_the_reconciler_never_calls_syncthing(self):
         from darkroom.server import jobs
 
-        scheduler = self.serving(dataclasses.replace(self.settings, syncthing=False))
-        self.assertNotIn("syncthing.reconcile", scheduler.jobs)
-        scheduler.run_one("pixels.tend", 105.0)
         self.fake.version = {"version": "v2.2.0", "isRelease": True}
         gated = self.serving()
         self.assertFalse(gated.syncthing.on)

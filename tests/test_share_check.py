@@ -26,14 +26,7 @@ from tests.test_pixel_check import share_tree
 NOW = test_pixel_folder.NOW
 HOUR = jobs.PIXEL_TEND_SECONDS
 ROOT = Path(__file__).resolve().parent.parent
-OUTSIDE_SYNCTHING: dict[str, str] = {}
-OWN_SYNCTHING = {"DARKROOM_SYNCTHING": "1", "DARKROOM_ONE_CONTAINER": "1"}
-SYNCTHING_OUTSIDE_THE_ONE_CONTAINER = {"DARKROOM_SYNCTHING": "1"}
-OUTSIDE_PROMPT = ("Syncthing is configured by hand, outside Darkroom. Pause it for every folder under _pixels/ on this server now: an empty replacement would otherwise reach each Pixel as deletions. "
-                  "Type paused once it is paused: ")
-OUTSIDE_REFUSED = "bind-share: the outside Syncthing was not confirmed paused; nothing was written"
-OUTSIDE_RESUME = ("Bound. Placing and pruning resume at the next hourly tend (or now with `python run.py jobs pixels.tend`); the placed-copy check first writes back every placed copy that is missing. "
-                  "Resume the outside Syncthing for _pixels/ only when Darkroom reports the refill complete: the `pixel folders tended` log line shows held=0.")
+SETUPS: tuple[dict[str, str], ...] = ({}, {"DARKROOM_ONE_CONTAINER": "1"}, {"DARKROOM_SYNCTHING": "0", "DARKROOM_ONE_CONTAINER": "1"})
 OWN_PROMPT = ("Syncthing is Darkroom's own (DARKROOM_SYNCTHING=1), and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
               "No other Syncthing may serve _pixels/ on this server, such as Unraid's Syncthing app or one on the host (docs/deploy/one-container.md, \"Ports already in use\"): "
               "an empty replacement would otherwise reach each Pixel as deletions. Type paused once you have checked that none does: ")
@@ -324,7 +317,7 @@ class BindShareTests(ShareWorld):
         self.environment = {"DARKROOM_PHOTOS_ROOT": str(self.root), "DARKROOM_DATA_DIR": data.name, "DATABASE_URL": url}
         self.mount = share.Mount(self.root, "xfs", "/dev/md1p1")
 
-    def run_bind(self, answers="paused\nbind\n", mounted=True, setup=OUTSIDE_SYNCTHING):
+    def run_bind(self, answers="paused\nbind\n", mounted=True, setup=SETUPS[0]):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.dict(os.environ, {**self.environment, **setup}, clear=True))
             stack.enter_context(mock.patch("sys.stdin", io.StringIO(answers)))
@@ -353,7 +346,7 @@ class BindShareTests(ShareWorld):
         self.assertIn(f"Share root: {self.root}", out)
         self.assertIn("Mounted from: /dev/md1p1 (xfs)", out)
         self.assertIn("Pixel copies recorded as placed: 2", out)
-        self.assertIn("held=0", out)
+        self.assertIn(OWN_RESUME, out)
         token = self.recorded()
         self.assertRegex(token, r"^[0-9a-f]{32}$")
         self.assertEqual((self.root / share.SHARE_SENTINEL_FILE).read_bytes(), share.sentinel_content(token))
@@ -404,35 +397,27 @@ class BindShareTests(ShareWorld):
             self.assert_refused(self.run_bind(), share_bind.NOT_WIRED)
         self.assertIsNone(self.recorded())
 
-    def test_the_bind_is_refused_unless_the_operator_confirms_the_outside_syncthing_is_paused(self):
-        for setup, refused, other in ((OUTSIDE_SYNCTHING, OUTSIDE_REFUSED, OWN_REFUSED), (OWN_SYNCTHING, OWN_REFUSED, OUTSIDE_REFUSED)):
+    def test_the_bind_is_refused_unless_the_operator_confirms_no_other_syncthing_serves_the_pixels(self):
+        for setup in SETUPS:
             for answers in ("", "\nbind\n", "yes\nbind\n", "bind\nbind\n"):
                 with self.subTest(setup=setup, answers=answers):
                     found = self.run_bind(answers, setup=setup)
-                    self.assert_refused(found, refused)
-                    self.assertNotIn(other, found[2])
+                    self.assert_refused(found, OWN_REFUSED)
+                    self.assertNotIn("outside Syncthing", found[2])
                     self.assertNotIn("Type bind", found[1])
         self.assertIsNone(self.recorded())
 
-    def test_with_darkroom_s_own_syncthing_the_prompts_say_darkroom_pauses_it(self):
-        code, out, err = self.run_bind(setup=OWN_SYNCTHING)
-        self.assertEqual((code, err), (0, '{"event": "share bound"}\n'))
-        self.assertIn(OWN_PROMPT + "Type bind to write a new sentinel on this share and record it: ", out)
-        self.assertIn(OWN_RESUME, out)
-        for outside in ("configured by hand", "Pause it", "Resume the outside Syncthing"):
-            self.assertNotIn(outside, out)
-        self.assertRegex(self.recorded(), r"^[0-9a-f]{32}$")
-
-    def test_with_an_outside_syncthing_the_prompts_ask_the_operator_to_pause_and_resume_it(self):
-        for setup in (OUTSIDE_SYNCTHING, SYNCTHING_OUTSIDE_THE_ONE_CONTAINER):
+    def test_the_prompts_always_say_darkroom_pauses_its_own_syncthing(self):
+        for setup in SETUPS:
             with self.subTest(setup=setup):
                 (self.root / share.SHARE_SENTINEL_FILE).unlink(missing_ok=True)
                 code, out, err = self.run_bind(setup=setup)
                 self.assertEqual((code, err), (0, '{"event": "share bound"}\n'))
-                self.assertIn(OUTSIDE_PROMPT + "Type bind to write a new sentinel on this share and record it: ", out)
-                self.assertIn(OUTSIDE_RESUME, out)
-                for own in ("Darkroom's own", "No other Syncthing", "nothing to resume by hand"):
-                    self.assertNotIn(own, out)
+                self.assertIn(OWN_PROMPT + "Type bind to write a new sentinel on this share and record it: ", out)
+                self.assertIn(OWN_RESUME, out)
+                for outside in ("configured by hand", "Pause it", "Resume the outside Syncthing"):
+                    self.assertNotIn(outside, out)
+                self.assertRegex(self.recorded(), r"^[0-9a-f]{32}$")
 
     def test_the_bind_is_refused_on_the_containers_own_filesystem(self):
         self.assert_refused(self.run_bind(mounted=False), share_bind.NOT_A_MOUNT)
