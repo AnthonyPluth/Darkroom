@@ -2450,17 +2450,10 @@
             "type": "array"
           },
           "syncthing": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/PixelSyncthing"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "items": {
+              "$ref": "#/components/schemas/PixelSyncthing"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -2978,14 +2971,7 @@
             "type": "array"
           },
           "syncthing": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SyncthingCard"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/SyncthingCard"
           },
           "worker_last_seen": {
             "anyOf": [

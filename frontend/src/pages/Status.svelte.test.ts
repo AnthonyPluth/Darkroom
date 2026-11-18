@@ -60,7 +60,7 @@ describe("the Status page with the seeded data", () => {
     expect(within(jo).getByText("120 photos, 100 with GPS, 3 without a time")).toBeInTheDocument();
     expect(within(jo).getByText("jo.photos@example.com")).toBeInTheDocument();
     expect(within(jo).getByText("Session ok")).toBeInTheDocument();
-    expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
+    expect(within(jo).getByText(/^Pixel 9a, synced /)).toBeInTheDocument();
     expect(within(jo).getAllByText("Not checked yet")).toHaveLength(1);
     for (const unknown of within(jo).getAllByText("Not checked yet")) expect(unknown).toHaveClass("text-ink-muted");
     expect(within(jo).queryByText(/^0 (photos|originals)$/)).not.toBeInTheDocument();

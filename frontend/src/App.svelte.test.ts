@@ -9,7 +9,7 @@ import { devVersion, emptyStatus, joAccount, me, reply, serve } from "./test/ser
 import App from "./App.svelte";
 
 const LABELS = ["Status", "People", "Exports", "Imports", "Review", "Browser"];
-const quiet = { "GET /api/me": me, "GET /api/status": emptyStatus, "GET /api/version": devVersion, "GET /api/events": { events: [] }, "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [joAccount] }, "GET /api/pixels": { pixels: [], syncthing: null } };
+const quiet = { "GET /api/me": me, "GET /api/status": emptyStatus, "GET /api/version": devVersion, "GET /api/events": { events: [] }, "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [joAccount] }, "GET /api/pixels": { pixels: [], syncthing: [] }, "GET /api/pairing/device": { device_id: "DRKROOM-AAAAAAA" } };
 
 function start(routes: Parameters<typeof serve>[0]) {
   const server = serve(routes);

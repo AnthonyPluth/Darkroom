@@ -467,7 +467,7 @@ export interface PixelView {
 
 export interface Pixels {
   pixels: PixelView[];
-  syncthing: PixelSyncthing[] | null;
+  syncthing: PixelSyncthing[];
 }
 
 export interface ProgressBody {
@@ -582,7 +582,7 @@ export interface Status {
   worker_last_seen: number | null;
   people: PersonStatus[];
   alerts: AlertView[];
-  syncthing: SyncthingCard | null;
+  syncthing: SyncthingCard;
 }
 
 export interface SyncthingCard {

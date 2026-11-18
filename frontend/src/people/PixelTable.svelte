@@ -40,7 +40,7 @@
       {:else}
         <td class="md:text-right">
           <span class="flex flex-wrap justify-end gap-2 md:flex-nowrap">
-            {#if data.transport.pairing && !pixel.syncthing_device_id}
+            {#if !pixel.syncthing_device_id}
               <button type="button" class="btn" aria-label="Pair {pixel.name}" onclick={() => onpair?.(pixel)}>Pair</button>
             {:else if transport?.state === "device_id_invalid" || transport?.state === "device_id_shared"}
               <button type="button" class="btn" aria-label="Pair {pixel.name} again" onclick={() => onpair?.(pixel)}>Pair again</button>

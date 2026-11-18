@@ -38,14 +38,16 @@ export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id:
 
 export const devVersion: Version = { version: "dev", commit: null };
 
-export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [], syncthing: null };
+export const idleCard: SyncthingCard = { state: "running", reason: null, since: null, pixels: [] };
+
+export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [], syncthing: idleCard };
 
 export const signInAlert = { id: 1, kind: "sign_in_needed", subject: "family.photos@example.com", message: "family.photos@example.com needs someone to sign in to Google again.", link: null, opened: 900 };
 export const unmatchedAlert = { id: 2, kind: "originals_unmatched", subject: "sam-example", message: "14 of Sam's originals have no match in Google yet.", link: null, opened: 800 };
 
 export const seededStatus: Status = {
   worker_last_seen: 940,
-  syncthing: null,
+  syncthing: idleCard,
   alerts: [signInAlert, unmatchedAlert],
   people: [
     {
