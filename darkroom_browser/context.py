@@ -72,6 +72,20 @@ class JobFailure(Exception):
     pass
 
 
+class Unreachable(Exception):
+    pass
+
+
+class Refused(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"darkroom answered {status}: {message}")
+        self.status = status
+
+
+class LeaseLost(Refused):
+    pass
+
+
 @dataclass
 class JobContext:
     job_id: int

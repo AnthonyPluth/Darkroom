@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from darkroom_browser import monitoring
-from darkroom_browser.context import Cancelled, JobContext
+from darkroom_browser.context import JobContext, LeaseLost, Refused, Unreachable
 
 
 def counted(number: int, noun: str) -> str:
@@ -61,9 +61,9 @@ class Clicks:
     def send(self, number: int, body: dict[str, object]) -> None:
         try:
             self.ctx.reporter.part(self.ctx.job_id, number, body)
-        except Cancelled:
+        except LeaseLost:
             raise
-        except Exception as error:
+        except (Refused, Unreachable, ValueError) as error:
             monitoring.log("download telemetry not recorded", job=self.ctx.job_id, error=type(error).__name__)
 
     def clicked(self, number: int, downloading: int) -> None:

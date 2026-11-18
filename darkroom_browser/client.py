@@ -12,24 +12,12 @@ from collections.abc import Buffer, Callable
 from pathlib import Path
 from typing import Any, final
 
+from darkroom_browser.context import LeaseLost, Refused, Unreachable
+
 TIMEOUT = 30.0
 MAX_REPLY = 1024 * 1024
 SOCKET_FOLDER = Path("/run/darkroom")
 APP_SOCKET = SOCKET_FOLDER / "worker-api.sock"
-
-
-class Unreachable(Exception):
-    pass
-
-
-class Refused(Exception):
-    def __init__(self, status: int, message: str) -> None:
-        super().__init__(f"darkroom answered {status}: {message}")
-        self.status = status
-
-
-class LeaseLost(Refused):
-    pass
 
 
 def folder_is_private(folder: Path) -> bool:
