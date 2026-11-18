@@ -136,16 +136,11 @@ def syncthing_version() -> Wording:
                    "Run the published Darkroom image, which carries a tested Syncthing.")
 
 
-def share_check_failed(own_syncthing: bool) -> Wording:
-    if own_syncthing:
-        return Wording(TITLES["share_check_failed"],
-                       "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, and nothing on the share is changed. "
-                       "If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new one as the runbook says. "
-                       "The Status page gives the reason.")
+def share_check_failed() -> Wording:
     return Wording(TITLES["share_check_failed"],
-                   "The photo share did not pass Darkroom's check, so placing and pruning are paused, and nothing on the share is changed. "
-                   "Pause the Syncthing that serves the Pixels until it passes again. If the share is not mounted, fix the mapping and restart the container. "
-                   "If it really was replaced, bind the new one as the runbook says.")
+                   "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, and nothing on the share is changed. "
+                   "If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new one as the runbook says. "
+                   "The Status page gives the reason.")
 
 
 def counted(number: int, noun: str) -> str:

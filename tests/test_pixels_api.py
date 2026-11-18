@@ -40,7 +40,9 @@ class PixelsApiTests(ApiCase):
     def test_a_pixel_serves_the_accounts_default_person_unless_told_otherwise(self):
         pixel = self.pixel(self.account["id"], syncthing_device_id=FIRST_DEVICE)
         self.assertEqual((pixel["people_ids"], pixel["syncthing_device_id"], pixel["google_account_id"]), ([self.jo["id"]], FIRST_DEVICE, self.account["id"]))
-        self.assertEqual(self.call("GET", "/api/pixels")[1], {"pixels": [pixel], "syncthing": None})
+        listed = self.call("GET", "/api/pixels")[1]
+        self.assertEqual(listed["pixels"], [pixel])
+        self.assertEqual([entry["pixel_id"] for entry in listed["syncthing"]], [pixel["id"]])
 
     def test_only_a_pixel_that_starts_serving_someone_new_scans_for_items_to_confirm(self):
         with mock.patch.object(dedupe, "confirm_served_matches", wraps=dedupe.confirm_served_matches) as scan:
@@ -516,7 +518,7 @@ class PairingApiTests(unittest.TestCase):
             patched = mock.patch.object(target, name, value)
             patched.start()
             self.addCleanup(patched.stop)
-        self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), **OIDC), syncthing=True, syncthing_key=KEY)
+        self.settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), **OIDC), syncthing_key=KEY)
         self.base, self.settings = start_server(self, self.settings, self.engine)
         moment = time.time()
         with db.session(self.engine, writing=True) as opened:
@@ -663,17 +665,6 @@ class PairingApiTests(unittest.TestCase):
                 self.assertEqual(self.call("GET", "/api/pairing/device", base=base), unreachable)
                 self.assertEqual(self.approve(base=base, origin=base), unreachable)
         self.assertEqual(self.devices(), [None, None])
-
-    def test_with_the_transport_off_every_pairing_route_says_so_and_typing_still_works(self):
-        base, _ = start_server(self, dataclasses.replace(self.settings, public_url="", syncthing=False), self.engine)
-        off = (409, {"error": "Darkroom's Syncthing is off"})
-        self.assertEqual(self.call("GET", "/api/pairing/device", base=base), off)
-        self.assertEqual(self.call("GET", "/api/pairing/waiting", base=base), off)
-        self.assertEqual(self.approve(base=base, origin=base), off)
-        self.assertEqual(self.call("POST", f"/api/pixels/{self.pixel_id}/release-folder", {"confirmed": True}, base=base, origin=base), off)
-        self.assertEqual(self.fake.requests, [])
-        status, reply = self.call("PATCH", f"/api/pixels/{self.pixel_id}", {"syncthing_device_id": WAITING}, base=base, origin=base)
-        self.assertEqual((status, reply["pixel"]["syncthing_device_id"]), (200, WAITING))
 
     def removed(self, pixel_id):
         with db.session(self.engine) as opened:

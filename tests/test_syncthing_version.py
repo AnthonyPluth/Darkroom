@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 import os
 import tempfile
 import unittest
@@ -123,34 +125,32 @@ class AppSettingTests(unittest.TestCase):
         config.handed_tokens.clear()
         self.addCleanup(config.handed_tokens.clear)
 
-    def test_syncthing_is_off_by_default_and_the_key_comes_only_from_its_pipe(self):
-        self.assertEqual((settings_from().syncthing, settings_from().syncthing_key), (False, ""))
-        self.assertEqual(settings_from(DARKROOM_SYNCTHING="yes").syncthing, False)
+    def test_the_key_comes_only_from_its_pipe(self):
+        self.assertEqual(settings_from().syncthing_key, "")
         fd = handed(KEY + "\n")
-        settings = settings_from(DARKROOM_SYNCTHING="1", DARKROOM_SYNCTHING_KEY_FD=str(fd))
-        self.assertEqual((settings.syncthing, settings.syncthing_key), (True, KEY))
+        settings = settings_from(DARKROOM_SYNCTHING_KEY_FD=str(fd))
+        self.assertEqual(settings.syncthing_key, KEY)
         self.assertRaises(OSError, os.fstat, fd)
         self.assertNotIn(KEY, repr(settings))
         self.assertEqual(settings_from(DARKROOM_SYNCTHING_KEY="typed-by-hand-0123456789").syncthing_key, "")
 
-    def test_check_config_reports_syncthing_never_shows_its_key_and_names_it_outside_the_one_container(self):
-        fd = handed(KEY)
-        with tempfile.TemporaryDirectory() as folder, no_leaks(self, KEY), mock.patch.object(exiftool, "version", return_value="13.0"), \
-                mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING": "1", "DARKROOM_SYNCTHING_KEY_FD": str(fd), "DARKROOM_ONE_CONTAINER": "1", "DARKROOM_PHOTOS_ROOT": folder,
-                                             "DARKROOM_DATA_DIR": folder, "DARKROOM_PUBLIC_URL": "https://d.example", "DARKROOM_ALLOW_NO_AUTH": "1"}, clear=True):
-            self.assertEqual(run.syncthing_line(config.load()), run.SYNCTHING_ON)
-            self.assertEqual(run.main(["check-config"]), 0)
-            os.environ.pop("DARKROOM_ONE_CONTAINER")
-            self.assertEqual(config.syncthing_problems(config.load()), [config.SYNCTHING_TWO_CONTAINERS])
-            self.assertEqual(run.syncthing_line(config.load()), run.SYNCTHING_OFF)
-            self.assertEqual(run.main(["check-config"]), 1)
-        self.assertEqual(config.syncthing_problems(settings_from(DARKROOM_ONE_CONTAINER="1")), [])
+    def test_check_config_always_reports_syncthing_on_and_never_shows_its_key(self):
+        for one_container in ({"DARKROOM_ONE_CONTAINER": "1"}, {}):
+            config.handed_tokens.clear()
+            fd = handed(KEY)
+            err = io.StringIO()
+            with self.subTest(one_container=one_container), tempfile.TemporaryDirectory() as folder, no_leaks(self, KEY), \
+                    mock.patch.object(exiftool, "version", return_value="13.0"), contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err), \
+                    mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING_KEY_FD": str(fd), "DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder,
+                                                 "DARKROOM_PUBLIC_URL": "https://d.example", "DARKROOM_ALLOW_NO_AUTH": "1"} | one_container, clear=True):
+                self.assertEqual(run.main(["check-config"]), 0, err.getvalue())
+                self.assertIn(run.SYNCTHING_ON, out.getvalue().splitlines())
 
     def test_check_config_the_deploy_page_and_the_example_say_what_syncs_once_it_is_on(self):
         root = Path(__file__).resolve().parent.parent
         page = (root / "docs/deploy/one-container.md").read_text()
-        section = page[page.index("## Syncthing: on by default"):page.index("## Moving from the two containers")]
-        example = next(line for line in (root / ".env.example").read_text().splitlines() if line.startswith("# 1 makes the one container's init start"))
+        section = page[page.index("## Syncthing: always on"):page.index("## Moving from the two containers")]
+        example = next(line for line in (root / ".env.example").read_text().splitlines() if line.startswith("# No longer supported, and ignored: Darkroom's own Syncthing is always on"))
         for text in (run.SYNCTHING_ON, section, example):
             with self.subTest(text=text[:40]):
                 self.assertNotRegex(text.lower(), r"nothing syncs|syncs nothing|later release|no folder or device is configured")
@@ -169,12 +169,12 @@ class SchedulerTests(unittest.TestCase):
     def test_one_shot_commands_build_a_scheduler_without_the_gate_and_record_no_event(self):
         engine = own_database(self)
         fake, path = on_socket(self)
-        settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing=True)
+        settings = settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir())
         with mock.patch.object(config, "SYNCTHING_SOCKET", path):
             built = jobs.build(settings, engine)
         self.assertIsNone(built.syncthing)
         self.assertNotIn("syncthing.gate", built.jobs)
-        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING": "1", "DARKROOM_DATA_DIR": folder, "DARKROOM_PHOTOS_ROOT": folder,
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"DARKROOM_DATA_DIR": folder, "DARKROOM_PHOTOS_ROOT": folder,
                                                                                    "DARKROOM_SECRET_KEY": "k" * 43}, clear=True), mock.patch.object(config, "SYNCTHING_SOCKET", path):
             self.assertEqual(run.main(["migrate"]), 0)
             self.assertEqual(run.main(["jobs", "browser.leases"]), 0)
@@ -188,7 +188,7 @@ class SchedulerTests(unittest.TestCase):
         engine = own_database(self)
         fake, path = on_socket(self)
         fake.key = "persisted-key-canary-0123456789"
-        settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing=True, syncthing_key=KEY)
+        settings = dataclasses.replace(settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir()), syncthing_key=KEY)
         with no_leaks(self, KEY, "persisted-key-canary-0123456789", database=engine), mock.patch.object(config, "SYNCTHING_SOCKET", path):
             scheduler = jobs.for_serving(settings, engine, 100.0)
             self.assertEqual(scheduler.syncthing, syncthing_version.Gate(False, syncthing_version.KEY_REFUSED))
@@ -202,21 +202,21 @@ class SchedulerTests(unittest.TestCase):
             scheduler.run_one("syncthing.gate", 340.0)
             self.assertEqual(len(fake.requests), asked)
         self.assertEqual(scheduler.jobs["syncthing.gate"].interval, jobs.SYNCTHING_RECHECK_SECONDS)
-        self.assertNotIn("syncthing.gate", jobs.for_serving(dataclasses.replace(settings, syncthing=False), engine, 100.0).jobs)
         with db.session(engine) as opened:
             self.assertEqual([entry.detail for entry in events.recent(opened, type=syncthing_version.EVENT)], [syncthing_version.KEY_REFUSED])
 
 
-    def test_the_scheduler_holds_the_startup_gate_only_with_syncthing_on(self):
+    def test_the_scheduler_always_holds_the_startup_gate_and_it_is_off_without_a_usable_key(self):
         engine = own_database(self)
         fake, path = on_socket(self)
         base = settings_from(DARKROOM_PHOTOS_ROOT=tempfile.gettempdir())
-        self.assertIsNone(jobs.for_serving(base, engine, 100.0).syncthing)
-        self.assertEqual(fake.requests, [])
         with no_leaks(self, KEY, database=engine), mock.patch.object(config, "SYNCTHING_SOCKET", path):
-            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True, syncthing_key=KEY), engine, 100.0).syncthing, syncthing_version.Gate(True))
-            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True), engine, 100.0).syncthing, syncthing_version.Gate(False, syncthing_version.NO_KEY))
-            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing=True, syncthing_key="with space"), engine, 100.0).syncthing.reason, syncthing_version.NO_KEY)
+            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing_key=KEY), engine, 100.0).syncthing, syncthing_version.Gate(True))
+            asked = len(fake.requests)
+            self.assertEqual(jobs.for_serving(base, engine, 100.0).syncthing, syncthing_version.Gate(False, syncthing_version.NO_KEY))
+            self.assertEqual(jobs.for_serving(dataclasses.replace(base, syncthing_key="with space"), engine, 100.0).syncthing.reason, syncthing_version.NO_KEY)
+            self.assertEqual(len(fake.requests), asked)
+        self.assertIn("syncthing.gate", jobs.for_serving(base, engine, 100.0).jobs)
 
 
 if __name__ == "__main__":

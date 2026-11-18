@@ -163,7 +163,6 @@ class Settings:
     wizard: bool = False
     blank_in_environment: frozenset[str] = frozenset()
     browser_root: Path | None = None
-    syncthing: bool = False
     syncthing_key: str = field(default="", repr=False)
     alerts_off: tuple[str, ...] = ()
     build: Build = Build()
@@ -226,7 +225,6 @@ def load() -> Settings:
         wizard=env_flag("DARKROOM_WIZARD"),
         blank_in_environment=frozenset(entry.variable for entry in STORABLE if entry.variable in os.environ and not env(entry.variable)),
         browser_root=Path(env("DARKROOM_BROWSER_ROOT")) if env("DARKROOM_BROWSER_ROOT") else None,
-        syncthing=env_flag("DARKROOM_SYNCTHING"),
         syncthing_key=syncthing_key(),
         alerts_off=env_list("DARKROOM_ALERTS_OFF"),
         build=read_build(),
@@ -402,7 +400,7 @@ def problems(settings: Settings) -> list[str]:
         found.append("DARKROOM_PUBLIC_URL has a port that is not a number from 0 to 65535")
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
-    return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings) + syncthing_problems(settings)
+    return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
             + alerts_off_problems(settings))
 
 
@@ -414,14 +412,6 @@ def alerts_off_problems(settings: Settings) -> list[str]:
     if not unknown:
         return []
     return [f"DARKROOM_ALERTS_OFF names {len(unknown)} unknown alert kind{'' if len(unknown) == 1 else 's'}; it takes only {', '.join(SWITCHABLE_ALERTS)}"]
-
-
-SYNCTHING_TWO_CONTAINERS = ("DARKROOM_SYNCTHING=1 does nothing outside the one container: only the one container's init starts Darkroom's Syncthing, "
-                            "so unset it here (docs/deploy/one-container.md)")
-
-
-def syncthing_problems(settings: Settings) -> list[str]:
-    return [SYNCTHING_TWO_CONTAINERS] if settings.syncthing and not settings.one_container else []
 
 
 def port_problem(address: str) -> bool:
@@ -488,6 +478,15 @@ REMOVED_BROWSER_VARIABLES = ("DARKROOM_BROWSER_TOKEN", "DARKROOM_URL", "VNC_URL"
 
 def ignored_browser_variables() -> tuple[str, ...]:
     return tuple(name for name in REMOVED_BROWSER_VARIABLES if env(name))
+
+
+SYNCTHING_SWITCH_IGNORED = ("DARKROOM_SYNCTHING is no longer supported and is ignored: Darkroom's Syncthing is always on in the one container, so remove it "
+                            "(docs/deploy/one-container.md)")
+
+
+def syncthing_switch_set_off() -> bool:
+    value = env("DARKROOM_SYNCTHING")
+    return bool(value) and value != "1"
 
 
 def ignored_browser_note(names: tuple[str, ...]) -> str:
