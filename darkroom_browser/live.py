@@ -121,7 +121,7 @@ class Live:
     def is_from(self, download: Any, part: PartClick) -> bool:
         if self.clicked != part.selector or not self.started_in_own_tab(download):
             return False
-        return takeout.download_of_part(getattr(download, "url", None), getattr(download, "suggested_filename", None), part.href, part.number)
+        return takeout.download_of_part(getattr(download, "url", None), part.href)
 
     def started_in_own_tab(self, download: Any) -> bool:
         page = getattr(download, "page", None)

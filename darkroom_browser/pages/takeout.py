@@ -579,7 +579,7 @@ def size_in_bytes(text: str) -> int | None:
 DOWNLOAD_HREF = re.compile(r"https://" + re.escape(selectors.DOWNLOAD_HOST) + r"/takeout/download(?:[?#].*)?")
 SINGLE_PARAMETERS = ("j", "i", "user")
 PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
-PART_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,190}-([0-9]{3,4})\.zip")
+GOOGLE_DOWNLOAD_DOMAINS = ("google.com", "googleusercontent.com")
 
 
 def single_parameters(href: str) -> dict[str, str] | None:
@@ -601,28 +601,25 @@ def export_id_of(href: str) -> str | None:
     return None if found is None else found.get("j")
 
 
-def numbered_as_part(name: object, number: int) -> bool:
-    if not isinstance(name, str) or "/" in name or "\\" in name:
-        return False
-    found = PART_NAME.fullmatch(name)
-    return found is not None and int(found.group(1)) == number
-
-
-def download_of_part(url: object, name: object, href: str, number: int) -> bool:
-    if not isinstance(url, str) or LINK_TRICKS.search(url):
-        return False
+def googles_download_host(url: str) -> bool:
     authority = AUTHORITY.fullmatch(url)
     if authority is None or "@" in authority.group(1):
         return False
-    host = host_category(url)
-    if host == "accounts" or (host == "takeout" and DOWNLOAD_HREF.fullmatch(url) is None):
+    host, _, port = authority.group(1).lower().partition(":")
+    if port not in ("", "443") or host == selectors.ACCOUNTS_HOST:
+        return False
+    return host in GOOGLE_DOWNLOAD_DOMAINS or host.endswith(tuple("." + domain for domain in GOOGLE_DOWNLOAD_DOMAINS))
+
+
+def download_of_part(url: object, href: str) -> bool:
+    if not isinstance(url, str) or LINK_TRICKS.search(url) or not googles_download_host(url):
+        return False
+    if host_category(url) == "takeout" and DOWNLOAD_HREF.fullmatch(url) is None:
         return False
     got, wanted = single_parameters(url), single_parameters(href)
     if got is None or wanted is None or wanted.get("j") is None or wanted.get("i") is None:
         return False
-    if "j" in got or "i" in got:
-        return got.get("j") == wanted["j"] and got.get("i") == wanted["i"]
-    return numbered_as_part(name, number)
+    return got.get("j") == wanted["j"] and got.get("i") == wanted["i"]
 
 
 def download_link(href: str, address: str, base: str | None) -> str | None:

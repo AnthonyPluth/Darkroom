@@ -162,10 +162,20 @@ class LiveTabsTests(unittest.TestCase):
         self.arrives(REDIRECTED_1)
         self.assertEqual(self.browser.collect_download(self.target, CLICK_1).name, "takeout-001.zip")
 
-    def test_a_redirected_download_without_its_ids_is_kept_when_its_name_carries_this_parts_number(self):
-        self.click_that_times_out()
-        self.arrives(UNNAMED, name="takeout-20261102T031000Z-001.zip")
-        self.assertEqual(self.browser.collect_download(self.target, CLICK_1).name, "takeout-20261102T031000Z-001.zip")
+    def test_a_redirected_download_without_its_ids_is_not_kept_even_when_named_for_this_part(self):
+        self.assert_not_kept(UNNAMED, name="takeout-20261102T031000Z-001.zip")
+
+    def test_another_exports_part_1_whose_redirect_dropped_the_ids_is_not_kept(self):
+        popup = Tab(self.clock, self.downloads, "https://takeout.google.com/manage/archive/export-2", "")
+        popup.opened_by = self.main
+        self.context.open(popup)
+        self.assert_not_kept(UNNAMED, page=popup, name="takeout-20260901T000000Z-001.zip")
+
+    def test_a_download_from_a_host_that_is_not_googles_is_not_kept_even_with_this_parts_ids(self):
+        self.assert_not_kept("https://other.example/takeout/download?j=export-1&i=0&user=made-up")
+
+    def test_a_name_only_download_from_a_host_that_is_not_googles_is_not_kept(self):
+        self.assert_not_kept("https://other.example/x-001.zip", name="x-001.zip")
 
     def assert_not_kept(self, url=PART_1, page=None, name=None, click=True):
         if click:
