@@ -226,11 +226,20 @@ class ManagedAssetOrigin(Base):
     recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+PART_INGEST_STATES = ("not_queued", "queued", "ingesting", "ingested", "refused", "failed")
+ENTRY_KINDS = ("media", "sidecar", "other")
+ENTRY_OUTCOMES = ("listed", "placed", "review", "skipped", "copy", "waiting_sidecar", "waiting_export", "failed", "recorded")
+Crc32 = Integer().with_variant(BigInteger(), "postgresql")
+
+
 class ExportPart(Base):
     __tablename__ = "export_parts"
     __table_args__ = (
         UniqueConstraint("export_id", "number", name="uq_export_parts_number"),
         one_of("status", ("pending", "downloading", "done", "failed", "corrupt"), "ck_export_parts_status"),
+        one_of("ingest_state", PART_INGEST_STATES, "ck_export_parts_ingest_state"),
+        CheckConstraint("entries IS NULL OR entries >= 0", name="ck_export_parts_entries"),
+        CheckConstraint("entries_done >= 0 AND held >= 0 AND failed_items >= 0", name="ck_export_parts_ingest_counts"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     export_id: Mapped[int] = mapped_column(ForeignKey("exports.id", ondelete="CASCADE"), nullable=False)
@@ -241,6 +250,72 @@ class ExportPart(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
     bytes_done: Mapped[int | None] = mapped_column(Bytes)
+    ingest_state: Mapped[str] = mapped_column(String, nullable=False, default="not_queued", server_default="not_queued")
+    ingest_queued_at: Mapped[float | None] = mapped_column(Float)
+    ingested_at: Mapped[float | None] = mapped_column(Float)
+    entries: Mapped[int | None] = mapped_column(Integer)
+    entries_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    held: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class TakeoutEntry(Base):
+    __tablename__ = "takeout_entries"
+    __table_args__ = (
+        UniqueConstraint("export_id", "part_number", "name", name="uq_takeout_entries_part_name"),
+        ForeignKeyConstraint(["export_id", "part_number"], ["export_parts.export_id", "export_parts.number"], ondelete="CASCADE", name="fk_takeout_entries_part"),
+        Index("ix_takeout_entries_export_outcome", "export_id", "outcome"),
+        Index("ix_takeout_entries_export_sha1", "export_id", "sha1"),
+        one_of("kind", ENTRY_KINDS, "ck_takeout_entries_kind"),
+        one_of("outcome", ENTRY_OUTCOMES, "ck_takeout_entries_outcome"),
+        CheckConstraint("crc32 BETWEEN 0 AND 4294967295", name="ck_takeout_entries_crc32"),
+        CheckConstraint("bytes >= 0", name="ck_takeout_entries_bytes"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    export_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    part_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+    crc32: Mapped[int] = mapped_column(Crc32, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False, default="listed", server_default="listed")
+    metadata_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    sha1: Mapped[str | None] = mapped_column(String)
+    phash: Mapped[str | None] = mapped_column(String)
+    captured_utc: Mapped[float | None] = mapped_column(Float)
+    captured_local: Mapped[str | None] = mapped_column(String)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    make: Mapped[str | None] = mapped_column(String)
+    model: Mapped[str | None] = mapped_column(String)
+    is_video: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    is_edited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    edited_of: Mapped[str | None] = mapped_column(String)
+    copy_of_id: Mapped[int | None] = mapped_column(ForeignKey("takeout_entries.id", ondelete="SET NULL"))
+    sidecar_entry_id: Mapped[int | None] = mapped_column(ForeignKey("takeout_entries.id", ondelete="SET NULL"))
+    decision_id: Mapped[int | None] = mapped_column(ForeignKey("dedupe_decisions.id", ondelete="SET NULL"))
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
+    held_path: Mapped[str | None] = mapped_column(String)
+    listed_at: Mapped[float] = mapped_column(Float, nullable=False)
+    done_at: Mapped[float | None] = mapped_column(Float)
+
+
+class TakeoutSidecar(Base):
+    __tablename__ = "takeout_sidecars"
+    __table_args__ = (
+        UniqueConstraint("export_id", "part_number", "folder", "name", name="uq_takeout_sidecars_part_folder_name"),
+        ForeignKeyConstraint(["export_id", "part_number"], ["export_parts.export_id", "export_parts.number"], ondelete="CASCADE", name="fk_takeout_sidecars_part"),
+        UniqueConstraint("entry_id", name="uq_takeout_sidecars_entry"),
+        Index("ix_takeout_sidecars_export_folder", "export_id", "folder"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    export_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    part_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("takeout_entries.id", ondelete="CASCADE"), nullable=False)
+    folder: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class MediaItem(Base):
@@ -251,7 +326,7 @@ class MediaItem(Base):
         Index("ix_media_items_person_captured", "person_id", "captured_utc"),
         Index("ix_media_items_pixel_source_binding", "id", "person_id", unique=True),
         one_of("source", ("phone", "takeout"), "ck_media_items_source"),
-        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown"), "ck_media_items_time_source"),
+        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown", "quicktime_utc"), "ck_media_items_time_source"),
         one_of("gps_source", ("exif", "google", "none"), "ck_media_items_gps_source"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
