@@ -141,7 +141,7 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
-    prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path)).items)
+    prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path), lambda path: staged_text(photos, path)).items)
     for start in range(0, len(prepared.items), PINNED_AT_ONCE):
         group = prepared.items[start:start + PINNED_AT_ONCE]
         with paths.pinned_inbox_files(photos, [item.path for item in group]) as pinned:

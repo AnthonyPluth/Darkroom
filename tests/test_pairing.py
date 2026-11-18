@@ -7,10 +7,16 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from darkroom.domain.ingest import pairing
+from sqlalchemy import select
+
+from darkroom.domain.ingest import pairing, unpack
+from darkroom.storage.models import MediaItem, Person
+from tests.import_world import NOW, World
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder, standard_export
 
 YEAR = f"{GOOGLE_PHOTOS}/Photos from 2019"
+CUT = "screen_capture_of_a_chat_with_a_long_title_AAA"
+ONE, TWO = f"{CUT}_one.jpg", f"{CUT}_two.jpg"
 
 
 def unzip(manifest, target):
@@ -59,6 +65,16 @@ def listed_from_zips(manifest, staging, numbers=None):
     return list(by_folder.items()), digests
 
 
+def zip_reader(manifest, staging):
+    texts = {}
+    for part in manifest.parts:
+        with zipfile.ZipFile(part) as archive:
+            for entry in archive.namelist():
+                if entry.endswith(".json"):
+                    texts[staging / entry] = archive.read(entry).decode("utf-8")
+    return texts.get
+
+
 def mixed_export(root, seed, parts):
     builder = TakeoutBuilder(root, seed=seed, parts=parts)
     last = parts - 1
@@ -92,7 +108,7 @@ class PairingTests(unittest.TestCase):
     def pair(self, staging, hashing=pairing.paths.plain_sha1):
         report = pairing.pair(staging, hashing)
         folders, digests = listed_from_disk(staging)
-        self.assertEqual(pairing.pair_names(folders, digests), report)
+        self.assertEqual(pairing.pair_names(folders, digests, reading=pairing.plain_text), report)
         return report
 
     def staged(self, builder):
@@ -125,6 +141,84 @@ class PairingTests(unittest.TestCase):
         long_name = "a_very_long_original_file_name_from_a_camera_roll_0007.JPG"
         found, _ = self.sidecar_name("limit", long_name)
         self.assertEqual(found, f"{long_name[:46]}.json")
+
+    def shared_cut(self, label, tails=("_one.jpg", "_two.jpg"), titles=None, prefix=CUT):
+        builder = TakeoutBuilder(self.root / label)
+        builder.shared_cut(prefix, tails, titles)
+        return self.staged(builder)[1]
+
+    def sidecars_of(self, report):
+        return {item.path.name: item.sidecar.name if item.sidecar else None for item in report.items}
+
+    def test_two_long_names_with_one_cut_name_each_get_the_sidecar_titled_with_their_name(self):
+        staging = self.shared_cut("cut", titles=(TWO, ONE))
+        before = sorted((str(p), p.stat().st_mtime_ns) for p in staging.rglob("*"))
+        report = self.pair(staging)
+        self.assertEqual(self.sidecars_of(report), {ONE: f"{CUT}(1).json", TWO: f"{CUT}.json"})
+        self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+        self.assertEqual(sorted((str(p), p.stat().st_mtime_ns) for p in staging.rglob("*")), before)
+
+    def test_two_long_names_whose_titles_cannot_tell_them_apart_get_no_sidecar(self):
+        for label, titles in (("missing", (None, None)), ("equal", (ONE, ONE)), ("neither", ("other.jpg", "another.jpg"))):
+            with self.subTest(titles=label):
+                report = self.pair(self.shared_cut(f"vague-{label}", titles=titles))
+                self.assertEqual(self.sidecars_of(report), {ONE: None, TWO: None})
+                self.assertEqual(sorted(p.name for p in report.orphan_sidecars), [f"{CUT}(1).json", f"{CUT}.json"])
+                self.assertEqual(sorted(i.path.name for i in report.unpaired_media), [ONE, TWO])
+
+    def test_only_the_long_name_a_title_names_gets_a_sidecar(self):
+        report = self.pair(self.shared_cut("half", titles=(ONE, None)))
+        self.assertEqual(self.sidecars_of(report), {ONE: f"{CUT}.json", TWO: None})
+        self.assertEqual([p.name for p in report.orphan_sidecars], [f"{CUT}(1).json"])
+
+    def test_a_title_matches_ignoring_case_and_unicode_composition(self):
+        prefix = "cafe\u0301_receipt_photographed_on_a_long_trip_AAAA"
+        one, two = f"{prefix}_one.JPG", f"{prefix}_two.jpg"
+        composed = "caf\u00e9_receipt_photographed_on_a_long_trip_AAAA"
+        report = self.pair(self.shared_cut("unicode", ("_one.JPG", "_two.jpg"), (f"{composed}_TWO.JPG", f"{composed}_one.jpg".upper()), prefix=prefix))
+        cut = one[:pairing.SIDECAR_NAME_LIMIT]
+        self.assertEqual(self.sidecars_of(report), {one: f"{cut}(1).json", two: f"{cut}.json"})
+        self.assertEqual(report.orphan_sidecars, [])
+
+    def test_a_title_that_names_both_long_names_by_case_alone_pairs_neither(self):
+        folder = self.root / "case"
+        folder.mkdir()
+        lower, upper = f"{CUT}_x.jpg", f"{CUT}_X.jpg"
+        (folder / lower).write_bytes(b"lower")
+        (folder / upper).write_bytes(b"upper")
+        (folder / f"{CUT}.json").write_text(f'{{"title": "{lower}"}}')
+        self.assertEqual(self.sidecars_of(self.pair(folder)), {lower: None, upper: None})
+
+    def test_a_long_edited_copy_still_shares_its_originals_sidecar(self):
+        folder = self.root / "long-edit"
+        folder.mkdir()
+        edit = f"{CUT}_one-edited.jpg"
+        (folder / ONE).write_bytes(b"original")
+        (folder / edit).write_bytes(b"edit")
+        (folder / f"{CUT}.json").write_text(f'{{"title": "{ONE}"}}')
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {ONE: f"{CUT}.json", edit: f"{CUT}.json"})
+        self.assertEqual(self.only(report, edit).edited_of, folder / ONE)
+
+    def test_a_long_edited_copy_follows_its_original_when_two_long_names_share_a_cut(self):
+        folder = self.root / "long-edits"
+        folder.mkdir()
+        edit = f"{CUT}_two-edited.jpg"
+        for name in (ONE, TWO, edit):
+            (folder / name).write_bytes(name.encode())
+        (folder / f"{CUT}.json").write_text(f'{{"title": "{ONE}"}}')
+        (folder / f"{CUT}(1).json").write_text(f'{{"title": "{TWO}"}}')
+        self.assertEqual(self.sidecars_of(self.pair(folder)), {ONE: f"{CUT}.json", TWO: f"{CUT}(1).json", edit: f"{CUT}(1).json"})
+
+    def test_an_unreadable_sidecar_leaves_the_long_names_unpaired(self):
+        staging = self.shared_cut("unreadable")
+
+        def refusing(path):
+            raise pairing.paths.LinkRefused("not a plain file")
+
+        report = pairing.pair(staging, reading=refusing)
+        self.assertEqual(self.sidecars_of(report), {ONE: None, TWO: None})
+        self.assertEqual(len(report.orphan_sidecars), 2)
 
     def test_the_counter_moves_before_the_extension_on_the_sidecar(self):
         builder = TakeoutBuilder(self.root / "dup")
@@ -354,6 +448,34 @@ class PairingNamesTests(unittest.TestCase):
             shuffled = [(folder, list(reversed(names))) for folder, names in order]
             self.assertEqual(pairing.pair_names(shuffled, digests), expected)
 
+    def test_names_and_a_zip_reader_give_the_walkers_report_for_long_names_sharing_a_cut(self):
+        for parts in (1, 2, 3):
+            with self.subTest(parts=parts):
+                builder = TakeoutBuilder(self.root / f"cut-{parts}", seed=parts, parts=parts)
+                builder.shared_cut(CUT, ("_one.jpg", "_two.jpg"), (TWO, ONE), part=0, sidecar_part=parts - 1)
+                builder.shared_cut("another_screen_capture_from_a_long_chat_title_B", ("_a.png", "_b.png", "_c.png"), (None, None, None))
+                manifest = builder.build()
+                staging = unzip(manifest, self.root / f"stage-cut-{parts}")
+                folders, digests = listed_from_zips(manifest, staging)
+                expected = pairing.pair(staging)
+                (one,) = [item for item in expected.items if item.path.name == ONE]
+                self.assertEqual(one.sidecar.name, f"{CUT}(1).json")
+                self.assertEqual(len(expected.orphan_sidecars), 3)
+                self.assertEqual(pairing.pair_names(folders, digests, reading=zip_reader(manifest, staging)), expected)
+
+    def test_without_a_reader_long_names_sharing_a_cut_get_no_sidecar(self):
+        folder = self.root / YEAR
+        report = pairing.pair_names([(folder, [ONE, TWO, f"{CUT}.json", f"{CUT}(1).json"])], {folder / ONE: "1", folder / TWO: "2"})
+        self.assertEqual([item.sidecar for item in report.items], [None, None])
+        self.assertEqual(report.orphan_sidecars, [folder / f"{CUT}(1).json", folder / f"{CUT}.json"])
+
+    def test_long_names_sharing_a_cut_settle_from_earlier_sidecars(self):
+        folder = self.root / YEAR
+        texts = {folder / f"{CUT}.json": f'{{"title": "{TWO}"}}', folder / f"{CUT}(1).json": f'{{"title": "{ONE}"}}'}
+        report = pairing.pair_names([(folder, [ONE, TWO])], {folder / ONE: "1", folder / TWO: "2"},
+                                    {folder: [f"{CUT}.json", f"{CUT}(1).json"]}, reading=texts.get)
+        self.assertEqual({i.path.name: i.sidecar.name for i in report.items}, {ONE: f"{CUT}(1).json", TWO: f"{CUT}.json"})
+
     def test_a_media_name_without_a_digest_is_left_out(self):
         folder = self.root / "f"
         report = pairing.pair_names([(folder, ["a.JPG", "b.JPG", "b.JPG.json"])], {folder / "a.JPG": "1"})
@@ -389,6 +511,20 @@ class PairingNamesTests(unittest.TestCase):
         self.assertTrue(any(item.sidecar is not None and item.sidecar.name in earlier.get(item.path.parent, []) for item in compared))
         for item in compared:
             self.assertEqual(item.sidecar, whole[item.path], item.path.name)
+
+
+class ImportedLongNamesTests(unittest.TestCase):
+    def test_an_import_gives_each_long_name_the_place_from_its_own_sidecar(self):
+        world = World(self, ("jo",), ("jo",))
+        inbox = world.photos.manual_inbox("jo") / "drop"
+        builder = TakeoutBuilder(inbox, seed=5)
+        builder.shared_cut(CUT, ("_one.jpg", "_two.jpg"))
+        builder.build()
+        exports = unpack.register_zips(world.opened, world.opened.get(Person, world.ids["jo"]), inbox, NOW)
+        world.opened.commit()
+        world.run_import(exports[0])
+        places = {Path(item.path).name: (item.lat, item.lon) for item in world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout")).scalars()}
+        self.assertEqual(places, {ONE: (10.0, 20.0), TWO: (11.0, 20.0)})
 
 
 if __name__ == "__main__":

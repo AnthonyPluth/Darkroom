@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from darkroom.domain import media
+from darkroom.domain.ingest import sidecar
 from darkroom.storage import paths
 
 SIDECAR_NAME_LIMIT = 46
@@ -21,6 +24,7 @@ NON_MEDIA_JSON = {"metadata.json", "print-subscriptions.json", "user-generated-m
 Sidecars = dict[str, Path]
 Rule = Callable[[Path, Sidecars], Path | None]
 Digest = Callable[[Path], str]
+Reader = Callable[[Path], str | None]
 
 
 @dataclass
@@ -118,6 +122,71 @@ def sidecar_for(media_path: Path, sidecars: Sidecars) -> Path | None:
     return own_sidecar(media_path, sidecars) or edited_sidecar(media_path, sidecars)
 
 
+def folded(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def plain_text(path: Path) -> str:
+    with paths.open_plain_file(path) as handle:
+        return handle.read().decode("utf-8", errors="replace")
+
+
+def title_of(path: Path, reading: Reader | None) -> str | None:
+    if reading is None:
+        return None
+    try:
+        raw = reading(path)
+    except (OSError, ValueError):
+        return None
+    parsed = sidecar.parse(raw) if raw else None
+    return folded(parsed.title) if parsed is not None and parsed.title else None
+
+
+def owner_of(path: Path, found: Path, sidecars: Sidecars) -> str:
+    original = original_name(path)
+    if original is not None and own_sidecar(path.with_name(original), sidecars) == found:
+        return original
+    return path.name
+
+
+def variants_of(shared: Path, sidecars: Sidecars) -> list[Path]:
+    stem = stem_of(shared.name)
+    found = []
+    for name, path in sorted(sidecars.items()):
+        numbered = NUMBERED.match(stem_of(name))
+        if stem_of(name) == stem or (numbered is not None and numbered.group("stem") == stem):
+            found.append(path)
+    return found
+
+
+def by_title(candidates: dict[str, list[Path]], reading: Reader | None) -> dict[str, Path]:
+    titles = {path: title_of(path, reading) for paths_of in candidates.values() for path in paths_of}
+    picks: dict[str, Path] = {}
+    for owner, paths_of in candidates.items():
+        named = [path for path in paths_of if titles[path] == folded(owner)]
+        if len(named) == 1:
+            picks[owner] = named[0]
+    counts = Counter(picks.values())
+    return {owner: path for owner, path in picks.items() if counts[path] == 1}
+
+
+def folder_sidecars(media_paths: Iterable[Path], sidecars: Sidecars, reading: Reader | None) -> dict[Path, Path | None]:
+    found = {path: sidecar_for(path, sidecars) for path in media_paths}
+    owners: dict[Path, str] = {}
+    claims: dict[Path, set[str]] = {}
+    for path, match in found.items():
+        if match is not None:
+            owners[path] = owner_of(path, match, sidecars)
+            claims.setdefault(match, set()).add(owners[path])
+    shared = {match for match, names in claims.items() if len(names) > 1}
+    if not shared:
+        return found
+    taken = set(claims) - shared
+    candidates = {owners[path]: [c for c in variants_of(match, sidecars) if c not in taken] for path, match in found.items() if match in shared}
+    settled = by_title(candidates, reading)
+    return {path: settled.get(owners[path]) if match in shared else match for path, match in found.items()}
+
+
 def album_of(folder: Path) -> str | None:
     return None if YEAR_FOLDER.match(folder.name) else folder.name
 
@@ -153,13 +222,13 @@ def digests_of(folders: dict[Path, list[str]], hashing: Digest) -> dict[Path, st
     return found
 
 
-def pair(staging_root: Path, hashing: Digest = paths.plain_sha1) -> PairingReport:
+def pair(staging_root: Path, hashing: Digest = paths.plain_sha1, reading: Reader = plain_text) -> PairingReport:
     folders = scan(staging_root)
-    return pair_names(folders.items(), digests_of(folders, hashing))
+    return pair_names(folders.items(), digests_of(folders, hashing), reading=reading)
 
 
 def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[Path, str],
-               earlier_sidecars: Mapping[Path, Iterable[str]] | None = None) -> PairingReport:
+               earlier_sidecars: Mapping[Path, Iterable[str]] | None = None, *, reading: Reader | None = None) -> PairingReport:
     earlier = earlier_sidecars or {}
     report = PairingReport()
     found_copies: dict[str, list[tuple[Path, Path | None]]] = {}
@@ -170,15 +239,11 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
         own: Sidecars = {name: folder / name for name in files if is_sidecar(name)}
         json_files.extend(own.values())
         sidecars: Sidecars = {name: folder / name for name in earlier.get(folder, ()) if is_sidecar(name)} | own
-        for name in files:
-            path = folder / name
-            sha1 = digests.get(path) if is_media(name) else None
-            if sha1 is None:
-                continue
-            found = sidecar_for(path, sidecars)
+        media_paths = [folder / name for name in files if is_media(name) and folder / name in digests]
+        for path, found in folder_sidecars(media_paths, sidecars, reading).items():
             if found is not None:
                 used.add(found)
-            found_copies.setdefault(sha1, []).append((path, found))
+            found_copies.setdefault(digests[path], []).append((path, found))
     by_copy: dict[Path, TakeoutItem] = {}
     for digest, copies in sorted((digest, slot) for digest, found in found_copies.items() for slot in slots_of(found)):
         copies.sort(key=lambda c: (album_of(c[0].parent) is not None, str(c[0])))
