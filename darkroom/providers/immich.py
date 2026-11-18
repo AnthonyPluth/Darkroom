@@ -26,6 +26,7 @@ PING_PATH = "/api/server/ping"
 CHECK_TIMEOUT = 5.0
 CHECK_LIMIT = 4096
 USER_AGENT = "Darkroom"
+NOT_READABLE = "Not found or no asset.read access"
 AddressCheck = Literal["answered", "no_answer", "not_immich", "tls_failed"]
 MANAGED_VERSIONS = frozenset({"v3.3.6", "v3.4.1"})
 MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
@@ -70,6 +71,30 @@ class NotConfigured(ImmichFailed):
 
 class ChecksumMismatch(ImmichFailed):
     pass
+
+
+class NotVisible(ImmichFailed):
+    pass
+
+
+def not_readable(raw: bytes) -> bool:
+    if len(raw) > CHECK_LIMIT:
+        return False
+    try:
+        found = json.loads(raw)
+    except ValueError:
+        return False
+    return (isinstance(found, dict) and found.get("message") == NOT_READABLE
+            and found.get("error", "Bad Request") == "Bad Request" and type(found.get("statusCode", 400)) is int and found.get("statusCode", 400) == 400)
+
+
+def denial_of(error: urllib.error.HTTPError) -> bytes:
+    try:
+        return error.read(CHECK_LIMIT + 1) if error.code == 400 else b""
+    except (OSError, ValueError):
+        return b""
+    finally:
+        error.close()
 
 
 @dataclass(frozen=True)
@@ -304,9 +329,11 @@ class Client:
             with self.open(method, path, (key or self.admin_key) if keyed else "", body) as response:
                 raw = response.read(MAX_REPLY + 1)
         except urllib.error.HTTPError as error:
-            error.close()
+            denial = denial_of(error)
             if error.code in (401, 403):
                 raise ImmichFailed(f"Immich refused the {'person key' if key else 'admin key'} ({error.code})", error.code) from None
+            if error.code == 400 and not_readable(denial):
+                raise NotVisible("Immich answered 400: not found or not readable with this key", 400) from None
             raise ImmichFailed(f"Immich answered {error.code}", error.code) from None
         except tls.Refused as error:
             raise ImmichFailed(str(error)) from None

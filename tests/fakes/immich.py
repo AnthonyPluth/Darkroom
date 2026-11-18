@@ -23,6 +23,7 @@ HOST = "127.0.0.1"
 MODES = ("ok", "down", "slow", "401", "500")
 VERSION = "v1.130.0"
 SLOW_SECONDS = 2.0
+NOT_READABLE = {"message": "Not found or no asset.read access", "error": "Bad Request", "statusCode": 400}
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,8 @@ class State:
     intercept: Callable[[str, str, str], int | None] | None = None
     drop_fields: tuple[str, ...] = ()
     refused_agents: tuple[str, ...] = ()
+    missing_status: int = 400
+    shared: set[str] = field(default_factory=set)
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -204,11 +207,11 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             self.reply(200, {"assets": {"items": [a.json() for a in found[start:end]], "nextCursor": str(end) if end < len(found) else None}})
 
         def asset(self, person: FakePerson, parts: list[str]) -> None:
-            found = next((a for a in state.assets if a.id == parts[3] and a.owner_id == person.user_id), None)
-            if found is None and any(a.id == parts[3] for a in state.assets):
-                self.reply(400, {"message": "Not found or no asset.read access"})
-            elif found is None:
+            found = next((a for a in state.assets if a.id == parts[3] and (a.owner_id == person.user_id or a.id in state.shared)), None)
+            if found is None and state.missing_status == 404 and not any(a.id == parts[3] for a in state.assets):
                 self.reply(404, {"message": "Not found"})
+            elif found is None:
+                self.reply(400, NOT_READABLE)
             elif len(parts) == 4:
                 self.reply(200, {k: v for k, v in found.json().items() if k not in state.drop_fields})
             elif parts[4] == "metadata":

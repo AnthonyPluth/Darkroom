@@ -1,6 +1,10 @@
 import dataclasses
+import email.message
 import hashlib
+import io
+import json
 import unittest
+import urllib.error
 from unittest import mock
 
 from sqlalchemy import select
@@ -191,6 +195,73 @@ class LivePhotoTests(ReconcileCase):
         self.world.fake.add_asset(FakeAsset(id="vid", owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  later", name="IMG_0001.MOV", kind="VIDEO", visibility="hidden", metadata=()))
         later = self.run_it(at=NOW + 3600)
         self.assertEqual((later.stored, self.rows()[still.id].status, self.rows()["vid"].status), (2, "stored", "stored"))
+
+    def late_video(self, owner_id="u-jo"):
+        return self.world.fake.add_asset(FakeAsset(id="vid", owner_id=owner_id, data=b"\x00\x00\x00\x14ftypqt  later", name="IMG_0001.MOV", kind="VIDEO",
+                                                   visibility="hidden", metadata=()))
+
+    def reconcile_all(self, at):
+        return reconcile.reconcile_all(self.world.opened, self.settings, at)
+
+    def failures(self):
+        failed = self.world.opened.execute(select(Event.type).where(Event.type.in_(("immich_asset_failed", "immich_reconcile_failed")))).scalars().all()
+        return failed, self.world.opened.execute(select(Alert.key).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all()
+
+    def video_reads(self):
+        return [path for method, path in self.world.fake.requests() if path.startswith("/api/assets/vid")]
+
+    def assert_waiting(self, still, report):
+        self.assertEqual((report.stored, report.waiting, report.failed), (0, 1, 0))
+        rows = self.rows()
+        self.assertEqual((rows[still.id].status, rows[still.id].linked_asset_id, rows[still.id].original_item_id, rows[still.id].queued_at), ("waiting", "vid", None, None))
+        self.assertNotIn("vid", rows)
+        self.assertEqual((self.stored(), self.copies(), self.failures()), ([], [], ([], [])))
+
+    def test_a_still_whose_video_immich_answers_400_not_readable_waits_without_failing_the_run_and_is_stored_when_it_arrives(self):
+        still = self.photo(live_video_id="vid")
+        self.assert_waiting(still, self.reconcile_all(NOW)["jo"])
+        self.assertEqual(self.video_reads(), ["/api/assets/vid"])
+        self.assertEqual(self.jo.immich_reconciled_until, NOW - reconcile.MARGIN_SECONDS)
+        self.assert_waiting(still, self.reconcile_all(NOW + 3600)["jo"])
+        self.assertEqual(self.video_reads(), ["/api/assets/vid"] * 2)
+        self.late_video()
+        later = self.reconcile_all(NOW + 7200)["jo"]
+        self.assertEqual((later.stored, later.waiting, self.rows()[still.id].status, self.rows()["vid"].status), (2, 0, "stored", "stored"))
+        self.assertEqual(self.failures(), ([], []))
+
+    def test_a_still_whose_video_answers_404_still_waits(self):
+        self.world.fake.state.missing_status = 404
+        still = self.photo(live_video_id="vid")
+        self.assert_waiting(still, self.reconcile_all(NOW)["jo"])
+
+    def test_another_users_unreadable_video_is_never_read_or_stored_and_the_still_only_waits(self):
+        self.late_video(owner_id="u-sam")
+        still = self.photo(live_video_id="vid")
+        self.assert_waiting(still, self.reconcile_all(NOW)["jo"])
+        self.assertEqual(self.video_reads(), ["/api/assets/vid"])
+
+    def test_another_users_video_that_the_key_can_see_is_refused_and_nothing_is_stored(self):
+        self.late_video(owner_id="u-sam")
+        self.world.fake.state.shared.add("vid")
+        still = self.photo(live_video_id="vid")
+        report = self.reconcile_all(NOW)["jo"]
+        self.assertEqual((report.stored, report.waiting, report.failed, self.rows()[still.id].status), (0, 0, 1, "failed"))
+        self.assertNotIn("vid", self.rows())
+        self.assertEqual((self.stored(), self.copies()), ([], []))
+        self.assertEqual(self.world.opened.execute(select(Event.detail).where(Event.type == "immich_asset_failed")).scalars().all(), ["LiveVideoOwner"])
+        self.assertEqual(self.video_reads(), ["/api/assets/vid"])
+
+    def test_any_other_answer_for_the_video_fails_the_run_with_an_alert_as_before(self):
+        for status in (400, 403, 500, 502):
+            with self.subTest(status=status):
+                self.setUp()
+                still = self.photo(live_video_id="vid")
+                self.world.fake.state.intercept = lambda method, path, slug, status=status: status if path == "/api/assets/vid" else None
+                self.assertEqual(self.reconcile_all(NOW), {})
+                self.assertIsNone(self.jo.immich_reconciled_until)
+                self.assertEqual((self.stored(), self.copies()), ([], []))
+                self.assertNotIn(still.id, self.rows())
+                self.assertEqual(self.failures(), (["immich_reconcile_failed"], [f"immich:reconcile:{self.jo.id}"]))
 
 
 class FailureTests(ReconcileCase):
@@ -415,6 +486,30 @@ class ProviderTests(unittest.TestCase):
                 list(client.search_updated("k", None, "2026-01-01T00:00:00.000Z"))
         with mock.patch.object(immich.Client, "call", return_value={}), self.assertRaises(immich.ImmichFailed):
             client.metadata_keys("k", "a")
+
+    def test_only_immichs_exact_not_found_or_unreadable_400_is_told_apart(self):
+        client = immich.Client("http://127.0.0.1:1", "k")
+        text = "Not found or no asset.read access"
+
+        def answer(status, body):
+            raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+            error = urllib.error.HTTPError("http://127.0.0.1:1/api/assets/a", status, "x", email.message.Message(), io.BytesIO(raw))
+            with mock.patch.object(immich.tls, "urlopen", side_effect=error), self.assertRaises(immich.ImmichFailed) as caught:
+                client.get_asset("k", "a")
+            return type(caught.exception), caught.exception.status
+
+        for body in ({"message": text, "error": "Bad Request", "statusCode": 400}, {"message": text}, {"message": text, "error": "Bad Request", "statusCode": 400, "correlationId": "c"}):
+            with self.subTest(body=body):
+                self.assertEqual(answer(400, body), (immich.NotVisible, 400))
+        for status, body in ((400, {"message": ["id must be a UUID"], "error": "Bad Request", "statusCode": 400}), (400, {"message": "Not found"}),
+                             (400, {"message": text + "!"}), (400, {"message": text.lower()}), (400, {"message": [text]}), (400, {"message": text, "statusCode": 404}),
+                             (400, {"message": text, "statusCode": "400"}), (400, {"message": text, "error": "Not Found"}), (400, [text]), (400, text.encode()),
+                             (400, b"\xff"), (400, b""), (400, b" " * immich.CHECK_LIMIT + json.dumps({"message": text}).encode()),
+                             (404, {"message": text}), (403, {"message": text}), (500, {"message": text})):
+            with self.subTest(status=status, body=body):
+                kind, seen = answer(status, body)
+                self.assertIs(kind, immich.ImmichFailed)
+                self.assertEqual(seen, status)
 
 
 if __name__ == "__main__":

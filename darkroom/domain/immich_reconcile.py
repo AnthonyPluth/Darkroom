@@ -188,7 +188,7 @@ class Run:
             try:
                 video = self.client.get_asset(self.key, asset.live_video_id)
             except immich.ImmichFailed as error:
-                if error.status != 404:
+                if error.status != 404 and not isinstance(error, immich.NotVisible):
                     raise
                 self.mark(asset, "photo", "waiting", asset.live_video_id)
                 self.opened.commit()
