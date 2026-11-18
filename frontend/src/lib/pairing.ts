@@ -5,7 +5,7 @@ export const POLL_MS = 5000;
 
 export const NOT_A_DEVICE_ID = "not a Syncthing device ID";
 
-export type Pairing = { kind: "off" } | { kind: "on" };
+export const PAIRING_FAILED = "Couldn't load Pixel pairing";
 
 export type OwnDevice = { kind: "loading" } | { kind: "ready"; id: string } | { kind: "not_running" };
 
@@ -18,12 +18,11 @@ export function sentence(message: string): string {
   return /[.!?]$/.test(message) ? message : `${message}.`;
 }
 
-export async function pairingMode(): Promise<Pairing> {
+export async function readPairing(): Promise<void> {
   try {
-    await apiCall<"GET /api/pairing/device">("/api/pairing/device");
-    return { kind: "on" };
+    await apiCall<"GET /api/pairing/device">("/api/pairing/device", { failed: PAIRING_FAILED });
   } catch (err) {
-    return err instanceof ApiError && err.status === 503 ? { kind: "on" } : { kind: "off" };
+    if (!(err instanceof ApiError && err.status === 503)) throw err;
   }
 }
 

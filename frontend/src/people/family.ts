@@ -1,9 +1,9 @@
 import type { AccountView, PersonView, PixelSyncthing, PixelView } from "$lib/api-types";
 import { apiCall } from "$lib/contract";
 import { nowSeconds } from "$lib/format";
-import { pairingMode } from "$lib/pairing";
+import { readPairing } from "$lib/pairing";
 
-export type Transport = { syncthing: PixelSyncthing[] | null; pairing: boolean };
+export type Transport = { syncthing: PixelSyncthing[] };
 
 export type Family = { people: PersonView[]; accounts: AccountView[]; pixels: PixelView[]; now: number; transport: Transport | null };
 
@@ -15,13 +15,13 @@ export type Editing =
   | { kind: "paired"; item: PixelView };
 
 export async function loadFamily(options: { transport?: boolean } = {}): Promise<Family> {
-  const [people, accounts, pixels, pairing] = await Promise.all([
+  const [people, accounts, pixels] = await Promise.all([
     apiCall<"GET /api/people">("/api/people", { failed: "Couldn't load the people" }),
     apiCall<"GET /api/accounts">("/api/accounts", { failed: "Couldn't load the Google accounts" }),
     apiCall<"GET /api/pixels">("/api/pixels", { failed: "Couldn't load the Pixels" }),
-    options.transport ? pairingMode() : null,
+    options.transport ? readPairing() : null,
   ]);
-  const transport = pairing === null ? null : { syncthing: pixels.syncthing, pairing: pairing.kind === "on" };
+  const transport = options.transport ? { syncthing: pixels.syncthing } : null;
   return { people: people.people, accounts: accounts.accounts, pixels: pixels.pixels, now: nowSeconds(), transport };
 }
 

@@ -18,10 +18,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const PAIRING = { "GET /api/pairing/device": { device_id: "DRKROOM-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG" } };
+
 const seeded = () => ({
   "GET /api/people": { people: [jo, sam] },
   "GET /api/accounts": { accounts: [joAccount, familyAccount] },
-  "GET /api/pixels": { pixels: [solo, shared], syncthing: null },
+  "GET /api/pixels": { pixels: [solo, shared], syncthing: [] },
+  ...PAIRING,
 });
 
 function expectFullWidth(dialog: HTMLElement): void {
@@ -38,7 +41,7 @@ function show(routes: Parameters<typeof serve>[0]) {
 
 describe("the People page with no data", () => {
   it("asks for a person first, then an account, and disables what can't be added yet", async () => {
-    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: [] }, "GET /api/status": emptyStatus, ...PAIRING });
     expect(await screen.findByText("Add a person first.")).toBeInTheDocument();
     expect(screen.getByText("Add a Google account first.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
@@ -47,7 +50,7 @@ describe("the People page with no data", () => {
   });
 
   it("says no accounts or Pixels yet once there is a person", async () => {
-    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: null }, "GET /api/status": emptyStatus });
+    show({ "GET /api/people": { people: [jo] }, "GET /api/accounts": { accounts: [] }, "GET /api/pixels": { pixels: [], syncthing: [] }, "GET /api/status": emptyStatus, ...PAIRING });
     expect(await screen.findByText("No Google accounts yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add Pixel" })).toBeDisabled();
@@ -257,25 +260,81 @@ describe("forms in dialogs", () => {
       "POST /api/pixels": reply(201, { pixel: solo }),
       "PATCH /api/pixels/20": { pixel: solo },
       "DELETE /api/pixels/20": { ok: true },
+      "GET /api/pairing/waiting": { devices: [] },
     });
     await userEvent.click(await screen.findByRole("button", { name: "Add Pixel" }));
     let dialog = await screen.findByRole("dialog", { name: "Add Pixel" });
     await userEvent.type(within(dialog).getByLabelText("Name"), "Pixel 7");
     await userEvent.click(within(dialog).getByRole("button", { name: "Add Pixel" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Pair Pixel 9a" })).getByRole("button", { name: "Pair later" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(server.sent("POST /api/pixels")[0].body).toEqual({ name: "Pixel 7", google_account_id: 10, syncthing_device_id: null, people_ids: [1] });
+    expect(server.sent("POST /api/pixels")[0].body).toEqual({ name: "Pixel 7", google_account_id: 10, people_ids: [1] });
 
     await userEvent.click(screen.getByRole("button", { name: "Edit Pixel 9a" }));
     dialog = await screen.findByRole("dialog", { name: "Edit Pixel" });
     await userEvent.click(within(dialog).getByLabelText("Sam Example"));
     await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(server.sent("PATCH /api/pixels/20")[0].body).toMatchObject({ people_ids: [1, 2], syncthing_device_id: "AAA-111" });
+    expect(server.sent("PATCH /api/pixels/20")[0].body).toEqual({ name: "Pixel 9a", google_account_id: 10, people_ids: [1, 2] });
 
     await userEvent.click(screen.getByRole("button", { name: "Edit Pixel 9a" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete Pixel" }));
     await userEvent.click(within(await screen.findByRole("dialog", { name: "Delete Pixel 9a?" })).getByRole("button", { name: "Delete Pixel" }));
     await waitFor(() => expect(server.sent("DELETE /api/pixels/20")).toHaveLength(1));
+  });
+});
+
+describe("when Pixel pairing can't be read", () => {
+  it.each([
+    ["a 500", reply(500, {}), "Couldn't load Pixel pairing (500)"],
+    ["a 500 with Darkroom's message", reply(500, { error: "the database is busy" }), "the database is busy"],
+  ])("shows the load failure card on %s, with no table or form", async (_, answer, message) => {
+    show({ ...seeded(), "GET /api/pairing/device": answer });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(message);
+    expect(alert).toHaveClass("card", "border-danger");
+    expect(within(alert).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Pixel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Edit / })).not.toBeInTheDocument();
+  });
+
+  it("shows the load failure card when Darkroom can't be reached", async () => {
+    const server = serve(seeded());
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => (url === "/api/pairing/device" ? Promise.reject(new TypeError("Failed to fetch")) : server.mock(url, init))));
+    render(People);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Can't reach Darkroom. Check your connection and try again.");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("shows the load failure card and signs out when the session has ended", async () => {
+    const signedOut = vi.fn();
+    window.addEventListener(SIGNED_OUT, signedOut);
+    show({ ...seeded(), "GET /api/pairing/device": reply(401, {}) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("You're signed out. Sign in again to keep going.");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(signedOut).toHaveBeenCalled();
+    window.removeEventListener(SIGNED_OUT, signedOut);
+  });
+
+  it("tries again and then draws the page with the Syncthing column, Pair and the pairing step", async () => {
+    let attempt = 0;
+    const server = show({ ...seeded(), "GET /api/pairing/waiting": { devices: [] }, "GET /api/pairing/device": () => (attempt++ === 0 ? reply(500, {}) : PAIRING["GET /api/pairing/device"]) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load Pixel pairing (500)");
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const table = await screen.findByRole("table", { name: "Pixels" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Syncthing", "Last sync", ""]);
+    expect(server.sent("GET /api/pairing/device").length).toBeGreaterThanOrEqual(2);
+    await userEvent.click(within(table).getByRole("button", { name: "Pair Pixel 8" }));
+    expect(await screen.findByRole("dialog", { name: "Pair Pixel 8" })).toBeInTheDocument();
+  });
+
+  it("never falls back to the typed device ID field without Pair or Unpair", async () => {
+    show({ ...seeded(), "GET /api/pairing/device": reply(409, {}) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load Pixel pairing (409)");
+    expect(screen.queryByLabelText("Syncthing device ID (optional)")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Pixels" })).not.toBeInTheDocument();
   });
 });
 

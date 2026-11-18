@@ -84,7 +84,7 @@ class Status(TypedDict):
     worker_last_seen: float | None
     people: list[PersonStatus]
     alerts: list[AlertView]
-    syncthing: SyncthingCard | None
+    syncthing: SyncthingCard
 
 
 class Ok(TypedDict):
@@ -178,7 +178,7 @@ class PixelView(TypedDict):
 
 class Pixels(TypedDict):
     pixels: list[PixelView]
-    syncthing: list[PixelSyncthing] | None
+    syncthing: list[PixelSyncthing]
 
 
 class PixelReply(TypedDict):

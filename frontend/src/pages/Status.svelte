@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { apiCall } from "$lib/contract";
   import { describeEvent } from "$lib/events";
-  import { ago, buildName, count, names, nowSeconds, onDay, when } from "$lib/format";
+  import { ago, buildName, count, nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
   import { alertChip, NOT_CHECKED, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "$lib/view";
@@ -43,6 +43,8 @@
     <LoadFailed message={loader.current.message} retry={() => loader.load()} />
   {:else}
     {@const data = loader.current.data}
+    {@const syncthing = data.status.syncthing}
+    {@const card = syncthingCard(syncthing, data.now)}
     {#if data.status.alerts.length > 0}
       <section class="flex flex-col gap-2.5" aria-label="Open alerts">
         <h2 class="label">Needs you, {data.status.alerts.length}</h2>
@@ -92,20 +94,16 @@
                   {/each}
                 </dd>
                 <dt class="text-ink-muted">Pixel</dt>
-                {#if data.status.syncthing === null}
-                  <dd>{names(person.pixels.map((p) => p.name), "None")}</dd>
-                {:else}
-                  <dd class="flex flex-col gap-1">
-                    {#each person.pixels as pixel (pixel.id)}
-                      {@const chip = pixel.syncthing === null ? null : pixelSyncthing(pixel.syncthing, data.now)}
-                      <span class="flex flex-wrap items-center gap-2">{pixel.name}, {pixel.last_sync === null ? "not synced yet" : `synced ${ago(pixel.last_sync, data.now)}`}
-                        {#if chip !== null && chip.tone !== "ok"}<Chip tone={chip.tone} label={chip.label} />{/if}
-                      </span>
-                    {:else}
-                      <span>None</span>
-                    {/each}
-                  </dd>
-                {/if}
+                <dd class="flex flex-col gap-1">
+                  {#each person.pixels as pixel (pixel.id)}
+                    {@const chip = pixel.syncthing === null ? null : pixelSyncthing(pixel.syncthing, data.now)}
+                    <span class="flex flex-wrap items-center gap-2">{pixel.name}, {pixel.last_sync === null ? "not synced yet" : `synced ${ago(pixel.last_sync, data.now)}`}
+                      {#if chip !== null && chip.tone !== "ok"}<Chip tone={chip.tone} label={chip.label} />{/if}
+                    </span>
+                  {:else}
+                    <span>None</span>
+                  {/each}
+                </dd>
                 <dt class="text-ink-muted">Last import</dt>
                 <dd>{person.last_import === null ? "None yet" : when(person.last_import, data.now)}</dd>
                 <dt class="text-ink-muted">Unmatched</dt>
@@ -118,30 +116,26 @@
       {/if}
     </section>
 
-    {#if data.status.syncthing !== null}
-      {@const syncthing = data.status.syncthing}
-      {@const card = syncthingCard(syncthing, data.now)}
-      <section class="card" aria-label="Syncthing">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-md font-semibold">Syncthing</h2>
-          <Chip tone={card.tone} label={card.label} />
+    <section class="card" aria-label="Syncthing">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-md font-semibold">Syncthing</h2>
+        <Chip tone={card.tone} label={card.label} />
+      </div>
+      <p>{card.line}</p>
+      {#each syncthing.pixels as pixel (pixel.pixel_id)}
+        {@const state = pixelSyncthing(pixel, data.now)}
+        <div class="flex flex-col gap-1 border-t border-raised pt-2.5 md:grid md:grid-cols-[8.75rem_11.875rem_minmax(0,1fr)] md:items-start md:gap-3">
+          <b>{pixel.name}</b>
+          <span><Chip tone={state.tone} label={state.label} /></span>
+          <span class="flex flex-col gap-1 text-ink-muted">
+            {#each state.lines as line (line)}<span>{line}</span>{/each}
+          </span>
         </div>
-        <p>{card.line}</p>
-        {#each syncthing.pixels as pixel (pixel.pixel_id)}
-          {@const state = pixelSyncthing(pixel, data.now)}
-          <div class="flex flex-col gap-1 border-t border-raised pt-2.5 md:grid md:grid-cols-[8.75rem_11.875rem_minmax(0,1fr)] md:items-start md:gap-3">
-            <b>{pixel.name}</b>
-            <span><Chip tone={state.tone} label={state.label} /></span>
-            <span class="flex flex-col gap-1 text-ink-muted">
-              {#each state.lines as line (line)}<span>{line}</span>{/each}
-            </span>
-          </div>
-        {:else}
-          <p class="text-ink-muted">No Pixel is paired yet.</p>
-          <a class="self-start font-semibold underline" href="/people" onclick={(e) => followLink(e, "/people")}>Open People</a>
-        {/each}
-      </section>
-    {/if}
+      {:else}
+        <p class="text-ink-muted">No Pixel is paired yet.</p>
+        <a class="self-start font-semibold underline" href="/people" onclick={(e) => followLink(e, "/people")}>Open People</a>
+      {/each}
+    </section>
 
     <section class="card" aria-label="Recent events">
       <h2 class="text-md font-semibold">Recent events</h2>
