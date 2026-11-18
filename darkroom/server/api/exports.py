@@ -15,9 +15,10 @@ BUSY = "Darkroom is busy with another change; try again in a moment"
 
 
 def list_exports(request: Request) -> Annotated[Response, contract.Exports]:
+    moment = now()
     with db.session(engine_of(request)) as opened:
-        listed = [exports.as_dict(opened, export) for export in exports.listing(opened)]
-        schedules = exports.schedule_dicts(opened, now(), ZoneInfo(request.settings.timezone))
+        listed = [exports.as_dict(opened, export, moment) for export in exports.listing(opened)]
+        schedules = exports.schedule_dicts(opened, moment, ZoneInfo(request.settings.timezone))
     return json_response({"exports": listed, "schedules": schedules})
 
 
@@ -27,7 +28,7 @@ def export_one(request: Request) -> Annotated[Response, contract.ExportReply]:
         return error_response(NO_EXPORT, 404)
     try:
         with db.session(engine_of(request)) as opened:
-            reply = exports.as_dict(opened, exports.one(opened, export_id))
+            reply = exports.as_dict(opened, exports.one(opened, export_id), now())
     except exports.NoSuchExport:
         return error_response(NO_EXPORT, 404)
     return json_response({"export": reply})
@@ -49,8 +50,9 @@ def retry_download(request: Request) -> Annotated[Response, contract.RetryDownlo
         return error_response(NO_EXPORT, 404)
     try:
         with db.session(engine_of(request)) as opened:
-            export, retried = downloads.retry_failed(opened, export_id, now())
-            reply = {"export": exports.as_dict(opened, export), "retried": retried}
+            moment = now()
+            export, retried = downloads.retry_failed(opened, export_id, moment)
+            reply = {"export": exports.as_dict(opened, export, moment), "retried": retried}
     except exports.NoSuchExport:
         return error_response(NO_EXPORT, 404)
     except downloads.CannotRetry as error:

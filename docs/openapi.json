@@ -1061,6 +1061,19 @@
               }
             ]
           },
+          "retry_allowed": {
+            "type": "boolean"
+          },
+          "retry_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "stage": {
             "anyOf": [
               {
@@ -1084,6 +1097,8 @@
           "part_count",
           "parts",
           "ready_at",
+          "retry_allowed",
+          "retry_refusal",
           "stage",
           "status"
         ],

@@ -19,7 +19,7 @@ from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
 
-MAX_DOWNLOADS = 5
+MAX_DOWNLOADS = exports.PART_DOWNLOADS
 MAX_ATTEMPTS = 3
 MAX_INTERRUPTIONS = 3
 EXPIRY_NOTICE = 4 * alerts.DAY
@@ -32,12 +32,6 @@ MAX_PART_BYTES = 1 << 40
 ATTEMPTED = json.dumps({"attempted": True})
 EXPIRING = "export_expiring"
 RESET_ON_RETRY = ("failed", "downloading", "corrupt")
-DOWNLOADED = ("downloaded", "unpacking", "importing", "imported")
-EXPIRED_WORDS = "This export has expired in Takeout, so it can't be downloaded again."
-DOWNLOADED_WORDS = "This export is already downloaded, so there is nothing to retry."
-IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry it on the Imports page."
-NOTHING_LEFT_WORDS = "Every part of this export is already downloaded, so there is nothing left to download."
-PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 
 
 class NotADownload(ValueError):
@@ -271,32 +265,15 @@ def lock_for_retry(opened: Session) -> None:
         raise browser_jobs.Busy("Darkroom is busy with another change; try again in a moment") from None
 
 
-def refuse_retry(export: Export, parts: Sequence[ExportPart], now: float) -> None:
-    expires_at = dates.instant_or_none(export.expires_at)
-    if export.status == "expired" or (expires_at is not None and now >= expires_at):
-        raise CannotRetry(EXPIRED_WORDS)
-    if export.inbox_dir is not None:
-        raise CannotRetry(IMPORT_FAILED_WORDS)
-    left = [part for part in parts if part.status != "done"]
-    if not left:
-        raise CannotRetry(NOTHING_LEFT_WORDS)
-    for part in left:
-        if part.downloads_used >= MAX_DOWNLOADS:
-            raise CannotRetry(f"Part {part.number} has used all {MAX_DOWNLOADS} of Google's downloads, so Takeout won't let Darkroom download it again. "
-                              "Ask Takeout for a new export of Google Photos instead.")
-
-
 def retry_failed(opened: Session, export_id: int, now: float) -> tuple[Export, bool]:
     lock_for_retry(opened)
     export = exports.one(opened, export_id)
-    if export.status in DOWNLOADED:
-        raise CannotRetry(DOWNLOADED_WORDS)
-    if export.status in exports.STILL_WAITING:
-        if export.ready_at is None:
-            raise CannotRetry(PREPARING_WORDS)
+    if export.status in exports.STILL_WAITING and export.ready_at is not None:
         return export, False
     parts = exports.parts_of(opened, export.id)
-    refuse_retry(export, parts, now)
+    refusal = exports.retry_refusal(export, parts, now)
+    if refusal is not None:
+        raise CannotRetry(refusal)
     reset = [part for part in parts if part.status in RESET_ON_RETRY]
     for part in reset:
         part.status = "pending"

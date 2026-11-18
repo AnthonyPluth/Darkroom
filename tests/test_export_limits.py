@@ -157,7 +157,7 @@ class AttemptTests(DownloadCase):
         self.call(downloads.progress, job, 1, MB, NOW)
         self.assertEqual(self.part(1)[3], MB)
         with db.session(self.engine) as opened:
-            self.assertEqual([part["progress"] for part in exports.as_dict(opened, opened.get(Export, self.export))["parts"]], [25, 0])
+            self.assertEqual([part["progress"] for part in exports.as_dict(opened, opened.get(Export, self.export), NOW)["parts"]], [25, 0])
         with self.assertRaises(downloads.Refused):
             self.call(downloads.progress, job, 2, MB, NOW)
         with self.assertRaises(downloads.Refused):
@@ -565,6 +565,23 @@ class RetryFailedTests(DownloadCase):
     def test_an_export_google_is_still_preparing_is_refused(self):
         self.set_export(ready_at=None)
         self.assertEqual(self.refused(), "Google is still preparing this export, so there is nothing to retry yet.")
+
+    def shown(self, now=NOW + DAY):
+        with db.session(self.engine) as opened:
+            found = exports.as_dict(opened, opened.get(Export, self.export), now)
+            return found["retry_allowed"], found["retry_refusal"]
+
+    def test_the_export_says_whether_a_retry_would_be_allowed_and_why_not(self):
+        self.assertEqual(self.shown(), (False, None))
+        self.fail_part_two()
+        self.assertEqual(self.shown(), (True, None))
+        self.assertEqual(self.shown(NOW + 7 * DAY), (False, "This export has expired in Takeout, so it can't be downloaded again."))
+        self.set_part(2, downloads_used=downloads.MAX_DOWNLOADS)
+        self.assertEqual(self.shown(), (False, self.refused()))
+        self.set_export(inbox_dir="/photos/_inbox/jo/export-1")
+        self.assertEqual(self.shown(), (False, "This export was downloaded and its import failed; retry it on the Imports page."))
+        self.set_export(status="imported")
+        self.assertEqual(self.shown(), (False, None))
 
     def test_an_unknown_export_is_not_found(self):
         with db.session(self.engine, writing=True) as opened, self.assertRaises(exports.NoSuchExport):

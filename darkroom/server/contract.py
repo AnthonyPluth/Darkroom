@@ -367,6 +367,8 @@ class ExportView(TypedDict):
     status: str
     stage: str | None
     parts: list[ExportPartDetail]
+    retry_allowed: bool
+    retry_refusal: str | None
 
 
 class ExportSchedule(TypedDict):

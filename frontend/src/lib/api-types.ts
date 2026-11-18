@@ -211,6 +211,8 @@ export interface ExportView {
   status: string;
   stage: string | null;
   parts: ExportPartDetail[];
+  retry_allowed: boolean;
+  retry_refusal: string | null;
 }
 
 export interface Exports {

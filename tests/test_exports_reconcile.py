@@ -374,7 +374,7 @@ class ViewTests(ReconcileCase):
         with db.session(self.engine) as opened:
             first = opened.execute(select(ExportPart).where(ExportPart.number == 1)).scalars().first()
             first.status, first.downloads_used = "done", 1
-            shown = [exports.as_dict(opened, each) for each in exports.listing(opened)]
+            shown = [exports.as_dict(opened, each, NOW) for each in exports.listing(opened)]
             self.assertEqual([each["created_at"] for each in shown], sorted((each["created_at"] for each in shown), reverse=True))
             self.assertEqual(exports.one(opened, shown[1]["id"]).google_id, "g-1")
             self.assertEqual([(part["number"], part["progress"], part["downloads_used"], part["status"]) for part in shown[1]["parts"]], [(1, 100, 1, "done"), (2, 0, 0, "pending")])

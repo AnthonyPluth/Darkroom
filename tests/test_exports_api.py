@@ -245,11 +245,14 @@ class RetryDownloadApiTests(ApiCase):
         export_id = self.failed_export()
         self.replies.clear()
         with no_leaks(self, TOKEN, "jo.photos@example.test", replies=self.replies):
+            (listed,) = self.call("GET", "/api/exports")[1]["exports"]
+            self.assertEqual((listed["retry_allowed"], listed["retry_refusal"]), (True, None))
             status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
             self.assertEqual((status, reply["retried"], reply["export"]["status"]), (200, True, "downloading"), reply)
             self.assertEqual([(part["status"], part["attempts"], part["downloads_used"]) for part in reply["export"]["parts"]], [("pending", 0, 3)] * 2)
             status, again = self.call("POST", f"/api/exports/{export_id}/retry-download")
             self.assertEqual((status, again["retried"], again["export"]), (200, False, reply["export"]))
+            self.assertEqual((again["export"]["retry_allowed"], again["export"]["retry_refusal"]), (False, None))
         self.assertEqual(self.queued_downloads(), 1)
         with db.session(self.engine) as opened:
             self.assertEqual(opened.execute(select(Event.detail).where(Event.type == "export_download_retried")).scalars().all(), ["2 parts reset"])
@@ -260,6 +263,8 @@ class RetryDownloadApiTests(ApiCase):
         with no_leaks(self, TOKEN, "jo.photos@example.test", replies=self.replies):
             status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
         self.assertEqual((status, reply), (409, {"error": "This export has expired in Takeout, so it can't be downloaded again."}))
+        (listed,) = self.call("GET", "/api/exports")[1]["exports"]
+        self.assertEqual((listed["retry_allowed"], listed["retry_refusal"]), (False, reply["error"]))
         self.assertEqual(self.call("GET", f"/api/exports/{export_id}")[1]["export"]["status"], "failed")
         self.assertEqual(self.queued_downloads(), 0)
 

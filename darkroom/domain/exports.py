@@ -31,6 +31,13 @@ CHECK_STEP_MINUTES = 37
 LIST_LIMIT = 200
 STILL_WAITING = ("announced", "downloading")
 MAX_DOWNLOAD_JOBS = 3
+PART_DOWNLOADS = 5
+DOWNLOADED = ("downloaded", "unpacking", "importing", "imported")
+EXPIRED_WORDS = "This export has expired in Takeout, so it can't be downloaded again."
+DOWNLOADED_WORDS = "This export is already downloaded, so there is nothing to retry."
+IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry it on the Imports page."
+NOTHING_LEFT_WORDS = "Every part of this export is already downloaded, so there is nothing left to download."
+PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
 EXACT_FLOAT_LIMIT = 2**53
@@ -361,11 +368,35 @@ def parts_of(opened: Session, export_id: int) -> Sequence[ExportPart]:
     return opened.execute(select(ExportPart).where(ExportPart.export_id == export_id).order_by(ExportPart.number)).scalars().all()
 
 
-def as_dict(opened: Session, export: Export) -> dict[str, object]:
+def spent_words(part: ExportPart) -> str:
+    return (f"Part {part.number} has used all {PART_DOWNLOADS} of Google's downloads, so Takeout won't let Darkroom download it again. "
+            "Ask Takeout for a new export of Google Photos instead.")
+
+
+def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float) -> str | None:
+    if export.status in DOWNLOADED:
+        return DOWNLOADED_WORDS
+    if export.status in STILL_WAITING:
+        return PREPARING_WORDS if export.ready_at is None else None
+    expires_at = dates.instant_or_none(export.expires_at)
+    if export.status == "expired" or (expires_at is not None and now >= expires_at):
+        return EXPIRED_WORDS
+    if export.inbox_dir is not None:
+        return IMPORT_FAILED_WORDS
+    left = [part for part in parts if part.status != "done"]
+    if not left:
+        return NOTHING_LEFT_WORDS
+    spent = next((part for part in left if part.downloads_used >= PART_DOWNLOADS), None)
+    return None if spent is None else spent_words(spent)
+
+
+def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
+    parts = parts_of(opened, export.id)
+    refusal = retry_refusal(export, parts, now) if export.status == "failed" else None
     return {
         "id": export.id, "account_id": export.account_id, "kind": export.kind, "created_at": dates.instant_or_none(export.created_at),
         "ready_at": dates.instant_or_none(export.ready_at), "expires_at": dates.instant_or_none(export.expires_at), "part_count": export.part_count, "status": export.status, "stage": export.stage,
-        "parts": [part_dict(part) for part in parts_of(opened, export.id)],
+        "parts": [part_dict(part) for part in parts], "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
     }
 
 
