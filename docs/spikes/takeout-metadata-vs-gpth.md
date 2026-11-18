@@ -152,41 +152,41 @@ All references are to `main` at `2a3e932`.
 
 **Can corrupt dates or GPS (the worst).** These write a wrong value into the library, through the record, the month folder or the XMP, and Immich then shows it:
 
-1. Row 23, video QuickTime dates read as local time ({{G1}}). It affects every video without an Apple offset, on both sides of the dedupe, so tier-2 matches still line up but every such video's time is off by its offset.
-2. Row 6, two long names taking one sidecar ({{G6}}): another photo's date, place and caption go into a sidecar.
-3. Rows 22 and 24, an EXIF wall clock and a sidecar instant mixed into one record ({{G2}}).
-4. Rows 21 and 29, corrections the person made in Google ignored ({{G3}}, owner decision first).
-5. Row 26, an invented `+00:00` offset in XMP ({{G10}}).
+1. Row 23, video QuickTime dates read as local time (#436). It affects every video without an Apple offset, on both sides of the dedupe, so tier-2 matches still line up but every such video's time is off by its offset.
+2. Row 6, two long names taking one sidecar (#441): another photo's date, place and caption go into a sidecar.
+3. Rows 22 and 24, an EXIF wall clock and a sidecar instant mixed into one record (#437).
+4. Rows 21 and 29, corrections the person made in Google ignored (#438, owner decision first).
+5. Row 26, an invented `+00:00` offset in XMP (#445).
 
 **Silent loss.** Photos or videos that never reach the library and are not reported:
 
-6. Row 15, files Darkroom does not count as media ({{G4}}).
-7. Row 33, a sidecar that is not UTF-8 drops its photo ({{G8}}, with row 34).
-8. Row 14, trashed items placed as if they were the person's photos (the opposite of a loss, but the same "wrong photo" class; {{G9}}, owner decision first).
+6. Row 15, files Darkroom does not count as media (#439).
+7. Row 33, a sidecar that is not UTF-8 drops its photo (#443, with row 34).
+8. Row 14, trashed items placed as if they were the person's photos (the opposite of a loss, but the same "wrong photo" class; #444, owner decision first).
 
 **Orphan sidecars** (the media is placed, without its Google date, place and caption):
 
-9. Rows 5, 7, 8 and 9, naming rules the pairing lacks ({{G5}}).
-10. Rows 16 and 17, Live Photo and motion-photo videos ({{G7}}).
+9. Rows 5, 7, 8 and 9, naming rules the pairing lacks (#440).
+10. Rows 16 and 17, Live Photo and motion-photo videos (#442).
 
 **Cosmetic, no issue now:** altitude, people, favourites and albums (rows 30, 32), extension case (row 10), a sidecar in another folder (row 11), NFD names (row 36), Storage Saver extensions (row 35, belongs to #266's upload checks), and file-name date guessing (row 37). Each is worth revisiting if a real export shows it (#11).
 
-The per-part design (#424) assumes "at most one sidecar in a folder matches a media file under the rules" (section 7). Row 6 breaks the converse, one sidecar matching two media; {{G6}} has to land in the pure pairing before PP-4 copies the rules into the per-part flow, or the order-property test will pass on a wrong pairing.
+The per-part design (#424) assumes "at most one sidecar in a folder matches a media file under the rules" (section 7). Row 6 breaks the converse, one sidecar matching two media; #441 has to land in the pure pairing before PP-4 copies the rules into the per-part flow, or the order-property test will pass on a wrong pairing.
 
 ## 5. Issues opened
 
 | Key | Issue | Gap rows |
 | --- | --- | --- |
-| G1 | {{G1}} Read video QuickTime dates as UTC | 23 |
-| G2 | {{G2}} Keep the capture wall clock, offset and instant consistent when EXIF and the sidecar both give a time | 22, 24 |
-| G3 | {{G3}} Decide and apply whether a date or place corrected in Google Photos wins over the file's own | 21, 29 |
-| G4 | {{G4}} Stop skipping Takeout media Darkroom doesn't recognise | 15 |
-| G5 | {{G5}} Pair the sidecar names Takeout uses that the rules miss | 5, 7, 8, 9 |
-| G6 | {{G6}} Never give one sidecar to two different media | 6 |
-| G7 | {{G7}} Give Live Photo and motion-photo videos their still's Google metadata | 16, 17 |
-| G8 | {{G8}} Don't drop a photo because its sidecar isn't clean UTF-8 JSON | 33, 34 |
-| G9 | {{G9}} Decide and apply what happens to Takeout's Trash and Archive folders | 14 |
-| G10 | {{G10}} Don't write an invented `+00:00` offset into XMP dates | 26 |
+| G1 | #436 Read video QuickTime dates as UTC | 23 |
+| G2 | #437 Keep the capture wall clock, offset and instant consistent when EXIF and the sidecar both give a time | 22, 24 |
+| G3 | #438 Decide and apply whether a date or place corrected in Google Photos wins over the file's own | 21, 29 |
+| G4 | #439 Stop skipping Takeout media Darkroom doesn't recognise | 15 |
+| G5 | #440 Pair the sidecar names Takeout uses that the rules miss | 5, 7, 8, 9 |
+| G6 | #441 Never give one sidecar to two different media | 6 |
+| G7 | #442 Give Live Photo and motion-photo videos their still's Google metadata | 16, 17 |
+| G8 | #443 Don't drop a photo because its sidecar isn't clean UTF-8 JSON | 33, 34 |
+| G9 | #444 Decide and apply what happens to Takeout's Trash and Archive folders | 14 |
+| G10 | #445 Don't write an invented `+00:00` offset into XMP dates | 26 |
 
 ## 6. What this spike could not verify
 
