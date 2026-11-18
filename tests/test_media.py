@@ -150,6 +150,58 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual((found.time_source, found.offset_minutes), ("exif_offset", -240))
         self.assertEqual(found.captured_utc, utc(2021, 5, 6, 11, 8, 9))
 
+    def test_a_video_with_only_a_quicktime_date_read_through_exiftool_keeps_that_utc_instant(self):
+        found = self.prints(fixtures.make_video(self.folder / "v.mp4", quicktime_utc="2019:07:04 23:30:00", gps=NEW_YORK))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes), (utc(2019, 7, 4, 23, 30), "quicktime_utc", -240))
+        self.assertEqual(found.captured_local, "2019-07-04T19:30:00")
+        found = self.prints(fixtures.make_video(self.folder / "w.mp4", quicktime_utc="2019:07:04 23:30:00"))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (utc(2019, 7, 4, 23, 30), "quicktime_utc", None, None))
+
+    def test_a_quicktime_date_is_a_utc_instant_with_the_offset_of_the_position_at_that_instant(self):
+        tags = {"QuickTime:CreateDate": "2019:07:04 23:30:00"}
+        self.assertEqual(media.capture(tags, *NEW_YORK), (utc(2019, 7, 4, 23, 30), "2019-07-04T19:30:00", -240, "quicktime_utc"))
+        self.assertEqual(media.capture(tags, None, None), (utc(2019, 7, 4, 23, 30), None, None, "quicktime_utc"))
+        self.assertEqual(media.capture({"QuickTime:CreateDate": "2019:01:15 23:30:00"}, *NEW_YORK)[1:3], ("2019-01-15T18:30:00", -300))
+
+    def test_the_group_decides_whether_a_date_is_utc_not_the_name_alone(self):
+        for group in ("QuickTime", "Track1", "Media2"):
+            with self.subTest(group=group):
+                self.assertEqual(media.capture({f"{group}:CreateDate": "2019:07:04 23:30:00"}, None, None)[::3], (utc(2019, 7, 4, 23, 30), "quicktime_utc"))
+        for group in ("ExifIFD", "XMP-xmp", "Keys", "QuickTimeX", ""):
+            with self.subTest(group=group):
+                key = f"{group}:CreateDate" if group else "CreateDate"
+                self.assertEqual(media.capture({key: "2019:07:04 23:30:00"}, *NEW_YORK), (utc(2019, 7, 5, 3, 30), "2019-07-04T23:30:00", -240, "gps_lookup"))
+
+    def test_a_date_with_its_own_offset_wins_over_a_quicktime_date(self):
+        apple = {"QuickTime:CreateDate": "2019:07:05 03:30:00", "Keys:CreationDate": "2019:07:04 22:30:00-05:00"}
+        self.assertEqual(media.capture(apple, *NEW_YORK), (utc(2019, 7, 5, 3, 30), "2019-07-04T22:30:00", -300, "exif_offset"))
+        exif = {"QuickTime:CreateDate": "2019:07:05 03:30:00", "ExifIFD:DateTimeOriginal": "2019:07:05 12:30:00", "ExifIFD:OffsetTimeOriginal": "+09:00"}
+        self.assertEqual(media.capture(exif, *NEW_YORK), (utc(2019, 7, 5, 3, 30), "2019-07-05T12:30:00", 540, "exif_offset"))
+
+    def test_a_quicktime_date_wins_over_a_wall_clock_date_without_an_offset(self):
+        tags = {"XMP-exif:DateTimeOriginal": "2019:07:04 19:30:00", "QuickTime:CreateDate": "2019:07:04 23:30:00"}
+        self.assertEqual(media.capture(tags, None, None), (utc(2019, 7, 4, 23, 30), None, None, "quicktime_utc"))
+
+    def test_a_still_image_keeps_reading_its_dates_as_wall_clock_times(self):
+        self.assertEqual(media.capture({"ExifIFD:CreateDate": "2019:07:04 23:30:00"}, *NEW_YORK), (utc(2019, 7, 5, 3, 30), "2019-07-04T23:30:00", -240, "gps_lookup"))
+        self.assertEqual(media.capture({"ExifIFD:DateTimeOriginal": "2019:07:04 23:30:00"}, None, None), (None, "2019-07-04T23:30:00", None, "unknown"))
+
+    def test_a_zero_or_epoch_quicktime_date_is_no_date(self):
+        for empty in ("0000:00:00 00:00:00", "1904:01:01 00:00:00"):
+            with self.subTest(empty=empty):
+                self.assertEqual(media.capture({"QuickTime:CreateDate": empty}, *NEW_YORK), (None, None, None, "unknown"))
+                self.assertEqual(media.capture({"QuickTime:CreateDate": empty, "Keys:CreationDate": "2019:07:04 22:30:00-05:00"}, None, None)[3], "exif_offset")
+
+    def test_a_quicktime_date_that_names_its_own_offset_keeps_it(self):
+        self.assertEqual(media.capture({"QuickTime:CreateDate": "2019:07:04 19:30:00-04:00"}, None, None), (utc(2019, 7, 4, 23, 30), "2019-07-04T19:30:00", -240, "exif_offset"))
+
+    def test_tagged_names_the_group_a_value_came_from_and_tag_still_returns_the_value(self):
+        tags = {"System:FileName": "x", "QuickTime:CreateDate": "2019:07:04 23:30:00", "Make": "Made-up"}
+        self.assertEqual(media.tagged(tags, "CreateDate"), ("QuickTime", "2019:07:04 23:30:00"))
+        self.assertEqual(media.tagged(tags, "Make"), ("", "Made-up"))
+        self.assertIsNone(media.tagged(tags, "Model"))
+        self.assertEqual((media.tag(tags, "CreateDate"), media.tag(tags, "Model")), ("2019:07:04 23:30:00", None))
+
     def test_sub_second_time_is_kept(self):
         path = fixtures.make_jpeg(self.folder / "a.jpg", taken="2019:07:04 12:30:15", offset="+00:00")
         fixtures.set_tags(path, {"SubSecTimeOriginal": "250"})
