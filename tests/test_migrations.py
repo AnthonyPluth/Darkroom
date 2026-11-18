@@ -382,8 +382,8 @@ class MigrationTests(unittest.TestCase):
             media, sidecar = connection.exec_driver_sql("SELECT id FROM takeout_entries ORDER BY id").scalars().all()
             connection.execute(text("INSERT INTO takeout_sidecars (export_id, part_number, entry_id, folder, name, text) VALUES (1, 2, :entry, :folder, 'made-up.jpg.json', ' { } ')"),
                                {"entry": sidecar, "folder": "Takeout/Google Photos/Photos from 2019"})
-            connection.execute(text("UPDATE takeout_entries SET outcome = 'waiting_export', sha1 = :sha1, is_edited = :yes, sidecar_id = (SELECT id FROM takeout_sidecars) WHERE id = :id"),
-                               {"sha1": "a" * 40, "yes": True, "id": media})
+            connection.execute(text("UPDATE takeout_entries SET outcome = 'waiting_export', sha1 = :sha1, is_edited = :yes, sidecar_entry_id = :sidecar WHERE id = :id"),
+                               {"sha1": "a" * 40, "yes": True, "sidecar": sidecar, "id": media})
             self.assertEqual(connection.execute(text("SELECT bytes, crc32, outcome, metadata_pending, is_video, is_edited FROM takeout_entries WHERE id = :id"), {"id": media}).one(),
                              (big, 4294967295, "waiting_export", False, False, True))
             refused = ("UPDATE export_parts SET ingest_state = 'downloaded' WHERE number = 1",
