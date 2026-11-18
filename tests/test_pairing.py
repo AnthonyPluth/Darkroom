@@ -476,6 +476,25 @@ class PairingNamesTests(unittest.TestCase):
                                     {folder: [f"{CUT}.json", f"{CUT}(1).json"]}, reading=texts.get)
         self.assertEqual({i.path.name: i.sidecar.name for i in report.items}, {ONE: f"{CUT}(1).json", TWO: f"{CUT}.json"})
 
+    def test_each_sidecar_of_many_long_names_sharing_a_cut_is_read_once(self):
+        for count in (3, 200):
+            with self.subTest(count=count):
+                folder = self.root / f"many-{count}" / YEAR
+                names = [f"{CUT}_{number:04d}.jpg" for number in range(count)]
+                sidecars = [f"{CUT}.json"] + [f"{CUT}({number}).json" for number in range(1, count)]
+                texts = {folder / sidecar: f'{{"title": "{name}"}}' for sidecar, name in zip(sidecars, reversed(names), strict=True)}
+                reads = []
+
+                def counting(path, texts=texts, reads=reads):
+                    reads.append(path)
+                    return texts.get(path)
+
+                report = pairing.pair_names([(folder, names + sidecars)], {folder / name: str(n) for n, name in enumerate(names)}, reading=counting)
+                self.assertEqual(sorted(reads), sorted(texts))
+                expected = {name: sidecar for sidecar, name in zip(sidecars, reversed(names), strict=True)}
+                self.assertEqual({item.path.name: item.sidecar.name for item in report.items}, expected)
+                self.assertEqual(report.orphan_sidecars, [])
+
     def test_a_media_name_without_a_digest_is_left_out(self):
         folder = self.root / "f"
         report = pairing.pair_names([(folder, ["a.JPG", "b.JPG", "b.JPG.json"])], {folder / "a.JPG": "1"})

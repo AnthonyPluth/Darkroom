@@ -159,13 +159,20 @@ def variants_of(shared: Path, sidecars: Sidecars) -> list[Path]:
     return found
 
 
-def by_title(candidates: dict[str, list[Path]], reading: Reader | None) -> dict[str, Path]:
-    titles = {path: title_of(path, reading) for paths_of in candidates.values() for path in paths_of}
+def by_title(candidates: dict[str, tuple[Path, ...]], reading: Reader | None) -> dict[str, Path]:
+    titles = {path: title_of(path, reading) for path in {path for paths_of in candidates.values() for path in paths_of}}
+    named: dict[tuple[Path, ...], dict[str, list[Path]]] = {}
+    for paths_of in set(candidates.values()):
+        index = named.setdefault(paths_of, {})
+        for path in paths_of:
+            title = titles[path]
+            if title is not None:
+                index.setdefault(title, []).append(path)
     picks: dict[str, Path] = {}
     for owner, paths_of in candidates.items():
-        named = [path for path in paths_of if titles[path] == folded(owner)]
-        if len(named) == 1:
-            picks[owner] = named[0]
+        matching = named[paths_of].get(folded(owner), [])
+        if len(matching) == 1:
+            picks[owner] = matching[0]
     counts = Counter(picks.values())
     return {owner: path for owner, path in picks.items() if counts[path] == 1}
 
@@ -182,7 +189,8 @@ def folder_sidecars(media_paths: Iterable[Path], sidecars: Sidecars, reading: Re
     if not shared:
         return found
     taken = set(claims) - shared
-    candidates = {owners[path]: [c for c in variants_of(match, sidecars) if c not in taken] for path, match in found.items() if match in shared}
+    variants = {match: tuple(c for c in variants_of(match, sidecars) if c not in taken) for match in shared}
+    candidates = {owners[path]: variants[match] for path, match in found.items() if match in shared}
     settled = by_title(candidates, reading)
     return {path: settled.get(owners[path]) if match in shared else match for path, match in found.items()}
 
