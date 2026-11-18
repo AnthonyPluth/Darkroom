@@ -310,9 +310,21 @@ class HostileZipTests(unittest.TestCase):
         return refused
 
     def test_a_zip_bomb_is_refused_without_being_decompressed(self):
-        with mock.patch.object(zipfile.ZipFile, "testzip", side_effect=AssertionError("decompressed")):
+        with mock.patch.object(zipfile.ZipFile, "testzip", side_effect=AssertionError("decompressed")), \
+                mock.patch.object(part_reader, "RATIO_FLOOR", 64 * 1024):
             refused = self.refused([("Takeout/Google Photos/IMG_1.JPG", bytes(8 * 1024 * 1024))], zipfile.ZIP_DEFLATED)
         self.assertEqual(refused.reason, "zip_bomb")
+
+    def test_a_flat_image_that_compresses_far_more_than_a_hundred_times_is_not_a_zip_bomb(self):
+        flat = bytes(8 * 1024 * 1024)
+        write_zip(self.world.inbox / PART, [("Takeout/Google Photos/Photos from 2019/SCAN_0001.TIF", flat)], zipfile.ZIP_DEFLATED)
+        with zipfile.ZipFile(self.world.inbox / PART) as archive:
+            info = archive.infolist()[0]
+        self.assertGreater(info.file_size, 100 * info.compress_size)
+        self.world.register()
+        sha1s = []
+        read = self.world.read(each_batch=lambda opened, batch: sha1s.extend(s.sha1 for s in batch))
+        self.assertEqual((read.media, sha1s), (1, [sha1_of(flat)]))
 
     def test_ordinary_compression_is_not_a_zip_bomb(self):
         data = os.urandom(2 * 1024 * 1024)
@@ -509,17 +521,77 @@ class ScratchBatchTests(unittest.TestCase):
             self.world.read(each_batch=fail, batch_files=3)
         self.assertFalse(self.world.scratch().exists())
 
-    def test_a_scratch_folder_reached_through_a_link_is_refused(self):
+    def plant_victims(self, folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "1.jpg").write_bytes(b"a scratch-named victim")
+        (folder / "1609459200000.jpg").write_bytes(b"a camera-numbered original")
+        (folder / ".write-once-0123456789abcdef").write_bytes(b"a temp-named victim")
+        (folder / "keep.txt").write_bytes(b"a foreign victim")
+        (folder / "2.jpg").mkdir(exist_ok=True)
+        (folder / "2.jpg" / "3.jpg").write_bytes(b"a nested victim")
+        other = self.world.root / "hard-link-source.jpg"
+        other.write_bytes(b"a hard-linked victim")
+        os.link(other, folder / "4.jpg")
+        return tree_of(folder)
+
+    def assert_link_refused_and_nothing_removed(self, victims, before):
         with db.session(self.world.engine) as opened:
-            export_folder = self.world.photos.root / "_inbox" / "jo" / unpack.staging_name(opened.query(Export).one())
+            export_folder = unpack.staging_name(opened.query(Export).one())
+        with self.assertRaises((paths.LinkRefused, part_reader.PartRefused)):
+            self.world.read()
+        self.assertEqual(tree_of(victims), before)
+        with self.assertRaises(paths.LinkRefused):
+            paths.sweep_scratch(self.world.photos, "jo", export_folder)
+        self.assertEqual(tree_of(victims), before)
+
+    def export_folder(self):
+        with db.session(self.world.engine) as opened:
+            return self.world.photos.root / "_inbox" / "jo" / unpack.staging_name(opened.query(Export).one())
+
+    def test_an_export_folder_that_is_a_link_is_never_swept_through(self):
+        export_folder = self.export_folder()
         elsewhere = self.world.root / "elsewhere"
-        elsewhere.mkdir()
-        (elsewhere / "1.jpg").write_bytes(b"keep me")
+        before = self.plant_victims(elsewhere / "scratch")
         export_folder.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(elsewhere, export_folder)
-        with self.assertRaises(paths.LinkRefused):
-            self.world.read()
-        self.assertEqual((elsewhere / "1.jpg").read_bytes(), b"keep me")
+        self.assert_link_refused_and_nothing_removed(elsewhere / "scratch", before)
+
+    def test_a_scratch_folder_that_is_a_link_into_originals_is_never_swept_through(self):
+        originals = self.world.photos.originals("jo")
+        before = self.plant_victims(originals)
+        export_folder = self.export_folder()
+        export_folder.mkdir(parents=True)
+        os.symlink(originals, export_folder / "scratch")
+        self.assert_link_refused_and_nothing_removed(originals, before)
+
+    def test_a_person_inbox_that_is_a_link_is_never_swept_through(self):
+        person = self.world.photos.root / "_inbox" / "jo"
+        export_name = self.export_folder().name
+        elsewhere = self.world.root / "elsewhere-jo"
+        shutil.move(person, elsewhere)
+        before = self.plant_victims(elsewhere / export_name / "scratch")
+        os.symlink(elsewhere, person)
+        self.assert_link_refused_and_nothing_removed(elsewhere / export_name / "scratch", before)
+
+    def test_an_inbox_that_is_a_link_is_never_swept_through(self):
+        inbox = self.world.photos.root / "_inbox"
+        export_name = self.export_folder().name
+        elsewhere = self.world.root / "elsewhere-inbox"
+        shutil.move(inbox, elsewhere)
+        before = self.plant_victims(elsewhere / "jo" / export_name / "scratch")
+        os.symlink(elsewhere, inbox)
+        self.assert_link_refused_and_nothing_removed(elsewhere / "jo" / export_name / "scratch", before)
+
+    def test_a_link_at_a_scratch_file_name_is_never_followed_by_the_sweep(self):
+        victims = self.world.root / "victims"
+        before = self.plant_victims(victims)
+        scratch = self.world.scratch()
+        scratch.mkdir(parents=True)
+        os.symlink(victims / "1.jpg", scratch / "1.jpg")
+        os.symlink(victims, scratch / "5.jpg")
+        self.assertEqual(paths.sweep_scratch(self.world.photos, "jo", scratch.parent.name), 0)
+        self.assertEqual(sorted(p.name for p in scratch.iterdir()), ["1.jpg", "5.jpg"])
+        self.assertEqual(tree_of(victims), before)
 
     def test_the_sweep_never_removes_a_hard_link_a_folder_or_anything_outside_scratch(self):
         originals = self.world.photos.originals("jo")
@@ -651,6 +723,18 @@ class RelistTests(unittest.TestCase):
     def test_a_part_missing_an_entry_is_refused(self):
         self.assert_refused_as_different(zip_entries(self.manifest.parts[0])[1:])
 
+    def test_a_part_listed_under_an_older_classification_is_not_refused_and_is_reclassified(self):
+        expected = self.world.ledger()
+        with db.session(self.world.engine) as opened:
+            sidecar = opened.query(TakeoutEntry).filter_by(kind="sidecar").order_by(TakeoutEntry.id).first()
+            opened.query(TakeoutSidecar).filter_by(entry_id=sidecar.id).delete()
+            sidecar.kind = "other"
+            media = opened.query(TakeoutEntry).filter_by(kind="media").order_by(TakeoutEntry.id).first()
+            media.kind = "other"
+        again = self.world.read()
+        self.assertTrue(again.relisted)
+        self.assertEqual(self.world.ledger(), expected)
+
     def test_media_whose_recorded_sha1_differs_is_refused(self):
         with db.session(self.world.engine) as opened:
             row = opened.query(TakeoutEntry).filter_by(kind="media").order_by(TakeoutEntry.id).first()
@@ -737,21 +821,27 @@ class SidecarMemoryTests(unittest.TestCase):
         return sum(1 for found in gc.get_objects() if isinstance(found, TakeoutSidecar))
 
     def test_a_part_of_many_sidecars_never_holds_more_than_a_flush_of_their_text(self):
-        real = part_reader.sidecar_text
-        live = []
+        real_flush, real_text = part_reader.flush_out, part_reader.sidecar_text
+        at_flush, while_reading = [], []
 
-        def counting(*args):
-            live.append(self.live_sidecars())
-            return real(*args)
+        def flushing(opened, held):
+            at_flush.append(self.live_sidecars())
+            return real_flush(opened, held)
 
-        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 3 * self.size), mock.patch.object(part_reader, "sidecar_text", counting):
+        def reading(*args):
+            while_reading.append(self.live_sidecars())
+            return real_text(*args)
+
+        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 3 * self.size), mock.patch.object(part_reader, "flush_out", flushing), \
+                mock.patch.object(part_reader, "sidecar_text", reading):
             read = self.world.read()
-        self.assertEqual(len(live), 40)
-        self.assertLessEqual(max(live), 3)
+        self.assertGreaterEqual(len(at_flush), 13)
+        self.assertLessEqual(max(at_flush), 3)
+        self.assertEqual((len(while_reading), max(while_reading)), (40, 0))
         self.assertEqual(read.sidecars, 40)
         self.assertEqual({f"{folder}/{name}": text for _, folder, name, text in self.world.ledger()[1]}, self.texts)
 
-    def test_a_refusal_after_some_sidecars_were_flushed_writes_nothing(self):
+    def test_a_refusal_while_reading_sidecars_writes_nothing(self):
         real = part_reader.sidecar_text
         calls = [0]
 
@@ -761,11 +851,41 @@ class SidecarMemoryTests(unittest.TestCase):
                 raise part_reader.PartRefused("size_lies", part_reader.SIZE_LIES)
             return real(*args)
 
-        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 2 * self.size), mock.patch.object(part_reader, "FLUSH_ROWS", 7), \
-                mock.patch.object(part_reader, "sidecar_text", lying):
+        with mock.patch.object(part_reader, "sidecar_text", lying):
             refused = self.world.refusal()
         self.assertEqual(refused.reason, "size_lies")
         self.assertEqual(self.world.ledger(), ([], [], [(1, None)]))
+
+    def test_a_failure_after_some_sidecars_were_flushed_writes_nothing(self):
+        real = part_reader.flush_out
+        calls = [0]
+
+        def failing(opened, held):
+            calls[0] += 1
+            if calls[0] == 4:
+                raise OSError(5, "Input/output error")
+            return real(opened, held)
+
+        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 2 * self.size), mock.patch.object(part_reader, "FLUSH_ROWS", 7), \
+                mock.patch.object(part_reader, "flush_out", failing), self.assertRaises(OSError):
+            self.world.read()
+        self.assertEqual(self.world.ledger(), ([], [], [(1, None)]))
+
+    def test_sidecars_are_read_from_the_zip_before_the_write_lock_is_taken(self):
+        locked = []
+        real_lock, real_text = part_reader.db.write_lock, part_reader.sidecar_text
+
+        def lock(opened):
+            locked.append(True)
+            return real_lock(opened)
+
+        def reading(*args):
+            self.assertEqual(locked, [])
+            return real_text(*args)
+
+        with mock.patch.object(part_reader.db, "write_lock", lock), mock.patch.object(part_reader, "sidecar_text", reading):
+            self.assertEqual(self.world.read().sidecars_unread, 0)
+        self.assertEqual(locked, [True])
 
     def test_sidecars_too_big_in_all_are_refused_without_being_decompressed(self):
         with mock.patch.object(part_reader, "MAX_SIDECAR_BYTES", 40 * self.size - 1), \

@@ -12,11 +12,6 @@ def sweep_by_name(photos, person, export):
     sweep_scratch(photos, person, export)
 
 
-def clear_an_open_folder(folder):
-    # ruleid: darkroom-scratch-sweep-one-caller
-    paths.clear_scratch(folder)
-
-
 def name_a_scratch_file(photos, person, export):
     # ok: darkroom-scratch-sweep-one-caller
     return paths.scratch_file(photos, person, export, "1.jpg")

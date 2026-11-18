@@ -359,7 +359,7 @@ rules:
           - pattern: $F(...)
       - metavariable-regex:
           metavariable: $F
-          regex: ^(sweep_scratch|clear_scratch)$
+          regex: ^sweep_scratch$
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_reader.py"]

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import stat
+import tempfile
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -43,7 +45,7 @@ DEVICE_ENTRY = "an entry is a device, a pipe or a socket"
 UNREADABLE_ENTRY = "an entry is encrypted or packed in a way Darkroom can't read"
 NAME_TOO_LONG = "an entry's name is too long"
 DUPLICATE_NAME = "two entries have the same name"
-ZIP_BOMB = "an entry is compressed far more than a photo or video can be"
+ZIP_BOMB = "the part would unpack to far more than photos and videos can be compressed to fit in it"
 SIZE_LIES = "an entry's size doesn't match what the zip says"
 SIDECARS_TOO_BIG = "the part's sidecars are too big in all to store"
 
@@ -63,8 +65,8 @@ class Listed:
     crc32: int
     info: zipfile.ZipInfo
 
-    def key(self) -> tuple[str, str, int, int]:
-        return self.name, self.kind, self.bytes, self.crc32
+    def in_the_zip(self) -> tuple[str, int, int]:
+        return self.name, self.bytes, self.crc32
 
 
 @dataclass(frozen=True)
@@ -95,20 +97,20 @@ def refused_by_unpack(error: unpack.UnpackFailed) -> PartRefused:
     return PartRefused(FROM_UNPACK.get(error.reason or "", "damaged"), error.public)
 
 
-def central_checks(infos: Sequence[zipfile.ZipInfo], number: int) -> None:
+def central_checks(infos: Sequence[zipfile.ZipInfo], number: int, part_bytes: int) -> None:
     if len(infos) > MAX_ENTRIES:
         raise PartRefused("too_many_entries", f"part {number} has more than {MAX_ENTRIES} entries")
     total = sidecars = 0
     for info in infos:
         if info.flag_bits & ENCRYPTED or info.compress_type not in READABLE:
             raise PartRefused("unreadable_entry", UNREADABLE_ENTRY)
-        if info.file_size > RATIO_FLOOR and info.file_size > MAX_RATIO * max(info.compress_size, 1):
-            raise PartRefused("zip_bomb", ZIP_BOMB)
         total += info.file_size
         if may_be_read_as_sidecar(info):
             sidecars += info.file_size
     if total > MAX_UNPACKED_BYTES:
         raise PartRefused("too_large", f"part {number} would unpack to more than {MAX_UNPACKED_BYTES >> 40} TiB")
+    if total > MAX_RATIO * max(part_bytes, RATIO_FLOOR):
+        raise PartRefused("zip_bomb", ZIP_BOMB)
     if sidecars > MAX_SIDECAR_BYTES:
         raise PartRefused("sidecars_too_big", SIDECARS_TOO_BIG)
 
@@ -203,37 +205,77 @@ def recorded(opened: Session, export: Export, part: ExportPart) -> list[TakeoutE
     return list(opened.execute(query).scalars())
 
 
-def record_listing(opened: Session, archive: zipfile.ZipFile, export: Export, part: ExportPart, listed: list[Listed], now: float,
-                   read: PartRead) -> None:
+class Spool:
+    def __init__(self, file: IO[bytes]) -> None:
+        self.file = file
+        self.places: dict[str, tuple[int, int]] = {}
+
+    def put(self, name: str, text: str) -> None:
+        raw = text.encode()
+        self.places[name] = (self.file.seek(0, os.SEEK_END), len(raw))
+        self.file.write(raw)
+
+    def get(self, name: str) -> str | None:
+        place = self.places.get(name)
+        if place is None:
+            return None
+        self.file.seek(place[0])
+        return self.file.read(place[1]).decode()
+
+
+def spool_sidecars(archive: zipfile.ZipFile, listed: list[Listed], number: int, spool: Spool) -> None:
+    for entry in listed:
+        text = sidecar_text(archive, entry, number) if entry.kind == "sidecar" else None
+        if text is not None:
+            spool.put(entry.name, text)
+
+
+def record_listing(opened: Session, export: Export, part: ExportPart, listed: list[Listed], spool: Spool, now: float, read: PartRead) -> None:
     db.write_lock(opened)
     known = recorded(opened, export, part)
     if known:
-        if sorted((row.name, row.kind, row.bytes, row.crc32) for row in known) != sorted(entry.key() for entry in listed):
+        if sorted((row.name, row.bytes, row.crc32) for row in known) != sorted(entry.in_the_zip() for entry in listed):
             opened.rollback()
             raise PartRefused("listing_differs", f"part {part.number} doesn't match the part listed before")
+        reclassify(opened, export, part, known, listed, spool)
         read.relisted = True
         return
     for start in range(0, len(listed), FLUSH_ROWS):
-        record_rows(opened, archive, export, part, listed[start:start + FLUSH_ROWS], now)
+        chunk = listed[start:start + FLUSH_ROWS]
+        rows = [TakeoutEntry(export_id=export.id, part_number=part.number, name=entry.name, kind=entry.kind, bytes=entry.bytes, crc32=entry.crc32,
+                             listed_at=now) for entry in chunk]
+        opened.add_all(rows)
+        opened.flush()
+        sidecars = [(row.id, row.name) for row in rows if row.kind == "sidecar"]
+        for row in rows:
+            opened.expunge(row)
+        add_sidecars(opened, export, part, sidecars, spool)
     part.entries = len(listed)
     opened.commit()
 
 
-def record_rows(opened: Session, archive: zipfile.ZipFile, export: Export, part: ExportPart, chunk: list[Listed], now: float) -> None:
-    rows = [TakeoutEntry(export_id=export.id, part_number=part.number, name=entry.name, kind=entry.kind, bytes=entry.bytes, crc32=entry.crc32,
-                         listed_at=now) for entry in chunk]
-    opened.add_all(rows)
+def reclassify(opened: Session, export: Export, part: ExportPart, known: list[TakeoutEntry], listed: list[Listed], spool: Spool) -> None:
+    kinds = {entry.name: entry.kind for entry in listed}
+    changed = [row for row in known if row.kind != kinds[row.name]]
+    if not changed:
+        return
+    for row in changed:
+        row.kind = kinds[row.name]
     opened.flush()
-    ids = [row.id for row in rows]
-    for row in rows:
-        opened.expunge(row)
+    stored = set(opened.execute(select(TakeoutSidecar.entry_id).where(TakeoutSidecar.export_id == export.id,
+                                                                      TakeoutSidecar.part_number == part.number)).scalars())
+    add_sidecars(opened, export, part, [(row.id, row.name) for row in changed if row.kind == "sidecar" and row.id not in stored], spool)
+    opened.commit()
+
+
+def add_sidecars(opened: Session, export: Export, part: ExportPart, sidecars: list[tuple[int, str]], spool: Spool) -> None:
     held: list[TakeoutSidecar] = []
     pending = 0
-    for entry, entry_id in zip(chunk, ids, strict=True):
-        text = sidecar_text(archive, entry, part.number) if entry.kind == "sidecar" else None
+    for entry_id, entry_name in sidecars:
+        text = spool.get(entry_name)
         if text is None:
             continue
-        folder, name = folder_and_name(entry.name)
+        folder, name = folder_and_name(entry_name)
         held.append(TakeoutSidecar(export_id=export.id, part_number=part.number, entry_id=entry_id, folder=folder, name=name, text=text))
         opened.add(held[-1])
         pending += len(text)
@@ -344,12 +386,15 @@ def read_part(opened: Session, photos: Photos, person: Person, export: Export, p
     try:
         with unpack.open_part(photos, path, part.number) as handle, zip_of(handle, path, part.number) as archive:
             infos = archive.infolist()
-            central_checks(infos, part.number)
+            central_checks(infos, part.number, os.fstat(handle.fileno()).st_size)
             unpack.test_archive(archive, path, part.number)
             listed = entry_listing(infos)
+            with tempfile.TemporaryFile() as spooled:
+                spool = Spool(spooled)
+                spool_sidecars(archive, listed, part.number, spool)
+                record_listing(opened, export, part, listed, spool, now, read)
             paths.sweep_scratch(photos, person.slug, folder)
             try:
-                record_listing(opened, archive, export, part, listed, now, read)
                 stream_media(opened, photos, person, export, part, archive, listed, each_batch, batch_files, batch_bytes, read)
             finally:
                 paths.sweep_scratch(photos, person.slug, folder)

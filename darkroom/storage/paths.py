@@ -1785,8 +1785,15 @@ def sweep_scratch(photos: Photos, person: str, export: str) -> int:
                 scratch = inbox_child(SCRATCH, parent, False)
             except FileNotFoundError:
                 return 0
+            swept = 0
             try:
-                swept = clear_scratch(scratch)
+                for name in sorted(os.listdir(scratch)):
+                    found = entry_at(name, scratch)
+                    if not SCRATCH_FILE.match(name) or found is None or not plain_file(found):
+                        continue
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=scratch)
+                        swept += 1
             finally:
                 os.close(scratch)
             with contextlib.suppress(OSError):
@@ -1794,18 +1801,6 @@ def sweep_scratch(photos: Photos, person: str, export: str) -> int:
             return swept
     except FileNotFoundError:
         return 0
-
-
-def clear_scratch(scratch: int) -> int:
-    swept = 0
-    for name in sorted(os.listdir(scratch)):
-        found = entry_at(name, scratch)
-        if not SCRATCH_FILE.match(name) or found is None or not plain_file(found):
-            continue
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(name, dir_fd=scratch)
-            swept += 1
-    return swept
 
 
 def copy_entry(source: str, target: str, folder: int) -> None:
