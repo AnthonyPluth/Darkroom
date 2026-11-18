@@ -52,6 +52,14 @@ class IndexTests(unittest.TestCase):
         self.assertEqual((photo.source, photo.make, photo.time_source, photo.gps_source), ("phone", "Apple", "exif_offset", "exif"))
         self.assertFalse(photo.confirmed_in_google)
 
+    def test_a_phone_video_with_only_a_quicktime_date_is_stored_as_that_utc_instant(self):
+        fixtures.make_video(self.originals / "v.mp4", quicktime_utc="2019:07:04 23:30:00", gps=(40.7, -74.0))
+        fixtures.make_video(self.originals / "w.mp4", quicktime_utc="2019:07:04 23:30:00")
+        self.assertEqual(self.run_index().new, 2)
+        placed, unplaced = self.items()["jo/originals/v.mp4"], self.items()["jo/originals/w.mp4"]
+        self.assertEqual((placed.captured_utc, placed.time_source, placed.offset_minutes, placed.captured_local), (1562283000.0, "quicktime_utc", -240, "2019-07-04T19:30:00"))
+        self.assertEqual((unplaced.captured_utc, unplaced.time_source, unplaced.offset_minutes, unplaced.captured_local), (1562283000.0, "quicktime_utc", None, None))
+
     def test_a_photo_is_indexed_with_both_perceptual_hashes_and_a_video_with_neither(self):
         fixtures.save_jpeg(fixtures.scene(1), self.originals / "a.jpg")
         fixtures.make_video(self.originals / "b.mov")
