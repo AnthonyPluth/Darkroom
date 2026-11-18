@@ -311,7 +311,7 @@ class CameraRawTests(CopiesCase):
         for name, removed in (("IMG_0001.jpg", 1), ("IMG_0001.CR2", 0), ("IMG_0001.nef", 0)):
             with self.subTest(name=name):
                 self.setUp()
-                takeout, _ = self.takeout(b"google copy of the shot", name=name)
+                self.takeout(b"google copy of the shot", name=name)
                 phone = self.phone(b"phone jpeg of the shot")
                 before = self.files()
                 self.assertEqual(len(takeout_copies.pairs(self.opened, self.jo)), removed)
