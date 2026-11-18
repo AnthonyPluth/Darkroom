@@ -90,6 +90,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     found = sa.inspect(op.get_bind()).get_table_names()
+    for table in ("takeout_sidecars", "takeout_entries"):
+        if table in found:
+            op.execute(f"DELETE FROM {table}")
     if "takeout_sidecars" in found:
         op.drop_index("ix_takeout_sidecars_export_folder", table_name="takeout_sidecars")
         op.drop_table("takeout_sidecars")
