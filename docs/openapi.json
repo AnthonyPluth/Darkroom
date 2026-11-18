@@ -631,6 +631,9 @@
           "number": {
             "type": "integer"
           },
+          "sign_in_prompts": {
+            "type": "integer"
+          },
           "status": {
             "type": "string"
           }
@@ -643,6 +646,7 @@
           "max_attempts",
           "max_downloads",
           "number",
+          "sign_in_prompts",
           "status"
         ],
         "type": "object"

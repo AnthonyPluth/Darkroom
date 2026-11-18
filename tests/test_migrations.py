@@ -347,7 +347,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all(), before)
         db.migrate(self.engine)
 
-    def test_0034_export_download_interruptions_start_at_zero_keep_the_rows_and_can_be_undone(self):
+    def test_0034_download_interruptions_start_at_zero_prompts_are_backfilled_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         columns = "id, account_id, kind, status, download_tries"
         with self.engine.begin() as connection:
@@ -356,15 +356,18 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, download_tries) VALUES (1, 1, 'initial', 'failed', 3)")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, downloads_used, attempts, status) VALUES (1, 1, 1, 5, 2, 'failed'), (2, 1, 2, 1, 1, 'done')")
             before = connection.exec_driver_sql(f"SELECT {columns} FROM exports").all()
         db.migrate(self.engine)
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
             self.assertEqual(connection.exec_driver_sql("SELECT download_interruptions FROM exports").scalar(), 0)
+            self.assertEqual(connection.exec_driver_sql("SELECT id, sign_in_prompts FROM export_parts ORDER BY id").all(), [(1, 3), (2, 0)])
             config.attributes["connection"] = connection
             command.downgrade(config, "0033")
         self.assertNotIn("download_interruptions", {column["name"] for column in inspect(self.engine).get_columns("exports")})
+        self.assertNotIn("sign_in_prompts", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
         db.migrate(self.engine)

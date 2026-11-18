@@ -129,6 +129,7 @@ export interface DownloadPartPlan {
   attempts: number;
   max_downloads: number;
   max_attempts: number;
+  sign_in_prompts: number;
 }
 
 export interface DownloadPlan {

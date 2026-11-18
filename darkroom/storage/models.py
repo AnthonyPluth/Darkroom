@@ -240,6 +240,7 @@ class ExportPart(Base):
     bytes: Mapped[int | None] = mapped_column(Bytes)
     downloads_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sign_in_prompts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
     bytes_done: Mapped[int | None] = mapped_column(Bytes)
 

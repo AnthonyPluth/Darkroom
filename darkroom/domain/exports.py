@@ -36,7 +36,8 @@ DOWNLOADED = ("downloaded", "unpacking", "importing", "imported")
 EXPIRED_WORDS = "This export has expired in Takeout, so it can't be downloaded again."
 DOWNLOADED_WORDS = "This export is already downloaded, so there is nothing to retry."
 IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry it on the Imports page."
-NOTHING_LEFT_WORDS = "Every part of this export is already downloaded, so there is nothing left to download."
+NO_PARTS_WORDS = "Takeout listed no parts for this export, so there is nothing to download."
+STILL_OPEN_WORDS = "The download job that stopped is still finishing; try again in a few minutes."
 PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
@@ -373,7 +374,7 @@ def spent_words(part: ExportPart) -> str:
             "Ask Takeout for a new export of Google Photos instead.")
 
 
-def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float) -> str | None:
+def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float, job_open: bool) -> str | None:
     if export.status in DOWNLOADED:
         return DOWNLOADED_WORDS
     if export.status in STILL_WAITING:
@@ -383,16 +384,18 @@ def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float) -> st
         return EXPIRED_WORDS
     if export.inbox_dir is not None:
         return IMPORT_FAILED_WORDS
+    if not parts or export.part_count != len(parts):
+        return NO_PARTS_WORDS
+    if job_open:
+        return STILL_OPEN_WORDS
     left = [part for part in parts if part.status != "done"]
-    if not left:
-        return NOTHING_LEFT_WORDS
     spent = next((part for part in left if part.downloads_used >= PART_DOWNLOADS), None)
     return None if spent is None else spent_words(spent)
 
 
 def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
     parts = parts_of(opened, export.id)
-    refusal = retry_refusal(export, parts, now) if export.status == "failed" else None
+    refusal = retry_refusal(export, parts, now, download_open(opened, export)) if export.status == "failed" else None
     return {
         "id": export.id, "account_id": export.account_id, "kind": export.kind, "created_at": dates.instant_or_none(export.created_at),
         "ready_at": dates.instant_or_none(export.ready_at), "expires_at": dates.instant_or_none(export.expires_at), "part_count": export.part_count, "status": export.status, "stage": export.stage,

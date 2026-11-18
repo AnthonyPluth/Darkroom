@@ -317,6 +317,7 @@ class DownloadPartPlan(TypedDict):
     attempts: int
     max_downloads: int
     max_attempts: int
+    sign_in_prompts: int
 
 
 class DownloadPlan(TypedDict):

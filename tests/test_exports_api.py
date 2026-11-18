@@ -1,11 +1,14 @@
 import json
+import sqlite3
+import threading
 import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from darkroom.dates import utc_now
-from darkroom.domain import browser_jobs, exports
+from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount
 from tests.api_world import ApiCase
@@ -280,6 +283,37 @@ class RetryDownloadApiTests(ApiCase):
         for path in ("99", "abc", "9" * 13):
             with self.subTest(path=path):
                 self.assertEqual(self.call("POST", f"/api/exports/{path}/retry-download")[0], 404)
+
+    def test_a_database_busy_while_saving_the_retry_is_503_and_another_error_is_not_hidden(self):
+        export_id = self.failed_export()
+        locked = OperationalError("UPDATE", {}, sqlite3.OperationalError("database is locked"))
+        with mock.patch.object(downloads, "retry_failed", side_effect=locked):
+            status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
+        self.assertEqual((status, reply), (503, {"error": "Darkroom is busy with another change; try again in a moment"}))
+        broken = OperationalError("UPDATE", {}, sqlite3.OperationalError("disk I/O error"))
+        with mock.patch.object(downloads, "retry_failed", side_effect=broken):
+            self.assertEqual(self.call("POST", f"/api/exports/{export_id}/retry-download")[0], 500)
+        self.assertEqual(self.call("GET", f"/api/exports/{export_id}")[1]["export"]["status"], "failed")
+
+    def test_two_presses_at_once_retry_once_and_queue_one_job(self):
+        export_id = self.failed_export()
+        gate, outcomes = threading.Barrier(2), []
+
+        def press():
+            gate.wait()
+            outcomes.append(self.call("POST", f"/api/exports/{export_id}/retry-download"))
+
+        threads = [threading.Thread(target=press) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(self.queued_downloads(), 1)
+        retried = [reply["retried"] for status, reply in outcomes if status == 200]
+        self.assertEqual(retried.count(True), 1)
+        self.assertTrue(all(status in (200, 503) for status, _ in outcomes), outcomes)
+        with db.session(self.engine) as opened:
+            self.assertEqual(len(opened.execute(select(Event.id).where(Event.type == "export_download_retried")).all()), 1)
 
     def test_a_busy_database_is_503_and_changes_nothing(self):
         export_id = self.failed_export()
