@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import http.client
+import io
 import json
 import os
 import re
 import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket opens when it is made (#393)
 import stat
+from collections.abc import Buffer, Callable
 from pathlib import Path
 from typing import Any, final
 
@@ -53,7 +55,29 @@ REQUEST_PATH = re.compile(r"/[\x21-\x7e]*")
 
 
 @final
+class Received(io.RawIOBase):
+    __slots__ = ("_receive",)
+
+    def __init__(self, receive: Callable[[Buffer], int]) -> None:
+        super().__init__()
+        self._receive = receive
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Buffer, /) -> int:
+        return self._receive(buffer)
+
+    def makefile(self, mode: str) -> io.BufferedReader:
+        if mode != "rb":
+            raise ValueError("the answer is read only as bytes")
+        return io.BufferedReader(self)
+
+
+@final
 class OnSocket:
+    __slots__ = ("_close", "_received", "_send", "method", "reply")
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("OnSocket is the worker's one connection to the app's private socket and takes no subclass")
 
@@ -65,7 +89,19 @@ class OnSocket:
         except OSError:
             stream.close()
             raise
-        self.sock = stream
+
+        def send(data: bytes) -> None:
+            stream.sendall(data)
+
+        def receive(buffer: Buffer) -> int:
+            return stream.recv_into(buffer)
+
+        def close() -> None:
+            stream.close()
+
+        self._send = send
+        self._received = Received(receive)
+        self._close = close
         self.method = "POST"
         self.reply: http.client.HTTPResponse | None = None
 
@@ -80,17 +116,17 @@ class OnSocket:
                 raise ValueError("a request header is not a token and a line of visible ASCII")
             lines.append(f"{name}: {value}")
         self.method = method
-        self.sock.sendall("\r\n".join(lines).encode("ascii") + b"\r\n\r\n" + body)
+        self._send("\r\n".join(lines).encode("ascii") + b"\r\n\r\n" + body)
 
     def getresponse(self) -> http.client.HTTPResponse:
-        self.reply = http.client.HTTPResponse(self.sock, method=self.method)
+        self.reply = http.client.HTTPResponse(self._received, method=self.method)  # type: ignore[arg-type]
         self.reply.begin()
         return self.reply
 
     def close(self) -> None:
         if self.reply is not None:
             self.reply.close()
-        self.sock.close()
+        self._close()
 
 
 class Client:
