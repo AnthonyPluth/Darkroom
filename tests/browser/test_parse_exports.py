@@ -184,6 +184,14 @@ ROW_FORMS = {
     "root-relative": ("/manage/archive/{}", None, MANAGE_PAGE),
     "path-relative on /manage/": ("archive/{}", None, MANAGE_PAGE + "/"),
     "path-relative under a relative base": ("archive/{}", "/manage/", MANAGE_PAGE),
+    "an encoded dot segment": ("/manage/%2e/archive/{}", None, MANAGE_PAGE),
+    "an uppercase encoded dot segment": ("/manage/%2E/archive/{}", None, MANAGE_PAGE),
+    "encoded double dots": ("/manage/archive/x/%2e%2e/{}", None, MANAGE_PAGE),
+    "a dot and an encoded dot": ("/manage/archive/x/.%2E/{}", None, MANAGE_PAGE),
+    "an encoded dot and a dot": ("/manage/archive/x/%2e./{}", None, MANAGE_PAGE),
+    "half-encoded double dots up from a segment": ("/manage/.%2e/manage/archive/{}", None, MANAGE_PAGE),
+    "an encoded dot relative to /manage/": ("%2e/archive/{}", None, MANAGE_PAGE + "/"),
+    "a base with encoded double dots": ("./manage/archive/{}", "https://takeout.google.com/x/%2E%2e/", MANAGE_PAGE),
 }
 ROWS_ELSEWHERE = {
     "the live form on /manage/ with no base": ("./manage/archive/{}", None, MANAGE_PAGE + "/"),
@@ -204,7 +212,22 @@ ROWS_ELSEWHERE = {
     "a tab that browsers drop": ("/\t/other.example/manage/archive/{}", None, MANAGE_PAGE),
     "dot segments out of the archive path": ("./manage/archive/../../settings/{}", LIVE_BASE, MANAGE_PAGE),
     "dot segments above the root": ("../../other/manage/archive/{}", None, MANAGE_PAGE + "/x/"),
-    "a trailing dot segment": ("/manage/archive/x/../{}/..", None, MANAGE_PAGE),
+    "a trailing dot segment": ("/manage/archive/{}/.", None, MANAGE_PAGE),
+    "a trailing double-dot segment": ("/manage/archive/{}/x/..", None, MANAGE_PAGE),
+    "a trailing encoded dot segment": ("/manage/archive/{}/%2e", None, MANAGE_PAGE),
+    "a trailing encoded double-dot segment": ("/manage/archive/{}/x/%2E%2e", None, MANAGE_PAGE),
+    "an encoded dot segment that moves the path": ("/manage/%2e/../archive/{}", None, MANAGE_PAGE),
+    "an uppercase encoded dot segment that moves the path": ("/manage/%2E/../archive/{}", None, MANAGE_PAGE),
+    "a dot and an encoded dot that move the path": ("/manage/.%2e/../archive/{}", None, MANAGE_PAGE),
+    "an encoded dot and a dot that move the path": ("/manage/%2E./../archive/{}", None, MANAGE_PAGE),
+    "encoded double dots that move the path": ("/manage/%2e%2e/../archive/{}", None, MANAGE_PAGE),
+    "an encoded slash": ("/manage/archive/x%2f/../{}", None, MANAGE_PAGE),
+    "an uppercase encoded slash": ("/manage/archive/x%2F/../{}", None, MANAGE_PAGE),
+    "an encoded backslash": ("/manage/archive/x%5c/../{}", None, MANAGE_PAGE),
+    "an uppercase encoded backslash": ("/manage/archive/x%5C/../{}", None, MANAGE_PAGE),
+    "a double-encoded dot": ("/manage/archive/%252e/../{}", None, MANAGE_PAGE),
+    "a base with an encoded slash": ("./manage/archive/{}", "https://takeout.google.com/x%2f/../", MANAGE_PAGE),
+    "a base with an encoded dot that moves it": ("./archive/{}", "https://takeout.google.com/manage/%2e/../", MANAGE_PAGE),
     "a base on another host": ("./manage/archive/{}", "https://other.example/", MANAGE_PAGE),
     "a scheme-relative base": ("./manage/archive/{}", "//other.example/", MANAGE_PAGE),
     "a base with a backslash that browsers read as a slash": ("./manage/archive/{}", "/\\other.example/", MANAGE_PAGE),
@@ -259,6 +282,9 @@ PART_FORMS = {
     "dot-relative to the live base": ("./takeout/download?{query}", LIVE_BASE, ARCHIVE_PAGE),
     "root-relative": ("/takeout/download?{query}", None, ARCHIVE_PAGE),
     "up from the archive's own address": ("../../takeout/download?{query}", None, ARCHIVE_PAGE),
+    "an encoded dot segment": ("/takeout/%2e/download?{query}", None, ARCHIVE_PAGE),
+    "encoded double dots": ("/takeout/x/%2E%2E/download?{query}", None, ARCHIVE_PAGE),
+    "encoded double dots up from the archive's own address": ("%2e%2e/%2e%2e/takeout/download?{query}", None, ARCHIVE_PAGE),
 }
 PARTS_ELSEWHERE = {
     "relative to the archive's own address": ("takeout/download?{query}", None, ARCHIVE_PAGE),
@@ -270,6 +296,17 @@ PARTS_ELSEWHERE = {
     "dot segments to another path": ("/takeout/download/../../elsewhere?{query}", None, ARCHIVE_PAGE),
     "dot segments in an absolute link": ("https://takeout.google.com/takeout/download/../../elsewhere?{query}", None, ARCHIVE_PAGE),
     "up to another path": ("../../../elsewhere/download?{query}", None, ARCHIVE_PAGE),
+    "a trailing dot segment": ("/takeout/download/.?{query}", None, ARCHIVE_PAGE),
+    "a trailing double-dot segment": ("/takeout/download/x/..?{query}", None, ARCHIVE_PAGE),
+    "a trailing encoded dot segment": ("/takeout/download/%2E?{query}", None, ARCHIVE_PAGE),
+    "an encoded dot segment that moves the path": ("/takeout/%2e/../download?{query}", None, ARCHIVE_PAGE),
+    "an encoded dot segment in an absolute link": ("https://takeout.google.com/takeout/%2e/../download?{query}", None, ARCHIVE_PAGE),
+    "a dot and an encoded dot that move the path": ("/takeout/.%2E/../download?{query}", None, ARCHIVE_PAGE),
+    "an encoded dot and a dot that move the path": ("/takeout/%2E./../download?{query}", None, ARCHIVE_PAGE),
+    "an encoded slash": ("/takeout/x%2F/../download?{query}", None, ARCHIVE_PAGE),
+    "an encoded backslash": ("/takeout/x%5c/../download?{query}", None, ARCHIVE_PAGE),
+    "a double-encoded dot": ("/takeout/%252e/../download?{query}", None, ARCHIVE_PAGE),
+    "the export id only in the fragment": ("/takeout/download?i=0#&{query}", None, ARCHIVE_PAGE),
     "a base on another host": ("takeout/download?{query}", "https://other.example/", ARCHIVE_PAGE),
     "a javascript link": ("javascript:void(0)//takeout/download?{query}", None, ARCHIVE_PAGE),
     "a malformed bracketed host": ("https://[x]/takeout/download?{query}", None, ARCHIVE_PAGE),
@@ -288,12 +325,18 @@ class RelativePartLinkTests(unittest.TestCase):
                 self.assertEqual([part.href for part in parts], [f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i={index}&user={MADE_UP_USER}" for index in range(3)])
                 self.assertEqual([part.link for part in parts], [download_href(COMPLETED_ID, index, form=form).replace("&amp;", "&") for index in range(3)])
 
+    def test_encoded_characters_in_the_query_are_left_as_written(self):
+        form = "/takeout/download?{query}&amp;next=%2F%5C%252e"
+        parts = takeout.parse_archive(archive(items=items_linked(form)), ARCHIVE_PAGE, COMPLETED_ID).parts
+        self.assertEqual(parts[0].href, f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}&next=%2F%5C%252e")
+
     def test_a_part_link_that_resolves_anywhere_else_is_refused(self):
         for name, (form, base, address) in PARTS_ELSEWHERE.items():
-            with self.subTest(name), self.assertRaises(takeout.UnreadableExports) as raised:
-                takeout.parse_archive(archive(items=items_linked(form), base=base), address, COMPLETED_ID)
-            self.assertNotIn("user=", str(raised.exception))
-            self.assertNotIn(COMPLETED_ID, str(raised.exception))
+            with self.subTest(name):
+                with self.assertRaises(takeout.UnreadableExports) as raised:
+                    takeout.parse_archive(archive(items=items_linked(form), base=base), address, COMPLETED_ID)
+                self.assertNotIn("user=", str(raised.exception))
+                self.assertNotIn(COMPLETED_ID, str(raised.exception))
 
 
 class FindingsTests(unittest.TestCase):

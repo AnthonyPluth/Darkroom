@@ -188,17 +188,21 @@ ASCII_SPACE = " \t\n\r\f"
 LINK_TRICKS = re.compile(r"[\x00-\x20\x7f\\]")
 SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 TAKEOUT_ROOT = "https://" + selectors.TAKEOUT_HOST + "/"
+SINGLE_DOT = re.compile(r"\.|%2[eE]")
+DOUBLE_DOT = re.compile(r"(?:\.|%2[eE]){2}")
+ENCODED_TRICKS = re.compile(r"%(?:2[fF]|5[cC]|25)")
 
 
 def without_dot_segments(path: str) -> str:
     segments = path.split("/")[1:]
     kept: list[str] = []
     for index, segment in enumerate(segments):
-        if segment == "..":
+        double, single = DOUBLE_DOT.fullmatch(segment), SINGLE_DOT.fullmatch(segment)
+        if double:
             kept = kept[:-1]
-        elif segment != ".":
+        elif not single:
             kept.append(segment)
-        if segment in (".", "..") and index == len(segments) - 1:
+        if (double or single) and index == len(segments) - 1:
             kept.append("")
     return "/" + "/".join(kept)
 
@@ -223,6 +227,8 @@ def joined(link: str, against: str | None) -> str | None:
     if not absolute.startswith(TAKEOUT_ROOT):
         return None
     path, tail = path_and_tail(absolute[len(TAKEOUT_ROOT) - 1:])
+    if ENCODED_TRICKS.search(path):
+        return None
     return TAKEOUT_ROOT[:-1] + without_dot_segments(path) + tail
 
 
@@ -540,7 +546,7 @@ def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> t
         raise UnreadableExports("a download on an export's page on Takeout has no readable part number")
     raw, label = numbered[0]
     href = download_link(raw, address, base)
-    owner = None if href is None else EXPORT_PARAMETER.search(href)
+    owner = None if href is None else EXPORT_PARAMETER.search(href.partition("#")[0])
     if href is None or owner is None or owner.group(1) != google_id:
         raise UnreadableExports("a download link on an export's page on Takeout is not one Darkroom can use")
     exact = set(item.sizes)
