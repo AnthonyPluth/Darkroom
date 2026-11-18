@@ -476,7 +476,7 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
 
-    def test_0037_download_interruptions_start_at_zero_prompts_are_backfilled_and_it_can_be_undone(self):
+    def test_0038_download_interruptions_start_at_zero_prompts_are_backfilled_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         columns = "id, account_id, kind, status, download_tries"
         with self.engine.begin() as connection:
