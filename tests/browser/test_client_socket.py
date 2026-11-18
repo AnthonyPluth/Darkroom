@@ -1,9 +1,10 @@
 import http.client
+import io
 import socket
 import socketserver
 import tempfile
 import threading
-import typing
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,14 +21,23 @@ class Recorded:
     def __init__(self) -> None:
         self.requests: list[bytes] = []
         self.families: list[int] = []
+        self.made: list[socket.socket] = []
+        self.closes: list[socket.socket] = []
 
     def spy(self) -> type:
-        families = self.families
+        families, made, closes = self.families, self.made, self.closes
 
         class Spy(REAL_SOCKET):
             def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
                 families.append(family)
                 super().__init__(family, type, proto, fileno)
+                if fileno is None:
+                    made.append(self)
+
+            def close(self):
+                if self in made:
+                    closes.append(self)
+                super().close()
 
         return Spy
 
@@ -101,7 +111,6 @@ class TheClassIsClosedTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             type("Mixed", (int, type(instance)), {})
         self.assertTrue(getattr(OnSocket, "__final__", False))
-        self.assertIs(typing.final(OnSocket), OnSocket)
 
     def test_the_class_is_not_an_http_connection_so_no_tcp_connect_is_reachable_from_an_instance(self):
         socket_path = unix_app(self, Recorded())
@@ -122,9 +131,10 @@ class TheClassIsClosedTests(unittest.TestCase):
         with mock.patch.object(app_client.socket, "socket", recorded.spy()):
             connection = OnSocket(str(socket_path), 5.0)
             try:
-                connection.host, connection.port = host, port
+                for name, value in (("host", host), ("port", port), ("sock", REAL_SOCKET)):
+                    with self.subTest(name=name), self.assertRaises(AttributeError):
+                        setattr(connection, name, value)
                 connection.request("POST", "/internal/browser/jobs/claim", body=b"{}", headers={"Authorization": f"Bearer {TOKEN}"})
-                self.assertEqual(connection.sock.family, socket.AF_UNIX)
                 reply = connection.getresponse()
                 self.assertEqual((reply.status, reply.read()), (200, b"{}"))
             finally:
@@ -147,10 +157,83 @@ class TheClassIsClosedTests(unittest.TestCase):
     def test_a_socket_that_is_not_there_is_unreachable_and_nothing_is_left_open(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        with self.assertRaises(FileNotFoundError):
-            OnSocket(str(Path(folder.name) / "worker-api.sock"), 1.0)
-        with self.assertRaisesRegex(Unreachable, "FileNotFoundError"):
-            Client(Path(folder.name) / "worker-api.sock", TOKEN, folder=Path(folder.name)).claim("w")
+        for number, attempt in enumerate((lambda: OnSocket(str(Path(folder.name) / "worker-api.sock"), 1.0),
+                        lambda: Client(Path(folder.name) / "worker-api.sock", TOKEN, folder=Path(folder.name)).claim("w"))):
+            recorded = Recorded()
+            with self.subTest(attempt=number), mock.patch.object(app_client.socket, "socket", recorded.spy()):
+                with self.assertRaises((FileNotFoundError, Unreachable)) as raised:
+                    attempt()
+                self.assertIn("FileNotFoundError", f"{type(raised.exception).__name__} {raised.exception}")
+                self.assertEqual(len(recorded.made), 1)
+                self.assertEqual(recorded.closes, recorded.made)
+                self.assertEqual(recorded.made[0].fileno(), -1)
+
+    def test_closing_after_an_answer_closes_the_one_stream(self):
+        recorded = Recorded()
+        socket_path = unix_app(self, recorded)
+        with mock.patch.object(app_client.socket, "socket", recorded.spy()):
+            connection = OnSocket(str(socket_path), 5.0)
+            connection.request("POST", "/internal/browser/jobs/claim", body=b"{}", headers={})
+            reply = connection.getresponse()
+            self.assertEqual((reply.status, reply.read()), (200, b"{}"))
+            self.assertGreaterEqual(recorded.made[0].fileno(), 0)
+            connection.close()
+        self.assertEqual(len(recorded.made), 1)
+        self.assertEqual(recorded.made[0].fileno(), -1)
+
+
+def reachable_by_attribute(start: object, depth: int) -> list[tuple[str, object]]:
+    seen: dict[int, tuple[str, object]] = {id(start): ("instance", start)}
+    frontier = [("instance", start)]
+    for _ in range(depth):
+        following = []
+        for trail, found in frontier:
+            for name in dir(found):
+                if name.startswith("__") and name.endswith("__"):
+                    continue
+                try:
+                    value = getattr(found, name)
+                except Exception:
+                    continue
+                if id(value) not in seen:
+                    seen[id(value)] = (f"{trail}.{name}", value)
+                    following.append((f"{trail}.{name}", value))
+        frontier = following
+    return list(seen.values())
+
+
+def opens_sockets(found: object) -> bool:
+    if found is socket or isinstance(found, (socket.socket, socket.SocketIO)):
+        return True
+    return any(isinstance(kind, type) and issubclass(kind, (socket.socket, socket.SocketIO)) for kind in (found, type(found), found.__class__))
+
+
+class NoSocketHandedOutTests(unittest.TestCase):
+    def test_an_instance_and_its_answer_hand_out_no_socket_or_socket_class_by_attribute(self):
+        recorded = Recorded()
+        socket_path = unix_app(self, recorded)
+        connection = OnSocket(str(socket_path), 5.0)
+        self.addCleanup(connection.close)
+        self.assertFalse(hasattr(connection, "sock"))
+        self.assertFalse(hasattr(connection, "__dict__"))
+        with self.assertRaises(TypeError):
+            vars(connection)
+        connection.request("POST", "/internal/browser/jobs/claim", body=b"{}", headers={})
+        reply = connection.getresponse()
+        for start in (connection, reply, reply.fp, connection.reply):
+            for trail, found in reachable_by_attribute(start, 4):
+                with self.subTest(trail=trail):
+                    self.assertFalse(opens_sockets(found), trail)
+        self.assertIsInstance(reply.fp, io.BufferedReader)
+        self.assertEqual(reply.read(), b"{}")
+
+    def test_the_check_would_see_a_socket_kept_on_an_instance(self):
+        stream = REAL_SOCKET(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(stream.close)
+        holder = types.SimpleNamespace(conn=types.SimpleNamespace(sock=stream))
+        self.assertTrue(any(opens_sockets(found) for _, found in reachable_by_attribute(holder, 4)))
+        self.assertTrue(any(opens_sockets(found) for _, found in reachable_by_attribute(types.SimpleNamespace(kind=REAL_SOCKET), 4)))
+        self.assertTrue(any(opens_sockets(found) for _, found in reachable_by_attribute(types.SimpleNamespace(module=socket), 4)))
 
 
 class OnTheWireTests(unittest.TestCase):
