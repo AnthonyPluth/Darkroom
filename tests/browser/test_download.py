@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from darkroom.domain import browser_jobs, downloads, exports
+from darkroom.domain import browser_jobs, downloads, events, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
@@ -47,6 +47,7 @@ class DomainReporter:
         self.engine = engine
         self.settings = settings
         self.events = []
+        self.telemetry = []
 
     def session(self):
         return db.session(self.engine)
@@ -74,6 +75,12 @@ class DomainReporter:
                 return downloads.progress(opened, job_id, number, body["bytes"], NOW)
             if body["event"] == "done":
                 return downloads.part_done(opened, self.settings, job_id, number, body["filename"], body["bytes"], NOW)
+            if body["event"] == "clicked":
+                self.telemetry.append((number, body))
+                return downloads.clicked(opened, job_id, number, body["downloading"], body.get("since_click"), body.get("since_answer"), NOW)
+            if body["event"] == "prompted":
+                self.telemetry.append((number, body))
+                return downloads.prompted(opened, job_id, number, body["downloading"], body["clicks"], body.get("since_click"), body.get("since_answer"), NOW)
             return downloads.part_failed(opened, job_id, number, body["reason"], NOW)
 
 
@@ -248,7 +255,8 @@ class DownloadJobTests(DownloadWorld):
     def test_it_downloads_every_part_in_order_into_the_inbox(self):
         browser = DownloadBrowser(["ok", "ok", "ok"])
         job_id, result = self.run_job(browser)
-        self.assertEqual(result, {"export_id": self.export, "parts": 3, "downloaded": 3})
+        self.assertEqual(result, {"export_id": self.export, "parts": 3, "downloaded": 3,
+                                  "telemetry": {"clicks": 3, "prompts": 0, "most_clicks_in_a_row_without_a_prompt": 3, "most_downloading": 1}})
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         self.assertEqual(sorted(path.name for path in self.folder().iterdir()), [f"takeout-20261102T031000Z-00{n}.zip" for n in (1, 2, 3)])
@@ -262,7 +270,7 @@ class DownloadJobTests(DownloadWorld):
         job_id, _ = self.run_job(browser)
         self.assertEqual(browser.downloaded, [1, 2, 2, 3])
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
-        self.assertIn(("progress", "verified; resuming part 2"), self.reporter.events)
+        self.assertIn(("progress", "verified; resuming part 2 (prompt 1 of this job, after 2 part clicks since the last answered prompt)"), self.reporter.events)
         self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
         self.assertEqual(self.clock.slept, [download.POLL_SECONDS])
         with db.session(self.engine) as opened:
@@ -458,7 +466,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.downloaded, [1, 2, 2, 3])
         self.assertEqual(self.waits(), [("waiting", "verify")])
-        self.assertIn("verified; resuming part 2", self.messages())
+        self.assertIn("verified; resuming part 2 (prompt 1 of this job, after 2 part clicks since the last answered prompt)", self.messages())
         self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
         self.assertNotIn(("failed", 1), self.reporter.events)
         with db.session(self.engine) as opened:
@@ -1040,6 +1048,97 @@ class InboxFolderTests(unittest.TestCase):
 
     def test_a_part_link_escapes_quotes(self):
         self.assertEqual(download.part_link('https://takeout.google.com/takeout/download?j="x"\\'), 'a[href="https://takeout.google.com/takeout/download?j=\\"x\\"\\\\"]')
+
+
+class SlowDownloadBrowser(DownloadBrowser):
+    def __init__(self, script, clock, seconds):
+        super().__init__(script)
+        self.clock = clock
+        self.seconds = seconds
+
+    def download_to(self, selector, folder, progress=None):
+        path = super().download_to(selector, folder, progress)
+        self.clock.now += self.seconds
+        return path
+
+
+class TelemetryTests(DownloadWorld):
+    def recorded(self, kind):
+        with db.session(self.engine) as opened:
+            return [entry.detail for entry in reversed(events.recent(opened, type=kind))]
+
+    def messages(self):
+        return [message for kind, message in self.reporter.events if kind == "progress" and isinstance(message, str)]
+
+    def test_every_click_and_prompt_is_recorded_with_the_minutes_since_the_last_click_and_answer(self):
+        browser = SlowDownloadBrowser(["ok", "reauth", "ok", "ok"], self.clock, 20 * 60)
+        _, result = self.run_job(browser)
+        self.assertEqual([(number, body["event"]) for number, body in self.reporter.telemetry], [(1, "clicked"), (2, "clicked"), (2, "prompted"), (2, "clicked"), (3, "clicked")])
+        self.assertEqual([{key: value for key, value in body.items() if key != "event"} for _, body in self.reporter.telemetry],
+                         [{"downloading": 0}, {"downloading": 0, "since_click": 1200}, {"downloading": 0, "clicks": 2, "since_click": 1200},
+                          {"downloading": 0, "since_click": 60, "since_answer": 0}, {"downloading": 0, "since_click": 1200, "since_answer": 1200}])
+        self.assertEqual(self.recorded("export_part_clicked"), [
+            "part 1: clicked with 0 other parts downloading, the first click of this job, no prompt answered yet in this job",
+            "part 2: clicked with 0 other parts downloading, 20 minutes after the previous click, no prompt answered yet in this job",
+            "part 2: clicked with 0 other parts downloading, 1 minute after the previous click, 0 minutes after the last answered prompt",
+            "part 3: clicked with 0 other parts downloading, 20 minutes after the previous click, 20 minutes after the last answered prompt",
+        ])
+        self.assertEqual(self.recorded("export_part_prompt"), ["part 2: Google asked to verify after 2 clicks since the last answered prompt, with 0 other parts downloading, "
+                                                               "20 minutes after the previous click, no prompt answered yet in this job"])
+        self.assertIn("downloading part 3 of 3; 20 minutes after the previous click, 20 minutes after the last answered prompt", self.messages())
+        self.assertEqual(self.messages()[-1], "downloaded 3 of 3 parts; 4 part clicks and 1 verification prompt in 1 hour 1 minute; "
+                                              "at most 2 part clicks in a row without a prompt; at most 1 part downloading at once")
+        self.assertEqual(result["telemetry"], {"clicks": 4, "prompts": 1, "most_clicks_in_a_row_without_a_prompt": 2, "most_downloading": 1})
+
+    def test_a_sign_in_at_the_start_counts_as_an_answer(self):
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        browser.verifying = 1
+        browser.content = self.reading_verify_once(browser)
+        self.run_job(browser)
+        self.assertEqual(self.reporter.telemetry[0][1], {"event": "clicked", "downloading": 0, "since_answer": 0})
+
+    def reading_verify_once(self, browser):
+        original = DownloadBrowser.content.__get__(browser)
+        shown = []
+
+        def content():
+            if not shown and browser.url != ARCHIVE:
+                shown.append(True)
+                return VERIFY
+            return original()
+
+        return content
+
+    def test_telemetry_that_cannot_be_recorded_never_stops_a_download(self):
+        real = self.reporter.part
+
+        def refusing(job_id, number, body):
+            if body["event"] in ("clicked", "prompted"):
+                raise RuntimeError("darkroom said no")
+            return real(job_id, number, body)
+
+        self.reporter.part = refusing
+        _, result = self.run_job(DownloadBrowser(["ok", "verify", "ok", "ok"]))
+        self.assertEqual((result["downloaded"], result["telemetry"]["clicks"], result["telemetry"]["prompts"]), (3, 4, 1))
+        self.assertEqual(self.recorded("export_part_clicked"), [])
+
+    def test_a_lost_lease_while_recording_still_stops_the_job(self):
+        real = self.reporter.part
+
+        def lost(job_id, number, body):
+            if body["event"] == "clicked":
+                raise Cancelled("lost")
+            return real(job_id, number, body)
+
+        self.reporter.part = lost
+        with self.assertRaises(Cancelled):
+            self.run_job(DownloadBrowser(["ok"]))
+
+    def test_the_words_for_long_and_short_runs(self):
+        from darkroom_browser.jobs import telemetry
+
+        self.assertEqual([telemetry.lasted(seconds) for seconds in (0, 59, 61, 3600, 3660, 7322, -5)],
+                         ["0 minutes", "0 minutes", "1 minute", "1 hour", "1 hour 1 minute", "2 hours 2 minutes", "0 minutes"])
 
 
 class TwoRootsDownloadTests(DownloadWorld):
