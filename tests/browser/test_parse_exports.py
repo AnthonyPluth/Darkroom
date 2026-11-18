@@ -97,6 +97,145 @@ class SummaryPageTests(unittest.TestCase):
             self.assertFalse(takeout.exports_page_ready(text, MANAGE_PAGE))
 
 
+def created(text, now=NOW, zone=NEW_YORK):
+    return listed(summary(row(created=text, available=None)), now=now, zone=zone)[0].created_at
+
+
+def until(text):
+    return listed(summary(row(available=text)))[0].expires_at
+
+
+def refusal(page, now=NOW):
+    try:
+        listed(page, now=now)
+    except takeout.UnreadableExports as error:
+        return str(error)
+    raise AssertionError("the page was read")
+
+
+class DateShapeTests(unittest.TestCase):
+    def test_yesterday_and_today_are_days_of_the_workers_zone(self):
+        for text, expected in (("Created yesterday", at(2026, 11, 16, 0, 0)), (f"Created yesterday at 8:12{NNBSP}PM", at(2026, 11, 16, 20, 12)),
+                               ("Created Yesterday, 20:12", at(2026, 11, 16, 20, 12)), ("Created today", at(2026, 11, 17, 0, 0)),
+                               ("Created today at 9:05 AM", at(2026, 11, 17, 9, 5)), ("Created Today, 14:45", at(2026, 11, 17, 14, 45))):
+            with self.subTest(text=text):
+                self.assertEqual(created(text), expected)
+        tokyo = ZoneInfo("Asia/Tokyo")
+        self.assertEqual(created("Created yesterday at 10:00 PM", zone=tokyo), at(2026, 11, 17, 22, 0, zone=tokyo))
+
+    def test_months_and_years_ago_count_as_thirty_and_three_hundred_sixty_five_days(self):
+        for text, days in (("Created a month ago", 30), ("Created 1 month ago", 30), ("Created 2 months ago", 60), ("Created a year ago", 365),
+                           ("Created 2 years ago", 730), ("Created 3 weeks ago", 21)):
+            with self.subTest(text=text):
+                self.assertEqual(created(text), NOW - days * 86400)
+
+    def test_abbreviated_months_and_on_are_read(self):
+        for text in (f"Created Nov 9, 2:45{NNBSP}PM", f"Created Nov. 9, 2:45{NNBSP}PM", "Created on November 9, 2:45 PM", "Created on Nov 9 at 2:45 p.m.",
+                     "Created November 9, 2:45PM", "Created November 9, 2026, 2:45 PM", "Created Mon, Nov 9, 2026, 2:45 PM"):
+            with self.subTest(text=text):
+                self.assertEqual(created(text), at(2026, 11, 9, 14, 45))
+        self.assertEqual(created("Created Monday, November 9"), at(2026, 11, 9, 0, 0))
+        self.assertEqual(created("Created Sept 30"), at(2026, 9, 30, 0, 0))
+        self.assertEqual(created("Created sep 30, 2026"), at(2026, 9, 30, 0, 0))
+
+    def test_a_twenty_four_hour_clock_and_the_day_before_the_month_are_read(self):
+        for text in ("Created November 9, 14:45", "Created 9 November, 14:45", "Created 9 Nov 2026, 14:45", "Created 9 November 2026 at 14:45"):
+            with self.subTest(text=text):
+                self.assertEqual(created(text), at(2026, 11, 9, 14, 45))
+        self.assertEqual(created("Created 9 November, 00:05"), at(2026, 11, 9, 0, 5))
+
+    def test_a_weekday_is_the_latest_one_not_after_now(self):
+        for text, expected in (("Created Monday at 8:12 PM", at(2026, 11, 16, 20, 12)), ("Created Tuesday at 9:00 AM", at(2026, 11, 17, 9, 0)),
+                               ("Created Tuesday at 11:00 PM", at(2026, 11, 10, 23, 0)), ("Created Wed", at(2026, 11, 11, 0, 0)),
+                               ("Created Wednesday, 18:30", at(2026, 11, 11, 18, 30)), ("Created Thurs. at 1:01 AM", at(2026, 11, 12, 1, 1))):
+            with self.subTest(text=text):
+                self.assertEqual(created(text), expected)
+
+    def test_more_forms_of_available_until_are_read(self):
+        for text in ("Available until Nov 24, 2026 at 1:55 PM", "Available until November 24, 2026, 1:55 PM", "Available until November 24, 2026 1:55 PM",
+                     f"Available until Tuesday, November 24, 2026 at 1:55{NNBSP}PM", "Available until Tue, Nov 24, 2026, 13:55", "Available until 24 November 2026, 13:55",
+                     "Available until 24 Nov. 2026 at 13:55"):
+            with self.subTest(text=text):
+                self.assertEqual(until(text), at(2026, 11, 24, 13, 55))
+        self.assertEqual(until("Available until Nov 24, 2026"), at(2026, 11, 24, 0, 0))
+
+    def test_shapes_that_prove_nothing_are_still_refused(self):
+        for text in ("Created Novembr 9", "Created November 9, 24:00", "Created November 9, 13:00 PM", "Created November 9, 2:60 PM", "Created November 9, 0:30 AM",
+                     "Created November 9, 2:45", "Created yesterday at 9:05",                      "Created Funday at 3:00 PM", "Created 9 9", "Created 11/9", "Created 2 fortnights ago", "Created in 3 days", "Created today at 4:30 PM",
+                     "Created November 9, 2:45 PM extra", "Created Wednesday, November 9, 2026", "Created Wednesday, November 9", "Created Wed Nov 9 at 2:45 PM", "Created December 1, 2026", "Created tomorrow",
+                     "Created yesterday 2:45 PM ago", "Created Tuesday November", "Created 32 November", "Created 1 Juno 2026"):
+            with self.subTest(text=text):
+                refusal(summary(row(created=text)))
+        for text in ("Available until November 24", "Available until Wednesday, November 24, 2026", "Available until Nov 31, 2026", "Available until tomorrow"):
+            with self.subTest(text=text):
+                refusal(summary(row(available=text)))
+
+    def test_a_clock_whose_am_or_pm_is_shown_apart_is_refused(self):
+        self.assertEqual(created("Created November 9, 10:45"), at(2026, 11, 9, 10, 45))
+        for split in ("PM", "p.m.", "AM"):
+            with self.subTest(split=split):
+                refusal(summary(row(created=f"Created November 9, 10:45</div><div>{split}")))
+
+
+class DateShapeMessageTests(unittest.TestCase):
+    def test_the_failure_names_the_shape_of_each_unreadable_date(self):
+        said = refusal(summary(row(created=f"Created Novembre 9, 2:45{NNBSP}PM"), expired_row()))
+        self.assertEqual(said, "an export on Takeout's summary has a date that could not be read (1 of 2 exports): 'created ? 9, 9:99 pm'")
+        said = refusal(summary(row(created="Created yesterday at 2:45 PM ago", available="Available until 24/11/2026")))
+        self.assertEqual(said, "an export on Takeout's summary has a date that could not be read (1 of 1 exports): 'created yesterday at 9:99 pm ago', 'available until 99/99/9999'")
+
+    def test_only_the_first_two_unreadable_exports_are_shaped(self):
+        rows = [row(google_id=f"id-{number}", created=f"Created {number} lunes ago", available=None) for number in range(1, 5)]
+        said = refusal(summary(*rows, expired_row()))
+        self.assertEqual(said, "an export on Takeout's summary has a date that could not be read (4 of 5 exports): 'created 9 ? ago'; 'created 9 ? ago'")
+
+    def test_a_row_with_no_creation_date_shows_the_shape_of_its_text(self):
+        said = refusal(summary(row(created="Created</div><div>2 hours ago")))
+        self.assertEqual(said, "an export on Takeout's summary has no readable creation date: '? ?', 'completed', '? ? ? a ? ?', 'created', '9 hours ago', "
+                               "'available until november 99, 9999 at 9:99 pm'")
+
+    def test_digits_long_runs_and_long_text_are_bounded(self):
+        said = refusal(summary(row(created="Created " + "a " * 200 + "12345678901234567890")))
+        self.assertIn("'" + ("created " + "a " * 200)[:takeout.SHAPE_LIMIT - 3] + "...'", said)
+        self.assertLess(len(said), len(takeout.DATE_UNREADABLE) + takeout.SHAPE_LIMIT + 30)
+        self.assertEqual(takeout.shape("user 100000000000000000001 at 0a1b"), "? 9+ at 9a9?")
+
+    def test_the_shapes_keep_no_ids_addresses_or_free_text(self):
+        canaries = (f"Created {CANARY} 9, 2:45 PM", f"Created {COMPLETED_ID}", "Created https://takeout.google.com/manage/archive/x9", "Created jo@example.test",
+                    "Created Jo Example's photos", "Created 東京 9", "Created Ｎｏｖ ９")
+        for text in canaries:
+            with self.subTest(text=text):
+                said = refusal(summary(row(created=text)))
+                for leaked in (CANARY.lower(), COMPLETED_ID, "takeout.google", "example", "jo", "photos", "manage", "東京", "Ｎｏｖ", "９", "x9"):
+                    self.assertNotIn(leaked, said.lower().removeprefix("an export on takeout's summary has a date that could not be read"))
+        self.assertEqual(takeout.shape("created jo@example.test"), "created ?.?")
+        self.assertEqual(takeout.shape(f"created {COMPLETED_ID}"), "created 9a9?9?9?-9999-9?-9?-9+")
+
+
+class ArchiveDateTests(unittest.TestCase):
+    def test_the_archives_dates_take_the_same_month_forms(self):
+        for text in ("November 17, 2026", "Nov 17, 2026", "Nov. 17, 2026", "17 November 2026", "17 Nov 2026", "Tuesday, November 17, 2026", "Tue, Nov 17, 2026",
+                     "November 17, 2026, 12:55 PM", "November 17, 2026 at 12:55 PM", "17 November 2026, 12:55"):
+            with self.subTest(text=text):
+                detail = takeout.parse_archive(archive(created=text, expires=text.replace("17", "24")), ARCHIVE_PAGE, COMPLETED_ID)
+                self.assertEqual((detail.created_on, detail.expires_on), (date(2026, 11, 17), date(2026, 11, 24)))
+
+    def test_an_archive_date_that_proves_nothing_is_refused(self):
+        for text in ("November 17", "Monday, November 17, 2026", "Novembre 17, 2026", "17/11/2026", "yesterday", "November 17, 2026, 13:00 PM"):
+            with self.subTest(text=text), self.assertRaises(takeout.UnreadableExports):
+                takeout.parse_archive(archive(created=text), ARCHIVE_PAGE, COMPLETED_ID)
+
+    def test_the_failure_names_the_shape_of_each_unreadable_archive_date(self):
+        failed = "an export's page on Takeout has a date that could not be read: "
+        for page, said in ((archive(created="Novembre 17, 2026"), "creation date '? 99, 9999'"),
+                           (archive(created="Tue 17 Novembre", expires="24/11/2026"), "creation date 'tue 99 ?', expiration date '99/99/9999'"),
+                           (archive().replace("<li>Creation date: November 17, 2026</li>", ""), "no creation date"),
+                           (archive(created=f"{CANARY} 17, 2026 {COMPLETED_ID}"), "creation date '?-?-? 99, 9999 9a9?9?9?-9999-9?-9?-9+'")):
+            with self.subTest(said=said), self.assertRaises(takeout.UnreadableExports) as raised:
+                takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID)
+            self.assertEqual(str(raised.exception), failed + said)
+
+
 class SummaryReadyTests(unittest.TestCase):
     def test_a_summary_with_exports_is_loaded(self):
         self.assertTrue(takeout.exports_page_ready(summary(completed_row(), expired_row()), MANAGE_PAGE))
