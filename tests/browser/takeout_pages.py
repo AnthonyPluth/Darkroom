@@ -70,16 +70,26 @@ def items_linked(form: str, google_id: str = COMPLETED_ID, sizes: tuple[int, ...
 
 
 def part_item(google_id: str, index: int, count: int, size: int, filename: str, href: str | None = None, size_attribute: bool = True,
-              label: str | None = None) -> str:
+              label: str | None = None, downloaded: bool = False, index_attribute: bool = True, extra: str = "", flag: str | None = None) -> str:
     shown = f"{size / GB:.2f} GB"
     attribute = f' data-size="{size}"' if size_attribute else ""
-    aria = label if label is not None else f"Download part {index + 1} of {count}"
+    again = " again" if downloaded else ""
+    aria = label if label is not None else f"Download{again} part {index + 1} of {count}"
+    indexed = f' data-index="{index}"' if index_attribute else ""
+    marked = flag if flag is not None else ("true" if downloaded else "false")
     return (f'<li class="pr"><div><div><div class="pt">Part {index + 1}</div><div><div class="ps">{shown}</div></div></div><div><div>'
-            f'<div data-is-webview="false" data-download-uri="takeout/download?j={google_id}&amp;i={index}&amp;user={MADE_UP_USER}"{attribute} data-job-id="{google_id}" '
-            f'data-index="{index}" data-filename="{filename}" data-is-downloaded="false"><div jsname="Rfwdsf"><i aria-hidden="true">file_download</i>'
-            f'<span aria-hidden="true">Download</span><a jsname="hSRGPd" href="{href or download_href(google_id, index)}" aria-label="{aria}"></a></div></div></div></div></div><hr></li>')
+            f'<div data-is-webview="false" data-download-uri="takeout/download?j={google_id}&amp;i={index}&amp;user={MADE_UP_USER}"{attribute} data-job-id="{google_id}"'
+            f'{indexed} data-filename="{filename}" data-is-downloaded="{marked}"><div jsname="Rfwdsf"><i aria-hidden="true">file_download</i>'
+            f'<span aria-hidden="true">Download{again}</span><a jsname="hSRGPd" href="{href or download_href(google_id, index)}" aria-label="{aria}"></a>{extra}</div></div></div></div></div><hr></li>')
 
 
+def downloaded_page_parts(google_id: str = COMPLETED_ID, count: int = 25, downloaded: tuple[int, ...] = (1,), sizes: tuple[int, ...] | None = None) -> list[str]:
+    sizes = sizes or tuple(PAGE_SIZES[index % len(PAGE_SIZES)] for index in range(count))
+    names = part_names(count)
+    return [part_item(google_id, index, count, sizes[index], names[index], downloaded=index + 1 in downloaded) for index in range(count)]
+
+
+PAGE_SIZES = (39_209_062_486, 52_525_636_975, 44_198_313_169)
 SIZES = (39_209_062_486, 52_525_636_975, 9_233_726_362)
 
 

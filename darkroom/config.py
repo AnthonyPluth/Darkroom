@@ -95,6 +95,41 @@ STORABLE = (
 )
 
 
+BUILD_FILE = Path(__file__).resolve().parent / "build-info"
+BUILD_FILE_LIMIT = 256
+RELEASE_VERSION = re.compile(r"v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
+COMMIT_HASH = re.compile(r"[0-9a-f]{7,40}")
+SHORT_COMMIT = 7
+DEV = "dev"
+
+
+@dataclass(frozen=True)
+class Build:
+    version: str = DEV
+    commit: str = ""
+
+    @property
+    def shown(self) -> str:
+        return f"{self.version} ({self.commit})" if self.commit else self.version
+
+
+def build_of(text: str) -> Build:
+    lines = text.splitlines()
+    if len(lines) > 2:
+        return Build()
+    version, commit = ([line.strip() for line in lines] + ["", ""])[:2]
+    return Build(version if RELEASE_VERSION.fullmatch(version) else DEV, commit[:SHORT_COMMIT] if COMMIT_HASH.fullmatch(commit) else "")
+
+
+def read_build(path: Path | None = None) -> Build:
+    try:
+        with (path or BUILD_FILE).open("rb") as opened:
+            raw = opened.read(BUILD_FILE_LIMIT + 1)
+        return Build() if len(raw) > BUILD_FILE_LIMIT else build_of(raw.decode("ascii"))
+    except (OSError, UnicodeDecodeError):
+        return Build()
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -131,6 +166,7 @@ class Settings:
     syncthing: bool = False
     syncthing_key: str = field(default="", repr=False)
     alerts_off: tuple[str, ...] = ()
+    build: Build = Build()
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -193,6 +229,7 @@ def load() -> Settings:
         syncthing=env_flag("DARKROOM_SYNCTHING"),
         syncthing_key=syncthing_key(),
         alerts_off=env_list("DARKROOM_ALERTS_OFF"),
+        build=read_build(),
     )
 
 

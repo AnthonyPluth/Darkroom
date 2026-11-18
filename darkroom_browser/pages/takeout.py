@@ -167,7 +167,21 @@ FUTURE_SLACK = 3600.0
 YEARS_BACK = 8
 SUMMARY_FIELD = re.compile(r"(overall status|creation date|expiration date): (.+)")
 PARTS_HEADING = "data backup to a download link"
-PART_LABEL = re.compile(r"download part (\d{1,4}) of (\d{1,4})")
+PART_LABEL = re.compile(r"(?:(?P<verb>download|downloaded|redownload|re-download)(?P<again> again)? )?part (?P<number>\d{1,4}) of (?P<total>\d{1,4})(?P<after> again)?")
+LABEL_PUNCTUATION = re.compile(r"[()\[\],.;:!]+")
+LABEL_WORDS = frozenset(("download", "downloaded", "redownload", "re", "again", "part", "of", "see", "report"))
+LABEL_SHAPE_LIMIT = 40
+MAX_SHAPED_ITEMS = 2
+MAX_SHAPED_LABELS = 2
+INDEX = re.compile(r"\d{1,4}")
+NO_NUMBER = "a download on an export's page on Takeout has no readable part number"
+NO_SIZE = "a download on an export's page on Takeout has no readable size"
+NO_LINK = "a download on an export's page on Takeout has no download link"
+NOT_USABLE = "a download link on an export's page on Takeout is not one Darkroom can use"
+TWO_ADDRESSES = "a download on an export's page on Takeout has links that lead to different addresses"
+NUMBERS_DISAGREE = "a download on an export's page on Takeout shows part numbers that disagree"
+DOWNLOADED_DISAGREE = "a download on an export's page on Takeout says both that it was and was not downloaded already"
+TOLD_APART = "an export's page on Takeout lists parts that could not be told apart"
 KNOWN_HEADINGS = ("google takeout", "summary", "status", "your exports", "your latest export", "create a new export", "manage your exports", "your google data",
                   "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account", "confirm it's you",
                   "welcome", "verify your identity", "enter your password", "google accounts")
@@ -184,11 +198,16 @@ class UnreadableRowDates(ValueError):
         self.shapes = shapes
 
 
+class PartUnreadable(UnreadableExports):
+    pass
+
+
 class ListedPart(NamedTuple):
     number: int
     bytes: int
     href: str
     link: str
+    already_downloaded: bool = False
 
 
 @dataclass(frozen=True)
@@ -207,6 +226,7 @@ class ArchiveDetail:
     created_on: date
     expires_on: date | None
     parts: tuple[ListedPart, ...]
+    unreadable: int = 0
 
 
 ASCII_SPACE = " \t\n\r\f"
@@ -389,19 +409,19 @@ def says_empty(reader: SummaryReader) -> bool:
     return any(phrase in chunk for chunk in reader.chunks for phrase in EMPTY_SUMMARY_PHRASES)
 
 
-def shape(text: str) -> str:
+def shape(text: str, words: frozenset[str] = SHAPE_WORDS, limit: int = SHAPE_LIMIT) -> str:
     pieces: list[str] = []
     for digits, word, kept, _other in SHAPE_PIECE.findall(text):
         if digits:
             piece = "9" * len(digits) if len(digits) <= LONGEST_DIGITS else "9+"
         elif word:
-            piece = word.lower() if word.lower() in SHAPE_WORDS else "?"
+            piece = word.lower() if word.lower() in words else "?"
         else:
             piece = kept or "?"
         if not (piece == "?" and pieces and pieces[-1] == "?"):
             pieces.append(piece)
     said = "".join(pieces)
-    return said if len(said) <= SHAPE_LIMIT else said[:SHAPE_LIMIT - 3] + "..."
+    return said if len(said) <= limit else said[:limit - 3] + "..."
 
 
 def quoted(texts: list[str]) -> str:
@@ -632,6 +652,7 @@ class PartItem:
     links: list[tuple[str, str]]
     sizes: list[str]
     chunks: list[str]
+    marks: list[dict[str, str]]
 
 
 class ArchiveReader(SkippingReader):
@@ -653,8 +674,10 @@ class ArchiveReader(SkippingReader):
                 self.current.links.append((attributes["href"], plain(attributes.get("aria-label", ""))))
             if "data-size" in attributes:
                 self.current.sizes.append(attributes["data-size"].strip())
+            if "data-download-uri" in attributes:
+                self.current.marks.append(attributes)
         elif tag == "li" and self.in_parts:
-            self.current, self.depth = PartItem([], [], []), 1
+            self.current, self.depth = PartItem([], [], [], []), 1
 
     def closed(self, tag: str) -> None:
         if tag == "h2" and self.heading is not None:
@@ -692,35 +715,149 @@ def summary_fields(chunks: list[str]) -> dict[str, str]:
     return fields
 
 
+def part_label(label: str) -> re.Match[str] | None:
+    return PART_LABEL.fullmatch(SPACES.sub(" ", LABEL_PUNCTUATION.sub(" ", label)).strip())
+
+
 def numbered_link(item: PartItem) -> list[tuple[str, re.Match[str]]]:
-    return [(href, found) for href, label in item.links if (found := PART_LABEL.fullmatch(label)) is not None]
+    return [(href, found) for href, label in item.links if (found := part_label(label)) is not None]
 
 
-def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> tuple[ListedPart, int]:
-    numbered = numbered_link(item)
-    if len(numbered) != 1:
-        raise UnreadableExports("a download on an export's page on Takeout has no readable part number")
-    raw, label = numbered[0]
-    href = download_link(raw, address, base)
-    if href is None or export_id_of(href) != google_id:
-        raise UnreadableExports("a download link on an export's page on Takeout is not one Darkroom can use")
+def counts_as_part(item: PartItem) -> bool:
+    return bool(item.links or item.marks)
+
+
+def label_says_downloaded(found: re.Match[str]) -> bool | None:
+    if found["verb"] is None:
+        return True if found["after"] else None
+    return bool(found["again"] or found["after"]) or found["verb"] != "download"
+
+
+def mark_says_downloaded(item: PartItem) -> bool | None:
+    said = {mark["data-is-downloaded"].strip().lower() for mark in item.marks if "data-is-downloaded" in mark}
+    if not said:
+        return None
+    if not said <= {"true", "false"} or len(said) > 1:
+        raise PartUnreadable(DOWNLOADED_DISAGREE)
+    return said == {"true"}
+
+
+class Candidate(NamedTuple):
+    raw: str
+    href: str
+    label: re.Match[str] | None
+
+
+def candidates_of(item: PartItem, google_id: str, address: str, base: str | None) -> list[Candidate]:
+    found: list[Candidate] = []
+    for raw, label in item.links:
+        numbered = part_label(label)
+        target = download_link(raw, address, base)
+        if target is None:
+            if numbered is not None:
+                raise UnreadableExports(NOT_USABLE)
+            continue
+        if export_id_of(target) != google_id:
+            raise UnreadableExports(NOT_USABLE)
+        found.append(Candidate(raw, target, numbered))
+    return found
+
+
+def index_number(item: PartItem) -> int | None:
+    indices = {mark["data-index"].strip() for mark in item.marks if "data-index" in mark}
+    if len(indices) > 1:
+        raise UnreadableExports(NUMBERS_DISAGREE)
+    if not indices:
+        return None
+    index = indices.pop()
+    if not INDEX.fullmatch(index):
+        raise PartUnreadable(NO_NUMBER)
+    return int(index) + 1
+
+
+def link_number(href: str) -> int | None:
+    found = single_parameters(href)
+    index = None if found is None else found.get("i")
+    return int(index) + 1 if index is not None and INDEX.fullmatch(index) else None
+
+
+class ReadPart(NamedTuple):
+    part: ListedPart
+    total: int | None
+
+
+def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> ReadPart:
+    candidates = candidates_of(item, google_id, address, base)
+    if not candidates:
+        raise PartUnreadable(NO_LINK)
+    if len({candidate.href for candidate in candidates}) > 1:
+        raise UnreadableExports(TWO_ADDRESSES)
+    labels = {(int(found["number"]), int(found["total"])) for candidate in candidates if (found := candidate.label) is not None}
+    if len(labels) > 1:
+        raise UnreadableExports(NUMBERS_DISAGREE)
+    chosen = next((candidate for candidate in candidates if candidate.label is not None), candidates[0])
+    from_label = next(iter(labels), None)
+    from_index = index_number(item)
+    number = from_label[0] if from_label is not None else from_index
+    if number is None:
+        raise PartUnreadable(NO_NUMBER)
+    if {seen for seen in (from_index, link_number(chosen.href)) if seen is not None} - {number}:
+        raise UnreadableExports(NUMBERS_DISAGREE)
+    by_label = {said for candidate in candidates if candidate.label is not None and (said := label_says_downloaded(candidate.label)) is not None}
+    by_mark = mark_says_downloaded(item)
+    if len(by_label) > 1 or (by_mark is not None and by_label - {by_mark}):
+        raise PartUnreadable(DOWNLOADED_DISAGREE)
     exact = set(item.sizes)
     if len(exact) == 1 and (value := exact.pop()).isdigit():
         size: int | None = int(value)
     else:
         size = size_in_bytes(" ".join(item.chunks))
     if size is None:
-        raise UnreadableExports("a download on an export's page on Takeout has no readable size")
-    return ListedPart(int(label.group(1)), size, href, raw), int(label.group(2))
+        raise PartUnreadable(NO_SIZE)
+    part = ListedPart(number, size, chosen.href, chosen.raw, bool(by_mark) or True in by_label)
+    return ReadPart(part, from_label[1] if from_label is not None else None)
 
 
-def archive_parts(reader: ArchiveReader, google_id: str, address: str) -> tuple[ListedPart, ...]:
-    read = [part_of(item, google_id, address, reader.base) for item in reader.items if item.links]
-    parts = sorted(part for part, _ in read)
-    totals = {total for _, total in read}
-    if len(parts) > MAX_PARTS or totals != {len(parts)} or [part.number for part in parts] != list(range(1, len(parts) + 1)):
-        raise UnreadableExports("an export's page on Takeout lists parts that could not be told apart")
-    return tuple(parts)
+def has_attribute(item: PartItem, name: str) -> bool:
+    return any(name in mark for mark in item.marks) or (name == "data-size" and bool(item.sizes))
+
+
+def item_findings(item: PartItem, address: str, base: str | None) -> str:
+    usable = sum(download_link(raw, address, base) is not None for raw, _ in item.links)
+    labels = [label for _, label in item.links if label][:MAX_SHAPED_LABELS]
+    shown = ", ".join(f"'{shape(label, LABEL_WORDS, LABEL_SHAPE_LIMIT)}'" for label in labels) or "none"
+    return f"{len(item.links)} links ({usable} usable), labels {shown}"
+
+
+def part_findings(reader: ArchiveReader, unread: list[PartItem], address: str) -> str:
+    items = [item for item in reader.items if counts_as_part(item)]
+    labelled = sum(bool(numbered_link(item)) for item in items)
+    present = ", ".join(f"{name} on {sum(has_attribute(item, name) for item in items)}" for name in ("data-index", "data-size", "data-is-downloaded"))
+    downloaded = sum(any(mark.get("data-is-downloaded", "").strip().lower() == "true" for mark in item.marks) for item in items)
+    shown = "; ".join(item_findings(item, address, reader.base) for item in unread[:MAX_SHAPED_ITEMS])
+    return (f"{len(items)} part items, at most {max((len(item.links) for item in items), default=0)} links in one, {labelled} with a part label, {present} "
+            f"({downloaded} downloaded); {len(unread)} unread: {shown}")
+
+
+def archive_parts(reader: ArchiveReader, google_id: str, address: str, needed: int | None = None) -> tuple[tuple[ListedPart, ...], int]:
+    read: list[ReadPart] = []
+    unread: list[tuple[PartItem, PartUnreadable]] = []
+    for item in reader.items:
+        if not counts_as_part(item):
+            continue
+        try:
+            read.append(part_of(item, google_id, address, reader.base))
+        except PartUnreadable as error:
+            unread.append((item, error))
+    parts = sorted(each.part for each in read)
+    count = len(read) + len(unread)
+    numbers = [part.number for part in parts]
+    totals = {each.total for each in read if each.total is not None}
+    if count > MAX_PARTS or not totals <= {count} or len(set(numbers)) != len(numbers) or not all(1 <= number <= count for number in numbers):
+        raise UnreadableExports(TOLD_APART)
+    if unread and (needed is None or needed not in numbers):
+        raise UnreadableExports(f"{unread[0][1]}: {part_findings(reader, [item for item, _ in unread], address)}")
+    return tuple(parts), len(unread)
 
 
 def calendar_date(text: str) -> date:
@@ -740,7 +877,7 @@ def field_date(fields: dict[str, str], name: str, required: bool, unreadable: li
         return None
 
 
-def parse_archive(page: str, address: str, google_id: str) -> ArchiveDetail:
+def parse_archive(page: str, address: str, google_id: str, needed: int | None = None) -> ArchiveDetail:
     reader = read_archive(page)
     fields = summary_fields(reader.chunks)
     state = STATE_WORDS.get(fields.get("overall status", ""))
@@ -751,10 +888,10 @@ def parse_archive(page: str, address: str, google_id: str) -> ArchiveDetail:
     expires_on = field_date(fields, "expiration date", False, unreadable)
     if unreadable or created_on is None:
         raise UnreadableExports("an export's page on Takeout has a date that could not be read: " + ", ".join(unreadable))
-    parts = archive_parts(reader, google_id, address) if state == "ready" else ()
+    parts, unread = archive_parts(reader, google_id, address, needed) if state == "ready" else ((), 0)
     if state == "ready" and not parts:
         raise UnreadableExports("a completed export's page on Takeout lists no parts")
-    return ArchiveDetail(state, created_on, expires_on, parts)
+    return ArchiveDetail(state, created_on, expires_on, parts, unread)
 
 
 def overall_status(reader: ArchiveReader) -> str | None:
@@ -766,7 +903,7 @@ def archive_page_ready(page: str) -> bool:
     status = overall_status(reader)
     if status is None:
         return False
-    return STATE_WORDS.get(status) != "ready" or any(numbered_link(item) for item in reader.items)
+    return STATE_WORDS.get(status) != "ready" or any(numbered_link(item) or has_attribute(item, "data-index") for item in reader.items)
 
 
 def archive_findings(page: str, address: str) -> str:

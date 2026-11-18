@@ -55,12 +55,13 @@ docker version --format '{{.Server.Version}}'; stat -fc %T /sys/fs/cgroup
 docker inspect --format '{{.Config.Image}}' "$C"
 docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE"
 curl -fsS http://127.0.0.1:8000/healthz; echo
+docker logs "$C" 2>&1 | grep -F '"event": "darkroom started"' | tail -1
 sha256sum /boot/config/darkroom/seccomp.json
 wget -qO- "https://raw.githubusercontent.com/AnthonyPluth/Darkroom/$TAG/deploy/browser/seccomp.json" | sha256sum
 syncthing_version
 ```
 
-`stat` prints `cgroup2fs` for cgroup v2 and `tmpfs` for v1. `/healthz` answers `{"ok": true, "version": ...}` with the release. The two `sha256sum` lines must show the same hash (the profile on the flash drive is the release's). `syncthing_version` (defined in Before you start) asks Darkroom's Syncthing on its socket and prints `v2.1.7 release`. On the Pixel, the app's version is at the bottom of its App info page (Android's Settings, Apps, the Syncthing app).
+`stat` prints `cgroup2fs` for cgroup v2 and `tmpfs` for v1. `/healthz` answers `{"ok": true, "version": ...}`: that shows Darkroom answering, not which release runs (its `version` is a fixed package number). The `darkroom started` line names the release and the build's commit (`"version": "v1.2.3"`, `"commit": "abc1234"`), as does the Version row in the About card at the bottom of the Status page; an image built from a checkout without the release build args shows `dev`. The two `sha256sum` lines must show the same hash (the profile on the flash drive is the release's). `syncthing_version` (defined in Before you start) asks Darkroom's Syncthing on its socket and prints `v2.1.7 release`. On the Pixel, the app's version is at the bottom of its App info page (Android's Settings, Apps, the Syncthing app).
 
 ```text
 Result:

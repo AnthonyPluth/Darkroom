@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AccountView, BrowserJobView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelSyncthing, PixelView, Status, SyncthingCard } from "$lib/api-types";
+import type { AccountView, BrowserJobView, EventView, ExportPartDetail, ExportView, Exports, Me, PersonView, PixelSyncthing, PixelView, Status, SyncthingCard, Version } from "$lib/api-types";
 
 export type Answer = { status: number; body: unknown };
 export type Handler = unknown | ((body: unknown, url: string) => unknown);
@@ -35,6 +35,8 @@ export const familyAccount: AccountView = { id: 11, email: "family.photos@exampl
 
 export const solo: PixelView = { id: 20, name: "Pixel 9a", syncthing_device_id: "AAA-111", google_account_id: 10, people_ids: [1], last_sync: 940, created: 1 };
 export const shared: PixelView = { id: 21, name: "Pixel 8", syncthing_device_id: null, google_account_id: 11, people_ids: [1, 2], last_sync: null, created: 1 };
+
+export const devVersion: Version = { version: "dev", commit: null };
 
 export const emptyStatus: Status = { worker_last_seen: null, people: [], alerts: [], syncthing: null };
 

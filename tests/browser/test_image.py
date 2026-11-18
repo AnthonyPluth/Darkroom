@@ -360,6 +360,50 @@ class SingleImageTests(unittest.TestCase):
         self.assertEqual(build.count("docker/build-push-action@"), 1)
 
 
+def docker_jobs():
+    workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+    jobs = re.split(r"\n  (?=[a-z][a-z-]*:\n)", workflow[workflow.index("\njobs:\n"):])[1:]
+    return {job.split(":", 1)[0]: job for job in jobs}
+
+
+class BuildVersionTests(unittest.TestCase):
+    def runtime(self):
+        return DOCKERFILE[DOCKERFILE.index("AS runtime"):]
+
+    def test_the_version_and_commit_are_build_args_with_no_value_of_their_own(self):
+        self.assertEqual(re.findall(r"^ARG (DARKROOM_\w+)(.*)$", DOCKERFILE, re.M), [("DARKROOM_VERSION", '=""'), ("DARKROOM_COMMIT", '=""')])
+        for arg in re.findall(r"^ARG (\w+)", DOCKERFILE, re.M):
+            self.assertNotRegex(arg, r"(?i)secret|token|key|password", "a build arg is kept in the image's history, so no secret is one")
+
+    def test_the_build_file_is_written_as_root_beside_the_package_and_only_read_by_the_app(self):
+        runtime = self.runtime()
+        written = runtime.index("> /app/darkroom/build-info")
+        self.assertLess(runtime.index("COPY darkroom ./darkroom"), written)
+        self.assertLess(written, runtime.index("USER darkroom"))
+        self.assertIn("""RUN printf '%s\\n%s\\n' "$DARKROOM_VERSION" "$DARKROOM_COMMIT" > /app/darkroom/build-info""", runtime)
+        self.assertIn("chmod 0644 /app/darkroom/build-info", runtime)
+        self.assertLess(runtime.index("useradd"), runtime.index("ARG DARKROOM_VERSION"), "the build args come late so a new version reuses the cached layers")
+
+    def test_the_image_carries_the_oci_version_and_revision_labels(self):
+        self.assertIn('LABEL org.opencontainers.image.version="${DARKROOM_VERSION:-dev}" org.opencontainers.image.revision="${DARKROOM_COMMIT}"', self.runtime())
+
+    def test_the_build_and_the_publish_bake_the_version_worked_out_before_the_build(self):
+        jobs = docker_jobs()
+        build, publish = jobs["build"], jobs["publish"]
+        self.assertLess(build.index("tools/fleet next-version"), build.index("docker/build-push-action@"))
+        self.assertIn("DARKROOM_VERSION=${{ steps.next.outputs.version }}\n            DARKROOM_COMMIT=${{ github.sha }}", build)
+        self.assertIn("DARKROOM_VERSION=${{ needs.build.outputs.version }}\n            DARKROOM_COMMIT=${{ github.sha }}", publish)
+        self.assertLess(publish.index("docker/build-push-action@"), publish.index("gh release create"))
+        self.assertIn('gh release create "$VERSION"', publish)
+        self.assertIn("VERSION: ${{ needs.build.outputs.version }}", publish[publish.index("Tag and publish the release"):])
+
+    def test_the_built_image_is_checked_to_know_its_version(self):
+        build = docker_jobs()["build"]
+        step = build[build.index("Check the image knows its own version"):]
+        self.assertIn("config.read_build()", step)
+        self.assertIn('"$GITHUB_SHA" "$VERSION"', step)
+
+
 def template():
     return ElementTree.parse(ROOT / "deploy/unraid/darkroom.xml").getroot()
 

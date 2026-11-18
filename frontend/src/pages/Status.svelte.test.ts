@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus, transport } from "../test/server";
+import { devVersion, emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus, transport } from "../test/server";
 import Status from "./Status.svelte";
 
 beforeEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 function show(routes: Parameters<typeof serve>[0]) {
-  const server = serve(routes);
+  const server = serve({ "GET /api/version": devVersion, ...routes });
   vi.stubGlobal("fetch", server.mock);
   render(Status);
   return server;
@@ -115,6 +115,63 @@ describe("when loading fails", () => {
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("article", { name: "Jo Example" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("the version row", () => {
+  const quiet = { "GET /api/status": emptyStatus, "GET /api/events": { events: [] } };
+
+  it.each([
+    [{ version: "v4.7.1", commit: "abc1234" }, "v4.7.1 (abc1234)"],
+    [{ version: "dev", commit: "abc1234" }, "dev (abc1234)"],
+    [{ version: "dev", commit: null }, "dev"],
+  ])("shows %o as %s under About, after Recent events", async (version, shown) => {
+    show({ ...quiet, "GET /api/version": version });
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(within(about).getByRole("heading", { name: "About" })).toBeInTheDocument();
+    const term = within(about).getByText("Version");
+    expect(term.tagName).toBe("DT");
+    expect(term).toHaveClass("text-ink-muted");
+    expect(term.nextElementSibling?.textContent?.trim()).toBe(shown);
+    const order = [...document.querySelectorAll("section")].map((section) => section.getAttribute("aria-label"));
+    expect(order.at(-1)).toBe("About");
+    expect(order.indexOf("Recent events")).toBe(order.length - 2);
+  });
+
+  it("asks for the version once with the status", async () => {
+    const server = show(quiet);
+    await screen.findByRole("region", { name: "About" });
+    expect(server.sent("GET /api/version")).toHaveLength(1);
+  });
+
+  it("keeps the page and its alerts when the version could not be loaded, and says so in the About card", async () => {
+    show({ "GET /api/status": seededStatus, "GET /api/events": { events: someEvents }, "GET /api/version": reply(500, { error: "the server is restarting" }) });
+    const about = await screen.findByRole("region", { name: "About" });
+    const term = within(about).getByText("Version");
+    expect(term.nextElementSibling?.textContent?.trim()).toBe("Couldn't load the version");
+    expect(term.nextElementSibling).toHaveClass("text-ink-muted");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Open alerts" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Jo Example" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent events" })).toBeInTheDocument();
+  });
+
+  it("shows the version once it arrives after the status", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const late = new Promise((resolve) => (answer = resolve));
+    const server = serve({ ...quiet, "GET /api/version": { version: "v4.7.1", commit: null } });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url === "/api/version" ? late.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(Status);
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(within(about).getByText("Version").nextElementSibling?.textContent?.trim()).toBe("Loading...");
+    answer(null);
+    expect(await within(about).findByText("v4.7.1")).toBeInTheDocument();
+  });
+
+  it("still shows the page's own failure when the status could not be loaded", async () => {
+    show({ ...quiet, "GET /api/status": reply(500, { error: "the database is busy" }) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("the database is busy");
+    expect(screen.queryByRole("region", { name: "About" })).not.toBeInTheDocument();
   });
 });
 
