@@ -57,11 +57,20 @@ def open_archive(ctx: JobContext, browser: Browser, url: str) -> Loaded:
     return open_page(ctx, browser, url, archive_ready, takeout.archive_findings, "an export's own page on Takeout did not load")
 
 
-def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing, zone: tzinfo) -> takeout.ExportListing:
+def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing, zone: tzinfo, unused: list[str]) -> takeout.ExportListing:
     if listing.state != "ready":
         return listing
-    detail = takeout.parse_archive(*open_archive(ctx, browser, listing.archive_url), listing.google_id)
+    detail = takeout.parse_archive(*open_archive(ctx, browser, listing.archive_url), listing.google_id, now=ctx.wall())
+    if detail.unused is not None:
+        unused.append(takeout.unused_note("an export's page", detail.unused))
     return takeout.with_archive(listing, detail, zone)
+
+
+def part_report(part: takeout.ListedPart) -> dict[str, object]:
+    found: dict[str, object] = {"number": part.number, "bytes": part.bytes}
+    if part.google_downloads is not None:
+        found["google_downloads"] = part.google_downloads
+    return found
 
 
 def report(listings: list[takeout.ExportListing]) -> dict[str, object]:
@@ -72,11 +81,15 @@ def report(listings: list[takeout.ExportListing]) -> dict[str, object]:
                 "created_at": listing.created_at,
                 "state": listing.state,
                 "expires_at": listing.expires_at,
-                "parts": [{"number": part.number, "bytes": part.bytes} for part in listing.parts],
+                "parts": [part_report(part) for part in listing.parts],
             }
             for listing in listings
         ]
     }
+
+
+def read_message(count: int, unused: list[str]) -> str:
+    return "; ".join([f"read {count} exports", *dict.fromkeys(unused)])
 
 
 def check_exports(ctx: JobContext) -> dict[str, object]:
@@ -84,9 +97,13 @@ def check_exports(ctx: JobContext) -> dict[str, object]:
     ensure_signed_in(ctx, browser)
     zone = local_zone()
     page, address = open_exports(ctx, browser)
+    unused: list[str] = []
     try:
-        listings = [with_parts(ctx, browser, listing, zone) for listing in takeout.parse_exports(page, address, ctx.wall(), zone)]
+        found = takeout.read_exports(page, address, ctx.wall(), zone)
+        if found.unused is not None:
+            unused.append(takeout.unused_note("the list of exports", found.unused))
+        listings = [with_parts(ctx, browser, listing, zone, unused) for listing in found.listings]
     except takeout.UnreadableExports as error:
         raise ExportsUnreadable(str(error)) from error
-    ctx.progress(f"read {len(listings)} exports")
+    ctx.progress(read_message(len(listings), unused))
     return report(listings)

@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from typing import ClassVar
@@ -5,8 +6,10 @@ from zoneinfo import ZoneInfo
 
 from darkroom_browser.jobs import download
 from darkroom_browser.live import Live
-from darkroom_browser.pages import takeout
-from tests.browser.takeout_pages import COMPLETED_ID, EXPIRED_ID, MADE_UP_USER, archive, archive_url, expired_row, items_linked, row, summary
+from darkroom_browser.pages import takeout, takeout_data
+from tests.browser import test_takeout_data as data
+from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, MADE_UP_USER, MANAGE_PAGE, SIZES, archive, archive_url, completed_row, downloaded_page_parts, embedded_parts,
+                                         expired_row, in_progress_row, items_linked, row, summary, with_blocks)
 from tests.browser.test_parse_exports import ARCHIVE_PAGE, NOW, PART_FORMS, PARTS_ELSEWHERE, ROW_FORMS, ROWS_ELSEWHERE
 
 try:
@@ -117,6 +120,33 @@ class ChromiumLinkTests(unittest.TestCase):
                 self.assertEqual([each.google_id for each in found], [COMPLETED_ID, EXPIRED_ID])
                 self.assertEqual(takeout.resolved(raw, address, base), archive_url(COMPLETED_ID))
                 self.assertEqual(self.resolved_by_chromium(live, raw), [archive_url(COMPLETED_ID)])
+
+    def test_the_embedded_data_survives_chromiums_serialisation_of_the_page(self):
+        listing = self.load(MANAGE_PAGE, data.list_page(data.completed(), data.in_progress(), data.expired(),
+                                                         rows=(completed_row(), in_progress_row(), expired_row())))
+        found = takeout.read_exports(listing.content(), listing.current_url(), NOW, NEW_YORK)
+        self.assertIsNone(found.unused)
+        self.assertEqual([each.created_at for each in found.listings], [data.CREATED_MS / 1000, data.IN_PROGRESS_CREATED_MS / 1000, data.EXPIRED_CREATED_MS / 1000])
+        detail = self.load(ARCHIVE_PAGE, data.detail_page(data.completed(parts=embedded_parts(downloaded=(1,))), data.expired(),
+                                                          page=archive(items=downloaded_page_parts(count=3, sizes=SIZES))))
+        read = takeout.parse_archive(detail.content(), detail.current_url(), COMPLETED_ID, now=NOW)
+        self.assertIsNone(read.unused)
+        self.assertEqual([(part.google_downloads, part.bytes) for part in read.parts], [(2, SIZES[0]), (0, SIZES[1]), (0, SIZES[2])])
+        for part in read.parts:
+            self.assertEqual(self.resolved_by_chromium(detail, part.link), [part.href])
+
+    def test_a_closing_tag_inside_a_string_is_cut_by_chromium_as_by_the_parser(self):
+        raw = json.dumps([[[None, data.completed()]], "made-up </script><script>window.madeUp = 1</script>"])
+        page = with_blocks(archive(), [data.raw_block(raw, key="ds:0")])
+        live = self.load(ARCHIVE_PAGE, page)
+        reader = takeout_data.ScriptReader()
+        reader.feed(page)
+        reader.close()
+        self.assertEqual(self.page.evaluate("Array.from(document.scripts, script => script.text)"), reader.scripts)
+        self.assertEqual(takeout_data.read_embedded(live.content(), NOW).unused, takeout_data.NOT_DATA)
+        self.assertEqual(takeout_data.read_embedded(page, NOW).unused, takeout_data.NOT_DATA)
+        read = takeout.parse_archive(live.content(), live.current_url(), COMPLETED_ID, now=NOW)
+        self.assertEqual((len(read.parts), read.unused), (3, takeout_data.NOT_DATA))
 
     def test_chromium_reads_a_refused_export_link_nowhere_the_parser_would_have_resolved_it_differently(self):
         for name, (form, base, address) in ROWS_ELSEWHERE.items():

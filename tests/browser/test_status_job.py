@@ -6,8 +6,9 @@ from darkroom_browser import selectors
 from darkroom_browser.jobs import REGISTRY, session, status
 from darkroom_browser.pages import takeout
 from tests.browser.scripted import ScriptedBrowser, context_for
-from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, LIVE_BASE, SIZES, archive, archive_url, completed_row, expired_row, in_progress_row,
-                                         items_linked, row, summary)
+from tests.browser import test_takeout_data as data
+from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, LIVE_BASE, SIZES, archive, archive_url, completed_row, downloaded_page_parts,
+                                         embedded_parts, expired_row, in_progress_row, items_linked, list_blocks, row, summary, with_blocks)
 from tests.browser.test_classify import SIGN_IN_NEEDED, SIGNED_IN, UNKNOWN, VERIFY
 from tests.browser.test_parse_exports import NOW, at
 
@@ -52,7 +53,8 @@ class StatusJobTests(unittest.TestCase):
         result, clock, reporter = self.run_job(browser)
         self.assertEqual(browser.visited, [selectors.TAKEOUT_URL, selectors.TAKEOUT_MANAGE_URL, ARCHIVE])
         self.assertEqual((browser.clicks, browser.typed, clock.slept, reporter.kinds("waiting")), ([], [], [], []))
-        self.assertEqual(reporter.kinds("progress"), ["read 3 exports"])
+        self.assertEqual(reporter.kinds("progress"), ["read 3 exports; Takeout's embedded data was not used on the list of exports (none on the page); "
+                                                      "Takeout's embedded data was not used on an export's page (none on the page)"])
         self.assertEqual(result, {"exports": [
             {"google_id": COMPLETED_ID, "created_at": NOW - 3600, "state": "ready", "expires_at": at(2026, 11, 24, 13, 55),
              "parts": [{"number": number, "bytes": size} for number, size in enumerate(SIZES, start=1)]},
@@ -217,6 +219,49 @@ class StatusJobTests(unittest.TestCase):
         with self.assertRaises(status.ExportsUnreadable):
             self.run_job(browser)
         self.assertEqual(browser.visited.count(selectors.TAKEOUT_MANAGE_URL), status.MAX_ROUNDS)
+
+
+class EmbeddedDataStatusTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"TZ": "America/New_York"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_job(self, listing, detail):
+        ctx, _, reporter = context_for(SiteBrowser(site(listing, detail)), wall=NOW)
+        return status.check_exports(ctx), reporter
+
+    def listing(self):
+        return with_blocks(EXPORTS, list_blocks([data.completed(), data.in_progress(), data.expired()]))
+
+    def test_googles_own_download_counts_and_the_embedded_times_are_reported(self):
+        detail = data.detail_page(data.completed(parts=embedded_parts(downloaded=(2,))), page=archive(items=downloaded_page_parts(count=3, downloaded=(2,), sizes=SIZES)))
+        result, reporter = self.run_job(self.listing(), detail)
+        self.assertEqual(reporter.kinds("progress"), ["read 3 exports"])
+        self.assertEqual(result, {"exports": [
+            {"google_id": COMPLETED_ID, "created_at": data.CREATED_MS / 1000, "state": "ready", "expires_at": data.EXPIRES_MS / 1000,
+             "parts": [{"number": number, "bytes": size, "google_downloads": 2 if number == 2 else 0} for number, size in enumerate(SIZES, start=1)]},
+            {"google_id": IN_PROGRESS_ID, "created_at": data.IN_PROGRESS_CREATED_MS / 1000, "state": "in_progress", "expires_at": None, "parts": []},
+            {"google_id": EXPIRED_ID, "created_at": data.EXPIRED_CREATED_MS / 1000, "state": "expired", "expires_at": data.EXPIRED_EXPIRES_MS / 1000, "parts": []},
+        ]})
+        for leak in ("takeout-2026", ".zip", "made-up"):
+            self.assertNotIn(leak, repr(result))
+
+    def test_a_disagreement_on_an_exports_page_reports_the_page_alone_and_says_so(self):
+        detail = data.detail_page(data.completed(parts=embedded_parts(sizes=(SIZES[0], SIZES[1] + 7, SIZES[2]))))
+        result, reporter = self.run_job(self.listing(), detail)
+        self.assertEqual(reporter.kinds("progress"), ["read 3 exports; Takeout's embedded data was not used on an export's page (it and the page disagree about the sizes)"])
+        self.assertEqual(result["exports"][0]["parts"], [{"number": number, "bytes": size} for number, size in enumerate(SIZES, start=1)])
+
+    def test_a_failure_of_the_embedded_data_never_fails_a_job_the_page_alone_passes(self):
+        broken = with_blocks(EXPORTS, [data.raw_block("[" * 40 + "]" * 40)])
+        result, reporter = self.run_job(broken, with_blocks(archive(), [data.raw_block("[1,]", key="ds:0")]))
+        self.assertEqual(len(result["exports"]), 3)
+        self.assertEqual(reporter.kinds("progress"), ["read 3 exports; Takeout's embedded data was not used on the list of exports (it was nested too deeply); "
+                                                      "Takeout's embedded data was not used on an export's page (it was not plain data)"])
+
+    def test_the_same_reason_on_many_pages_is_said_once(self):
+        self.assertEqual(status.read_message(2, ["a", "b", "a", "a"]), "read 2 exports; a; b")
 
 
 if __name__ == "__main__":

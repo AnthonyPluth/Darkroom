@@ -194,11 +194,11 @@ def gave_up_message(number: int, part: dict[str, Any], seen: str) -> str:
     attempts, used, most = part["attempts"], part["downloads_used"], part.get("max_downloads")
     prompts = max(0, used - attempts)
     if isinstance(most, int) and used >= most:
-        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt"
+        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt or that Google counted elsewhere"
     else:
         limit = f"Google's {most}" if isinstance(most, int) else "Google's"
         said = f"part {number} failed after {attempts} attempts, using {used} of {limit} downloads"
-        said += f" ({prompts} ended at Google's sign-in prompt)" if prompts else ""
+        said += f" ({prompts} ended at Google's sign-in prompt or Google counted elsewhere)" if prompts else ""
     led_to = f"; the last click led to: {seen}" if seen else ""
     return f"{said}; Darkroom stopped before using more{led_to}"
 

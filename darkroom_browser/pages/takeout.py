@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 from typing import Literal, NamedTuple
 
 from darkroom_browser import selectors
+from darkroom_browser.pages import takeout_data
 
 SIGNED_IN = "SIGNED_IN"
 SIGN_IN_NEEDED = "SIGN_IN_NEEDED"
@@ -186,10 +187,40 @@ KNOWN_HEADINGS = ("google takeout", "summary", "status", "your exports", "your l
                   "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account", "confirm it's you",
                   "welcome", "verify your identity", "enter your password", "google accounts")
 MAX_LANDMARKS = 8
+EMBEDDED_DATA = "Takeout's embedded data"
+ABOUT_ID = "export id"
+ABOUT_COUNT = "part count"
+ABOUT_NAMES = "file names"
+ABOUT_INDEXES = "part numbers"
+ABOUT_SIZES = "sizes"
+ABOUT_DOWNLOADED = "downloaded flags"
+ABOUT_CREATED = "creation date"
+ABOUT_EXPIRY = "expiry date"
+DAY_SECONDS = 86400.0
+PART_SIZE_SLACK = 0.06
+PART_MIN_SLACK = 1024 * 1024
 
 
 class UnreadableExports(ValueError):
     pass
+
+
+class Disagreement(Exception):
+    def __init__(self, about: str) -> None:
+        super().__init__(about)
+        self.about = about
+
+    @property
+    def refusal(self) -> str:
+        return f"{EMBEDDED_DATA} and the page disagree about the {self.about}"
+
+    @property
+    def unused(self) -> str:
+        return f"it and the page disagree about the {self.about}"
+
+
+def unused_note(where: str, reason: str) -> str:
+    return f"{EMBEDDED_DATA} was not used on {where} ({reason})"
 
 
 class UnreadableRowDates(ValueError):
@@ -208,6 +239,7 @@ class ListedPart(NamedTuple):
     href: str
     link: str
     already_downloaded: bool = False
+    google_downloads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +259,7 @@ class ArchiveDetail:
     expires_on: date | None
     parts: tuple[ListedPart, ...]
     unreadable: int = 0
+    unused: str | None = None
 
 
 ASCII_SPACE = " \t\n\r\f"
@@ -541,7 +574,19 @@ def row_dates(row: SummaryRow, created: str, available: str | None, now: float, 
     return created_moment, expires
 
 
-def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
+class RowRead(NamedTuple):
+    google_id: str
+    state: ExportState
+    dates: tuple[float, float | None] | None
+    shapes: list[str]
+
+
+class ReadExports(NamedTuple):
+    listings: list[ExportListing]
+    unused: str | None
+
+
+def row_read(row: SummaryRow, now: float, zone: tzinfo) -> RowRead:
     states = [STATE_WORDS[chunk] for chunk in row.chunks if chunk in STATE_WORDS]
     if len(states) != 1:
         raise UnreadableExports("an export on Takeout's summary is in a state that was not recognised")
@@ -549,27 +594,69 @@ def listing_of(row: SummaryRow, now: float, zone: tzinfo) -> ExportListing:
     available = [chunk for chunk in row.chunks if chunk.startswith("available until ")]
     if len(created) != 1 or len(available) > 1:
         raise UnreadableExports(f"an export on Takeout's summary has no readable creation date: {quoted(row.chunks[:MAX_SHAPED_CHUNKS])}")
-    created_moment, expires = row_dates(row, created[0], available[0] if available else None, now, zone)
-    return ExportListing(row.google_id, created_moment, states[0], expires, (), archive_url(row.google_id))
+    try:
+        return RowRead(row.google_id, states[0], row_dates(row, created[0], available[0] if available else None, now, zone), [])
+    except UnreadableRowDates as error:
+        return RowRead(row.google_id, states[0], None, error.shapes)
 
 
-def parse_exports(page: str, address: str, now: float, zone: tzinfo) -> list[ExportListing]:
-    reader = read_summary(page, address)
-    if not is_summary(reader):
-        raise UnreadableExports("the page is not Takeout's summary of exports")
-    listings: list[ExportListing] = []
-    unreadable: list[list[str]] = []
-    for row in reader.rows:
-        try:
-            listings.append(listing_of(row, now, zone))
-        except UnreadableRowDates as error:
-            unreadable.append(error.shapes)
-    if unreadable:
-        shown = "; ".join(quoted(chunks[:MAX_SHAPED_CHUNKS]) for chunks in unreadable[:MAX_SHAPED_ROWS])
-        raise UnreadableExports(f"{DATE_UNREADABLE} ({len(unreadable)} of {len(reader.rows)} exports): {shown}")
+def told_apart(listings: list[ExportListing]) -> list[ExportListing]:
     if len(listings) > MAX_EXPORTS or len({listing.google_id for listing in listings}) != len(listings):
         raise UnreadableExports("Takeout's summary lists exports that could not be told apart")
     return listings
+
+
+def page_listings(reads: list[RowRead]) -> list[ExportListing]:
+    unreadable = [read.shapes for read in reads if read.dates is None]
+    if unreadable:
+        shown = "; ".join(quoted(chunks[:MAX_SHAPED_CHUNKS]) for chunks in unreadable[:MAX_SHAPED_ROWS])
+        raise UnreadableExports(f"{DATE_UNREADABLE} ({len(unreadable)} of {len(reads)} exports): {shown}")
+    return told_apart([ExportListing(read.google_id, read.dates[0], read.state, read.dates[1], (), archive_url(read.google_id)) for read in reads if read.dates is not None])
+
+
+def parts_fit_state(state: ExportState, export: takeout_data.EmbeddedExport) -> bool:
+    return not ((state == "ready" and export.parts is None) or (state == "expired" and export.parts is not None))
+
+
+def apart(first: float | None, second: float | None) -> bool:
+    return first is not None and second is not None and abs(first - second) > DAY_SECONDS
+
+
+def embedded_listing(read: RowRead, found: dict[str, takeout_data.EmbeddedExport]) -> ExportListing:
+    export = found.get(read.google_id)
+    if export is None:
+        raise Disagreement(ABOUT_ID)
+    if not parts_fit_state(read.state, export):
+        raise Disagreement(ABOUT_COUNT)
+    created, expires = read.dates if read.dates is not None else (None, None)
+    if apart(created, export.created_at):
+        raise Disagreement(ABOUT_CREATED)
+    if apart(expires, export.expires_at) or (expires is not None and export.expires_at is None):
+        raise Disagreement(ABOUT_EXPIRY)
+    return ExportListing(read.google_id, export.created_at, read.state, export.expires_at, (), archive_url(read.google_id))
+
+
+def read_exports(page: str, address: str, now: float, zone: tzinfo) -> ReadExports:
+    reader = read_summary(page, address)
+    if not is_summary(reader):
+        raise UnreadableExports("the page is not Takeout's summary of exports")
+    reads = [row_read(row, now, zone) for row in reader.rows]
+    if not reads:
+        return ReadExports([], None)
+    embedded = takeout_data.read_embedded(page, now)
+    if embedded.unused is not None:
+        return ReadExports(page_listings(reads), embedded.unused)
+    try:
+        listings = [embedded_listing(read, embedded.exports) for read in reads]
+    except Disagreement as error:
+        if any(read.dates is None for read in reads):
+            raise UnreadableExports(error.refusal) from error
+        return ReadExports(page_listings(reads), error.unused)
+    return ReadExports(told_apart(listings), None)
+
+
+def parse_exports(page: str, address: str, now: float, zone: tzinfo) -> list[ExportListing]:
+    return read_exports(page, address, now, zone).listings
 
 
 def exports_page_ready(page: str, address: str) -> bool:
@@ -784,6 +871,14 @@ def link_number(href: str) -> int | None:
 class ReadPart(NamedTuple):
     part: ListedPart
     total: int | None
+    file_name: str | None = None
+    marked: bool | None = None
+    exact_size: bool = False
+
+
+def file_name_of(item: PartItem) -> str | None:
+    names = {mark["data-filename"].strip() for mark in item.marks if "data-filename" in mark}
+    return names.pop() if len(names) == 1 else None
 
 
 def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> ReadPart:
@@ -808,14 +903,14 @@ def part_of(item: PartItem, google_id: str, address: str, base: str | None) -> R
     if len(by_label) > 1 or (by_mark is not None and by_label - {by_mark}):
         raise PartUnreadable(DOWNLOADED_DISAGREE)
     exact = set(item.sizes)
-    if len(exact) == 1 and (value := exact.pop()).isdigit():
-        size: int | None = int(value)
-    else:
-        size = size_in_bytes(" ".join(item.chunks))
+    value = exact.pop() if len(exact) == 1 else ""
+    is_exact = value.isdigit()
+    size = int(value) if is_exact else size_in_bytes(" ".join(item.chunks))
     if size is None:
         raise PartUnreadable(NO_SIZE)
     part = ListedPart(number, size, chosen.href, chosen.raw, bool(by_mark) or True in by_label)
-    return ReadPart(part, from_label[1] if from_label is not None else None)
+    marked = by_mark if by_mark is not None else next(iter(by_label), None)
+    return ReadPart(part, from_label[1] if from_label is not None else None, file_name_of(item), marked, is_exact)
 
 
 def has_attribute(item: PartItem, name: str) -> bool:
@@ -839,7 +934,7 @@ def part_findings(reader: ArchiveReader, unread: list[PartItem], address: str) -
             f"({downloaded} downloaded); {len(unread)} unread: {shown}")
 
 
-def archive_parts(reader: ArchiveReader, google_id: str, address: str, needed: int | None = None) -> tuple[tuple[ListedPart, ...], int]:
+def archive_reads(reader: ArchiveReader, google_id: str, address: str, needed: int | None = None) -> tuple[list[ReadPart], int]:
     read: list[ReadPart] = []
     unread: list[tuple[PartItem, PartUnreadable]] = []
     for item in reader.items:
@@ -849,15 +944,20 @@ def archive_parts(reader: ArchiveReader, google_id: str, address: str, needed: i
             read.append(part_of(item, google_id, address, reader.base))
         except PartUnreadable as error:
             unread.append((item, error))
-    parts = sorted(each.part for each in read)
+    read.sort(key=lambda each: each.part)
     count = len(read) + len(unread)
-    numbers = [part.number for part in parts]
+    numbers = [each.part.number for each in read]
     totals = {each.total for each in read if each.total is not None}
     if count > MAX_PARTS or not totals <= {count} or len(set(numbers)) != len(numbers) or not all(1 <= number <= count for number in numbers):
         raise UnreadableExports(TOLD_APART)
     if unread and (needed is None or needed not in numbers):
         raise UnreadableExports(f"{unread[0][1]}: {part_findings(reader, [item for item, _ in unread], address)}")
-    return tuple(parts), len(unread)
+    return read, len(unread)
+
+
+def archive_parts(reader: ArchiveReader, google_id: str, address: str, needed: int | None = None) -> tuple[tuple[ListedPart, ...], int]:
+    reads, unread = archive_reads(reader, google_id, address, needed)
+    return tuple(each.part for each in reads), unread
 
 
 def calendar_date(text: str) -> date:
@@ -877,7 +977,56 @@ def field_date(fields: dict[str, str], name: str, required: bool, unreadable: li
         return None
 
 
-def parse_archive(page: str, address: str, google_id: str, needed: int | None = None) -> ArchiveDetail:
+def sizes_agree(read: ReadPart, embedded: takeout_data.EmbeddedPart) -> bool:
+    if read.exact_size:
+        return read.part.bytes == embedded.bytes
+    return abs(read.part.bytes - embedded.bytes) <= max(embedded.bytes * PART_SIZE_SLACK, PART_MIN_SLACK)
+
+
+def matched_parts(reads: list[ReadPart], unread: int, parts: tuple[takeout_data.EmbeddedPart, ...]) -> tuple[ListedPart, ...]:
+    if len(reads) + unread != len(parts):
+        raise Disagreement(ABOUT_COUNT)
+    by_name = {part.file_name: part for part in parts}
+    matched: list[tuple[ReadPart, takeout_data.EmbeddedPart]] = []
+    for read in reads:
+        found = parts[read.part.number - 1] if read.file_name is None else by_name.get(read.file_name)
+        if found is None:
+            raise Disagreement(ABOUT_NAMES)
+        matched.append((read, found))
+    checks = ((ABOUT_INDEXES, lambda read, found: found.position + 1 == read.part.number), (ABOUT_SIZES, sizes_agree),
+              (ABOUT_DOWNLOADED, lambda read, found: read.marked is None or read.marked == (found.google_downloads > 0)))
+    for about, agrees in checks:
+        if not all(agrees(read, found) for read, found in matched):
+            raise Disagreement(about)
+    return tuple(read.part._replace(bytes=found.bytes, already_downloaded=read.part.already_downloaded or found.google_downloads > 0, google_downloads=found.google_downloads)
+                 for read, found in matched)
+
+
+def utc_date(moment: float) -> date:
+    return datetime.fromtimestamp(moment, UTC).date()
+
+
+def days_apart(first: date | None, second: date | None) -> bool:
+    return first is not None and second is not None and abs((first - second).days) > 1
+
+
+def embedded_archive(state: ExportState, created_on: date | None, expires_on: date | None, reads: list[ReadPart], unread: int,
+                     export: takeout_data.EmbeddedExport | None) -> ArchiveDetail:
+    if export is None:
+        raise Disagreement(ABOUT_ID)
+    if not parts_fit_state(state, export):
+        raise Disagreement(ABOUT_COUNT)
+    parts = matched_parts(reads, unread, export.parts) if state == "ready" and export.parts is not None else ()
+    embedded_created = utc_date(export.created_at)
+    embedded_expiry = None if export.expires_at is None else utc_date(export.expires_at)
+    if days_apart(created_on, embedded_created):
+        raise Disagreement(ABOUT_CREATED)
+    if days_apart(expires_on, embedded_expiry):
+        raise Disagreement(ABOUT_EXPIRY)
+    return ArchiveDetail(state, embedded_created, embedded_expiry or expires_on, parts, unread)
+
+
+def parse_archive(page: str, address: str, google_id: str, needed: int | None = None, now: float | None = None) -> ArchiveDetail:
     reader = read_archive(page)
     fields = summary_fields(reader.chunks)
     state = STATE_WORDS.get(fields.get("overall status", ""))
@@ -886,12 +1035,21 @@ def parse_archive(page: str, address: str, google_id: str, needed: int | None = 
     unreadable: list[str] = []
     created_on = field_date(fields, "creation date", True, unreadable)
     expires_on = field_date(fields, "expiration date", False, unreadable)
-    if unreadable or created_on is None:
+    embedded = takeout_data.read_embedded(page, now)
+    if (unreadable or created_on is None) and embedded.unused is not None:
         raise UnreadableExports("an export's page on Takeout has a date that could not be read: " + ", ".join(unreadable))
-    parts, unread = archive_parts(reader, google_id, address, needed) if state == "ready" else ((), 0)
-    if state == "ready" and not parts:
+    reads, unread = archive_reads(reader, google_id, address, needed) if state == "ready" else ([], 0)
+    if state == "ready" and not reads:
         raise UnreadableExports("a completed export's page on Takeout lists no parts")
-    return ArchiveDetail(state, created_on, expires_on, parts, unread)
+    page_detail = ArchiveDetail(state, created_on or date.min, expires_on, tuple(read.part for read in reads), unread)
+    if embedded.unused is not None:
+        return replace(page_detail, unused=embedded.unused)
+    try:
+        return embedded_archive(state, created_on, expires_on, reads, unread, embedded.exports.get(google_id))
+    except Disagreement as error:
+        if unreadable or created_on is None or unread:
+            raise UnreadableExports(error.refusal) from error
+        return replace(page_detail, unused=error.unused)
 
 
 def overall_status(reader: ArchiveReader) -> str | None:
