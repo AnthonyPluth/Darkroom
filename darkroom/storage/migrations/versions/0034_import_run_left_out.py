@@ -16,6 +16,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE import_runs DROP COLUMN unpaired_media")
-    op.execute("ALTER TABLE import_runs DROP COLUMN orphan_sidecars")
-    op.execute("ALTER TABLE import_runs DROP COLUMN not_imported")
+    found = sa.inspect(op.get_bind())
+    columns = {column["name"] for column in found.get_columns("import_runs")} if "import_runs" in found.get_table_names() else set()
+    if "unpaired_media" in columns:
+        op.execute("ALTER TABLE import_runs DROP COLUMN unpaired_media")
+    if "orphan_sidecars" in columns:
+        op.execute("ALTER TABLE import_runs DROP COLUMN orphan_sidecars")
+    if "not_imported" in columns:
+        op.execute("ALTER TABLE import_runs DROP COLUMN not_imported")
