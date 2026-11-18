@@ -12,6 +12,7 @@ from darkroom_browser.config import env
 from darkroom_browser.context import DownloadInterrupted, Look
 from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
+from darkroom_browser.pages import takeout
 from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
 
 DEFAULT_TIMEOUT_MS = 30_000
@@ -42,20 +43,17 @@ class Live:
             self.watch_page(page)
 
     def watch_page(self, page: Any) -> None:
-        page.on("download", self.arrived.append)
+        page.on("download", self.remember)
+
+    def remember(self, download: Any) -> None:
+        self.arrived.append(download)
 
     def open_pages(self) -> list[Any]:
-        pages = [] if self.context is None else [page for page in self.context.pages if not page.is_closed()]
-        return pages or [self.page]
+        others = [] if self.context is None else [page for page in self.context.pages if page is not self.page and not page.is_closed()]
+        return [self.page, *others]
 
-    def look(self) -> Look:
-        pages = self.open_pages()
-        newest = pages[-1]
-        try:
-            text = newest.content()
-        except Exception:
-            text = ""
-        return Look(str(newest.url), text if isinstance(text, str) else "", len(pages))
+    def tabs(self) -> list[Look]:
+        return [Look(str(page.url), read_page(page), page is self.page) for page in self.open_pages()]
 
     def download_started(self) -> bool:
         if self.arrived:
@@ -97,22 +95,29 @@ class Live:
         self.arrived[:] = [each for each in self.arrived if each is not download]
         return self.keep(download, folder, progress)
 
-    def collect_download(self, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
+    def collect_download(self, folder: Path, href: str, progress: Callable[[int], None] | None = None) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
         if not self.arrived and self.downloads is not None:
             watch = StallWatch(self.clock())
             while not self.arrived and watch.judge(self.clock(), folder_state(self.downloads)) is Verdict.WAIT:
                 self.page.wait_for_timeout(POLL_MS)
         if not self.arrived:
-            if self.downloads is not None:
-                sweep_downloads(self.downloads)
+            self.sweep()
             raise DownloadInterrupted("a download appeared in Chromium's folder without Playwright's event")
-        download, *others = self.arrived
-        self.arrived.clear()
-        for other in others:
-            with contextlib.suppress(Exception):
-                other.cancel()
-        return self.keep(download, folder, progress)
+        arrived, self.arrived = self.arrived, []
+        own = [each for each in arrived if takeout.download_of_part(getattr(each, "url", None), href)]
+        for other in arrived:
+            if other is not (own[0] if own else None):
+                with contextlib.suppress(Exception):
+                    other.cancel()
+        if not own:
+            self.sweep()
+            raise DownloadInterrupted("a download started by itself, but it was not this part's from Takeout")
+        return self.keep(own[0], folder, progress)
+
+    def sweep(self) -> None:
+        if self.downloads is not None:
+            sweep_downloads(self.downloads)
 
     def keep(self, download: Any, folder: Path, progress: Callable[[int], None] | None) -> Path:
         target = folder / Path(download.suggested_filename).name
@@ -183,6 +188,14 @@ class Live:
                 share_tree(self.profile.parent)
         if failure is not None:
             raise failure
+
+
+def read_page(page: Any) -> str:
+    try:
+        text = page.content()
+    except Exception:
+        return ""
+    return text if isinstance(text, str) else ""
 
 
 def launch_context(playwright: Any, profile_dir: Path, downloads: Path, channel: str | None) -> Any:

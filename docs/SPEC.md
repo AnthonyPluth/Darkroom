@@ -137,7 +137,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 **Limits it must respect**
 
 - Each archive expires after about 7 days and can be downloaded only 5 times. Retries are capped at 2 per part, then it alerts instead of burning the rest. An export whose download jobs fail 3 times (a job that started a download and failed before every part was downloaded, or a job that had nothing left to download and only had to finish a complete export; a job that fails right after downloading the last part is not counted) is marked failed, which frees the account.
-- Google often asks you to verify it's you before a download. The job pauses, raises an alert linking to the noVNC view (emailed to the owner when Resend is set up, otherwise shown on the status page), and resumes after you sign in.
+- Google often asks you to verify it's you before a download, sometimes by asking for the password again when a part's link is clicked (in the same tab or a new one). The job pauses, raises an alert linking to the noVNC view (emailed to the owner when Resend is set up, otherwise shown on the status page), and resumes after you sign in. Such a prompt does not use up one of the part's attempts, but the click still counts as one of Google's downloads; if the part's download starts by itself once you have signed in, the job keeps it rather than clicking again.
 - Alerts repeat at 24 hours and again at 4 days, so an export never expires unnoticed. An alert about an export that is about to expire is closed, before the alert tick sends it again, once the export has expired or been downloaded.
 
 **Resilience**
@@ -356,7 +356,7 @@ Darkroom no longer deletes anything from the iPhones, so the one step that can l
 | The Pixel's transient folder isn't turned on for backup in Google Photos | Its photos never reach Google. Darkroom alerts after a full export cycle with no match |
 | Google changes the Takeout pages and the worker breaks | Selectors in one module, screenshot on failure, alert. Fallback: download the parts by hand into the inbox |
 | Google flags the automation | Headed browser, saved profile, home IP, a few visits a week, no password automation |
-| An export expires before it's downloaded (about 7 days, 5 downloads per part) | Daily status check, alerts at 24 hours and 4 days, retries capped at 2 per part |
+| An export expires before it's downloaded (about 7 days, 5 downloads per part) | Daily status check, alerts at 24 hours and 4 days, 3 attempts and at most 5 of Google's downloads per part (a click that ends at Google's password prompt uses a download but not an attempt) |
 | Immich's iOS background backup lags | Assumed to be a delay, not a loss (#202 checks how reliable it is). Darkroom copies each asset once Immich has it |
 | Renewing the schedule triggers another full export | Dedupe makes it safe. Plan disk headroom of about twice the largest library during an import |
 | A wrong dedupe match hides a photo | Only the losing copy of an automatic tier 1 or 2 pair is deleted, after the kept copy is checked; other decisions are reversible, and Google still holds every original |

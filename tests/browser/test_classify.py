@@ -133,14 +133,31 @@ class ClassifyAfterAClickTests(unittest.TestCase):
                 self.assertEqual(takeout.host_category(address), category)
 
     def test_what_a_click_led_to_is_said_in_fixed_words_without_page_text(self):
-        said = takeout.click_findings(ODD_PAGE, REAUTH_URL, 2)
-        self.assertEqual(said, "page host accounts; no password field; an unrecognised title; 2 other headings; 2 tabs open")
-        self.assertEqual(takeout.click_findings(SECRET_FIELD_ONLY, TAKEOUT_ADDRESS, 1), "page host takeout; a password field; no title or headings; 1 tab open")
-        self.assertEqual(takeout.click_findings("", "", 0), "page host none; no password field; no title or headings; 0 tabs open")
+        said = takeout.click_findings(ODD_PAGE, REAUTH_URL, 2, False)
+        self.assertEqual(said, "another tab: page host accounts; no password field; an unrecognised title; 2 other headings; 2 tabs open")
+        self.assertEqual(takeout.click_findings(SECRET_FIELD_ONLY, TAKEOUT_ADDRESS, 1, True), "the job's own tab: page host takeout; a password field; no title or headings; 1 tab open")
+        self.assertEqual(takeout.click_findings("", "", 0, True), "the job's own tab: page host none; no password field; no title or headings; 0 tabs open")
         for page in (ODD_PAGE, REAUTH_WELCOME, REAUTH_UNWORDED, SECRET_FIELD_ONLY):
-            said = takeout.click_findings(page, REAUTH_URL, 1)
+            said = takeout.click_findings(page, REAUTH_URL, 1, True)
             for canary in (NAME_CANARY, NAME_CANARY.lower(), EMAIL_CANARY, TOKEN_CANARY, "quillfeather", "challenge"):
                 self.assertNotIn(canary, said)
+
+
+PART = "https://takeout.google.com/takeout/download?j=export-1&i=0&user=made-up"
+
+
+class DownloadOfThePartTests(unittest.TestCase):
+    def test_only_takeouts_download_of_this_export_and_part_is_this_parts(self):
+        self.assertTrue(takeout.download_of_part(PART, PART))
+        self.assertTrue(takeout.download_of_part("https://takeout.google.com/takeout/download?i=0&j=export-1", PART))
+        for url in ("https://takeout.google.com/takeout/download?j=export-1&i=1&user=made-up", "https://takeout.google.com/takeout/download?j=export-2&i=0",
+                    "https://other.example/takeout/download?j=export-1&i=0", "https://takeout.google.com/settings?j=export-1&i=0",
+                    "https://takeout.google.com/takeout/download?j=export-1&i=0&%6a=export-2", "https://takeout.google.com/takeout/download?j=export-1",
+                    "https://takeout.google.com/takeout/download?j=export-1&i=0&i=1", "https://takeout.google.com\\@other.example/takeout/download?j=export-1&i=0",
+                    "", None, 7):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, PART))
+        self.assertFalse(takeout.download_of_part(PART, "https://takeout.google.com/takeout/download?j=export-1"))
 
 
 if __name__ == "__main__":

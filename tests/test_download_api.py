@@ -95,6 +95,16 @@ class DownloadApiTests(DownloadApiServer):
         status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
         self.assertEqual((status, reply["part"]["attempts"], reply["part"]["downloads_used"]), (200, 1, 2))
 
+    def test_a_prompt_reported_with_no_attempt_in_flight_takes_nothing_back(self):
+        self.part({"event": "attempt"})
+        self.part({"event": "failed", "reason": "not_started"})
+        status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
+        self.assertEqual((status, reply["part"]["attempts"], reply["part"]["downloads_used"]), (200, 1, 1))
+        self.part({"event": "attempt"})
+        self.part({"event": "failed", "reason": "corrupt"})
+        status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
+        self.assertEqual((status, reply["part"]["attempts"]), (200, 2))
+
     def test_a_failed_download_job_resets_its_part_and_alerts(self):
         self.part({"event": "attempt"})
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{self.job}/failed", {"message": "UnexpectedPage: gone"})[0], 200)

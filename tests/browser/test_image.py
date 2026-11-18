@@ -179,7 +179,8 @@ class SingleImageTests(unittest.TestCase):
         healthz, smoke, links, copy, init = run_lines
         self.assertIn(f"{SANDBOX} --shm-size=1g", links)
         self.assertIn('-v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke', links)
-        self.assertTrue(links.endswith("/opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links"), "the image's own worker venv and Chromium run the link test, and it may not skip")
+        self.assertTrue(links.endswith("/opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links tests.browser.test_chromium_downloads"),
+                        "the image's own worker venv and Chromium run the link test and the real open_context's download test, and they may not skip")
         self.assertIn(SANDBOX, copy)
         self.assertIn("--tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100", copy)
         self.assertTrue(copy.endswith("-w /app darkroom:smoke bash /probe.sh"))

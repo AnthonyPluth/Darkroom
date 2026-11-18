@@ -600,6 +600,15 @@ def export_id_of(href: str) -> str | None:
     return None if found is None else found.get("j")
 
 
+def download_of_part(url: object, href: str) -> bool:
+    if not isinstance(url, str) or LINK_TRICKS.search(url) or DOWNLOAD_HREF.fullmatch(url) is None:
+        return False
+    got, wanted = single_parameters(url), single_parameters(href)
+    if got is None or wanted is None:
+        return False
+    return all(wanted.get(name) is not None and got.get(name) == wanted.get(name) for name in ("j", "i"))
+
+
 def download_link(href: str, address: str, base: str | None) -> str | None:
     target = resolved(href, address, base)
     return target if target is not None and DOWNLOAD_HREF.fullmatch(target) else None
@@ -888,6 +897,7 @@ def classify_at(page: str, address: str) -> str:
     return state
 
 
-def click_findings(page: str, address: str, tabs: int) -> str:
+def click_findings(page: str, address: str, tabs: int, own_tab: bool) -> str:
     field = "a password field" if owner_fields(page).secret_field else "no password field"
-    return f"page host {host_category(address)}; {field}; {landmarks(page)}; {tabs} tab{'' if tabs == 1 else 's'} open"
+    which = "the job's own tab" if own_tab else "another tab"
+    return f"{which}: page host {host_category(address)}; {field}; {landmarks(page)}; {tabs} tab{'' if tabs == 1 else 's'} open"

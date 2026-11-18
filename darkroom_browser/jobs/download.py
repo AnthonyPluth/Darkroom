@@ -30,6 +30,7 @@ ARRIVED = "ARRIVED"
 NOTHING = "NOTHING"
 MAX_SEEN = 300
 UNREADABLE_PAGES = "the browser's pages could not be read"
+NO_TABS = "no tab open"
 
 
 class DownloadFailed(JobFailure):
@@ -186,10 +187,13 @@ def problem_with(path: Path, listed: object, taken: set[str]) -> str | None:
 def report_failure(ctx: JobContext, number: int, reason: str, seen: str = "") -> None:
     reply = ctx.reporter.part(ctx.job_id, number, {"event": "failed", "reason": reason})
     if reply.get("gave_up"):
-        used = reply["part"]
+        attempts, used = reply["part"]["attempts"], reply["part"]["downloads_used"]
+        prompts = max(0, used - attempts)
         led_to = f"; the last click led to: {seen}" if seen else ""
-        raise DownloadFailed(f"part {number} failed after {used['attempts']} attempts and {used['downloads_used']} of Google's downloads; "
-                             f"Darkroom stopped before using more{led_to}")
+        if prompts:
+            raise DownloadFailed(f"part {number} stopped after {used} downloads of Google's limit: {prompts} ended at Google's sign-in prompt and "
+                                 f"{attempts} were failed attempts; Darkroom stopped before using more{led_to}")
+        raise DownloadFailed(f"part {number} failed after {attempts} attempts and {used} of Google's downloads; Darkroom stopped before using more{led_to}")
 
 
 def bytes_reporter(ctx: JobContext, number: int) -> Any:
@@ -204,10 +208,14 @@ def bytes_reporter(ctx: JobContext, number: int) -> Any:
 
 def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
     try:
-        seen = browser.look()
+        tabs = browser.tabs()
     except Exception:
         return takeout.UNKNOWN, UNREADABLE_PAGES
-    return takeout.classify_at(seen.page, seen.address), takeout.click_findings(seen.page, seen.address, seen.tabs)[:MAX_SEEN]
+    if not tabs:
+        return takeout.UNKNOWN, NO_TABS
+    read = [(takeout.classify_at(tab.page, tab.address), tab) for tab in tabs]
+    state, shown = next(((state, tab) for state, tab in read if state in SIGN_IN_STATES), read[0])
+    return state, takeout.click_findings(shown.page, shown.address, len(tabs), shown.primary)[:MAX_SEEN]
 
 
 def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_downloads: bool) -> bool:
@@ -244,10 +252,10 @@ def back_off(ctx: JobContext, browser: Browser) -> str:
     return NOTHING
 
 
-def collected(ctx: JobContext, browser: Browser, number: int, partial: Path, report: Any) -> Path | None:
+def collected(ctx: JobContext, browser: Browser, number: int, href: str, partial: Path, report: Any) -> Path | None:
     ctx.progress(f"part {number} started downloading by itself; Darkroom is keeping it rather than clicking again")
     try:
-        return browser.collect_download(partial, report)
+        return browser.collect_download(partial, href, report)
     except Cancelled:
         raise
     except Exception:
@@ -255,7 +263,7 @@ def collected(ctx: JobContext, browser: Browser, number: int, partial: Path, rep
         return None
 
 
-def no_download(ctx: JobContext, browser: Browser, number: int, partial: Path, report: Any, interrupted: bool) -> Path | None:
+def no_download(ctx: JobContext, browser: Browser, number: int, href: str, partial: Path, report: Any, interrupted: bool) -> Path | None:
     state, seen = what_the_click_led_to(browser)
     if interrupted:
         report_failure(ctx, number, "interrupted")
@@ -270,18 +278,18 @@ def no_download(ctx: JobContext, browser: Browser, number: int, partial: Path, r
             report_failure(ctx, number, "not_started", seen)
             return None
     if state == ARRIVED or wait_for_verification(ctx, browser, number, True):
-        return collected(ctx, browser, number, partial, report)
+        return collected(ctx, browser, number, href, partial, report)
     report_failure(ctx, number, ASKED_TO_VERIFY)
     return None
 
 
-def clicked(ctx: JobContext, browser: Browser, number: int, selector: str, partial: Path, report: Any) -> Path | None:
+def clicked(ctx: JobContext, browser: Browser, number: int, listed: takeout.ListedPart, partial: Path, report: Any) -> Path | None:
     try:
-        return browser.download_to(selector, partial, report)
+        return browser.download_to(part_link(listed.link), partial, report)
     except Cancelled:
         raise
     except Exception as error:
-        return no_download(ctx, browser, number, partial, report, isinstance(error, DownloadInterrupted))
+        return no_download(ctx, browser, number, listed.href, partial, report, isinstance(error, DownloadInterrupted))
 
 
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
@@ -297,10 +305,10 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
         partial = fresh_partial(folder)
         report = bytes_reporter(ctx, number)
         if browser.download_started():
-            path = collected(ctx, browser, number, partial, report)
+            path = collected(ctx, browser, number, listed.href, partial, report)
         else:
             ctx.progress(f"downloading part {number} of {plan['part_count']}")
-            path = clicked(ctx, browser, number, selector, partial, report)
+            path = clicked(ctx, browser, number, listed, partial, report)
         if path is None:
             continue
         ctx.check()

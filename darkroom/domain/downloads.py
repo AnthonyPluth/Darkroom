@@ -200,7 +200,7 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
     if part.status in ("done", "failed"):
         raise Refused(f"part {number} is {part.status}")
     events.record(opened, now, "export_part_attempt_failed", str(export.id), f"part {number}: {reason}")
-    if reason == ASKED_TO_VERIFY:
+    if reason == ASKED_TO_VERIFY and part.status == "downloading":
         part.attempts = max(0, part.attempts - 1)
     if exhausted(part):
         give_up(opened, export, part, now)
