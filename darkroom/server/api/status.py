@@ -17,6 +17,11 @@ def healthz(request: Request) -> Annotated[Response, contract.Health]:
     return json_response({"ok": True, "version": VERSION})
 
 
+def version(request: Request) -> Annotated[Response, contract.Version]:
+    build = request.settings.build
+    return json_response({"version": build.version, "commit": build.commit or None})
+
+
 def status(request: Request) -> Annotated[Response, contract.Status]:
     with db.session(engine_of(request)) as opened:
         reply = overview.overview(opened, request.settings.syncthing, now())

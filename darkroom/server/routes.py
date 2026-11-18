@@ -28,6 +28,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/auth/signed-out", auth.signed_out, "public"),
     Route("GET", "/api/me", auth.me, "session"),
     Route("GET", "/api/status", status.status, "session"),
+    Route("GET", "/api/version", status.version, "session"),
     Route("GET", "/api/events", status.recent_events, "session"),
     Route("POST", "/api/demo/syncthing", demo.syncthing_state, "session"),
     Route("GET", "/api/people", people.list_people, "session"),

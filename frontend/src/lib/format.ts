@@ -72,3 +72,7 @@ export function joined(list: readonly string[]): string {
 export function nowSeconds(): number {
   return Date.now() / 1000;
 }
+
+export function buildName(build: { version: string; commit: string | null }): string {
+  return build.commit === null ? build.version : `${build.version} (${build.commit})`;
+}

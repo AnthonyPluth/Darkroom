@@ -544,6 +544,10 @@ def serve_worker_api(settings: config.Settings, engine: Engine) -> handler.Worke
     return server
 
 
+def log_started(settings: config.Settings) -> None:
+    monitoring.log("darkroom started", version=settings.build.version, commit=settings.build.commit)
+
+
 def serve() -> int:
     settings = config.load()
     refused = config.refuses_to_start(settings)
@@ -578,6 +582,7 @@ def serve() -> int:
     scheduler.start(lambda: utc_now().timestamp())
     server = handler.make_server(settings, engine=engine)
     worker_api = serve_worker_api(settings, engine)
+    log_started(settings)
     monitoring.log("serving", port=server.server_address[1])
     try:
         server.serve_forever()

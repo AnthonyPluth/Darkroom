@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { apiCall } from "$lib/contract";
   import { describeEvent } from "$lib/events";
-  import { ago, count, names, nowSeconds, onDay, when } from "$lib/format";
+  import { ago, buildName, count, names, nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
   import { alertChip, NOT_CHECKED, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "$lib/view";
@@ -10,11 +10,12 @@
   import LoadFailed from "../components/LoadFailed.svelte";
 
   const loader = new Loader(async () => {
-    const [status, events] = await Promise.all([
+    const [status, events, version] = await Promise.all([
       apiCall<"GET /api/status">("/api/status", { failed: "Couldn't load the status" }),
       apiCall<"GET /api/events">("/api/events?limit=10", { failed: "Couldn't load the events" }),
+      apiCall<"GET /api/version">("/api/version", { failed: "Couldn't load the version" }),
     ]);
-    return { status, events: events.events, now: nowSeconds() };
+    return { status, events: events.events, version, now: nowSeconds() };
   });
 
   onMount(() => void loader.load());
@@ -153,6 +154,14 @@
           {/each}
         </ul>
       {/if}
+    </section>
+
+    <section class="card" aria-label="About">
+      <h2 class="text-md font-semibold">About</h2>
+      <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 md:grid-cols-[8.5rem_minmax(0,1fr)]">
+        <dt class="text-ink-muted">Version</dt>
+        <dd>{buildName(data.version)}</dd>
+      </dl>
     </section>
   {/if}
 </div>

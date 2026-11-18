@@ -5,11 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
 import { pending } from "$lib/pending.svelte";
 import { session } from "$lib/session.svelte";
-import { emptyStatus, joAccount, me, reply, serve } from "./test/server";
+import { devVersion, emptyStatus, joAccount, me, reply, serve } from "./test/server";
 import App from "./App.svelte";
 
 const LABELS = ["Status", "People", "Exports", "Imports", "Review", "Browser"];
-const quiet = { "GET /api/me": me, "GET /api/status": emptyStatus, "GET /api/events": { events: [] }, "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [joAccount] }, "GET /api/pixels": { pixels: [], syncthing: null } };
+const quiet = { "GET /api/me": me, "GET /api/status": emptyStatus, "GET /api/version": devVersion, "GET /api/events": { events: [] }, "GET /api/people": { people: [] }, "GET /api/accounts": { accounts: [joAccount] }, "GET /api/pixels": { pixels: [], syncthing: null } };
 
 function start(routes: Parameters<typeof serve>[0]) {
   const server = serve(routes);

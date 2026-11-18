@@ -8,6 +8,7 @@
       "tests": [
         "tests/browser/test_image.py",
         "tests/test_auth_routes.py",
+        "tests/test_build_version.py",
         "tests/test_every_route.py",
         "tests/test_healthz.py",
         "tests/test_routes_table.py",
@@ -110,6 +111,18 @@
         "tests/test_stored_settings.py",
         "tests/test_tools.py",
         "tests/test_verify_env.py"
+      ]
+    },
+    {
+      "route": "GET /api/version",
+      "auth": "session",
+      "handler": "darkroom.server.api.status.version",
+      "frontend": [
+        "frontend/src/pages/Status.svelte"
+      ],
+      "tests": [
+        "tests/test_build_version.py",
+        "tests/test_every_route.py"
       ]
     },
     {

@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "$lib/nav.svelte";
-import { emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus, transport } from "../test/server";
+import { devVersion, emptyStatus, reply, runningCard, seededStatus, serve, someEvents, syncthingStatus, transport } from "../test/server";
 import Status from "./Status.svelte";
 
 beforeEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 function show(routes: Parameters<typeof serve>[0]) {
-  const server = serve(routes);
+  const server = serve({ "GET /api/version": devVersion, ...routes });
   vi.stubGlobal("fetch", server.mock);
   render(Status);
   return server;
@@ -115,6 +115,43 @@ describe("when loading fails", () => {
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("article", { name: "Jo Example" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("the version row", () => {
+  const quiet = { "GET /api/status": emptyStatus, "GET /api/events": { events: [] } };
+
+  it.each([
+    [{ version: "v4.7.1", commit: "abc1234" }, "v4.7.1 (abc1234)"],
+    [{ version: "dev", commit: "abc1234" }, "dev (abc1234)"],
+    [{ version: "dev", commit: null }, "dev"],
+  ])("shows %o as %s under About, after Recent events", async (version, shown) => {
+    show({ ...quiet, "GET /api/version": version });
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(within(about).getByRole("heading", { name: "About" })).toBeInTheDocument();
+    const term = within(about).getByText("Version");
+    expect(term.tagName).toBe("DT");
+    expect(term).toHaveClass("text-ink-muted");
+    expect(term.nextElementSibling).toHaveTextContent(new RegExp(`^${shown.replace(/[()]/g, "\\$&")}$`));
+    const order = [...document.querySelectorAll("section")].map((section) => section.getAttribute("aria-label"));
+    expect(order.at(-1)).toBe("About");
+    expect(order.indexOf("Recent events")).toBe(order.length - 2);
+  });
+
+  it("asks for the version once with the status", async () => {
+    const server = show(quiet);
+    await screen.findByRole("region", { name: "About" });
+    expect(server.sent("GET /api/version")).toHaveLength(1);
+  });
+
+  it("says why when the version could not be loaded, and shows it after trying again", async () => {
+    let attempt = 0;
+    show({ ...quiet, "GET /api/version": () => (attempt++ === 0 ? reply(500, { error: "the server is restarting" }) : { version: "v4.7.1", commit: null }) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("the server is restarting");
+    expect(screen.queryByRole("region", { name: "About" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(within(about).getByText("v4.7.1")).toBeInTheDocument();
   });
 });
 

@@ -8,6 +8,11 @@ class Health(TypedDict):
     version: str
 
 
+class Version(TypedDict):
+    version: str
+    commit: str | None
+
+
 class Me(TypedDict):
     sub: str
     email: str
