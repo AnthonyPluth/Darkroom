@@ -310,6 +310,8 @@ class DownloadPartPlan(TypedDict):
     filename: str | None
     downloads_used: int
     attempts: int
+    max_downloads: int
+    max_attempts: int
 
 
 class DownloadPlan(TypedDict):

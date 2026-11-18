@@ -127,6 +127,8 @@ export interface DownloadPartPlan {
   filename: string | null;
   downloads_used: number;
   attempts: number;
+  max_downloads: number;
+  max_attempts: number;
 }
 
 export interface DownloadPlan {

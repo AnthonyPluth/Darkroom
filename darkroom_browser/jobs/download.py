@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from darkroom_browser import selectors
-from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure
+from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, PartClick
 from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
 from darkroom_browser.jobs.status import open_archive
 from darkroom_browser.pages import takeout
@@ -187,13 +187,20 @@ def problem_with(path: Path, listed: object, taken: set[str]) -> str | None:
 def report_failure(ctx: JobContext, number: int, reason: str, seen: str = "") -> None:
     reply = ctx.reporter.part(ctx.job_id, number, {"event": "failed", "reason": reason})
     if reply.get("gave_up"):
-        attempts, used = reply["part"]["attempts"], reply["part"]["downloads_used"]
-        prompts = max(0, used - attempts)
-        led_to = f"; the last click led to: {seen}" if seen else ""
-        if prompts:
-            raise DownloadFailed(f"part {number} stopped after {used} downloads of Google's limit: {prompts} ended at Google's sign-in prompt and "
-                                 f"{attempts} were failed attempts; Darkroom stopped before using more{led_to}")
-        raise DownloadFailed(f"part {number} failed after {attempts} attempts and {used} of Google's downloads; Darkroom stopped before using more{led_to}")
+        raise DownloadFailed(gave_up_message(number, reply["part"], seen))
+
+
+def gave_up_message(number: int, part: dict[str, Any], seen: str) -> str:
+    attempts, used, most = part["attempts"], part["downloads_used"], part.get("max_downloads")
+    prompts = max(0, used - attempts)
+    if isinstance(most, int) and used >= most:
+        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt"
+    else:
+        limit = f"Google's {most}" if isinstance(most, int) else "Google's"
+        said = f"part {number} failed after {attempts} attempts, using {used} of {limit} downloads"
+        said += f" ({prompts} ended at Google's sign-in prompt)" if prompts else ""
+    led_to = f"; the last click led to: {seen}" if seen else ""
+    return f"{said}; Darkroom stopped before using more{led_to}"
 
 
 def bytes_reporter(ctx: JobContext, number: int) -> Any:
@@ -252,10 +259,10 @@ def back_off(ctx: JobContext, browser: Browser) -> str:
     return NOTHING
 
 
-def collected(ctx: JobContext, browser: Browser, number: int, href: str, partial: Path, report: Any) -> Path | None:
+def collected(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any) -> Path | None:
     ctx.progress(f"part {number} started downloading by itself; Darkroom is keeping it rather than clicking again")
     try:
-        return browser.collect_download(partial, href, report)
+        return browser.collect_download(partial, part, report)
     except Cancelled:
         raise
     except Exception:
@@ -263,7 +270,7 @@ def collected(ctx: JobContext, browser: Browser, number: int, href: str, partial
         return None
 
 
-def no_download(ctx: JobContext, browser: Browser, number: int, href: str, partial: Path, report: Any, interrupted: bool) -> Path | None:
+def no_download(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any, interrupted: bool) -> Path | None:
     state, seen = what_the_click_led_to(browser)
     if interrupted:
         report_failure(ctx, number, "interrupted")
@@ -278,18 +285,18 @@ def no_download(ctx: JobContext, browser: Browser, number: int, href: str, parti
             report_failure(ctx, number, "not_started", seen)
             return None
     if state == ARRIVED or wait_for_verification(ctx, browser, number, True):
-        return collected(ctx, browser, number, href, partial, report)
+        return collected(ctx, browser, number, part, partial, report)
     report_failure(ctx, number, ASKED_TO_VERIFY)
     return None
 
 
-def clicked(ctx: JobContext, browser: Browser, number: int, listed: takeout.ListedPart, partial: Path, report: Any) -> Path | None:
+def clicked(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any) -> Path | None:
     try:
-        return browser.download_to(part_link(listed.link), partial, report)
+        return browser.download_to(part.selector, partial, report)
     except Cancelled:
         raise
     except Exception as error:
-        return no_download(ctx, browser, number, listed.href, partial, report, isinstance(error, DownloadInterrupted))
+        return no_download(ctx, browser, number, part, partial, report, isinstance(error, DownloadInterrupted))
 
 
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
@@ -304,11 +311,12 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
             raise DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         partial = fresh_partial(folder)
         report = bytes_reporter(ctx, number)
+        clicking = PartClick(selector, listed.href, number)
         if browser.download_started():
-            path = collected(ctx, browser, number, listed.href, partial, report)
+            path = collected(ctx, browser, number, clicking, partial, report)
         else:
             ctx.progress(f"downloading part {number} of {plan['part_count']}")
-            path = clicked(ctx, browser, number, listed, partial, report)
+            path = clicked(ctx, browser, number, clicking, partial, report)
         if path is None:
             continue
         ctx.check()

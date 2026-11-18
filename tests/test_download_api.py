@@ -51,6 +51,7 @@ class DownloadApiTests(DownloadApiServer):
                 self.assertEqual((plan["person"], plan["folder"], plan["part_count"]), ("jo", f"export-{self.export}", 1))
                 status, reply = self.part({"event": "attempt"})
                 self.assertEqual((status, reply["allowed"], reply["part"]["downloads_used"]), (200, True, 1))
+                self.assertEqual((reply["part"]["max_attempts"], reply["part"]["max_downloads"]), (3, 5))
                 self.assertEqual(self.part({"event": "progress", "bytes": 1024})[0], 200)
                 status, _, body = self.owner("GET", f"/api/exports/{self.export}")
                 self.assertEqual((status, json.loads(body)["export"]["parts"][0]["progress"]), (200, 50))

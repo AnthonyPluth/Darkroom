@@ -15,7 +15,7 @@ from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
-from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look
+from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look, PartClick
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGNED_IN, TOKEN_CANARY, VERIFY
@@ -144,8 +144,8 @@ class DownloadBrowser:
         self.arriving -= 1
         return self.arriving <= 0
 
-    def collect_download(self, folder, href, progress=None):
-        self.collected_for.append(href)
+    def collect_download(self, folder, part, progress=None):
+        self.collected_for.append(part)
         number = self.downloaded[-1]
         self.collected.append(number)
         self.arriving = None
@@ -273,7 +273,7 @@ class DownloadJobTests(DownloadWorld):
 
     def test_a_corrupt_part_is_retried_twice_then_fails_with_every_attempt_counted(self):
         browser = DownloadBrowser(["ok", "corrupt", "corrupt", "corrupt", "ok"])
-        with self.assertRaisesRegex(download.DownloadFailed, "part 2 failed after 3 attempts and 3 of Google's downloads; Darkroom stopped before using more$"):
+        with self.assertRaisesRegex(download.DownloadFailed, "^part 2 failed after 3 attempts, using 3 of Google's 5 downloads; Darkroom stopped before using more$"):
             self.run_job(browser)
         self.assertEqual(browser.downloaded, [1, 2, 2, 2])
         self.assertEqual(self.parts(), [("done", 1, 1), ("failed", 3, 3), ("pending", 0, 0)])
@@ -465,10 +465,20 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         browser = DownloadBrowser(["reauth"] * 6)
         with self.assertRaises(download.DownloadFailed) as raised:
             self.run_job(browser)
-        self.assertEqual(str(raised.exception), "part 1 stopped after 5 downloads of Google's limit: 5 ended at Google's sign-in prompt and 0 were failed attempts; "
+        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 failed attempts and 5 that ended at Google's sign-in prompt; "
                                                 "Darkroom stopped before using more")
         self.assertEqual(len(browser.downloaded), 5)
         self.assertEqual(self.parts()[0], ("failed", 5, 0))
+
+    def test_a_part_stopped_by_the_attempt_cap_after_a_prompt_says_so_and_how_many_downloads_it_used(self):
+        browser = DownloadBrowser(["reauth", "unrecognised", "unrecognised", "unrecognised"])
+        with self.assertRaises(download.DownloadFailed) as raised:
+            self.run_job(browser)
+        self.assertEqual(self.parts()[0], ("failed", 4, 3))
+        said = str(raised.exception)
+        self.assertTrue(said.startswith("part 1 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt); "
+                                        "Darkroom stopped before using more; the last click led to: the job's own tab: page host other;"), said)
+        self.assertNotIn("used all", said)
 
     def test_a_download_that_starts_during_the_wait_is_kept_and_part_2_is_not_clicked_again(self):
         browser = DownloadBrowser(["ok", "reauth then it arrives", "ok"])
@@ -476,7 +486,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(browser.collected, [2])
-        self.assertEqual(browser.collected_for, [f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=1&user={MADE_UP_USER}"])
+        self.assertEqual(browser.collected_for, [PartClick(browser.selectors[1], f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=1&user={MADE_UP_USER}", 2)])
         self.assertEqual(self.parts(), [("done", 1, 1), ("done", 1, 1), ("done", 1, 1)])
         self.assertEqual(self.waits(), [("waiting", "verify")])
         self.assertTrue(any(message.startswith("part 2 started downloading by itself") for message in self.messages()))
@@ -559,7 +569,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
     def test_a_kept_download_that_breaks_counts_as_interrupted(self):
         browser = DownloadBrowser(["reauth then it arrives", "ok", "ok", "ok"])
 
-        def broken(folder, href, progress=None):
+        def broken(folder, part, progress=None):
             browser.arriving = None
             raise DownloadInterrupted("network")
 

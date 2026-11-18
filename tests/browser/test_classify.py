@@ -147,17 +147,35 @@ PART = "https://takeout.google.com/takeout/download?j=export-1&i=0&user=made-up"
 
 
 class DownloadOfThePartTests(unittest.TestCase):
-    def test_only_takeouts_download_of_this_export_and_part_is_this_parts(self):
-        self.assertTrue(takeout.download_of_part(PART, PART))
-        self.assertTrue(takeout.download_of_part("https://takeout.google.com/takeout/download?i=0&j=export-1", PART))
-        for url in ("https://takeout.google.com/takeout/download?j=export-1&i=1&user=made-up", "https://takeout.google.com/takeout/download?j=export-2&i=0",
-                    "https://other.example/takeout/download?j=export-1&i=0", "https://takeout.google.com/settings?j=export-1&i=0",
-                    "https://takeout.google.com/takeout/download?j=export-1&i=0&%6a=export-2", "https://takeout.google.com/takeout/download?j=export-1",
-                    "https://takeout.google.com/takeout/download?j=export-1&i=0&i=1", "https://takeout.google.com\\@other.example/takeout/download?j=export-1&i=0",
-                    "", None, 7):
+    NAME = "takeout-20261102T031000Z-001.zip"
+    REDIRECTED = "https://takeout-download.usercontent.google.com/download/takeout-20261102T031000Z-001.zip"
+
+    def test_a_download_naming_this_export_and_part_is_this_parts_on_any_https_host(self):
+        for url in (PART, "https://takeout.google.com/takeout/download?i=0&j=export-1", self.REDIRECTED + "?j=export-1&i=0&user=made-up"):
             with self.subTest(url=url):
-                self.assertFalse(takeout.download_of_part(url, PART))
-        self.assertFalse(takeout.download_of_part(PART, "https://takeout.google.com/takeout/download?j=export-1"))
+                self.assertTrue(takeout.download_of_part(url, self.NAME, PART, 1))
+
+    def test_a_download_naming_another_export_or_part_is_not(self):
+        for url in ("https://takeout.google.com/takeout/download?j=export-1&i=1&user=made-up", "https://takeout.google.com/takeout/download?j=export-2&i=0",
+                    self.REDIRECTED + "?j=export-1&i=1", self.REDIRECTED + "?j=export-2&i=0", self.REDIRECTED + "?i=0", self.REDIRECTED + "?j=export-1",
+                    "https://takeout.google.com/takeout/download?j=export-1&i=0&%6a=export-2", "https://takeout.google.com/takeout/download?j=export-1&i=0&i=1"):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, self.NAME, PART, 1))
+
+    def test_without_ids_the_file_name_must_carry_this_parts_number(self):
+        self.assertTrue(takeout.download_of_part(self.REDIRECTED, self.NAME, PART, 1))
+        self.assertTrue(takeout.download_of_part(self.REDIRECTED, "takeout-20261102T031000Z-012.zip", PART, 12))
+        for name in ("takeout-20261102T031000Z-002.zip", "takeout.zip", "photos-001.zip.exe", "", None, "../x/takeout-002.zip"):
+            with self.subTest(name=name):
+                self.assertFalse(takeout.download_of_part(self.REDIRECTED, name, PART, 1))
+
+    def test_an_address_that_is_not_plain_https_or_is_off_takeouts_download_path_is_not(self):
+        for url in ("http://takeout-download.usercontent.google.com/x?j=export-1&i=0", "https://takeout.google.com/settings?j=export-1&i=0",
+                    "https://accounts.google.com/x?j=export-1&i=0", "https://takeout.google.com\\@other.example/takeout/download?j=export-1&i=0",
+                    "https://user@other.example/x?j=export-1&i=0", "", None, 7):
+            with self.subTest(url=url):
+                self.assertFalse(takeout.download_of_part(url, self.NAME, PART, 1))
+        self.assertFalse(takeout.download_of_part(PART, self.NAME, "https://takeout.google.com/takeout/download?j=export-1", 1))
 
 
 if __name__ == "__main__":

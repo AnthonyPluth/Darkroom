@@ -94,7 +94,7 @@ def export_folder(settings: Settings, person: Person, export: Export) -> Path:
 
 def part_plan(part: ExportPart) -> dict[str, object]:
     return {"number": part.number, "bytes": part.bytes, "status": part.status, "filename": part.filename,
-            "downloads_used": part.downloads_used, "attempts": part.attempts}
+            "downloads_used": part.downloads_used, "attempts": part.attempts, "max_downloads": MAX_DOWNLOADS, "max_attempts": MAX_ATTEMPTS}
 
 
 def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:

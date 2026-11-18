@@ -9,7 +9,7 @@ from typing import Any
 
 from darkroom_browser import monitoring, selectors
 from darkroom_browser.config import env
-from darkroom_browser.context import DownloadInterrupted, Look
+from darkroom_browser.context import DownloadInterrupted, Look, PartClick
 from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
 from darkroom_browser.pages import takeout
@@ -17,6 +17,7 @@ from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, 
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
+MAX_OPENERS = 8
 CANCELLED = "canceled"
 
 
@@ -34,6 +35,7 @@ class Live:
         self.profile = profile
         self.clock = clock
         self.arrived: list[Any] = []
+        self.clicked: str | None = None
 
     def watch_downloads(self) -> None:
         if self.context is None:
@@ -89,13 +91,14 @@ class Live:
     def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
         self.arrived.clear()
+        self.clicked = selector
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
             self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
         download = started.value
         self.arrived[:] = [each for each in self.arrived if each is not download]
         return self.keep(download, folder, progress)
 
-    def collect_download(self, folder: Path, href: str, progress: Callable[[int], None] | None = None) -> Path:
+    def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
         if not self.arrived and self.downloads is not None:
             watch = StallWatch(self.clock())
@@ -105,7 +108,7 @@ class Live:
             self.sweep()
             raise DownloadInterrupted("a download appeared in Chromium's folder without Playwright's event")
         arrived, self.arrived = self.arrived, []
-        own = [each for each in arrived if takeout.download_of_part(getattr(each, "url", None), href)]
+        own = [each for each in arrived if self.is_from(each, part)]
         for other in arrived:
             if other is not (own[0] if own else None):
                 with contextlib.suppress(Exception):
@@ -114,6 +117,24 @@ class Live:
             self.sweep()
             raise DownloadInterrupted("a download started by itself, but it was not this part's from Takeout")
         return self.keep(own[0], folder, progress)
+
+    def is_from(self, download: Any, part: PartClick) -> bool:
+        if self.clicked != part.selector or not self.started_in_own_tab(download):
+            return False
+        return takeout.download_of_part(getattr(download, "url", None), getattr(download, "suggested_filename", None), part.href, part.number)
+
+    def started_in_own_tab(self, download: Any) -> bool:
+        page = getattr(download, "page", None)
+        for _ in range(MAX_OPENERS):
+            if page is None:
+                return False
+            if page is self.page:
+                return True
+            try:
+                page = page.opener()
+            except Exception:
+                return False
+        return False
 
     def sweep(self) -> None:
         if self.downloads is not None:

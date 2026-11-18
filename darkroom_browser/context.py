@@ -15,6 +15,13 @@ class Look:
     primary: bool
 
 
+@dataclass(frozen=True)
+class PartClick:
+    selector: str
+    href: str
+    number: int
+
+
 class Browser(Protocol):
     def goto(self, url: str) -> None: ...
 
@@ -36,7 +43,7 @@ class Browser(Protocol):
 
     def download_started(self) -> bool: ...
 
-    def collect_download(self, folder: Path, href: str, progress: Callable[[int], None] | None = None) -> Path: ...
+    def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path: ...
 
     def screenshot(self, path: Path) -> None: ...
 

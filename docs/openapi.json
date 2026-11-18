@@ -622,6 +622,12 @@
               }
             ]
           },
+          "max_attempts": {
+            "type": "integer"
+          },
+          "max_downloads": {
+            "type": "integer"
+          },
           "number": {
             "type": "integer"
           },
@@ -634,6 +640,8 @@
           "bytes",
           "downloads_used",
           "filename",
+          "max_attempts",
+          "max_downloads",
           "number",
           "status"
         ],
