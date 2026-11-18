@@ -845,7 +845,7 @@ class MigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             self.assertEqual(connection.exec_driver_sql("SELECT added, failed, repeated, not_imported, orphan_sidecars, unpaired_media FROM import_runs").all(),
-                             [(3, 1, 2, None, 0, 0)])
+                             [(3, 1, 2, None, None, None)])
             connection.exec_driver_sql("UPDATE import_runs SET not_imported = '{\".txt\": 1}', orphan_sidecars = 4, unpaired_media = 5")
             self.assertEqual(connection.exec_driver_sql("SELECT not_imported, orphan_sidecars, unpaired_media FROM import_runs").all(), [('{".txt": 1}', 4, 5)])
         with self.engine.begin() as connection:

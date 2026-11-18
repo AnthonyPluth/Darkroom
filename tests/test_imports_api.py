@@ -141,6 +141,17 @@ class ImportsApiTests(unittest.TestCase):
                 (listed,) = self.call("GET", "/api/imports")[1]["imports"]
                 self.assertEqual((listed["not_imported"], listed["orphan_sidecars"], listed["unpaired_media"]), (shown, 3, 4))
 
+    def test_a_run_that_never_counted_what_was_left_out_lists_null_counts_not_zero(self):
+        self.call("POST", f"/api/exports/{self.export_id}/import")
+        self.import_now()
+        opened = self.world.reopen()
+        row = opened.query(ImportRun).one()
+        row.not_imported = row.orphan_sidecars = row.unpaired_media = None
+        opened.commit()
+        (listed,) = self.call("GET", "/api/imports")[1]["imports"]
+        self.assertEqual((listed["not_imported"], listed["orphan_sidecars"], listed["unpaired_media"]), (None, None, None))
+        self.assertEqual(self.call("GET", f"/api/imports/{listed['id']}")[1]["run"]["not_imported"], None)
+
     def test_a_retry_whose_staging_is_gone_is_refused(self):
         import shutil
 

@@ -1262,13 +1262,27 @@
             "type": "integer"
           },
           "not_imported": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "orphan_sidecars": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "part_count": {
             "anyOf": [
@@ -1321,7 +1335,14 @@
             "type": "object"
           },
           "unpaired_media": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [

@@ -49,7 +49,7 @@ class Shot:
     make: str | None
     model: str | None
     is_video: bool
-    is_raw: bool = False
+    is_raw: bool
 
 
 @dataclass(frozen=True)
@@ -65,9 +65,9 @@ class TakeoutCandidate:
     make: str | None
     model: str | None
     is_video: bool
+    is_raw: bool
     is_edited: bool = False
     edited_of: str | None = None
-    is_raw: bool = False
 
 
 @dataclass(frozen=True)

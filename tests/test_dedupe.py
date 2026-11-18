@@ -340,8 +340,8 @@ class OverlappingAccountsTests(unittest.TestCase):
 
 class PureIndexTests(unittest.TestCase):
     def test_decide_ignores_items_of_people_outside_the_index_even_when_handed_them(self):
-        outsider = dedupe.Shot(7, 99, "phone", "a" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False)
-        placed = dedupe.Shot(8, 99, "takeout", "b" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False)
+        outsider = dedupe.Shot(7, 99, "phone", "a" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False, False)
+        placed = dedupe.Shot(8, 99, "takeout", "b" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False, False)
         index = dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=(outsider,), takeout=(placed,))
         world = World(self)
         for sha1 in ("a" * 40, "b" * 40, "c" * 40):
