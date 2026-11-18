@@ -49,6 +49,7 @@ class Shot:
     make: str | None
     model: str | None
     is_video: bool
+    is_raw: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class TakeoutCandidate:
     is_video: bool
     is_edited: bool = False
     edited_of: str | None = None
+    is_raw: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,7 @@ def shot_of(item: MediaItem) -> Shot:
         id=item.id, person_id=item.person_id, source=item.source, sha1=item.sha1, phash=item.phash,
         captured_utc=item.captured_utc, captured_local=item.captured_local, width=item.width, height=item.height,
         duration_ms=item.duration_ms, make=item.make, model=item.model, is_video=Path(item.path).suffix.lower() in media.VIDEO_SUFFIXES,
+        is_raw=Path(item.path).suffix.lower() in media.CAMERA_RAW_SUFFIXES,
     )
 
 
@@ -185,6 +188,7 @@ def candidate_of(item: TakeoutItem, fields: MediaItem, root: Path) -> TakeoutCan
         duration_ms=fields.duration_ms, make=fields.make, model=fields.model, is_video=item.path.suffix.lower() in media.VIDEO_SUFFIXES,
         is_edited=pairing.original_name(item.path) is not None,
         edited_of=None if item.edited_of is None else str(item.edited_of.relative_to(root)),
+        is_raw=item.path.suffix.lower() in media.CAMERA_RAW_SUFFIXES,
     )
 
 
@@ -227,7 +231,7 @@ def same_text(mine: str | None, theirs: str | None) -> bool:
 
 
 def same_size(item: TakeoutCandidate, shot: Shot) -> bool:
-    if item.is_video != shot.is_video:
+    if item.is_video != shot.is_video or item.is_raw != shot.is_raw:
         return False
     if item.is_video:
         return item.duration_ms is not None and shot.duration_ms is not None and item.duration_ms // 1000 == shot.duration_ms // 1000

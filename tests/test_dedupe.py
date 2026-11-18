@@ -1,3 +1,4 @@
+import dataclasses
 import random
 import unittest
 from pathlib import Path
@@ -121,6 +122,14 @@ class TierTwoTests(SinglePerson):
         self.assertEqual(self.decide(self.world.candidate(is_video=True, width=None, height=None, duration_ms=12_900, phash=None)).matched_item_id, clip.id)
         self.assertEqual(self.decide(self.world.candidate(is_video=True, duration_ms=13_000, phash=None)).tier, 5)
         self.assertEqual(self.decide(self.world.candidate(is_video=True, duration_ms=None, phash=None)).tier, 5)
+
+    def test_a_camera_raw_file_never_matches_a_photo_of_the_same_shot(self):
+        jpeg = self.world.item(self.jo, suffix=".JPG")
+        raw = dataclasses.replace(self.world.candidate(phash=None), source_path="Takeout/Google Photos/Photos from 2023/IMG_1.CR2", is_raw=True)
+        self.assertEqual(self.decide(raw).tier, 5)
+        self.world.opened.query(MediaItem).filter(MediaItem.id == jpeg.id).update({"path": "p/IMG_1.NEF"})
+        self.assertEqual(self.decide(raw).tier, 2)
+        self.assertEqual(self.decide(self.world.candidate(phash=None)).tier, 5)
 
     def test_a_photo_never_matches_a_video(self):
         self.world.item(self.jo, suffix=".MOV", duration_ms=1000, phash=None)
@@ -428,6 +437,8 @@ class LoadTests(unittest.TestCase):
         self.assertEqual((made.width, made.height, made.make, made.model, made.captured_utc), (10, 20, "Apple", "X", MOMENT))
         clip = dedupe.candidate_of(TakeoutItem(path=root / "a" / "VID_2.MP4", sha1="b", copies=(), sidecar=None), fields, root)
         self.assertEqual((clip.source_path, clip.edited_of, clip.is_edited, clip.is_video), ("a/VID_2.MP4", None, False, True))
+        raw = dedupe.candidate_of(TakeoutItem(path=root / "a" / "IMG_3.CR2", sha1="c", copies=(), sidecar=None), fields, root)
+        self.assertEqual((raw.is_raw, raw.is_video, made.is_raw, clip.is_raw), (True, False, False, False))
 
 
 if __name__ == "__main__":

@@ -261,6 +261,9 @@ export interface ImportView {
   missing_gps: number;
   failed: number;
   unmatched_by_person: Record<string, number>;
+  not_imported: Record<string, number>;
+  orphan_sidecars: number;
+  unpaired_media: number;
   error: string | null;
 }
 

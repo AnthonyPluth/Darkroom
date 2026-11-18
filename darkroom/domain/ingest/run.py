@@ -65,6 +65,9 @@ class Prepared:
     staging: Path
     items: list[TakeoutItem] = field(default_factory=list)
     fields: dict[Path, MediaItem] = field(default_factory=dict)
+    not_imported: dict[str, int] = field(default_factory=dict)
+    orphan_sidecars: int = 0
+    unpaired_media: int = 0
 
     def source_of(self, item: TakeoutItem) -> str:
         return str(item.path.relative_to(self.staging))
@@ -141,7 +144,9 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
-    prepared = Prepared(staging, pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path)).items)
+    paired = pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path))
+    prepared = Prepared(staging, paired.items, not_imported=paired.not_imported, orphan_sidecars=len(paired.orphan_sidecars),
+                        unpaired_media=len(paired.unpaired_media))
     for start in range(0, len(prepared.items), PINNED_AT_ONCE):
         group = prepared.items[start:start + PINNED_AT_ONCE]
         with paths.pinned_inbox_files(photos, [item.path for item in group]) as pinned:
@@ -242,6 +247,8 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
         run.changed_people = json.dumps(sorted(changed))
         opened.commit()
     run.failed, run.repeated = failed, repeated
+    run.not_imported = json.dumps(prepared.not_imported, sort_keys=True)
+    run.orphan_sidecars, run.unpaired_media = prepared.orphan_sidecars, prepared.unpaired_media
     run.changed_people = json.dumps(sorted(changed))
     mark(opened, export, run, "placed")
 
@@ -387,6 +394,37 @@ def summary_of(export: Export, run: ImportRun) -> str:
     return f"{text}, {run.failed} could not be imported" if run.failed else text
 
 
+def kind_text(kind: str, count: int) -> str:
+    if kind == pairing.NO_EXTENSION:
+        return f"{count} with no extension"
+    if kind == pairing.OTHER_KIND:
+        return f"{count} of another kind"
+    return f"{count} {kind}"
+
+
+def not_imported_of(run: ImportRun) -> dict[str, int]:
+    try:
+        stored = json.loads(run.not_imported) if run.not_imported else {}
+    except ValueError:
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {kind: count for kind, count in stored.items() if isinstance(kind, str) and isinstance(count, int) and count > 0}
+
+
+def left_out_of(run: ImportRun) -> str:
+    kinds = not_imported_of(run)
+    text = ""
+    if kinds:
+        listed = ", ".join(kind_text(kind, count) for kind, count in sorted(kinds.items()))
+        text += f", {sum(kinds.values())} not imported ({listed})"
+    if run.orphan_sidecars:
+        text += f", {run.orphan_sidecars} {'sidecar' if run.orphan_sidecars == 1 else 'sidecars'} matched no file"
+    if run.unpaired_media:
+        text += f", {run.unpaired_media} without a sidecar"
+    return text
+
+
 def stage_report(opened: Session, settings: config.Settings, export: Export, run: ImportRun, now: float, tools: Tools) -> None:
     key = f"export_imported:{export.id}"
     if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
@@ -453,7 +491,7 @@ def run_stages(opened: Session, settings: config.Settings, export: Export, now: 
     export.status = "imported"
     run.status, run.finished = "done", now
     mark(opened, export, run, "done")
-    events.record(opened, now, "import_done", f"export {export.id}", summary_of(export, run))
+    events.record(opened, now, "import_done", f"export {export.id}", f"{summary_of(export, run)}{left_out_of(run)}")
     opened.commit()
     monitoring.log("imported", export=export.id, added=run.added, review=run.review, failed=run.failed)
     return run

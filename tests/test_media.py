@@ -92,6 +92,21 @@ class FingerprintTests(unittest.TestCase):
         self.assertGreater(close(original.phash, other.phash), 16)
         self.assertGreater(close(original.dhash, other.dhash), 16)
 
+    def test_a_camera_raw_file_gets_no_perceptual_hash_even_when_pillow_could_open_it(self):
+        picture = fixtures.save_jpeg(fixtures.scene(1), self.folder / "a.jpg")
+        self.assertIsNotNone(media.perceptual_hashes(picture).phash)
+        for name in ("shot.CR2", "shot.nef", "shot.ARW", "shot.raf"):
+            with self.subTest(name=name):
+                self.assertEqual(media.perceptual_hashes(picture, self.folder / name), media.PerceptualHashes(None, None))
+        self.assertIsNotNone(media.perceptual_hashes(picture, self.folder / "shot.dng").phash)
+
+    def test_the_new_video_kinds_are_videos_with_no_perceptual_hash(self):
+        picture = fixtures.save_jpeg(fixtures.scene(1), self.folder / "a.jpg")
+        for suffix in (".mts", ".m2ts", ".mpg", ".mpeg", ".wmv", ".3g2", ".mp", ".mv"):
+            with self.subTest(suffix=suffix):
+                self.assertIn(suffix, media.VIDEO_SUFFIXES)
+                self.assertEqual(media.perceptual_hashes(picture, self.folder / f"clip{suffix.upper()}"), media.PerceptualHashes(None, None))
+
     def test_a_file_that_is_not_a_picture_has_no_hashes(self):
         broken = self.folder / "broken.jpg"
         broken.write_bytes(b"not a picture")
