@@ -13,6 +13,7 @@ from darkroom_browser.pages import takeout
 LIST_POLLS = 6
 LIST_POLL_SECONDS = 5.0
 MAX_ROUNDS = 2
+MAX_MESSAGE_CHARS = 480
 
 
 class ExportsUnreadable(UnexpectedPage):
@@ -63,6 +64,7 @@ def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing
     detail = takeout.parse_archive(*open_archive(ctx, browser, listing.archive_url), listing.google_id, now=ctx.wall(), zone=zone)
     if detail.unused is not None:
         unused.append(takeout.unused_note("an export's page", detail.unused))
+    unused.extend(takeout.unchecked_note("an export's page", about) for about in detail.unchecked)
     return takeout.with_archive(listing, detail, zone)
 
 
@@ -89,7 +91,15 @@ def report(listings: list[takeout.ExportListing]) -> dict[str, object]:
 
 
 def read_message(count: int, unused: list[str]) -> str:
-    return "; ".join([f"read {count} exports", *dict.fromkeys(unused)])
+    said = f"read {count} exports"
+    notes = list(dict.fromkeys(unused))
+    for index, note in enumerate(notes):
+        left = len(notes) - index - 1
+        room = MAX_MESSAGE_CHARS - (len(f"; and {left} more notes about Takeout's embedded data") if left else 0)
+        if len(said) + 2 + len(note) > room:
+            return f"{said}; and {left + 1} more notes about Takeout's embedded data"
+        said += "; " + note
+    return said
 
 
 def check_exports(ctx: JobContext) -> dict[str, object]:
@@ -102,6 +112,7 @@ def check_exports(ctx: JobContext) -> dict[str, object]:
         found = takeout.read_exports(page, address, ctx.wall(), zone)
         if found.unused is not None:
             unused.append(takeout.unused_note("the list of exports", found.unused))
+        unused.extend(takeout.unchecked_note("the list of exports", about) for about in found.unchecked)
         listings = [with_parts(ctx, browser, listing, zone, unused) for listing in found.listings]
     except takeout.UnreadableExports as error:
         raise ExportsUnreadable(str(error)) from error

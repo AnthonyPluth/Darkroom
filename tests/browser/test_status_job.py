@@ -272,6 +272,34 @@ class EmbeddedDataStatusTests(unittest.TestCase):
     def test_the_same_reason_on_many_pages_is_said_once(self):
         self.assertEqual(status.read_message(2, ["a", "b", "a", "a"]), "read 2 exports; a; b")
 
+    def test_a_date_the_page_shows_unreadably_is_named_as_not_checked(self):
+        listing = with_blocks(summary(completed_row(created="Created Novembre 17, 1:55 PM"), in_progress_row(), expired_row()),
+                              list_blocks([data.completed(), data.in_progress(), data.expired()]))
+        result, reporter = self.run_job(listing, data.detail_page(page=archive(expires="24/11/2026")))
+        self.assertEqual(result["exports"][0]["created_at"], data.CREATED_MS / 1000)
+        self.assertEqual(reporter.kinds("progress"), [
+            "read 3 exports; Takeout's embedded data on the list of exports was used without checking its creation date, which the page shows in a form that could not be read; "
+            "Takeout's embedded data on an export's page was used without checking its expiry date, which the page shows in a form that could not be read"])
+
+    def test_a_readable_date_that_disagrees_beside_an_unreadable_one_fails_the_job_in_fixed_words(self):
+        listing = with_blocks(summary(completed_row(created="Created Novembre 17, 1:55 PM"), in_progress_row(), expired_row()),
+                              list_blocks([data.completed(expires_ms=data.EARLY_EXPIRES_MS), data.in_progress(), data.expired()]))
+        with self.assertRaises(status.ExportsUnreadable) as raised:
+            self.run_job(listing, data.detail_page())
+        self.assertEqual(str(raised.exception), "Takeout's embedded data and the page disagree about the expiry date")
+
+    def test_the_message_stays_within_what_darkroom_records(self):
+        from darkroom.server.api.browser_internal import MAX_MESSAGE
+
+        notes = [takeout.unused_note("an export's page", f"it and the page disagree about the {about}") for about in
+                 (takeout.ABOUT_ID, takeout.ABOUT_COUNT, takeout.ABOUT_NAMES, takeout.ABOUT_INDEXES, takeout.ABOUT_SIZES, takeout.ABOUT_DOWNLOADED)]
+        notes += [takeout.unchecked_note(where, about) for where in ("the list of exports", "an export's page") for about in (takeout.ABOUT_CREATED, takeout.ABOUT_EXPIRY)]
+        said = status.read_message(takeout.MAX_EXPORTS, notes)
+        self.assertLessEqual(len(said), status.MAX_MESSAGE_CHARS)
+        self.assertLessEqual(len(said), MAX_MESSAGE)
+        self.assertTrue(said.endswith("more notes about Takeout's embedded data"), said)
+        self.assertEqual(status.read_message(1, notes[:1]), f"read 1 exports; {notes[0]}")
+
 
 if __name__ == "__main__":
     unittest.main()

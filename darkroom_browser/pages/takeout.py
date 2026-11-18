@@ -223,10 +223,8 @@ def unused_note(where: str, reason: str) -> str:
     return f"{EMBEDDED_DATA} was not used on {where} ({reason})"
 
 
-class UnreadableRowDates(ValueError):
-    def __init__(self, shapes: list[str]) -> None:
-        super().__init__("an export's dates could not be read")
-        self.shapes = shapes
+def unchecked_note(where: str, about: str) -> str:
+    return f"{EMBEDDED_DATA} on {where} was used without checking its {about}, which the page shows in a form that could not be read"
 
 
 class PartUnreadable(UnreadableExports):
@@ -261,6 +259,7 @@ class ArchiveDetail:
     unreadable: int = 0
     unused: str | None = None
     expires_at: float | None = None
+    unchecked: tuple[str, ...] = ()
 
 
 ASCII_SPACE = " \t\n\r\f"
@@ -559,32 +558,24 @@ def available_until(chunk: str, zone: tzinfo) -> float:
     return dated(found.group(1), zone)
 
 
-def row_dates(row: SummaryRow, created: str, available: str | None, now: float, zone: tzinfo) -> tuple[float, float | None]:
-    unreadable: list[str] = []
-    try:
-        created_moment = created_at(created, now, zone)
-    except ValueError:
-        unreadable.append(created)
-    try:
-        expires = None if available is None else available_until(available, zone)
-    except ValueError:
-        unreadable.append(available or "")
-    unreadable += [chunk for chunk in row.chunks if chunk in MERIDIEMS]
-    if unreadable:
-        raise UnreadableRowDates(unreadable)
-    return created_moment, expires
-
-
 class RowRead(NamedTuple):
     google_id: str
     state: ExportState
-    dates: tuple[float, float | None] | None
+    created: float | None
+    expires: float | None
+    shows_expiry: bool
     shapes: list[str]
 
 
 class ReadExports(NamedTuple):
     listings: list[ExportListing]
     unused: str | None
+    unchecked: tuple[str, ...] = ()
+
+
+class Checked(NamedTuple):
+    listing: ExportListing
+    unchecked: tuple[str, ...]
 
 
 def row_read(row: SummaryRow, now: float, zone: tzinfo) -> RowRead:
@@ -595,10 +586,21 @@ def row_read(row: SummaryRow, now: float, zone: tzinfo) -> RowRead:
     available = [chunk for chunk in row.chunks if chunk.startswith("available until ")]
     if len(created) != 1 or len(available) > 1:
         raise UnreadableExports(f"an export on Takeout's summary has no readable creation date: {quoted(row.chunks[:MAX_SHAPED_CHUNKS])}")
+    unreadable: list[str] = []
+    created_moment: float | None = None
+    expires: float | None = None
     try:
-        return RowRead(row.google_id, states[0], row_dates(row, created[0], available[0] if available else None, now, zone), [])
-    except UnreadableRowDates as error:
-        return RowRead(row.google_id, states[0], None, error.shapes)
+        created_moment = created_at(created[0], now, zone)
+    except ValueError:
+        unreadable.append(created[0])
+    try:
+        expires = available_until(available[0], zone) if available else None
+    except ValueError:
+        unreadable.append(available[0])
+    split_clock = [chunk for chunk in row.chunks if chunk in MERIDIEMS]
+    if split_clock:
+        created_moment = expires = None
+    return RowRead(row.google_id, states[0], created_moment, expires, bool(available), unreadable + split_clock)
 
 
 def told_apart(listings: list[ExportListing]) -> list[ExportListing]:
@@ -608,11 +610,12 @@ def told_apart(listings: list[ExportListing]) -> list[ExportListing]:
 
 
 def page_listings(reads: list[RowRead]) -> list[ExportListing]:
-    unreadable = [read.shapes for read in reads if read.dates is None]
+    unreadable = [read.shapes for read in reads if read.shapes]
     if unreadable:
         shown = "; ".join(quoted(chunks[:MAX_SHAPED_CHUNKS]) for chunks in unreadable[:MAX_SHAPED_ROWS])
         raise UnreadableExports(f"{DATE_UNREADABLE} ({len(unreadable)} of {len(reads)} exports): {shown}")
-    return told_apart([ExportListing(read.google_id, read.dates[0], read.state, read.dates[1], (), archive_url(read.google_id)) for read in reads if read.dates is not None])
+    return told_apart([ExportListing(read.google_id, read.created, read.state, read.expires, (), archive_url(read.google_id))
+                       for read in reads if read.created is not None])
 
 
 def parts_fit_state(state: ExportState, export: takeout_data.EmbeddedExport) -> bool:
@@ -623,18 +626,22 @@ def apart(first: float | None, second: float | None) -> bool:
     return first is not None and second is not None and abs(first - second) > DAY_SECONDS
 
 
-def embedded_listing(read: RowRead, found: dict[str, takeout_data.EmbeddedExport]) -> ExportListing:
+def unchecked_dates(created_unread: bool, expiry_unread: bool) -> tuple[str, ...]:
+    return tuple(about for about, unread in ((ABOUT_CREATED, created_unread), (ABOUT_EXPIRY, expiry_unread)) if unread)
+
+
+def embedded_listing(read: RowRead, found: dict[str, takeout_data.EmbeddedExport]) -> Checked:
     export = found.get(read.google_id)
     if export is None:
         raise Disagreement(ABOUT_ID)
     if not parts_fit_state(read.state, export):
         raise Disagreement(ABOUT_COUNT)
-    created, expires = read.dates if read.dates is not None else (None, None)
-    if apart(created, export.created_at):
+    if apart(read.created, export.created_at):
         raise Disagreement(ABOUT_CREATED)
-    if apart(expires, export.expires_at) or (expires is not None and export.expires_at is None):
+    if apart(read.expires, export.expires_at) or (read.expires is not None and export.expires_at is None):
         raise Disagreement(ABOUT_EXPIRY)
-    return ExportListing(read.google_id, export.created_at, read.state, export.expires_at, (), archive_url(read.google_id))
+    listing = ExportListing(read.google_id, export.created_at, read.state, export.expires_at, (), archive_url(read.google_id))
+    return Checked(listing, unchecked_dates(read.created is None, read.shows_expiry and read.expires is None))
 
 
 def read_exports(page: str, address: str, now: float, zone: tzinfo) -> ReadExports:
@@ -648,12 +655,13 @@ def read_exports(page: str, address: str, now: float, zone: tzinfo) -> ReadExpor
     if embedded.unused is not None:
         return ReadExports(page_listings(reads), embedded.unused)
     try:
-        listings = [embedded_listing(read, embedded.exports) for read in reads]
+        checked = [embedded_listing(read, embedded.exports) for read in reads]
     except Disagreement as error:
-        if any(read.dates is None for read in reads):
+        if any(read.shapes for read in reads):
             raise UnreadableExports(error.refusal) from error
         return ReadExports(page_listings(reads), error.unused)
-    return ReadExports(told_apart(listings), None)
+    unchecked = tuple(dict.fromkeys(about for each in checked for about in each.unchecked))
+    return ReadExports(told_apart([each.listing for each in checked]), None, unchecked)
 
 
 def parse_exports(page: str, address: str, now: float, zone: tzinfo) -> list[ExportListing]:
@@ -1012,7 +1020,7 @@ def days_apart(first: date | None, second: date | None) -> bool:
 
 
 def embedded_archive(state: ExportState, created_on: date | None, expires_on: date | None, reads: list[ReadPart], unread: int,
-                     export: takeout_data.EmbeddedExport | None, zone: tzinfo) -> ArchiveDetail:
+                     export: takeout_data.EmbeddedExport | None, zone: tzinfo, unchecked: tuple[str, ...]) -> ArchiveDetail:
     if export is None:
         raise Disagreement(ABOUT_ID)
     if not parts_fit_state(state, export):
@@ -1022,9 +1030,9 @@ def embedded_archive(state: ExportState, created_on: date | None, expires_on: da
     embedded_expiry = None if export.expires_at is None else local_date(export.expires_at, zone)
     if days_apart(created_on, embedded_created):
         raise Disagreement(ABOUT_CREATED)
-    if days_apart(expires_on, embedded_expiry):
+    if days_apart(expires_on, embedded_expiry) or (expires_on is not None and embedded_expiry is None):
         raise Disagreement(ABOUT_EXPIRY)
-    return ArchiveDetail(state, embedded_created, embedded_expiry or expires_on, parts, unread, expires_at=export.expires_at)
+    return ArchiveDetail(state, embedded_created, embedded_expiry or expires_on, parts, unread, expires_at=export.expires_at, unchecked=unchecked)
 
 
 def parse_archive(page: str, address: str, google_id: str, needed: int | None = None, now: float | None = None, zone: tzinfo = UTC) -> ArchiveDetail:
@@ -1046,7 +1054,8 @@ def parse_archive(page: str, address: str, google_id: str, needed: int | None = 
     if embedded.unused is not None:
         return replace(page_detail, unused=embedded.unused)
     try:
-        return embedded_archive(state, created_on, expires_on, reads, unread, embedded.exports.get(google_id), zone)
+        unchecked = unchecked_dates(created_on is None, "expiration date" in fields and expires_on is None)
+        return embedded_archive(state, created_on, expires_on, reads, unread, embedded.exports.get(google_id), zone, unchecked)
     except Disagreement as error:
         if unreadable or created_on is None or unread:
             raise UnreadableExports(error.refusal) from error

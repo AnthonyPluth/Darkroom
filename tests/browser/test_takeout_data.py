@@ -475,6 +475,91 @@ class ArchiveReconcileTests(unittest.TestCase):
         self.assertEqual(([part.google_downloads for part in found.parts], found.unused), ([0, 0, 0], None))
 
 
+UNREADABLE_CREATED = "Created Novembre 9, 2:45 PM"
+UNREADABLE_EXPIRY = "Available until 24/11/2026"
+EARLY_EXPIRES_MS = EXPIRES_MS - 4 * 86_400_000
+
+
+def unchecked(*fields):
+    return tuple(fields)
+
+
+class IndependentSummaryDateTests(unittest.TestCase):
+    def refusal(self, page):
+        with self.assertRaises(takeout.UnreadableExports) as raised:
+            listed(page)
+        return str(raised.exception)
+
+    def test_a_readable_expiry_is_still_checked_when_the_creation_date_is_unreadable(self):
+        page = list_page(completed(expires_ms=EARLY_EXPIRES_MS), expired(), rows=(completed_row(created=UNREADABLE_CREATED), expired_row()))
+        self.assertEqual(self.refusal(page), "Takeout's embedded data and the page disagree about the expiry date")
+
+    def test_a_readable_creation_date_is_still_checked_when_the_expiry_is_unreadable(self):
+        page = list_page(completed(created_ms=CREATED_MS - 3 * 86_400_000), expired(), rows=(completed_row(available=UNREADABLE_EXPIRY), expired_row()))
+        self.assertEqual(self.refusal(page), "Takeout's embedded data and the page disagree about the creation date")
+
+    def test_a_readable_expiry_the_embedded_data_lacks_is_still_a_disagreement_beside_an_unreadable_creation_date(self):
+        page = list_page(embedded_export(EXPIRED_ID, EXPIRED_CREATED_MS, None, expired=True), completed(),
+                         rows=(completed_row(), row(EXPIRED_ID, "Expired", UNREADABLE_CREATED, "Available until November 16, 2026")))
+        self.assertEqual(self.refusal(page), "Takeout's embedded data and the page disagree about the expiry date")
+
+    def test_one_unreadable_date_beside_an_agreeing_one_is_used_and_named_as_unchecked(self):
+        for rows, missing in (((completed_row(created=UNREADABLE_CREATED), expired_row()), takeout.ABOUT_CREATED),
+                              ((completed_row(available=UNREADABLE_EXPIRY), expired_row()), takeout.ABOUT_EXPIRY)):
+            with self.subTest(missing):
+                found = listed(list_page(rows=rows))
+                self.assertEqual((found.unused, found.unchecked), (None, unchecked(missing)))
+                self.assertEqual((found.listings[0].created_at, found.listings[0].expires_at), (CREATED_MS / 1000, EXPIRES_MS / 1000))
+
+    def test_both_dates_unreadable_are_both_named(self):
+        found = listed(list_page(rows=(completed_row(created=UNREADABLE_CREATED, available=UNREADABLE_EXPIRY), expired_row())))
+        self.assertEqual((found.unused, found.unchecked), (None, unchecked(takeout.ABOUT_CREATED, takeout.ABOUT_EXPIRY)))
+
+    def test_an_am_or_pm_shown_apart_leaves_neither_date_checked(self):
+        found = listed(list_page(rows=(completed_row(created="Created November 17, 13:55</div><div>PM"), expired_row())))
+        self.assertEqual((found.unused, found.unchecked), (None, unchecked(takeout.ABOUT_CREATED, takeout.ABOUT_EXPIRY)))
+
+    def test_both_readable_and_agreeing_leave_nothing_unchecked(self):
+        found = listed(list_page())
+        self.assertEqual((found.unused, found.unchecked), (None, ()))
+
+    def test_without_embedded_data_one_unreadable_date_still_fails_as_before(self):
+        with self.assertRaises(takeout.UnreadableExports) as raised:
+            listed(summary(completed_row(created=UNREADABLE_CREATED)))
+        self.assertTrue(str(raised.exception).startswith(takeout.DATE_UNREADABLE))
+
+
+class IndependentArchiveDateTests(unittest.TestCase):
+    def test_a_readable_expiration_date_is_still_checked_when_the_creation_date_is_unreadable(self):
+        page = detail_page(completed(expires_ms=EARLY_EXPIRES_MS), expired(), page=archive(created="Novembre 17, 2026"))
+        with self.assertRaises(takeout.UnreadableExports) as raised:
+            detail(page)
+        self.assertEqual(str(raised.exception), "Takeout's embedded data and the page disagree about the expiry date")
+
+    def test_a_readable_creation_date_is_still_checked_when_the_expiration_date_is_unreadable(self):
+        page = detail_page(completed(created_ms=CREATED_MS - 3 * 86_400_000), expired(), page=archive(expires="24/11/2026"))
+        with self.assertRaises(takeout.UnreadableExports) as raised:
+            detail(page)
+        self.assertEqual(str(raised.exception), "Takeout's embedded data and the page disagree about the creation date")
+
+    def test_an_expiration_date_the_embedded_data_lacks_is_a_disagreement(self):
+        page = detail_page(embedded_export(EXPIRED_ID, EXPIRED_CREATED_MS, None, expired=True), page=archive(status="Expired", created="November 9, 2026", items=[]))
+        found = takeout.parse_archive(page, ARCHIVE_PAGE, EXPIRED_ID, now=NOW)
+        self.assertEqual(found.unused, f"it and the page disagree about the {takeout.ABOUT_EXPIRY}")
+
+    def test_unreadable_dates_are_named_as_unchecked_and_agreeing_ones_are_not(self):
+        for page, missing in ((archive(created="Novembre 17, 2026"), (takeout.ABOUT_CREATED,)), (archive(expires="24/11/2026"), (takeout.ABOUT_EXPIRY,)),
+                              (archive(created="Novembre 17, 2026", expires="24/11/2026"), (takeout.ABOUT_CREATED, takeout.ABOUT_EXPIRY)), (archive(), ())):
+            with self.subTest(missing=missing):
+                found = detail(detail_page(page=page))
+                self.assertEqual((found.unused, found.unchecked), (None, missing))
+                self.assertEqual((found.created_on, found.expires_at), (date(2026, 11, 17), EXPIRES_MS / 1000))
+
+    def test_a_page_without_an_expiration_date_leaves_it_unchecked_only_when_one_was_shown(self):
+        found = detail(detail_page(page=archive(expires=None)))
+        self.assertEqual((found.unused, found.unchecked), (None, ()))
+
+
 BRISBANE = ZoneInfo("Australia/Brisbane")
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 
