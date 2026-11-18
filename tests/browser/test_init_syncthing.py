@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import socket
 import stat
@@ -47,7 +49,7 @@ GENERATED = textwrap.dedent(f"""\
         </options>
     </configuration>
     """)
-GIVEN = {"PATH": "/x", "HOME": "/home/darkroom", "LANG": "C.UTF-8", "TZ": "Europe/Paris", "DARKROOM_SYNCTHING": "1", "DARKROOM_DATA_DIR": "/appdata/",
+GIVEN = {"PATH": "/x", "HOME": "/home/darkroom", "LANG": "C.UTF-8", "TZ": "Europe/Paris", "DARKROOM_DATA_DIR": "/appdata/",
          "HTTPS_PROXY": "http://proxy.example:3128", "http_proxy": "http://proxy.example:3128", "DARKROOM_SECRET_KEY": "key-canary", "STGUIAPIKEY": "someone-set-this",
          "IMMICH_ADMIN_KEY": "immich-canary"}
 
@@ -347,26 +349,33 @@ class RecoveryTests(Folders):
         self.assertNotIn(OLD, (self.data / "app-got").read_text())
 
 
-class PlanAndMainTests(unittest.TestCase):
-    def test_with_the_setting_on_syncthing_comes_first_and_only_the_app_is_handed_its_key(self):
-        specs = plan.specs(GIVEN, bool, bool, bool)
-        self.assertEqual([spec.name for spec in specs], ["syncthing", "app", "display", "vnc", "viewer", "worker"])
-        self.assertEqual([spec.secrets for spec in specs], [(), ("token", "viewer", "syncthing"), (), (), ("viewer",), ("token",)])
-        self.assertEqual(specs[0].argv, ("python3", "-P", "-m", "darkroom_init.syncthing", "/appdata/syncthing"))
-        self.assertIs(specs[0].ready, bool)
-        self.assertEqual([spec.name for spec in specs if spec.recheck], ["syncthing"])
-        self.assertEqual(specs[1].env[plan.SYNCTHING_KEY_FD], plan.PIPE["syncthing"])
-        self.assertIn(plan.SYNCTHING_KEY_FD, plan.FD_VARIABLES)
-        self.assertEqual(specs[1].env["DARKROOM_SYNCTHING"], "1")
-        self.assertFalse({plan.SYNCTHING_KEY_FD} & {name for spec in specs[2:] for name in spec.env})
-        self.assertNotIn(plan.SYNCTHING_KEY_FD, plan.app_env(GIVEN | {"DARKROOM_SYNCTHING": "0"}))
+SWITCH_CANARY = "a-switch-value-canary-0123456789abcdef0123"
 
-    def test_with_the_setting_off_nothing_about_syncthing_is_planned(self):
-        for value in ("", "0", "yes", "true"):
-            with self.subTest(value=value):
-                specs = plan.specs(GIVEN | {"DARKROOM_SYNCTHING": value}, bool, bool, bool)
-                self.assertEqual([spec.name for spec in specs], ["app", "display", "vnc", "viewer", "worker"])
-                self.assertEqual(specs[0].secrets, ("token", "viewer"))
+
+class PlanAndMainTests(unittest.TestCase):
+    def test_syncthing_always_comes_first_and_only_the_app_is_handed_its_key_whatever_the_removed_switch_says(self):
+        for given in (GIVEN, GIVEN | {"DARKROOM_SYNCTHING": "0"}, GIVEN | {"DARKROOM_SYNCTHING": ""}, GIVEN | {"DARKROOM_SYNCTHING": "1"},
+                      GIVEN | {"DARKROOM_SYNCTHING": SWITCH_CANARY}):
+            with self.subTest(switch=given.get("DARKROOM_SYNCTHING")):
+                specs = plan.specs(given, bool, bool, bool)
+                self.assertEqual([spec.name for spec in specs], ["syncthing", "app", "display", "vnc", "viewer", "worker"])
+                self.assertEqual([spec.secrets for spec in specs], [(), ("token", "viewer", "syncthing"), (), (), ("viewer",), ("token",)])
+                self.assertEqual(specs[0].argv, ("python3", "-P", "-m", "darkroom_init.syncthing", "/appdata/syncthing"))
+                self.assertIs(specs[0].ready, bool)
+                self.assertEqual([spec.name for spec in specs if spec.recheck], ["syncthing"])
+                self.assertEqual(specs[1].env[plan.SYNCTHING_KEY_FD], plan.PIPE["syncthing"])
+                self.assertIn(plan.SYNCTHING_KEY_FD, plan.FD_VARIABLES)
+                self.assertFalse({plan.SYNCTHING_KEY_FD} & {name for spec in specs[2:] for name in spec.env})
+                self.assertFalse({"DARKROOM_SYNCTHING"} & {name for spec in specs for name in spec.env})
+                self.assertNotIn(SWITCH_CANARY, {value for spec in specs for value in spec.env.values()})
+
+    def test_the_app_is_given_neither_the_removed_switch_nor_a_variable_it_does_not_read(self):
+        given = GIVEN | {"DARKROOM_SYNCTHING": "0", "DARKROOM_SOMETHING_NEW": "stray-canary-0123456789", "FOO": "bar"}
+        env = plan.app_env(given)
+        self.assertNotIn("DARKROOM_SYNCTHING", plan.APP_SETTINGS)
+        self.assertFalse({"DARKROOM_SYNCTHING", "DARKROOM_SOMETHING_NEW", "FOO", "STGUIAPIKEY", "HTTPS_PROXY", "http_proxy"} & set(env))
+        self.assertNotIn("stray-canary-0123456789", env.values())
+        self.assertEqual(env["DARKROOM_SECRET_KEY"], "key-canary")
 
     def test_the_init_and_the_app_agree_on_the_socket_and_the_home_is_under_appdata(self):
         self.assertEqual(syncthing.SOCKET, app_config.SYNCTHING_SOCKET)
@@ -376,21 +385,46 @@ class PlanAndMainTests(unittest.TestCase):
         self.assertIn("&& chmod 0700 /run/darkroom", image)
         self.assertIn("COPY --from=syncthing /syncthing /usr/local/bin/syncthing", image)
 
-    def test_main_holds_a_third_fresh_key_only_with_the_setting_on(self):
-        for given, names in ((GIVEN, ["syncthing", "token", "viewer"]), (GIVEN | {"DARKROOM_SYNCTHING": ""}, ["token", "viewer"])):
-            held = {}
+    def test_the_init_and_the_app_warn_about_the_removed_switch_in_the_same_words_and_for_the_same_values(self):
+        self.assertEqual(plan.SYNCTHING_SWITCH_IGNORED, app_config.SYNCTHING_SWITCH_IGNORED)
+        self.assertEqual(plan.SYNCTHING_SWITCH, "DARKROOM_SYNCTHING")
+        for value in ("0", "false", "no", "off", "yes", " 0 ", SWITCH_CANARY, "", "  ", "1", " 1 ", None):
+            given = {} if value is None else {"DARKROOM_SYNCTHING": value}
+            with self.subTest(value=value), mock.patch.dict(os.environ, given, clear=True):
+                self.assertEqual(plan.syncthing_switch_set_off(given), app_config.syncthing_switch_set_off())
 
-            def run(self, held=held):
-                held.update(self.secrets)
-                return 0
+    def run_main(self, given):
+        held = {}
 
-            with self.subTest(names=names), no_leaks(self, "never-a-real-key-value") as watched, mock.patch.object(supervisor, "prctl", return_value=True), \
-                    mock.patch.object(supervisor.Supervisor, "run", run), mock.patch("signal.signal"):
-                self.assertEqual(init_main.main(given), 0)
-                watched.update(held.values())
-            self.assertEqual(sorted(held), names)
-            self.assertEqual(len(set(held.values())), len(names))
-            self.assertTrue(all(len(value) == 43 for value in held.values()))
+        def run(self, held=held):
+            held.update(self.secrets)
+            return 0
+
+        with no_leaks(self, "never-a-real-key-value", SWITCH_CANARY) as watched, mock.patch.object(supervisor, "prctl", return_value=True), \
+                mock.patch.object(supervisor.Supervisor, "run", run), mock.patch("signal.signal"), mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(init_main.main(given), 0)
+            watched.update(held.values())
+        return held, err.getvalue()
+
+    def test_main_always_holds_a_third_fresh_key_for_syncthing(self):
+        for given in (GIVEN, GIVEN | {"DARKROOM_SYNCTHING": ""}, GIVEN | {"DARKROOM_SYNCTHING": "0"}):
+            with self.subTest(switch=given.get("DARKROOM_SYNCTHING")):
+                held, _ = self.run_main(given)
+                self.assertEqual(sorted(held), ["syncthing", "token", "viewer"])
+                self.assertEqual(len(set(held.values())), 3)
+                self.assertTrue(all(len(value) == 43 for value in held.values()))
+
+    def test_main_logs_one_fixed_warning_when_the_removed_switch_would_have_turned_syncthing_off_and_starts_anyway(self):
+        held, err = self.run_main(GIVEN | {"DARKROOM_SYNCTHING": SWITCH_CANARY})
+        warnings = [json.loads(line) for line in err.splitlines() if "DARKROOM_SYNCTHING" in line]
+        self.assertEqual(warnings, [{"event": plan.SYNCTHING_SWITCH_IGNORED, "level": "warning"}])
+        self.assertNotIn(SWITCH_CANARY, err)
+        self.assertIn("syncthing", held)
+        self.assertIn('"event": "init started"', err)
+        for given in (GIVEN, GIVEN | {"DARKROOM_SYNCTHING": "1"}, GIVEN | {"DARKROOM_SYNCTHING": ""}):
+            with self.subTest(switch=given.get("DARKROOM_SYNCTHING")):
+                _, err = self.run_main(given)
+                self.assertNotIn("DARKROOM_SYNCTHING", err)
 
 
 if __name__ == "__main__":
