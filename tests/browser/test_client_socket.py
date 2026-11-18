@@ -157,13 +157,16 @@ class TheClassIsClosedTests(unittest.TestCase):
     def test_a_socket_that_is_not_there_is_unreachable_and_nothing_is_left_open(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        for number, attempt in enumerate((lambda: OnSocket(str(Path(folder.name) / "worker-api.sock"), 1.0),
-                        lambda: Client(Path(folder.name) / "worker-api.sock", TOKEN, folder=Path(folder.name)).claim("w"))):
+        socket_path = Path(folder.name) / "worker-api.sock"
+        for expected, message, attempt in ((FileNotFoundError, None, lambda: OnSocket(str(socket_path), 1.0)),
+                                           (Unreachable, "FileNotFoundError", lambda: Client(socket_path, TOKEN, folder=Path(folder.name)).claim("w"))):
             recorded = Recorded()
-            with self.subTest(attempt=number), mock.patch.object(app_client.socket, "socket", recorded.spy()):
-                with self.assertRaises((FileNotFoundError, Unreachable)) as raised:
+            with self.subTest(expected=expected.__name__), mock.patch.object(app_client.socket, "socket", recorded.spy()):
+                with self.assertRaises(expected) as raised:
                     attempt()
-                self.assertIn("FileNotFoundError", f"{type(raised.exception).__name__} {raised.exception}")
+                self.assertIs(type(raised.exception), expected)
+                if message is not None:
+                    self.assertEqual(str(raised.exception), message)
                 self.assertEqual(len(recorded.made), 1)
                 self.assertEqual(recorded.closes, recorded.made)
                 self.assertEqual(recorded.made[0].fileno(), -1)
