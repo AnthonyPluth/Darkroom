@@ -312,6 +312,15 @@ PARTS_ELSEWHERE = {
     "a malformed bracketed host": ("https://[x]/takeout/download?{query}", None, ARCHIVE_PAGE),
     "an unclosed bracketed host": ("//[/takeout/download?{query}", None, ARCHIVE_PAGE),
     "a malformed bracketed base": ("takeout/download?{query}", "http://[::1", ARCHIVE_PAGE),
+    "a second export id in the query": (f"/takeout/download?{{query}}&amp;j={EXPIRED_ID}", None, ARCHIVE_PAGE),
+    "a second export id in an absolute link": (f"https://takeout.google.com/takeout/download?{{query}}&amp;j={EXPIRED_ID}", None, ARCHIVE_PAGE),
+    "another export's id before this one": (f"/takeout/download?j={EXPIRED_ID}&amp;{{query}}", None, ARCHIVE_PAGE),
+    "this export's id twice": (f"/takeout/download?{{query}}&amp;j={COMPLETED_ID}", None, ARCHIVE_PAGE),
+    "a second export id with its name encoded": (f"/takeout/download?{{query}}&amp;%6A={EXPIRED_ID}", None, ARCHIVE_PAGE),
+    "the export id with its name encoded": (f"/takeout/download?%6a={COMPLETED_ID}&amp;i=0&amp;user={MADE_UP_USER}", None, ARCHIVE_PAGE),
+    "a second part index in the query": ("/takeout/download?{query}&amp;i=1", None, ARCHIVE_PAGE),
+    "a second part index with its name encoded": ("/takeout/download?{query}&amp;%69=1", None, ARCHIVE_PAGE),
+    "a second user in the query": ("/takeout/download?{query}&amp;user=100000000000000000002", None, ARCHIVE_PAGE),
 }
 
 
@@ -329,6 +338,11 @@ class RelativePartLinkTests(unittest.TestCase):
         form = "/takeout/download?{query}&amp;next=%2F%5C%252e"
         parts = takeout.parse_archive(archive(items=items_linked(form)), ARCHIVE_PAGE, COMPLETED_ID).parts
         self.assertEqual(parts[0].href, f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}&next=%2F%5C%252e")
+
+    def test_parameters_whose_names_only_contain_j_i_or_user_are_other_parameters(self):
+        form = "/takeout/download?{query}&amp;xj=1&amp;ji=2&amp;usera=3&amp;j_=4&amp;other=j%3D5"
+        parts = takeout.parse_archive(archive(items=items_linked(form)), ARCHIVE_PAGE, COMPLETED_ID).parts
+        self.assertEqual(parts[0].href, f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}&xj=1&ji=2&usera=3&j_=4&other=j%3D5")
 
     def test_a_part_link_that_resolves_anywhere_else_is_refused(self):
         for name, (form, base, address) in PARTS_ELSEWHERE.items():
