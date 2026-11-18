@@ -160,7 +160,7 @@ class SeededDemo(unittest.TestCase):
 
     def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
         exports = self.rows(Export)
-        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental")])
+        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental"), ("failed", "incremental")])
         runs = self.rows(ImportRun)
         self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
         reviews = self.rows(ReviewItem)
@@ -214,9 +214,17 @@ class SeededDemo(unittest.TestCase):
             export = opened.get(Export, parts[0].export_id)
             self.assertEqual([each["progress"] for each in exports.as_dict(opened, export, NOON)["parts"]], [100, 40, 0])
 
+    def test_an_older_failed_download_sits_behind_the_export_still_downloading_on_the_same_account(self):
+        with db.session(self.engine) as opened:
+            older = opened.query(Export).filter(Export.google_id == "demo-export-4").one()
+            newer = opened.query(Export).filter(Export.status == "downloading").one()
+            self.assertEqual(older.account_id, newer.account_id)
+            self.assertLess(older.created_at, newer.created_at)
+            self.assertTrue(exports.as_dict(opened, older, NOON)["retry_allowed"])
+
     def test_a_third_export_failed_its_download_and_can_be_retried_without_touching_its_downloaded_part(self):
         with db.session(self.engine, writing=True) as opened:
-            export = opened.query(Export).filter(Export.status == "failed").one()
+            export = opened.query(Export).filter(Export.google_id == "demo-export-3").one()
             shown = exports.as_dict(opened, export, NOON)
             self.assertEqual((shown["retry_allowed"], [(part["status"], part["downloads_used"]) for part in shown["parts"]]), (True, [("done", 1), ("failed", 3)]))
             retried, changed = downloads.retry_failed(opened, export.id, NOON)
@@ -227,7 +235,7 @@ class SeededDemo(unittest.TestCase):
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
         with db.session(self.engine) as opened:
             seeded = list(opened.query(Export).order_by(Export.id))
-            self.assertEqual(len(seeded), 3)
+            self.assertEqual(len(seeded), 4)
             for export in seeded:
                 account = opened.get(GoogleAccount, export.account_id)
                 self.assertIsNotNone(export.owner_person_id)

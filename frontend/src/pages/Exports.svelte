@@ -258,6 +258,7 @@
             {#snippet row(item)}
               {@const chip = exportChip(item)}
               {@const review = reviewCount(data.imports, item.id)}
+              {@const retryNote = failedDownloadSentence(item)}
               <tr>
                 <td data-label="Exported">{onDay(item.created_at ?? 0)}</td>
                 <td data-label="Parts">{item.part_count ?? "None"}</td>
@@ -266,6 +267,9 @@
                     <Chip tone={chip.tone} label={chip.label} />
                     {#if item.status === "expired"}
                       <span>Never downloaded</span>
+                    {:else if retryNote}
+                      <span id="retry-note-{item.id}">{retryNote}</span>
+                      <button type="button" class="btn" disabled={busy > 0} aria-describedby="retry-note-{item.id}" onclick={() => retryDownload(item.id, account.email)}>Retry download</button>
                     {:else if item.status === "failed" && item.retry_refusal}
                       <span>{item.retry_refusal}</span>
                     {:else if review > 0}

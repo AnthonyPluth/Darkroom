@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onDay, onDayAt } from "$lib/format";
 import { router } from "$lib/nav.svelte";
-import { downloadingExport, expiredExport, failedDownload, failedExport, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
+import { downloadingExport, expiredExport, failedDownload, failedExport, olderFailedDownload, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
 import Exports from "./Exports.svelte";
 
 beforeEach(() => {
@@ -626,6 +626,23 @@ describe("the Exports page", () => {
       await userEvent.click(await screen.findByRole("button", { name: "Retry download" }));
       expect(await screen.findByRole("alert")).toHaveTextContent("This export has expired in Takeout, so it can't be downloaded again.");
       expect(server.sent("GET /api/exports").length).toBeGreaterThan(1);
+    });
+
+    it("is offered for an older failed download listed under a newer export that is still downloading", async () => {
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [downloadingExport, olderFailedDownload], schedules: [] },
+        "POST /api/exports/44/retry-download": () => reply(200, { export: { ...olderFailedDownload, status: "downloading", retry_allowed: false }, retried: true }),
+      });
+      const current = await screen.findByRole("region", { name: /Current export parts/ });
+      expect(within(current).queryByRole("button", { name: "Retry download" })).not.toBeInTheDocument();
+      const earlier = screen.getByRole("region", { name: /Earlier exports/ });
+      const button = within(earlier).getByRole("button", { name: "Retry download" });
+      expect(button).toHaveAccessibleDescription(/^Download stopped: part 2 failed after 3 attempts\./);
+      await userEvent.click(button);
+      expect(server.sent("POST /api/exports/44/retry-download")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("Download queued again for jo.photos@example.com.");
     });
 
     it("is not offered for an export that cannot be retried, which says what to do instead", async () => {

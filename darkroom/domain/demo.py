@@ -368,15 +368,15 @@ def seed_download(opened: Session, now: float) -> None:
     opened.add(ExportPart(export_id=export.id, number=3, bytes=1_800_000, status="pending"))
 
 
-def seed_failed_download(opened: Session, now: float) -> None:
-    owner = opened.execute(select(Person).where(Person.slug == "blair")).scalar_one()
+def seed_failed_download(opened: Session, now: float, slug: str = "blair", number: int = 3) -> None:
+    owner = opened.execute(select(Person).where(Person.slug == slug)).scalar_one()
     account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
-    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-3", created_at=now - 2 * DAY, ready_at=now - 2 * DAY + HOUR,
+    export = Export(account_id=account.id, kind="incremental", google_id=f"demo-export-{number}", created_at=now - 2 * DAY, ready_at=now - 2 * DAY + HOUR,
                     expires_at=now + 5 * DAY + HOUR, part_count=2, status="failed", download_tries=0, owner_person_id=owner.id)
     opened.add(export)
     opened.flush()
-    opened.add(ExportPart(export_id=export.id, number=1, filename="takeout-demo-3-001.zip", bytes=2_000_000, bytes_done=2_000_000, downloads_used=1, attempts=1,
-                          status="done"))
+    opened.add(ExportPart(export_id=export.id, number=1, filename=f"takeout-demo-{number}-001.zip", bytes=2_000_000, bytes_done=2_000_000, downloads_used=1,
+                          attempts=1, status="done"))
     opened.add(ExportPart(export_id=export.id, number=2, bytes=1_500_000, downloads_used=3, attempts=3, status="failed"))
 
 
@@ -438,6 +438,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_import(opened, photos, people, today, now)
     seed_download(opened, now)
     seed_failed_download(opened, now)
+    seed_failed_download(opened, now, "casey", 4)
     events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
     seed_transport(opened, now)
     transport_status.review_unlocked(opened, settings, now - 2 * HOUR, alerts.recorded)

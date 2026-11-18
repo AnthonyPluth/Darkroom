@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
-import { downloadingExport, expiredExport, failedDownload, failedExport, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { downloadingExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
 import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
@@ -284,6 +284,8 @@ describe("a failed download", () => {
     expect(currentExport([failedDownload, importedExport])?.id).toBe(42);
     expect(currentExport([spentDownload, importedExport])).toBeUndefined();
     expect(currentExport([failedExport])).toBeUndefined();
+    expect(currentExport([downloadingExport, olderFailedDownload])?.id).toBe(40);
+    expect(earlierExports([downloadingExport, olderFailedDownload], downloadingExport).map((item) => item.id)).toEqual([44]);
   });
 
   it("says why it stopped and what Retry download does", () => {
