@@ -347,6 +347,59 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all(), before)
         db.migrate(self.engine)
 
+    def test_0035_quicktime_utc_time_source_allows_the_new_source_keeps_every_row_that_refers_to_media_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0034")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("UPDATE media_items SET captured_utc = 1562283000.0, offset_minutes = -240, captured_local = '2019-07-04T19:30:00', time_source = 'gps_lookup', "
+                                       "width = 64, height = 48, lat = 40.7, lon = -74.0, gps_source = 'exif' WHERE id = 1")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (id, export_id, account_id, source_path, person_id, matched_item_id, takeout_item_id, tier, reason, decided_by, decided_at) "
+                                       "VALUES (1, 1, 1, 'generated.mp4', 1, 1, 2, 2, 'same capture second', 'auto', 2.0)")
+            connection.exec_driver_sql("INSERT INTO review_items (id, decision_id, status) VALUES (1, 1, 'pending')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, bytes, status) VALUES (1, 1, 1, 10, 'done')")
+            connection.exec_driver_sql("INSERT INTO takeout_entries (id, export_id, part_number, name, kind, bytes, crc32, outcome, decision_id, item_id, listed_at) "
+                                       "VALUES (1, 1, 1, 'generated.mp4', 'media', 10, 7, 'placed', 1, 2, 1.0)")
+            connection.exec_driver_sql("INSERT INTO takeout_entries (id, export_id, part_number, name, kind, bytes, crc32, outcome, copy_of_id, item_id, listed_at) "
+                                       "VALUES (2, 1, 1, 'generated(1).mp4', 'media', 10, 7, 'copy', 1, 2, 1.0)")
+            connection.exec_driver_sql("INSERT INTO duplicate_removals (id, person_id, decision_id, kept_item_id, removed_item_id, kept_path, kept_sha1, removed_path, removed_sha1, removed_source, "
+                                       "rule, tier, state, created_at) VALUES (1, 1, 1, 1, 2, 'k', 'a', 'r', 'b', 'takeout', 'identical', 2, 'pending', 3.0)")
+            connection.exec_driver_sql("INSERT INTO legacy_files (id, person_id, path, bytes, mtime, sha1, status, tier, seen_at, original_item_id, matched_item_id) "
+                                       "VALUES (1, 1, 'generated.mov', 3, 1.0, 'x', 'matched', 2, 2.0, 1, 2)")
+            connection.exec_driver_sql("INSERT INTO immich_assets (id, person_id, asset_id, kind, status, sha1, original_item_id, seen_at) VALUES (1, 1, 'generated-asset', 'photo', 'stored', 'a', 1, 2.0)")
+            connection.execute(text("INSERT INTO managed_pixel_sources (copy_id, pixel_id, item_id, person_id, version_id, owner_id, asset_id, sha1, bytes, generation, google_account_id, "
+                                    "destination_email, copy_snapshot, recorded_at) VALUES (1, 1, 1, 1, 1, 'owner-a', 'asset-a', :sha1, :bytes, 3, 1, 'jo@example.test', ' { } ', -0.125)"),
+                               {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4 + 17})
+            tables = ("media_items", "dedupe_decisions", "review_items", "duplicate_removals", "legacy_files", "immich_assets", "pixel_copies", "managed_pixel_sources", "takeout_entries")
+            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all() for table in tables}
+            before_indexes = inspect(connection).get_indexes("media_items")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE media_items SET time_source = 'quicktime_utc' WHERE id = 2")
+        self.assertTrue(all(before.values()))
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            self.assertEqual(inspect(connection).get_indexes("media_items"), before_indexes)
+            self.assertEqual({check["name"] for check in inspect(connection).get_check_constraints("media_items")},
+                             {"ck_media_items_source", "ck_media_items_time_source", "ck_media_items_gps_source"})
+            connection.exec_driver_sql("UPDATE media_items SET time_source = 'quicktime_utc' WHERE id = 2")
+            for wrong in ("time_source = 'invented'", "source = 'elsewhere'", "gps_source = 'guessed'"):
+                with self.assertRaises(IntegrityError), connection.begin_nested():
+                    connection.exec_driver_sql(f"UPDATE media_items SET {wrong} WHERE id = 1")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0034")
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT time_source FROM media_items ORDER BY id").scalars().all(), ["gps_lookup", "unknown"])
+            for table, rows in before.items():
+                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE media_items SET time_source = 'quicktime_utc' WHERE id = 2")
+        db.migrate(self.engine)
+
     def test_0034_per_part_ingest_keeps_an_export_in_flight_untouched_adds_an_empty_ledger_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         big = 5 * 1024**3
@@ -428,7 +481,7 @@ class MigrationTests(unittest.TestCase):
         columns = "id, account_id, kind, status, download_tries"
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0034")
+            command.upgrade(config, "0035")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, download_tries) VALUES (1, 1, 'initial', 'failed', 3)")
@@ -441,7 +494,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT download_interruptions FROM exports").scalar(), 0)
             self.assertEqual(connection.exec_driver_sql("SELECT id, sign_in_prompts FROM export_parts ORDER BY id").all(), [(1, 3), (2, 0)])
             config.attributes["connection"] = connection
-            command.downgrade(config, "0034")
+            command.downgrade(config, "0035")
         self.assertNotIn("download_interruptions", {column["name"] for column in inspect(self.engine).get_columns("exports")})
         self.assertNotIn("sign_in_prompts", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:
