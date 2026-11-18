@@ -18,7 +18,7 @@ PEOPLE_AND_STATUS_ROUTES = {
     "POST /api/pixels/{id}/pair", "POST /api/pixels/{id}/release-folder", "GET /api/pairing/device", "GET /api/pairing/waiting",
 }
 REVIEW_AND_IMPORT_ROUTES = {
-    "GET /api/imports", "GET /api/imports/{id}", "POST /api/exports/{id}/import", "GET /api/review", "GET /api/review/{id}",
+    "GET /api/imports", "GET /api/imports/{id}", "POST /api/exports/{id}/import", "POST /api/exports/{id}/retry-download", "GET /api/review", "GET /api/review/{id}",
     "GET /api/review/{id}/thumb/{side}", "POST /api/review/{id}/resolve", "POST /api/review/{id}/undo", "GET /api/decisions",
     "POST /api/decisions/{id}/reverse", "GET /api/media", "POST /api/media/{id}/reassign",
 }

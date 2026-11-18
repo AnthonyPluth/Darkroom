@@ -92,6 +92,7 @@ class Export(Base):
     stage: Mapped[str | None] = mapped_column(String)
     inbox_dir: Mapped[str | None] = mapped_column(String)
     download_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    download_interruptions: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     owner_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"))
 
 

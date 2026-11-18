@@ -2445,6 +2445,22 @@
         ],
         "type": "object"
       },
+      "RetryDownloadReply": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/ExportView"
+          },
+          "retried": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "export",
+          "retried"
+        ],
+        "type": "object"
+      },
       "ReviewDetail": {
         "additionalProperties": false,
         "properties": {
@@ -3561,6 +3577,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ImportQueued"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports/{id}/retry-download": {
+      "post": {
+        "operationId": "retry_download",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryDownloadReply"
                 }
               }
             },

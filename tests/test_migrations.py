@@ -14,6 +14,14 @@ from tests.managed_pixel_fixtures import seed_pixel_source_parents
 from tests.shared import on_postgres, own_database_url
 
 
+def snapshot(connection, tables, order=""):
+    found = {}
+    for table in tables:
+        columns = tables[table][0] if isinstance(tables, dict) else [column["name"] for column in inspect(connection).get_columns(table)]
+        found[table] = (columns, connection.exec_driver_sql(f"SELECT {', '.join(columns)} FROM {table}{order}").all())
+    return found
+
+
 class MigrationTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -133,20 +141,18 @@ class MigrationTests(unittest.TestCase):
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'jo@example.test', 1, 1.25)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
             connection.exec_driver_sql("INSERT INTO media_items (person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 'phone', 'jo/originals/generated.jpg', 'ab', 7, -0.125)")
-            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table}").all() for table in ("people", "google_accounts", "exports", "media_items")}
+            before = snapshot(connection, ("people", "google_accounts", "exports", "media_items"))
         db.migrate(self.engine)
         with self.engine.connect() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+            self.assertEqual(snapshot(connection, before), before)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0025")
         self.assertNotIn("managed_import_intents", inspect(self.engine).get_table_names())
         self.assertNotIn("managed_import_receipts", inspect(self.engine).get_table_names())
         with self.engine.connect() as connection:
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+            self.assertEqual(snapshot(connection, before), before)
         db.migrate(self.engine)
 
     def test_0027_managed_asset_catalog_preserves_a_populated_journal_and_downgrades_empty_catalogue(self):
@@ -161,13 +167,12 @@ class MigrationTests(unittest.TestCase):
             connection.execute(text("INSERT INTO managed_import_receipts (intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, updated_at) "
                                     "VALUES (1, 'generated-resource', 'generated-group', :sha1, :bytes, ' { } ', 1.125)"), {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4 + 17})
             tables = ("people", "google_accounts", "exports", "managed_import_intents", "managed_import_receipts")
-            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table}").all() for table in tables}
+            before = snapshot(connection, tables)
             before_indexes = {table: inspect(connection).get_indexes(table) for table in ("managed_import_intents", "managed_import_receipts")}
         db.migrate(self.engine)
         with self.engine.connect() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+            self.assertEqual(snapshot(connection, before), before)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0026")
@@ -177,8 +182,7 @@ class MigrationTests(unittest.TestCase):
             self.assertFalse(any(index["name"].endswith("catalog_binding") for index in inspect(self.engine).get_indexes(table)))
             self.assertEqual(inspect(self.engine).get_indexes(table), before_indexes[table])
         with self.engine.connect() as connection:
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table}").all(), rows)
+            self.assertEqual(snapshot(connection, before), before)
         db.migrate(self.engine)
 
     def test_0028_managed_pixel_sources_preserves_queue_and_catalogue_and_downgrades_empty_references(self):
@@ -195,21 +199,19 @@ class MigrationTests(unittest.TestCase):
                                     "VALUES (1, 1, 'owner-a', 'asset-a', :sha1, 'phone', 'generated-mobile', ' { } ', -0.125)"), {"sha1": "a" * 40})
             tables = ("people", "google_accounts", "pixels", "media_items", "pixel_copies", "exports", "managed_import_intents",
                       "managed_import_receipts", "managed_asset_versions", "managed_asset_origins")
-            before = {table: connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all() for table in tables}
+            before = snapshot(connection, tables, " ORDER BY id")
             indexed = ("media_items", "pixel_copies", "managed_asset_versions")
             before_indexes = {table: inspect(connection).get_indexes(table) for table in indexed}
         db.migrate(self.engine)
         with self.engine.connect() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0027")
         self.assertNotIn("managed_pixel_sources", inspect(self.engine).get_table_names())
         with self.engine.connect() as connection:
-            for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
             for table in indexed:
                 self.assertEqual(inspect(connection).get_indexes(table), before_indexes[table])
         db.migrate(self.engine)
@@ -343,6 +345,28 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("synced", {column["name"] for column in inspect(self.engine).get_columns("pixel_transport")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, paired, connected, last_seen, completion, error, updated FROM pixel_transport").all(), before)
+        db.migrate(self.engine)
+
+    def test_0034_export_download_interruptions_start_at_zero_keep_the_rows_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        columns = "id, account_id, kind, status, download_tries"
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0033")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, download_tries) VALUES (1, 1, 'initial', 'failed', 3)")
+            before = connection.exec_driver_sql(f"SELECT {columns} FROM exports").all()
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
+            self.assertEqual(connection.exec_driver_sql("SELECT download_interruptions FROM exports").scalar(), 0)
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0033")
+        self.assertNotIn("download_interruptions", {column["name"] for column in inspect(self.engine).get_columns("exports")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
         db.migrate(self.engine)
 
     def test_migrating_twice_changes_nothing(self):

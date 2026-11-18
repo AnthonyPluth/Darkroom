@@ -5,10 +5,11 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.dates import utc_now
-from darkroom.domain import browser_jobs
+from darkroom.domain import browser_jobs, exports
 from darkroom.storage import db
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount
+from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount
 from tests.api_world import ApiCase
+from tests.privacy import no_leaks
 from tests.shared import worker_fetch
 
 TOKEN = "exports-api-worker-token-canary-0123456789abcdef"
@@ -208,6 +209,79 @@ class ExportsApiTests(ApiCase):
         self.assertEqual((row["status"], row["parts"], row["ready_at"]), ("expired", [], None))
         with db.session(self.engine) as opened:
             self.assertEqual(opened.execute(select(BrowserJob).where(BrowserJob.kind == "download")).scalars().all(), [])
+
+
+class RetryDownloadApiTests(ApiCase):
+    extra_env = {"browser_token": TOKEN}
+
+    def setUp(self):
+        super().setUp()
+        self.account_id = self.account(self.person()["id"])["id"]
+        self.now = utc_now().timestamp()
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            account.session_state, account.schedule_created, account.schedule_end = "ok", self.now - DAY, self.now + 364 * DAY
+
+    def failed_export(self, **values):
+        with db.session(self.engine) as opened:
+            account = opened.get(GoogleAccount, self.account_id)
+            listed = exports.Listed("g-retry", self.now - 3600, "ready", self.now + 6 * DAY, (exports.ListedPart(1, 1000), exports.ListedPart(2, 2000)))
+            exports.reconcile(opened, account, [listed], self.now)
+            export = opened.execute(select(Export).where(Export.google_id == "g-retry")).scalar_one()
+            for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "download")).scalars():
+                job.status = "failed"
+            export.status, export.download_tries = "failed", exports.MAX_DOWNLOAD_JOBS
+            for part in exports.parts_of(opened, export.id):
+                part.status, part.attempts, part.downloads_used = "failed", 3, 3
+            for name, value in values.items():
+                setattr(export, name, value)
+            return export.id
+
+    def queued_downloads(self):
+        with db.session(self.engine) as opened:
+            return len(opened.execute(select(BrowserJob).where(BrowserJob.kind == "download", BrowserJob.status == "queued")).scalars().all())
+
+    def test_a_failed_export_is_retried_and_a_second_press_changes_nothing(self):
+        export_id = self.failed_export()
+        self.replies.clear()
+        with no_leaks(self, TOKEN, "jo.photos@example.test", replies=self.replies):
+            status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
+            self.assertEqual((status, reply["retried"], reply["export"]["status"]), (200, True, "downloading"), reply)
+            self.assertEqual([(part["status"], part["attempts"], part["downloads_used"]) for part in reply["export"]["parts"]], [("pending", 0, 3)] * 2)
+            status, again = self.call("POST", f"/api/exports/{export_id}/retry-download")
+            self.assertEqual((status, again["retried"], again["export"]), (200, False, reply["export"]))
+        self.assertEqual(self.queued_downloads(), 1)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.execute(select(Event.detail).where(Event.type == "export_download_retried")).scalars().all(), ["2 parts reset"])
+
+    def test_a_refusal_is_409_with_its_sentence_and_changes_nothing(self):
+        export_id = self.failed_export(expires_at=self.now - 60)
+        self.replies.clear()
+        with no_leaks(self, TOKEN, "jo.photos@example.test", replies=self.replies):
+            status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
+        self.assertEqual((status, reply), (409, {"error": "This export has expired in Takeout, so it can't be downloaded again."}))
+        self.assertEqual(self.call("GET", f"/api/exports/{export_id}")[1]["export"]["status"], "failed")
+        self.assertEqual(self.queued_downloads(), 0)
+
+    def test_a_part_out_of_googles_downloads_is_refused_with_what_to_do(self):
+        export_id = self.failed_export()
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, export_id)[1].downloads_used = 5
+        status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
+        self.assertEqual(status, 409, reply)
+        self.assertIn("Ask Takeout for a new export", reply["error"])
+
+    def test_unknown_exports_are_404(self):
+        for path in ("99", "abc", "9" * 13):
+            with self.subTest(path=path):
+                self.assertEqual(self.call("POST", f"/api/exports/{path}/retry-download")[0], 404)
+
+    def test_a_busy_database_is_503_and_changes_nothing(self):
+        export_id = self.failed_export()
+        with mock.patch.object(db, "write_lock", side_effect=browser_jobs.Busy("Darkroom is busy with another change; try again in a moment")):
+            status, reply = self.call("POST", f"/api/exports/{export_id}/retry-download")
+        self.assertEqual(status, 503, reply)
+        self.assertEqual(self.call("GET", f"/api/exports/{export_id}")[1]["export"]["status"], "failed")
 
 
 if __name__ == "__main__":

@@ -384,6 +384,11 @@ class ExportReply(TypedDict):
     export: ExportView
 
 
+class RetryDownloadReply(TypedDict):
+    export: ExportView
+    retried: bool
+
+
 class CheckNowReply(TypedDict):
     jobs: list[BrowserJobView]
     skipped: int

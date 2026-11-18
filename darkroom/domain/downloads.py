@@ -8,17 +8,20 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import dates
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import run
+from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
 
 MAX_DOWNLOADS = 5
 MAX_ATTEMPTS = 3
+MAX_INTERRUPTIONS = 3
 EXPIRY_NOTICE = 4 * alerts.DAY
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
 ASKED_TO_VERIFY = "asked_to_verify"
@@ -28,6 +31,13 @@ MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
 ATTEMPTED = json.dumps({"attempted": True})
 EXPIRING = "export_expiring"
+RESET_ON_RETRY = ("failed", "downloading", "corrupt")
+DOWNLOADED = ("downloaded", "unpacking", "importing", "imported")
+EXPIRED_WORDS = "This export has expired in Takeout, so it can't be downloaded again."
+DOWNLOADED_WORDS = "This export is already downloaded, so there is nothing to retry."
+IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry it on the Imports page."
+NOTHING_LEFT_WORDS = "Every part of this export is already downloaded, so there is nothing left to download."
+PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 
 
 class NotADownload(ValueError):
@@ -35,6 +45,10 @@ class NotADownload(ValueError):
 
 
 class Refused(ValueError):
+    pass
+
+
+class CannotRetry(ValueError):
     pass
 
 
@@ -222,15 +236,21 @@ def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Expo
     return export
 
 
-def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
+def job_failed(opened: Session, job: BrowserJob, now: float, lease_expired: bool = False) -> Export | None:
     export = export_of(opened, job)
     if export is None or export.status not in exports.STILL_WAITING:
         return None
-    for part in exports.parts_of(opened, export.id):
-        if part.status == "downloading":
-            part.status = "pending"
-            part.bytes_done = None
+    interrupted = [part for part in exports.parts_of(opened, export.id) if part.status == "downloading"]
+    for part in interrupted:
+        part.status = "pending"
+        part.bytes_done = None
     if (job.result == ATTEMPTED) == exports.all_done(opened, export):
+        return export
+    if lease_expired and export.download_interruptions < MAX_INTERRUPTIONS:
+        export.download_interruptions += 1
+        for part in interrupted:
+            part.attempts = max(0, part.attempts - 1)
+        events.record(opened, now, "export_download_interrupted", str(export.id), f"{export.download_interruptions} of {MAX_INTERRUPTIONS} interruptions used")
         return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:
@@ -238,8 +258,58 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
     return export
 
 
-def jobs_failed(opened: Session, jobs: Sequence[BrowserJob], now: float) -> int:
-    return sum(1 for job in jobs if job_failed(opened, job, now) is not None)
+def leases_expired(opened: Session, jobs: Sequence[BrowserJob], now: float) -> int:
+    return sum(1 for job in jobs if job_failed(opened, job, now, lease_expired=True) is not None)
+
+
+def lock_for_retry(opened: Session) -> None:
+    try:
+        db.write_lock(opened)
+    except OperationalError as error:
+        if not db.is_busy(error):
+            raise
+        raise browser_jobs.Busy("Darkroom is busy with another change; try again in a moment") from None
+
+
+def refuse_retry(export: Export, parts: Sequence[ExportPart], now: float) -> None:
+    expires_at = dates.instant_or_none(export.expires_at)
+    if export.status == "expired" or (expires_at is not None and now >= expires_at):
+        raise CannotRetry(EXPIRED_WORDS)
+    if export.inbox_dir is not None:
+        raise CannotRetry(IMPORT_FAILED_WORDS)
+    left = [part for part in parts if part.status != "done"]
+    if not left:
+        raise CannotRetry(NOTHING_LEFT_WORDS)
+    for part in left:
+        if part.downloads_used >= MAX_DOWNLOADS:
+            raise CannotRetry(f"Part {part.number} has used all {MAX_DOWNLOADS} of Google's downloads, so Takeout won't let Darkroom download it again. "
+                              "Ask Takeout for a new export of Google Photos instead.")
+
+
+def retry_failed(opened: Session, export_id: int, now: float) -> tuple[Export, bool]:
+    lock_for_retry(opened)
+    export = exports.one(opened, export_id)
+    if export.status in DOWNLOADED:
+        raise CannotRetry(DOWNLOADED_WORDS)
+    if export.status in exports.STILL_WAITING:
+        if export.ready_at is None:
+            raise CannotRetry(PREPARING_WORDS)
+        return export, False
+    parts = exports.parts_of(opened, export.id)
+    refuse_retry(export, parts, now)
+    reset = [part for part in parts if part.status in RESET_ON_RETRY]
+    for part in reset:
+        part.status = "pending"
+        part.attempts = 0
+        part.bytes_done = None
+    export.download_tries = 0
+    export.download_interruptions = 0
+    export.status = "downloading"
+    if not exports.download_open(opened, export):
+        exports.queue_download(opened, browser_jobs.account_of(opened, export.account_id), export, now)
+    events.record(opened, now, "export_download_retried", str(export.id), "1 part reset" if len(reset) == 1 else f"{len(reset)} parts reset")
+    opened.flush()
+    return export, True
 
 
 def on_day(moment: float, zone: str) -> str:
