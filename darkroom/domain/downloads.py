@@ -28,6 +28,9 @@ MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
 ATTEMPTED = json.dumps({"attempted": True})
 EXPIRING = "export_expiring"
+MAX_DOWNLOADING = 10
+MAX_GAP_SECONDS = 30 * 86400
+MAX_CLICKS = 10_000
 
 
 class NotADownload(ValueError):
@@ -162,6 +165,33 @@ def progress(opened: Session, job_id: int, number: int, bytes_done: int, now: fl
     if not 0 <= bytes_done <= MAX_PART_BYTES:
         raise Refused("bytes is out of range")
     part.bytes_done = bytes_done
+    return outcome(part, True, False)
+
+
+def minutes(seconds: int) -> str:
+    return alerts.counted(seconds // 60, "minute")
+
+
+def gaps(since_click: int | None, since_answer: int | None) -> str:
+    click = "the first click of this job" if since_click is None else f"{minutes(since_click)} after the previous click"
+    answer = "no prompt answered yet in this job" if since_answer is None else f"{minutes(since_answer)} after the last answered prompt"
+    return f"{click}, {answer}"
+
+
+def clicked(opened: Session, job_id: int, number: int, downloading: int, since_click: int | None, since_answer: int | None, now: float) -> dict[str, object]:
+    export = waiting_export(opened, job_id)
+    part = part_of(opened, export, number)
+    others = alerts.counted(downloading, "other part")
+    events.record(opened, now, "export_part_clicked", str(export.id), f"part {number}: clicked with {others} downloading, {gaps(since_click, since_answer)}")
+    return outcome(part, True, False)
+
+
+def prompted(opened: Session, job_id: int, number: int, downloading: int, clicks: int, since_click: int | None, since_answer: int | None, now: float) -> dict[str, object]:
+    export = waiting_export(opened, job_id)
+    part = part_of(opened, export, number)
+    others = alerts.counted(downloading, "other part")
+    events.record(opened, now, "export_part_prompt", str(export.id),
+                  f"part {number}: Google asked to verify after {alerts.counted(clicks, 'click')} since the last answered prompt, with {others} downloading, {gaps(since_click, since_answer)}")
     return outcome(part, True, False)
 
 

@@ -335,10 +335,14 @@ export interface OwnDevice {
 }
 
 export interface PartBody {
-  event: "attempt" | "progress" | "done" | "failed";
+  event: "attempt" | "progress" | "done" | "failed" | "clicked" | "prompted";
   bytes?: number;
   filename?: string;
   reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name" | "asked_to_verify";
+  downloading?: number;
+  since_click?: number;
+  since_answer?: number;
+  clicks?: number;
 }
 
 export interface PartReply {

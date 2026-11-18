@@ -1774,12 +1774,20 @@
           "bytes": {
             "type": "integer"
           },
+          "clicks": {
+            "type": "integer"
+          },
+          "downloading": {
+            "type": "integer"
+          },
           "event": {
             "enum": [
               "attempt",
               "progress",
               "done",
-              "failed"
+              "failed",
+              "clicked",
+              "prompted"
             ]
           },
           "filename": {
@@ -1794,6 +1802,12 @@
               "bad_name",
               "asked_to_verify"
             ]
+          },
+          "since_answer": {
+            "type": "integer"
+          },
+          "since_click": {
+            "type": "integer"
           }
         },
         "required": [

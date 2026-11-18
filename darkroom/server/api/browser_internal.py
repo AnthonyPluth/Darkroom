@@ -167,6 +167,19 @@ def download_plan(request: Annotated[Request, contract.DownloadPlanBody]) -> Ann
     return reply_with(request, work)
 
 
+def gap_of(body: dict[str, object], name: str) -> int | None:
+    return None if body.get(name) is None else validate.whole_number(body, name, maximum=downloads.MAX_GAP_SECONDS)
+
+
+def telemetry(opened: Session, body: dict[str, object], event: str, job_id: int, number: int, moment: float) -> dict[str, object]:
+    downloading = validate.whole_number(body, "downloading", maximum=downloads.MAX_DOWNLOADING)
+    since_click, since_answer = gap_of(body, "since_click"), gap_of(body, "since_answer")
+    if event == "clicked":
+        return downloads.clicked(opened, job_id, number, downloading, since_click, since_answer, moment)
+    clicks = validate.whole_number(body, "clicks", maximum=downloads.MAX_CLICKS)
+    return downloads.prompted(opened, job_id, number, downloading, clicks, since_click, since_answer, moment)
+
+
 def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, contract.PartReply]:
     def work(opened: Session, moment: float) -> dict[str, object]:
         body = body_of(request)
@@ -182,9 +195,11 @@ def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, 
             reply = downloads.part_done(opened, request.settings, job_id, number, filename, validate.whole_number(body, "bytes", minimum=1, maximum=downloads.MAX_PART_BYTES), moment)
         elif event == "failed":
             reply = downloads.part_failed(opened, job_id, number, validate.text(body, "reason", limit=20), moment)
+        elif event in ("clicked", "prompted"):
+            reply = telemetry(opened, body, event, job_id, number, moment)
         else:
-            raise validate.Invalid("event must be attempt, progress, done or failed")
-        if event != "progress":
+            raise validate.Invalid("event must be attempt, progress, done, failed, clicked or prompted")
+        if event not in ("progress", "clicked", "prompted"):
             monitoring.log("export part reported", outcome=event, allowed=reply["allowed"] is True, gave_up=reply["gave_up"] is True)
         return reply
 

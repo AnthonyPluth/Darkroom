@@ -12,6 +12,7 @@ from darkroom_browser import selectors
 from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, PartClick
 from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
 from darkroom_browser.jobs.status import open_archive
+from darkroom_browser.jobs.telemetry import Clicks
 from darkroom_browser.pages import takeout
 
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
@@ -225,11 +226,13 @@ def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
     return state, takeout.click_findings(shown.page, shown.address, len(tabs), shown.primary)[:MAX_SEEN]
 
 
-def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_downloads: bool) -> bool:
+def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_downloads: bool, clicks: Clicks) -> bool:
+    clicks.prompted(number, 0)
     ctx.wait_for_user("verify")
     started = ctx.clock()
     while True:
         if watch_downloads and browser.download_started():
+            clicks.answered()
             return True
         state, _ = what_the_click_led_to(browser)
         if state not in SIGN_IN_STATES:
@@ -238,10 +241,11 @@ def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_
             raise SignInTimedOut("nobody confirmed it was them within 48 hours")
         ctx.sleep(POLL_SECONDS)
         ctx.check()
+    clicks.answered()
     if watch_downloads and browser.download_started():
         return True
     ensure_signed_in(ctx, browser)
-    ctx.progress(f"verified; resuming part {number}")
+    ctx.progress(f"verified; resuming part {number} ({clicks.answer_words()})")
     return False
 
 
@@ -270,12 +274,12 @@ def collected(ctx: JobContext, browser: Browser, number: int, part: PartClick, p
         return None
 
 
-def no_download(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any, interrupted: bool) -> Path | None:
+def no_download(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any, interrupted: bool, clicks: Clicks) -> Path | None:
     state, seen = what_the_click_led_to(browser)
     if interrupted:
         report_failure(ctx, number, "interrupted")
         if state in SIGN_IN_STATES:
-            wait_for_verification(ctx, browser, number, False)
+            wait_for_verification(ctx, browser, number, False, clicks)
         return None
     if state not in SIGN_IN_STATES:
         ctx.progress(f"part {number}: clicking its link started no download ({seen}); "
@@ -284,22 +288,23 @@ def no_download(ctx: JobContext, browser: Browser, number: int, part: PartClick,
         if state == NOTHING:
             report_failure(ctx, number, "not_started", seen)
             return None
-    if state == ARRIVED or wait_for_verification(ctx, browser, number, True):
+    if state == ARRIVED or wait_for_verification(ctx, browser, number, True, clicks):
         return collected(ctx, browser, number, part, partial, report)
     report_failure(ctx, number, ASKED_TO_VERIFY)
     return None
 
 
-def clicked(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any) -> Path | None:
+def clicked(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any, clicks: Clicks) -> Path | None:
+    clicks.clicked(number, 0)
     try:
         return browser.download_to(part.selector, partial, report)
     except Cancelled:
         raise
     except Exception as error:
-        return no_download(ctx, browser, number, part, partial, report, isinstance(error, DownloadInterrupted))
+        return no_download(ctx, browser, number, part, partial, report, isinstance(error, DownloadInterrupted), clicks)
 
 
-def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
+def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str], clicks: Clicks) -> str:
     number = part["number"]
     while True:
         listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"], number)[number]
@@ -315,8 +320,8 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
         if browser.download_started():
             path = collected(ctx, browser, number, clicking, partial, report)
         else:
-            ctx.progress(f"downloading part {number} of {plan['part_count']}")
-            path = clicked(ctx, browser, number, clicking, partial, report)
+            ctx.progress(f"downloading part {number} of {plan['part_count']}; {clicks.words()}")
+            path = clicked(ctx, browser, number, clicking, partial, report, clicks)
         if path is None:
             continue
         ctx.check()
@@ -340,13 +345,15 @@ def download_export(ctx: JobContext) -> dict[str, object]:
         if part.get("status") == "done" and not (folder / str(part.get("filename"))).is_file():
             raise DownloadFailed(f"part {part['number']} is recorded as downloaded but is not in the inbox")
     browser = ctx.browser()
-    ensure_signed_in(ctx, browser)
+    clicks = Clicks(ctx)
+    if ensure_signed_in(ctx, browser):
+        clicks.answered()
     fetched = 0
     for part in parts:
         if part.get("status") == "done":
             continue
-        taken.add(fetch_part(ctx, browser, folder, plan, part, taken))
+        taken.add(fetch_part(ctx, browser, folder, plan, part, taken, clicks))
         fetched += 1
     discard_partial(folder)
-    ctx.progress(f"downloaded {fetched} of {len(parts)} parts")
-    return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched}
+    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}")
+    return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched, "telemetry": clicks.result()}
