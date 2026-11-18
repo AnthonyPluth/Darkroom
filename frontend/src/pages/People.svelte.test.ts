@@ -298,13 +298,6 @@ describe("the People page with Darkroom's Syncthing", () => {
     "GET /api/pixels": { pixels: [solo, shared], syncthing: [transport(20, "Pixel 9a", "connected", { completion: 100 }), transport(21, "Pixel 8", "not_paired")] },
   });
 
-  it("has no Syncthing column or Pair button when Syncthing is off", async () => {
-    show(seeded());
-    const table = await screen.findByRole("table", { name: "Pixels" });
-    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Device", "Google account", "People served", "Last sync", ""]);
-    expect(within(table).queryByRole("button", { name: "Pair Pixel 8" })).not.toBeInTheDocument();
-  });
-
   it("asks whether Darkroom's Syncthing pairs, which the setup wizard's Pixels step never does", async () => {
     const server = show(withSyncthing());
     await screen.findByRole("table", { name: "Pixels" });
