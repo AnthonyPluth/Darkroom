@@ -46,31 +46,34 @@ PAGE = f"""<html><body><a id="same" href="{PART_1}">part 1 in this tab</a>
 <a id="other" href="{PART_2}&amp;late=1" target="_blank">part 2 in a new tab, answered late</a></body></html>"""
 
 
+NAMES = {1: "takeout-20261102T031000Z-001.zip", 2: "takeout-20261102T031000Z-002.zip"}
+DOWNLOADS = {f"/download/{name}": f'attachment; filename="{name}"' for name in NAMES.values()}
+LINKS = {PART_1: (1, False), f"{PART_1}&late=1": (1, True), f"{PART_2}&late=1": (2, True)}
+REDIRECTS = {link.removeprefix(f"https://{TAKEOUT}"): (f"https://{GOOGLES_DOWNLOAD_HOST}/download/{NAMES[number]}?{link.partition('?')[2]}", late)
+             for link, (number, late) in LINKS.items()}
+
+
 class GoogleStandIn(BaseHTTPRequestHandler):
     def do_GET(self):
         host = self.headers.get("Host", "")
-        path, _, query = self.path.partition("?")
-        if host == TAKEOUT and path == "/takeout/download":
-            number = int(query.split("i=")[1].split("&")[0]) + 1
-            if "late=1" in query:
+        if host == TAKEOUT and self.path in REDIRECTS:
+            location, late = REDIRECTS[self.path]
+            if late:
                 time.sleep(LATE_SECONDS)
-            self.send_response(302)
-            self.send_header("Location", f"https://{GOOGLES_DOWNLOAD_HOST}/download/takeout-20261102T031000Z-00{number}.zip?{query}")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        if host == GOOGLES_DOWNLOAD_HOST and path.startswith("/download/"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", f'attachment; filename="{path.removeprefix("/download/")}"')
-            self.send_header("Content-Length", str(len(ZIP)))
-            self.end_headers()
-            self.wfile.write(ZIP)
-            return
-        body = PAGE.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+            self.answer(302, {"Location": location, "Content-Length": "0"}, b"")
+        elif host == GOOGLES_DOWNLOAD_HOST and self.path.partition("?")[0] in DOWNLOADS:
+            disposition = DOWNLOADS[self.path.partition("?")[0]]
+            self.answer(200, {"Content-Type": "application/zip", "Content-Disposition": disposition, "Content-Length": str(len(ZIP))}, ZIP)
+        elif host == TAKEOUT and self.path == PAGE_URL.removeprefix(f"https://{TAKEOUT}"):
+            body = PAGE.encode()
+            self.answer(200, {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(body))}, body)
+        else:
+            self.answer(404, {"Content-Length": "0"}, b"")
+
+    def answer(self, status, headers, body):
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -112,6 +115,7 @@ class ChromiumDownloadTests(unittest.TestCase):
                         "-keyout", str(folder / "key.pem"), "-out", str(folder / "cert.pem")], check=True, capture_output=True)
         server = ThreadingHTTPServer(("127.0.0.1", 0), GoogleStandIn)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(folder / "cert.pem", folder / "key.pem")
         server.socket = context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
