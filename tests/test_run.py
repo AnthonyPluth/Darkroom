@@ -85,8 +85,10 @@ class RunTests(unittest.TestCase):
         server.serve_forever.side_effect = KeyboardInterrupt
         with mock.patch.object(run.handler, "make_server", return_value=server) as made, mock.patch.object(run, "migrate", return_value=0) as migrated, \
                 mock.patch.object(run.jobs, "build") as built, mock.patch.object(run.db, "make_engine") as engine, \
+                mock.patch.object(run.jobs, "gate_syncthing", side_effect=lambda scheduler, *rest: scheduler) as gated, \
                 mock.patch.object(run.secret_key, "ensure", side_effect=lambda settings, engine: settings) as keyed, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(run.main(["serve"]), 0)
+        gated.assert_called_once()
         keyed.assert_called_once()
         server.server_close.assert_called_once()
         migrated.assert_called_once()

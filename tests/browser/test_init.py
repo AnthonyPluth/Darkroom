@@ -53,7 +53,8 @@ def handed(value):
 class PlanTests(unittest.TestCase):
     def test_the_app_gets_every_setting_it_reads_except_the_browser_token(self):
         read = set(re.findall(r'env(?:_list|_flag)?\("([A-Z0-9_]+)"', (ROOT / "darkroom/config.py").read_text())) | set(app_config.REMOVED_ALERT_VARIABLES)
-        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_SYNCTHING_KEY_FD", "DARKROOM_ONE_CONTAINER"})
+        self.assertEqual(set(plan.APP_SETTINGS), read - {"DARKROOM_BROWSER_TOKEN_FD", "DARKROOM_VIEWER_SECRET_FD", "DARKROOM_SYNCTHING_KEY_FD", "DARKROOM_ONE_CONTAINER",
+                                                         plan.SYNCTHING_SWITCH})
         env = plan.app_env(GIVEN)
         self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD], env[plan.ONE_CONTAINER]), (plan.PIPE["token"], plan.PIPE["viewer"], "1"))
         self.assertFalse({"HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
@@ -86,12 +87,12 @@ class PlanTests(unittest.TestCase):
         viewer = next(spec for spec in plan.specs(GIVEN, bool, bool) if spec.name == "viewer")
         self.assertEqual(set(viewer.env) - set(plan.display_env(GIVEN)), {"PYTHONPATH", "PYTHONDONTWRITEBYTECODE"})
 
-    def test_the_app_starts_first_and_the_secrets_go_on_pipes_never_on_a_command_line(self):
+    def test_syncthing_then_the_app_start_first_and_the_secrets_go_on_pipes_never_on_a_command_line(self):
         specs = plan.specs(GIVEN, bool, bool)
-        self.assertEqual([spec.name for spec in specs], ["app", "display", "vnc", "viewer", "worker"])
-        self.assertEqual([spec.secrets for spec in specs], [("token", "viewer"), (), (), ("viewer",), ("token",)])
+        self.assertEqual([spec.name for spec in specs], ["syncthing", "app", "display", "vnc", "viewer", "worker"])
+        self.assertEqual([spec.secrets for spec in specs], [(), ("token", "viewer", "syncthing"), (), (), ("viewer",), ("token",)])
         self.assertEqual([spec.name for spec in specs if spec.strays], ["worker"])
-        viewer = specs[3].argv
+        viewer = specs[4].argv
         self.assertEqual(viewer[viewer.index("--auth-source") + 1], plan.PIPE["viewer"])
         self.assertEqual(viewer[viewer.index("--auth-plugin") + 1], plan.VIEWER_PLUGIN)
         for spec in specs:
@@ -287,7 +288,7 @@ class ViewerAuthTests(unittest.TestCase):
 
 
 class InitMainTests(unittest.TestCase):
-    def test_main_hands_two_fresh_secrets_and_logs_neither(self):
+    def test_main_hands_three_fresh_secrets_and_logs_none(self):
         held = {}
 
         def run(self):
@@ -298,8 +299,8 @@ class InitMainTests(unittest.TestCase):
                 mock.patch.object(supervisor.Supervisor, "run", run), mock.patch("signal.signal"):
             self.assertEqual(init_main.main(GIVEN), 0)
             watched.update(held.values())
-        self.assertEqual(sorted(held), ["token", "viewer"])
-        self.assertNotEqual(held["token"], held["viewer"])
+        self.assertEqual(sorted(held), ["syncthing", "token", "viewer"])
+        self.assertEqual(len(set(held.values())), 3)
         self.assertTrue(all(len(value) == 43 and app_config.browser_token_usable(value) for value in held.values()))
         self.assertEqual([call.args for call in prctl.call_args_list], [(supervisor.PR_SET_DUMPABLE, 0), (supervisor.PR_SET_CHILD_SUBREAPER, 1)])
         with mock.patch.object(init_main.sockets, "accepting", return_value=False) as accepting:

@@ -9,9 +9,9 @@ The check never repairs itself. Only `python run.py bind-share` writes a sentine
 An existing deployment has no sentinel, so from this version on placing and pruning stop until you bind the share once. Nothing else changes, and nothing is deleted while they are stopped. `python run.py check-config` warns `the working share is not bound (...)` until you do.
 
 1. Start the container once with this version, so the database is migrated.
-2. Pause the Syncthing that serves `_pixels/` (while Syncthing is configured by hand, outside Darkroom).
+2. Check that no other Syncthing serves `_pixels/` on the server, such as Unraid's Syncthing app or one on the host ([Ports already in use](one-container.md#ports-already-in-use)). Darkroom's own Syncthing, always on in the one container, stays paused for every Pixel while the share has no sentinel.
 3. Run the command in the container: `docker compose exec darkroom python run.py bind-share` (or the container's console on Unraid).
-4. Resume Syncthing for `_pixels/` once the next `pixel folders tended` log line shows `held=0`.
+4. There is nothing to resume by hand: Darkroom resumes each Pixel's folder in its own Syncthing once the hourly tend has checked that Pixel's copies and none is still being written back.
 
 ## What the command does
 
@@ -25,14 +25,14 @@ An existing deployment has no sentinel, so from this version on placing and prun
 
 Otherwise it shows what it found (the root, what it is mounted from, how many entries are at the root and files under `_pixels/`, how many copies are recorded as placed) and asks two things, each answered by typing a word:
 
-- `paused`: with an outside Syncthing configured by hand, that it is paused for every folder under `_pixels/`; with Darkroom's own Syncthing (`DARKROOM_SYNCTHING=1` in the one container), which Darkroom keeps paused for every Pixel while the share has no sentinel, that no other Syncthing (Unraid's Syncthing app, or one on the host) serves `_pixels/` on the server. Either way, because an empty replacement would otherwise reach each Pixel as deletions;
+- `paused`: that no other Syncthing (Unraid's Syncthing app, or one on the host) serves `_pixels/` on the server. Darkroom keeps its own Syncthing paused for every Pixel while the share has no sentinel, and an empty replacement served by another Syncthing would otherwise reach each Pixel as deletions;
 - `bind`: to write a new sentinel and record it.
 
 Any other answer writes nothing. On `bind` it records a new random identity in the `stored_settings` table (as `share_sentinel`, which no environment variable sets), writes it to `.darkroom-share` at the share root (create-only, mode 0600), and records a `share_bound` event. If the file cannot be written the command says so and removes the file it had just created (never one that was put in its place); placing and pruning stay stopped and the command can be run again.
 
 ## A lost and replaced share
 
-When the share really has been lost and replaced (restored from a backup, or a new disk), the check fails with `the sentinel is missing from the share`. Pause the outside Syncthing for `_pixels/`, map the replacement to `/photos`, start the container and run `bind-share`. The next cycle runs the placed-copy check first, which finds the placed copies that are missing and has them written again from `originals/` (see "Placed copies that are missing or changed" in [the runbook](../runbook.md)); resume Syncthing only when the `pixel folders tended` log line shows `held=0`.
+When the share really has been lost and replaced (restored from a backup, or a new disk), the check fails with `the sentinel is missing from the share`. Darkroom's Syncthing is already paused for every Pixel while the check fails. Map the replacement to `/photos`, start the container and run `bind-share`. The next cycle runs the placed-copy check first, which finds the placed copies that are missing and has them written again from `originals/` (see "Placed copies that are missing or changed" in [the runbook](../runbook.md)); Darkroom resumes each Pixel's folder by itself once that Pixel's copies are checked and none is still being written back.
 
 ## Rollback
 

@@ -24,7 +24,7 @@ def version(request: Request) -> Annotated[Response, contract.Version]:
 
 def status(request: Request) -> Annotated[Response, contract.Status]:
     with db.session(engine_of(request)) as opened:
-        reply = overview.overview(opened, request.settings.syncthing, now())
+        reply = overview.overview(opened, now())
     return json_response(reply)
 
 
