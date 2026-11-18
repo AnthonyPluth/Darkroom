@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from tests.fakes.immich import FakeImmich, FakePerson
+from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
 
 ROOT = Path(__file__).resolve().parent.parent
 PEOPLE = [
@@ -85,6 +85,18 @@ class FakeImmichTests(unittest.TestCase):
 
     def test_unknown_routes_are_404(self):
         self.assertEqual(call(self.fake, "GET", "/api/assets", "admin-key")[0], 404)
+
+    def test_a_missing_or_unreadable_asset_answers_400_like_immich_and_404_only_when_asked(self):
+        denied = (400, {"message": "Not found or no asset.read access", "error": "Bad Request", "statusCode": 400})
+        self.fake.add_asset(FakeAsset(id="als", owner_id="u-al", data=b"x"))
+        self.assertEqual(call(self.fake, "GET", "/api/assets/ghost", "key-jo"), denied)
+        self.assertEqual(call(self.fake, "GET", "/api/assets/als", "key-jo"), denied)
+        self.assertEqual(call(self.fake, "GET", "/api/assets/als", "key-al")[0], 200)
+        self.fake.state.missing_status = 404
+        self.assertEqual(call(self.fake, "GET", "/api/assets/ghost", "key-jo")[0], 404)
+        self.assertEqual(call(self.fake, "GET", "/api/assets/als", "key-jo"), denied)
+        self.fake.state.shared.add("als")
+        self.assertEqual(call(self.fake, "GET", "/api/assets/als", "key-jo")[1]["ownerId"], "u-al")
 
     def test_mode_500_and_401_apply_to_every_call(self):
         self.fake.mode("500")
