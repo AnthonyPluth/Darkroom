@@ -27,8 +27,14 @@ CHECK_TIMEOUT = 5.0
 CHECK_LIMIT = 4096
 USER_AGENT = "Darkroom"
 AddressCheck = Literal["answered", "no_answer", "not_immich", "tls_failed"]
-MANAGED_VERSION = "v3.3.6"
+MANAGED_VERSIONS = frozenset({"v3.3.6", "v3.4.1"})
 MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
+MANAGED_IMPORT_PERMISSIONS = MANAGED_READ_PERMISSIONS | {"asset.upload"}
+ManagedAccess = Literal["read", "import"]
+MANAGED_GRANTS: dict[str, tuple[frozenset[str], str]] = {
+    "read": (MANAGED_READ_PERMISSIONS, "managed Immich reads require only the approved read permissions"),
+    "import": (MANAGED_IMPORT_PERMISSIONS, "managed Immich imports require only the approved import permissions"),
+}
 READ_ROUTES = frozenset({("GET", "/api/server/ping"), ("GET", "/api/server/about"), ("GET", "/api/users/me"),
                          ("GET", "/api/api-keys/me"), ("GET", "/api/libraries"), ("POST", "/api/search/metadata")})
 
@@ -407,8 +413,11 @@ class ManagedReader:
     client: Client = field(repr=False)
     key: str = field(repr=False)
     owner_id: str = field(repr=False)
+    access: ManagedAccess = "read"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.access, str) or self.access not in MANAGED_GRANTS:
+            raise ImmichFailed("managed Immich access must be read or import")
         if (not isinstance(self.key, str) or not self.key or any(not 33 <= ord(c) <= 126 for c in self.key)
                 or self.key == self.client.admin_key or not is_canonical_id(self.owner_id)):
             raise ImmichFailed("managed Immich access requires a person key and owner")
@@ -425,14 +434,18 @@ class ManagedReader:
         identity = self.client.call("GET", "/api/users/me", key=self.key)
         if not isinstance(identity, dict) or identity.get("id") != self.owner_id:
             raise ImmichFailed("the Immich key does not belong to the expected person")
+        if identity.get("isAdmin") is not False:
+            raise ImmichFailed("managed Immich access refuses an administrator's key")
         about = self.client.call("GET", "/api/server/about", key=self.key)
-        if not isinstance(about, dict) or about.get("version") != MANAGED_VERSION:
+        version = about.get("version") if isinstance(about, dict) else None
+        if not isinstance(version, str) or version not in MANAGED_VERSIONS:
             raise ImmichFailed("this Immich version is not supported for managed access")
         found = self.client.call("GET", "/api/api-keys/me", key=self.key)
         permissions = found.get("permissions") if isinstance(found, dict) else None
+        required, refusal = MANAGED_GRANTS[self.access]
         if (not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions)
-                or frozenset(permissions) != MANAGED_READ_PERMISSIONS):
-            raise ImmichFailed("managed Immich reads require only the approved read permissions")
+                or frozenset(permissions) != required):
+            raise ImmichFailed(refusal)
 
     def get_asset(self, asset_id: str) -> Asset:
         if not is_canonical_id(asset_id):
