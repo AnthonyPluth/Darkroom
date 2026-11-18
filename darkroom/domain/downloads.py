@@ -274,9 +274,10 @@ def retry_failed(opened: Session, export_id: int, now: float) -> tuple[Export, b
     refusal = exports.retry_refusal(export, parts, now)
     if refusal is not None:
         raise CannotRetry(refusal)
-    reset = [part for part in parts if part.status in RESET_ON_RETRY]
+    reset = [part for part in parts if part.status != "done"]
     for part in reset:
-        part.status = "pending"
+        if part.status in RESET_ON_RETRY:
+            part.status = "pending"
         part.attempts = 0
         part.bytes_done = None
     export.download_tries = 0

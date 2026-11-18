@@ -491,17 +491,53 @@ class RetryFailedTests(DownloadCase):
             downloads.finish(opened, self.settings, job, NOW + DAY)
         self.assertEqual(self.export_row()[:2], ("downloaded", 0))
 
-    def test_only_failed_downloading_and_corrupt_parts_are_reset(self):
-        for status, attempts in (("pending", 2), ("corrupt", 2), ("downloading", 1), ("failed", 3)):
+    def test_every_part_left_to_download_waits_again_with_its_attempts_back_and_its_downloads_kept(self):
+        for status, attempts in (("pending", 3), ("corrupt", 2), ("downloading", 1), ("failed", 3)):
             with self.subTest(status=status):
                 self.set_export(status="failed", download_tries=2)
                 self.set_part(1, status=status, attempts=attempts, downloads_used=attempts, bytes_done=None if status != "downloading" else 1024)
                 self.set_part(2, status="failed", attempts=3, downloads_used=3)
                 self.assertEqual(self.retry()[1], True)
-                expected = ("pending", attempts, 2) if status == "pending" else ("pending", 0, 0)
-                self.assertEqual(self.part(1)[:3], (expected[0], attempts, expected[1]))
-                self.assertEqual(self.part(1)[3], None)
+                self.assertEqual(self.part(1), ("pending", attempts, 0, None))
                 self.assertEqual(self.part(2), ("pending", 3, 0, None))
+
+    def retried_part_two_downloads(self, at):
+        self.assertEqual(self.part(2), ("pending", 3, downloads.MAX_ATTEMPTS, None))
+        self.assertEqual(self.export_row()[0], "failed")
+        self.assertEqual(self.retry(at), ("downloading", True))
+        job = self.claim(at)
+        reply = self.attempt(job, 2, at)
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["part"]["downloads_used"], reply["part"]["attempts"]), (True, False, 4, 1))
+        self.assertEqual((self.export_row()[0], self.part(2)[0]), ("downloading", "downloading"))
+
+    def test_a_part_left_waiting_with_its_attempts_used_by_three_failed_jobs_downloads_after_a_retry(self):
+        for day in range(exports.MAX_DOWNLOAD_JOBS):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            job = self.claim(at)
+            self.attempt(job, 2, at)
+            self.fail_job(job, at)
+        self.retried_part_two_downloads(NOW + 3 * DAY)
+
+    def test_a_part_left_waiting_with_its_attempts_used_by_counted_lost_leases_downloads_after_a_retry(self):
+        self.set_export(download_interruptions=downloads.MAX_INTERRUPTIONS)
+        for day in range(exports.MAX_DOWNLOAD_JOBS):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            self.attempt(self.claim(at), 2, at)
+            jobs.build(self.settings, self.engine, at).run_one("browser.leases", at + browser_jobs.LEASE_SECONDS + 1)
+        self.retried_part_two_downloads(NOW + 3 * DAY)
+
+    def test_uncounted_lost_leases_leave_no_part_with_its_attempts_used(self):
+        for day in range(downloads.MAX_INTERRUPTIONS):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            self.attempt(self.claim(at), 2, at)
+            jobs.build(self.settings, self.engine, at).run_one("browser.leases", at + browser_jobs.LEASE_SECONDS + 1)
+        self.assertEqual((self.export_row()[:2], self.part(2)), (("downloading", 0), ("pending", 3, 0, None)))
 
     def test_a_second_press_changes_nothing_and_queues_no_second_job(self):
         self.fail_part_two()
