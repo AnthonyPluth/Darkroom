@@ -89,6 +89,12 @@ export const importedExport: ExportView = {
   parts: [part(1, "done", 1), part(2, "done", 1)],
 };
 export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", parts: [part(1, "done", 1), part(2, "failed", 3)], retry_refusal: "This export was downloaded and its import failed; retry it on the Imports page." };
+export const failedDownload: ExportView = {
+  ...downloadingExport, id: 42, status: "failed", retry_allowed: true,
+  parts: [part(1, "done", 1), { ...part(2, "failed", 3), filename: null }, part(3, "pending", 0)],
+};
+export const SPENT = "Part 2 has used all 5 of Google's downloads, so Takeout won't let Darkroom download it again. Ask Takeout for a new export of Google Photos instead.";
+export const spentDownload: ExportView = { ...failedDownload, id: 43, created_at: 250_000, retry_allowed: false, retry_refusal: SPENT };
 export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [], retry_allowed: false, retry_refusal: null };
 
 export const transport = (pixel_id: number, name: string, state: PixelSyncthing["state"], extra: Partial<PixelSyncthing> = {}): PixelSyncthing => ({

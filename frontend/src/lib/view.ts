@@ -190,7 +190,21 @@ export function accountExports(exports: readonly ExportView[], accountId: number
 }
 
 export function currentExport(exports: readonly ExportView[]): ExportView | undefined {
-  return exports.find((item) => ACTIVE.includes(item.status));
+  return exports.find((item) => ACTIVE.includes(item.status) || (item.status === "failed" && item.retry_allowed));
+}
+
+const DOWNLOAD_JOBS = 3;
+const RETRY_DOES = "Retry download tries the parts that are not downloaded yet again and keeps the ones that are. Google's downloads already used still count.";
+
+export function failedDownloadSentence(item: ExportView): string | null {
+  if (item.status !== "failed" || !item.retry_allowed) return null;
+  const stopped = item.parts.find((part) => part.status === "failed");
+  const why = stopped === undefined ? `the download failed ${DOWNLOAD_JOBS} times` : `part ${stopped.number} failed after ${stopped.attempts === 1 ? "1 attempt" : `${stopped.attempts} attempts`}`;
+  return `Download stopped: ${why}. ${RETRY_DOES}`;
+}
+
+export function retryDownloadSentence(retried: boolean, email: string): string {
+  return retried ? `Download queued again for ${email}.` : "This export is already downloading.";
 }
 
 export function earlierExports(exports: readonly ExportView[], current: ExportView | undefined): ExportView[] {

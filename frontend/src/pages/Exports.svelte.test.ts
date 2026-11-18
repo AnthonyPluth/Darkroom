@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onDay, onDayAt } from "$lib/format";
 import { router } from "$lib/nav.svelte";
-import { downloadingExport, expiredExport, failedExport, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
+import { downloadingExport, expiredExport, failedDownload, failedExport, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
 import Exports from "./Exports.svelte";
 
 beforeEach(() => {
@@ -588,6 +588,51 @@ describe("the Exports page", () => {
       expect(await within(region).findByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com: database is locked.");
       expect(server.sent("GET /api/accounts")).toHaveLength(1);
       expect(within(region).getByRole("button", { name: "Renew now" })).toBeEnabled();
+    });
+  });
+  describe("Retry download", () => {
+    const retried = { ...failedDownload, status: "downloading", retry_allowed: false, parts: failedDownload.parts.map((part) => (part.status === "failed" ? { ...part, status: "pending", attempts: 0 } : part)) };
+
+    it("says why a download stopped and puts it back on request", async () => {
+      let current = failedDownload;
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": () => ({ exports: [current], schedules: [] }),
+        "POST /api/exports/42/retry-download": () => {
+          current = retried;
+          return reply(200, { export: retried, retried: true });
+        },
+      });
+      const section = await screen.findByRole("region", { name: /Current export parts/ });
+      expect(within(section).getAllByText("Failed").length).toBeGreaterThan(0);
+      const button = within(section).getByRole("button", { name: "Retry download" });
+      expect(button).toHaveAccessibleDescription(/^Download stopped: part 2 failed after 3 attempts\./);
+      await userEvent.click(button);
+      expect(server.sent("POST /api/exports/42/retry-download")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("Download queued again for jo.photos@example.com.");
+      const after = await screen.findByRole("region", { name: /Current export parts/ });
+      expect(within(after).queryByRole("button", { name: "Retry download" })).not.toBeInTheDocument();
+      expect(within(after).getAllByText("Downloading").length).toBeGreaterThan(0);
+    });
+
+    it("shows the server's refusal and reloads", async () => {
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [failedDownload], schedules: [] },
+        "POST /api/exports/42/retry-download": () => reply(409, { error: "This export has expired in Takeout, so it can't be downloaded again." }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Retry download" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("This export has expired in Takeout, so it can't be downloaded again.");
+      expect(server.sent("GET /api/exports").length).toBeGreaterThan(1);
+    });
+
+    it("is not offered for an export that cannot be retried, which says what to do instead", async () => {
+      show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] }, "GET /api/exports": { exports: [spentDownload], schedules: [] } });
+      const section = await screen.findByRole("region", { name: /Earlier exports/ });
+      expect(within(section).getByText(SPENT)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Retry download" })).not.toBeInTheDocument();
     });
   });
 });

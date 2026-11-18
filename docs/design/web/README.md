@@ -14,6 +14,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `03-people-desktop.dc.html`, `03-people-phone.dc.html` | People |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` | Exports |
 | `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (signed off, #164, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904)) |
+| `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` (last two blocks) | Exports, a failed download: the parts, why it stopped and Retry download, and in Earlier exports a failed download that can't be retried with what to do instead (**awaiting the owner's sign-off**, #427) |
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
