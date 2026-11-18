@@ -136,14 +136,22 @@ def part_link(href: str) -> str:
     return selectors.PART_LINK_TEMPLATE.format(href=href.replace("\\", "\\\\").replace('"', '\\"'))
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int) -> dict[int, str]:
+def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
+    try:
+        targets = browser.link_targets(selector)
+    except Exception:
+        return False
+    return bool(targets) and set(targets) == {checked}
+
+
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int) -> dict[int, takeout.ListedPart]:
     try:
         detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
         raise DownloadFailed("Takeout no longer lists this export as ready to download")
-    links = {part.number: part.link for part in detail.parts}
+    links = {part.number: part for part in detail.parts}
     if sorted(links) != list(range(1, count + 1)):
         raise DownloadFailed(f"Takeout lists {len(links)} parts for an export Darkroom expects {count} parts from")
     return links
@@ -200,14 +208,17 @@ def wait_for_verification(ctx: JobContext, browser: Browser, number: int) -> Non
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
     number = part["number"]
     while True:
-        href = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"])[number]
+        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"])[number]
+        selector = part_link(listed.link)
+        if not leads_where_checked(browser, selector, listed.href):
+            raise DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
         reply = ctx.reporter.part(ctx.job_id, number, {"event": "attempt"})
         if not reply.get("allowed"):
             raise DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         partial = fresh_partial(folder)
         ctx.progress(f"downloading part {number} of {plan['part_count']}")
         try:
-            path = browser.download_to(part_link(href), partial, bytes_reporter(ctx, number))
+            path = browser.download_to(selector, partial, bytes_reporter(ctx, number))
         except Cancelled:
             raise
         except Exception as error:

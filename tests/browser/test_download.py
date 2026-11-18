@@ -74,6 +74,8 @@ class DownloadBrowser:
         self.selectors = []
         self.visited = []
         self.closed = False
+        self.read_links = []
+        self.targets = self.as_chromium_resolves
 
     def goto(self, url):
         self.url = url
@@ -97,6 +99,14 @@ class DownloadBrowser:
 
     def wait_for(self, selector, timeout_ms=30_000):
         return None
+
+    @staticmethod
+    def as_chromium_resolves(selector):
+        return ["https://takeout.google.com/takeout/download?" + re.search(r'download\?([^"]*)"\]$', selector).group(1)]
+
+    def link_targets(self, selector):
+        self.read_links.append(selector)
+        return self.targets(selector)
 
     def download_to(self, selector, folder, progress=None):
         self.selectors.append(selector)
@@ -282,6 +292,42 @@ class DownloadJobTests(DownloadWorld):
         _, result = self.run_job(browser)
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.selectors, [f'a[href="takeout/download?j={COMPLETED_ID}&i={index}&user={MADE_UP_USER}"]' for index in range(3)])
+
+    def test_each_part_is_clicked_only_after_the_browser_reads_its_link_as_the_address_checked(self):
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(browser.read_links, browser.selectors)
+
+    def assert_read_differently_downloads_nothing(self, reading):
+        browser = DownloadBrowser(["ok"])
+        browser.targets = reading
+        with self.assertRaisesRegex(download.DownloadFailed, "could not confirm that the link to part 1 on Takeout leads to the address Darkroom checked") as raised:
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [])
+        self.assertEqual(self.parts(), [("pending", 0, 0)] * 3)
+        self.assertNotIn("user=", str(raised.exception))
+        self.assertNotIn(COMPLETED_ID, str(raised.exception))
+
+    def test_a_part_link_the_browser_resolves_to_another_path_downloads_nothing(self):
+        self.assert_read_differently_downloads_nothing(lambda selector: [f"https://takeout.google.com/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}"])
+
+    def test_a_part_link_the_browser_resolves_to_another_host_downloads_nothing(self):
+        self.assert_read_differently_downloads_nothing(lambda selector: [f"https://other.example/takeout/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}"])
+
+    def test_a_second_matching_link_that_leads_elsewhere_downloads_nothing(self):
+        self.assert_read_differently_downloads_nothing(lambda selector: [*DownloadBrowser.as_chromium_resolves(selector), "https://other.example/"])
+
+    def test_a_part_link_the_browser_cannot_find_downloads_nothing(self):
+        self.assert_read_differently_downloads_nothing(lambda selector: [])
+
+    def test_a_part_link_the_browser_cannot_read_downloads_nothing(self):
+        self.assert_read_differently_downloads_nothing(lambda selector: [""])
+
+    def test_an_error_reading_a_part_link_downloads_nothing_and_names_no_address(self):
+        def unreadable(selector):
+            raise RuntimeError(f"page closed while reading {selector}")
+
+        self.assert_read_differently_downloads_nothing(unreadable)
 
     def test_part_links_that_resolve_off_takeouts_download_path_download_nothing(self):
         browser = DownloadBrowser(["ok"])
@@ -608,6 +654,16 @@ class SharedFolderTests(unittest.TestCase):
         page = mock.Mock()
         page.url = "https://takeout.google.com/manage/"
         self.assertEqual(live.Live(page).current_url(), "https://takeout.google.com/manage/")
+
+    def test_the_live_browser_reads_each_matching_links_resolved_address(self):
+        from unittest import mock
+
+        from darkroom_browser import live
+
+        page = mock.Mock()
+        page.eval_on_selector_all.return_value = ["https://takeout.google.com/takeout/download?j=x", {}, None]
+        self.assertEqual(live.Live(page).link_targets('a[href="takeout/download?j=x"]'), ["https://takeout.google.com/takeout/download?j=x", "", ""])
+        page.eval_on_selector_all.assert_called_once_with('a[href="takeout/download?j=x"]', "links => links.map(link => link.href)")
 
     def test_closing_still_reports_the_browsers_error_when_sharing_the_folder_fails(self):
         from unittest import mock

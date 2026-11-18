@@ -55,6 +55,10 @@ class Live:
     def wait_for(self, selector: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
         self.page.wait_for_selector(selector, timeout=timeout_ms)
 
+    def link_targets(self, selector: str) -> list[str]:
+        found = self.page.eval_on_selector_all(selector, "links => links.map(link => link.href)")
+        return [each if isinstance(each, str) else "" for each in found]
+
     def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
