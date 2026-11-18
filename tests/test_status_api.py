@@ -24,7 +24,7 @@ def made_up_device(index: int) -> str:
 
 class StatusApiTests(ApiCase):
     def test_with_no_data_it_is_empty_and_the_worker_has_not_been_seen(self):
-        self.assertEqual(self.call("GET", "/api/status"), (200, {"worker_last_seen": None, "people": [], "alerts": [], "syncthing": None}))
+        self.assertEqual(self.call("GET", "/api/status"), (200, {"worker_last_seen": None, "people": [], "alerts": [], "syncthing": {"state": "starting", "reason": None, "since": None, "pixels": []}}))
         self.assertEqual(self.call("GET", "/api/events"), (200, {"events": []}))
 
     def test_a_person_with_nothing_yet_has_zeros_and_nulls(self):
@@ -123,7 +123,7 @@ class SeededDemoStatusTests(unittest.TestCase):
             self.addCleanup(engine.dispose)
             db.Base.metadata.create_all(engine)
             (root / "photos").mkdir()
-            settings = settings_from(DARKROOM_DEMO="1", DARKROOM_SYNCTHING="1", DARKROOM_PHOTOS_ROOT=str(root / "photos"))
+            settings = settings_from(DARKROOM_DEMO="1", DARKROOM_PHOTOS_ROOT=str(root / "photos"))
             with db.session(engine) as opened, mock.patch.object(tls, "urlopen", side_effect=AssertionError):
                 demo.seed(opened, Photos(root / "photos"), settings, date(2026, 6, 15))
                 token = demo.sign_in(opened, settings, utc_now().timestamp())
@@ -150,8 +150,6 @@ class SeededDemoStatusTests(unittest.TestCase):
 
 
 class SyncthingStatusApiTests(ApiCase):
-    extra_env = {"DARKROOM_SYNCTHING": "1"}
-
     def setUp(self):
         super().setUp()
         jo = self.person()
@@ -294,16 +292,6 @@ class SyncthingStatusApiTests(ApiCase):
             self.call("GET", "/api/status")
 
 
-class SyncthingOffStatusApiTests(ApiCase):
-    def test_with_darkrooms_syncthing_off_nothing_about_it_is_sent(self):
-        jo = self.person()
-        self.pixel(self.account(jo["id"])["id"], "Pixel A", syncthing_device_id=made_up_device(1))
-        _, reply = self.call("GET", "/api/status")
-        self.assertIsNone(reply["syncthing"])
-        self.assertIsNone(reply["people"][0]["pixels"][0]["syncthing"])
-        self.assertIsNone(self.call("GET", "/api/pixels")[1]["syncthing"])
-
-
 class DemoSyncthingRouteTests(ApiCase):
     def test_a_server_that_is_not_a_demo_answers_404_and_changes_nothing(self):
         status, reply = self.call("POST", "/api/demo/syncthing", {"state": "down"})
@@ -320,7 +308,7 @@ class DemoSyncthingSwitchTests(unittest.TestCase):
             self.addCleanup(engine.dispose)
             db.Base.metadata.create_all(engine)
             (root / "photos").mkdir()
-            settings = settings_from(DARKROOM_DEMO="1", DARKROOM_SYNCTHING="1", DARKROOM_PHOTOS_ROOT=str(root / "photos"))
+            settings = settings_from(DARKROOM_DEMO="1", DARKROOM_PHOTOS_ROOT=str(root / "photos"))
             with db.session(engine) as opened, mock.patch.object(tls, "urlopen", side_effect=AssertionError):
                 demo.seed(opened, Photos(root / "photos"), settings, date(2026, 6, 15))
                 token = demo.sign_in(opened, settings, utc_now().timestamp())

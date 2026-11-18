@@ -77,7 +77,6 @@ def hand_key() -> None:
     os.write(write, KEY.encode("ascii"))
     os.close(write)
     os.environ["DARKROOM_SYNCTHING_KEY_FD"] = str(read)
-    os.environ["DARKROOM_SYNCTHING"] = "1"
 
 
 def start(data_dir: Path) -> DemoSyncthing:
