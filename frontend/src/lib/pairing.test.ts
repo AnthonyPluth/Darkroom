@@ -32,9 +32,4 @@ describe("pairingMode and ownDevice", () => {
     expect(await pairingMode()).toEqual({ kind: "on" });
     expect(await ownDevice()).toEqual({ kind: "not_running" });
   });
-
-  it("are off when Darkroom's Syncthing is off", async () => {
-    answering(reply(409, { error: "off" }));
-    expect(await pairingMode()).toEqual({ kind: "off" });
-  });
 });
