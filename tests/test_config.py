@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import tempfile
@@ -249,6 +250,63 @@ class AuthProblemTests(unittest.TestCase):
                 self.assertEqual(bad.pixel_folder_cap_gb, 0)
                 self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.refuses_to_start(bad)))
                 self.assertIn("PIXEL_FOLDER_CAP_GB", " ".join(config.problems(bad)))
+
+
+SWITCH_CANARY = "a-switch-value-canary-0123456789abcdef0123"
+
+
+class RemovedSyncthingSwitchTests(unittest.TestCase):
+    def test_only_a_value_that_used_to_turn_syncthing_off_counts_as_set_off(self):
+        for value in ("0", "false", "no", "off", "yes", "true", " 0 ", SWITCH_CANARY):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING": value}, clear=True):
+                self.assertTrue(config.syncthing_switch_set_off())
+        for given in ({}, {"DARKROOM_SYNCTHING": ""}, {"DARKROOM_SYNCTHING": "   "}, {"DARKROOM_SYNCTHING": "1"}, {"DARKROOM_SYNCTHING": " 1 "}):
+            with self.subTest(given=given), mock.patch.dict(os.environ, given, clear=True):
+                self.assertFalse(config.syncthing_switch_set_off())
+
+    def test_the_warning_is_one_fixed_line_that_says_syncthing_is_always_on(self):
+        self.assertEqual(config.SYNCTHING_SWITCH_IGNORED,
+                         "DARKROOM_SYNCTHING is no longer supported and is ignored: Darkroom's Syncthing is always on in the one container, so remove it "
+                         "(docs/deploy/one-container.md)")
+        self.assertNotIn("\n", config.SYNCTHING_SWITCH_IGNORED)
+
+    def test_check_config_warns_once_without_the_value_and_still_passes(self):
+        code, out, err = check_config(self, {"DARKROOM_SYNCTHING": SWITCH_CANARY}, SWITCH_CANARY)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([line for line in err.splitlines() if "DARKROOM_SYNCTHING" in line], [f"config: warning: {config.SYNCTHING_SWITCH_IGNORED}"])
+        self.assertNotIn(SWITCH_CANARY, err + out)
+        for given in ({}, {"DARKROOM_SYNCTHING": "1"}, {"DARKROOM_SYNCTHING": ""}):
+            with self.subTest(given=given):
+                code, out, err = check_config(self, given)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("DARKROOM_SYNCTHING", err + out)
+
+    def test_the_switch_changes_no_setting(self):
+        with mock.patch.dict(os.environ, {"DARKROOM_SYNCTHING": "0"}, clear=True):
+            off = config.load()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            unset = config.load()
+        self.assertEqual(off, unset)
+        self.assertFalse(hasattr(off, "syncthing"))
+
+    def test_serve_logs_the_warning_once_at_start_up_without_the_value_and_carries_on(self):
+        import contextlib
+        import io
+
+        import run
+        from tests.privacy import no_leaks
+
+        with tempfile.TemporaryDirectory() as folder:
+            values = {"DARKROOM_PHOTOS_ROOT": folder, "DARKROOM_DATA_DIR": folder, "DARKROOM_SYNCTHING": SWITCH_CANARY}
+            with no_leaks(self, SWITCH_CANARY), contextlib.redirect_stderr(io.StringIO()) as err, mock.patch.dict(os.environ, values, clear=True), \
+                    mock.patch.object(run, "migrate", side_effect=SystemExit(7)) as migrate:
+                with self.assertRaises(SystemExit):
+                    run.main(["serve"])
+        migrate.assert_called_once()
+        lines = [line for line in err.getvalue().splitlines() if "DARKROOM_SYNCTHING" in line]
+        self.assertEqual(len(lines), 1, err.getvalue())
+        self.assertEqual(json.loads(lines[0]), {"event": config.SYNCTHING_SWITCH_IGNORED, "level": "warning"})
+        self.assertNotIn(SWITCH_CANARY, err.getvalue())
 
 
 if __name__ == "__main__":
