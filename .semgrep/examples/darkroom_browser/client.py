@@ -1,21 +1,29 @@
 import http.client
+from typing import final
 
 # ok: darkroom-no-raw-sockets
-import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket.connect opens
+import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket opens when it is made
 
 
 # ok: darkroom-no-raw-sockets
-class OnSocket(http.client.HTTPConnection):  # nosemgrep: darkroom-no-raw-sockets -- the worker's one HTTP connection, which connect sends over the app's private Unix socket
+@final
+# ok: darkroom-no-raw-sockets
+class OnSocket:
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("OnSocket takes no subclass")
+
     def __init__(self, socket_path: str, timeout: float) -> None:
         # ok: darkroom-no-raw-sockets
-        super().__init__("localhost", timeout=timeout)
-        self.socket_path = socket_path
-
-    def connect(self) -> None:
-        # ok: darkroom-no-raw-sockets
         stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # nosemgrep: darkroom-no-raw-sockets -- the one socket the client opens, to the app's private Unix socket
-        stream.connect("/run/darkroom/worker-api.sock")
+        stream.settimeout(timeout)
+        stream.connect(socket_path)
         self.sock = stream
+
+    def getresponse(self) -> http.client.HTTPResponse:
+        # ok: darkroom-no-raw-sockets
+        reply = http.client.HTTPResponse(self.sock, method="POST")
+        reply.begin()
+        return reply
 
 
 def reach_the_app(path: str) -> object:

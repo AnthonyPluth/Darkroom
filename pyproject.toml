@@ -115,14 +115,16 @@ allowed_importers = ["darkroom.tls"]
 ignore_imports = [
     "darkroom.server.handler -> http",
     "darkroom.tls -> http",
-    # The worker may not import darkroom.tls, so its client reaches the app through http.client.HTTPConnection on the
-    # app's private Unix socket (#392). Import-linter records an outside package only by its top-level name, so
-    # "-> http.client" matches nothing and "-> http" is as narrow as the tool allows; ssl stays protected. What this
-    # ignore lets through, Semgrep checks in that file: darkroom-no-raw-sockets flags every reference to
-    # http.client.HTTPConnection or HTTPSConnection (a call, a base class, a value, an unbound .connect), every use of
-    # the socket module, and every reference to OnSocket other than a call that makes one (so a subclass, or
-    # super(OnSocket, ...), can't reach HTTPConnection.connect), apart from OnSocket's class line, the socket import and
-    # the one socket open, which carry a justified nosemgrep; darkroom-raw-urlopen flags any urlopen (#393).
+    # The worker may not import darkroom.tls, so its client reaches the app over the app's private Unix socket with
+    # http.client's HTTPResponse reading the answer (#392). Import-linter records an outside package only by its
+    # top-level name, so "-> http.client" matches nothing and "-> http" is as narrow as the tool allows; ssl stays
+    # protected. What this ignore lets through is held two ways. Semgrep's darkroom-no-raw-sockets flags, in that file
+    # too, every reference to http.client.HTTPConnection or HTTPSConnection (a call, a base class, a value, an unbound
+    # .connect), every use of the socket module and every reference to OnSocket by name other than a call that makes
+    # one, apart from the socket import and the one socket open, which carry a justified nosemgrep; darkroom-raw-urlopen
+    # flags any urlopen (#393). The class itself holds what Semgrep can't see through an instance: OnSocket is no
+    # HTTPConnection, opens only its AF_UNIX socket, has no connect, host or port, and refuses every subclass, checked by
+    # tests/browser/test_client_socket.py.
     "darkroom_browser.client -> http",
 ]
 broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."

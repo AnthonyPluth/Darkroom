@@ -762,6 +762,7 @@
       "tests": [
         "tests/browser/fake_darkroom.py",
         "tests/browser/host_network.py",
+        "tests/browser/test_client_socket.py",
         "tests/browser/test_runner.py",
         "tests/test_accounts_jobs_api.py",
         "tests/test_browser_internal_api.py",
