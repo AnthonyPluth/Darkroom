@@ -2974,6 +2974,29 @@
         ],
         "type": "object"
       },
+      "Version": {
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit",
+          "version"
+        ],
+        "type": "object"
+      },
       "WaitingBody": {
         "additionalProperties": false,
         "properties": {
@@ -4285,6 +4308,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Status"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/version": {
+      "get": {
+        "operationId": "version",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
                 }
               }
             },

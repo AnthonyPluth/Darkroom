@@ -581,6 +581,11 @@ export interface SyncthingCard {
   pixels: PixelSyncthing[];
 }
 
+export interface Version {
+  version: string;
+  commit: string | null;
+}
+
 export interface WaitingBody {
   reason: string;
 }
@@ -609,6 +614,7 @@ export interface Endpoints {
   "GET /healthz": { body: never; reply: Health };
   "GET /api/me": { body: never; reply: Me };
   "GET /api/status": { body: never; reply: Status };
+  "GET /api/version": { body: never; reply: Version };
   "GET /api/events": { body: never; reply: Events };
   "POST /api/demo/syncthing": { body: DemoSyncthingBody; reply: Ok };
   "GET /api/people": { body: never; reply: People };

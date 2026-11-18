@@ -43,6 +43,9 @@ jobs:
           context: .
           load: true
           tags: darkroom:smoke
+          build-args: |
+            DARKROOM_VERSION=${{ steps.next.outputs.version }}
+            DARKROOM_COMMIT=${{ github.sha }}
           cache-from: type=gha
       - name: Check the image answers /healthz
         run: |
@@ -52,6 +55,11 @@ jobs:
             sleep 1
           done
           docker logs smoke; exit 1
+      - name: Check the image knows its own version and commit (dev on a pull request, where no version is worked out)
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          docker run --rm --entrypoint python darkroom:smoke -c 'import sys; from darkroom import config; b = config.read_build(); print(b.shown); sys.exit(0 if b.commit == sys.argv[1][:7] and b.version == (sys.argv[2] or "dev") else 1)' "$GITHUB_SHA" "$VERSION"
       - name: Validate the compose file
         env:
           PHOTOS_ROOT: /tmp/photos
@@ -162,6 +170,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image }}
+          build-args: |
+            DARKROOM_VERSION=${{ needs.build.outputs.version }}
+            DARKROOM_COMMIT=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

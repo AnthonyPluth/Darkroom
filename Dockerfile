@@ -81,6 +81,12 @@ RUN if ! getent group "$PGID" >/dev/null; then groupadd --system --gid "$PGID" d
     && chmod 1777 /tmp/.X11-unix \
     && chown darkroom /data /home/darkroom /run/darkroom \
     && chmod 0700 /run/darkroom
+
+ARG DARKROOM_VERSION=""
+ARG DARKROOM_COMMIT=""
+LABEL org.opencontainers.image.version="${DARKROOM_VERSION:-dev}" org.opencontainers.image.revision="${DARKROOM_COMMIT}"
+RUN printf '%s\n%s\n' "$DARKROOM_VERSION" "$DARKROOM_COMMIT" > /app/darkroom/build-info \
+    && chmod 0644 /app/darkroom/build-info
 USER darkroom
 
 ENV DARKROOM_HOST=0.0.0.0 DARKROOM_PORT=8000 DARKROOM_DATA_DIR=/data DARKROOM_PHOTOS_ROOT=/photos DARKROOM_BROWSER_ROOT=/data/browser DARKROOM_ONE_CONTAINER=1

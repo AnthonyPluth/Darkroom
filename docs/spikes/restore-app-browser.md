@@ -49,13 +49,14 @@ docker version --format '{{.Server.Version}}'
 docker inspect --format '{{.Config.Image}}' "$C"
 docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE"
 curl -fsS http://127.0.0.1:8000/healthz; echo
+docker logs "$C" 2>&1 | grep -F '"event": "darkroom started"' | tail -1
 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$C" | grep -E '^BROWSER_CHANNEL='
 docker exec "$C" /opt/google/chrome/chrome --version
 docker exec "$C" sh -c 'ls -d /ms-playwright/chromium-*'
 docker exec <postgres container> psql -U <postgres user> -tAc 'show server_version'   # PostgreSQL only
 ```
 
-`/healthz` answers `{"ok": true, "version": ...}` with the release. Keep the `grep` on the `BROWSER_CHANNEL` line: without it the command prints every variable, secrets included.
+`/healthz` answers `{"ok": true, "version": ...}`: that shows Darkroom answering, not which release runs (its `version` is a fixed package number). The `darkroom started` line names the release and the build's commit (`"version": "v1.2.3"`, `"commit": "abc1234"`), as does the Version row in the About card at the bottom of the Status page; an image built from a checkout without the release build args shows `dev`. Keep the `grep` on the `BROWSER_CHANNEL` line: without it the command prints every variable, secrets included.
 
 ```text
 Result:

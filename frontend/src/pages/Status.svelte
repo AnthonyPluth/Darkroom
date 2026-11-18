@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { apiCall } from "$lib/contract";
   import { describeEvent } from "$lib/events";
-  import { ago, count, names, nowSeconds, onDay, when } from "$lib/format";
+  import { ago, buildName, count, names, nowSeconds, onDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
   import { alertChip, NOT_CHECKED, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "$lib/view";
@@ -16,8 +16,12 @@
     ]);
     return { status, events: events.events, now: nowSeconds() };
   });
+  const version = new Loader(() => apiCall<"GET /api/version">("/api/version", { failed: "Couldn't load the version" }));
 
-  onMount(() => void loader.load());
+  onMount(() => {
+    void loader.load();
+    void version.load();
+  });
 </script>
 
 <div class="flex flex-col gap-6">
@@ -153,6 +157,20 @@
           {/each}
         </ul>
       {/if}
+    </section>
+
+    <section class="card" aria-label="About">
+      <h2 class="text-md font-semibold">About</h2>
+      <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 md:grid-cols-[8.5rem_minmax(0,1fr)]">
+        <dt class="text-ink-muted">Version</dt>
+        {#if version.current.kind === "ready"}
+          <dd>{buildName(version.current.data)}</dd>
+        {:else if version.current.kind === "error"}
+          <dd class="text-ink-muted">Couldn't load the version</dd>
+        {:else}
+          <dd class="text-ink-muted">Loading...</dd>
+        {/if}
+      </dl>
     </section>
   {/if}
 </div>

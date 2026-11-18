@@ -10,7 +10,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `00-tokens.dc.html` | Theme tokens: colour, type, spacing, radius |
 | `01-signin-desktop.dc.html`, `01-signin-phone.dc.html` | Sign-in, signed out |
 | `01-signin-error-desktop.dc.html`, `01-signin-error-phone.dc.html` | Sign-in, not allowed |
-| `02-status-desktop.dc.html`, `02-status-phone.dc.html` | Status (home) |
+| `02-status-desktop.dc.html`, `02-status-phone.dc.html` | Status (home); the About card with its Version row, last on the page (approved 2026-11-18, #421, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6986445014)) |
 | `03-people-desktop.dc.html`, `03-people-phone.dc.html` | People |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` | Exports |
 | `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (signed off, #164, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904)) |
@@ -18,7 +18,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
-| `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322) |
+| `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322); its last block, the About card's states (approved 2026-11-18, #421) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |
 | `03-people-unpair-desktop.dc.html`, `03-people-unpair-phone.dc.html` | People: unpairing a Pixel from Edit Pixel (addendum to #322, signed off 2026-11-16) |
 | `08-setup.md` | First-run setup wizard: **document signed off by the owner on 2026-11-16 (#344, recorded on #303); the boards signed off by the owner on 2026-11-16 (#303)**. #305 builds it, after #346 extends the API |
@@ -473,3 +473,13 @@ Status: **signed off by the owner on 2026-11-16 (https://github.com/AnthonyPluth
 - **Boards changed** (desktop only; the change is the pane's width and padding and the card's cap, nothing else, and each board's subtitle says so): `08-setup-{welcome,closed,address,sign-in,immich,immich-check,people,accounts,pixels,alerts,done}-desktop.dc.html`. The People step's add-person dialog keeps its 512 px width (the wizard's dialogs are not part of this revision).
 - **Not changed:** every phone board; `08-setup-test-failed-desktop.dc.html`, which draws the server's own failure pages as `darkroom/server/common.py` renders them, not the wizard's pane.
 - **For the build:** #363's wizard (`frontend/src/setup/Setup.svelte`, today `md:grid-cols-2`, or `md:grid-cols-[26.25rem_minmax(0,1fr)]` on the steps with lists) moves to a 19 rem pane with `md:px-10` on every step; `make verify`'s `setup-*` desktop images show it.
+
+## About card on Status (#421, approved 2026-11-18)
+
+Status: **approved by the owner on 2026-11-18**, in the Claude Code session that built #421. The owner said they "don't need to sign off, just make the change", then answered "Yes, About card on Status" when asked to confirm where it goes. Those words reached the building agent through the coordinating session. Recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6986445014), the design issue, where the owner can correct the record.
+
+- **Where.** A card titled "About", last on the Status page, after Recent events, with `DARKROOM_SYNCTHING` on or off. Darkroom has no Settings page, so no navigation item is added.
+- **What.** One row, "Version": the release and the build's short commit, `v4.7.1 (abc1234)`. A build without a release version (an image built from a checkout, or a local run) shows `dev (abc1234)` when it knows its commit and `dev` when it doesn't.
+- **Style.** The existing card, its `dl` row and the muted label (`text-ink-muted`), as in the person cards. No new token, colour or component.
+- **Failure.** The version loads on its own (`GET /api/version`, signed in only). While it loads the row reads "Loading...", and when it can't load, "Couldn't load the version" (muted). The rest of the page, its alerts included, is unchanged either way.
+- **Boards.** `02-status-desktop.dc.html` and `02-status-phone.dc.html` draw the card with a release version. `02-status-syncthing-desktop.dc.html` and `02-status-syncthing-phone.dc.html` end with a block, "About: the Version row", that draws each state. These four boards were edited by hand in their own HTML, in the boards' existing classes (`card`, `kv`, `sub`, `state`), because the canvas could not be re-exported from the building session. They should be re-exported from the canvas the next time the design session touches them.

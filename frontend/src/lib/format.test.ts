@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, count, joined, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
+import { ago, buildName, count, joined, names, nowSeconds, onDay, onDayAt, untilDay, when } from "./format";
 
 const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m - 1, d, h, min).getTime() / 1000;
 
@@ -69,5 +69,13 @@ describe("untilDay", () => {
     expect(untilDay(now + 86_400 * 3, now)).toBe("In 3 days");
     expect(untilDay(now + 86_400 * 70, now)).toBe("In 10 weeks");
     expect(untilDay(now + 86_400 * 14, now)).toBe("In 2 weeks");
+  });
+});
+
+describe("buildName", () => {
+  it("puts the short commit after the version when there is one", () => {
+    expect(buildName({ version: "v4.7.1", commit: "abc1234" })).toBe("v4.7.1 (abc1234)");
+    expect(buildName({ version: "dev", commit: "abc1234" })).toBe("dev (abc1234)");
+    expect(buildName({ version: "dev", commit: null })).toBe("dev");
   });
 });
