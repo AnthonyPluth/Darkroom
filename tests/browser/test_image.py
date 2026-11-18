@@ -215,15 +215,19 @@ class SingleImageTests(unittest.TestCase):
         self.assertLess(runtime.index("COPY --from=syncthing /syncthing /usr/local/bin/syncthing"), runtime.index("USER darkroom"))
         self.assertNotIn("8384", DOCKERFILE)
 
-    def test_ci_runs_syncthing_paused_against_a_peer_under_the_deployment_policy_and_checks_it_is_off_by_default(self):
+    def test_ci_runs_syncthing_paused_against_a_peer_under_the_deployment_policy_and_checks_the_init_always_starts_it(self):
         workflow = (ROOT / ".github/workflows/docker.yml").read_text()
         job = workflow[workflow.index("\n  single:\n"):workflow.index("\n  publish:\n")]
         self.assertIn("run: bash tests/browser/syncthing_paused.sh darkroom:smoke 8767", job)
-        self.assertLess(job.index("bash tests/browser/one_container.sh init 8766\n          docker exec init test ! -e /data/syncthing"), job.index("syncthing_paused.sh"))
+        default = job[job.index("docker run -d --name init "):job.index("syncthing_paused.sh")]
+        self.assertIn(" -e DARKROOM_SYNCTHING=0 ", default.splitlines()[0])
+        self.assertIn("bash tests/browser/one_container.sh init 8766\n          docker exec init test -d /data/syncthing\n", default)
+        self.assertIn("""docker logs init 2>&1 | grep -c -F '"event": "DARKROOM_SYNCTHING is no longer supported and is ignored' | grep -Fx 1""", default)
+        self.assertIn(""""child": "display" "child": "app" "child": "syncthing" '""", default)
         script = (ROOT / "tests/browser/syncthing_paused.sh").read_text()
         self.assertIn("sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json)", script)
         self.assertEqual(script.count('"${sandbox[@]}"'), 2)
-        self.assertIn("-e DARKROOM_SYNCTHING=1", script)
+        self.assertNotIn("DARKROOM_SYNCTHING=", script)
         self.assertNotRegex(script, r"-p [^ ]*(22000|21027|8384)")
         self.assertNotIn("--network host", script)
         for check in ("Syncthing is not the pinned release", "Syncthing did not start paused", "Syncthing's API answers from outside the container",
@@ -240,7 +244,7 @@ class SingleImageTests(unittest.TestCase):
         script = (ROOT / "tests/browser/host_network.sh").read_text()
         self.assertIn("sandbox=(--cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json)", script)
         self.assertIn('--network host "${sandbox[@]}"', script)
-        self.assertIn("-e DARKROOM_SYNCTHING=1", script)
+        self.assertNotIn("DARKROOM_SYNCTHING=", script)
         self.assertNotRegex(script, r" -p ")
         for check in ("check refused 127.0.0.1 ::1", "sudo -u nobody python3 -I - refused", 'docker exec -i -u 4242:4242 "$name" python3 -I - inside', "sudo ss -Hltunp | check listeners",
                       "sudo ss -Hlxp | check unix-listeners", "probe relay", "syncthing reconciled"):
@@ -297,12 +301,12 @@ class SingleImageTests(unittest.TestCase):
         self.assertNotIn("command:", single)
         self.assertFalse([name for name in REMOVED_SETTINGS if f"{name}:" in single])
 
-    def test_the_one_container_runs_on_the_host_network_with_syncthing_on_and_its_web_port_on_loopback(self):
+    def test_the_one_container_runs_on_the_host_network_with_no_syncthing_switch_and_its_web_port_on_loopback(self):
         single = compose_service("darkroom")
         self.assertRegex(single, r"(?m)^    network_mode: host$")
         self.assertNotRegex(single, r"(?m)^    ports:", "compose ignores published ports on the host network; the web port's address is DARKROOM_HOST")
         self.assertRegex(single, r'(?m)^      DARKROOM_HOST: "127\.0\.0\.1"$', "the web port stays on the host's loopback, as the published 127.0.0.1:8000 was")
-        self.assertRegex(single, r"(?m)^      DARKROOM_SYNCTHING: \$\{DARKROOM_SYNCTHING:-1\}$")
+        self.assertNotIn("DARKROOM_SYNCTHING", single)
         self.assertRegex(single, r'(?m)^      DARKROOM_ONE_CONTAINER: "1"$')
 
     def test_the_postgresql_recipe_reaches_the_host_network_service_on_loopback_only(self):
@@ -512,8 +516,7 @@ class UnraidTemplateTests(unittest.TestCase):
         environment = set(re.findall(r"^      ([A-Z_]+): ", compose_service("darkroom"), re.M))
         self.assertEqual(set(names), environment - {"TZ", "DARKROOM_ONE_CONTAINER", "DARKROOM_HOST"})
         self.assertNotIn("DARKROOM_HOST", names, "on Unraid the image's 0.0.0.0 stands: bridge networking already published 8000 on every address")
-        syncthing = next(config for config in configs if config.get("Target") == "DARKROOM_SYNCTHING")
-        self.assertEqual((syncthing.get("Default"), syncthing.text), ("1", "1"))
+        self.assertNotIn("DARKROOM_SYNCTHING", names)
         self.assertRegex(DOCKERFILE, r"(?m)^ENV .*\bDARKROOM_ONE_CONTAINER=1\b", "the image marks itself, so the template and `docker exec` need no variable for it")
         self.assertFalse(set(names) & set(REMOVED_SETTINGS))
         masked = {config.get("Target") for config in configs if config.get("Mask") == "true"}

@@ -41,7 +41,7 @@ def account_state(account: GoogleAccount) -> dict[str, object]:
 
 
 def person_status(opened: Session, person: Person, counts: tuple[int, int, int], alerts_open: list[Alert], unmatched: Mapping[str, int | None],
-                  skipped: int, syncthing: Mapping[int, dict[str, object]] | None = None) -> dict[str, object]:
+                  skipped: int, syncthing: Mapping[int, dict[str, object]]) -> dict[str, object]:
     serving = accounts.accounts_serving(opened, person.id)
     people_accounts = [account for account in accounts.listing(opened) if account.id in serving]
     emails = {account.email for account in people_accounts}
@@ -57,21 +57,21 @@ def person_status(opened: Session, person: Person, counts: tuple[int, int, int],
         "index_skipped": skipped,
         "accounts": [account_state(account) for account in people_accounts],
         "pixels": [{"id": pixel.id, "name": pixel.name, "google_account_id": pixel.google_account_id, "last_sync": pixel.last_sync,
-                    "syncthing": None if syncthing is None else syncthing.get(pixel.id)} for pixel in served_pixels],
+                    "syncthing": syncthing.get(pixel.id)} for pixel in served_pixels],
         "last_import": last_import(opened, serving),
         "unmatched": unmatched.get(person.slug),
         "alerts": concerning,
     }
 
 
-def overview(opened: Session, syncthing_on: bool = False, now: float = 0.0) -> dict[str, object]:
+def overview(opened: Session, now: float = 0.0) -> dict[str, object]:
     counts = photo_counts(opened)
     alerts_open = open_alerts(opened)
     unmatched = run.unmatched_by_person(opened)
     skipped = index.skipped_by_person(opened)
-    seen = transport_status.overview(opened, now) if syncthing_on else None
-    per_pixel = None if seen is None else transport_status.pixel_dicts(opened, seen)
+    seen = transport_status.overview(opened, now)
+    per_pixel = transport_status.pixel_dicts(opened, seen)
     people = [person_status(opened, person, counts.get(person.id, (0, 0, 0)), alerts_open, unmatched, skipped.get(person.id, 0), per_pixel)
               for person in opened.execute(select(Person).order_by(Person.id)).scalars()]
     return {"worker_last_seen": browser_jobs.worker_last_seen(opened), "people": people, "alerts": [alert_dict(alert) for alert in alerts_open],
-            "syncthing": None if seen is None else transport_status.card_dict(opened, seen)}
+            "syncthing": transport_status.card_dict(opened, seen)}
