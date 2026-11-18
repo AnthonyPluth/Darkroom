@@ -171,7 +171,7 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 **Time zones**
 
 - Store every capture time as UTC plus an offset. Use the EXIF offset when present, otherwise look it up from the GPS position, otherwise mark it unknown.
-- A video's QuickTime creation date (exiftool's `QuickTime`, `Track…` and `Media…` groups) is already UTC (#436): it is stored as that instant (`time_source` `quicktime_utc`), with the offset of the GPS position at that instant (EXIF, or for a Takeout item the sidecar's) or none, and a wall-clock time only when the offset is known. A date that carries its own offset (Apple's `Keys:CreationDate`, an EXIF date with `OffsetTime*`) wins over it; a QuickTime date of zero or 1904-01-01 is no date. Items indexed before #436 keep the time they were given until their file is read again.
+- A video's QuickTime creation date (exiftool's `QuickTime`, `Track…` and `Media…` groups) is already UTC (#436): it is stored as that instant (`time_source` `quicktime_utc`), with the offset of the GPS position at that instant (EXIF, or for a Takeout item the sidecar's) or none, and a wall-clock time only when the offset is known. A date that carries its own offset (Apple's `Keys:CreationDate`, an EXIF date with `OffsetTime*`) wins over it; a QuickTime date of zero or 1904-01-01 is no date. Items indexed before #436 keep the time they were given until their file is read again. `python run.py reread-video-times --apply` (#452) re-reads the phone index's videos once and corrects only their time fields, where the new reading is a QuickTime UTC date. It is run before the Takeout import (`docs/runbook.md`).
 - Waypoint needs this to match photos to trips that cross time zones.
 
 ## Legacy library import (#217)
