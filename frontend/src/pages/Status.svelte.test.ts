@@ -132,7 +132,7 @@ describe("the version row", () => {
     const term = within(about).getByText("Version");
     expect(term.tagName).toBe("DT");
     expect(term).toHaveClass("text-ink-muted");
-    expect(term.nextElementSibling).toHaveTextContent(new RegExp(`^${shown.replace(/[()]/g, "\\$&")}$`));
+    expect(term.nextElementSibling?.textContent?.trim()).toBe(shown);
     const order = [...document.querySelectorAll("section")].map((section) => section.getAttribute("aria-label"));
     expect(order.at(-1)).toBe("About");
     expect(order.indexOf("Recent events")).toBe(order.length - 2);
