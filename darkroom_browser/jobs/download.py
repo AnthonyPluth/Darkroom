@@ -144,16 +144,16 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
     return bool(targets) and set(targets) == {checked}
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int) -> dict[int, takeout.ListedPart]:
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id, needed)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
         raise DownloadFailed("Takeout no longer lists this export as ready to download")
     links = {part.number: part for part in detail.parts}
-    if sorted(links) != list(range(1, count + 1)):
-        raise DownloadFailed(f"Takeout lists {len(links)} parts for an export Darkroom expects {count} parts from")
+    if len(links) + detail.unreadable != count or not set(links) <= set(range(1, count + 1)) or needed not in links:
+        raise DownloadFailed(f"Takeout lists {len(links) + detail.unreadable} parts for an export Darkroom expects {count} parts from")
     return links
 
 
@@ -208,7 +208,7 @@ def wait_for_verification(ctx: JobContext, browser: Browser, number: int) -> Non
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
     number = part["number"]
     while True:
-        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"])[number]
+        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"], number)[number]
         selector = part_link(listed.link)
         if not leads_where_checked(browser, selector, listed.href):
             raise DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")

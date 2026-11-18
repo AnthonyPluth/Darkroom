@@ -3,8 +3,9 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from darkroom_browser.pages import takeout
-from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, LIVE_BASE, MADE_UP_USER, MANAGE_PAGE, NNBSP, SIZES, archive, archive_url,
-                                         completed_row, download_href, expired_row, in_progress_row, items_linked, part_item, part_names, row, summary)
+from tests.browser.takeout_pages import (COMPLETED_ID, EXPIRED_ID, IN_PROGRESS_ID, LIVE_BASE, MADE_UP_USER, MANAGE_PAGE, NNBSP, PAGE_SIZES, SIZES, archive, archive_url,
+                                         completed_row, download_href, downloaded_page_parts, expired_row, in_progress_row, items_linked, part_item, part_names, row,
+                                         summary)
 
 NEW_YORK = ZoneInfo("America/New_York")
 NOW = datetime(2026, 11, 17, 14, 55, tzinfo=NEW_YORK).timestamp()
@@ -295,7 +296,7 @@ class ArchivePageTests(unittest.TestCase):
             "a link to another path": archive(items=[*good[:2], part_item(COMPLETED_ID, 2, 3, SIZES[2], "x", href=f"https://takeout.google.com/elsewhere?j={COMPLETED_ID}&amp;i=2")]),
             "a missing part": archive(items=good[:2]),
             "a repeated part": archive(items=[*good, good[0]]),
-            "an unnumbered part": archive(items=[*good[:2], part_item(COMPLETED_ID, 2, 3, SIZES[2], "x", label=CANARY)]),
+            "an unnumbered part": archive(items=[*good[:2], part_item(COMPLETED_ID, 2, 3, SIZES[2], "x", label=CANARY, index_attribute=False)]),
             "no size": archive(items=[*good[:2], part_item(COMPLETED_ID, 2, 3, SIZES[2], "x", size_attribute=False).replace("GB</div>", f"{CANARY}</div>")]),
             "an unknown status": archive(status=CANARY),
             "a completed archive with no parts": archive(items=[]),
@@ -312,6 +313,128 @@ class ArchivePageTests(unittest.TestCase):
         for bad in ("", "../settings", "a/b", "a?b", "x" * 200):
             with self.subTest(bad=bad), self.assertRaises(takeout.UnreadableExports):
                 takeout.archive_url(bad)
+
+
+def first_of_three(**changes):
+    names = part_names(3)
+    first = part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], **changes)
+    return archive(items=[first, *[part_item(COMPLETED_ID, index, 3, SIZES[index], names[index]) for index in (1, 2)]])
+
+
+class DownloadedPartTests(unittest.TestCase):
+    def refused(self, page, needed=None):
+        with self.assertRaises(takeout.UnreadableExports) as raised:
+            takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, needed)
+        return str(raised.exception)
+
+    def test_the_page_after_part_1_was_downloaded_lists_every_part_and_marks_part_1(self):
+        page = archive(items=downloaded_page_parts())
+        self.assertIn('aria-label="Download again part 1 of 25"', page)
+        self.assertIn('<span aria-hidden="true">Download again</span>', page)
+        self.assertIn('data-is-downloaded="true"', page)
+        self.assertTrue(takeout.archive_page_ready(page))
+        parts = takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID).parts
+        self.assertEqual([part.number for part in parts], list(range(1, 26)))
+        self.assertEqual([part.already_downloaded for part in parts], [True] + [False] * 24)
+        self.assertEqual([part.bytes for part in parts[:3]], list(PAGE_SIZES))
+        self.assertEqual(parts[0].href, f"https://takeout.google.com/takeout/download?j={COMPLETED_ID}&i=0&user={MADE_UP_USER}")
+
+    def test_every_part_downloaded_is_still_listed(self):
+        parts = takeout.parse_archive(archive(items=downloaded_page_parts(count=3, downloaded=(1, 2, 3))), ARCHIVE_PAGE, COMPLETED_ID).parts
+        self.assertEqual([(part.number, part.already_downloaded) for part in parts], [(1, True), (2, True), (3, True)])
+
+    def test_other_wordings_of_the_part_label_are_read(self):
+        for label, downloaded in (("Download part 1 of 3 again", True), ("Downloaded part 1 of 3", True), ("Part 1 of 3", True), ("DOWNLOAD\xa0AGAIN  part 1 of 3", True),
+                                  ("Re-download part 1 of 3.", True), (f"Download again part 1 of 3{NNBSP}", True), ("download part 1 of 3", False), ("Part 1 of 3", False)):
+            with self.subTest(label=label, downloaded=downloaded):
+                parts = takeout.parse_archive(first_of_three(label=label, downloaded=downloaded), ARCHIVE_PAGE, COMPLETED_ID).parts
+                self.assertEqual([(part.number, part.already_downloaded) for part in parts], [(1, downloaded), (2, False), (3, False)])
+
+    def test_without_a_part_label_the_number_comes_from_the_data_index(self):
+        for label in ("", "Download again", "Downloaded"):
+            with self.subTest(label=label):
+                parts = takeout.parse_archive(first_of_three(label=label, downloaded=True), ARCHIVE_PAGE, COMPLETED_ID).parts
+                self.assertEqual([(part.number, part.already_downloaded) for part in parts], [(1, True), (2, False), (3, False)])
+                self.assertTrue(takeout.archive_page_ready(first_of_three(label=label, downloaded=True)))
+
+    def test_the_links_query_alone_never_numbers_a_part(self):
+        said = self.refused(first_of_three(label="", index_attribute=False))
+        self.assertTrue(said.startswith(takeout.NO_NUMBER), said)
+
+    def test_a_second_link_to_the_same_address_or_off_takeouts_downloads_is_passed_over(self):
+        same = f'<a href="{download_href(COMPLETED_ID, 0)}" aria-label="Download again"></a>'
+        elsewhere = '<a href="https://support.google.com/accounts/answer/x" aria-label="Report a problem"></a>'
+        for name, extra in (("the same address", same), ("a help page", elsewhere)):
+            with self.subTest(name):
+                parts = takeout.parse_archive(first_of_three(downloaded=True, extra=extra), ARCHIVE_PAGE, COMPLETED_ID).parts
+                self.assertEqual([part.number for part in parts], [1, 2, 3])
+                self.assertEqual(parts[0].link, download_href(COMPLETED_ID, 0).replace("&amp;", "&"))
+
+    def test_links_that_lead_to_different_downloads_are_refused(self):
+        other = f'<a href="{download_href(COMPLETED_ID, 0, user="100000000000000000002")}" aria-label="Download again"></a>'
+        self.assertEqual(self.refused(first_of_three(downloaded=True, extra=other)), takeout.TWO_ADDRESSES)
+        another = f'<a href="{download_href(EXPIRED_ID, 0)}" aria-label="Download again"></a>'
+        self.assertEqual(self.refused(first_of_three(downloaded=True, extra=another)), takeout.NOT_USABLE)
+        labelled_elsewhere = '<a href="https://other.example/x" aria-label="Download again part 1 of 3"></a>'
+        self.assertEqual(self.refused(first_of_three(downloaded=True, extra=labelled_elsewhere)), takeout.NOT_USABLE)
+
+    def test_sources_that_disagree_about_the_number_are_refused(self):
+        names = part_names(3)
+        cases = {
+            "the label and the data index": part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], label="Download again part 2 of 3", downloaded=True),
+            "the label and the links query": part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], href=download_href(COMPLETED_ID, 4), downloaded=True),
+            "the data index and the links query without a label": part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], label="", href=download_href(COMPLETED_ID, 2)),
+            "two labels": part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], extra=f'<a href="{download_href(COMPLETED_ID, 0)}" aria-label="Download part 2 of 3"></a>'),
+        }
+        for name, first in cases.items():
+            with self.subTest(name):
+                page = archive(items=[first, *[part_item(COMPLETED_ID, index, 3, SIZES[index], names[index]) for index in (1, 2)]])
+                self.assertEqual(self.refused(page), takeout.NUMBERS_DISAGREE)
+
+    def test_a_label_and_a_flag_that_disagree_about_downloading_are_refused(self):
+        for label, flag in (("Download again part 1 of 3", "false"), ("Download part 1 of 3", "true"), ("Download part 1 of 3", "maybe")):
+            with self.subTest(label=label, flag=flag):
+                self.assertTrue(self.refused(first_of_three(label=label, flag=flag)).startswith(takeout.DOWNLOADED_DISAGREE))
+
+    def test_an_unreadable_part_is_described_in_fixed_words_and_shapes(self):
+        page = first_of_three(label=f"Download again part 1 of 3 {CANARY} jo@example.test", index_attribute=False, downloaded=True)
+        said = self.refused(page)
+        self.assertEqual(said, f"{takeout.NO_NUMBER}: 3 part items, at most 1 links in one, 2 with a part label, data-index on 2, data-size on 3, data-is-downloaded on 3 "
+                               "(1 downloaded); 1 unread: 1 links (1 usable), labels 'download again part 9 of 9 ?-?-? ?.?'")
+        for leak in (CANARY.lower(), "jo", "example", COMPLETED_ID, MADE_UP_USER, "takeout-", "user=", ".zip"):
+            self.assertNotIn(leak, said.lower())
+
+    def test_the_longest_description_fits_what_darkroom_records(self):
+        from darkroom.server.api.browser_internal import MAX_MESSAGE
+
+        words = " ".join(sorted(takeout.LABEL_WORDS, key=len, reverse=True)) * 20
+        extra = "".join(f'<a href="{download_href(COMPLETED_ID, 0)}" aria-label="{words} 12345 {CANARY}"></a>' for _ in range(50))
+        names = part_names(takeout.MAX_PARTS)
+        items = [part_item(COMPLETED_ID, index, takeout.MAX_PARTS, 1, names[index] + str(index), label=words, index_attribute=False, extra=extra) for index in range(takeout.MAX_PARTS)]
+        said = f"DownloadFailed: {self.refused(archive(items=items))}"
+        self.assertLessEqual(len(said), MAX_MESSAGE, said)
+        self.assertNotIn(CANARY.lower(), said.lower())
+
+    def test_the_download_job_needs_only_the_part_it_is_fetching_to_be_readable(self):
+        names = part_names(3)
+        unreadable = part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], label="", index_attribute=False, downloaded=True)
+        page = archive(items=[unreadable, *[part_item(COMPLETED_ID, index, 3, SIZES[index], names[index]) for index in (1, 2)]])
+        detail = takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, needed=2)
+        self.assertEqual(([part.number for part in detail.parts], detail.unreadable), ([2, 3], 1))
+        self.assertTrue(self.refused(page, needed=1).startswith(takeout.NO_NUMBER))
+        self.assertTrue(self.refused(page).startswith(takeout.NO_NUMBER))
+
+    def test_the_download_job_still_refuses_numbering_that_breaks(self):
+        names = part_names(3)
+        unreadable = part_item(COMPLETED_ID, 0, 3, SIZES[0], names[0], label="", index_attribute=False)
+        cases = {
+            "a repeated number": [unreadable, part_item(COMPLETED_ID, 1, 3, SIZES[1], names[1]), part_item(COMPLETED_ID, 1, 3, SIZES[2], names[2])],
+            "a number past the count": [unreadable, part_item(COMPLETED_ID, 1, 3, SIZES[1], names[1]), part_item(COMPLETED_ID, 3, 4, SIZES[2], names[2])],
+            "a total that is not the count": [part_item(COMPLETED_ID, 1, 4, SIZES[1], names[1]), part_item(COMPLETED_ID, 2, 4, SIZES[2], names[2]), unreadable],
+        }
+        for name, items in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.refused(archive(items=items), needed=2), takeout.TOLD_APART)
 
 
 ROW_FORMS = {

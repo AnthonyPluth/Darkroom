@@ -19,7 +19,7 @@ from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import SIGNED_IN, VERIFY
-from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked
+from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked, part_item, part_names
 from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -345,6 +345,43 @@ class DownloadJobTests(DownloadWorld):
             self.run_job(browser)
         self.assertNotIn("https://takeout.google.com/manage/archive/../settings", browser.visited)
         self.assertEqual(browser.downloaded, [])
+
+    def page_marking_downloads(self, browser, unreadable=()):
+        names = part_names(3)
+
+        def page():
+            if browser.url != ARCHIVE:
+                return SIGNED_IN
+            done = set(browser.downloaded)
+            return archive(sizes=SIZES, items=[part_item(COMPLETED_ID, index, 3, size, names[index], downloaded=index + 1 in done,
+                                                         label="" if index + 1 in unreadable else None, index_attribute=index + 1 not in unreadable)
+                                               for index, size in enumerate(SIZES)])
+
+        return page
+
+    def test_parts_takeout_marks_as_downloaded_do_not_stop_the_next_part(self):
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        browser.content = self.page_marking_downloads(browser)
+        _, result = self.run_job(browser)
+        self.assertEqual((result["downloaded"], browser.downloaded), (3, [1, 2, 3]))
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+
+    def test_a_part_takeout_marks_as_downloaded_is_downloaded_again_when_darkroom_has_not_got_it(self):
+        browser = DownloadBrowser(["interrupted", "ok", "ok", "ok"])
+        browser.content = self.page_marking_downloads(browser)
+        self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 1, 2, 3])
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_another_parts_unreadable_entry_does_not_stop_the_part_being_fetched(self):
+        browser = DownloadBrowser(["ok", "ok"])
+        browser.content = self.page_marking_downloads(browser, unreadable=(3,))
+        with self.assertRaisesRegex(download.DownloadFailed, "no readable part number: 3 part items") as raised:
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 2])
+        self.assertEqual(self.parts(), [("done", 1, 1), ("done", 1, 1), ("pending", 0, 0)])
+        self.assertNotIn(COMPLETED_ID, str(raised.exception))
+        self.assertNotIn("user=", str(raised.exception))
 
     def test_takeout_listing_fewer_parts_than_darkroom_expects_stops_the_job(self):
         browser = DownloadBrowser(["ok"])
