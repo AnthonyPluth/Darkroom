@@ -9,7 +9,7 @@ from typing import Any
 
 from darkroom_browser import monitoring, selectors
 from darkroom_browser.config import env
-from darkroom_browser.context import DownloadInterrupted
+from darkroom_browser.context import DownloadInterrupted, Look
 from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
 from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
@@ -32,6 +32,35 @@ class Live:
         self.downloads = downloads
         self.profile = profile
         self.clock = clock
+        self.arrived: list[Any] = []
+
+    def watch_downloads(self) -> None:
+        if self.context is None:
+            return
+        self.context.on("page", self.watch_page)
+        for page in self.context.pages:
+            self.watch_page(page)
+
+    def watch_page(self, page: Any) -> None:
+        page.on("download", self.arrived.append)
+
+    def open_pages(self) -> list[Any]:
+        pages = [] if self.context is None else [page for page in self.context.pages if not page.is_closed()]
+        return pages or [self.page]
+
+    def look(self) -> Look:
+        pages = self.open_pages()
+        newest = pages[-1]
+        try:
+            text = newest.content()
+        except Exception:
+            text = ""
+        return Look(str(newest.url), text if isinstance(text, str) else "", len(pages))
+
+    def download_started(self) -> bool:
+        if self.arrived:
+            return True
+        return self.downloads is not None and folder_state(self.downloads).files > 0
 
     def goto(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
@@ -61,9 +90,31 @@ class Live:
 
     def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
+        self.arrived.clear()
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
             self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
         download = started.value
+        self.arrived[:] = [each for each in self.arrived if each is not download]
+        return self.keep(download, folder, progress)
+
+    def collect_download(self, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        if not self.arrived and self.downloads is not None:
+            watch = StallWatch(self.clock())
+            while not self.arrived and watch.judge(self.clock(), folder_state(self.downloads)) is Verdict.WAIT:
+                self.page.wait_for_timeout(POLL_MS)
+        if not self.arrived:
+            if self.downloads is not None:
+                sweep_downloads(self.downloads)
+            raise DownloadInterrupted("a download appeared in Chromium's folder without Playwright's event")
+        download, *others = self.arrived
+        self.arrived.clear()
+        for other in others:
+            with contextlib.suppress(Exception):
+                other.cancel()
+        return self.keep(download, folder, progress)
+
+    def keep(self, download: Any, folder: Path, progress: Callable[[int], None] | None) -> Path:
         target = folder / Path(download.suggested_filename).name
         self.wait_for_download(download, progress)
         shutil.move(download.path(), target)
@@ -107,6 +158,8 @@ class Live:
     def raise_if_failed(self, download: Any) -> None:
         failure = download.failure()
         if failure is not None:
+            if self.downloads is not None:
+                sweep_downloads(self.downloads)
             raise DownloadInterrupted(str(failure)[:200])
 
     def screenshot(self, path: Path) -> None:
@@ -159,4 +212,6 @@ def open_context(profile_dir: Path, working_root: Path) -> Live:
         playwright.stop()
         raise
     page = context.pages[0] if context.pages else context.new_page()
-    return Live(page, context, playwright, downloads, profile_dir)
+    opened = Live(page, context, playwright, downloads, profile_dir)
+    opened.watch_downloads()
+    return opened

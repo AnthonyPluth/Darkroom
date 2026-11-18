@@ -15,10 +15,10 @@ from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
-from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
+from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
-from tests.browser.test_classify import SIGNED_IN, VERIFY
+from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGNED_IN, TOKEN_CANARY, VERIFY
 from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked
 from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
@@ -27,6 +27,17 @@ NOW = 1_793_750_400.0
 SIZES = (40 * 1024, 40 * 1024, 40 * 1024)
 ARCHIVE = archive_url(COMPLETED_ID)
 EXPORT_PAGE = archive(sizes=SIZES)
+ODD_URL = f"https://www.google.com/sorry/index?continue={TOKEN_CANARY}"
+AFTER_THE_CLICK = {
+    "reauth": [(REAUTH_URL, REAUTH_UNWORDED, 1)] * 3,
+    "popup": [(REAUTH_URL, REAUTH_UNWORDED, 2)] * 3,
+    "secret field": [(ARCHIVE, SECRET_FIELD_ONLY, 1)] * 3,
+    "unrecognised": [(ODD_URL, ODD_PAGE, 1)] * 20,
+    "reauth then it arrives": [(REAUTH_URL, REAUTH_UNWORDED, 2)] * 20,
+    "unrecognised then it arrives": [(ODD_URL, ODD_PAGE, 1)] * 20,
+    "unrecognised then reauth": [(ODD_URL, ODD_PAGE, 1)] * 3 + [(REAUTH_URL, REAUTH_UNWORDED, 2)] * 2,
+}
+ARRIVES_ON = {"reauth then it arrives": 3, "unrecognised then it arrives": 4}
 
 
 class DomainReporter:
@@ -76,6 +87,10 @@ class DownloadBrowser:
         self.closed = False
         self.read_links = []
         self.targets = self.as_chromium_resolves
+        self.after_click = []
+        self.arriving = None
+        self.collected = []
+        self.looks = 0
 
     def goto(self, url):
         self.url = url
@@ -108,6 +123,32 @@ class DownloadBrowser:
         self.read_links.append(selector)
         return self.targets(selector)
 
+    def look(self):
+        self.looks += 1
+        if self.after_click:
+            return Look(*self.after_click.pop(0))
+        return Look(self.current_url(), self.content(), 1)
+
+    def download_started(self):
+        if self.arriving is None:
+            return False
+        self.arriving -= 1
+        return self.arriving <= 0
+
+    def collect_download(self, folder, progress=None):
+        number = self.downloaded[-1]
+        self.collected.append(number)
+        self.arriving = None
+        return self.write_part(folder, f"takeout-20261102T031000Z-00{number}.zip", number, progress)
+
+    def write_part(self, folder, name, number, progress):
+        path = folder / name
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr(f"Takeout/Google Photos/{number}.bin", bytes(40 * 1024))
+        if progress is not None:
+            progress(20 * 1024)
+        return path
+
     def download_to(self, selector, folder, progress=None):
         self.selectors.append(selector)
         number = int(re.search(r"i=(\d+)", selector).group(1)) + 1
@@ -115,6 +156,10 @@ class DownloadBrowser:
         outcome = self.script.pop(0)
         if outcome == "verify":
             self.verifying = self.verify_reads
+            raise TimeoutError("no download started")
+        if outcome in AFTER_THE_CLICK:
+            self.after_click = list(AFTER_THE_CLICK[outcome])
+            self.arriving = ARRIVES_ON.get(outcome)
             raise TimeoutError("no download started")
         if outcome == "interrupted":
             raise DownloadInterrupted("network")
@@ -208,7 +253,7 @@ class DownloadJobTests(DownloadWorld):
         self.assertEqual(browser.downloaded, [1, 2, 2, 3])
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertIn(("progress", "verified; resuming part 2"), self.reporter.events)
-        self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 2), ("done", 1, 1)])
+        self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
         self.assertEqual(self.clock.slept, [download.POLL_SECONDS])
         with db.session(self.engine) as opened:
             sign_in = opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalars().all()
@@ -352,6 +397,173 @@ class DownloadJobTests(DownloadWorld):
         with self.assertRaisesRegex(download.DownloadFailed, "Takeout lists 2 parts"):
             self.run_job(browser)
         self.assertEqual(browser.downloaded, [])
+
+
+class GooglesPromptAfterTheClickTests(DownloadWorld):
+    def waits(self):
+        return [event for event in self.reporter.events if event[0] == "waiting"]
+
+    def messages(self):
+        return [message for kind, message in self.reporter.events if kind == "progress" and isinstance(message, str)]
+
+    def assert_waited_for_the_owner_and_retried_part_2_uncounted(self, browser):
+        job_id, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 2, 2, 3])
+        self.assertEqual(self.waits(), [("waiting", "verify")])
+        self.assertIn("verified; resuming part 2", self.messages())
+        self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
+        self.assertNotIn(("failed", 1), self.reporter.events)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(BrowserJob, job_id).status, "running")
+            self.assertIsNotNone(opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalar_one().closed)
+
+    def test_a_password_prompt_on_googles_accounts_page_in_the_same_tab_waits_for_the_owner(self):
+        self.assert_waited_for_the_owner_and_retried_part_2_uncounted(DownloadBrowser(["ok", "reauth", "ok", "ok"]))
+
+    def test_a_password_prompt_in_a_popup_waits_for_the_owner(self):
+        browser = DownloadBrowser(["ok", "popup", "ok", "ok"])
+        self.assert_waited_for_the_owner_and_retried_part_2_uncounted(browser)
+        self.assertEqual(browser.verifying, 0)
+
+    def test_a_page_with_only_a_password_field_waits_for_the_owner(self):
+        self.assert_waited_for_the_owner_and_retried_part_2_uncounted(DownloadBrowser(["ok", "secret field", "ok", "ok"]))
+
+    def test_the_worker_types_and_clicks_nothing_while_it_waits(self):
+        browser = DownloadBrowser(["reauth", "ok", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 1, 2, 3])
+
+    def test_a_prompt_that_keeps_coming_back_still_stops_at_googles_download_limit(self):
+        browser = DownloadBrowser(["reauth"] * 6)
+        with self.assertRaisesRegex(download.DownloadFailed, "part 1"):
+            self.run_job(browser)
+        self.assertEqual(len(browser.downloaded), 5)
+        self.assertEqual(self.parts()[0], ("failed", 5, 0))
+
+    def test_a_download_that_starts_during_the_wait_is_kept_and_part_2_is_not_clicked_again(self):
+        browser = DownloadBrowser(["ok", "reauth then it arrives", "ok"])
+        job_id, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 2, 3])
+        self.assertEqual(browser.collected, [2])
+        self.assertEqual(self.parts(), [("done", 1, 1), ("done", 1, 1), ("done", 1, 1)])
+        self.assertEqual(self.waits(), [("waiting", "verify")])
+        self.assertTrue(any(message.startswith("part 2 started downloading by itself") for message in self.messages()))
+        self.assertNotIn(("failed", 2), self.reporter.events)
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(BrowserJob, job_id).status, "running")
+
+    def test_a_download_already_under_way_before_a_retry_is_kept_rather_than_clicked(self):
+        browser = DownloadBrowser(["unrecognised", "ok", "ok"])
+        original = browser.download_started
+        calls = []
+
+        def started():
+            calls.append(len(browser.downloaded))
+            return len(calls) == 8 or original()
+
+        browser.download_started = started
+        _, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 2, 3])
+        self.assertEqual(browser.collected, [1])
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_an_unrecognised_page_backs_off_between_attempts_and_says_what_it_saw(self):
+        browser = DownloadBrowser(["unrecognised", "ok", "ok", "ok"])
+        _, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 1, 2, 3])
+        self.assertEqual(self.clock.slept, [download.POLL_SECONDS] * int(download.BACKOFF_SECONDS / download.POLL_SECONDS))
+        self.assertGreaterEqual(download.BACKOFF_SECONDS, 120)
+        self.assertEqual(self.waits(), [])
+        self.assertIn("part 1: clicking its link started no download (page host other; no password field; an unrecognised title; 2 other headings; 1 tab open); "
+                      "waiting 3 minutes in case it starts late before Darkroom tries again", self.messages())
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_an_unrecognised_page_every_time_fails_the_part_after_its_attempts_naming_what_the_click_led_to(self):
+        browser = DownloadBrowser(["unrecognised"] * 3)
+        with self.assertRaises(download.DownloadFailed) as raised:
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 1, 1])
+        self.assertEqual(sum(self.clock.slept), 3 * download.BACKOFF_SECONDS)
+        self.assertIn("part 1 failed after 3 attempts", str(raised.exception))
+        self.assertIn("the last click led to: page host other; no password field", str(raised.exception))
+        self.assertLessEqual(len(str(raised.exception)), 500)
+        self.assertEqual(self.parts()[0], ("failed", 3, 3))
+        said = " ".join([str(raised.exception), *self.messages()])
+        for canary in (NAME_CANARY, NAME_CANARY.lower(), EMAIL_CANARY, TOKEN_CANARY, "sorry", "www.google.com"):
+            self.assertNotIn(canary, said)
+
+    def test_a_page_that_turns_into_a_prompt_during_the_back_off_waits_for_the_owner(self):
+        browser = DownloadBrowser(["unrecognised then reauth", "ok", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 1, 2, 3])
+        self.assertEqual(self.waits(), [("waiting", "verify")])
+        self.assertEqual(self.parts()[0], ("done", 2, 1))
+
+    def test_a_download_that_starts_during_the_back_off_is_kept(self):
+        browser = DownloadBrowser(["unrecognised then it arrives", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 2, 3])
+        self.assertEqual(browser.collected, [1])
+        self.assertEqual(self.parts()[0], ("done", 1, 1))
+
+    def test_a_lost_lease_during_the_back_off_stops_at_once(self):
+        browser = DownloadBrowser(["unrecognised", "ok", "ok", "ok"])
+        job_id = self.claim()
+        cancelled = threading.Event()
+
+        def sleep(seconds):
+            self.clock.sleep(seconds)
+            cancelled.set()
+
+        ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
+                         lambda profile: browser, cancelled, None, sleep, self.clock.monotonic, lambda: NOW)
+        with self.assertRaises(Cancelled):
+            download.download_export(ctx)
+        self.assertEqual(self.clock.slept, [download.POLL_SECONDS])
+        self.assertEqual(browser.downloaded, [1])
+
+    def test_a_kept_download_that_breaks_counts_as_interrupted(self):
+        browser = DownloadBrowser(["reauth then it arrives", "ok", "ok", "ok"])
+
+        def broken(folder, progress=None):
+            browser.arriving = None
+            raise DownloadInterrupted("network")
+
+        browser.collect_download = broken
+        _, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 1, 2, 3])
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_an_interrupted_download_that_lands_on_a_prompt_counts_once_and_waits(self):
+        browser = DownloadBrowser(["interrupted", "ok", "ok", "ok"])
+        browser.after_click = []
+        original = browser.download_to
+
+        def interrupted_onto_a_prompt(selector, folder, progress=None):
+            if not browser.downloaded:
+                browser.after_click = list(AFTER_THE_CLICK["reauth"])
+            return original(selector, folder, progress)
+
+        browser.download_to = interrupted_onto_a_prompt
+        self.run_job(browser)
+        self.assertEqual(self.waits(), [("waiting", "verify")])
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_a_browser_whose_pages_cannot_be_read_backs_off_as_unrecognised(self):
+        browser = DownloadBrowser(["unrecognised", "ok", "ok", "ok"])
+
+        def unreadable():
+            raise RuntimeError(f"target closed at {REAUTH_URL}")
+
+        browser.look = unreadable
+        self.run_job(browser)
+        self.assertTrue(any("the browser's pages could not be read" in message for message in self.messages()))
+        self.assertFalse(any(TOKEN_CANARY in message for message in self.messages()))
 
 
 class DownloadsFolderTests(unittest.TestCase):

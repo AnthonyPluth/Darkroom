@@ -80,6 +80,21 @@ class DownloadApiTests(DownloadApiServer):
         status, reply = self.worker("POST", f"/internal/browser/jobs/{self.job}/download")
         self.assertEqual((status, reply), (400, {"error": f"export {self.export} is failed, not waiting to be downloaded"}))
 
+    def test_googles_prompt_after_a_click_does_not_count_as_an_attempt_but_still_counts_the_download(self):
+        for tries in range(5):
+            status, reply = self.part({"event": "attempt"})
+            self.assertEqual((status, reply["allowed"], reply["part"]["attempts"], reply["part"]["downloads_used"]), (200, True, 1, tries + 1))
+            status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
+            self.assertEqual((status, reply["gave_up"], reply["part"]["attempts"], reply["part"]["status"]), (200, tries == 4, 0, "failed" if tries == 4 else "pending"))
+        self.assertEqual(self.part({"event": "attempt"})[0], 400)
+
+    def test_a_prompt_after_a_counted_failure_keeps_the_earlier_attempt(self):
+        self.part({"event": "attempt"})
+        self.part({"event": "failed", "reason": "not_started"})
+        self.part({"event": "attempt"})
+        status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
+        self.assertEqual((status, reply["part"]["attempts"], reply["part"]["downloads_used"]), (200, 1, 2))
+
     def test_a_failed_download_job_resets_its_part_and_alerts(self):
         self.part({"event": "attempt"})
         self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{self.job}/failed", {"message": "UnexpectedPage: gone"})[0], 200)

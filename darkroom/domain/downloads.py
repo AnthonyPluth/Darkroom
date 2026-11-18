@@ -21,7 +21,8 @@ MAX_DOWNLOADS = 5
 MAX_ATTEMPTS = 3
 EXPIRY_NOTICE = 4 * alerts.DAY
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
-FAILURES = ("corrupt", "wrong_size", "not_started", "interrupted", "bad_name")
+ASKED_TO_VERIFY = "asked_to_verify"
+FAILURES = ("corrupt", "wrong_size", "not_started", "interrupted", "bad_name", ASKED_TO_VERIFY)
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
@@ -199,6 +200,8 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
     if part.status in ("done", "failed"):
         raise Refused(f"part {number} is {part.status}")
     events.record(opened, now, "export_part_attempt_failed", str(export.id), f"part {number}: {reason}")
+    if reason == ASKED_TO_VERIFY:
+        part.attempts = max(0, part.attempts - 1)
     if exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)

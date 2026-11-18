@@ -169,7 +169,8 @@ SUMMARY_FIELD = re.compile(r"(overall status|creation date|expiration date): (.+
 PARTS_HEADING = "data backup to a download link"
 PART_LABEL = re.compile(r"download part (\d{1,4}) of (\d{1,4})")
 KNOWN_HEADINGS = ("google takeout", "summary", "status", "your exports", "your latest export", "create a new export", "manage your exports", "your google data",
-                  "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account")
+                  "data backup to a download link", "google photos", "export summary", "sign in", "verify it's you", "choose an account", "confirm it's you",
+                  "welcome", "verify your identity", "enter your password", "google accounts")
 MAX_LANDMARKS = 8
 
 
@@ -798,10 +799,15 @@ def known_heading(text: str) -> str | None:
     return next((known for known in KNOWN_HEADINGS if text == known or text.startswith(known + " ")), None)
 
 
-def landmarks(page: str) -> str:
+def read_landmarks(page: str) -> LandmarkReader:
     reader = LandmarkReader()
     reader.feed(page)
     reader.close()
+    return reader
+
+
+def landmarks(page: str) -> str:
+    reader = read_landmarks(page)
     said: list[str] = []
     if reader.title is not None:
         title = known_heading(reader.title)
@@ -814,3 +820,74 @@ def landmarks(page: str) -> str:
     elif others:
         said.append(f"{others} other heading{'s' if others > 1 else ''}")
     return "; ".join(said) or "no title or headings"
+
+
+HostCategory = Literal["takeout", "accounts", "other", "none"]
+REAUTH_PHRASES = ("enter your password", "confirm your password", "re-enter your password", "type your password", "to continue, first verify it's you")
+GREETINGS = ("welcome", "hi ")
+IDENTITY_ATTRIBUTES = ("data-email", "data-identifier", "data-profile-identifier")
+IDENTITY_IDS = ("profileidentifier", "identifier-chip")
+AUTHORITY = re.compile(r"https://([^/?#]*)(?:[/?#].*)?", re.IGNORECASE | re.DOTALL)
+
+
+def host_category(address: str) -> HostCategory:
+    link = address.strip(ASCII_SPACE)
+    if not link or link.lower().startswith("about:"):
+        return "none"
+    found = AUTHORITY.fullmatch(link)
+    if found is None or LINK_TRICKS.search(link):
+        return "other"
+    host, _, port = found.group(1).lower().partition(":")
+    if "@" in found.group(1) or (port and not port.isdigit()):
+        return "other"
+    if host == selectors.TAKEOUT_HOST:
+        return "takeout"
+    return "accounts" if host == selectors.ACCOUNTS_HOST else "other"
+
+
+class OwnerFieldReader(SkippingReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.secret_field = False
+        self.identity = False
+
+    def opened(self, tag: str, attributes: dict[str, str]) -> None:
+        lowered = {name.lower(): value.lower() for name, value in attributes.items()}
+        if tag == "input" and (lowered.get("type", "").strip() == "password" or lowered.get("name", "").strip() == "passwd"):
+            self.secret_field = True
+        if any(name in lowered for name in IDENTITY_ATTRIBUTES) or lowered.get("id", "") in IDENTITY_IDS:
+            self.identity = True
+
+
+def owner_fields(page: str) -> OwnerFieldReader:
+    reader = OwnerFieldReader()
+    reader.feed(page)
+    reader.close()
+    return reader
+
+
+def greets_someone(page: str) -> bool:
+    reader = read_landmarks(page)
+    return any(heading == "welcome" or heading.startswith(GREETINGS) for heading in reader.headings)
+
+
+def classify_at(page: str, address: str) -> str:
+    state = classify(page)
+    if state in (SIGN_IN_NEEDED, VERIFY_ITS_YOU):
+        return state
+    host = host_category(address)
+    fields = owner_fields(page)
+    if host == "accounts" or fields.secret_field:
+        return VERIFY_ITS_YOU
+    if state == SIGNED_IN:
+        return state
+    if any(phrase in visible_text(page) for phrase in REAUTH_PHRASES):
+        return VERIFY_ITS_YOU
+    if host != "takeout" and (fields.identity or greets_someone(page)):
+        return VERIFY_ITS_YOU
+    return state
+
+
+def click_findings(page: str, address: str, tabs: int) -> str:
+    field = "a password field" if owner_fields(page).secret_field else "no password field"
+    return f"page host {host_category(address)}; {field}; {landmarks(page)}; {tabs} tab{'' if tabs == 1 else 's'} open"

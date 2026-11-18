@@ -24,6 +24,12 @@ PART_MODE = 0o660
 PARTIAL = ".partial"
 SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
+BACKOFF_SECONDS = 3 * 60.0
+ASKED_TO_VERIFY = "asked_to_verify"
+ARRIVED = "ARRIVED"
+NOTHING = "NOTHING"
+MAX_SEEN = 300
+UNREADABLE_PAGES = "the browser's pages could not be read"
 
 
 class DownloadFailed(JobFailure):
@@ -177,10 +183,13 @@ def problem_with(path: Path, listed: object, taken: set[str]) -> str | None:
         return "corrupt"
 
 
-def report_failure(ctx: JobContext, number: int, reason: str) -> None:
+def report_failure(ctx: JobContext, number: int, reason: str, seen: str = "") -> None:
     reply = ctx.reporter.part(ctx.job_id, number, {"event": "failed", "reason": reason})
     if reply.get("gave_up"):
-        raise DownloadFailed(f"part {number} failed after {reply['part']['attempts']} attempts; Darkroom stopped before using more of Google's downloads")
+        used = reply["part"]
+        led_to = f"; the last click led to: {seen}" if seen else ""
+        raise DownloadFailed(f"part {number} failed after {used['attempts']} attempts and {used['downloads_used']} of Google's downloads; "
+                             f"Darkroom stopped before using more{led_to}")
 
 
 def bytes_reporter(ctx: JobContext, number: int) -> Any:
@@ -193,16 +202,86 @@ def bytes_reporter(ctx: JobContext, number: int) -> Any:
     return report
 
 
-def wait_for_verification(ctx: JobContext, browser: Browser, number: int) -> None:
+def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
+    try:
+        seen = browser.look()
+    except Exception:
+        return takeout.UNKNOWN, UNREADABLE_PAGES
+    return takeout.classify_at(seen.page, seen.address), takeout.click_findings(seen.page, seen.address, seen.tabs)[:MAX_SEEN]
+
+
+def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_downloads: bool) -> bool:
     ctx.wait_for_user("verify")
     started = ctx.clock()
-    while takeout.classify(browser.content()) in SIGN_IN_STATES:
+    while True:
+        if watch_downloads and browser.download_started():
+            return True
+        state, _ = what_the_click_led_to(browser)
+        if state not in SIGN_IN_STATES:
+            break
         if ctx.clock() - started > WAIT_LIMIT_SECONDS:
             raise SignInTimedOut("nobody confirmed it was them within 48 hours")
         ctx.sleep(POLL_SECONDS)
         ctx.check()
+    if watch_downloads and browser.download_started():
+        return True
     ensure_signed_in(ctx, browser)
     ctx.progress(f"verified; resuming part {number}")
+    return False
+
+
+def back_off(ctx: JobContext, browser: Browser) -> str:
+    waited = 0.0
+    while waited < BACKOFF_SECONDS:
+        ctx.sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+        ctx.check()
+        if browser.download_started():
+            return ARRIVED
+        state, _ = what_the_click_led_to(browser)
+        if state in SIGN_IN_STATES:
+            return state
+    return NOTHING
+
+
+def collected(ctx: JobContext, browser: Browser, number: int, partial: Path, report: Any) -> Path | None:
+    ctx.progress(f"part {number} started downloading by itself; Darkroom is keeping it rather than clicking again")
+    try:
+        return browser.collect_download(partial, report)
+    except Cancelled:
+        raise
+    except Exception:
+        report_failure(ctx, number, "interrupted")
+        return None
+
+
+def no_download(ctx: JobContext, browser: Browser, number: int, partial: Path, report: Any, interrupted: bool) -> Path | None:
+    state, seen = what_the_click_led_to(browser)
+    if interrupted:
+        report_failure(ctx, number, "interrupted")
+        if state in SIGN_IN_STATES:
+            wait_for_verification(ctx, browser, number, False)
+        return None
+    if state not in SIGN_IN_STATES:
+        ctx.progress(f"part {number}: clicking its link started no download ({seen}); "
+                     f"waiting {int(BACKOFF_SECONDS // 60)} minutes in case it starts late before Darkroom tries again")
+        state = back_off(ctx, browser)
+        if state == NOTHING:
+            report_failure(ctx, number, "not_started", seen)
+            return None
+    if state == ARRIVED or wait_for_verification(ctx, browser, number, True):
+        return collected(ctx, browser, number, partial, report)
+    report_failure(ctx, number, ASKED_TO_VERIFY)
+    return None
+
+
+def clicked(ctx: JobContext, browser: Browser, number: int, selector: str, partial: Path, report: Any) -> Path | None:
+    try:
+        return browser.download_to(selector, partial, report)
+    except Cancelled:
+        raise
+    except Exception as error:
+        return no_download(ctx, browser, number, partial, report, isinstance(error, DownloadInterrupted))
 
 
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
@@ -216,16 +295,13 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
         if not reply.get("allowed"):
             raise DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         partial = fresh_partial(folder)
-        ctx.progress(f"downloading part {number} of {plan['part_count']}")
-        try:
-            path = browser.download_to(selector, partial, bytes_reporter(ctx, number))
-        except Cancelled:
-            raise
-        except Exception as error:
-            asked = takeout.classify(browser.content()) in SIGN_IN_STATES
-            report_failure(ctx, number, "interrupted" if isinstance(error, DownloadInterrupted) else "not_started")
-            if asked:
-                wait_for_verification(ctx, browser, number)
+        report = bytes_reporter(ctx, number)
+        if browser.download_started():
+            path = collected(ctx, browser, number, partial, report)
+        else:
+            ctx.progress(f"downloading part {number} of {plan['part_count']}")
+            path = clicked(ctx, browser, number, selector, partial, report)
+        if path is None:
             continue
         ctx.check()
         problem = problem_with(path, part.get("bytes"), taken)

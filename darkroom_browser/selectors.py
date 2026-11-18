@@ -10,6 +10,7 @@ SIGNED_IN_ACCOUNT_MENU = "a[aria-label*='Google Account']"
 SIGNED_IN_ACCOUNT_LABEL_PREFIX = "google account:"
 CREATE_NEW_EXPORT_HEADING = "text=/create a new export/i"
 TAKEOUT_HOST = "takeout.google.com"
+ACCOUNTS_HOST = "accounts.google.com"
 DOWNLOAD_HOST = TAKEOUT_HOST
 PART_LINK_TEMPLATE = 'a[href="{href}"]'
 

@@ -1783,7 +1783,8 @@
               "wrong_size",
               "not_started",
               "interrupted",
-              "bad_name"
+              "bad_name",
+              "asked_to_verify"
             ]
           }
         },

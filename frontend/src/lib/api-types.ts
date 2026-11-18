@@ -336,7 +336,7 @@ export interface PartBody {
   event: "attempt" | "progress" | "done" | "failed";
   bytes?: number;
   filename?: string;
-  reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name";
+  reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name" | "asked_to_verify";
 }
 
 export interface PartReply {
