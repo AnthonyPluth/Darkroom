@@ -391,6 +391,7 @@ The kept copy must be present, a regular file in the same person's library and h
 ## Open questions
 
 - [ ] Owner sign-off on #259's quality/deletion boundary, retention, Pixel routing and migration/rollback proposal, followed by its live upload/metadata gates. See [approval and remaining gates](design/immich-managed-storage.md#10-approval-and-remaining-gates).
+- [ ] Ingest each Takeout part as soon as it downloads, and free its zip once nothing in it exists only there? A proposal for owner sign-off on [#424](https://github.com/AnthonyPluth/Darkroom/issues/424): [per-part ingest](design/per-part-ingest.md). Until it is signed off and built, the pipeline above is unchanged.
 - [x] #284's open questions, answered by the owner on 2026-11-10. See [the answers](design/single-container.md#11-the-owners-answers); two known gaps from review remain there.
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.
