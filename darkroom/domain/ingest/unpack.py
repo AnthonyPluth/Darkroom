@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import lzma
 import os
 import re
 import shutil
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -16,6 +18,7 @@ from darkroom.storage import paths
 from darkroom.storage.models import Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import Photos
 
+DECOMPRESS_ERRORS = (zlib.error, lzma.LZMAError, OSError, EOFError, NotImplementedError, RuntimeError)
 PART_NAME = re.compile(r"^(?P<stamp>.+?)-(?P<number>\d{1,4})\.zip$", re.IGNORECASE)
 UNPACKED_MARKER_FOLDER = ".darkroom-unpacked"
 CHUNK = 1024 * 1024
@@ -107,6 +110,8 @@ def test_archive(archive: zipfile.ZipFile, path: Path, number: int) -> None:
         bad = archive.testzip()
     except zipfile.BadZipFile as error:
         raise not_a_zip(path, number) from error
+    except DECOMPRESS_ERRORS as error:
+        raise damaged(path, number) from error
     if bad is not None:
         raise damaged(path, number)
 

@@ -3,11 +3,10 @@ from __future__ import annotations
 import re
 import stat
 import zipfile
-import zlib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Literal
+from typing import IO, BinaryIO, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,15 +25,18 @@ MAX_RATIO = 100
 MAX_COMPONENT_BYTES = 255
 MAX_NAME_BYTES = 4096
 SIDECAR_MAX_BYTES = 1 << 20
+MAX_SIDECAR_BYTES = 256 << 20
+FLUSH_ROWS = 500
+FLUSH_TEXT_BYTES = 16 << 20
 ENCRYPTED = 0x1
 READABLE = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA})
 PLAIN_TYPES = frozenset({0, stat.S_IFREG, stat.S_IFDIR})
 SCRATCH_SUFFIX = re.compile(r"^\.[a-z0-9]{1,10}$")
-READ_ERRORS = (zipfile.BadZipFile, EOFError, zlib.error)
+READ_ERRORS = (zipfile.BadZipFile, *unpack.DECOMPRESS_ERRORS)
 
 Refusal = Literal["missing", "not_plain", "empty", "not_a_zip", "damaged", "symlink_entry", "outside", "file_and_folder", "device_entry",
-                  "unreadable_entry", "name_too_long", "duplicate_name", "too_many_entries", "too_large", "zip_bomb", "size_lies",
-                  "listing_differs", "bytes_differ"]
+                  "unreadable_entry", "name_too_long", "duplicate_name", "too_many_entries", "too_large", "zip_bomb", "sidecars_too_big",
+                  "size_lies", "listing_differs", "bytes_differ"]
 FROM_UNPACK: dict[str, Refusal] = {"missing": "missing", "not_plain": "not_plain", "empty": "empty", "not_a_zip": "not_a_zip",
                                    "damaged": "damaged", "outside": "outside"}
 DEVICE_ENTRY = "an entry is a device, a pipe or a socket"
@@ -43,7 +45,7 @@ NAME_TOO_LONG = "an entry's name is too long"
 DUPLICATE_NAME = "two entries have the same name"
 ZIP_BOMB = "an entry is compressed far more than a photo or video can be"
 SIZE_LIES = "an entry's size doesn't match what the zip says"
-DAMAGED_ENTRY = "an entry is damaged"
+SIDECARS_TOO_BIG = "the part's sidecars are too big in all to store"
 
 
 class PartRefused(Exception):
@@ -96,15 +98,27 @@ def refused_by_unpack(error: unpack.UnpackFailed) -> PartRefused:
 def central_checks(infos: Sequence[zipfile.ZipInfo], number: int) -> None:
     if len(infos) > MAX_ENTRIES:
         raise PartRefused("too_many_entries", f"part {number} has more than {MAX_ENTRIES} entries")
-    total = 0
+    total = sidecars = 0
     for info in infos:
         if info.flag_bits & ENCRYPTED or info.compress_type not in READABLE:
             raise PartRefused("unreadable_entry", UNREADABLE_ENTRY)
         if info.file_size > RATIO_FLOOR and info.file_size > MAX_RATIO * max(info.compress_size, 1):
             raise PartRefused("zip_bomb", ZIP_BOMB)
         total += info.file_size
+        if may_be_read_as_sidecar(info):
+            sidecars += info.file_size
     if total > MAX_UNPACKED_BYTES:
         raise PartRefused("too_large", f"part {number} would unpack to more than {MAX_UNPACKED_BYTES >> 40} TiB")
+    if sidecars > MAX_SIDECAR_BYTES:
+        raise PartRefused("sidecars_too_big", SIDECARS_TOO_BIG)
+
+
+def may_be_read_as_sidecar(info: zipfile.ZipInfo) -> bool:
+    return not info.is_dir() and info.file_size <= SIDECAR_MAX_BYTES and pairing.is_sidecar(PurePosixPath(info.filename.replace("\\", "/")).name)
+
+
+def damaged(number: int) -> PartRefused:
+    return PartRefused("damaged", unpack.damaged(Path(), number).public)
 
 
 def file_type(info: zipfile.ZipInfo) -> int:
@@ -162,14 +176,14 @@ def entry_listing(infos: Sequence[zipfile.ZipInfo]) -> list[Listed]:
     return listed
 
 
-def sidecar_text(archive: zipfile.ZipFile, entry: Listed) -> str | None:
+def sidecar_text(archive: zipfile.ZipFile, entry: Listed, number: int) -> str | None:
     if entry.bytes > SIDECAR_MAX_BYTES:
         return None
     try:
         with archive.open(entry.info) as source:
             raw = source.read(SIDECAR_MAX_BYTES + 1)
     except READ_ERRORS as error:
-        raise PartRefused("damaged", DAMAGED_ENTRY) from error
+        raise damaged(number) from error
     if len(raw) != entry.bytes:
         raise PartRefused("size_lies", SIZE_LIES)
     try:
@@ -199,18 +213,41 @@ def record_listing(opened: Session, archive: zipfile.ZipFile, export: Export, pa
             raise PartRefused("listing_differs", f"part {part.number} doesn't match the part listed before")
         read.relisted = True
         return
-    texts = {entry.name: sidecar_text(archive, entry) for entry in listed if entry.kind == "sidecar"}
-    for entry in listed:
-        row = TakeoutEntry(export_id=export.id, part_number=part.number, name=entry.name, kind=entry.kind, bytes=entry.bytes, crc32=entry.crc32,
-                           listed_at=now)
-        opened.add(row)
-        text = texts.get(entry.name)
-        if text is not None:
-            opened.flush()
-            folder, name = folder_and_name(entry.name)
-            opened.add(TakeoutSidecar(export_id=export.id, part_number=part.number, entry_id=row.id, folder=folder, name=name, text=text))
+    for start in range(0, len(listed), FLUSH_ROWS):
+        record_rows(opened, archive, export, part, listed[start:start + FLUSH_ROWS], now)
     part.entries = len(listed)
     opened.commit()
+
+
+def record_rows(opened: Session, archive: zipfile.ZipFile, export: Export, part: ExportPart, chunk: list[Listed], now: float) -> None:
+    rows = [TakeoutEntry(export_id=export.id, part_number=part.number, name=entry.name, kind=entry.kind, bytes=entry.bytes, crc32=entry.crc32,
+                         listed_at=now) for entry in chunk]
+    opened.add_all(rows)
+    opened.flush()
+    ids = [row.id for row in rows]
+    for row in rows:
+        opened.expunge(row)
+    held: list[TakeoutSidecar] = []
+    pending = 0
+    for entry, entry_id in zip(chunk, ids, strict=True):
+        text = sidecar_text(archive, entry, part.number) if entry.kind == "sidecar" else None
+        if text is None:
+            continue
+        folder, name = folder_and_name(entry.name)
+        held.append(TakeoutSidecar(export_id=export.id, part_number=part.number, entry_id=entry_id, folder=folder, name=name, text=text))
+        opened.add(held[-1])
+        pending += len(text)
+        if pending >= FLUSH_TEXT_BYTES:
+            flush_out(opened, held)
+            pending = 0
+    flush_out(opened, held)
+
+
+def flush_out(opened: Session, held: list[TakeoutSidecar]) -> None:
+    opened.flush()
+    for row in held:
+        opened.expunge(row)
+    held.clear()
 
 
 def count(read: PartRead, opened: Session, export: Export, part: ExportPart) -> None:
@@ -242,9 +279,20 @@ def batches_of(rows: list[TakeoutEntry], files: int, size: int) -> Iterator[list
         yield batch
 
 
-def entry_chunks(archive: zipfile.ZipFile, info: zipfile.ZipInfo, seen: list[int]) -> Iterator[bytes]:
-    with archive.open(info) as source:
-        while chunk := source.read(unpack.CHUNK):
+def read_chunk(source: IO[bytes], number: int) -> bytes:
+    try:
+        return source.read(unpack.CHUNK)
+    except READ_ERRORS as error:
+        raise damaged(number) from error
+
+
+def entry_chunks(archive: zipfile.ZipFile, info: zipfile.ZipInfo, number: int, seen: list[int]) -> Iterator[bytes]:
+    try:
+        source = archive.open(info)
+    except READ_ERRORS as error:
+        raise damaged(number) from error
+    with source:
+        while chunk := read_chunk(source, number):
             seen[0] += len(chunk)
             if seen[0] > info.file_size:
                 raise PartRefused("size_lies", SIZE_LIES)
@@ -254,10 +302,7 @@ def entry_chunks(archive: zipfile.ZipFile, info: zipfile.ZipInfo, seen: list[int
 def stream_one(photos: Photos, person: Person, export: Export, archive: zipfile.ZipFile, row: TakeoutEntry, info: zipfile.ZipInfo) -> Streamed:
     target = paths.scratch_file(photos, person.slug, unpack.staging_name(export), scratch_name(row))
     seen = [0]
-    try:
-        sha1 = paths.write_inbox_once(photos, target, entry_chunks(archive, info, seen))
-    except READ_ERRORS as error:
-        raise PartRefused("damaged", DAMAGED_ENTRY) from error
+    sha1 = paths.write_inbox_once(photos, target, entry_chunks(archive, info, row.part_number, seen))
     if seen[0] != row.bytes:
         raise PartRefused("size_lies", SIZE_LIES)
     return Streamed(row.id, row.name, target, sha1, row.bytes)

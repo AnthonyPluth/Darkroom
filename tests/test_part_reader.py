@@ -1,3 +1,4 @@
+import gc
 import hashlib
 import io
 import os
@@ -18,10 +19,14 @@ from darkroom.storage.models import Event, Export, ExportPart, GoogleAccount, Pe
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
 from tests.shared import add_person, own_database
-from tests.takeout_fixtures import TakeoutBuilder, standard_export
+from tests.takeout_fixtures import TakeoutBuilder, corrupt_compressed_stream, standard_export
 
 PART = "takeout-20260101T000000Z-001.zip"
 ROOT = Path(__file__).resolve().parents[1]
+COMPRESSIONS = (("deflate", zipfile.ZIP_DEFLATED, 0), ("bzip2", zipfile.ZIP_BZIP2, 0), ("lzma", zipfile.ZIP_LZMA, 9))
+MEDIA = "Takeout/Google Photos/Photos from 2019/IMG_0001.JPG"
+SIDECAR = f"{MEDIA}.json"
+DAMAGED = "part 1 has a damaged file inside"
 
 
 class Crash(Exception):
@@ -48,6 +53,12 @@ def write_zip(path, entries, compression=zipfile.ZIP_STORED):
         with zipfile.ZipFile(path, "w", compression) as archive:
             for entry, data in entries:
                 archive.writestr(entry, data)
+
+
+def corrupt_zip(path, compression, keep, entries):
+    write_zip(path, entries, compression)
+    corrupt_compressed_stream(path, entries[0][0], keep)
+    return path
 
 
 def special(name, mode):
@@ -267,6 +278,15 @@ class SameRefusalsAsUnpackTests(unittest.TestCase):
 
         self.assert_same_refusal([("Takeout/a.txt", b"a")], after_register=swap, reason="not_plain")
 
+    def test_a_damaged_compressed_stream(self):
+        for label, compression, keep in COMPRESSIONS:
+            with self.subTest(compression=label):
+                folder = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, folder)
+                raw = corrupt_zip(folder / "part.zip", compression, keep, [(MEDIA, bytes(range(256)) * 200)]).read_bytes()
+                refused = self.assert_same_refusal(raw=raw, reason="damaged")
+                self.assertEqual(refused.public, DAMAGED)
+
     def test_a_damaged_part_wins_over_a_bad_entry_as_in_unpack(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
@@ -374,6 +394,41 @@ class HostileZipTests(unittest.TestCase):
         self.assertFalse(self.world.scratch().exists())
         self.assertEqual([sha1 for *_, sha1, _ in self.world.ledger()[0]], [None])
 
+    def read_without_the_first_check(self, entries, compression, keep):
+        world = self.world = World(self)
+        corrupt_zip(world.inbox / PART, compression, keep, entries)
+        world.register()
+        with mock.patch.object(unpack, "test_archive"):
+            refused = world.refusal()
+        self.assertEqual((refused.reason, refused.public), ("damaged", DAMAGED))
+        self.assertFalse(world.scratch().exists())
+        return world
+
+    def test_a_damaged_stream_found_while_streaming_media_is_refused(self):
+        for label, compression, keep in COMPRESSIONS:
+            with self.subTest(compression=label):
+                world = self.read_without_the_first_check([(MEDIA, bytes(range(256)) * 200)], compression, keep)
+                self.assertEqual([(name, sha1) for _, name, _, _, _, sha1, _ in world.ledger()[0]], [(MEDIA, None)])
+
+    def test_a_damaged_stream_found_while_reading_a_sidecar_writes_nothing(self):
+        for label, compression, keep in COMPRESSIONS:
+            with self.subTest(compression=label):
+                world = self.read_without_the_first_check([(SIDECAR, b'{"title": "' + b"a" * 4000 + b'"}')], compression, keep)
+                self.assertEqual(world.ledger(), ([], [], [(1, None)]))
+
+    def test_a_disk_error_while_streaming_stays_a_disk_error(self):
+        write_zip(self.world.inbox / PART, [(MEDIA, b"z" * 100)])
+        self.world.register()
+
+        def full(photos, target, chunks, sha1=None):
+            list(chunks)
+            raise OSError(28, "No space left on device")
+
+        with mock.patch.object(paths, "write_inbox_once", full), self.assertRaises(OSError) as raised:
+            self.world.read()
+        self.assertNotIsInstance(raised.exception, part_reader.PartRefused)
+        self.assertEqual(raised.exception.errno, 28)
+
     def test_refusals_never_name_an_entry(self):
         canary = "canary-holiday-0001"
         refused = self.refused([(f"../{canary}.txt", b"x")])
@@ -465,6 +520,36 @@ class ScratchBatchTests(unittest.TestCase):
         with self.assertRaises(paths.LinkRefused):
             self.world.read()
         self.assertEqual((elsewhere / "1.jpg").read_bytes(), b"keep me")
+
+    def test_the_sweep_never_removes_a_hard_link_a_folder_or_anything_outside_scratch(self):
+        originals = self.world.photos.originals("jo")
+        originals.mkdir(parents=True)
+        original = originals / "IMG_0001.JPG"
+        original.write_bytes(b"an original")
+        scratch = self.world.scratch()
+        scratch.mkdir(parents=True)
+        os.link(original, scratch / "5.jpg")
+        (scratch / "7.jpg").mkdir()
+        (scratch / "7.jpg" / "8.jpg").write_bytes(b"inside a folder")
+        export_folder = scratch.parent
+        siblings = {export_folder / "staging" / "9.jpg": b"staged", self.world.photos.root / "_inbox" / "jo" / "review" / "10.jpg": b"held"}
+        for path, data in siblings.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        self.assertEqual(paths.sweep_scratch(self.world.photos, "jo", export_folder.name), 0)
+        self.assertEqual(sorted(p.name for p in scratch.iterdir()), ["5.jpg", "7.jpg"])
+        self.assertEqual((original.read_bytes(), (scratch / "7.jpg" / "8.jpg").read_bytes()), (b"an original", b"inside a folder"))
+        for path, data in siblings.items():
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_the_sweep_removes_only_the_scratch_files_and_then_the_folder(self):
+        scratch = self.world.scratch()
+        scratch.mkdir(parents=True)
+        for name in ("1.jpg", "22", ".write-once-0123456789abcdef"):
+            (scratch / name).write_bytes(b"left over")
+        self.assertEqual(paths.sweep_scratch(self.world.photos, "jo", scratch.parent.name), 3)
+        self.assertFalse(scratch.exists())
+        self.assertTrue(scratch.parent.is_dir())
 
     def test_sweep_scratch_needs_no_folder(self):
         self.assertEqual(paths.sweep_scratch(self.world.photos, "jo", "export-404"), 0)
@@ -637,3 +722,63 @@ class WholeExportPathTests(unittest.TestCase):
         self.assertEqual(world.unpack_public(), ["part 1 is not a valid zip"])
         with db.session(world.engine) as opened:
             self.assertEqual(opened.query(ExportPart).one().status, "corrupt")
+
+
+class SidecarMemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        folder = "Takeout/Google Photos/Photos from 2019"
+        self.texts = {f"{folder}/IMG_{n:04d}.JPG.json": '{"title": "%s"}' % (f"{n:04d}" * 248) for n in range(40)}
+        self.size = len(next(iter(self.texts.values())))
+        write_zip(self.world.inbox / PART, [(name, text.encode()) for name, text in self.texts.items()], zipfile.ZIP_DEFLATED)
+        self.world.register()
+
+    def live_sidecars(self):
+        return sum(1 for found in gc.get_objects() if isinstance(found, TakeoutSidecar))
+
+    def test_a_part_of_many_sidecars_never_holds_more_than_a_flush_of_their_text(self):
+        real = part_reader.sidecar_text
+        live = []
+
+        def counting(*args):
+            live.append(self.live_sidecars())
+            return real(*args)
+
+        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 3 * self.size), mock.patch.object(part_reader, "sidecar_text", counting):
+            read = self.world.read()
+        self.assertEqual(len(live), 40)
+        self.assertLessEqual(max(live), 3)
+        self.assertEqual(read.sidecars, 40)
+        self.assertEqual({f"{folder}/{name}": text for _, folder, name, text in self.world.ledger()[1]}, self.texts)
+
+    def test_a_refusal_after_some_sidecars_were_flushed_writes_nothing(self):
+        real = part_reader.sidecar_text
+        calls = [0]
+
+        def lying(*args):
+            calls[0] += 1
+            if calls[0] == 30:
+                raise part_reader.PartRefused("size_lies", part_reader.SIZE_LIES)
+            return real(*args)
+
+        with mock.patch.object(part_reader, "FLUSH_TEXT_BYTES", 2 * self.size), mock.patch.object(part_reader, "FLUSH_ROWS", 7), \
+                mock.patch.object(part_reader, "sidecar_text", lying):
+            refused = self.world.refusal()
+        self.assertEqual(refused.reason, "size_lies")
+        self.assertEqual(self.world.ledger(), ([], [], [(1, None)]))
+
+    def test_sidecars_too_big_in_all_are_refused_without_being_decompressed(self):
+        with mock.patch.object(part_reader, "MAX_SIDECAR_BYTES", 40 * self.size - 1), \
+                mock.patch.object(zipfile.ZipFile, "testzip", side_effect=AssertionError("decompressed")):
+            refused = self.world.refusal()
+        self.assertEqual((refused.reason, refused.public), ("sidecars_too_big", part_reader.SIDECARS_TOO_BIG))
+        self.assertEqual(self.world.ledger(), ([], [], [(1, None)]))
+
+    def test_sidecars_at_the_total_cap_are_read(self):
+        with mock.patch.object(part_reader, "MAX_SIDECAR_BYTES", 40 * self.size):
+            self.assertEqual(self.world.read().sidecars_unread, 0)
+
+    def test_sidecars_too_big_to_read_do_not_count_towards_the_total(self):
+        with mock.patch.object(part_reader, "MAX_SIDECAR_BYTES", self.size), mock.patch.object(part_reader, "SIDECAR_MAX_BYTES", self.size - 1):
+            read = self.world.read()
+        self.assertEqual((read.sidecars, read.sidecars_unread), (40, 40))

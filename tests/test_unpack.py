@@ -10,7 +10,7 @@ from darkroom.storage import db
 from darkroom.storage.models import Event, Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import Photos
 from tests.shared import add_person, own_database
-from tests.takeout_fixtures import TakeoutBuilder, standard_export
+from tests.takeout_fixtures import TakeoutBuilder, corrupt_compressed_stream, standard_export
 
 
 class UnpackTests(unittest.TestCase):
@@ -95,6 +95,39 @@ class UnpackTests(unittest.TestCase):
         self.assertFalse(self.staging().exists())
         with db.session(self.engine) as opened:
             self.assertEqual([p.status for p in opened.query(ExportPart).order_by(ExportPart.number)], ["done", "corrupt"])
+
+    def assert_damaged_stream_fails_the_export(self, compression, keep=0):
+        path = self.inbox / "takeout-20260101T000000Z-001.zip"
+        with zipfile.ZipFile(path, "w", compression) as archive:
+            archive.writestr("Takeout/Google Photos/IMG_1.JPG", bytes(range(256)) * 200)
+        corrupt_compressed_stream(path, "Takeout/Google Photos/IMG_1.JPG", keep)
+        ((_, report),) = self.run_inbox()
+        self.assertEqual(report.public, ["part 1 has a damaged file inside"])
+        self.assertEqual(self.export_state(), [("failed", "unpack")])
+        self.assertEqual(self.events(), ["unpack_failed"])
+        self.assertFalse(self.staging().exists())
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.query(ExportPart).one().status, "corrupt")
+
+    def test_a_damaged_deflate_stream_fails_the_export_as_damaged(self):
+        self.assert_damaged_stream_fails_the_export(zipfile.ZIP_DEFLATED)
+
+    def test_a_damaged_bzip2_stream_fails_the_export_as_damaged(self):
+        self.assert_damaged_stream_fails_the_export(zipfile.ZIP_BZIP2)
+
+    def test_a_damaged_lzma_stream_fails_the_export_as_damaged(self):
+        self.assert_damaged_stream_fails_the_export(zipfile.ZIP_LZMA, keep=9)
+
+    def test_an_encrypted_entry_fails_the_export_as_damaged(self):
+        path = self.inbox / "takeout-20260101T000000Z-001.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Takeout/secret.txt", b"x")
+        raw = bytearray(path.read_bytes())
+        raw[6] |= 0x1
+        raw[raw.rindex(b"PK\x01\x02") + 8] |= 0x1
+        path.write_bytes(bytes(raw))
+        ((_, report),) = self.run_inbox()
+        self.assertEqual(report.public, ["part 1 has a damaged file inside"])
 
     def test_corrupt_part_fails_the_export(self):
         builder = TakeoutBuilder(self.inbox)
