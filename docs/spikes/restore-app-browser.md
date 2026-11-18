@@ -65,7 +65,7 @@ Version, date, who ran it:
 
 ## What the owner runs, and what to record
 
-Use a low-value Google test account and made-up photos only. Write down no account, address or file name: say "the test account", "a made-up capture". Each run starts from a fresh one container with `DARKROOM_SYNCTHING=0` (Syncthing is S5b). `<appdata>` is the appdata folder on the host and `<backup>` a copy of it; in the container `python run.py` runs from `/app`.
+Use a low-value Google test account and made-up photos only. Write down no account, address or file name: say "the test account", "a made-up capture". Each run starts from a fresh one container. Darkroom's Syncthing runs in it too, since it is always on, but with no Pixel paired it syncs nothing (the transport is S5b). `<appdata>` is the appdata folder on the host and `<backup>` a copy of it; in the container `python run.py` runs from `/app`.
 
 Taking the backup, the same each time: stop the container, `cp -a <appdata> <backup>` (and, on PostgreSQL, `pg_dump` of the database taken while it is stopped, as [docs/deploy/postgres.md](../deploy/postgres.md) says), note what the deployment holds at that point (people, accounts, the test account's sign-in, one capture).
 
@@ -140,7 +140,7 @@ Expected: `99:100` on all three (`600` on `secret-key`, which is absent when the
 
 ### Item 1: appdata restored alone onto a fresh one container
 
-Set-up, click by click, on a fresh container (`DARKROOM_SYNCTHING=0`):
+Set-up, click by click, on a fresh container (no Pixel paired):
 
 1. Sign in to Darkroom.
 2. **People**, **Add person**: a made-up name; fill **Immich user ID** with a test Immich user's ID and **Immich API key** with a key of that user. The Immich reconcile also needs `IMMICH_URL` (and `IMMICH_ADMIN_KEY`) in the template, and the person's **Immich user ID** and **Immich API key** (a key of that same Immich user) on their **Edit** form on **People**; without them it prints `reconcile-immich: <person>: this person has no Immich user and key`.

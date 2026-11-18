@@ -25,6 +25,8 @@ MAX_PIXELS = 120_000_000
 MAX_STORED_INT = 2**31 - 1
 UNDECODABLE: tuple[type[Exception], ...] = (ValueError, ArithmeticError, LookupError, TypeError, RuntimeError, SyntaxError, struct.error,
                                             Image.DecompressionBombError)
+UTC_GROUP = re.compile(r"QuickTime|Track\d+|Media\d+")
+QUICKTIME_EPOCH = datetime(1904, 1, 1)
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
 
 
@@ -64,12 +66,18 @@ def sha1_of(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def tag(tags: dict[str, object], *names: str) -> object | None:
+def tagged(tags: dict[str, object], *names: str) -> tuple[str, object] | None:
     for name in names:
         for key, value in tags.items():
-            if key.rsplit(":", 1)[-1] == name and value not in (None, ""):
-                return value
+            group, _, own = key.rpartition(":")
+            if own == name and value not in (None, ""):
+                return group, value
     return None
+
+
+def tag(tags: dict[str, object], *names: str) -> object | None:
+    found = tagged(tags, *names)
+    return None if found is None else found[1]
 
 
 def number(value: object) -> float | None:
@@ -119,11 +127,45 @@ def seconds_fraction(tags: dict[str, object]) -> float:
     return float(f"0.{digits}") if digits else 0.0
 
 
-def capture(tags: dict[str, object], lat: float | None, lon: float | None) -> tuple[float | None, str | None, int | None, str]:
-    stamp = tag(tags, "DateTimeOriginal", "CreationDate", "CreateDate")
-    parsed = parse_local(stamp)
-    if parsed is None:
+def utc_group(group: str) -> bool:
+    return UTC_GROUP.fullmatch(group) is not None
+
+
+def quicktime_utc(tags: dict[str, object]) -> datetime | None:
+    for key, value in tags.items():
+        group, _, name = key.rpartition(":")
+        parsed = parse_local(value) if name == "CreateDate" and utc_group(group) else None
+        if parsed is not None and parsed[1] is None and parsed[0] != QUICKTIME_EPOCH:
+            return parsed[0].replace(tzinfo=UTC)
+    return None
+
+
+def wall_clock_at(utc: float, lat: float | None, lon: float | None) -> tuple[str | None, int | None]:
+    if lat is None or lon is None:
+        return None, None
+    try:
+        moment = datetime.fromtimestamp(utc, UTC)
+        offset = timezones.offset_at(lat, lon, moment)
+        if offset is None:
+            return None, None
+        return (moment + timedelta(minutes=offset)).replace(tzinfo=None).isoformat(timespec="seconds"), offset
+    except (OverflowError, OSError, ValueError):
+        return None, None
+
+
+def universal(moment: datetime | None, lat: float | None, lon: float | None) -> tuple[float | None, str | None, int | None, str]:
+    if moment is None:
         return None, None, None, "unknown"
+    utc = moment.timestamp()
+    local, offset = wall_clock_at(utc, lat, lon)
+    return utc, local, offset, "quicktime_utc"
+
+
+def capture(tags: dict[str, object], lat: float | None, lon: float | None) -> tuple[float | None, str | None, int | None, str]:
+    found = tagged(tags, "DateTimeOriginal", "CreationDate", "CreateDate")
+    parsed = None if found is None else parse_local(found[1])
+    if parsed is None or (found is not None and utc_group(found[0]) and parsed[1] is None):
+        return universal(quicktime_utc(tags), lat, lon)
     local, embedded = parsed
     local_text = local.isoformat(timespec="seconds")
     offset = embedded
@@ -135,6 +177,9 @@ def capture(tags: dict[str, object], lat: float | None, lon: float | None) -> tu
         if utc is not None:
             return utc + seconds_fraction(tags), local_text, offset, "exif_offset"
         return None, local_text, None, "unknown"
+    moment = quicktime_utc(tags)
+    if moment is not None:
+        return universal(moment, lat, lon)
     if lat is not None and lon is not None:
         looked_up = timezones.offset_minutes(lat, lon, local)
         utc = None if looked_up is None else utc_or_none(local, looked_up)

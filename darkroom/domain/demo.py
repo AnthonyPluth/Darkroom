@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import os
 import struct
 from dataclasses import dataclass
@@ -406,7 +405,7 @@ def syncthing_state(opened: Session, settings: Settings, state: str, now: float)
         if transport.last_outcome(opened) not in (None, (transport.RECOVERED, None)):
             events.record(opened, now, transport.RECOVERED, transport.SUBJECT)
         seed_transport(opened, now)
-    transport_status.review_unlocked(opened, dataclasses.replace(settings, syncthing=True), now, alerts.recorded)
+    transport_status.review_unlocked(opened, settings, now, alerts.recorded)
     opened.commit()
 
 
@@ -428,7 +427,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_download(opened, now)
     events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
     seed_transport(opened, now)
-    transport_status.review_unlocked(opened, dataclasses.replace(settings, syncthing=True), now - 2 * HOUR, alerts.recorded)
+    transport_status.review_unlocked(opened, settings, now - 2 * HOUR, alerts.recorded)
     opened.flush()
     held = len(opened.execute(select(Alert.id).where(Alert.kind == "pixel_held", Alert.closed.is_(None))).all())
     return Summary(len(PEOPLE), len(ACCOUNTS), sum(spec.pixel is not None for spec in ACCOUNTS) + len(PIXELS) + len(UNPAIRED), originals, indexed, failed,

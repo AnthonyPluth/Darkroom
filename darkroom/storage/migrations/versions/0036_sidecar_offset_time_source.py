@@ -2,14 +2,14 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0035"
-down_revision = "0034"
+revision = "0036"
+down_revision = "0035"
 branch_labels = None
 depends_on = None
 
 NAME = "ck_media_items_time_source"
-BEFORE = "'exif_offset', 'gps_lookup', 'sidecar', 'unknown'"
-AFTER = "'exif_offset', 'gps_lookup', 'sidecar', 'sidecar_offset', 'unknown'"
+BEFORE = "'exif_offset', 'gps_lookup', 'sidecar', 'unknown', 'quicktime_utc'"
+AFTER = "'exif_offset', 'gps_lookup', 'sidecar', 'unknown', 'quicktime_utc', 'sidecar_offset'"
 
 
 def allow(old: str, new: str) -> None:

@@ -11,7 +11,6 @@ from darkroom.storage import db
 
 MAX_BODY = 16 * 1024
 NO_PIXEL = "no such Pixel"
-TRANSPORT_OFF = "Darkroom's Syncthing is off"
 UNREACHABLE = "Darkroom's Syncthing could not be reached; try again in a moment, or type the Pixel's device ID instead"
 NOT_WAITING = "that device is no longer waiting; ask the Pixel to connect again"
 UNCONFIRMED = "the approval was not confirmed"
@@ -37,8 +36,6 @@ def transport_client(request: Request) -> syncthing.Client:
 
 
 def own_or_none(request: Request) -> str | None:
-    if not request.settings.syncthing:
-        return None
     try:
         return syncthing.device_id(transport_client(request).own_device_id())
     except (syncthing.SyncthingFailed, syncthing.InvalidDeviceId):
@@ -55,8 +52,6 @@ def confirmed(body: dict[str, object], refusal: str) -> None:
 
 
 def own_device(request: Request) -> Annotated[Response, contract.OwnDevice]:
-    if not request.settings.syncthing:
-        return error_response(TRANSPORT_OFF, 409)
     try:
         found = transport_client(request).own_device_id()
     except syncthing.SyncthingFailed:
@@ -65,8 +60,6 @@ def own_device(request: Request) -> Annotated[Response, contract.OwnDevice]:
 
 
 def waiting_devices(request: Request) -> Annotated[Response, contract.WaitingDevices]:
-    if not request.settings.syncthing:
-        return error_response(TRANSPORT_OFF, 409)
     try:
         found = transport_client(request).pending_devices()
     except syncthing.SyncthingFailed:
@@ -75,8 +68,6 @@ def waiting_devices(request: Request) -> Annotated[Response, contract.WaitingDev
 
 
 def pair_pixel(request: Annotated[Request, contract.PixelPairBody]) -> Annotated[Response, contract.PixelReply]:
-    if not request.settings.syncthing:
-        return error_response(TRANSPORT_OFF, 409)
     pixel_id = path_id(request)
     if pixel_id is None:
         return error_response(NO_PIXEL, 404)
@@ -113,8 +104,6 @@ def pair_pixel(request: Annotated[Request, contract.PixelPairBody]) -> Annotated
 
 
 def release_folder(request: Annotated[Request, contract.ReleaseFolderBody]) -> Annotated[Response, contract.Ok]:
-    if not request.settings.syncthing:
-        return error_response(TRANSPORT_OFF, 409)
     pixel_id = path_id(request)
     if pixel_id is None:
         return error_response(NO_PIXEL, 404)
@@ -136,7 +125,7 @@ def release_folder(request: Annotated[Request, contract.ReleaseFolderBody]) -> A
 def list_pixels(request: Request) -> Annotated[Response, contract.Pixels]:
     with db.session(engine_of(request)) as opened:
         listed = [pixels.as_dict(opened, pixel) for pixel in pixels.listing(opened)]
-        transports = list(transport_status.pixel_dicts(opened, transport_status.overview(opened, now())).values()) if request.settings.syncthing else None
+        transports = list(transport_status.pixel_dicts(opened, transport_status.overview(opened, now())).values())
     return json_response({"pixels": listed, "syncthing": transports})
 
 
