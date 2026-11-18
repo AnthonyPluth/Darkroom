@@ -27,7 +27,8 @@ UNDECODABLE: tuple[type[Exception], ...] = (ValueError, ArithmeticError, LookupE
                                             Image.DecompressionBombError)
 UTC_GROUP = re.compile(r"QuickTime|Track\d+|Media\d+")
 QUICKTIME_EPOCH = datetime(1904, 1, 1)
-VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm"}
+VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm", ".mts", ".m2ts", ".mpg", ".mpeg", ".wmv", ".3g2", ".mp", ".mv"}
+CAMERA_RAW_SUFFIXES = {".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".raf", ".orf", ".rw2", ".pef", ".srw", ".raw"}
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,7 @@ def location(tags: dict[str, object]) -> tuple[float | None, float | None, str]:
 
 
 def perceptual_hashes(path: Path, named: Path | None = None) -> PerceptualHashes:
-    if (named or path).suffix.lower() in VIDEO_SUFFIXES:
+    if (named or path).suffix.lower() in VIDEO_SUFFIXES | CAMERA_RAW_SUFFIXES:
         return PerceptualHashes(None, None)
     try:
         with Image.open(path) as image:

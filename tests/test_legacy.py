@@ -378,6 +378,43 @@ class LegacyImportTests(unittest.TestCase):
         self.assertEqual((entry.subject, entry.detail), ("jo", "6 new, 3 matched, 3 unmatched, 0 failed"))
 
 
+class CameraRawTests(unittest.TestCase):
+    def setUp(self):
+        self.home = LegacyWorld(self)
+        self.world = self.home.world
+        self.home.imported()
+        self.moment_copy = self.world.scratch_jpeg("again.jpg", colour=(11, 119, 31), **MOMENT)
+        self.home.put("reencoded.jpg", self.moment_copy)
+        self.home.put("reencoded-raw.CR2", self.moment_copy + b"raw")
+        self.home.put("google-only-raw.CR2", self.home.takeout_bytes())
+        self.home.configure()
+
+    def test_a_raw_file_beside_a_jpeg_of_the_same_shot_is_unmatched_while_identical_bytes_still_match(self):
+        report = self.home.run()
+        rows = self.home.rows()
+        self.assertEqual({path: (row.status, row.tier) for path, row in rows.items()}, {
+            "reencoded.jpg": ("matched", 2), "reencoded-raw.CR2": ("unmatched", 5), "google-only-raw.CR2": ("matched", 1),
+        })
+        self.assertEqual((report.matched, report.unmatched, report.copied), (2, 1, 1))
+
+    def test_an_unmatched_raw_file_is_copied_into_originals_once_with_no_perceptual_hash_and_offered_to_the_pixel(self):
+        before = tree(self.world.root / "jo" / "originals")
+        taking = Recorder()
+        self.home.run(taking)
+        after = tree(self.world.root / "jo" / "originals")
+        added = {path: sha for path, sha in after.items() if path not in before}
+        self.assertEqual(list(added.values()), [legacy_sha(self.moment_copy + b"raw")])
+        (path,) = added
+        self.assertTrue(path.startswith("legacy/") and path.endswith(".cr2"), path)
+        self.assertEqual({key: sha for key, sha in after.items() if key in before}, before)
+        item = self.world.opened.get(MediaItem, self.home.rows()["reencoded-raw.CR2"].original_item_id)
+        self.assertEqual((item.phash, item.dhash, item.source, item.confirmed_in_google), (None, None, "phone", False))
+        self.assertEqual(taking.offered, [("jo", item.path)])
+        report = self.home.run(Recorder(), at=NOW + 5)
+        self.assertEqual((report.new, report.copied, report.queued), (0, 0, 0))
+        self.assertEqual(tree(self.world.root / "jo" / "originals"), after)
+
+
 class LegacyGuardTests(unittest.TestCase):
     def setUp(self):
         self.home = LegacyWorld(self)

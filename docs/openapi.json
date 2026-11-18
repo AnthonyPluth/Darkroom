@@ -1261,6 +1261,29 @@
           "missing_gps": {
             "type": "integer"
           },
+          "not_imported": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orphan_sidecars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "part_count": {
             "anyOf": [
               {
@@ -1310,6 +1333,16 @@
               "type": "integer"
             },
             "type": "object"
+          },
+          "unpaired_media": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1323,6 +1356,8 @@
           "finished",
           "id",
           "missing_gps",
+          "not_imported",
+          "orphan_sidecars",
           "part_count",
           "parts",
           "review",
@@ -1332,7 +1367,8 @@
           "stage",
           "started",
           "status",
-          "unmatched_by_person"
+          "unmatched_by_person",
+          "unpaired_media"
         ],
         "type": "object"
       },

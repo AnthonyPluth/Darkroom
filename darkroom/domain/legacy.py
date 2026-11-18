@@ -254,7 +254,7 @@ def candidate_of(seen: Seen) -> dedupe.TakeoutCandidate:
     return dedupe.TakeoutCandidate(
         source_path=seen.key, sha1=print_.sha1, phash=print_.phash, captured_utc=print_.captured_utc, captured_local=print_.captured_local,
         width=print_.width, height=print_.height, duration_ms=print_.duration_ms, make=print_.make, model=print_.model,
-        is_video=seen.path.suffix.lower() in media.VIDEO_SUFFIXES,
+        is_video=seen.path.suffix.lower() in media.VIDEO_SUFFIXES, is_raw=seen.path.suffix.lower() in media.CAMERA_RAW_SUFFIXES,
     )
 
 
