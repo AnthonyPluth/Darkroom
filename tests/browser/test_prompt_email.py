@@ -71,5 +71,12 @@ class PromptEmailTests(DownloadWorld):
                                  ("Resolved: Wrong Google account", f"{alert_push.CLOSED_TEXT}\n\n{PUBLIC}")])
 
 
+    def test_without_a_usable_public_url_the_sign_in_email_has_no_link(self):
+        for public in ("", "darkroom.example"):
+            with self.subTest(public=public):
+                settings = dataclasses.replace(self.settings, public_url=public)
+                alert = Alert(id=1, kind="sign_in_needed", subject="x", message="x", opened=NOW, sent_count=1)
+                self.assertIsNone(alert_push.note_for(settings, alert).click)
+
 if __name__ == "__main__":
     unittest.main()

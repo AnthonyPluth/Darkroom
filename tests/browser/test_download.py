@@ -15,11 +15,11 @@ from darkroom.domain import browser_jobs, downloads, events, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
-from darkroom_browser import client
+from darkroom_browser import client, selectors
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look, PartClick
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
-from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGNED_IN, TOKEN_CANARY, VERIFY
+from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGN_IN_NEEDED, SIGNED_IN, TOKEN_CANARY, VERIFY
 from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked, part_item, part_names
 from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
 
@@ -1183,6 +1183,29 @@ class TelemetryTests(DownloadWorld):
         with self.assertRaises(Cancelled):
             self.run_job(browser)
         self.assertEqual(browser.downloaded, [])
+
+    def test_the_answer_is_timed_when_a_second_sign_in_after_the_prompt_is_done(self):
+        browser = SlowDownloadBrowser(["ok", "verify", "ok", "ok"], self.clock, 20 * 60)
+        asked_again = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if url == selectors.TAKEOUT_URL and browser.downloaded == [1, 2] and not asked_again:
+                asked_again.append(4)
+
+        def content():
+            if asked_again and asked_again[0] > 0 and browser.url == selectors.TAKEOUT_URL:
+                asked_again[0] -= 1
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        self.run_job(browser)
+        self.assertEqual(asked_again, [0])
+        self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify"), ("waiting", "sign_in")])
+        reclick = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"][2]
+        self.assertEqual((reclick["since_answer"], reclick["since_click"]), (0, 30 + 4 * 30))
 
     def test_the_words_for_long_and_short_runs(self):
         from darkroom_browser.jobs import telemetry
