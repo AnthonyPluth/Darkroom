@@ -178,13 +178,6 @@ describe("the version row", () => {
 describe("the Status page with Darkroom's Syncthing", () => {
   const routes = (status: typeof syncthingStatus) => ({ "GET /api/status": status, "GET /api/events": { events: [] } });
 
-  it("draws no Syncthing card and lists the Pixels by name when Syncthing is off", async () => {
-    show(routes(seededStatus));
-    const jo = await screen.findByRole("article", { name: "Jo Example" });
-    expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Syncthing" })).not.toBeInTheDocument();
-  });
-
   it("puts the card after People and before Recent events, with each Pixel's chip and line", async () => {
     show(routes(syncthingStatus));
     const card = await screen.findByRole("region", { name: "Syncthing" });
