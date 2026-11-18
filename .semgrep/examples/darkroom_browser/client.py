@@ -1,14 +1,30 @@
 import http.client
+import io
+from collections.abc import Callable
 from typing import final
 
 # ok: darkroom-no-raw-sockets
 import socket  # nosemgrep: darkroom-no-raw-sockets -- the worker's one socket, the app's private Unix socket that OnSocket opens when it is made
 
 
+class Received(io.RawIOBase):
+    def __init__(self, receive: Callable[[bytearray], int]) -> None:
+        super().__init__()
+        self._receive = receive
+
+    def readinto(self, buffer: bytearray) -> int:
+        return self._receive(buffer)
+
+    def makefile(self, mode: str) -> io.BufferedReader:
+        return io.BufferedReader(self)
+
+
 # ok: darkroom-no-raw-sockets
 @final
 # ok: darkroom-no-raw-sockets
 class OnSocket:
+    __slots__ = ("_received",)
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("OnSocket takes no subclass")
 
@@ -17,11 +33,15 @@ class OnSocket:
         stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # nosemgrep: darkroom-no-raw-sockets -- the one socket the client opens, to the app's private Unix socket
         stream.settimeout(timeout)
         stream.connect(socket_path)
-        self.sock = stream
+
+        def receive(buffer: bytearray) -> int:
+            return stream.recv_into(buffer)
+
+        self._received = Received(receive)
 
     def getresponse(self) -> http.client.HTTPResponse:
         # ok: darkroom-no-raw-sockets
-        reply = http.client.HTTPResponse(self.sock, method="POST")
+        reply = http.client.HTTPResponse(self._received, method="POST")
         reply.begin()
         return reply
 

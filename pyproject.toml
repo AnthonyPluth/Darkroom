@@ -123,8 +123,10 @@ ignore_imports = [
     # .connect), every use of the socket module and every reference to OnSocket by name other than a call that makes
     # one, apart from the socket import and the one socket open, which carry a justified nosemgrep; darkroom-raw-urlopen
     # flags any urlopen (#393). The class itself holds what Semgrep can't see through an instance: OnSocket is no
-    # HTTPConnection, opens only its AF_UNIX socket, has no connect, host or port, and refuses every subclass, checked by
-    # tests/browser/test_client_socket.py.
+    # HTTPConnection, opens only its AF_UNIX socket, has no connect, host, port, sock or __dict__, refuses every subclass
+    # and keeps the socket only inside closures, so no attribute of an instance or its answer is a socket, a socket class
+    # or the socket module, checked by tests/browser/test_client_socket.py. Neither holds introspection of those closures
+    # or of a function's globals, or an import of socket by name at run time (importlib, __import__, sys.modules).
     "darkroom_browser.client -> http",
 ]
 broken_contract_guidance = "Make the request with darkroom.tls.urlopen instead of opening the connection yourself."

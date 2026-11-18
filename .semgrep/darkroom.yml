@@ -21,10 +21,14 @@ rules:
       HTTPSConnection under any name Semgrep can follow an import to (a call, a base class, a value, an unbound method
       such as .connect), every reference to the client's OnSocket written by name other than calling it to make one (a
       base class, super(OnSocket, ...), a value, an attribute of a module), and every import of OnSocket under another
-      name. It can't see a class reached through an instance (type(connection)); the class holds that itself: OnSocket
-      is no HTTPConnection, opens its one AF_UNIX socket when it is made, has no connect, host or port, and refuses
-      every subclass (tests/browser/test_client_socket.py). The client's import of socket and its one socket open each
-      carry a justified nosemgrep, so these are flagged anywhere else in that file too (#393).
+      name. It can't see what is reached through an instance (type(connection), connection.sock); the class holds
+      that itself: OnSocket is no HTTPConnection, opens its one AF_UNIX socket when it is made, has no connect, host,
+      port, sock or __dict__, refuses every subclass, and keeps the socket only inside closures, so no attribute of an
+      instance or of its answer is a socket, a socket class or the socket module (tests/browser/test_client_socket.py).
+      Neither this rule nor the class holds introspection that reaches those closures or a function's globals
+      (__closure__, __globals__, gc.get_referents) or an import of socket by name at run time (importlib,
+      __import__, sys.modules); only an import statement is flagged here. The client's import of socket and its one
+      socket open each carry a justified nosemgrep, so these are flagged anywhere else in that file too (#393).
     severity: ERROR
     languages: [python]
     pattern-either:
