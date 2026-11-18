@@ -1280,6 +1280,12 @@
           "review": {
             "type": "integer"
           },
+          "sidecars_repaired": {
+            "type": "integer"
+          },
+          "sidecars_unreadable": {
+            "type": "integer"
+          },
           "skipped_t1": {
             "type": "integer"
           },
@@ -1326,6 +1332,8 @@
           "part_count",
           "parts",
           "review",
+          "sidecars_repaired",
+          "sidecars_unreadable",
           "skipped_t1",
           "skipped_t2",
           "skipped_t3",

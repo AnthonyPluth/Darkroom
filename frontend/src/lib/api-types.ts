@@ -260,6 +260,8 @@ export interface ImportView {
   review: number;
   missing_gps: number;
   failed: number;
+  sidecars_unreadable: number;
+  sidecars_repaired: number;
   unmatched_by_person: Record<string, number>;
   error: string | null;
 }

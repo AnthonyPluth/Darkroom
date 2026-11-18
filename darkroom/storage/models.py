@@ -474,6 +474,8 @@ class ImportRun(Base):
     unmatched_by_person: Mapped[str | None] = mapped_column(Text)
     failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     repeated: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sidecars_unreadable: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sidecars_repaired: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     changed_people: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running", server_default="running")
     error: Mapped[str | None] = mapped_column(Text)

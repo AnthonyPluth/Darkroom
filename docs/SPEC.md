@@ -161,7 +161,7 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 
 1. **Unpack** all parts of one export together into staging. Takeout can put a photo in one part and its JSON sidecar in another.
 2. **Pair** each media file with its JSON sidecar. Takeout truncates long names and adds suffixes such as `-edited` and `(1)`, so follow the matching rules immich-go already implements rather than inventing new ones.
-3. **Read metadata** from the file's EXIF first, then the sidecar: `photoTakenTime` (UTC), `geoData` / `geoDataExif` (location) and description.
+3. **Read metadata** from the file's EXIF first, then the sidecar: `photoTakenTime` (UTC), `geoData` / `geoDataExif` (location) and description. A sidecar is read as UTF-8, or as UTF-16 when it starts with a UTF-16 byte-order mark or its first bytes are UTF-16 text; a UTF-8 byte-order mark is dropped. Bytes that are not valid in that encoding are replaced (the time and place survive; a caption may show a replacement character), and the run counts the sidecar as repaired. A sidecar larger than 1 MiB, one that can't be opened as a plain file in staging, or one whose text still isn't a JSON object is treated as absent: the photo is imported with what its own file says, and the run counts the sidecar as unreadable. Neither count names a file.
 4. **Fingerprint**: SHA-1 of the file bytes, a perceptual hash (pHash and dHash) for images, duration for videos. Near-duplicate groups are built from the two hashes and only ever suggest: they confirm nothing and never feed eligibility.
 5. **Dedupe** against the person's index (next section).
 6. **Place** Google-only items in the person's `google-only/YYYY/MM/` folder. Fill metadata gaps with XMP sidecars, never by rewriting files.

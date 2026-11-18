@@ -8,11 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import alerts, dedupe, media
-from darkroom.domain.ingest import cleanup, metadata, pairing, place, run
+from darkroom.domain.ingest import cleanup, metadata, pairing, place, run, sidecar, unpack
 from darkroom.storage import locks
-from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, Person, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
 from tests.privacy import no_leaks
+from tests.takeout_fixtures import TakeoutBuilder
 
 SUMMARY = "Takeout import finished"
 FAILURE = "Darkroom needs a look"
@@ -517,6 +518,117 @@ class HandDroppedAndDownloadedTests(unittest.TestCase):
         for world in (dropped, downloaded):
             held = world.root / "_inbox/jo/review/export-1/IMG_1005.JPG"
             self.assertEqual(sha1_of(held), sha1_of(world.root / "_inbox/jo/export-1/staging/Takeout/Google Photos/Photos from 2019/IMG_1005.JPG"))
+
+
+TAKEN = 1_600_000_000
+BRIDGE = (48.85, 2.35)
+
+
+class BadSidecarTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+
+    def export_with(self, sidecars):
+        builder = TakeoutBuilder(self.world.photos.manual_inbox("jo"), seed=11, parts=1)
+        for number, (name, change) in enumerate(sidecars.items()):
+            item = builder.photo(name, gps=BRIDGE, description="CAPTION", taken=TAKEN + number * 3600)
+            item.sidecar_data = change(item.sidecar_data)
+        builder.build()
+        person = self.world.opened.get(Person, self.world.ids["jo"])
+        exports = unpack.inspect_manual_inbox(self.world.opened, self.world.photos, person, NOW)
+        self.world.opened.commit()
+        return exports[0]
+
+    def takeout_items(self):
+        rows = self.world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout")).scalars()
+        return {row.path.rsplit("/", 1)[-1]: row for row in rows}
+
+    def test_a_latin1_caption_keeps_the_photo_with_its_date_and_place_and_is_counted_as_repaired(self):
+        latin1 = "Café made-up".encode("latin-1")
+        done = self.world.run_import(self.export_with({"IMG_4001.JPG": lambda raw: raw.replace(b"CAPTION", latin1)}))
+        self.assertEqual((done.status, done.added, done.failed, done.sidecars_repaired, done.sidecars_unreadable), ("done", 1, 0, 1, 0))
+        placed = self.takeout_items()["IMG_4001.JPG"]
+        self.assertEqual((placed.captured_utc, placed.time_source, placed.lat, placed.lon, placed.gps_source), (TAKEN, "sidecar", *BRIDGE, "google"))
+        self.assertIn("Caf� made-up", placed.sidecar_json)
+
+    def test_a_byte_order_mark_or_utf16_keeps_the_sidecars_metadata(self):
+        done = self.world.run_import(self.export_with({"IMG_4101.JPG": lambda raw: b"\xef\xbb\xbf" + raw,
+                                                       "IMG_4102.JPG": lambda raw: raw.decode().encode("utf-16")}))
+        self.assertEqual((done.added, done.failed, done.sidecars_repaired, done.sidecars_unreadable), (2, 0, 0, 0))
+        placed = self.takeout_items()
+        self.assertEqual({name: (row.time_source, row.lat) for name, row in placed.items()},
+                         {"IMG_4101.JPG": ("sidecar", BRIDGE[0]), "IMG_4102.JPG": ("sidecar", BRIDGE[0])})
+        self.assertFalse(placed["IMG_4101.JPG"].sidecar_json.startswith("﻿"))
+
+    def test_an_unreadable_sidecar_costs_only_its_metadata_and_is_counted(self):
+        cases = {"IMG_4201.JPG": lambda raw: raw[:len(raw) // 2], "IMG_4202.JPG": lambda raw: b"",
+                 "IMG_4203.JPG": lambda raw: raw + b" " * sidecar.LIMIT, "IMG_4204.JPG": lambda raw: b"[" * 200_000,
+                 "IMG_4205.JPG": lambda raw: b"\x00\x00\x00{" + bytes(range(256)) * 8, "IMG_4206.JPG": lambda raw: b"[1, 2]"}
+        done = self.world.run_import(self.export_with(cases))
+        self.assertEqual((done.status, done.added, done.failed, done.sidecars_repaired, done.sidecars_unreadable), ("done", 6, 0, 0, 6))
+        placed = self.takeout_items()
+        self.assertEqual(set(placed), set(cases))
+        self.assertEqual([name for name, row in placed.items() if row.time_source == "sidecar" or row.lat is not None or row.sidecar_json is not None], [])
+        self.assertFalse(self.world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars().all())
+
+    def test_a_sidecar_up_to_the_limit_is_still_read(self):
+        def padded(raw):
+            return raw + b" " * (sidecar.LIMIT - len(raw))
+
+        done = self.world.run_import(self.export_with({"IMG_4301.JPG": padded}))
+        self.assertEqual((done.added, done.sidecars_unreadable), (1, 0))
+        self.assertEqual(self.takeout_items()["IMG_4301.JPG"].time_source, "sidecar")
+
+    def test_a_sidecar_swapped_for_a_link_after_pairing_is_not_followed_and_its_photo_is_kept(self):
+        export = self.export_with({"IMG_4401.JPG": lambda raw: raw})
+        secret = self.world.base / "outside.json"
+        secret.write_text('{"photoTakenTime": {"timestamp": "1234567890"}, "description": "SECRET-CAPTION-CANARY"}')
+        real = pairing.pair
+
+        def pairing_then_swapping(root, *rest):
+            report = real(root, *rest)
+            for path in (self.world.root / "_inbox").rglob("IMG_4401.JPG.json"):
+                if not path.is_symlink():
+                    path.unlink()
+                    path.symlink_to(secret)
+            return report
+
+        with mock.patch.object(pairing, "pair", side_effect=pairing_then_swapping):
+            done = self.world.run_import(export)
+        self.assertEqual((done.added, done.failed, done.sidecars_unreadable), (1, 0, 1))
+        self.assertIsNone(self.takeout_items()["IMG_4401.JPG"].sidecar_json)
+
+    def test_a_photo_that_cannot_be_read_still_fails_even_with_a_bad_sidecar(self):
+        export = self.export_with({"IMG_4501.JPG": lambda raw: raw[:10], "IMG_4502.JPG": lambda raw: raw})
+        real = metadata.candidate
+
+        def failing(item, *args, **kwargs):
+            if item.path.name == "IMG_4501.JPG":
+                raise ValueError("unreadable")
+            return real(item, *args, **kwargs)
+
+        with mock.patch.object(metadata, "candidate", failing):
+            done = self.world.run_import(export)
+        self.assertEqual((done.added, done.failed, done.sidecars_unreadable), (1, 1, 0))
+
+    def test_resuming_at_place_counts_the_same(self):
+        export = self.export_with({"IMG_4601.JPG": lambda raw: raw[:10], "IMG_4602.JPG": lambda raw: raw.replace(b"CAPTION", b"\xe9")})
+        with mock.patch.object(run, "stage_place", mock.Mock(side_effect=KeyboardInterrupt)), self.assertRaises(KeyboardInterrupt):
+            self.world.run_import(export)
+        self.world.reopen()
+        done = self.world.run_import(export.id)
+        self.assertEqual((done.status, done.added, done.sidecars_unreadable, done.sidecars_repaired), ("done", 2, 1, 1))
+
+    def test_no_event_or_log_names_the_sidecar_or_carries_its_content(self):
+        name = "IMG_CANARY-name-4701.JPG"
+        export = self.export_with({name: lambda raw: raw.replace(b"CAPTION", b"CANARY-caption-secret \xe9")[:-3],
+                                   "IMG_4702.JPG": lambda raw: raw.replace(b"CAPTION", b"CANARY-caption-secret")[:-3]})
+        with no_leaks(self, "CANARY-name-4701", "CANARY-caption-secret"):
+            done = self.world.run_import(export)
+        self.assertEqual((done.added, done.sidecars_unreadable), (2, 2))
+        details = " ".join(f"{e.subject} {e.detail or ''}" for e in self.world.opened.execute(select(Event)).scalars())
+        self.assertNotIn("CANARY", details)
+        self.assertNotIn("CANARY", " ".join(message for _, message in self.world.recorder.sent))
 
 
 

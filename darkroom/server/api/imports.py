@@ -44,6 +44,7 @@ def view(opened: Session, row: ImportRun) -> dict[str, object]:
         "started": row.started, "finished": row.finished, "stage": row.stage, "status": row.status,
         "added": row.added, "skipped_t1": row.skipped_t1, "skipped_t2": row.skipped_t2, "skipped_t3": row.skipped_t3,
         "review": row.review, "missing_gps": row.missing_gps, "failed": row.failed,
+        "sidecars_unreadable": row.sidecars_unreadable, "sidecars_repaired": row.sidecars_repaired,
         "unmatched_by_person": counts(row.unmatched_by_person), "error": row.error,
     }
 

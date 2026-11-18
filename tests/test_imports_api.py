@@ -48,10 +48,11 @@ class ImportsApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         (listed,) = body["imports"]
         self.assertEqual({key: listed[key] for key in ("export_id", "account_id", "status", "stage", "added", "skipped_t1", "skipped_t2",
-                                                       "skipped_t3", "review", "missing_gps", "failed", "unmatched_by_person", "error")},
+                                                       "skipped_t3", "review", "missing_gps", "failed", "sidecars_unreadable", "sidecars_repaired",
+                                                       "unmatched_by_person", "error")},
                          {"export_id": self.export_id, "account_id": self.world.account, "status": "done", "stage": "done", "added": 2,
                           "skipped_t1": 3, "skipped_t2": 1, "skipped_t3": 1, "review": 1, "missing_gps": 1, "failed": 0,
-                          "unmatched_by_person": {"jo": 2, "sam": 0}, "error": None})
+                          "sidecars_unreadable": 0, "sidecars_repaired": 0, "unmatched_by_person": {"jo": 2, "sam": 0}, "error": None})
         self.assertEqual(self.call("GET", f"/api/imports/{listed['id']}"), (200, {"run": listed}))
 
     def test_an_imported_export_cannot_be_requested_again(self):
