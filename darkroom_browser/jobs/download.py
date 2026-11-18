@@ -244,7 +244,8 @@ def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_
     clicks.answered()
     if watch_downloads and browser.download_started():
         return True
-    ensure_signed_in(ctx, browser)
+    if ensure_signed_in(ctx, browser):
+        clicks.answered()
     ctx.progress(f"verified; resuming part {number} ({clicks.answer_words()})")
     return False
 
