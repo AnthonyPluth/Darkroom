@@ -144,14 +144,34 @@ describe("the version row", () => {
     expect(server.sent("GET /api/version")).toHaveLength(1);
   });
 
-  it("says why when the version could not be loaded, and shows it after trying again", async () => {
-    let attempt = 0;
-    show({ ...quiet, "GET /api/version": () => (attempt++ === 0 ? reply(500, { error: "the server is restarting" }) : { version: "v4.7.1", commit: null }) });
-    expect(await screen.findByRole("alert")).toHaveTextContent("the server is restarting");
-    expect(screen.queryByRole("region", { name: "About" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  it("keeps the page and its alerts when the version could not be loaded, and says so in the About card", async () => {
+    show({ "GET /api/status": seededStatus, "GET /api/events": { events: someEvents }, "GET /api/version": reply(500, { error: "the server is restarting" }) });
     const about = await screen.findByRole("region", { name: "About" });
-    expect(within(about).getByText("v4.7.1")).toBeInTheDocument();
+    const term = within(about).getByText("Version");
+    expect(term.nextElementSibling?.textContent?.trim()).toBe("Couldn't load the version");
+    expect(term.nextElementSibling).toHaveClass("text-ink-muted");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Open alerts" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Jo Example" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent events" })).toBeInTheDocument();
+  });
+
+  it("shows the version once it arrives after the status", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const late = new Promise((resolve) => (answer = resolve));
+    const server = serve({ ...quiet, "GET /api/version": { version: "v4.7.1", commit: null } });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url === "/api/version" ? late.then(() => server.mock(url, init)) : server.mock(url, init)));
+    render(Status);
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(within(about).getByText("Version").nextElementSibling?.textContent?.trim()).toBe("Loading...");
+    answer(null);
+    expect(await within(about).findByText("v4.7.1")).toBeInTheDocument();
+  });
+
+  it("still shows the page's own failure when the status could not be loaded", async () => {
+    show({ ...quiet, "GET /api/status": reply(500, { error: "the database is busy" }) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("the database is busy");
+    expect(screen.queryByRole("region", { name: "About" })).not.toBeInTheDocument();
   });
 });
 

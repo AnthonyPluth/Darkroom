@@ -10,15 +10,18 @@
   import LoadFailed from "../components/LoadFailed.svelte";
 
   const loader = new Loader(async () => {
-    const [status, events, version] = await Promise.all([
+    const [status, events] = await Promise.all([
       apiCall<"GET /api/status">("/api/status", { failed: "Couldn't load the status" }),
       apiCall<"GET /api/events">("/api/events?limit=10", { failed: "Couldn't load the events" }),
-      apiCall<"GET /api/version">("/api/version", { failed: "Couldn't load the version" }),
     ]);
-    return { status, events: events.events, version, now: nowSeconds() };
+    return { status, events: events.events, now: nowSeconds() };
   });
+  const version = new Loader(() => apiCall<"GET /api/version">("/api/version", { failed: "Couldn't load the version" }));
 
-  onMount(() => void loader.load());
+  onMount(() => {
+    void loader.load();
+    void version.load();
+  });
 </script>
 
 <div class="flex flex-col gap-6">
@@ -160,7 +163,13 @@
       <h2 class="text-md font-semibold">About</h2>
       <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 md:grid-cols-[8.5rem_minmax(0,1fr)]">
         <dt class="text-ink-muted">Version</dt>
-        <dd>{buildName(data.version)}</dd>
+        {#if version.current.kind === "ready"}
+          <dd>{buildName(version.current.data)}</dd>
+        {:else if version.current.kind === "error"}
+          <dd class="text-ink-muted">Couldn't load the version</dd>
+        {:else}
+          <dd class="text-ink-muted">Loading...</dd>
+        {/if}
       </dl>
     </section>
   {/if}
