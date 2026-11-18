@@ -6,6 +6,7 @@ import shutil
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,13 +21,17 @@ UNPACKED_MARKER_FOLDER = ".darkroom-unpacked"
 CHUNK = 1024 * 1024
 SYMLINK_MODE = 0o120000
 LINK_IN_THE_INBOX = "a link is in the export's inbox folder"
+SYMLINK_ENTRY = "an entry is a symbolic link"
+OUTSIDE_STAGING = "an entry would be written outside the staging folder"
 OUTSIDE_THE_INBOX = "the export's staging folder is not inside the inbox"
 
 
 class UnpackFailed(Exception):
-    def __init__(self, message: str, public: str | None = None) -> None:
+    def __init__(self, message: str, public: str | None = None, status: str | None = None, reason: str | None = None) -> None:
         super().__init__(message)
         self.public = public or message
+        self.status = status
+        self.reason = reason
 
 
 @dataclass
@@ -60,34 +65,60 @@ def check_parts(photos: Photos, export: Export, parts: list[ExportPart]) -> list
     for part in sorted(parts, key=lambda p: p.number):
         path = part_path(export, part)
         try:
-            handle = paths.open_import_part(photos, path)
-        except FileNotFoundError as error:
-            part.status = "failed"
-            raise UnpackFailed(f"part {part.number} ({path.name}) is not in the inbox", f"part {part.number} is not in the inbox") from error
-        except paths.OutsideRoot as error:
-            part.status = "failed"
-            raise UnpackFailed(f"part {part.number} ({path.name}) is a link or not a plain file", f"part {part.number} is a link or not a plain file") from error
-        with handle:
-            if os.fstat(handle.fileno()).st_size == 0:
-                part.status = "corrupt"
-                raise UnpackFailed(f"part {part.number} ({path.name}) is empty", f"part {part.number} is empty")
-            try:
-                with zipfile.ZipFile(handle) as archive:
-                    bad = archive.testzip()
-            except zipfile.BadZipFile as error:
-                part.status = "corrupt"
-                raise UnpackFailed(f"part {part.number} ({path.name}) is not a valid zip", f"part {part.number} is not a valid zip") from error
-        if bad is not None:
-            part.status = "corrupt"
-            raise UnpackFailed(f"part {part.number} ({path.name}) has a damaged file inside", f"part {part.number} has a damaged file inside")
+            with open_part(photos, path, part.number) as handle, zip_of(handle, path, part.number) as archive:
+                test_archive(archive, path, part.number)
+        except UnpackFailed as error:
+            part.status = error.status or part.status
+            raise
         checked.append((part, path))
     return checked
+
+
+def open_part(photos: Photos, path: Path, number: int) -> BinaryIO:
+    try:
+        handle = paths.open_import_part(photos, path)
+    except FileNotFoundError as error:
+        raise UnpackFailed(f"part {number} ({path.name}) is not in the inbox", f"part {number} is not in the inbox", "failed", "missing") from error
+    except paths.OutsideRoot as error:
+        raise UnpackFailed(f"part {number} ({path.name}) is a link or not a plain file", f"part {number} is a link or not a plain file", "failed", "not_plain") from error
+    if os.fstat(handle.fileno()).st_size == 0:
+        handle.close()
+        raise UnpackFailed(f"part {number} ({path.name}) is empty", f"part {number} is empty", "corrupt", "empty")
+    return handle
+
+
+def not_a_zip(path: Path, number: int) -> UnpackFailed:
+    return UnpackFailed(f"part {number} ({path.name}) is not a valid zip", f"part {number} is not a valid zip", "corrupt", "not_a_zip")
+
+
+def damaged(path: Path, number: int) -> UnpackFailed:
+    return UnpackFailed(f"part {number} ({path.name}) has a damaged file inside", f"part {number} has a damaged file inside", "corrupt", "damaged")
+
+
+def zip_of(handle: BinaryIO, path: Path, number: int) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(handle)
+    except zipfile.BadZipFile as error:
+        raise not_a_zip(path, number) from error
+
+
+def test_archive(archive: zipfile.ZipFile, path: Path, number: int) -> None:
+    try:
+        bad = archive.testzip()
+    except zipfile.BadZipFile as error:
+        raise not_a_zip(path, number) from error
+    if bad is not None:
+        raise damaged(path, number)
+
+
+def symlink_entry(info: zipfile.ZipInfo) -> bool:
+    return (info.external_attr >> 16) & 0o170000 == SYMLINK_MODE
 
 
 def plain_entry(name: str) -> PurePosixPath:
     pure = PurePosixPath(name.replace("\\", "/"))
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
-        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
+        raise UnpackFailed(f"{OUTSIDE_STAGING}: {pure.name}", OUTSIDE_STAGING, reason="outside")
     return pure
 
 
@@ -95,7 +126,7 @@ def safe_target(staging: Path, name: str) -> Path:
     pure = plain_entry(name)
     target = (staging / pure).resolve()
     if not target.is_relative_to(staging.resolve()):
-        raise UnpackFailed(f"an entry would be written outside the staging folder: {pure.name}", "an entry would be written outside the staging folder")
+        raise UnpackFailed(f"{OUTSIDE_STAGING}: {pure.name}", OUTSIDE_STAGING, reason="outside")
     return target
 
 
@@ -103,8 +134,8 @@ def extract(photos: Photos, path: Path, staging: Path, staged: int) -> int:
     written = 0
     with paths.open_import_part(photos, path) as handle, zipfile.ZipFile(handle) as archive:
         for info in archive.infolist():
-            if (info.external_attr >> 16) & 0o170000 == SYMLINK_MODE:
-                raise UnpackFailed(f"an entry is a symbolic link: {PurePosixPath(info.filename).name}", "an entry is a symbolic link")
+            if symlink_entry(info):
+                raise UnpackFailed(f"{SYMLINK_ENTRY}: {PurePosixPath(info.filename).name}", SYMLINK_ENTRY)
             parts = plain_entry(info.filename).parts
             try:
                 safe_target(staging, info.filename)
