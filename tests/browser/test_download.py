@@ -15,6 +15,7 @@ from darkroom.domain import browser_jobs, downloads, events, exports
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
+from darkroom_browser import client
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look, PartClick
 from darkroom_browser.jobs import REGISTRY, download
 from tests.browser.scripted import Clock
@@ -1109,20 +1110,67 @@ class TelemetryTests(DownloadWorld):
 
         return content
 
-    def test_telemetry_that_cannot_be_recorded_never_stops_a_download(self):
+    def darkroom(self):
+        return client.Client(self.root / "no-socket-here" / "worker-api.sock", "t" * 40)
+
+    def answering(self, events_answered, status, raw):
+        darkroom = self.darkroom()
+        darkroom.exchange = lambda path, data: (status, raw)
         real = self.reporter.part
 
-        def refusing(job_id, number, body):
-            if body["event"] in ("clicked", "prompted"):
-                raise RuntimeError("darkroom said no")
+        def part(job_id, number, body):
+            if body["event"] in events_answered:
+                self.reporter.events.append((body["event"], number))
+                return darkroom.part(job_id, number, body)
             return real(job_id, number, body)
 
-        self.reporter.part = refusing
-        _, result = self.run_job(DownloadBrowser(["ok", "verify", "ok", "ok"]))
-        self.assertEqual((result["downloaded"], result["telemetry"]["clicks"], result["telemetry"]["prompts"]), (3, 4, 1))
-        self.assertEqual(self.recorded("export_part_clicked"), [])
+        self.reporter.part = part
 
-    def test_a_lost_lease_while_recording_still_stops_the_job(self):
+    def test_telemetry_that_cannot_be_recorded_never_stops_a_download(self):
+        for status, raw in ((400, b'{"error": "downloading must be a whole number"}'), (500, b"{}"), (302, b""), (200, b"[]"), (200, b"not json")):
+            with self.subTest(status=status, raw=raw):
+                self.setUp()
+                self.answering(("clicked", "prompted"), status, raw)
+                _, result = self.run_job(DownloadBrowser(["ok", "verify", "ok", "ok"]))
+                self.assertEqual((result["downloaded"], result["telemetry"]["clicks"], result["telemetry"]["prompts"]), (3, 4, 1))
+                self.assertEqual(self.recorded("export_part_clicked"), [])
+
+    def test_darkroom_unreachable_for_telemetry_never_stops_a_download(self):
+        darkroom = self.darkroom()
+        real = self.reporter.part
+
+        def unreachable(job_id, number, body):
+            if body["event"] == "clicked":
+                return darkroom.part(job_id, number, body)
+            return real(job_id, number, body)
+
+        self.reporter.part = unreachable
+        _, result = self.run_job(DownloadBrowser(["ok", "ok", "ok"]))
+        self.assertEqual(result["downloaded"], 3)
+
+    def test_a_lost_lease_while_recording_a_click_stops_the_job_before_the_click(self):
+        for status in (404, 409):
+            with self.subTest(status=status):
+                self.setUp()
+                self.answering(("clicked",), status, b'{"error": "this job is no longer running"}')
+                browser = DownloadBrowser(["ok"])
+                with self.assertRaises(client.LeaseLost):
+                    self.run_job(browser)
+                self.assertEqual(browser.downloaded, [])
+                self.assertEqual([event for event in self.reporter.events if event[0] in ("attempt", "clicked")], [("attempt", 1), ("clicked", 1)])
+
+    def test_a_lost_lease_while_recording_a_prompt_stops_the_job_before_waiting_or_clicking_again(self):
+        for status in (404, 409):
+            with self.subTest(status=status):
+                self.setUp()
+                self.answering(("prompted",), status, b'{"error": "this job is no longer running"}')
+                browser = DownloadBrowser(["ok", "verify", "ok", "ok"])
+                with self.assertRaises(client.LeaseLost):
+                    self.run_job(browser)
+                self.assertEqual(browser.downloaded, [1, 2])
+                self.assertNotIn(("waiting", "verify"), self.reporter.events)
+
+    def test_a_cancelled_job_while_recording_still_stops_before_the_click(self):
         real = self.reporter.part
 
         def lost(job_id, number, body):
@@ -1131,8 +1179,10 @@ class TelemetryTests(DownloadWorld):
             return real(job_id, number, body)
 
         self.reporter.part = lost
+        browser = DownloadBrowser(["ok"])
         with self.assertRaises(Cancelled):
-            self.run_job(DownloadBrowser(["ok"]))
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [])
 
     def test_the_words_for_long_and_short_runs(self):
         from darkroom_browser.jobs import telemetry
