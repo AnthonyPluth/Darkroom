@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from darkroom_browser.stall import FolderState
+
 
 @dataclass(frozen=True)
 class Look:
@@ -37,13 +39,19 @@ class Browser(Protocol):
 
     def link_targets(self, selector: str) -> list[str]: ...
 
-    def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path: ...
-
     def tabs(self) -> list[Look]: ...
 
-    def download_started(self) -> bool: ...
+    def start_download(self, selector: str, part: PartClick) -> str: ...
 
-    def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path: ...
+    def late_download(self, part: PartClick) -> str | None: ...
+
+    def download_state(self, handle: str) -> FolderState: ...
+
+    def keep_download(self, handle: str, folder: Path) -> Path: ...
+
+    def cancel_download(self, handle: str) -> None: ...
+
+    def drop_strays(self) -> int: ...
 
     def screenshot(self, path: Path) -> None: ...
 
@@ -69,6 +77,20 @@ class DownloadInterrupted(Exception):
 
 
 class JobFailure(Exception):
+    pass
+
+
+class Unreachable(Exception):
+    pass
+
+
+class Refused(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"darkroom answered {status}: {message}")
+        self.status = status
+
+
+class LeaseLost(Refused):
     pass
 
 

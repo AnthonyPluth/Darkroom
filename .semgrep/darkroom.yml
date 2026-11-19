@@ -268,6 +268,63 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py"]
 
+  - id: darkroom-no-removal-of-listed-names
+    message: >-
+      A name taken from a folder listing (iterdir, glob, listdir, scandir), even one collected into a set or list or
+      changed on the way, is removed only by darkroom/storage/paths.py and darkroom_browser/jobs/download.py's guarded
+      helpers (sweep_downloads, remove_download), which refuse a link at the folder and above it first. Removing it
+      anywhere else deletes whatever the folder is linked to, such as the held copies under _inbox/<person>/review/.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: $D.iterdir()
+      - pattern: $D.glob(...)
+      - pattern: $D.rglob(...)
+      - pattern: os.listdir(...)
+      - pattern: os.scandir(...)
+      - pattern: "{$X for $E in $D.iterdir()}"
+      - pattern: "{$X for $E in $D.glob(...)}"
+      - pattern: "{$X for $E in $D.rglob(...)}"
+      - pattern: "{$X for $E in os.listdir(...)}"
+      - pattern: "{$X for $E in os.scandir(...)}"
+      - pattern: "[$X for $E in $D.iterdir()]"
+      - pattern: "[$X for $E in $D.glob(...)]"
+      - pattern: "[$X for $E in $D.rglob(...)]"
+      - pattern: "[$X for $E in os.listdir(...)]"
+      - pattern: "[$X for $E in os.scandir(...)]"
+    pattern-propagators:
+      - pattern: $S.add($X)
+        from: $X
+        to: $S
+      - pattern: $S.append($X)
+        from: $X
+        to: $S
+      - pattern: $S.extend($X)
+        from: $X
+        to: $S
+      - pattern: $S.update($X)
+        from: $X
+        to: $S
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $X.unlink(...)
+              - pattern: $X.rmdir(...)
+              - pattern: os.unlink($X, ...)
+              - pattern: os.remove($X, ...)
+              - pattern: os.rmdir($X, ...)
+              - pattern: shutil.rmtree($X, ...)
+          - focus-metavariable: $X
+          - pattern-not-inside: |
+              def sweep_downloads(...):
+                  ...
+          - pattern-not-inside: |
+              def remove_download(...):
+                  ...
+    paths:
+      include: ["/darkroom_browser/"]
+
   - id: darkroom-pixel-prune-one-remover
     message: >-
       Pruning a Pixel's transient folder deletes only that Pixel's copy of one person's photo, never anything under

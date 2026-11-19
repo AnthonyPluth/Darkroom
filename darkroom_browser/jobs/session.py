@@ -45,7 +45,7 @@ def waiting_reason(state: str) -> str:
     return "verify" if state == takeout.VERIFY_ITS_YOU else "sign_in"
 
 
-def ensure_signed_in(ctx: JobContext, browser: Browser) -> None:
+def ensure_signed_in(ctx: JobContext, browser: Browser) -> bool:
     browser.goto(selectors.TAKEOUT_URL)
     started = ctx.clock()
     unknown_since: float | None = None
@@ -72,3 +72,4 @@ def ensure_signed_in(ctx: JobContext, browser: Browser) -> None:
         state = read_state(ctx, browser.content())
     if reported is not None:
         ctx.progress("signed in")
+    return reported is not None

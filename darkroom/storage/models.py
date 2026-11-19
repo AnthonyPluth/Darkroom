@@ -554,6 +554,8 @@ class ImportRun(Base):
     not_imported: Mapped[str | None] = mapped_column(Text)
     orphan_sidecars: Mapped[int | None] = mapped_column(Integer)
     unpaired_media: Mapped[int | None] = mapped_column(Integer)
+    sidecars_unreadable: Mapped[int | None] = mapped_column(Integer)
+    sidecars_repaired: Mapped[int | None] = mapped_column(Integer)
     changed_people: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running", server_default="running")
     error: Mapped[str | None] = mapped_column(Text)

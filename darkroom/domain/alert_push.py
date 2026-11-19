@@ -17,6 +17,7 @@ RETRY_FOR = 3600.0
 FALLBACK_TITLE = "Darkroom"
 OPEN_TEXT = "Darkroom needs a look. Open its Status page for details."
 CLOSED_TEXT = "This no longer needs a look."
+REMOTE_BROWSER_PAGE = "/browser"
 
 
 def closing(alert: Alert) -> bool:
@@ -35,6 +36,8 @@ def note_for(settings: Settings, alert: Alert) -> Note:
     click = settings.public_url if settings.public_url.startswith(("https://", "http://")) else None
     if closing(alert):
         return Note(f"Resolved: {title}", CLOSED_TEXT, click, key_for(settings, alert))
+    if click is not None and alert.kind in alerts.ANSWERED_IN_THE_BROWSER:
+        click = f"{click.rstrip('/')}{REMOTE_BROWSER_PAGE}"
     return Note(title, OPEN_TEXT, click, key_for(settings, alert))
 
 

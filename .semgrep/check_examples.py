@@ -22,7 +22,8 @@ def expected() -> tuple[set[tuple[str, int, str]], set[tuple[str, int, str]]]:
         for number, line in enumerate(path.read_text().split("\n"), 1):
             found = MARK.match(line.strip())
             if found:
-                (flagged if found.group(1) == "ruleid" else clean).add((rel, number + 1, found.group(2)))
+                for rule in found.group(2).split(","):
+                    (flagged if found.group(1) == "ruleid" else clean).add((rel, number + 1, rule))
     return flagged, clean
 
 

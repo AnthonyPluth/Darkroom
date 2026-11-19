@@ -20,6 +20,7 @@ DISABLED = "disabled"
 FAILED = "failed"
 QUEUED = "queued"
 ONE_SHOT_KINDS = frozenset({"export_imported", "schedule_renewed", "failure"})
+ANSWERED_IN_THE_BROWSER = frozenset({"sign_in_needed", "wrong_account"})
 TITLES = {
     "sign_in_needed": "Google sign-in needed",
     "wrong_account": "Wrong Google account",

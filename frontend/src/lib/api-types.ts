@@ -263,6 +263,8 @@ export interface ImportView {
   review: number;
   missing_gps: number;
   failed: number;
+  sidecars_unreadable: number | null;
+  sidecars_repaired: number | null;
   unmatched_by_person: Record<string, number>;
   not_imported: Record<string, number> | null;
   orphan_sidecars: number | null;
@@ -341,10 +343,14 @@ export interface OwnDevice {
 }
 
 export interface PartBody {
-  event: "attempt" | "progress" | "done" | "failed";
+  event: "attempt" | "progress" | "done" | "failed" | "clicked" | "prompted";
   bytes?: number;
   filename?: string;
   reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name" | "asked_to_verify";
+  downloading?: number;
+  since_click?: number;
+  since_answer?: number;
+  clicks?: number;
 }
 
 export interface PartReply {

@@ -504,12 +504,35 @@ class MigrationTests(unittest.TestCase):
                                                      ("jo/google-only/b.jpg", 1.5, -240, "sidecar")])
         db.migrate(self.engine)
 
+    def test_0038_import_run_sidecar_counts_are_not_counted_for_old_runs_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0037")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO import_runs (export_id, started, added, failed, repeated) VALUES (1, 2.0, 3, 1, 2)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT added, failed, repeated, sidecars_unreadable, sidecars_repaired FROM import_runs").all(),
+                             [(3, 1, 2, None, None)])
+            connection.exec_driver_sql("UPDATE import_runs SET sidecars_unreadable = 4, sidecars_repaired = 5")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0037")
+        columns = {column["name"] for column in inspect(self.engine).get_columns("import_runs")}
+        self.assertFalse({"sidecars_unreadable", "sidecars_repaired"} & columns)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT added, failed, repeated FROM import_runs").all(), [(3, 1, 2)])
+        db.migrate(self.engine)
+
     def test_0039_download_interruptions_start_at_zero_prompts_are_backfilled_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         columns = "id, account_id, kind, status, download_tries"
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0037")
+            command.upgrade(config, "0038")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, download_tries) VALUES (1, 1, 'initial', 'failed', 3)")
@@ -522,7 +545,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT download_interruptions FROM exports").scalar(), 0)
             self.assertEqual(connection.exec_driver_sql("SELECT id, sign_in_prompts FROM export_parts ORDER BY id").all(), [(1, 3), (2, 0)])
             config.attributes["connection"] = connection
-            command.downgrade(config, "0037")
+            command.downgrade(config, "0038")
         self.assertNotIn("download_interruptions", {column["name"] for column in inspect(self.engine).get_columns("exports")})
         self.assertNotIn("sign_in_prompts", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:
