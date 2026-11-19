@@ -23,6 +23,7 @@ Answers to the owner's questions in issues #10, #199, #259 and #284, copied here
 | Pixel flooding (#199, Nov 6, decision 4) | The per-Pixel folder is capped by size (`PIXEL_FOLDER_CAP_GB`, default 50); the next photos go in only after earlier ones are confirmed and pruned | #199, #216 |
 | Late Immich photos (#199, Nov 6, decision 5) | Every photo that arrives in Immich is sent to the Pixel, even if that person's Takeout already has a match | #199, #216 |
 | Duplicates on Unraid (#234, Nov 7) | In the owner's words: "Let's make sure we're not storing duplicate images permanently - figure out which one is higher quality and keep that one. If both images are identical, get rid of the duplicate." On how it goes: "if a duplicate exists on Unraid, delete the duplicate", with no trash area. When the Immich reconcile stores a phone original that matches a Takeout copy in `google-only/` (automatic tier 1 or 2), identical copies keep the phone original; otherwise the Takeout copy is kept only if it has strictly more pixels, and the other copy is deleted. Byte count and metadata never make a phone original lose. This supersedes "dedupe deletes nothing on Unraid" (promise 2) and the no-deletion half of promise 1 for the losing copy of a matched pair only, never anything else | #234, #199 |
+| Takeout's Trash and Archive folders (#444, Nov 18) | Trash: a photo that is only in a folder named `Trash` or `Bin` (anything the person deleted in Google Photos) is not imported: it gets no dedupe decision and no file, and the run counts it as `in Trash or Bin` in its not-imported summary, with no names. A photo that is in a year folder or in an album as well follows that copy. Archive: the owner left it undecided, so today's behaviour stands (an archived photo is placed like any other); the `Archive` folder is not an album and the item is marked `archive`, nothing else changes. Folder names are the fixed list `Trash`, `Bin`, `Archive`, matched whole and ignoring case; other languages' names are not recognised until the owner supplies them from a real export (#11). The sidecar's own flags are not read: no real export has shown their names. Nothing is deleted: the trashed files stay in staging until cleanup | #444 |
 
 ## Immich-managed storage (#259, 2026-11-09)
 
@@ -95,3 +96,14 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 Two known gaps from review remain open in the design (the order of the reconciler and the placed-copy check; the placement cutoff when a queued copy is adopted).
 
 Everything the design says about Syncthing's REST API, Chromium in the merged image and Unraid's networking is unverified until its spikes are written up; none of it has been run.
+
+## The XMP date when the time zone is unknown (#445, 2026-11-18)
+
+**Owner decision.** [Issue #445](https://github.com/AnthonyPluth/Darkroom/issues/445) asked what `xmp.created_text` should write when a Google-only item has Google's `photoTakenTime` instant but no position to give its zone. The owner answered, relayed by the coordinating session: "when a photo's time zone is unknown, write the local time with no offset in XMP. Do not invent `+00:00`."
+
+| Item | Decision | Source |
+| --- | --- | --- |
+| `XMP-photoshop:DateCreated` with a position | Unchanged: the local time at the position's offset at that instant, with the offset | #445 |
+| `XMP-photoshop:DateCreated` with no position | The clock time with no offset (`2019:07:04 12:30:15`). With no zone known, the clock written is the UTC reading of Google's instant, so it is not a claim about where the photo was taken; the stored `captured_utc` is unchanged. Never `+00:00` | #445 |
+| Options not taken | No XMP date at all; a household default offset setting | #445 |
+

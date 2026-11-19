@@ -79,8 +79,10 @@ def check(text, today):
             raise Refused("an entry needs a reason")
         if statement[0] in "|>":
             raise Refused("the reason is one line")
-        if not re.search(r"#\d+", statement):
-            raise Refused("the reason names the issue where the owner accepted it")
+        if not re.search(r"#\d+ \(issuecomment-\d+\)", statement):
+            raise Refused("the reason cites the owner's comment, as #N (issuecomment-ID)")
+        if re.search(r"not verified|unverified", statement, re.IGNORECASE):
+            raise Refused("the reason shows the finding does not apply; it does not admit that it is unchecked")
         expires = datetime.date.fromisoformat(entry["expired_at"])
         if (expires - today).days > MAX_DAYS:
             raise Refused(f"{entry['expired_at']} is more than {MAX_DAYS} days away")
@@ -91,7 +93,7 @@ GOOD = """vulnerabilities:
   - id: CVE-2026-0001
     paths:
       - usr/local/bin/example
-    statement: "Not linked in (#1)."
+    statement: "Accepted on #1 (issuecomment-1): not linked in."
     expired_at: 2027-01-31
 """
 
@@ -108,6 +110,13 @@ class TrivyIgnoreListTests(unittest.TestCase):
         self.assertEqual(len(syncthing), 1)
         self.assertEqual(syncthing[0]["paths"], ["usr/local/bin/syncthing"])
         self.assertEqual(syncthing[0]["purls"], ["pkg:golang/golang.org/x/net"])
+
+    def test_the_accepted_go_stdlib_finding_is_limited_to_the_syncthing_binary(self):
+        found = check(LIST.read_text(), datetime.date(2026, 11, 19))
+        stdlib = [entry for entry in found if entry["id"] == "CVE-2026-97054"]
+        self.assertEqual(len(stdlib), 1)
+        self.assertEqual(stdlib[0]["paths"], ["usr/local/bin/syncthing"])
+        self.assertEqual(stdlib[0]["purls"], ["pkg:golang/stdlib"])
 
     def test_the_list_is_owned_and_gets_the_second_review(self):
         owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
@@ -128,10 +137,13 @@ class TrivyIgnoreListTests(unittest.TestCase):
             "a double wildcard": GOOD.replace("usr/local/bin/example", "**"),
             "two paths": GOOD.replace("      - usr/local/bin/example\n", "      - usr/local/bin/example\n      - usr/bin/other\n"),
             "a leading slash": GOOD.replace("usr/local/bin/example", "/usr/local/bin/example"),
-            "no statement": GOOD.replace('    statement: "Not linked in (#1)."\n', ""),
-            "no owner's acceptance": GOOD.replace('"Not linked in (#1)."', '"Not linked in."'),
-            "an empty statement": GOOD.replace('"Not linked in (#1)."', '""'),
-            "a multi-line statement": GOOD.replace('"Not linked in (#1)."', "|"),
+            "no statement": GOOD.replace('    statement: "Accepted on #1 (issuecomment-1): not linked in."\n', ""),
+            "no owner's acceptance": GOOD.replace('"Accepted on #1 (issuecomment-1): not linked in."', '"Not linked in."'),
+            "an issue number without the owner's comment": GOOD.replace("(issuecomment-1)", "(1)"),
+            "an applicability that is not verified": GOOD.replace("not linked in.", "not linked in, but reachability is not verified."),
+            "an applicability that is unverified": GOOD.replace("not linked in.", "unverified."),
+            "an empty statement": GOOD.replace('"Accepted on #1 (issuecomment-1): not linked in."', '""'),
+            "a multi-line statement": GOOD.replace('"Accepted on #1 (issuecomment-1): not linked in."', "|"),
             "no expiry": GOOD.replace("    expired_at: 2027-01-31\n", ""),
             "an expiry too far away": GOOD.replace("2027-01-31", "2027-05-16"),
             "a misconfiguration": GOOD + "misconfigurations:\n  - id: AVD-DS-0002\n",

@@ -7,6 +7,11 @@
 #   "Add ignore-file support to fleet (Recommended)"
 #   "Since darkroom isn't deployed, let's just merge with these CVEs and fix when fleet bump is merged in so we can keep moving"
 # Scope: this one CVE, this one path, until a fixed Syncthing is pinned or the entry expires, whichever comes first.
+#
+# CVE-2026-97054: the owner's acceptance is recorded on #470, https://github.com/AnthonyPluth/Darkroom/pull/470#issuecomment-7014089710,
+# in the owner's words (posted from the owner's account on their instruction in a working session on 2026-11-19):
+#   "Owner acceptance: I accept CVE-2026-97054 in the pinned Syncthing v2.1.7 binary until a Syncthing release built with Go 1.27.4 or later is pinned, expiry 2027-02-14, subject to the reachability analysis in this PR."
+# Scope: this one CVE, this one path, until a Syncthing release built with Go 1.27.4 or later is pinned or the entry expires, whichever comes first.
 vulnerabilities:
   - id: CVE-2026-78661
     paths:
@@ -14,4 +19,11 @@ vulnerabilities:
     purls:
       - pkg:golang/golang.org/x/net
     statement: "Accepted by the owner on #341 (issuecomment-6926210618) until a fixed Syncthing is pinned: the pinned Syncthing v2.1.7 embeds golang.org/x/net v0.60.0, but the vulnerable x/net/html package is not linked into the binary (its Go build info and symbols show 12 x/net packages, none of them html), its API is only on a private 0600 Unix socket, and no Syncthing release with a fixed x/net exists yet."
+    expired_at: 2027-02-14
+  - id: CVE-2026-97054
+    paths:
+      - usr/local/bin/syncthing
+    purls:
+      - pkg:golang/stdlib
+    statement: "Accepted by the owner on #470 (issuecomment-7014089710) until a Syncthing release built with Go 1.27.4 or later is pinned (v2.1.7 is the newest release as of 2026-11-19 and embeds Go stdlib v1.27.3): in Syncthing's v2.1.7 source the only http.MaxBytesReader is the GUI login handler (lib/api/api_auth.go), served by the GUI/REST server that darkroom_init/syncthing.py puts only on a private 0600 Unix socket; the 22000 TCP and QUIC listeners carry Syncthing's own sync protocol, not HTTP (lib/connections imports no net/http); its other net/http servers (a temporary database-migration page on the GUI address and a profiler that only STPROFILER starts, which the init never sets) read no request body; global discovery, relays, NAT traversal, crash and usage reporting and automatic upgrades are off, so its outbound HTTP clients are unused."
     expired_at: 2027-02-14
