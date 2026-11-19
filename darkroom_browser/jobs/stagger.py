@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Unreachable
+from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, LeaseLost, PartClick, Refused, Unreachable
 from darkroom_browser.jobs import download
 from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in, waiting_reason
 from darkroom_browser.jobs.status import SignedOut
@@ -67,6 +67,7 @@ class Staggered:
         self.flights: dict[int, Flight] = {}
         self.waiting: Waiting | None = None
         self.signing_in: float | None = None
+        self.stopping: JobFailure | None = None
         self.last_click: float | None = None
         self.prompts = 0
         self.fetched = 0
@@ -78,19 +79,24 @@ class Staggered:
 
     def run(self) -> int:
         self.ctx.progress(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
-        while self.queue or self.flights or self.waiting is not None:
+        while self.busy():
             self.ctx.check()
             self.advance_flights()
             self.advance_waiting()
             self.advance_signing_in()
             if self.waiting is None and self.signing_in is None:
                 self.browser.drop_strays()
-                if self.may_start():
+                if self.stopping is None and self.may_start():
                     self.start(self.queue.pop(0))
                     continue
-            if self.queue or self.flights or self.waiting is not None:
+            if self.busy():
                 self.ctx.sleep(POLL_SECONDS)
+        if self.stopping is not None:
+            raise self.stopping
         return self.fetched
+
+    def busy(self) -> bool:
+        return bool(self.queue and self.stopping is None) or bool(self.flights) or self.waiting is not None or self.signing_in is not None
 
     def ending(self) -> str:
         if self.most == 1:
@@ -128,18 +134,26 @@ class Staggered:
         number = part["number"]
         try:
             listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks, wait=False)[number]
+            selector = download.part_link(listed.link)
+            if not download.leads_where_checked(self.browser, selector, listed.href):
+                raise download.DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
         except SignedOut as signed_out:
             self.requeue(part)
             self.signing_in = self.ctx.clock()
             self.ctx.wait_for_user(waiting_reason(signed_out.state))
             return
-        selector = download.part_link(listed.link)
-        if not download.leads_where_checked(self.browser, selector, listed.href):
-            raise download.DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
+        except JobFailure as failure:
+            if not self.flights:
+                raise
+            self.stopping = failure
+            self.say(f"part {number} could not be started, so Darkroom lets the {counted(len(self.flights), 'part')} still downloading finish before it stops")
+            return
         reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt"})
         if not reply.get("allowed"):
             raise download.DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         clicking = PartClick(selector, listed.href, number)
+        if self.kept_late(part, clicking):
+            return
         others = counted(len(self.flights), "other part")
         self.say(f"downloading part {number} of {self.plan['part_count']} with {others} downloading; {self.clicks.words()}")
         self.clicks.clicked(number, len(self.flights))
@@ -152,6 +166,21 @@ class Staggered:
             self.no_download(part, clicking, isinstance(error, DownloadInterrupted))
             return
         self.fly(part, handle)
+
+    def kept_late(self, part: dict[str, Any], clicking: PartClick) -> bool:
+        try:
+            handle = self.browser.late_download(clicking)
+        except Cancelled:
+            raise
+        except Exception:
+            download.report_failure(self.ctx, part["number"], "interrupted")
+            self.requeue(part)
+            return True
+        if handle is None:
+            return False
+        self.say(f"part {part['number']} started downloading by itself; Darkroom is keeping it rather than clicking again")
+        self.fly(part, handle)
+        return True
 
     def fly(self, part: dict[str, Any], handle: str) -> None:
         now = self.ctx.clock()
@@ -210,7 +239,8 @@ class Staggered:
     def answered(self, waiting: Waiting) -> None:
         self.clicks.answered()
         self.waiting = None
-        ensure_signed_in(self.ctx, self.browser)
+        if ensure_signed_in(self.ctx, self.browser):
+            self.clicks.answered()
         self.ctx.progress(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
 
     def advance_signing_in(self) -> None:

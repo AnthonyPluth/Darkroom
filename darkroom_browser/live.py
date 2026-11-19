@@ -10,7 +10,7 @@ from typing import Any
 from darkroom_browser import monitoring, selectors
 from darkroom_browser.config import env
 from darkroom_browser.context import DownloadInterrupted, Look, PartClick
-from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
+from darkroom_browser.jobs.download import downloads_folder, remove_download, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
 from darkroom_browser.pages import takeout
 from darkroom_browser.stall import IN_PROGRESS_SUFFIX, POLL_MS, STALL_SECONDS, FolderState, StallWatch, Verdict, file_state, folder_state
@@ -264,22 +264,15 @@ class Live:
         self.remove_files(handle)
 
     def remove_files(self, handle: str) -> None:
-        if self.downloads is None:
-            return
-        for name in (handle, handle + IN_PROGRESS_SUFFIX):
-            path = self.downloads / name
-            if path.is_symlink() or path.is_file():
-                path.unlink(missing_ok=True)
+        if self.downloads is not None:
+            remove_download(self.downloads, handle)
 
     def drop_strays(self) -> int:
         strays, self.arrived = self.arrived, []
         for stray in strays:
             with contextlib.suppress(Exception):
                 stray.cancel()
-        leftovers = self.stems() - set(self.flights)
-        for handle in leftovers:
-            self.remove_files(handle)
-        return len(strays) + len(leftovers)
+        return len(strays)
 
     def screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
