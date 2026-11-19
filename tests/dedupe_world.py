@@ -66,7 +66,7 @@ class World:
         base = dedupe.TakeoutCandidate(
             source_path=f"Takeout/Google Photos/Photos from 2023/IMG_{number:04d}.HEIC", sha1=f"{number + 10**9:040x}", phash=PHASH,
             captured_utc=MOMENT, captured_local=LOCAL, width=4032, height=3024, duration_ms=None,
-            make="Apple", model="iPhone 15 Pro", is_video=False,
+            make="Apple", model="iPhone 15 Pro", is_video=False, is_raw=False,
         )
         return dataclasses.replace(base, **fields)
 

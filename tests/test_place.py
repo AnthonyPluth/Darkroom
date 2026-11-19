@@ -579,6 +579,23 @@ class FixtureExportRun(unittest.TestCase):
         for relative, data in self.originals.items():
             self.assertEqual(sha1_of(self.root / relative), hashlib.sha1(data, usedforsecurity=False).hexdigest())
 
+    def test_raw_avif_and_new_video_kinds_are_placed_and_every_original_keeps_its_sha1(self):
+        builder = TakeoutBuilder(self.root / "_inbox/jo/kinds", seed=11)
+        builder.photo("shot.CR2", year=2020)
+        builder.photo("pic.avif", year=2020)
+        builder.video("cam.MTS", year=2020)
+        builder.video("PXL_20200101_101010101.MP", year=2020)
+        for part in builder.build().parts:
+            with zipfile.ZipFile(part) as archive:
+                archive.extractall(self.staging)
+        before = self.originals_tree()
+        self.run_once()
+        after = self.originals_tree()
+        self.assertEqual({key: after[key] for key in before}, before)
+        self.assertEqual(set(after) - set(before), {"jo/originals/IMG_0001.JPG.xmp", "sam/originals/2019/IMG_0012.JPG.xmp"})
+        placed = {key.rsplit("/", 1)[-1] for key in tree(self.root) if key.startswith("jo/google-only/")}
+        self.assertLessEqual({"shot.CR2", "shot.CR2.xmp", "pic.avif", "pic.avif.xmp", "cam.MTS", "PXL_20200101_101010101.MP"}, placed)
+
     def test_sidecars_read_back_with_the_takeout_values(self):
         self.run_once()
         sidecar_path = self.root / "jo/originals/IMG_0001.JPG.xmp"
