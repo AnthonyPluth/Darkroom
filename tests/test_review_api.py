@@ -237,6 +237,32 @@ class ResolveTests(ReviewCase):
         self.assertTrue((self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME).is_file())
         self.assertEqual(self.opened.get(MediaItem, body["review"]["kept_item_id"]).sidecar_json, raw)
 
+    def staged_sidecar_of_the_pair(self):
+        hit = review.found(self.opened, self.pending().id)
+        _, found_sidecar = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
+        self.assertIsNotNone(found_sidecar)
+        return found_sidecar
+
+    def kept_with_the_staged_sidecar_rewritten(self, rewrite):
+        found_sidecar = self.staged_sidecar_of_the_pair()
+        raw = found_sidecar.read_text(encoding="utf-8")
+        found_sidecar.write_bytes(rewrite(raw))
+        status, body = self.call("POST", f"/api/review/{self.pending().id}/resolve", {"action": "keep_both"})
+        self.assertEqual(status, 200, body)
+        return raw, self.opened.get(MediaItem, body["review"]["kept_item_id"])
+
+    def test_keep_both_with_staging_reads_a_utf16_sidecar_and_keeps_its_google_metadata(self):
+        raw, kept = self.kept_with_the_staged_sidecar_rewritten(lambda raw: raw.encode("utf-16"))
+        self.assertEqual(kept.sidecar_json, raw)
+
+    def test_keep_both_with_staging_reads_a_sidecar_with_a_byte_order_mark(self):
+        raw, kept = self.kept_with_the_staged_sidecar_rewritten(lambda raw: b"\xef\xbb\xbf" + raw.encode())
+        self.assertEqual(kept.sidecar_json, raw)
+
+    def test_keep_both_with_staging_falls_back_to_the_held_metadata_when_the_staged_sidecar_cannot_be_read(self):
+        raw, kept = self.kept_with_the_staged_sidecar_rewritten(lambda raw: raw.encode()[:20])
+        self.assertEqual(kept.sidecar_json, raw)
+
     def test_keep_both_after_cleanup_refuses_a_hold_that_changed_since_it_was_verified(self):
         self.cleaned()
         before_flags, review_id = self.confirmed(), self.pending().id
