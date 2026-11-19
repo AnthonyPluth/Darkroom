@@ -105,6 +105,22 @@ class GoogleOnlyFolderTests(Household):
         self.place(self.entry(self.staged(), captured_local=None, captured_utc=None))
         self.assertTrue((self.root / "jo/google-only/undated/IMG_0001.JPG").is_file())
 
+    def placed_from_takeout(self, path, tags, taken):
+        raw = json.dumps({"photoTakenTime": {"timestamp": str(taken)}, "geoData": {"latitude": 40.7, "longitude": -74.0}})
+        fields = metadata.candidate(TakeoutItem(path=path, sha1="", copies=(path,), sidecar=None), tags, sidecar.parse(raw), self.sam, "unplaced", 1.0)
+        self.place(self.entry(path, captured_local=fields.captured_local, captured_utc=fields.captured_utc, raw=raw))
+        return fields
+
+    def test_a_scan_whose_sidecar_disagrees_by_decades_goes_by_its_exif_wall_clock_alone(self):
+        fields = self.placed_from_takeout(self.staged(), {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}, 298_303_200)
+        self.assertEqual((fields.captured_local, fields.captured_utc, fields.offset_minutes), ("2020-02-09T12:47:20", None, None))
+        self.assertTrue((self.root / "jo/google-only/2020/02/IMG_0001.JPG").is_file())
+
+    def test_a_still_dated_only_by_its_scan_goes_by_the_sidecar_time(self):
+        fields = self.placed_from_takeout(self.staged(), {"ExifIFD:CreateDate": "2020:02:09 12:47:20"}, 298_303_200)
+        self.assertEqual((fields.captured_local, fields.captured_utc, fields.time_source), ("1979-06-15T10:00:00", 298_303_200.0, "sidecar"))
+        self.assertTrue((self.root / "jo/google-only/1979/06/IMG_0001.JPG").is_file())
+
     def test_a_date_outside_the_folder_range_goes_to_undated(self):
         self.place(self.entry(self.staged(), captured_local="1850-01-01T00:00:00", captured_utc=None))
         self.place(self.entry(self.staged("b.jpg"), captured_local=None, captured_utc=1e20))

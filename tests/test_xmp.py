@@ -55,6 +55,14 @@ class GapsTests(unittest.TestCase):
         own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "ExifIFD:DateTimeOriginal": "2019:07:04 12:30:15", "IFD0:ImageDescription": "mine"}
         self.assertEqual(xmp.gaps(own, {}, GOOGLE, with_date=True), {})
 
+    def test_a_create_date_alone_is_no_capture_date_for_a_still_but_is_for_a_video(self):
+        scanned = {"ExifIFD:CreateDate": "2020:02:09 12:47:20"}
+        self.assertFalse(xmp.has_date(scanned, still=True))
+        self.assertTrue(xmp.has_date(scanned, still=False))
+        self.assertTrue(xmp.has_date({**scanned, "ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}, still=True))
+        self.assertEqual(xmp.gaps(scanned, {}, GOOGLE, with_date=True, still=True)[xmp.CREATED], "2019:07:04 14:30:15+02:00")
+        self.assertNotIn(xmp.CREATED, xmp.gaps(scanned, {}, GOOGLE, with_date=True, still=False))
+
     def test_fields_an_existing_sidecar_has_are_left_alone(self):
         existing = {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0, "XMP-photoshop:DateCreated": "2001:01:01 00:00:00", "XMP-dc:Description": "kept"}
         self.assertEqual(xmp.gaps({}, existing, GOOGLE, with_date=True), {})
@@ -221,6 +229,19 @@ class FillTests(Folder):
         fixtures.set_tags(photo, {"ImageDescription": "mine"})
         self.assertFalse(xmp.fill(photo, GOOGLE, with_date=True))
         self.assertFalse((self.folder / "a.jpg.xmp").exists())
+
+    def test_a_still_dated_only_by_create_date_gets_the_google_date(self):
+        photo = fixtures.make_jpeg(self.folder / "a.jpg")
+        fixtures.set_tags(photo, {"CreateDate": "2020:02:09 12:47:20"})
+        self.assertTrue(xmp.fill(photo, GOOGLE, with_date=True))
+        self.assertEqual(tags_of(self.folder / "a.jpg.xmp")["XMP-photoshop:DateCreated"], "2019:07:04 14:30:15+02:00")
+
+    def test_a_video_dated_only_by_create_date_keeps_it(self):
+        video = self.folder / "a.mp4"
+        video.write_bytes(b"x")
+        write = mock.Mock(return_value=False)
+        xmp.fill(video, GOOGLE, with_date=True, read=lambda files: {video: {"QuickTime:CreateDate": "2019:07:04 12:30:15"}}, write=write)
+        self.assertNotIn(xmp.CREATED, write.call_args.args[1])
 
     def test_a_file_exiftool_cannot_read_gets_no_sidecar(self):
         photo = self.folder / "a.jpg"
