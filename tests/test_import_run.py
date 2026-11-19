@@ -92,6 +92,38 @@ class EndToEndTests(unittest.TestCase):
         self.assertFalse(any("IMG_" in detail for detail in details))
 
 
+class LeftOutTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+
+    def import_with(self, *adding):
+        self.world.extra_items = lambda builder: [add(builder) for add in adding]
+        return self.world.run_import(self.world.hand_dropped())
+
+    def import_done(self):
+        return self.world.opened.execute(select(Event).where(Event.type == "import_done")).scalar_one().detail
+
+    def test_raw_avif_mts_and_a_pixel_motion_clip_are_placed_with_sidecars_and_nothing_is_left_out(self):
+        done = self.import_with(lambda b: b.photo("shot.CR2", gps=(45.4, 12.3)), lambda b: b.photo("pic.avif", gps=(45.4, 12.3)),
+                                lambda b: b.video("cam.MTS"), lambda b: b.video("PXL_20200101_101010101.MP"))
+        self.assertEqual((done.status, done.failed, json.loads(done.not_imported), done.orphan_sidecars, done.unpaired_media), ("done", 0, {}, 0, 0))
+        self.assertEqual(done.added, 6)
+        placed = {key.rsplit("/", 1)[-1] for key in tree(self.world.root) if "/google-only/" in f"/{key}"}
+        self.assertLessEqual({"shot.CR2", "shot.CR2.xmp", "pic.avif", "pic.avif.xmp", "cam.MTS", "PXL_20200101_101010101.MP"}, placed)
+        self.assertNotIn("not imported", self.import_done())
+
+    def test_a_text_file_and_a_file_without_an_extension_are_counted_and_named_nowhere(self):
+        canaries = ("notes-canary-jo.txt", "IMG_NOEXT_canary_jo")
+        with no_leaks(self, *canaries, database=self.world.engine):
+            done = self.import_with(lambda b: b.loose_file(canaries[0]), lambda b: b.loose_file(canaries[1]),
+                                    lambda b: b.loose_file(f"{canaries[1]}.json", b"{}"), lambda b: b.photo("IMG_7001.JPG", form=None))
+        self.assertEqual((done.status, json.loads(done.not_imported), done.orphan_sidecars, done.unpaired_media), ("done", {".txt": 1, "none": 1}, 1, 1))
+        detail = self.import_done()
+        self.assertTrue(detail.endswith(", 2 not imported (1 .txt, 1 with no extension), 1 sidecar matched no file, 1 without a sidecar"), detail)
+        self.assertFalse(any(canary in detail for canary in canaries))
+        self.assertEqual(self.world.recorder.sent.count((SUMMARY, "Export 1: 3 added, 5 skipped as duplicates, 1 in review, 2 missing GPS")), 1)
+
+
 class CrashTests(unittest.TestCase):
     def clean_state(self):
         world = World(self)

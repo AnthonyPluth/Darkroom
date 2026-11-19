@@ -48,11 +48,13 @@ def check_config() -> int:
     ignored = config.ignored_browser_variables()
     if ignored:
         print(f"config: warning: {config.ignored_browser_note(ignored)}", file=sys.stderr)
+    if config.syncthing_switch_set_off():
+        print(f"config: warning: {config.SYNCTHING_SWITCH_IGNORED}", file=sys.stderr)
     unbound = share_warning(loaded)
     if unbound:
         print(f"config: warning: {unbound}", file=sys.stderr)
     print(alert_channel(settings))
-    print(syncthing_line(settings))
+    print(SYNCTHING_ON)
     print(key_origin_line(settings, missing_key))
     for line in source_lines(loaded):
         print(line)
@@ -79,18 +81,9 @@ def alert_channel(settings: config.Settings) -> str:
     return "Alerts: emailed to the owner through Resend, from the sender address you set."
 
 
-SYNCTHING_OFF = "Syncthing: off (DARKROOM_SYNCTHING=1 in the one container starts Darkroom's own Syncthing, paused)."
 SYNCTHING_ON = ("Syncthing: on; the one container's init starts it paused with a fresh API key, and Darkroom then shares each Pixel's own _pixels folder, "
                 "Send Only, with the Syncthing device ID on its Pixel record, resumes it once the Pixel's copies are checked, and turns local discovery on "
                 "(ports 22000 and 21027 on the local network; docs/deploy/one-container.md).")
-
-
-def darkroom_s_own_syncthing(settings: config.Settings) -> bool:
-    return settings.syncthing and settings.one_container
-
-
-def syncthing_line(settings: config.Settings) -> str:
-    return SYNCTHING_ON if darkroom_s_own_syncthing(settings) else SYNCTHING_OFF
 
 
 KEY_ORIGIN_LINES = {
@@ -351,34 +344,15 @@ def revoke_sessions(email: str | None, sub: str | None, everyone: bool) -> int:
 SYNCTHING_PAUSED = "paused"
 CONFIRM_BIND = "bind"
 NOT_SET_UP = "bind-share: the database has no settings table yet; start the service once (`python run.py serve` migrates it), then run this again"
-SYNCTHING_PROMPT = (f"Syncthing is configured by hand, outside Darkroom. Pause it for every folder under {PIXELS_NOTE} on this server now: an empty replacement would otherwise reach each Pixel as deletions. "
-                    f"Type {SYNCTHING_PAUSED} once it is paused: ")
 BIND_BUSY = "bind-share: another bind-share is running in this container; nothing was written. Let it finish, then run this again if it failed"
 BIND_PROMPT = f"Type {CONFIRM_BIND} to write a new sentinel on this share and record it: "
 BOUND_NOTE = "Bound. Placing and pruning resume at the next hourly tend (or now with `python run.py jobs pixels.tend`); the placed-copy check first writes back every placed copy that is missing. "
-RESUME_NOTE = BOUND_NOTE + f"Resume the outside Syncthing for {PIXELS_NOTE} only when Darkroom reports the refill complete: the `pixel folders tended` log line shows held=0."
-SYNCTHING_NOT_PAUSED = "bind-share: the outside Syncthing was not confirmed paused; nothing was written"
 OWN_SYNCTHING_PROMPT = (f"Syncthing is Darkroom's own (DARKROOM_SYNCTHING=1), and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
                         f"No other Syncthing may serve {PIXELS_NOTE} on this server, such as Unraid's Syncthing app or one on the host (docs/deploy/one-container.md, \"Ports already in use\"): "
                         f"an empty replacement would otherwise reach each Pixel as deletions. Type {SYNCTHING_PAUSED} once you have checked that none does: ")
 OWN_SYNCTHING_NOT_ALONE = f"bind-share: it was not confirmed that no other Syncthing serves {PIXELS_NOTE}; nothing was written"
 OWN_RESUME_NOTE = BOUND_NOTE + ("Darkroom resumes each Pixel's folder in its own Syncthing by itself, once the service's hourly tend has checked that Pixel's copies "
                                 "and none is still being written back: there is nothing to resume by hand.")
-
-
-@dataclasses.dataclass(frozen=True)
-class BindWording:
-    prompt: str
-    refused: str
-    resumed: str
-
-
-OUTSIDE_SYNCTHING_WORDING = BindWording(SYNCTHING_PROMPT, SYNCTHING_NOT_PAUSED, RESUME_NOTE)
-OWN_SYNCTHING_WORDING = BindWording(OWN_SYNCTHING_PROMPT, OWN_SYNCTHING_NOT_ALONE, OWN_RESUME_NOTE)
-
-
-def bind_wording(settings: config.Settings) -> BindWording:
-    return OWN_SYNCTHING_WORDING if darkroom_s_own_syncthing(settings) else OUTSIDE_SYNCTHING_WORDING
 
 
 def asked(prompt: str, expected: str) -> bool:
@@ -405,9 +379,8 @@ def bind_locked(settings: config.Settings, engine: Engine, wired: bool, held: sh
             return 1
         for line in describe_share(found):
             print(line)
-        wording = bind_wording(settings)
-        if not asked(wording.prompt, SYNCTHING_PAUSED):
-            print(wording.refused, file=sys.stderr)
+        if not asked(OWN_SYNCTHING_PROMPT, SYNCTHING_PAUSED):
+            print(OWN_SYNCTHING_NOT_ALONE, file=sys.stderr)
             return 1
         if not asked(BIND_PROMPT, CONFIRM_BIND):
             print("bind-share: not confirmed; nothing was written", file=sys.stderr)
@@ -421,7 +394,7 @@ def bind_locked(settings: config.Settings, engine: Engine, wired: bool, held: sh
             print(f"bind-share: the sentinel could not be written ({type(error).__name__}); placing and pruning stay stopped, and the command can be run again", file=sys.stderr)
             return 1
     monitoring.log("share bound")
-    print(wording.resumed)
+    print(OWN_RESUME_NOTE)
     return 0
 
 
@@ -558,6 +531,8 @@ def serve() -> int:
     ignored = config.ignored_browser_variables()
     if ignored:
         monitoring.log(config.ignored_browser_note(ignored), level="warning")
+    if config.syncthing_switch_set_off():
+        monitoring.log(config.SYNCTHING_SWITCH_IGNORED, level="warning")
     migrate(settings)
     try:
         Photos(settings.photos_root).share_inbox()

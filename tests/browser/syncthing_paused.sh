@@ -24,7 +24,7 @@ logged() { local logs; logs=$(docker logs "$1" 2>&1) && grep -qF "$2" <<<"$logs"
 docker rm -f darkroom peer >/dev/null 2>&1 || true
 docker network rm "$net" >/dev/null 2>&1 || true
 docker network create "$net" >/dev/null
-docker run -d --name darkroom --network "$net" "${sandbox[@]}" --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e DARKROOM_SYNCTHING=1 -e OIDC_ISSUER=https://id.example \
+docker run -d --name darkroom --network "$net" "${sandbox[@]}" --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e OIDC_ISSUER=https://id.example \
   -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p "$port:8000" "$image" >/dev/null
 wait_for 90 "curl -fsS -o /dev/null http://127.0.0.1:$port/healthz"
 wait_for 30 "logged darkroom 'syncthing started paused; its API key was rotated'"

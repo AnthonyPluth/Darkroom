@@ -198,7 +198,7 @@ class WorkflowTests(unittest.TestCase):
     def test_the_script_runs_both_instances_under_the_deployment_sandbox_and_exits_3_only_on_a_changed_share(self):
         self.assertIn(f"sandbox=({SANDBOX})", self.script)
         self.assertEqual(self.script.count('"${sandbox[@]}"'), 2)
-        self.assertIn("-e DARKROOM_SYNCTHING=1", self.script)
+        self.assertNotIn("DARKROOM_SYNCTHING=", self.script)
         self.assertNotIn("--network host", self.script)
         self.assertNotRegex(self.script, r"-p [^ ]*(22000|21027|8384)")
         self.assertIn(f"differs={syncthing_host.CHANGED}\n", self.script)

@@ -73,7 +73,7 @@ wait_for 60 "probe $peer id >/dev/null 2>&1"
 theirs=$(probe "$peer" id)
 docker exec "$peer" mkdir -p /data/pixel
 
-start_darkroom run -d --name "$darkroom" --network "$net" "${sandbox[@]}" --shm-size=1g -v "$work/share:/photos" -v "$work/data:/data" -e DARKROOM_SYNCTHING=1 \
+start_darkroom run -d --name "$darkroom" --network "$net" "${sandbox[@]}" --shm-size=1g -v "$work/share:/photos" -v "$work/data:/data" \
   -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p "$port:8000" "$image"
 mine=$(probe "$darkroom" id)
 pixel=$(seed seed "$theirs") || fail "the made-up Pixel could not be added"

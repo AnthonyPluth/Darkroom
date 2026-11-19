@@ -2,8 +2,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0036"
-down_revision = "0035"
+revision = "0037"
+down_revision = "0036"
 branch_labels = None
 depends_on = None
 
@@ -11,8 +11,9 @@ COLUMNS = ("sidecars_unreadable", "sidecars_repaired")
 
 
 def upgrade() -> None:
-    for name in COLUMNS:
-        op.add_column("import_runs", sa.Column(name, sa.Integer(), server_default="0", nullable=False))
+    with op.batch_alter_table("import_runs", schema=None) as batch_op:
+        for name in COLUMNS:
+            batch_op.add_column(sa.Column(name, sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:

@@ -260,9 +260,12 @@ export interface ImportView {
   review: number;
   missing_gps: number;
   failed: number;
-  sidecars_unreadable: number;
-  sidecars_repaired: number;
+  sidecars_unreadable: number | null;
+  sidecars_repaired: number | null;
   unmatched_by_person: Record<string, number>;
+  not_imported: Record<string, number> | null;
+  orphan_sidecars: number | null;
+  unpaired_media: number | null;
   error: string | null;
 }
 

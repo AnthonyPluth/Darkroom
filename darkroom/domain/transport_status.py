@@ -232,14 +232,9 @@ def review_unlocked(opened: Session, settings: Settings, now: float, notifier: a
     share = latest(opened, share_check.SHARE_EVENTS, share_check.SUBJECT)
     failed = share is not None and share.type == share_check.FAILED
     home = link_to(settings, "/")
-    raise_or_close(opened, settings, SHARE_KEY, "share_check_failed", share_check.SUBJECT, alerts.share_check_failed(settings.syncthing) if failed else None, home, now,
+    raise_or_close(opened, settings, SHARE_KEY, "share_check_failed", share_check.SUBJECT, alerts.share_check_failed() if failed else None, home, now,
                    notifier)
     close_switched_off(opened, settings, now)
-    if not settings.syncthing:
-        for key in (DOWN_KEY, SETTINGS_KEY, VERSION_KEY):
-            alerts.close(opened, key, now)
-        close_held(opened, now)
-        return
     seen = overview(opened, now)
     if seen.card.state in ("share_check_failed", "starting"):
         return
