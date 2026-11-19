@@ -212,7 +212,7 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual([(part.number, part.status) for part in parts], [(1, "done"), (2, "downloading"), (3, "pending")])
         with db.session(self.engine) as opened:
             export = opened.get(Export, parts[0].export_id)
-            self.assertEqual([each["progress"] for each in exports.as_dict(opened, export)["parts"]], [100, 40, 0])
+            self.assertEqual([each["progress"] for each in exports.as_dict(opened, export, NOON)["parts"]], [100, 40, 0])
 
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
         with db.session(self.engine) as opened:

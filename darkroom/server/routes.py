@@ -61,6 +61,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/exports/check-now", exports.check_now, "session"),
     Route("GET", "/api/exports/{id}", exports.export_one, "session"),
     Route("POST", "/api/exports/{id}/import", imports.request, "session"),
+    Route("POST", "/api/exports/{id}/retry-download", exports.retry_download, "session"),
     Route("GET", "/api/imports", imports.list_imports, "session"),
     Route("GET", "/api/imports/{id}", imports.import_one, "session"),
     Route("GET", "/api/review", review.list_reviews, "session"),

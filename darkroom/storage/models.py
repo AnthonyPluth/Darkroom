@@ -92,6 +92,7 @@ class Export(Base):
     stage: Mapped[str | None] = mapped_column(String)
     inbox_dir: Mapped[str | None] = mapped_column(String)
     download_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    download_interruptions: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     owner_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"))
 
 
@@ -248,6 +249,7 @@ class ExportPart(Base):
     bytes: Mapped[int | None] = mapped_column(Bytes)
     downloads_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sign_in_prompts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
     bytes_done: Mapped[int | None] = mapped_column(Bytes)
     ingest_state: Mapped[str] = mapped_column(String, nullable=False, default="not_queued", server_default="not_queued")

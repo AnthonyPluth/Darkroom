@@ -631,6 +631,9 @@
           "number": {
             "type": "integer"
           },
+          "sign_in_prompts": {
+            "type": "integer"
+          },
           "status": {
             "type": "string"
           }
@@ -643,6 +646,7 @@
           "max_attempts",
           "max_downloads",
           "number",
+          "sign_in_prompts",
           "status"
         ],
         "type": "object"
@@ -1061,6 +1065,19 @@
               }
             ]
           },
+          "retry_allowed": {
+            "type": "boolean"
+          },
+          "retry_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "stage": {
             "anyOf": [
               {
@@ -1084,6 +1101,8 @@
           "part_count",
           "parts",
           "ready_at",
+          "retry_allowed",
+          "retry_refusal",
           "stage",
           "status"
         ],
@@ -2510,6 +2529,22 @@
         ],
         "type": "object"
       },
+      "RetryDownloadReply": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/ExportView"
+          },
+          "retried": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "export",
+          "retried"
+        ],
+        "type": "object"
+      },
       "ReviewDetail": {
         "additionalProperties": false,
         "properties": {
@@ -3619,6 +3654,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ImportQueued"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/exports/{id}/retry-download": {
+      "post": {
+        "operationId": "retry_download",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryDownloadReply"
                 }
               }
             },

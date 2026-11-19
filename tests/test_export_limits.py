@@ -14,7 +14,7 @@ from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos
-from tests.shared import add_person, own_database, settings_from
+from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, settings_from
 
 NOW = 1_800_000_000.0
 DAY = 86400.0
@@ -157,7 +157,7 @@ class AttemptTests(DownloadCase):
         self.call(downloads.progress, job, 1, MB, NOW)
         self.assertEqual(self.part(1)[3], MB)
         with db.session(self.engine) as opened:
-            self.assertEqual([part["progress"] for part in exports.as_dict(opened, opened.get(Export, self.export))["parts"]], [25, 0])
+            self.assertEqual([part["progress"] for part in exports.as_dict(opened, opened.get(Export, self.export), NOW)["parts"]], [25, 0])
         with self.assertRaises(downloads.Refused):
             self.call(downloads.progress, job, 2, MB, NOW)
         with self.assertRaises(downloads.Refused):
@@ -320,14 +320,14 @@ class RetryTests(DownloadCase):
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
         self.assertEqual(len(self.download_jobs()), 1)
 
-    def test_a_download_job_that_lost_its_lease_puts_its_part_back(self):
+    def test_a_download_job_that_lost_its_lease_puts_its_part_back_without_using_a_try(self):
         job = self.claim()
         self.attempt(job, 1)
         jobs.build(self.settings, self.engine, NOW).run_one("browser.leases", NOW + browser_jobs.LEASE_SECONDS + 1)
         with db.session(self.engine) as opened:
             self.assertEqual(opened.get(BrowserJob, job).status, "failed")
         self.assertEqual(self.part(1), ("pending", 1, 1, None))
-        self.assertEqual(self.export_row()[:2], ("downloading", 1))
+        self.assertEqual(self.export_row()[:2], ("downloading", 0))
 
     def test_a_complete_export_whose_finish_is_refused_every_time_ends_up_failed_and_frees_the_account(self):
         job = self.claim()
@@ -357,6 +357,334 @@ class RetryTests(DownloadCase):
             self.assertIsNone(downloads.job_failed(opened, job, NOW))
             gone = browser_jobs.queue(opened, self.account, "download", {"export_id": 999}, NOW)
             self.assertIsNone(downloads.job_failed(opened, gone, NOW))
+
+
+class LeaseExpiryTests(DownloadCase):
+    def lose_lease(self, now):
+        jobs.build(self.settings, self.engine, now).run_one("browser.leases", now + browser_jobs.LEASE_SECONDS + 1)
+
+    def interruptions(self):
+        with db.session(self.engine) as opened:
+            return opened.get(Export, self.export).download_interruptions
+
+    def events(self, kind):
+        with db.session(self.engine) as opened:
+            return opened.execute(select(Event.detail).where(Event.type == kind).order_by(Event.id)).scalars().all()
+
+    def test_a_lost_lease_is_recorded_as_an_interruption_not_a_failed_try(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        self.lose_lease(NOW)
+        self.assertEqual((self.export_row()[:2], self.interruptions()), (("downloading", 0), 1))
+        self.assertEqual(self.events("export_download_interrupted"), [f"1 of {downloads.MAX_INTERRUPTIONS} interruptions used"])
+        self.assertEqual(self.events("export_download_failed"), [])
+        self.assertEqual(self.reconcile(NOW + DAY).requeued, 1)
+
+    def test_a_lost_lease_before_any_attempt_changes_nothing(self):
+        self.claim()
+        self.lose_lease(NOW)
+        self.assertEqual((self.export_row()[:2], self.interruptions()), (("announced", 0), 0))
+        self.assertEqual(self.part(1), ("pending", 0, 0, None))
+
+    def test_once_the_interruptions_are_used_up_a_lost_lease_counts_as_a_try(self):
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).download_interruptions = downloads.MAX_INTERRUPTIONS
+        job = self.claim()
+        self.attempt(job, 1)
+        self.lose_lease(NOW)
+        self.assertEqual((self.export_row()[:2], self.interruptions()), (("downloading", 1), downloads.MAX_INTERRUPTIONS))
+        self.assertEqual(self.part(1), ("pending", 1, 1, None))
+        self.assertEqual(self.events("export_download_interrupted"), [])
+
+    def test_a_worker_that_keeps_losing_its_lease_still_ends_the_export_failed(self):
+        rounds = downloads.MAX_INTERRUPTIONS + exports.MAX_DOWNLOAD_JOBS
+        for day in range(rounds):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            self.attempt(self.claim(at), 1 + day % 2, at)
+            self.lose_lease(at)
+        self.assertEqual((self.export_row()[:2], self.interruptions()), (("failed", exports.MAX_DOWNLOAD_JOBS), downloads.MAX_INTERRUPTIONS))
+        self.assertEqual(self.reconcile(NOW + rounds * DAY).requeued, 0)
+        self.assertEqual([status for _, status in self.download_jobs()], ["failed"] * rounds)
+        with db.session(self.engine) as opened:
+            self.assertFalse(exports.download_underway(opened, self.account))
+
+    def test_a_worker_that_loses_its_lease_on_one_part_every_round_keeps_googles_last_two_downloads(self):
+        for day in range(downloads.MAX_INTERRUPTIONS + exports.MAX_DOWNLOAD_JOBS + 2):
+            at = NOW + day * DAY
+            if day and self.reconcile(at).requeued == 0:
+                break
+            job = self.claim(at)
+            if not self.attempt(job, 1, at)["allowed"]:
+                break
+            self.lose_lease(at)
+        self.assertEqual(self.export_row()[0], "failed")
+        self.assertLessEqual(self.part(1)[1], downloads.MAX_ATTEMPTS)
+        self.assertEqual(self.part(1)[1], downloads.MAX_ATTEMPTS)
+
+    def test_a_worker_that_reports_the_lease_message_itself_still_uses_a_try(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        with db.session(self.engine) as opened:
+            failed = browser_jobs.failed(opened, self.settings, job, browser_jobs.EXPIRED_MESSAGE, None, [], NOW)
+            downloads.job_failed(opened, failed, NOW)
+        self.assertEqual((self.export_row()[:2], self.interruptions()), (("downloading", 1), 0))
+        self.assertEqual(self.part(1), ("pending", 1, 1, None))
+
+
+class RetryFailedTests(DownloadCase):
+    def retry(self, now=NOW + DAY):
+        with db.session(self.engine, writing=True) as opened:
+            export, retried = downloads.retry_failed(opened, self.export, now)
+            return export.status, retried
+
+    def refused(self, now=NOW + DAY):
+        with db.session(self.engine, writing=True) as opened, self.assertRaises(downloads.CannotRetry) as caught:
+            downloads.retry_failed(opened, self.export, now)
+        return str(caught.exception)
+
+    def set_export(self, **values):
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, self.export)
+            for name, value in values.items():
+                setattr(export, name, value)
+
+    def close_download_jobs(self):
+        with db.session(self.engine) as opened:
+            for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "download")).scalars():
+                job.status = "failed"
+
+    def set_part(self, number, **values):
+        with db.session(self.engine) as opened:
+            row = opened.execute(select(ExportPart).where(ExportPart.export_id == self.export, ExportPart.number == number)).scalar_one()
+            for name, value in values.items():
+                setattr(row, name, value)
+
+    def snapshot(self):
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, self.export)
+            parts = [(part.number, part.status, part.downloads_used, part.attempts, part.bytes_done, part.filename) for part in exports.parts_of(opened, self.export)]
+            return export.status, export.download_tries, export.download_interruptions, export.inbox_dir, parts, len(self.download_jobs()), self.events()
+
+    def events(self):
+        with db.session(self.engine) as opened:
+            return opened.execute(select(Event.type, Event.detail).where(Event.type == "export_download_retried")).all()
+
+    def fail_part_two(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        self.part_done(job, 1, "takeout-001.zip")
+        for _ in range(downloads.MAX_ATTEMPTS):
+            self.attempt(job, 2)
+            self.fail_part(job, 2)
+        self.fail_job(job)
+        return job
+
+    def test_a_failed_export_goes_back_to_downloading_and_only_its_unfinished_part_is_reset(self):
+        self.fail_part_two()
+        kept = (self.folder() / "takeout-001.zip").read_bytes()
+        self.set_export(download_tries=exports.MAX_DOWNLOAD_JOBS, download_interruptions=downloads.MAX_INTERRUPTIONS)
+        done_before = self.snapshot()[4][0]
+        self.assertEqual(done_before[:4] + done_before[5:], (1, "done", 1, 1, "takeout-001.zip"))
+        self.assertEqual(self.export_row()[0], "failed")
+        self.assertEqual(self.retry(), ("downloading", True))
+        status, tries, interruptions, inbox, parts, queued, events = self.snapshot()
+        self.assertEqual((status, tries, interruptions, inbox), ("downloading", 0, 0, None))
+        self.assertEqual(parts, [done_before, (2, "pending", 3, 0, None, None)])
+        self.assertEqual((self.folder() / "takeout-001.zip").read_bytes(), kept)
+        self.assertEqual(sorted(path.name for path in self.folder().iterdir()), ["takeout-001.zip"])
+        self.assertEqual(self.download_jobs()[-1], (self.export, "queued"))
+        self.assertEqual(queued, 2)
+        self.assertEqual(events, [("export_download_retried", "1 part reset")])
+
+    def test_the_retried_download_runs_and_keeps_counting_googles_downloads(self):
+        self.fail_part_two()
+        self.retry()
+        job = self.claim(NOW + DAY)
+        reply = self.attempt(job, 2, NOW + DAY)
+        self.assertEqual((reply["allowed"], reply["part"]["downloads_used"], reply["part"]["attempts"]), (True, 4, 1))
+        self.part_done(job, 2, "takeout-002.zip", NOW + DAY)
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, job, NOW + DAY)
+        self.assertEqual(self.export_row()[:2], ("downloaded", 0))
+
+    def test_every_part_left_to_download_waits_again_with_its_attempts_back_and_its_downloads_kept(self):
+        for status, attempts in (("pending", 3), ("corrupt", 2), ("downloading", 1), ("failed", 3)):
+            with self.subTest(status=status):
+                self.close_download_jobs()
+                self.set_export(status="failed", download_tries=2)
+                self.set_part(1, status=status, attempts=attempts, downloads_used=attempts, bytes_done=None if status != "downloading" else 1024)
+                self.set_part(2, status="failed", attempts=3, downloads_used=3)
+                self.assertEqual(self.retry()[1], True)
+                self.assertEqual(self.part(1), ("pending", attempts, 0, None))
+                self.assertEqual(self.part(2), ("pending", 3, 0, None))
+
+    def retried_part_two_downloads(self, at):
+        self.assertEqual(self.part(2), ("pending", 3, downloads.MAX_ATTEMPTS, None))
+        self.assertEqual(self.export_row()[0], "failed")
+        self.assertEqual(self.retry(at), ("downloading", True))
+        job = self.claim(at)
+        reply = self.attempt(job, 2, at)
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["part"]["downloads_used"], reply["part"]["attempts"]), (True, False, 4, 1))
+        self.assertEqual((self.export_row()[0], self.part(2)[0]), ("downloading", "downloading"))
+
+    def test_a_part_left_waiting_with_its_attempts_used_by_three_failed_jobs_downloads_after_a_retry(self):
+        for day in range(exports.MAX_DOWNLOAD_JOBS):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            job = self.claim(at)
+            self.attempt(job, 2, at)
+            self.fail_job(job, at)
+        self.retried_part_two_downloads(NOW + 3 * DAY)
+
+    def test_a_part_left_waiting_with_its_attempts_used_by_counted_lost_leases_downloads_after_a_retry(self):
+        self.set_export(download_interruptions=downloads.MAX_INTERRUPTIONS)
+        for day in range(exports.MAX_DOWNLOAD_JOBS):
+            at = NOW + day * DAY
+            if day:
+                self.assertEqual(self.reconcile(at).requeued, 1)
+            self.attempt(self.claim(at), 2, at)
+            jobs.build(self.settings, self.engine, at).run_one("browser.leases", at + browser_jobs.LEASE_SECONDS + 1)
+        self.retried_part_two_downloads(NOW + 3 * DAY)
+
+    def test_a_retry_while_the_job_that_stopped_is_still_open_is_refused_and_queues_nothing(self):
+        job = self.claim()
+        for _ in range(downloads.MAX_ATTEMPTS):
+            self.attempt(job, 2)
+            self.fail_part(job, 2)
+        self.assertEqual(self.export_row()[0], "failed")
+        before = self.snapshot()
+        self.assertEqual(self.shown(), (False, "The download job that stopped is still finishing; try again in a few minutes."))
+        self.assertEqual(self.refused(), "The download job that stopped is still finishing; try again in a few minutes.")
+        self.assertEqual(self.snapshot(), before)
+        self.fail_job(job)
+        self.assertEqual(self.retry(), ("downloading", True))
+        self.assertEqual(self.download_jobs()[-1], (self.export, "queued"))
+
+    def test_a_complete_export_whose_finish_failed_is_retried_as_a_finish_only(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        self.fail_job(job)
+        self.set_export(status="failed", download_tries=exports.MAX_DOWNLOAD_JOBS)
+        self.assertEqual(self.shown(), (True, None))
+        self.assertEqual(self.retry(), ("downloading", True))
+        self.assertEqual(self.events(), [("export_download_retried", "every part is downloaded")])
+        again = self.claim(NOW + DAY)
+        with db.session(self.engine) as opened:
+            downloads.finish(opened, self.settings, again, NOW + DAY)
+        self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+
+    def test_a_second_press_changes_nothing_and_queues_no_second_job(self):
+        self.fail_part_two()
+        self.assertEqual(self.retry(), ("downloading", True))
+        once = self.snapshot()
+        self.assertEqual(self.retry(NOW + DAY + 1), ("downloading", False))
+        self.assertEqual(self.snapshot(), once)
+
+    def test_an_expired_export_is_refused_and_left_as_it_is(self):
+        self.fail_part_two()
+        before = self.snapshot()
+        self.assertEqual(self.refused(NOW + 7 * DAY), "This export has expired in Takeout, so it can't be downloaded again.")
+        self.set_export(status="expired")
+        self.assertEqual(self.refused(), "This export has expired in Takeout, so it can't be downloaded again.")
+        self.set_export(status="failed")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_downloaded_imported_or_failed_import_export_is_refused(self):
+        self.fail_part_two()
+        cases = {
+            ("imported", None): "This export is already downloaded, so there is nothing to retry.",
+            ("downloaded", None): "This export is already downloaded, so there is nothing to retry.",
+            ("importing", None): "This export is already downloaded, so there is nothing to retry.",
+            ("failed", "/photos/_inbox/jo/export-1"): "This export was downloaded and its import failed; retry it on the Imports page.",
+        }
+        for (status, inbox), message in cases.items():
+            with self.subTest(status=status):
+                self.set_export(status=status, inbox_dir=inbox)
+                before = self.snapshot()
+                self.assertEqual(self.refused(), message)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_an_export_missing_a_listed_part_is_refused(self):
+        self.set_export(status="failed", part_count=3)
+        before = self.snapshot()
+        self.assertEqual(self.refused(), "Takeout listed no parts for this export, so there is nothing to download.")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_export_with_no_parts_listed_is_refused(self):
+        with db.session(self.engine) as opened:
+            for part in exports.parts_of(opened, self.export):
+                opened.delete(part)
+            opened.get(Export, self.export).status = "failed"
+        self.assertEqual(self.refused(), "Takeout listed no parts for this export, so there is nothing to download.")
+
+    def test_a_part_that_used_all_of_googles_downloads_is_refused_and_nothing_changes(self):
+        self.fail_part_two()
+        self.set_part(2, downloads_used=downloads.MAX_DOWNLOADS)
+        before = self.snapshot()
+        self.assertEqual(self.refused(), "Part 2 has used all 5 of Google's downloads, so Takeout won't let Darkroom download it again. "
+                                         "Ask Takeout for a new export of Google Photos instead.")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_export_still_waiting_to_download_is_left_as_it_is(self):
+        before = self.snapshot()
+        self.assertEqual(self.retry(), ("announced", False))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_export_google_is_still_preparing_is_refused(self):
+        self.set_export(ready_at=None)
+        self.assertEqual(self.refused(), "Google is still preparing this export, so there is nothing to retry yet.")
+
+    def shown(self, now=NOW + DAY):
+        with db.session(self.engine) as opened:
+            found = exports.as_dict(opened, opened.get(Export, self.export), now)
+            return found["retry_allowed"], found["retry_refusal"]
+
+    def test_the_export_says_whether_a_retry_would_be_allowed_and_why_not(self):
+        self.assertEqual(self.shown(), (False, None))
+        self.fail_part_two()
+        self.assertEqual(self.shown(), (True, None))
+        self.assertEqual(self.shown(NOW + 7 * DAY), (False, "This export has expired in Takeout, so it can't be downloaded again."))
+        self.set_part(2, downloads_used=downloads.MAX_DOWNLOADS)
+        self.assertEqual(self.shown(), (False, self.refused()))
+        self.set_export(inbox_dir="/photos/_inbox/jo/export-1")
+        self.assertEqual(self.shown(), (False, "This export was downloaded and its import failed; retry it on the Imports page."))
+        self.set_export(status="imported")
+        self.assertEqual(self.shown(), (False, None))
+
+    def prompts(self, number):
+        with db.session(self.engine) as opened:
+            return downloads.part_plan(downloads.part_of(opened, opened.get(Export, self.export), number))["sign_in_prompts"]
+
+    def test_sign_in_prompts_are_counted_on_their_own_and_kept_by_a_retry(self):
+        job = self.claim()
+        self.attempt(job, 2)
+        self.fail_part(job, 2, downloads.ASKED_TO_VERIFY)
+        self.fail_part(job, 2, downloads.ASKED_TO_VERIFY)
+        for _ in range(downloads.MAX_ATTEMPTS):
+            self.attempt(job, 2)
+            self.fail_part(job, 2)
+        self.fail_job(job)
+        self.assertEqual((self.part(2), self.prompts(2)), (("failed", 4, 3, None), 1))
+        self.retry()
+        self.assertEqual((self.part(2), self.prompts(2)), (("pending", 4, 0, None), 1))
+
+    def test_a_retry_that_cannot_get_the_write_lock_is_busy_and_changes_nothing(self):
+        self.fail_part_two()
+        before = self.snapshot()
+        impatient = impatient_engine(self, self.engine, 0.05)
+        with another_writer_holds_the_lock(self.engine):
+            with db.session(impatient) as opened, self.assertRaises(browser_jobs.Busy):
+                downloads.retry_failed(opened, self.export, NOW + DAY)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_unknown_export_is_not_found(self):
+        with db.session(self.engine, writing=True) as opened, self.assertRaises(exports.NoSuchExport):
+            downloads.retry_failed(opened, self.export + 99, NOW)
 
 
 class LinkedFolderTests(DownloadCase):

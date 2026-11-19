@@ -129,6 +129,7 @@ export interface DownloadPartPlan {
   attempts: number;
   max_downloads: number;
   max_attempts: number;
+  sign_in_prompts: number;
 }
 
 export interface DownloadPlan {
@@ -211,6 +212,8 @@ export interface ExportView {
   status: string;
   stage: string | null;
   parts: ExportPartDetail[];
+  retry_allowed: boolean;
+  retry_refusal: string | null;
 }
 
 export interface Exports {
@@ -486,6 +489,11 @@ export interface ResolveBody {
   action: "keep_both";
 }
 
+export interface RetryDownloadReply {
+  export: ExportView;
+  retried: boolean;
+}
+
 export interface ReviewDetail {
   review: ReviewSummary;
   library: LibrarySide | null;
@@ -655,6 +663,7 @@ export interface Endpoints {
   "POST /api/exports/check-now": { body: never; reply: CheckNowReply };
   "GET /api/exports/{id}": { body: never; reply: ExportReply };
   "POST /api/exports/{id}/import": { body: never; reply: ImportQueued };
+  "POST /api/exports/{id}/retry-download": { body: never; reply: RetryDownloadReply };
   "GET /api/imports": { body: never; reply: Imports };
   "GET /api/imports/{id}": { body: never; reply: ImportReply };
   "GET /api/review": { body: never; reply: Reviews };

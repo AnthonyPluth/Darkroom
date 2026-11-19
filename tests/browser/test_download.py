@@ -559,7 +559,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         browser = DownloadBrowser(["reauth"] * 6)
         with self.assertRaises(download.DownloadFailed) as raised:
             self.run_job(browser)
-        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 failed attempts and 5 that ended at Google's sign-in prompt or that Google counted elsewhere; "
+        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 that did not finish or that Google counted elsewhere and 5 that ended at Google's sign-in prompt; "
                                                 "Darkroom stopped before using more")
         self.assertEqual(len(browser.downloaded), 5)
         self.assertEqual(self.parts()[0], ("failed", 5, 0))
@@ -570,7 +570,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
             self.run_job(browser)
         self.assertEqual(self.parts()[0], ("failed", 4, 3))
         said = str(raised.exception)
-        self.assertTrue(said.startswith("part 1 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt or Google counted elsewhere); "
+        self.assertTrue(said.startswith("part 1 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt); "
                                         "Darkroom stopped before using more; the last click led to: the job's own tab: page host other;"), said)
         self.assertNotIn("used all", said)
 
@@ -1442,6 +1442,26 @@ class RegistryTests(unittest.TestCase):
         from darkroom_browser.jobs import stagger
 
         self.assertIs(REGISTRY["download"], stagger.download_export)
+
+
+class GaveUpMessageTests(unittest.TestCase):
+    def plan(self, attempts, used, prompts):
+        return {"number": 2, "attempts": attempts, "downloads_used": used, "max_downloads": 5, "max_attempts": 3, "sign_in_prompts": prompts}
+
+    def test_a_retried_part_does_not_blame_sign_in_prompts_that_never_happened(self):
+        said = download.gave_up_message(2, self.plan(2, 5, 0), "")
+        self.assertEqual(said, "part 2 used all 5 of Google's downloads for it: 5 that did not finish or that Google counted elsewhere and 0 that ended at Google's sign-in prompt; Darkroom stopped before using more")
+
+    def test_a_part_with_a_lost_lease_and_one_prompt_counts_each_as_it_was(self):
+        said = download.gave_up_message(2, self.plan(3, 4, 1), "")
+        self.assertEqual(said, "part 2 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt); Darkroom stopped before using more")
+        self.assertNotIn("sign-in", download.gave_up_message(2, self.plan(1, 4, 0), ""))
+
+    def test_a_plan_without_the_count_falls_back_to_what_attempts_leave_out(self):
+        plan = self.plan(1, 3, 0)
+        del plan["sign_in_prompts"]
+        self.assertIn("(2 ended at Google's sign-in prompt or Google counted elsewhere)", download.gave_up_message(2, plan, ""))
+        self.assertIn("(2 ended", download.gave_up_message(2, {**plan, "sign_in_prompts": 9}, ""))
 
 
 if __name__ == "__main__":
