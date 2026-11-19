@@ -1207,6 +1207,31 @@ class TelemetryTests(DownloadWorld):
         reclick = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"][2]
         self.assertEqual((reclick["since_answer"], reclick["since_click"]), (0, 30 + 4 * 30))
 
+    def test_a_sign_in_while_the_next_parts_archive_reopens_counts_as_the_answer(self):
+        browser = SlowDownloadBrowser(["ok", "ok", "verify", "ok", "ok"], self.clock, 20 * 60)
+        signed_out = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if url == ARCHIVE and browser.downloaded == [1] and not signed_out:
+                signed_out.append(3)
+
+        def content():
+            if signed_out and signed_out[0] > 0:
+                signed_out[0] -= 1
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        self.run_job(browser)
+        self.assertEqual(signed_out, [0])
+        self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "sign_in"), ("waiting", "verify")])
+        clicked = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"]
+        prompted = [body for number, body in self.reporter.telemetry if body["event"] == "prompted"]
+        self.assertEqual(clicked[1]["since_answer"], 0)
+        self.assertEqual((prompted[0]["clicks"], prompted[0]["since_answer"]), (2, 20 * 60))
+
     def test_the_words_for_long_and_short_runs(self):
         from darkroom_browser.jobs import telemetry
 
