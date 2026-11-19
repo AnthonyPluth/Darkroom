@@ -148,7 +148,7 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     staging = staging_of(opened, photos, export)
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
-    paired = pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path))
+    paired = pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path), lambda path: staged_text(photos, path))
     prepared = Prepared(staging, paired.items, not_imported=paired.not_imported, orphan_sidecars=len(paired.orphan_sidecars),
                         unpaired_media=len(paired.unpaired_media))
     for start in range(0, len(prepared.items), PINNED_AT_ONCE):
@@ -168,6 +168,12 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
                     if report:
                         item_failed(opened, export, "metadata", error, now)
     return prepared
+
+
+def staged_text(photos: Photos, path: Path) -> str | None:
+    with paths.open_inbox_file(photos, path) as handle:
+        decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+    return None if decoded is None else decoded.text
 
 
 def staged_sidecar(photos: Photos, path: Path) -> tuple[sidecar.Sidecar | None, SidecarState]:

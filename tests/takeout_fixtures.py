@@ -109,6 +109,25 @@ class TakeoutBuilder:
                           sidecar_name=f"{base}{extension}(1).json")
         return first, second
 
+    def shared_cut(self, prefix: str, tails: tuple[str, ...], titles: tuple[str | None, ...] | None = None, year: int = 2019, part: int = 0,
+                   sidecar_part: int | None = None) -> list[Item]:
+        cut = f"{prefix}{tails[0]}"[:SIDECAR_NAME_LIMIT]
+        items = []
+        for number, tail in enumerate(tails):
+            name = f"{prefix}{tail}"
+            sidecar_name = f"{cut}({number}).json" if number else f"{cut}.json"
+            item = self.add(name, self.image_bytes(Path(name).suffix), f"Photos from {year}", part, None, sidecar_part, (10.0 + number, 20.0), "",
+                            sidecar_name=sidecar_name)
+            data = json.loads(item.sidecar_data or b"{}")
+            title = name if titles is None else titles[number]
+            if title is None:
+                del data["title"]
+            else:
+                data["title"] = title
+            item.sidecar_data = json.dumps(data, sort_keys=True).encode()
+            items.append(item)
+        return items
+
     def edited(self, base: str, extension: str, year: int = 2019, part: int = 0) -> tuple[Item, Item]:
         original = self.photo(f"{base}{extension}", year, part=part)
         edit = self.add(f"{base}-edited{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, None, "")
