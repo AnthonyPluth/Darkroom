@@ -158,15 +158,6 @@ class DownloadBrowser:
             return [Look(address, page, True)]
         return [Look(self.current_url(), self.content(), True), *[Look(address, page, False)] * (count - 1)]
 
-    def download_to(self, selector, folder, progress=None):
-        raise AssertionError("the download job starts downloads with start_download")
-
-    def download_started(self):
-        raise AssertionError("the download job asks for its own part's late download")
-
-    def collect_download(self, folder, part, progress=None):
-        raise AssertionError("the download job keeps a late download with late_download")
-
     def flight(self, number, outcome):
         self.handles += 1
         handle = f"guid-{self.handles}"

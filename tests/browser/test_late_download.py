@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from darkroom_browser import live
-from darkroom_browser.context import DownloadInterrupted, Look, PartClick
+from darkroom_browser.context import Look, PartClick
 from tests.browser.test_stall import Clock, FakeDownload, FakePage
 
 
@@ -90,13 +90,13 @@ class LiveTabsTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.downloads = Path(folder.name) / "downloads"
-        self.downloads.mkdir()
+        self.downloads = Path(folder.name) / "_inbox" / ".downloads" / "3"
+        self.downloads.mkdir(parents=True)
         self.target = Path(folder.name) / "partial"
         self.clock = Clock()
         self.main = Tab(self.clock, self.downloads, "https://takeout.google.com/manage/archive/x", "<h1>Takeout</h1>")
         self.context = Context([self.main])
-        self.browser = live.Live(self.main, self.context, None, self.downloads, None, self.clock)
+        self.browser = live.Live(self.main, self.context, None, self.downloads, None)
         self.browser.watch_downloads()
 
     def test_the_fakes_refuse_a_handler_playwright_could_not_wrap(self):
@@ -131,7 +131,7 @@ class LiveTabsTests(unittest.TestCase):
     def click_that_times_out(self, selector=CLICK_1.selector):
         self.main.expect_download = lambda timeout: TimedOut()
         with self.assertRaises(TimeoutError):
-            self.browser.download_to(selector, self.target)
+            self.browser.start_download(selector, PartClick(selector, CLICK_1.href, CLICK_1.number))
 
     def arrives(self, url=PART_1, page=None, name=None):
         (self.downloads / "guid").write_bytes(b"part")
@@ -139,15 +139,19 @@ class LiveTabsTests(unittest.TestCase):
         (page or self.main).emit("download", download)
         return download
 
+    def kept(self):
+        handle = self.browser.late_download(CLICK_1)
+        self.assertIsNotNone(handle)
+        return self.browser.keep_download(handle, self.target)
+
     def test_a_download_that_arrives_after_the_click_timed_out_is_kept_not_lost(self):
         self.click_that_times_out()
-        self.assertFalse(self.browser.download_started())
+        self.assertIsNone(self.browser.late_download(CLICK_1))
         self.arrives()
-        self.assertTrue(self.browser.download_started())
-        path = self.browser.collect_download(self.target, CLICK_1)
+        path = self.kept()
         self.assertEqual(path, self.target / "takeout-001.zip")
         self.assertEqual(path.read_bytes(), b"part")
-        self.assertFalse(self.browser.download_started())
+        self.assertIsNone(self.browser.late_download(CLICK_1))
 
     def test_a_download_that_starts_in_a_popup_the_click_opened_is_kept_too(self):
         self.click_that_times_out()
@@ -155,12 +159,12 @@ class LiveTabsTests(unittest.TestCase):
         popup.opened_by = self.main
         self.context.open(popup)
         self.arrives(page=popup)
-        self.assertEqual(self.browser.collect_download(self.target, CLICK_1).name, "takeout-001.zip")
+        self.assertEqual(self.kept().name, "takeout-001.zip")
 
     def test_a_download_redirected_to_googles_download_host_is_kept_when_it_names_this_export_and_part(self):
         self.click_that_times_out()
         self.arrives(REDIRECTED_1)
-        self.assertEqual(self.browser.collect_download(self.target, CLICK_1).name, "takeout-001.zip")
+        self.assertEqual(self.kept().name, "takeout-001.zip")
 
     def test_a_redirected_download_without_its_ids_is_not_kept_even_when_named_for_this_part(self):
         self.assert_not_kept(UNNAMED, name="takeout-20261102T031000Z-001.zip")
@@ -181,12 +185,11 @@ class LiveTabsTests(unittest.TestCase):
         if click:
             self.click_that_times_out()
         other = self.arrives(url, page, name)
-        with self.assertRaisesRegex(DownloadInterrupted, "not this part's"):
-            self.browser.collect_download(self.target, CLICK_1)
+        self.assertIsNone(self.browser.late_download(CLICK_1))
+        self.assertEqual(self.browser.drop_strays(), 1)
         self.assertTrue(other.cancelled)
-        self.assertEqual(list(self.downloads.iterdir()), [])
-        self.assertFalse(any(self.target.iterdir()))
-        self.assertFalse(self.browser.download_started())
+        self.assertFalse(self.target.exists())
+        self.assertIsNone(self.browser.late_download(CLICK_1))
 
     def test_a_download_of_another_part_is_not_kept(self):
         self.assert_not_kept(PART_2)
@@ -221,8 +224,7 @@ class LiveTabsTests(unittest.TestCase):
         (self.downloads / "guid").write_bytes(b"part")
         orphan = part_download(self.downloads, PART_1, None)
         self.main.emit("download", orphan)
-        with self.assertRaisesRegex(DownloadInterrupted, "not this part's"):
-            self.browser.collect_download(self.target, CLICK_1)
+        self.assertIsNone(self.browser.late_download(CLICK_1))
 
     def test_a_download_the_job_never_clicked_this_parts_link_for_is_not_kept(self):
         self.assert_not_kept(PART_1, click=False)
@@ -235,46 +237,23 @@ class LiveTabsTests(unittest.TestCase):
         self.click_that_times_out()
         other = self.arrives(PART_2)
         own = self.arrives(PART_1)
-        self.assertEqual(self.browser.collect_download(self.target, CLICK_1).name, "takeout-001.zip")
+        self.assertEqual(self.kept().name, "takeout-001.zip")
+        self.browser.drop_strays()
         self.assertTrue(other.cancelled)
         self.assertFalse(own.cancelled)
 
-    def test_a_file_in_chromiums_folder_counts_as_a_download_under_way(self):
-        (self.downloads / "guid.crdownload").write_bytes(b"half")
-        self.assertTrue(self.browser.download_started())
-
-    def test_a_file_without_playwrights_event_is_waited_on_then_swept_and_reported_interrupted(self):
-        (self.downloads / "guid.crdownload").write_bytes(b"half")
-        with self.assertRaisesRegex(DownloadInterrupted, "without Playwright's event"):
-            self.browser.collect_download(self.target, CLICK_1)
-        self.assertEqual(list(self.downloads.iterdir()), [])
-        self.assertGreater(self.main.polls, 0)
-
     def test_the_event_of_a_download_the_click_itself_caught_is_not_kept_twice(self):
-        (self.downloads / "guid").write_bytes(b"part")
         caught = self.main.download
+        caught.url, caught.page = PART_1, self.main
 
         def click(selector, timeout):
             self.main.clicked.append(selector)
+            (self.downloads / "guid.crdownload").write_bytes(b"part")
             self.main.emit("download", caught)
 
         self.main.click = click
-        self.assertEqual(self.browser.download_to("a", self.target).name, "takeout-001.zip")
-        self.assertFalse(self.browser.download_started())
-
-    def test_a_download_chromium_failed_leaves_nothing_that_reads_as_a_download_under_way(self):
-        (self.downloads / "guid").write_bytes(b"half")
-        self.main.download = FakeDownload(self.downloads, {"done": True, "error": "net::ERR_FAILED"})
-        with self.assertRaises(DownloadInterrupted):
-            self.browser.download_to("a", self.target)
-        self.assertFalse(self.browser.download_started())
-
-    def test_a_late_event_from_an_earlier_click_is_forgotten_when_a_new_click_starts(self):
-        self.main.emit("download", FakeDownload(self.downloads, {"done": True}))
-        (self.downloads / "guid").write_bytes(b"part")
-        self.browser.download_to("a", self.target)
-        self.assertFalse(self.browser.download_started())
-
+        self.assertEqual(self.browser.start_download(CLICK_1.selector, CLICK_1), "guid")
+        self.assertIsNone(self.browser.late_download(CLICK_1))
 
 if __name__ == "__main__":
     unittest.main()

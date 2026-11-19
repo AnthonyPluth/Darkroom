@@ -72,7 +72,7 @@ class ScriptedBrowser:
         if selector in self.missing:
             raise TimeoutError(f"no {selector} on this page")
 
-    def download_to(self, selector: str, folder: Path) -> Path:
+    def start_download(self, selector: str, part: object) -> str:
         raise AssertionError("onboarding jobs download nothing")
 
     def screenshot(self, path: Path) -> None:

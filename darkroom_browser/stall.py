@@ -6,7 +6,6 @@ from pathlib import Path
 
 STALL_SECONDS = 300.0
 SETTLE_SECONDS = 4.0
-POLL_MS = 2000
 IN_PROGRESS_SUFFIX = ".crdownload"
 
 
@@ -21,23 +20,6 @@ class FolderState:
     size: int
     files: int
     in_progress: bool
-
-
-def folder_state(folder: Path) -> FolderState:
-    size = 0
-    files = 0
-    in_progress = False
-    for each in folder.iterdir():
-        try:
-            if each.is_symlink() or not each.is_file():
-                continue
-            found = each.stat().st_size
-        except FileNotFoundError:
-            continue
-        files += 1
-        size += found
-        in_progress = in_progress or each.name.endswith(IN_PROGRESS_SUFFIX)
-    return FolderState(size, files, in_progress)
 
 
 def file_state(folder: Path, handle: str) -> FolderState:

@@ -93,7 +93,7 @@ class LiveStaggerTests(unittest.TestCase):
         self.target = Path(folder.name) / "partial"
         self.clock = Clock()
         self.tab = StaggerTab(self.clock, self.downloads)
-        self.browser = live.Live(self.tab, Context([self.tab]), None, self.downloads, None, self.clock)
+        self.browser = live.Live(self.tab, Context([self.tab]), None, self.downloads, None)
         self.browser.watch_downloads()
 
     def finish(self, handle, size=50):
@@ -146,6 +146,26 @@ class LiveStaggerTests(unittest.TestCase):
         with self.assertRaisesRegex(DownloadInterrupted, "under another file"):
             self.browser.keep_download(second, self.target)
         self.assertEqual(self.names(), [])
+
+    def test_a_failure_chromium_reports_is_interrupted_with_the_first_200_characters_of_its_text(self):
+        first = self.browser.start_download(CLICK_1.selector, CLICK_1)
+        self.tab.started[0].error = "net::ERR_CONNECTION_RESET" + "!" * 400
+        self.finish(first)
+        with self.assertRaises(DownloadInterrupted) as raised:
+            self.browser.keep_download(first, self.target)
+        self.assertEqual(len(str(raised.exception)), 200)
+        self.assertTrue(str(raised.exception).startswith("net::ERR_CONNECTION_RESET"))
+        self.assertEqual(self.names(), [])
+
+    def test_no_thread_is_started_to_watch_a_download(self):
+        import threading
+
+        before = threading.active_count()
+        handle = self.browser.start_download(CLICK_1.selector, CLICK_1)
+        self.browser.download_state(handle)
+        self.finish(handle)
+        self.browser.keep_download(handle, self.target)
+        self.assertEqual(threading.active_count(), before)
 
     def test_cancelling_one_download_leaves_the_others_file(self):
         first = self.browser.start_download(CLICK_1.selector, CLICK_1)

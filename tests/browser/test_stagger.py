@@ -36,12 +36,6 @@ class StaggerBrowser(DownloadBrowser):
         self.late = late or {}
         self.handles = 0
 
-    def download_to(self, selector, folder, progress=None):
-        raise AssertionError("a staggered job starts downloads with start_download")
-
-    def download_started(self):
-        raise AssertionError("a staggered job asks for its own part's late download")
-
     def flight(self, number, outcome):
         self.handles += 1
         handle = f"guid-{self.handles}"
@@ -76,6 +70,8 @@ class StaggerBrowser(DownloadBrowser):
 
     def download_state(self, handle):
         flight = self.flying[handle]
+        if flight["outcome"] == "empty":
+            return FolderState(0, 0, False)
         elapsed = self.clock.now - flight["from"]
         if flight["outcome"] == "stall":
             elapsed = min(elapsed, 15 * MINUTE)
@@ -171,6 +167,14 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(self.parts(), [("done", 2, 2), ("done", 1, 1), ("done", 1, 1)])
         self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 1: interrupted"])
         self.assertEqual(self.started_after(browser)[:3], [(1, 0), (2, 10), (1, 20)])
+
+    def test_a_download_that_never_writes_a_byte_is_cancelled_after_the_stall_limit_and_retried(self):
+        browser = StaggerBrowser(["empty", "ok", "ok", "ok"], self.clock)
+        self.run_job(browser)
+        self.assertEqual(browser.cancelled, [1])
+        self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 1: interrupted"])
+        self.assertEqual(self.parts()[0], ("done", 2, 2))
+        self.assertEqual(self.started_after(browser)[:2], [(1, 0), (1, 5)])
 
     def test_a_prompt_pauses_new_clicks_and_leaves_the_part_in_flight_running_and_counted_once(self):
         browser = StaggerBrowser(["ok", "verify", "ok", "ok"], self.clock)
