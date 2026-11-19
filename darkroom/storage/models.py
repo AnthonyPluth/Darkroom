@@ -326,7 +326,7 @@ class MediaItem(Base):
         Index("ix_media_items_person_captured", "person_id", "captured_utc"),
         Index("ix_media_items_pixel_source_binding", "id", "person_id", unique=True),
         one_of("source", ("phone", "takeout"), "ck_media_items_source"),
-        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown", "quicktime_utc"), "ck_media_items_time_source"),
+        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown", "quicktime_utc", "sidecar_offset"), "ck_media_items_time_source"),
         one_of("gps_source", ("exif", "google", "none"), "ck_media_items_gps_source"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

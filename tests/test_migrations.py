@@ -473,11 +473,39 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
 
-    def test_0037_import_run_sidecar_counts_are_not_counted_for_old_runs_and_can_be_undone(self):
+    def test_0037_sidecar_offset_time_source_is_allowed_keeps_media_items_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
+        insert = ("INSERT INTO media_items (person_id, source, path, sha1, bytes, captured_utc, offset_minutes, time_source, indexed_at) "
+                  "VALUES (1, 'takeout', :path, 'ab', 7, 1.5, -240, :source, 1.0)")
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0036")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.execute(text(insert), {"path": "jo/google-only/a.jpg", "source": "sidecar"})
+            connection.execute(text(insert), {"path": "jo/google-only/v.mp4", "source": "quicktime_utc"})
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.execute(text(insert), {"path": "jo/google-only/b.jpg", "source": "sidecar_offset"})
+            before = connection.exec_driver_sql("SELECT * FROM media_items ORDER BY id").all()
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT * FROM media_items ORDER BY id").all(), before)
+            connection.execute(text(insert), {"path": "jo/google-only/b.jpg", "source": "sidecar_offset"})
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.execute(text(insert), {"path": "jo/google-only/c.jpg", "source": "guessed"})
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0036")
+        with self.engine.connect() as connection:
+            rows = connection.exec_driver_sql("SELECT path, captured_utc, offset_minutes, time_source FROM media_items ORDER BY id").all()
+        self.assertEqual([tuple(row) for row in rows], [("jo/google-only/a.jpg", 1.5, -240, "sidecar"), ("jo/google-only/v.mp4", 1.5, -240, "quicktime_utc"),
+                                                     ("jo/google-only/b.jpg", 1.5, -240, "sidecar")])
+        db.migrate(self.engine)
+
+    def test_0038_import_run_sidecar_counts_are_not_counted_for_old_runs_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0037")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
@@ -489,7 +517,7 @@ class MigrationTests(unittest.TestCase):
                              [(3, 1, 2, None, None)])
             connection.exec_driver_sql("UPDATE import_runs SET sidecars_unreadable = 4, sidecars_repaired = 5")
             config.attributes["connection"] = connection
-            command.downgrade(config, "0036")
+            command.downgrade(config, "0037")
         columns = {column["name"] for column in inspect(self.engine).get_columns("import_runs")}
         self.assertFalse({"sidecars_unreadable", "sidecars_repaired"} & columns)
         with self.engine.connect() as connection:
