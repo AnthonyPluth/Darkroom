@@ -812,3 +812,72 @@ class ImportedLongNamesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecialFolderTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+
+    def report_of(self, *placements):
+        builder = TakeoutBuilder(self.root / "export")
+        for name, folders in placements:
+            data = builder.image_bytes(".jpg")
+            for folder in folders:
+                builder.add(name, data, folder, 0, "json", None, None, "")
+        manifest = builder.build()
+        staging = unzip(manifest, self.root / "staging")
+        report = pairing.pair(staging)
+        folders, digests = listed_from_disk(staging)
+        self.assertEqual(pairing.pair_names(folders, digests, reading=pairing.plain_text), report)
+        return report
+
+    def item(self, report, name):
+        (found,) = [i for i in report.items if i.path.name == name]
+        return found
+
+    def test_a_photo_only_in_bin_or_trash_is_special_trash_and_in_no_album(self):
+        report = self.report_of(("only_in_bin.jpg", ["Bin"]), ("only_in_trash.jpg", ["Trash"]), ("in_both.jpg", ["Bin", "Trash"]))
+        for name in ("only_in_bin.jpg", "only_in_trash.jpg", "in_both.jpg"):
+            with self.subTest(name=name):
+                found = self.item(report, name)
+                self.assertEqual((found.special, found.albums, found.in_year_folder), ("trash", [], False))
+
+    def test_a_photo_in_a_year_folder_and_trash_follows_the_year_copy(self):
+        report = self.report_of(("kept.jpg", ["Photos from 2019", "Trash"]), ("kept_too.jpg", ["Photos from 2019", "Bin"]))
+        for name in ("kept.jpg", "kept_too.jpg"):
+            with self.subTest(name=name):
+                found = self.item(report, name)
+                self.assertEqual((found.special, found.albums, found.in_year_folder, found.path.parent.name), (None, [], True, "Photos from 2019"))
+
+    def test_a_photo_in_trash_and_in_an_album_without_a_year_copy_is_not_special(self):
+        found = self.item(self.report_of(("shared.jpg", ["Trash", "Family trip"])), "shared.jpg")
+        self.assertEqual((found.special, found.albums, found.in_year_folder), (None, ["Family trip"], False))
+
+    def test_a_photo_only_in_archive_is_special_archive_and_in_no_album(self):
+        found = self.item(self.report_of(("archived.jpg", ["Archive"])), "archived.jpg")
+        self.assertEqual((found.special, found.albums, found.in_year_folder), ("archive", [], False))
+
+    def test_a_photo_in_archive_and_trash_only_is_archive(self):
+        found = self.item(self.report_of(("both.jpg", ["Trash", "Archive"])), "both.jpg")
+        self.assertEqual(found.special, "archive")
+
+    def test_a_photo_in_a_year_folder_and_archive_is_not_special(self):
+        found = self.item(self.report_of(("year.jpg", ["Photos from 2019", "Archive"])), "year.jpg")
+        self.assertEqual((found.special, found.albums, found.in_year_folder), (None, [], True))
+
+    def test_only_the_fixed_names_count_and_other_folders_stay_albums(self):
+        report = self.report_of(("a.jpg", ["Bins"]), ("b.jpg", ["Trash and more"]), ("c.jpg", ["Recycle"]), ("d.jpg", ["trash"]))
+        for name in ("a.jpg", "b.jpg", "c.jpg"):
+            with self.subTest(name=name):
+                found = self.item(report, name)
+                self.assertEqual((found.special, len(found.albums)), (None, 1))
+        self.assertEqual(self.item(report, "d.jpg").special, "trash")
+
+    def test_a_trashed_photo_is_not_reported_as_without_a_sidecar(self):
+        builder = TakeoutBuilder(self.root / "nosidecar")
+        builder.add("gone.jpg", builder.image_bytes(".jpg"), "Trash", 0, None, None, None, "")
+        manifest = builder.build()
+        report = pairing.pair(unzip(manifest, self.root / "staging-nosidecar"))
+        self.assertEqual((self.item(report, "gone.jpg").special, report.unpaired_media), ("trash", []))

@@ -124,6 +124,56 @@ class LeftOutTests(unittest.TestCase):
         self.assertEqual(self.world.recorder.sent.count((SUMMARY, "Export 1: 3 added, 5 skipped as duplicates, 1 in review, 2 missing GPS")), 1)
 
 
+class SpecialFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+
+    def folder_photo(self, name, *folders):
+        def add(builder):
+            data = builder.image_bytes(".JPG")
+            for folder in folders:
+                builder.add(name, data, folder, 0, "json", None, (45.4, 12.3), "")
+        return add
+
+    def import_with(self, *adding):
+        self.world.extra_items = lambda builder: [add(builder) for add in adding]
+        return self.world.run_import(self.world.hand_dropped())
+
+    def placed_names(self):
+        return {key.rsplit("/", 1)[-1] for key in tree(self.world.root) if "/google-only/" in f"/{key}"}
+
+    def test_photos_only_in_trash_or_bin_are_not_placed_given_no_decision_and_counted_without_names(self):
+        canaries = ("only_in_bin_canary_jo.jpg", "only_in_trash_canary_jo.jpg")
+        with no_leaks(self, *canaries, database=self.world.engine):
+            done = self.import_with(self.folder_photo(canaries[0], "Bin"), self.folder_photo(canaries[1], "Trash"))
+        self.assertEqual((done.status, done.failed, done.added, json.loads(done.not_imported)), ("done", 0, 2, {pairing.TRASHED: 2}))
+        self.assertEqual(self.placed_names(), {"IMG_2001.JPG", "IMG_2001.JPG.xmp", "IMG_2002.JPG", "IMG_2002.JPG.xmp"})
+        self.assertEqual([d for d in self.world.opened.execute(select(DedupeDecision)).scalars() if "canary" in (d.source_path or "")], [])
+        self.assertEqual(self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("%canary%"))).scalars().all(), [])
+        detail = self.world.opened.execute(select(Event).where(Event.type == "import_done")).scalar_one().detail
+        self.assertTrue(detail.endswith(", 2 not imported (2 in Trash or Bin)"), detail)
+        self.assertFalse(any(canary in detail for canary in canaries))
+
+    def test_a_photo_in_a_year_folder_and_in_trash_is_placed_once(self):
+        done = self.import_with(self.folder_photo("kept_in_year.jpg", "Photos from 2019", "Trash"))
+        self.assertEqual((done.added, json.loads(done.not_imported)), (3, {}))
+        self.assertEqual({"kept_in_year.jpg", "kept_in_year.jpg.xmp"} - self.placed_names(), set())
+
+    def test_a_photo_only_in_archive_is_placed_as_before(self):
+        done = self.import_with(self.folder_photo("archived_only.jpg", "Archive"))
+        self.assertEqual((done.added, json.loads(done.not_imported)), (3, {}))
+        self.assertLessEqual({"archived_only.jpg", "archived_only.jpg.xmp"}, self.placed_names())
+
+    def test_a_photo_in_trash_and_an_album_is_placed(self):
+        done = self.import_with(self.folder_photo("album_and_trash.jpg", "Trash", "Family trip"))
+        self.assertEqual((done.added, json.loads(done.not_imported)), (3, {}))
+
+    def test_trashed_files_stay_in_staging(self):
+        self.import_with(self.folder_photo("left_alone.jpg", "Bin"))
+        staged = [key for key in tree(self.world.root) if key.endswith("/Bin/left_alone.jpg")]
+        self.assertEqual(len(staged), 1)
+
+
 class CrashTests(unittest.TestCase):
     def clean_state(self):
         world = World(self)

@@ -149,7 +149,11 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
     if staging is None:
         raise StageFailed("the export's staging folder is missing")
     paired = pairing.pair(staging, lambda path: paths.inbox_sha1(photos, path), lambda path: staged_text(photos, path))
-    prepared = Prepared(staging, paired.items, not_imported=paired.not_imported, orphan_sidecars=len(paired.orphan_sidecars),
+    kept = [item for item in paired.items if item.special != pairing.TRASHED]
+    not_imported = dict(paired.not_imported)
+    if len(kept) < len(paired.items):
+        not_imported[pairing.TRASHED] = len(paired.items) - len(kept)
+    prepared = Prepared(staging, kept, not_imported=not_imported, orphan_sidecars=len(paired.orphan_sidecars),
                         unpaired_media=len(paired.unpaired_media))
     for start in range(0, len(prepared.items), PINNED_AT_ONCE):
         group = prepared.items[start:start + PINNED_AT_ONCE]
@@ -418,6 +422,8 @@ def kind_text(kind: str, count: int) -> str:
         return f"{count} with no extension"
     if kind == pairing.OTHER_KIND:
         return f"{count} of another kind"
+    if kind == pairing.TRASHED:
+        return f"{count} in Trash or Bin"
     return f"{count} {kind}"
 
 
