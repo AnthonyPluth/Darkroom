@@ -45,6 +45,8 @@ PIXEL_COPY_MODE = 0o644
 PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
 INBOX = "_inbox"
+SCRATCH = "scratch"
+SCRATCH_FILE = re.compile(r"^(?:[0-9]{1,18}(?:\.[a-z0-9]{1,10})?|\.write-once-[0-9a-f]{16})$")
 BROWSER = "_browser"
 OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
 
@@ -188,6 +190,9 @@ class Photos:
 
     def staging(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), self.name_part(export), "staging")
+
+    def scratch(self, person: str, export: str) -> Path:
+        return self.in_the_inbox(self.person_part(person), self.name_part(export), SCRATCH)
 
     def review_hold(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), "review", self.name_part(export))
@@ -1764,6 +1769,38 @@ def write_inbox_once(photos: Photos, destination: Path, chunks: Iterable[bytes],
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temp, dir_fd=folder)
     return digest.hexdigest()
+
+
+def scratch_file(photos: Photos, person: str, export: str, name: str) -> Path:
+    if not SCRATCH_FILE.match(name) or name.startswith("."):
+        raise OutsideRoot("not a scratch file name")
+    return photos.scratch(person, export) / name
+
+
+def sweep_scratch(photos: Photos, person: str, export: str) -> int:
+    folder = photos.scratch(person, export)
+    try:
+        with inbox_folder(photos, folder.parent, create=False) as parent:
+            try:
+                scratch = inbox_child(SCRATCH, parent, False)
+            except FileNotFoundError:
+                return 0
+            swept = 0
+            try:
+                for name in sorted(os.listdir(scratch)):
+                    found = entry_at(name, scratch)
+                    if not SCRATCH_FILE.match(name) or found is None or not plain_file(found):
+                        continue
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=scratch)
+                        swept += 1
+            finally:
+                os.close(scratch)
+            with contextlib.suppress(OSError):
+                os.rmdir(SCRATCH, dir_fd=parent)
+            return swept
+    except FileNotFoundError:
+        return 0
 
 
 def copy_entry(source: str, target: str, folder: int) -> None:
