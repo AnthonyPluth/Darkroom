@@ -146,6 +146,14 @@ class TakeoutBuilder:
         self.extra_files.append((part, name, self.sidecar_json(media_name, 1_400_000_000, None, "")))
         self.manifest.orphan_sidecars.append(name)
 
+    def video(self, name: str, year: int = 2019, form: str | None = "json", part: int = 0) -> Item:
+        return self.add(name, self.video_bytes(), f"Photos from {year}", part, form, None, None, "")
+
+    def loose_file(self, name: str, data: bytes = b"made-up bytes", year: int = 2019, part: int = 0) -> str:
+        path = f"{GOOGLE_PHOTOS}/Photos from {year}/{name}"
+        self.extra_files.append((part, path, data))
+        return path
+
     def non_media(self, part: int = 0) -> None:
         for name, data in (("Takeout/archive_browser.html", b"<html>archive</html>"),
                            (f"{GOOGLE_PHOTOS}/print-subscriptions.json", b"[]"),
@@ -213,3 +221,13 @@ def standard_export(root: Path, seed: int = 0, parts: int = 2) -> Manifest:
     builder.orphan_sidecar("IMG_9999.JPG")
     builder.non_media()
     return builder.build()
+
+
+def corrupt_compressed_stream(path: Path, name: str, keep: int = 0) -> None:
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo(name)
+    raw = bytearray(path.read_bytes())
+    local = info.header_offset
+    start = local + 30 + int.from_bytes(raw[local + 26:local + 28], "little") + int.from_bytes(raw[local + 28:local + 30], "little")
+    raw[start + keep:start + info.compress_size] = b"\xff" * (info.compress_size - keep)
+    path.write_bytes(bytes(raw))

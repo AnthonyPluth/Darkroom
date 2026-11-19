@@ -25,7 +25,8 @@ const done: ImportView = {
   id: 3, export_id: 2, account_id: 11, export_kind: "initial", export_created_at: NOW - 2 * 86_400, part_count: 5,
   parts: [1, 2, 3, 4, 5].map((number) => ({ number, status: number <= 3 ? "done" : "pending" })),
   started: NOW - 3600, finished: NOW - 3500, stage: "done", status: "done", added: 1204, skipped_t1: 300, skipped_t2: 10, skipped_t3: 1, review: 4,
-  missing_gps: 37, failed: 0, unmatched_by_person: { "jo-example": 2, "sam-example": 0 }, error: null,
+  missing_gps: 37, failed: 0, unmatched_by_person: { "jo-example": 2, "sam-example": 0 }, not_imported: {}, orphan_sidecars: 0, unpaired_media: 0, sidecars_unreadable: 0, sidecars_repaired: 0,
+  error: null,
 };
 const failed: ImportView = {
   ...done, id: 2, export_id: 1, export_created_at: null, part_count: null, parts: [], stage: "placed", status: "failed", review: 0,

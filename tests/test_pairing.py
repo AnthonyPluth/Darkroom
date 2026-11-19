@@ -26,10 +26,6 @@ def unzip(manifest, target):
     return target
 
 
-def is_media(name):
-    return Path(name).suffix.lower() in pairing.MEDIA_SUFFIXES
-
-
 def sha1_of(data):
     return hashlib.sha1(data, usedforsecurity=False).hexdigest()
 
@@ -45,7 +41,7 @@ def listed_from_disk(root):
             found = os.lstat(os.path.join(folder, name))
             if stat.S_ISREG(found.st_mode) and found.st_nlink == 1:
                 kept.append(name)
-                if is_media(name):
+                if pairing.is_media(name):
                     digests[Path(folder) / name] = sha1_of(Path(folder, name).read_bytes())
         folders.append((Path(folder), kept))
     return folders, digests
@@ -60,7 +56,7 @@ def listed_from_zips(manifest, staging, numbers=None):
             for entry in archive.namelist():
                 path = staging / entry
                 by_folder.setdefault(path.parent, []).append(path.name)
-                if is_media(path.name):
+                if pairing.is_media(path.name):
                     digests[path] = sha1_of(archive.read(entry))
     return list(by_folder.items()), digests
 
@@ -209,6 +205,15 @@ class PairingTests(unittest.TestCase):
         (folder / f"{CUT}.json").write_text(f'{{"title": "{ONE}"}}')
         (folder / f"{CUT}(1).json").write_text(f'{{"title": "{TWO}"}}')
         self.assertEqual(self.sidecars_of(self.pair(folder)), {ONE: f"{CUT}.json", TWO: f"{CUT}(1).json", edit: f"{CUT}(1).json"})
+
+    def test_long_names_settle_from_sidecars_with_a_byte_order_mark(self):
+        folder = self.root / "marked"
+        folder.mkdir()
+        (folder / ONE).write_bytes(b"one")
+        (folder / TWO).write_bytes(b"two")
+        (folder / f"{CUT}.json").write_bytes(f'{{"title": "{TWO}"}}'.encode("utf-16"))
+        (folder / f"{CUT}(1).json").write_bytes(b"\xef\xbb\xbf" + f'{{"title": "{ONE}"}}'.encode())
+        self.assertEqual(self.sidecars_of(self.pair(folder)), {ONE: f"{CUT}(1).json", TWO: f"{CUT}.json"})
 
     def test_an_unreadable_sidecar_leaves_the_long_names_unpaired(self):
         staging = self.shared_cut("unreadable")
@@ -413,8 +418,67 @@ class PairingTests(unittest.TestCase):
                 path.symlink_to(staging / "IMG_1.JPG")
             return pairing.paths.plain_sha1(path)
 
-        report = self.pair(self.root / "stage-swap", hashing)
+        report = pairing.pair(self.root / "stage-swap", hashing)
         self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
+        self.assertEqual(report.not_imported, {".jpg": 1})
+
+
+class KindsTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+
+    def pair(self, builder):
+        staging = unzip(builder.build(), self.root / f"stage-{builder.root.name}")
+        report = pairing.pair(staging)
+        folders, digests = listed_from_disk(staging)
+        self.assertEqual(pairing.pair_names(folders, digests), report)
+        return report
+
+    def test_raw_avif_mts_and_a_pixel_motion_clip_pair_with_their_sidecars(self):
+        builder = TakeoutBuilder(self.root / "kinds", parts=2)
+        builder.photo("shot.CR2")
+        builder.photo("pic.avif", part=1)
+        builder.video("cam.MTS")
+        builder.video("PXL_20200101_101010101.MP", part=1)
+        report = self.pair(builder)
+        self.assertEqual(sorted((item.path.name, item.sidecar.name) for item in report.items),
+                         [("PXL_20200101_101010101.MP", "PXL_20200101_101010101.MP.json"), ("cam.MTS", "cam.MTS.json"),
+                          ("pic.avif", "pic.avif.json"), ("shot.CR2", "shot.CR2.json")])
+        self.assertEqual((report.orphan_sidecars, report.unpaired_media, report.not_imported), ([], [], {}))
+
+    def test_every_listed_kind_is_media(self):
+        for name in ("a.CR2", "a.cr3", "a.NEF", "a.nrw", "a.ARW", "a.srf", "a.sr2", "a.RAF", "a.orf", "a.RW2", "a.pef", "a.srw", "a.raw",
+                     "a.avif", "a.jxl", "a.MTS", "a.m2ts", "a.mpg", "a.mpeg", "a.wmv", "a.3g2", "a.MP", "a.MV"):
+            with self.subTest(name=name):
+                self.assertTrue(pairing.is_media(name))
+
+    def test_files_that_are_not_imported_are_counted_by_kind_without_names(self):
+        builder = TakeoutBuilder(self.root / "left-out")
+        builder.photo("IMG_1.JPG")
+        builder.loose_file("notes.txt")
+        builder.loose_file("more-notes.TXT")
+        builder.loose_file("IMG_NOEXT")
+        builder.loose_file("IMG_NOEXT.json", b"{}")
+        builder.loose_file("odd.private-kind-canary")
+        builder.loose_file("trailing.")
+        builder.non_media()
+        report = self.pair(builder)
+        self.assertEqual([item.path.name for item in report.items], ["IMG_1.JPG"])
+        self.assertEqual(report.not_imported, {".txt": 2, "none": 2, "other": 1})
+        self.assertEqual([path.name for path in report.orphan_sidecars], ["IMG_NOEXT.json"])
+
+    def test_a_media_name_without_a_digest_is_counted_by_its_kind(self):
+        folder = self.root / "f"
+        report = pairing.pair_names([(folder, ["a.JPG", "b.CR2", "c.heic"])], {folder / "a.JPG": "1"})
+        self.assertEqual(report.not_imported, {".cr2": 1, ".heic": 1})
+
+    def test_the_labels_are_a_fixed_vocabulary(self):
+        for name, label in (("x.PDF", ".pdf"), ("x.html", ".html"), ("x", "none"), (".hidden", "none"), ("x.", "none"), ("x.jo-example", "other"),
+                            ("x.jpg", ".jpg"), ("x.tar.gz", "other")):
+            with self.subTest(name=name):
+                self.assertEqual(pairing.left_out_kind(name), label)
 
 
 class PairingNamesTests(unittest.TestCase):

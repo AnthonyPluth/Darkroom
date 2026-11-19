@@ -306,6 +306,51 @@ class ResolveTests(CopiesCase):
         self.assertEqual([takeout_copies.resolve_person(self.opened, self.photos, who, 2.0).removed for who in (self.jo, sam)], [0, 0])
 
 
+class CameraRawTests(CopiesCase):
+    def test_a_raw_takeout_copy_beside_a_phone_jpeg_of_the_same_shot_is_never_removed(self):
+        for name, removed in (("IMG_0001.jpg", 1), ("IMG_0001.CR2", 0), ("IMG_0001.nef", 0)):
+            with self.subTest(name=name):
+                self.setUp()
+                self.takeout(b"google copy of the shot", name=name)
+                phone = self.phone(b"phone jpeg of the shot")
+                before = self.files()
+                self.assertEqual(len(takeout_copies.pairs(self.opened, self.jo)), removed)
+                self.assertEqual(self.resolve().removed, removed)
+                if not removed:
+                    self.assertEqual(self.files(), before)
+                    self.assertEqual(self.removals(), [])
+                self.assertTrue((self.root / phone.path).exists())
+
+    def test_a_raw_phone_original_never_pairs_with_a_takeout_jpeg_of_the_same_shot(self):
+        for name, removed in (("IMG_0001-aaaa.jpg", 1), ("IMG_0001-aaaa.CR2", 0)):
+            with self.subTest(name=name):
+                self.setUp()
+                self.takeout(b"google jpeg of the shot")
+                phone = self.phone(b"phone original of the shot", name=name)
+                before = self.files()
+                self.assertEqual(self.resolve().removed, removed)
+                self.assertTrue((self.root / phone.path).exists())
+                if not removed:
+                    self.assertEqual(self.files(), before)
+
+    def test_a_recorded_removal_is_refused_once_the_takeout_copy_is_raw_beside_a_jpeg(self):
+        for name, matched in (("IMG_0001.jpg", True), ("IMG_0001.CR2", False)):
+            with self.subTest(name=name):
+                self.setUp()
+                takeout, _ = self.takeout(b"google copy of the shot", name=name)
+                phone = self.phone(b"phone jpeg of the shot")
+                row = DuplicateRemoval(rule=takeout_copies.rule_for(phone, takeout), tier=2)
+                self.assertEqual(takeout_copies.still_matched(self.opened, self.jo, takeout, phone, row), matched)
+
+    def test_two_raw_files_with_the_same_bytes_are_identical_and_the_takeout_copy_goes(self):
+        takeout, _ = self.takeout(b"the same raw bytes", name="IMG_0001.CR2")
+        phone = self.phone(b"the same raw bytes", name="IMG_0001-aaaa.CR2")
+        self.assertEqual(self.resolve().removed, 1)
+        self.assertFalse((self.root / takeout.path).exists())
+        self.assertTrue((self.root / phone.path).exists())
+        self.assertEqual([(r.rule, r.removed_source) for r in self.removals()], [("identical", "takeout")])
+
+
 class WriterSerialisationTests(CopiesCase):
     def import_depending_on(self, phone_id):
         def work(elsewhere):

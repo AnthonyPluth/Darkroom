@@ -17,9 +17,16 @@ SUPPLEMENTAL = ".supplemental-metadata"
 EDITED = "-edited"
 YEAR_FOLDER = re.compile(r"^Photos from \d{4}$")
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
-STILL_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".bmp"}
+STILL_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".bmp", ".avif", ".jxl"} | media.CAMERA_RAW_SUFFIXES
 MEDIA_SUFFIXES = STILL_SUFFIXES | media.VIDEO_SUFFIXES
 NON_MEDIA_JSON = {"metadata.json", "print-subscriptions.json", "user-generated-memory-titles.json", "shared_album_comments.json", "archive_browser.json"}
+KNOWN_NON_MEDIA = NON_MEDIA_JSON | {"archive_browser.html"}
+NO_EXTENSION = "none"
+OTHER_KIND = "other"
+NAMED_KINDS = MEDIA_SUFFIXES | {
+    ".txt", ".html", ".htm", ".pdf", ".csv", ".xml", ".zip", ".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".svg", ".psd", ".ico",
+    ".jp2", ".jfif", ".mpo", ".crw", ".x3f", ".flv", ".vob", ".insp", ".insv", ".lrv", ".thm", ".aae", ".xmp",
+}
 
 Sidecars = dict[str, Path]
 Rule = Callable[[Path, Sidecars], Path | None]
@@ -44,6 +51,7 @@ class PairingReport:
     items: list[TakeoutItem] = field(default_factory=list)
     orphan_sidecars: list[Path] = field(default_factory=list)
     unpaired_media: list[TakeoutItem] = field(default_factory=list)
+    not_imported: dict[str, int] = field(default_factory=dict)
 
 
 def stem_of(sidecar: str) -> str:
@@ -126,9 +134,10 @@ def folded(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def plain_text(path: Path) -> str:
+def plain_text(path: Path) -> str | None:
     with paths.open_plain_file(path) as handle:
-        return handle.read().decode("utf-8", errors="replace")
+        decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+    return None if decoded is None else decoded.text
 
 
 def title_of(path: Path, reading: Reader | None) -> str | None:
@@ -217,6 +226,14 @@ def is_sidecar(name: str) -> bool:
     return name.lower().endswith(".json") and name not in NON_MEDIA_JSON
 
 
+def left_out_kind(name: str) -> str:
+    stem, dot, extension = name.rpartition(".")
+    if not dot or not stem or not extension:
+        return NO_EXTENSION
+    suffix = f".{extension.lower()}"
+    return suffix if suffix in NAMED_KINDS else OTHER_KIND
+
+
 def digests_of(folders: dict[Path, list[str]], hashing: Digest) -> dict[Path, str]:
     found: dict[Path, str] = {}
     for folder, files in folders.items():
@@ -247,7 +264,16 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
         own: Sidecars = {name: folder / name for name in files if is_sidecar(name)}
         json_files.extend(own.values())
         sidecars: Sidecars = {name: folder / name for name in earlier.get(folder, ()) if is_sidecar(name)} | own
-        media_paths = [folder / name for name in files if is_media(name) and folder / name in digests]
+        media_paths: list[Path] = []
+        for name in files:
+            path = folder / name
+            if is_sidecar(name) or name in KNOWN_NON_MEDIA:
+                continue
+            if not is_media(name) or path not in digests:
+                kind = left_out_kind(name)
+                report.not_imported[kind] = report.not_imported.get(kind, 0) + 1
+                continue
+            media_paths.append(path)
         for path, found in folder_sidecars(media_paths, sidecars, reading).items():
             if found is not None:
                 used.add(found)

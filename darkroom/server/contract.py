@@ -84,7 +84,7 @@ class Status(TypedDict):
     worker_last_seen: float | None
     people: list[PersonStatus]
     alerts: list[AlertView]
-    syncthing: SyncthingCard | None
+    syncthing: SyncthingCard
 
 
 class Ok(TypedDict):
@@ -178,7 +178,7 @@ class PixelView(TypedDict):
 
 class Pixels(TypedDict):
     pixels: list[PixelView]
-    syncthing: list[PixelSyncthing] | None
+    syncthing: list[PixelSyncthing]
 
 
 class PixelReply(TypedDict):
@@ -329,10 +329,14 @@ class DownloadPlan(TypedDict):
 
 
 class PartBody(TypedDict):
-    event: Literal["attempt", "progress", "done", "failed"]
+    event: Literal["attempt", "progress", "done", "failed", "clicked", "prompted"]
     bytes: NotRequired[int]
     filename: NotRequired[str]
     reason: NotRequired[Literal["corrupt", "wrong_size", "not_started", "interrupted", "bad_name", "asked_to_verify"]]
+    downloading: NotRequired[int]
+    since_click: NotRequired[int]
+    since_answer: NotRequired[int]
+    clicks: NotRequired[int]
 
 
 class PartReply(TypedDict):
@@ -408,7 +412,12 @@ class ImportView(TypedDict):
     review: int
     missing_gps: int
     failed: int
+    sidecars_unreadable: int | None
+    sidecars_repaired: int | None
     unmatched_by_person: dict[str, int]
+    not_imported: dict[str, int] | None
+    orphan_sidecars: int | None
+    unpaired_media: int | None
     error: str | None
 
 

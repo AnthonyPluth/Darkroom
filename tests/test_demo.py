@@ -372,7 +372,7 @@ class DemoSyncthingTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.engine, _ = seed_into(Path(folder.name).resolve())
         self.addCleanup(self.engine.dispose)
-        self.settings = settings_from(DARKROOM_DEMO="1", DARKROOM_SYNCTHING="1")
+        self.settings = settings_from(DARKROOM_DEMO="1")
 
     def overview(self):
         with db.session(self.engine) as opened:

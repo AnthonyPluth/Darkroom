@@ -47,9 +47,6 @@ class FakeBrowser:
     def wait_for(self, selector, timeout_ms=30_000):
         pass
 
-    def download_to(self, selector, folder):
-        return folder / "x"
-
     def screenshot(self, path):
         if self.broken:
             raise RuntimeError("no display")

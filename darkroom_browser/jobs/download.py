@@ -6,19 +6,23 @@ import shutil
 import stat
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from darkroom_browser import selectors
-from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, PartClick
-from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
+from darkroom_browser.config import local_zone
+from darkroom_browser.context import Browser, JobContext, JobFailure
+from darkroom_browser.jobs.session import SIGN_IN_STATES, ensure_signed_in
 from darkroom_browser.jobs.status import open_archive
+from darkroom_browser.jobs.telemetry import Clicks
 from darkroom_browser.pages import takeout
+from darkroom_browser.stall import IN_PROGRESS_SUFFIX
 
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
 PERSON = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FOLDER = re.compile(r"^export-[0-9]{1,12}$")
 ACCOUNT = re.compile(r"^[0-9]{1,12}$")
 DOWNLOADS = ".downloads"
+HANDLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 SHARED_FOLDER_MODE = 0o2770
 PART_MODE = 0o660
 PARTIAL = ".partial"
@@ -26,8 +30,6 @@ SIZE_SLACK = 0.06
 MIN_SLACK = 1024 * 1024
 BACKOFF_SECONDS = 3 * 60.0
 ASKED_TO_VERIFY = "asked_to_verify"
-ARRIVED = "ARRIVED"
-NOTHING = "NOTHING"
 MAX_SEEN = 300
 UNREADABLE_PAGES = "the browser's pages could not be read"
 NO_TABS = "no tab open"
@@ -82,6 +84,28 @@ def downloads_folder(profile_dir: Path, working_root: Path) -> Path:
     if folder.resolve() != inbox.resolve() / DOWNLOADS / account:
         raise DownloadsFolderRefused("Chromium's download folder is not where it should be")
     return folder
+
+
+def checked_downloads(folder: Path) -> Path:
+    inbox = folder.parent.parent
+    if folder.parent.name != DOWNLOADS or not ACCOUNT.match(folder.name) or any(each.is_symlink() for each in (inbox, folder.parent, folder)):
+        raise DownloadsFolderRefused("Chromium's download folder is a link or not where it should be")
+    if folder.resolve() != inbox.resolve() / DOWNLOADS / folder.name:
+        raise DownloadsFolderRefused("Chromium's download folder is not where it should be")
+    return folder
+
+
+def remove_download(folder: Path, handle: str) -> int:
+    if not HANDLE.match(handle):
+        raise DownloadsFolderRefused("a download's file name is not one Chromium gives")
+    checked_downloads(folder)
+    removed = 0
+    for name in (handle, handle + IN_PROGRESS_SUFFIX):
+        own = folder / name
+        if own.is_file() and not own.is_symlink():
+            own.unlink()
+            removed += 1
+    return removed
 
 
 def sweep_downloads(folder: Path) -> int:
@@ -151,9 +175,9 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
     return bool(targets) and set(targets) == {checked}
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int) -> dict[int, takeout.ListedPart]:
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks, wait: bool = True) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id, needed)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered, wait), google_id, needed, zone=local_zone())
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
@@ -194,23 +218,13 @@ def gave_up_message(number: int, part: dict[str, Any], seen: str) -> str:
     attempts, used, most = part["attempts"], part["downloads_used"], part.get("max_downloads")
     prompts = max(0, used - attempts)
     if isinstance(most, int) and used >= most:
-        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt"
+        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt or that Google counted elsewhere"
     else:
         limit = f"Google's {most}" if isinstance(most, int) else "Google's"
         said = f"part {number} failed after {attempts} attempts, using {used} of {limit} downloads"
-        said += f" ({prompts} ended at Google's sign-in prompt)" if prompts else ""
+        said += f" ({prompts} ended at Google's sign-in prompt or Google counted elsewhere)" if prompts else ""
     led_to = f"; the last click led to: {seen}" if seen else ""
     return f"{said}; Darkroom stopped before using more{led_to}"
-
-
-def bytes_reporter(ctx: JobContext, number: int) -> Any:
-    def report(size: int) -> None:
-        try:
-            ctx.reporter.part(ctx.job_id, number, {"event": "progress", "bytes": size})
-        except Exception:
-            return
-
-    return report
 
 
 def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
@@ -225,113 +239,11 @@ def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
     return state, takeout.click_findings(shown.page, shown.address, len(tabs), shown.primary)[:MAX_SEEN]
 
 
-def wait_for_verification(ctx: JobContext, browser: Browser, number: int, watch_downloads: bool) -> bool:
-    ctx.wait_for_user("verify")
-    started = ctx.clock()
-    while True:
-        if watch_downloads and browser.download_started():
-            return True
-        state, _ = what_the_click_led_to(browser)
-        if state not in SIGN_IN_STATES:
-            break
-        if ctx.clock() - started > WAIT_LIMIT_SECONDS:
-            raise SignInTimedOut("nobody confirmed it was them within 48 hours")
-        ctx.sleep(POLL_SECONDS)
-        ctx.check()
-    if watch_downloads and browser.download_started():
-        return True
-    ensure_signed_in(ctx, browser)
-    ctx.progress(f"verified; resuming part {number}")
-    return False
+class PartsRunner(Protocol):
+    def __call__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]: ...
 
 
-def back_off(ctx: JobContext, browser: Browser) -> str:
-    waited = 0.0
-    while waited < BACKOFF_SECONDS:
-        ctx.sleep(POLL_SECONDS)
-        waited += POLL_SECONDS
-        ctx.check()
-        if browser.download_started():
-            return ARRIVED
-        state, _ = what_the_click_led_to(browser)
-        if state in SIGN_IN_STATES:
-            return state
-    return NOTHING
-
-
-def collected(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any) -> Path | None:
-    ctx.progress(f"part {number} started downloading by itself; Darkroom is keeping it rather than clicking again")
-    try:
-        return browser.collect_download(partial, part, report)
-    except Cancelled:
-        raise
-    except Exception:
-        report_failure(ctx, number, "interrupted")
-        return None
-
-
-def no_download(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any, interrupted: bool) -> Path | None:
-    state, seen = what_the_click_led_to(browser)
-    if interrupted:
-        report_failure(ctx, number, "interrupted")
-        if state in SIGN_IN_STATES:
-            wait_for_verification(ctx, browser, number, False)
-        return None
-    if state not in SIGN_IN_STATES:
-        ctx.progress(f"part {number}: clicking its link started no download ({seen}); "
-                     f"waiting {int(BACKOFF_SECONDS // 60)} minutes in case it starts late before Darkroom tries again")
-        state = back_off(ctx, browser)
-        if state == NOTHING:
-            report_failure(ctx, number, "not_started", seen)
-            return None
-    if state == ARRIVED or wait_for_verification(ctx, browser, number, True):
-        return collected(ctx, browser, number, part, partial, report)
-    report_failure(ctx, number, ASKED_TO_VERIFY)
-    return None
-
-
-def clicked(ctx: JobContext, browser: Browser, number: int, part: PartClick, partial: Path, report: Any) -> Path | None:
-    try:
-        return browser.download_to(part.selector, partial, report)
-    except Cancelled:
-        raise
-    except Exception as error:
-        return no_download(ctx, browser, number, part, partial, report, isinstance(error, DownloadInterrupted))
-
-
-def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str]) -> str:
-    number = part["number"]
-    while True:
-        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"], number)[number]
-        selector = part_link(listed.link)
-        if not leads_where_checked(browser, selector, listed.href):
-            raise DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
-        reply = ctx.reporter.part(ctx.job_id, number, {"event": "attempt"})
-        if not reply.get("allowed"):
-            raise DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
-        partial = fresh_partial(folder)
-        report = bytes_reporter(ctx, number)
-        clicking = PartClick(selector, listed.href, number)
-        if browser.download_started():
-            path = collected(ctx, browser, number, clicking, partial, report)
-        else:
-            ctx.progress(f"downloading part {number} of {plan['part_count']}")
-            path = clicked(ctx, browser, number, clicking, partial, report)
-        if path is None:
-            continue
-        ctx.check()
-        problem = problem_with(path, part.get("bytes"), taken)
-        if problem is not None:
-            report_failure(ctx, number, problem)
-            continue
-        size = path.stat().st_size
-        os.replace(path, folder / path.name)
-        os.chmod(folder / path.name, PART_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Darkroom reads parts through the shared group, others get nothing
-        ctx.reporter.part(ctx.job_id, number, {"event": "done", "filename": path.name, "bytes": size})
-        return path.name
-
-
-def download_export(ctx: JobContext) -> dict[str, object]:
+def download_export(ctx: JobContext, run_parts: PartsRunner) -> dict[str, object]:
     plan = ctx.reporter.download_plan(ctx.job_id)
     folder = inbox_folder(ctx.photos_root, plan)
     parts = checked_parts(plan)
@@ -340,13 +252,10 @@ def download_export(ctx: JobContext) -> dict[str, object]:
         if part.get("status") == "done" and not (folder / str(part.get("filename"))).is_file():
             raise DownloadFailed(f"part {part['number']} is recorded as downloaded but is not in the inbox")
     browser = ctx.browser()
-    ensure_signed_in(ctx, browser)
-    fetched = 0
-    for part in parts:
-        if part.get("status") == "done":
-            continue
-        taken.add(fetch_part(ctx, browser, folder, plan, part, taken))
-        fetched += 1
+    clicks = Clicks(ctx)
+    if ensure_signed_in(ctx, browser):
+        clicks.answered()
+    fetched, ending = run_parts(ctx, browser, folder, plan, parts, taken, clicks)
     discard_partial(folder)
-    ctx.progress(f"downloaded {fetched} of {len(parts)} parts")
-    return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched}
+    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}{f'; {ending}' if ending else ''}")
+    return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched, "telemetry": clicks.result()}

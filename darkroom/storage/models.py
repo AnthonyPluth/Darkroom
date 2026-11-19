@@ -326,7 +326,7 @@ class MediaItem(Base):
         Index("ix_media_items_person_captured", "person_id", "captured_utc"),
         Index("ix_media_items_pixel_source_binding", "id", "person_id", unique=True),
         one_of("source", ("phone", "takeout"), "ck_media_items_source"),
-        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown", "quicktime_utc"), "ck_media_items_time_source"),
+        one_of("time_source", ("exif_offset", "gps_lookup", "sidecar", "unknown", "quicktime_utc", "sidecar_offset"), "ck_media_items_time_source"),
         one_of("gps_source", ("exif", "google", "none"), "ck_media_items_gps_source"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -549,6 +549,11 @@ class ImportRun(Base):
     unmatched_by_person: Mapped[str | None] = mapped_column(Text)
     failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     repeated: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    not_imported: Mapped[str | None] = mapped_column(Text)
+    orphan_sidecars: Mapped[int | None] = mapped_column(Integer)
+    unpaired_media: Mapped[int | None] = mapped_column(Integer)
+    sidecars_unreadable: Mapped[int | None] = mapped_column(Integer)
+    sidecars_repaired: Mapped[int | None] = mapped_column(Integer)
     changed_people: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running", server_default="running")
     error: Mapped[str | None] = mapped_column(Text)

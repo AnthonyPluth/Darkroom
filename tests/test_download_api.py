@@ -6,7 +6,7 @@ import zipfile
 
 from sqlalchemy import select
 
-from darkroom.domain import exports
+from darkroom.domain import events, exports
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, GoogleAccount
 from darkroom.storage.paths import Photos
@@ -105,6 +105,40 @@ class DownloadApiTests(DownloadApiServer):
         self.part({"event": "failed", "reason": "corrupt"})
         status, reply = self.part({"event": "failed", "reason": "asked_to_verify"})
         self.assertEqual((status, reply["part"]["attempts"]), (200, 2))
+
+    def recorded(self, kind):
+        with db.session(self.engine) as opened:
+            return [entry.detail for entry in reversed(events.recent(opened, type=kind))]
+
+    def test_clicks_and_prompts_are_recorded_in_fixed_words_and_change_no_part(self):
+        self.part({"event": "attempt"})
+        before = self.part({"event": "progress", "bytes": 0})[1]["part"]
+        cases = [
+            ({"event": "clicked", "downloading": 0}, "part 1: clicked with 0 other parts downloading, the first click of this job, no prompt answered yet in this job"),
+            ({"event": "clicked", "downloading": 1, "since_click": 840, "since_answer": 1890},
+             "part 1: clicked with 1 other part downloading, 14 minutes after the previous click, 31 minutes after the last answered prompt"),
+            ({"event": "clicked", "downloading": 3, "since_click": 59, "since_answer": 60},
+             "part 1: clicked with 3 other parts downloading, 0 minutes after the previous click, 1 minute after the last answered prompt"),
+        ]
+        for body, words in cases:
+            status, reply = self.part(body)
+            self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["part"]), (200, True, False, before))
+            self.assertEqual(self.recorded("export_part_clicked")[-1], words)
+        status, reply = self.part({"event": "prompted", "downloading": 1, "clicks": 4, "since_click": 600, "since_answer": 7200})
+        self.assertEqual((status, reply["part"]), (200, before))
+        self.assertEqual(self.recorded("export_part_prompt"), ["part 1: Google asked to verify after 4 clicks since the last answered prompt, with 1 other part downloading, "
+                                                               "10 minutes after the previous click, 120 minutes after the last answered prompt"])
+        self.part({"event": "prompted", "downloading": 0, "clicks": 1})
+        self.assertEqual(self.recorded("export_part_prompt")[-1], "part 1: Google asked to verify after 1 click since the last answered prompt, with 0 other parts downloading, "
+                                                                  "the first click of this job, no prompt answered yet in this job")
+
+    def test_bad_telemetry_is_refused_and_records_nothing(self):
+        for body in ({"event": "clicked"}, {"event": "clicked", "downloading": -1}, {"event": "clicked", "downloading": 11}, {"event": "clicked", "downloading": "1"},
+                     {"event": "clicked", "downloading": 1, "since_click": -5}, {"event": "clicked", "downloading": 1, "since_answer": 10**9},
+                     {"event": "prompted", "downloading": 1}, {"event": "prompted", "downloading": 1, "clicks": True}):
+            self.assertEqual(self.part(body)[0], 400, body)
+        self.assertEqual(self.part({"event": "clicked", "downloading": 0}, 9)[0], 400)
+        self.assertEqual(self.recorded("export_part_clicked") + self.recorded("export_part_prompt"), [])
 
     def test_a_failed_download_job_resets_its_part_and_alerts(self):
         self.part({"event": "attempt"})

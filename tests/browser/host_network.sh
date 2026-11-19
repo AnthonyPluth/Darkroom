@@ -19,7 +19,7 @@ wait_for() {
 logged() { docker logs "$name" 2>&1 | grep -F "$1" | grep -F "${2:-}" >/dev/null; }
 container_pids() { docker top "$name" -eo pid | tail -n +2 | tr -s ' \n' ' '; }
 
-docker run -d --name "$name" --network host "${sandbox[@]}" --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e DARKROOM_SYNCTHING=1 -e OIDC_ISSUER=https://id.example \
+docker run -d --name "$name" --network host "${sandbox[@]}" --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e OIDC_ISSUER=https://id.example \
   -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 "$image" >/dev/null
 wait_for 90 "curl -fsS -o /dev/null http://127.0.0.1:8000/healthz"
 wait_for 30 "logged 'syncthing started paused; its API key was rotated'"

@@ -62,6 +62,57 @@ class SidecarTests(unittest.TestCase):
         self.assertIsNone(sidecar.parse("nope"))
         self.assertIsNone(sidecar.parse("[1]"))
 
+    def test_a_byte_order_mark_is_ignored(self):
+        raw = build()
+        parsed = sidecar.parse("﻿" + raw)
+        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.raw), (1562243415.0, 40.7, raw))
+
+    def test_deep_nesting_or_a_huge_number_is_none_and_never_raises(self):
+        for raw in ("[" * 200_000, "{\"a\":" * 200_000, '{"photoTakenTime": {"timestamp": ' + "9" * 5000 + "}}"):
+            with self.subTest(length=len(raw)):
+                self.assertIsNone(sidecar.parse(raw))
+
+
+class DecodeTests(unittest.TestCase):
+    def test_plain_utf8_is_read_as_it_is(self):
+        raw = build(description="Café au bord de l'eau")
+        self.assertEqual(sidecar.decode(raw.encode()), sidecar.Decoded(raw, repaired=False))
+
+    def test_a_utf8_byte_order_mark_is_dropped(self):
+        raw = build()
+        self.assertEqual(sidecar.decode(b"\xef\xbb\xbf" + raw.encode()), sidecar.Decoded(raw, repaired=False))
+
+    def test_utf16_with_or_without_a_byte_order_mark_is_read(self):
+        raw = build(description="Café")
+        for data in (raw.encode("utf-16"), b"\xff\xfe" + raw.encode("utf-16-le"), b"\xfe\xff" + raw.encode("utf-16-be"),
+                     raw.encode("utf-16-le"), raw.encode("utf-16-be")):
+            with self.subTest(start=data[:4]):
+                self.assertEqual(sidecar.decode(data), sidecar.Decoded(raw, repaired=False))
+
+    def test_latin1_bytes_are_replaced_and_the_time_and_place_survive(self):
+        data = build(description="CAPTION").encode().replace(b"CAPTION", "Café made-up".encode("latin-1"))
+        decoded = sidecar.decode(data)
+        self.assertTrue(decoded.repaired)
+        parsed = sidecar.parse(decoded.text)
+        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.lon, parsed.description), (1562243415.0, 40.7, -74.0, "Caf� made-up"))
+
+    def test_broken_utf16_is_repaired_not_refused(self):
+        decoded = sidecar.decode(b"\xff\xfe" + build().encode("utf-16-le")[:-1])
+        self.assertTrue(decoded.repaired)
+
+    def test_a_file_up_to_the_limit_is_read_and_a_larger_one_is_not(self):
+        raw = build()
+        padded = raw + " " * (sidecar.LIMIT - len(raw))
+        self.assertEqual(sidecar.parse(sidecar.decode(padded.encode()).text).photo_taken_utc, 1562243415.0)
+        self.assertIsNone(sidecar.decode((padded + " ").encode()))
+
+    def test_empty_or_truncated_text_decodes_but_does_not_parse(self):
+        for data in (b"", build().encode()[:40]):
+            with self.subTest(data=data):
+                decoded = sidecar.decode(data)
+                self.assertFalse(decoded.repaired)
+                self.assertIsNone(sidecar.parse(decoded.text))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,7 +60,7 @@ describe("the Status page with the seeded data", () => {
     expect(within(jo).getByText("120 photos, 100 with GPS, 3 without a time")).toBeInTheDocument();
     expect(within(jo).getByText("jo.photos@example.com")).toBeInTheDocument();
     expect(within(jo).getByText("Session ok")).toBeInTheDocument();
-    expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
+    expect(within(jo).getByText(/^Pixel 9a, synced /)).toBeInTheDocument();
     expect(within(jo).getAllByText("Not checked yet")).toHaveLength(1);
     for (const unknown of within(jo).getAllByText("Not checked yet")) expect(unknown).toHaveClass("text-ink-muted");
     expect(within(jo).queryByText(/^0 (photos|originals)$/)).not.toBeInTheDocument();
@@ -177,13 +177,6 @@ describe("the version row", () => {
 
 describe("the Status page with Darkroom's Syncthing", () => {
   const routes = (status: typeof syncthingStatus) => ({ "GET /api/status": status, "GET /api/events": { events: [] } });
-
-  it("draws no Syncthing card and lists the Pixels by name when Syncthing is off", async () => {
-    show(routes(seededStatus));
-    const jo = await screen.findByRole("article", { name: "Jo Example" });
-    expect(within(jo).getByText("Pixel 9a")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Syncthing" })).not.toBeInTheDocument();
-  });
 
   it("puts the card after People and before Recent events, with each Pixel's chip and line", async () => {
     show(routes(syncthingStatus));
