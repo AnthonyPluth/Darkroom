@@ -317,7 +317,7 @@ def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_
     found_sidecar = None if paired is None else paired.sidecar
     text = None if found_sidecar is None else staged_text(photos, found_sidecar)
     parsed = (sidecar.parse(text) if text else None) or (sidecar.parse(hit.review.sidecar_json) if hit.review.sidecar_json else None)
-    item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar, sidecar_from_still=paired is not None and paired.sidecar_from_still)
+    item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar, sidecar_from_still=paired.sidecar_from_still if paired is not None else hit.review.sidecar_from_still)
     with paths.pinned_inbox_files(photos, [hold]) as pinned:
         if hold not in pinned:
             raise WrongState("the held copy is a link or not a plain file, so it was not kept")

@@ -299,6 +299,15 @@ class ReviewHoldTests(Household):
         self.assertFalse(list((self.root / "sam/google-only").rglob("*")))
         self.assertIsNone(self.opened.execute(select(MediaItem).where(MediaItem.source == "takeout")).scalar_one_or_none())
 
+    def test_a_held_review_remembers_whether_its_sidecar_came_from_a_still(self):
+        _, mine = self.phone("sam", self.sam)
+        plain = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        borrowed = self.entry(self.staged("IMG_0002.JPG", colour=(10, 200, 10)), tier=4, person=self.sam, matched=mine)
+        borrowed.item.sidecar_from_still = True
+        self.place(plain, borrowed)
+        flags = {row.decision_id: row.sidecar_from_still for row in self.opened.execute(select(ReviewItem)).scalars()}
+        self.assertEqual(flags, {plain.decision.id: False, borrowed.decision.id: True})
+
     def test_holding_twice_keeps_one_copy(self):
         _, mine = self.phone("sam", self.sam)
         entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)

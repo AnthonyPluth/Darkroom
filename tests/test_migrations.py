@@ -382,7 +382,7 @@ class MigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+                self.assertEqual([tuple(row)[:len(rows[0])] for row in connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all()], [tuple(row) for row in rows])
             self.assertEqual(inspect(connection).get_indexes("media_items"), before_indexes)
             self.assertEqual({check["name"] for check in inspect(connection).get_check_constraints("media_items")},
                              {"ck_media_items_source", "ck_media_items_time_source", "ck_media_items_gps_source"})
@@ -550,6 +550,27 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("sign_in_prompts", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
+        db.migrate(self.engine)
+
+    def test_0040_held_reviews_start_without_a_borrowed_sidecar_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0039")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (id, export_id, account_id, person_id, tier, reason, decided_by, decided_at) VALUES (1, 1, 1, 1, 3, 'close', 'auto', 2.0)")
+            connection.exec_driver_sql("INSERT INTO review_items (id, decision_id, status, hold_path) VALUES (1, 1, 'pending', 'h')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, status, hold_path, sidecar_from_still FROM review_items").all(), [(1, "pending", "h", False)])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0039")
+        self.assertNotIn("sidecar_from_still", {column["name"] for column in inspect(self.engine).get_columns("review_items")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, status, hold_path FROM review_items").all(), [(1, "pending", "h")])
         db.migrate(self.engine)
 
     def test_migrating_twice_changes_nothing(self):

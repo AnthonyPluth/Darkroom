@@ -214,6 +214,7 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
                        adopts=lambda destination, expected: holds_in_the_inbox(photos, destination, expected))
     report.held += 1
     review.hold_path, review.sidecar_json, review.hold_sha1 = relative(photos, placed.path), entry.fields.sidecar_json, entry.fields.sha1
+    review.sidecar_from_still = entry.item.sidecar_from_still
     return review
 
 

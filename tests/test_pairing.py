@@ -351,6 +351,17 @@ class PairingTests(unittest.TestCase):
         self.assertIsNone(video.sidecar)
         self.assertFalse(video.sidecar_from_still)
 
+    def test_a_still_whose_name_differs_only_in_case_pairs_as_a_live_photo_but_lends_no_sidecar(self):
+        folder = self.root / "case"
+        folder.mkdir()
+        for name, data in (("img_3.HEIC", b"a"), ("IMG_3.MOV", b"c")):
+            (folder / name).write_bytes(data)
+        (folder / "img_3.HEIC.json").write_text("{}")
+        video = self.only(self.pair(folder), "IMG_3.MOV")
+        self.assertEqual(video.live_pair_of, folder / "img_3.HEIC")
+        self.assertIsNone(video.sidecar)
+        self.assertFalse(video.sidecar_from_still)
+
     def test_a_live_photo_video_whose_still_has_no_sidecar_stays_without_one(self):
         folder = self.root / "bare-still"
         folder.mkdir()

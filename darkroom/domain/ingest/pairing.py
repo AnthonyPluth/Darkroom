@@ -301,7 +301,7 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
             item.edited_of = original_item.path if original_item else None
         if item.path.suffix.lower() in media.VIDEO_SUFFIXES:
             item.live_pair_of = live_still(item, by_copy)
-            if item.sidecar is None and item.live_pair_of is not None:
+            if item.sidecar is None and item.live_pair_of is not None and lends_sidecar(item, item.live_pair_of):
                 item.sidecar = by_copy[item.live_pair_of].sidecar
                 item.sidecar_from_still = item.sidecar is not None
     report.unpaired_media = [item for item in report.items if item.sidecar is None]
@@ -319,6 +319,10 @@ def slots_of(copies: list[tuple[Path, Path | None]]) -> list[list[tuple[Path, Pa
         else:
             slots.append([copy])
     return slots
+
+
+def lends_sidecar(video: TakeoutItem, still: Path) -> bool:
+    return still.stem in {video.path.stem, video.path.name if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else video.path.stem}
 
 
 def live_still(video: TakeoutItem, by_copy: dict[Path, TakeoutItem]) -> Path | None:
