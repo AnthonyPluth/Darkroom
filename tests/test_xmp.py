@@ -235,6 +235,12 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(xmp.changes(own, {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0}, same, moved), {})
         self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 48.8, "XMP-exif:GPSLongitude": 2.3}, same, moved), {xmp.LATITUDE, xmp.LONGITUDE})
 
+    def test_a_borrowed_sidecar_refreshes_only_a_place_the_file_lacks(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(xmp.changes(own, self.WROTE, self.OLD, self.NEW, corrects=False), {xmp.DESCRIPTION: "New words"})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}, self.OLD, self.NEW, corrects=False), frozenset())
+        self.assertEqual(set(xmp.changes({}, self.WROTE, self.OLD, self.NEW, corrects=False)), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+
     def test_a_new_place_is_not_written_where_the_sidecar_has_none_and_the_file_has_its_own(self):
         own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
         self.assertEqual(xmp.changes(own, {}, self.OLD, self.NEW), {})
@@ -354,6 +360,13 @@ class FillTests(Folder):
         fixtures.set_tags(photo, {"ImageDescription": "mine"})
         self.assertFalse(xmp.fill(photo, GOOGLE, with_date=True))
         self.assertFalse((self.folder / "a.jpg.xmp").exists())
+
+    def test_a_borrowed_sidecar_writes_nothing_over_the_files_own_place_and_date(self):
+        photo = fixtures.make_jpeg(self.folder / "a.jpg", taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        fixtures.set_tags(photo, {"ImageDescription": "mine"})
+        self.assertFalse(xmp.fill(photo, GOOGLE, with_date=True, corrects=False))
+        self.assertFalse((self.folder / "a.jpg.xmp").exists())
+        self.assertTrue(xmp.fill(photo, GOOGLE, with_date=True))
 
     def test_a_still_dated_only_by_create_date_gets_the_google_date(self):
         photo = fixtures.make_jpeg(self.folder / "a.jpg")

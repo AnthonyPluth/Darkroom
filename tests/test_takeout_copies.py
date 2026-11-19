@@ -339,6 +339,23 @@ class CorrectedMetadataCarryTests(CopiesCase):
         self.assertEqual((self.root / keeper.path).read_bytes(), before)
         self.assertFalse((self.root / takeout.path).exists())
 
+    def test_a_sidecar_borrowed_from_a_still_corrects_nothing_the_keeper_has(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        takeout.sidecar_from_still = True
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+        self.assertFalse((self.root / takeout.path).exists())
+
+    def test_a_sidecar_borrowed_from_a_still_still_fills_what_the_keeper_lacks(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00")
+        takeout.sidecar_from_still = True
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+
     def test_a_place_and_a_date_the_keepers_sidecar_already_holds_are_kept(self):
         _, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
         exiftool.write_xmp(self.root / f"{keeper.path}.xmp", {"XMP-exif:GPSLatitude": "9.0000000", "XMP-exif:GPSLongitude": "9.0000000",
@@ -366,9 +383,8 @@ class CorrectedMetadataCarryTests(CopiesCase):
     def carry_for_a_keeper_dated(self, wall, gps):
         _, keeper = self.pair(taken=wall, gps=gps)
         resolved = self.resolve_for_real()
-        self.assertEqual(resolved.removed + resolved.refused, 1)
-        sidecar = self.root / f"{keeper.path}.xmp"
-        self.assertNotIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper) if sidecar.exists() else {})
+        self.assertEqual((resolved.removed, resolved.refused), (1, 0))
+        self.assertNotIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper))
 
     def test_a_keeper_dated_in_year_one_east_of_greenwich_never_crashes_the_carry(self):
         self.carry_for_a_keeper_dated("0001:01:01 00:00:00", (41.9, 12.5))

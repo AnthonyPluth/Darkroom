@@ -258,7 +258,7 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     except (paths.NotALibraryCopy, paths.OutsideRoot, paths.NotASidecar):
         report.skipped += 1
         return
-    done = xmp.refresh(path, old, new, read, write)
+    done = xmp.refresh(path, old, new, read, write, not matched.sidecar_from_still)
     if done is None:
         report.skipped += 1
         return

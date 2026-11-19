@@ -4,8 +4,10 @@ import unittest
 from sqlalchemy import select
 
 from darkroom.domain import dedupe, exports, media, pixel_folder, review
+from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelCopy, PixelPerson
+from tests.fixtures import media as fixtures
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
 
@@ -399,6 +401,28 @@ class IncrementalTests(IncrementalCase):
         item = self.canal_item()
         self.assertEqual((item.lat, item.lon, item.gps_source), (None, None, "none"))
         self.assertIn(item.id, self.missing_gps_ids())
+        self.assertEqual(self.refreshed(), [])
+
+    def with_own_place(self):
+        path = fixtures.make_jpeg(self.world.base / "own-place.jpg", colour=(9, 99, 199), gps=(1.0, 2.0))
+        self.canal = path.read_bytes()
+
+    def test_a_place_google_adds_later_replaces_the_files_own_in_the_sidecar(self):
+        self.with_own_place()
+        self.imported(place=None)
+        self.imported(place=NEW_PLACE, at=NOW + DAY)
+        tags = exiftool.read([self.canal_sidecar()])[self.canal_sidecar()]
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], NEW_PLACE[0], places=5)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def test_a_place_google_adds_later_never_replaces_the_own_one_of_a_video_with_a_borrowed_sidecar(self):
+        self.with_own_place()
+        self.imported(place=None)
+        item = self.canal_item()
+        item.sidecar_from_still = True
+        self.world.opened.commit()
+        self.imported(place=NEW_PLACE, at=NOW + DAY)
+        self.assertNotIn("XMP-exif:GPSLatitude", exiftool.read([self.canal_sidecar()])[self.canal_sidecar()])
         self.assertEqual(self.refreshed(), [])
 
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):

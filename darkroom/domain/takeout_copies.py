@@ -201,6 +201,7 @@ def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], bytes | 
     if loser.source != "takeout":
         return None
     google = xmp.GoogleMetadata.of(loser.sidecar_json)
+    corrects = not loser.sidecar_from_still
 
     def carry(pinned: paths.Keeper) -> bytes | None:
         try:
@@ -208,10 +209,10 @@ def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], bytes | 
                 before, staged = pinned.sidecar(), Path(folder) / f"{pinned.name}{paths.SIDECAR_SUFFIX}"
                 if before is not None:
                     staged.write_bytes(before)
-                if not gaps_left(pinned.path, staged, google, tools):
+                if not gaps_left(pinned.path, staged, google, tools, corrects):
                     return before
-                tools.write(staged, gaps_left(pinned.path, staged, google, tools))
-                if gaps_left(pinned.path, staged, google, tools):
+                tools.write(staged, gaps_left(pinned.path, staged, google, tools, corrects))
+                if gaps_left(pinned.path, staged, google, tools, corrects):
                     raise paths.NotALosingCopy("Google's metadata could not be carried to the kept copy")
                 published = staged.read_bytes()
                 pinned.write_sidecar(published, before)
@@ -222,13 +223,13 @@ def carrier(loser: MediaItem, tools: Tools) -> Callable[[paths.Keeper], bytes | 
     return carry
 
 
-def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools: Tools) -> dict[str, str]:
+def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools: Tools, corrects: bool = True) -> dict[str, str]:
     present = staged.exists()
     tags = tools.read([media_path, staged] if present else [media_path])
     own, existing = tags.get(media_path), tags.get(staged, {}) if present else {}
     if own is None or "Error" in own or "Error" in existing:
         raise ValueError("the kept copy's metadata could not be read")
-    return xmp.gaps(own, existing, google, False)
+    return xmp.gaps(own, existing, google, False, corrects=corrects)
 
 
 def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, now: float, resolved: Resolved, tools: Tools) -> None:
