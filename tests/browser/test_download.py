@@ -511,7 +511,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         browser = DownloadBrowser(["reauth"] * 6)
         with self.assertRaises(download.DownloadFailed) as raised:
             self.run_job(browser)
-        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 failed attempts and 5 that ended at Google's sign-in prompt; "
+        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 failed attempts and 5 that ended at Google's sign-in prompt or that Google counted elsewhere; "
                                                 "Darkroom stopped before using more")
         self.assertEqual(len(browser.downloaded), 5)
         self.assertEqual(self.parts()[0], ("failed", 5, 0))
@@ -522,7 +522,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
             self.run_job(browser)
         self.assertEqual(self.parts()[0], ("failed", 4, 3))
         said = str(raised.exception)
-        self.assertTrue(said.startswith("part 1 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt); "
+        self.assertTrue(said.startswith("part 1 failed after 3 attempts, using 4 of Google's 5 downloads (1 ended at Google's sign-in prompt or Google counted elsewhere); "
                                         "Darkroom stopped before using more; the last click led to: the job's own tab: page host other;"), said)
         self.assertNotIn("used all", said)
 

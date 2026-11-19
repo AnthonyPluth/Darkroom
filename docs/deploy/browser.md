@@ -90,6 +90,28 @@ How to read them:
 
 The events cost nothing to record and change no part's state, Google's download count or the attempts; if Darkroom cannot record one, the download carries on.
 
+## Takeout's embedded data
+
+Takeout's list of exports (`/manage`) and an export's own page (`/manage/archive/<id>`) carry their data as structured values in inline `AF_initDataCallback({key: 'ds:N', ..., data: [...]})` script blocks, in the HTML the worker already reads (`Browser.content()`): no extra request, nothing replayed, no new network access. `darkroom_browser/pages/takeout_data.py` reads them and `takeout.py` reconciles them with the page's text; the page's text is still read every time, as the cross-check and the fallback.
+
+- **How it is read.** Each block's `data:` value is cut out with a bounded scanner and parsed with `json.loads` only (never evaluated): strict JSON, no `NaN` or `Infinity`, no repeated keys, at most 40 digits in a number, at most 16 blocks, 4 MiB a block, 8 MiB a script, 32 MiB a page, 24 levels of nesting and 250,000 values. A block that breaks any of these is refused. Blocks are found by their `ds:N` key and the exports by their shape, never by the blocks' order, which changes between loads.
+- **What it is trusted for.** An export is an array of 32 slots whose slot 1 is a UUID-shaped id; its part list (when present) is arrays of 9 slots. Accepted only when: times are whole epoch milliseconds after 2015, a creation no more than an hour past the job's clock, an expiry after the creation and within 90 days of it; sizes are whole numbers from 1 byte to 1 TiB; part indexes are exactly 0 to M-1; file names look like Takeout's zip names and are distinct; Google's download count is a whole number up to 1000. The same export in two blocks must say the same thing.
+- **What it supplies.** The creation and expiry times (preferred over the page's text, which is often relative, such as "Created Yesterday"), each part's exact size, and Google's own count of each part's downloads, which the status job reports as `google_downloads` and Darkroom uses as the part's downloads used when it is larger. It never supplies a link: the only links clicked are the page's own, through the existing checks.
+- **Agreement.** When both sources read, they must agree on the export id, the part count, the file names, the part numbers, the sizes, whether each part was downloaded (Google's count above 0 against the page's `data-is-downloaded`) and the creation and expiry dates (within a day: instants against instants on the list, and on an export's page its calendar dates against the embedded times' dates in the worker's `TZ`). The embedded expiry is kept as its instant, never turned into a date and back. Each date the page shows is read and checked on its own: a readable one is always checked, even when the other cannot be read, and a disagreement on a page whose other date cannot be read fails the job. A date the page shows in a form that cannot be read is taken from the embedded data, and the job's message says which date was not checked. On a disagreement the embedded data is not used: the job carries on with the page's text alone when that is complete, and otherwise fails with "Takeout's embedded data and the page disagree about the <field>". When the embedded data is missing or refused, the page's text is used exactly as before. Either way the status job's message ends with, for example, "Takeout's embedded data was not used on an export's page (it and the page disagree about the sizes)". These messages are fixed words: never a file name, an id or a value.
+- **What is never read.** Each part's slot 4 (a record of each download) is never read or kept, nor anything else outside the typed values above.
+
+The slots are assumptions from one account and one Takeout build, held in `EXPORT` and `PART` in `takeout_data.py` so that a layout change is a one-line fix there:
+
+| Value | Where |
+| --- | --- |
+| Export id | slot 1 of an export (also the export page's id and the `j` of its download links) |
+| Creation time (ms) | slot 22 (slot 23 holds the same value and is not read) |
+| Expiry time (ms) | slot 24 for an export with parts, slot 25 for an expired one |
+| Part list | slot 8 (absent once expired) |
+| Part file name, size, Google's download count, index | slots 0, 1, 2 and 8 of a part |
+
+A change to Takeout's layout makes the embedded data fail its checks or disagree with the page, and the job falls back to the page's text and says so in its message; it does not misread. If that message appears on every run, compare a saved page with the table above.
+
 ## The browser profiles in appdata (the one container)
 
 The browser's state and the working folders are two separate roots, configured apart and never worked out from each other (docs/design/single-container.md section 3):
