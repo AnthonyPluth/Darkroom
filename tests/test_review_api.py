@@ -305,6 +305,12 @@ class ResolveTests(ReviewCase):
         kept = self.held_video_kept_after_cleanup(False)
         self.assertEqual((kept.captured_local, kept.captured_utc, kept.time_source), ("2019-07-04T08:30:15", 1562243415.0, "sidecar_offset"))
 
+    def test_keep_both_records_a_borrowed_sidecar_on_the_kept_row_and_not_a_sidecar_of_its_own(self):
+        self.assertTrue(self.held_video_kept_after_cleanup(True).sidecar_from_still)
+
+    def test_keep_both_records_no_borrowing_for_a_sidecar_of_its_own(self):
+        self.assertFalse(self.held_video_kept_after_cleanup(False).sidecar_from_still)
+
     def held_video_kept_with_staging(self, own_sidecar):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
         pending = self.pending()

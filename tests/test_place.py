@@ -503,6 +503,23 @@ class OriginalSidecarTests(Household):
         self.assertEqual(sha1_of(original), before)
         self.assertEqual(report.sidecars, 1)
 
+    def test_a_borrowed_sidecar_corrects_nothing_the_matched_original_has_and_fills_what_it_lacks(self):
+        original, mine = self.phone("sam", self.sam, gps=(1.0, 2.0), taken="2020:02:09 12:47:20", offset="+01:00")
+        fixtures.set_tags(original, {"ImageDescription": "mine"})
+        mine.sha1 = sha1_of(original)
+        entry = self.entry(self.staged(), tier=1, person=self.sam, matched=mine)
+        entry.item.sidecar_from_still = True
+        report = self.place(entry)
+        self.assertEqual((sorted(p.name for p in original.parent.iterdir()), report.sidecars), (["IMG_0100.JPG"], 0))
+        other, other_mine = self.phone("sam", self.sam, name="IMG_0101.JPG", taken="2020:02:09 12:47:20", offset="+01:00")
+        entry = self.entry(self.staged("IMG_0002.JPG", colour=(10, 200, 10)), tier=1, person=self.sam, matched=other_mine)
+        entry.item.sidecar_from_still = True
+        self.place(entry)
+        sidecar = other.with_name("IMG_0101.JPG.xmp")
+        tags = exiftool.read([sidecar])[sidecar]
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+
     def test_an_existing_sidecar_next_to_the_original_is_merged(self):
         original, mine = self.phone("sam", self.sam)
         sidecar = original.with_name("IMG_0100.JPG.xmp")
@@ -655,6 +672,13 @@ class FixtureExportRun(unittest.TestCase):
         tags = self.placed_xmp("IMG_0011.MP4.xmp")
         self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 40.7, places=5)
         self.assertNotIn("XMP-photoshop:DateCreated", tags)
+
+    def test_only_the_video_that_borrowed_its_stills_sidecar_is_recorded_as_having_done_so(self):
+        self.run_once()
+        rows = self.opened.execute(select(MediaItem).where(MediaItem.source == "takeout")).scalars().all()
+        borrowed = {row.path.rsplit("/", 1)[-1] for row in rows if row.sidecar_from_still}
+        self.assertEqual(borrowed, {"IMG_0011.MP4"})
+        self.assertGreater(len(rows), 1)
 
     def test_a_live_photo_video_without_a_date_takes_the_date_of_its_stills_sidecar_in_its_xmp(self):
         self.run_once()

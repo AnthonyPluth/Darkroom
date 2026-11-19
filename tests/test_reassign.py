@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import unittest
@@ -12,6 +13,7 @@ from darkroom.domain.ingest import cleanup
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, MediaItem
+from tests.fixtures import media as fixtures
 from tests.import_world import NOW, sha1_of
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
 
@@ -159,6 +161,37 @@ class SharedAccountTests(ReviewCase):
         self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": "the photo could not be moved; it was left where it was"}))
         self.assertEqual(stray.read_bytes(), b"<x:xmpmeta>a stray sidecar, left untouched</x:xmpmeta>")
         self.assertEqual(self.tree(), before)
+
+    def with_own_place_and_a_google_place(self, borrowed, own_place=True):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        old = self.world.root / item.path
+        if own_place:
+            fixtures.set_tags(old, {"GPSLatitude": "1.0", "GPSLongitude": "2.0", "GPSLatitudeRef": "N", "GPSLongitudeRef": "E"})
+        old.with_name(f"{old.name}.xmp").unlink()
+        item.sha1, item.bytes = sha1_of(old), old.stat().st_size
+        item.sidecar_json = json.dumps({"geoData": {"latitude": 45.4, "longitude": 12.3}})
+        item.sidecar_from_still = borrowed
+        self.world.opened.commit()
+        self.opened.expire_all()
+        return item
+
+    def reassigned_place(self, item):
+        self.assertEqual(self.reassign(item.id, self.world.ids["sam"])[0], 200)
+        moved = self.world.root / self.opened.get(MediaItem, item.id).path
+        sidecar = moved.with_name(f"{moved.name}.xmp")
+        return exiftool.read([sidecar])[sidecar] if sidecar.exists() else {}
+
+    def test_a_reassigned_copy_with_a_borrowed_sidecar_keeps_its_own_place(self):
+        tags = self.reassigned_place(self.with_own_place_and_a_google_place(borrowed=True))
+        self.assertNotIn("XMP-exif:GPSLatitude", tags)
+
+    def test_a_reassigned_copy_with_a_borrowed_sidecar_still_gets_the_place_it_lacks(self):
+        tags = self.reassigned_place(self.with_own_place_and_a_google_place(borrowed=True, own_place=False))
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.4, places=5)
+
+    def test_a_reassigned_photo_with_its_own_sidecar_takes_googles_corrected_place(self):
+        tags = self.reassigned_place(self.with_own_place_and_a_google_place(borrowed=False))
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.4, places=5)
 
     def test_reassigning_back_returns_the_file(self):
         item = self.item_named(GOOGLE_ONLY_NAME)
