@@ -356,12 +356,12 @@ class CorrectedMetadataCarryTests(CopiesCase):
         self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
         self.assertFalse((self.root / takeout.path).exists())
 
-    def test_a_correction_with_no_known_zone_writes_no_date(self):
+    def test_a_correction_with_no_known_zone_is_written_with_no_offset(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20")
         takeout.sidecar_json = json.dumps({"photoTakenTime": {"timestamp": str(self.TAKEN)}})
         self.opened.commit()
         self.assertEqual(self.resolve_for_real().removed, 1)
-        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+        self.assertEqual(self.sidecar_of(keeper)["XMP-photoshop:DateCreated"], "2019:07:04 12:30:15")
 
     def test_a_write_the_re_read_cannot_verify_refuses_the_removal_and_leaves_both_copies(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))

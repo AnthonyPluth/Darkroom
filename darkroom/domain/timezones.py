@@ -27,6 +27,18 @@ def offset_minutes(lat: float, lon: float, local: datetime) -> int | None:
     return int(first.total_seconds() // 60)
 
 
+def candidate_offsets(lat: float, lon: float, local: datetime) -> frozenset[int]:
+    name = finder().timezone_at(lat=lat, lng=lon)
+    if name is None:
+        return frozenset()
+    try:
+        zone = ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return frozenset()
+    found = (local.replace(tzinfo=zone, fold=fold).utcoffset() for fold in (0, 1))
+    return frozenset(int(offset.total_seconds() // 60) for offset in found if offset is not None)
+
+
 def offset_at(lat: float, lon: float, moment_utc: datetime) -> int | None:
     name = finder().timezone_at(lat=lat, lng=lon)
     if name is None:

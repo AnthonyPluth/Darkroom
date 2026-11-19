@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from darkroom.domain import media
 from darkroom.domain.ingest import sidecar
@@ -14,8 +15,11 @@ from darkroom.storage import paths
 
 SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
-EDITED = "-edited"
+EDITED_SUFFIXES = ("-edited", "-bearbeitet", "-modifié", "-edytowane", "-bewerkt", "-modificato", "-editat", "-ha editado", "-編集済み")
+CREATION_SUFFIXES = ("-effects", "-smile", "-mix")
 YEAR_FOLDER = re.compile(r"^Photos from \d{4}$")
+SPECIAL_FOLDERS: dict[str, Literal["trash", "archive"]] = {"trash": "trash", "bin": "trash", "archive": "archive"}
+TRASHED = "trash"
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
 STILL_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".bmp", ".avif", ".jxl"} | media.CAMERA_RAW_SUFFIXES
 MEDIA_SUFFIXES = STILL_SUFFIXES | media.VIDEO_SUFFIXES
@@ -28,8 +32,11 @@ NAMED_KINDS = MEDIA_SUFFIXES | {
     ".jp2", ".jfif", ".mpo", ".crw", ".x3f", ".flv", ".vob", ".insp", ".insv", ".lrv", ".thm", ".aae", ".xmp",
 }
 
+Special = Literal["trash", "archive"]
 Sidecars = dict[str, Path]
+Names = frozenset[str]
 Rule = Callable[[Path, Sidecars], Path | None]
+FolderRule = Callable[[Path, Sidecars, Names], Path | None]
 Digest = Callable[[Path], str]
 Reader = Callable[[Path], str | None]
 
@@ -44,6 +51,7 @@ class TakeoutItem:
     in_year_folder: bool = False
     edited_of: Path | None = None
     live_pair_of: Path | None = None
+    special: Special | None = None
 
 
 @dataclass
@@ -102,36 +110,89 @@ def truncated(media_path: Path, sidecars: Sidecars) -> Path | None:
     return None
 
 
-def original_name(media_path: Path) -> str | None:
-    stem = media_path.stem
-    base = NUMBERED.match(stem)
+def folded(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def strip_suffix(bare: str, suffixes: tuple[str, ...]) -> str | None:
+    for suffix in suffixes:
+        target = folded(suffix)
+        for size in range(len(target), min(len(bare), 2 * len(target)) + 1):
+            if folded(bare[-size:]) == target:
+                return bare[:-size]
+    return None
+
+
+def derived_name(media_path: Path, suffixes: tuple[str, ...], media: Names | None) -> str | None:
+    base = NUMBERED.match(media_path.stem)
     number = f"({base.group('number')})" if base else ""
-    bare = base.group("stem") if base else stem
-    return f"{bare[: -len(EDITED)]}{number}{media_path.suffix}" if bare.endswith(EDITED) else None
+    cut = strip_suffix(base.group("stem") if base else media_path.stem, suffixes)
+    if cut is None:
+        return None
+    numbered = f"{cut}{number}{media_path.suffix}"
+    return numbered if media is None or numbered in media else f"{cut}{media_path.suffix}"
+
+
+def original_name(media_path: Path, media: Names | None = None) -> str | None:
+    return derived_name(media_path, EDITED_SUFFIXES, media)
+
+
+def base_name(media_path: Path, media: Names) -> str | None:
+    original = original_name(media_path, media)
+    return original if original is not None else derived_name(media_path, CREATION_SUFFIXES, media)
+
+
+def exclusive(fits: Callable[[str, str], bool]) -> FolderRule:
+    def rule(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
+        for sidecar_name, path in sorted(sidecars.items()):
+            if fits(media_path.name, sidecar_name) and not any(other != media_path.name and fits(other, sidecar_name) for other in media):
+                return path
+        return None
+
+    return rule
+
+
+def fits_without_extension(media_name: str, sidecar_name: str) -> bool:
+    stem = Path(media_name).stem
+    named = stem_of(sidecar_name)
+    return named == stem or (named.startswith(stem) and is_family_tail(named[len(stem):]))
+
+
+def fits_cut_counter(media_name: str, sidecar_name: str) -> bool:
+    media_path = Path(media_name)
+    found = NUMBERED.match(media_path.stem)
+    if not found:
+        return False
+    full = f"{found.group('stem')}{media_path.suffix}{SUPPLEMENTAL}"
+    tag = f"({found.group('number')})"
+    named = stem_of(sidecar_name)
+    cut = named[: -len(tag)]
+    return len(full) > SIDECAR_NAME_LIMIT and named.endswith(tag) and len(cut) in (SIDECAR_NAME_LIMIT, SIDECAR_NAME_LIMIT - len(tag)) and full.startswith(cut)
 
 
 RULES: tuple[Rule, ...] = (exact, supplemental, counter, truncated)
+FOLDER_RULES: tuple[FolderRule, ...] = (exclusive(fits_without_extension), exclusive(fits_cut_counter))
 
 
-def own_sidecar(media_path: Path, sidecars: Sidecars) -> Path | None:
+def own_sidecar(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
     for rule in RULES:
         found = rule(media_path, sidecars)
+        if found is not None:
+            return found
+    for folder_rule in FOLDER_RULES:
+        found = folder_rule(media_path, sidecars, media)
         if found is not None:
             return found
     return None
 
 
-def edited_sidecar(media_path: Path, sidecars: Sidecars) -> Path | None:
-    original = original_name(media_path)
-    return None if original is None else own_sidecar(media_path.with_name(original), sidecars)
+def edited_sidecar(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
+    base = base_name(media_path, media)
+    return None if base is None else own_sidecar(media_path.with_name(base), sidecars, media)
 
 
-def sidecar_for(media_path: Path, sidecars: Sidecars) -> Path | None:
-    return own_sidecar(media_path, sidecars) or edited_sidecar(media_path, sidecars)
-
-
-def folded(name: str) -> str:
-    return unicodedata.normalize("NFC", name).casefold()
+def sidecar_for(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
+    return own_sidecar(media_path, sidecars, media) or edited_sidecar(media_path, sidecars, media)
 
 
 def plain_text(path: Path) -> str | None:
@@ -151,10 +212,10 @@ def title_of(path: Path, reading: Reader | None) -> str | None:
     return folded(parsed.title) if parsed is not None and parsed.title else None
 
 
-def owner_of(path: Path, found: Path, sidecars: Sidecars) -> str:
-    original = original_name(path)
-    if original is not None and own_sidecar(path.with_name(original), sidecars) == found:
-        return original
+def owner_of(path: Path, found: Path, sidecars: Sidecars, media: Names) -> str:
+    base = base_name(path, media)
+    if base is not None and own_sidecar(path.with_name(base), sidecars, media) == found:
+        return base
     return path.name
 
 
@@ -187,12 +248,14 @@ def by_title(candidates: dict[str, tuple[Path, ...]], reading: Reader | None) ->
 
 
 def folder_sidecars(media_paths: Iterable[Path], sidecars: Sidecars, reading: Reader | None) -> dict[Path, Path | None]:
-    found = {path: sidecar_for(path, sidecars) for path in media_paths}
+    listed = list(media_paths)
+    media = frozenset(path.name for path in listed)
+    found = {path: sidecar_for(path, sidecars, media) for path in listed}
     owners: dict[Path, str] = {}
     claims: dict[Path, set[str]] = {}
     for path, match in found.items():
         if match is not None:
-            owners[path] = owner_of(path, match, sidecars)
+            owners[path] = owner_of(path, match, sidecars, media)
             claims.setdefault(match, set()).add(owners[path])
     shared = {match for match, names in claims.items() if len(names) > 1}
     if not shared:
@@ -204,8 +267,19 @@ def folder_sidecars(media_paths: Iterable[Path], sidecars: Sidecars, reading: Re
     return {path: settled.get(owners[path]) if match in shared else match for path, match in found.items()}
 
 
+def special_of(folder: Path) -> Special | None:
+    return SPECIAL_FOLDERS.get(folded(folder.name))
+
+
 def album_of(folder: Path) -> str | None:
-    return None if YEAR_FOLDER.match(folder.name) else folder.name
+    return None if YEAR_FOLDER.match(folder.name) or special_of(folder) is not None else folder.name
+
+
+def special_of_copies(folders: list[Path]) -> Special | None:
+    found = {special_of(folder) for folder in folders}
+    if not found or None in found:
+        return None
+    return "archive" if "archive" in found else "trash"
 
 
 def scan(root: Path) -> dict[Path, list[str]]:
@@ -257,6 +331,7 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
     earlier = earlier_sidecars or {}
     report = PairingReport()
     found_copies: dict[str, list[tuple[Path, Path | None]]] = {}
+    media_in: dict[Path, Names] = {}
     used: set[Path] = set()
     json_files: list[Path] = []
     for folder, listed in folders:
@@ -274,31 +349,33 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
                 report.not_imported[kind] = report.not_imported.get(kind, 0) + 1
                 continue
             media_paths.append(path)
+        media_in[folder] = frozenset(path.name for path in media_paths)
         for path, found in folder_sidecars(media_paths, sidecars, reading).items():
             if found is not None:
                 used.add(found)
             found_copies.setdefault(digests[path], []).append((path, found))
     by_copy: dict[Path, TakeoutItem] = {}
     for digest, copies in sorted((digest, slot) for digest, found in found_copies.items() for slot in slots_of(found)):
-        copies.sort(key=lambda c: (album_of(c[0].parent) is not None, str(c[0])))
+        copies.sort(key=lambda c: (not YEAR_FOLDER.match(c[0].parent.name), special_of(c[0].parent) is not None, str(c[0])))
         first = copies[0]
         item = TakeoutItem(
             path=first[0], sha1=digest, copies=tuple(c[0] for c in copies),
             sidecar=next((c[1] for c in copies if c[1] is not None), None),
             albums=sorted({a for c in copies if (a := album_of(c[0].parent))}),
-            in_year_folder=any(album_of(c[0].parent) is None for c in copies),
+            in_year_folder=any(YEAR_FOLDER.match(c[0].parent.name) for c in copies),
+            special=special_of_copies([c[0].parent for c in copies]),
         )
         report.items.append(item)
         for copy in copies:
             by_copy[copy[0]] = item
     for item in report.items:
-        original = original_name(item.path)
+        original = original_name(item.path, media_in.get(item.path.parent, frozenset()))
         if original is not None:
             original_item = by_copy.get(item.path.with_name(original))
             item.edited_of = original_item.path if original_item else None
         if item.path.suffix.lower() in media.VIDEO_SUFFIXES:
             item.live_pair_of = live_still(item, by_copy)
-    report.unpaired_media = [item for item in report.items if item.sidecar is None]
+    report.unpaired_media = [item for item in report.items if item.sidecar is None and item.special != TRASHED]
     report.orphan_sidecars = sorted(p for p in json_files if p not in used)
     return report
 

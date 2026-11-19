@@ -60,15 +60,16 @@ def offset_text(minutes: int) -> str:
     return f"{sign}{hours:02d}:{rest:02d}"
 
 
-def created_text(utc: float, lat: float | None, lon: float | None) -> str | None:
+def created_text(utc: float, lat: float | None, lon: float | None, own_offset: int | None = None) -> str | None:
     try:
         moment = datetime.fromtimestamp(utc, UTC)
     except (OverflowError, OSError, ValueError):
         return None
-    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
-    minutes = 0 if offset is None else offset
-    local = moment + timedelta(minutes=minutes)
-    return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(minutes)}"
+    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else own_offset
+    if offset is None:
+        return f"{moment:%Y:%m:%d %H:%M:%S}"
+    local = moment + timedelta(minutes=offset)
+    return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(offset)}"
 
 
 def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
@@ -76,23 +77,12 @@ def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
     return own_lat is None or not media.same_place(own_lat, own_lon, lat, lon)
 
 
-def corrected_text(utc: float, lat: float | None, lon: float | None, own_offset: int | None) -> str | None:
-    try:
-        moment = datetime.fromtimestamp(utc, UTC)
-    except (OverflowError, OSError, ValueError):
-        return None
-    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else own_offset
-    if offset is None:
-        return None
-    return f"{moment + timedelta(minutes=offset):%Y:%m:%d %H:%M:%S}{offset_text(offset)}"
-
-
 def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool) -> str | None:
     if google.taken_utc is None:
         return None
     if not has_date(own, still):
         return "missing" if with_date else None
-    return "corrected" if media.date_corrected_by(own, google.lat, google.lon, google.taken_utc) else None
+    return "corrected" if media.date_corrected_by(own, google.taken_utc) else None
 
 
 def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
@@ -103,10 +93,7 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     if google.taken_utc is not None and kind is not None and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
-        if kind == "missing":
-            created = created_text(google.taken_utc, lat, lon)
-        else:
-            created = corrected_text(google.taken_utc, lat, lon, media.capture(own, own_lat, own_lon)[2])
+        created = created_text(google.taken_utc, lat, lon, None if kind == "missing" else media.capture(own, own_lat, own_lon)[2])
         if created is not None:
             fields[CREATED] = created
     if google.description is not None and not has_description(own) and not has_tag(existing, DESCRIPTION):

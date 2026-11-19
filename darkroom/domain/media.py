@@ -208,11 +208,15 @@ def corrected_by(utc: float | None, local: datetime | None, taken: float) -> boo
     return abs((local - moment).total_seconds()) > CORRECTION_SECONDS
 
 
-def date_corrected_by(own: dict[str, object], google_lat: float | None, google_lon: float | None, taken: float) -> bool:
-    own_lat, own_lon, _ = location(own)
-    lat, lon = (google_lat, google_lon) if google_lat is not None and google_lon is not None else (own_lat, own_lon)
+def date_corrected_by(own: dict[str, object], taken: float) -> bool:
+    lat, lon, _ = location(own)
     utc, local, _, _ = capture(own, lat, lon)
-    return corrected_by(utc, None if local is None else datetime.fromisoformat(local), taken)
+    wall = None if local is None else datetime.fromisoformat(local)
+    if utc is None and wall is not None and lat is not None and lon is not None:
+        offsets = timezones.candidate_offsets(lat, lon, wall)
+        if offsets:
+            return all(corrected_by(local_to_utc(wall, offset), None, taken) for offset in offsets)
+    return corrected_by(utc, wall, taken)
 
 
 def local_to_utc(local: datetime, offset_minutes: int) -> float:
