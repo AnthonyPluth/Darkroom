@@ -229,7 +229,7 @@ def gaps_left(media_path: Path, staged: Path, google: xmp.GoogleMetadata, tools:
     own, existing = tags.get(media_path), tags.get(staged, {}) if present else {}
     if own is None or "Error" in own or "Error" in existing:
         raise ValueError("the kept copy's metadata could not be read")
-    return xmp.gaps(own, existing, google, False, corrects=corrects)
+    return xmp.gaps(own, existing, google, False, still=xmp.is_still(media_path), corrects=corrects)
 
 
 def finish(opened: Session, photos: Photos, person: Person, row: DuplicateRemoval, now: float, resolved: Resolved, tools: Tools) -> None:

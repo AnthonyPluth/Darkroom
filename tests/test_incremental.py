@@ -450,6 +450,28 @@ class IncrementalTests(IncrementalCase):
         self.assertEqual(report.refreshed, [item.id])
         self.assertFalse(item.sidecar_from_still)
 
+    def borrowed_then_own(self, own_place):
+        self.with_own_place()
+        self.imported(place=None)
+        row = self.canal_item()
+        row.sidecar_json = json.dumps({"title": "IMG_2.JPG", "description": CANAL, "geoData": {"latitude": NEW_PLACE[0], "longitude": NEW_PLACE[1]}})
+        row.sidecar_from_still = True
+        self.world.opened.commit()
+        item, report = self.refresh_with(own_place, from_still=False)
+        return item, report, exiftool.read([self.canal_sidecar()])[self.canal_sidecar()]
+
+    def test_an_own_sidecar_with_the_borrowed_place_still_corrects_the_files_own_and_clears_the_flag(self):
+        item, report, tags = self.borrowed_then_own(NEW_PLACE)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], NEW_PLACE[0], places=5)
+        self.assertFalse(item.sidecar_from_still)
+        self.assertEqual(report.refreshed, [item.id])
+
+    def test_an_own_sidecar_with_another_place_than_the_borrowed_one_corrects_the_files_own_and_clears_the_flag(self):
+        item, report, tags = self.borrowed_then_own(OLD_PLACE)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], OLD_PLACE[0], places=5)
+        self.assertFalse(item.sidecar_from_still)
+        self.assertEqual(report.refreshed, [item.id])
+
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):
         self.imported()
         confirming = next(d for d in self.decisions() if d.matched_item_id is not None and d.tier == 1)

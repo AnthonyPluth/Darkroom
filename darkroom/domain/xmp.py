@@ -101,7 +101,11 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     return fields
 
 
-def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp, corrects: bool = True) -> bool:
+def is_still(media_path: Path) -> bool:
+    return media_path.suffix.lower() not in media.VIDEO_SUFFIXES
+
+
+def fill_fields(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, corrects: bool = True) -> dict[str, str] | None:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -110,8 +114,13 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     own = tags.get(media_path)
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
-        return False
-    return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES, corrects=corrects))
+        return None
+    return gaps(own, existing, google, with_date, still=is_still(media_path), corrects=corrects)
+
+
+def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp, corrects: bool = True) -> bool:
+    fields = fill_fields(media_path, google, with_date, read, corrects)
+    return False if fields is None else write(paths.sidecar_of(media_path), fields)
 
 
 def place_refreshable(own: dict[str, object], old: GoogleMetadata, new: GoogleMetadata, corrects: bool = True) -> bool:

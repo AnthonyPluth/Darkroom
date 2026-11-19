@@ -247,7 +247,8 @@ def matched_takeout(opened: Session, decision: DedupeDecision) -> MediaItem | No
 
 def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> None:
     old, new = xmp.GoogleMetadata.of(matched.sidecar_json), xmp.GoogleMetadata.of(entry.fields.sidecar_json)
-    if old == new:
+    now_own = matched.sidecar_from_still and not entry.item.sidecar_from_still
+    if old == new and not now_own:
         report.skipped += 1
         return
     try:
@@ -262,6 +263,14 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     if done is None:
         report.skipped += 1
         return
+    if now_own:
+        corrected = xmp.fill_fields(path, new, True, read)
+        if corrected is None:
+            report.skipped += 1
+            return
+        if corrected:
+            write(sidecar, corrected)
+        done = done | frozenset(corrected)
     matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
     matched.sidecar_from_still = entry.item.sidecar_from_still
     if not done:

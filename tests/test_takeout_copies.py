@@ -373,6 +373,33 @@ class CorrectedMetadataCarryTests(CopiesCase):
         self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
         self.assertFalse((self.root / takeout.path).exists())
 
+    def pair_with_a_create_date_only(self, suffix):
+        source = fixtures.make_jpeg(self.root / "made.jpg", gps=(45.434, 12.3388))
+        fixtures.set_tags(source, {"CreateDate": "2020:02:09 12:47:20"})
+        data = source.read_bytes()
+        source.unlink()
+        takeout, _ = self.takeout(data, name=f"IMG_0001{suffix}")
+        takeout.sidecar_json = self.CORRECTED
+        self.opened.commit()
+        return self.phone(data, name=f"IMG_0001-aaaa{suffix}")
+
+    def test_a_still_with_only_a_create_date_has_no_capture_date_to_correct_in_the_carry(self):
+        keeper = self.pair_with_a_create_date_only(".jpg")
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+
+    def test_a_video_with_only_a_create_date_has_it_corrected_in_the_carry(self):
+        source = fixtures.make_video(self.root / "made.mp4")
+        fixtures.set_tags(source, {"CreateDate": "2020:02:09 12:47:20"})
+        data = source.read_bytes()
+        source.unlink()
+        takeout, _ = self.takeout(data, name="IMG_0001.mp4", **VIDEO)
+        takeout.sidecar_json = self.CORRECTED
+        self.opened.commit()
+        keeper = self.phone(data, name="IMG_0001-aaaa.mp4", **VIDEO)
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper))
+
     def test_a_correction_with_no_known_zone_is_written_with_no_offset(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20")
         takeout.sidecar_json = json.dumps({"photoTakenTime": {"timestamp": str(self.TAKEN)}})
