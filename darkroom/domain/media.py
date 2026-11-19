@@ -19,6 +19,9 @@ register_heif_opener()
 CHUNK = 1024 * 1024
 DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$")
 OFFSET = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
+CORRECTION_SECONDS = 14 * 3600
+WESTMOST_OFFSET_MINUTES = -12 * 60
+EASTMOST_OFFSET_MINUTES = 14 * 60
 PHASH_SIZE = 8
 DHASH_SIZE = 8
 MAX_PIXELS = 120_000_000
@@ -187,6 +190,35 @@ def capture(tags: dict[str, object], lat: float | None, lon: float | None) -> tu
         if utc is not None:
             return utc + seconds_fraction(tags), local_text, looked_up, "gps_lookup"
     return None, local_text, None, "unknown"
+
+
+def same_place(lat: float | None, lon: float | None, other_lat: float | None, other_lon: float | None) -> bool:
+    if lat is None or lon is None or other_lat is None or other_lon is None:
+        return lat is None and lon is None and other_lat is None and other_lon is None
+    return abs(lat - other_lat) < 1e-6 and abs(lon - other_lon) < 1e-6
+
+
+def corrected_by(utc: float | None, local: datetime | None, taken: float) -> bool:
+    if utc is not None:
+        return abs(utc - taken) > CORRECTION_SECONDS
+    if local is None:
+        return False
+    earliest, latest = utc_or_none(local, EASTMOST_OFFSET_MINUTES), utc_or_none(local, WESTMOST_OFFSET_MINUTES)
+    if earliest is None or latest is None:
+        return False
+    return taken < earliest - CORRECTION_SECONDS or taken > latest + CORRECTION_SECONDS
+
+
+def date_corrected_by(own: dict[str, object], taken: float) -> bool:
+    lat, lon, _ = location(own)
+    utc, local, _, _ = capture(own, lat, lon)
+    wall = None if local is None else datetime.fromisoformat(local)
+    if utc is None and wall is not None and lat is not None and lon is not None:
+        offsets = timezones.candidate_offsets(lat, lon, wall)
+        if offsets:
+            instants = [utc_or_none(wall, offset) for offset in offsets]
+            return all(instant is not None and corrected_by(instant, None, taken) for instant in instants)
+    return corrected_by(utc, wall, taken)
 
 
 def local_to_utc(local: datetime, offset_minutes: int) -> float:

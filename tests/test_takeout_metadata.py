@@ -41,10 +41,20 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual((found.phash, found.dhash), (hashes.phash, hashes.dhash))
         self.assertIsNotNone(found.dhash)
 
-    def test_exif_gps_beats_a_different_sidecar_gps(self):
+    def test_a_different_sidecar_gps_beats_exif_gps(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00", gps=(40.7, -74.0))
         found = self.build(path, parsed(10.0, 20.0))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (10.0, 20.0, "google"))
+
+    def test_a_sidecar_gps_equal_to_exif_gps_stays_exif(self):
+        path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00", gps=(40.7, -74.0))
+        found = self.build(path, parsed(40.7, -74.0))
         self.assertEqual((found.lat, found.lon, found.gps_source), (40.7, -74.0, "exif"))
+
+    def test_a_sidecar_time_far_from_the_exif_instant_never_replaces_the_matching_time(self):
+        path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
+        found = self.build(path, parsed(taken=TAKEN + 99999))
+        self.assertEqual((found.time_source, found.offset_minutes, found.captured_utc), ("exif_offset", -300, 1562261415.0))
 
     def test_without_exif_gps_the_sidecar_location_is_used(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
@@ -190,6 +200,25 @@ class CaptureAgreementTests(unittest.TestCase):
     def test_a_wall_clock_four_hours_behind_the_sidecar_instant_gets_that_offset(self):
         found = self.build(exif(DateTimeOriginal="2019:07:04 19:30:00"), taken_at("2019-07-04 23:30:00"))
         self.assertEqual(self.times(found), ("2019-07-04T19:30:00", utc("2019-07-04 23:30:00"), -240, "sidecar_offset"))
+
+    def test_a_looked_up_offset_stays_the_files_own_when_the_sidecar_place_replaced_it(self):
+        tags = {**exif(DateTimeOriginal="2019:07:04 12:30:15"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0}
+        found = self.build(tags, taken_at("2019-07-04 16:30:15", 35.68, 139.69))
+        self.assertEqual(self.times(found), ("2019-07-04T12:30:15", utc("2019-07-04 16:30:15"), -240, "gps_lookup"))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (35.68, 139.69, "google"))
+
+    def test_a_copy_whose_place_google_moved_across_zones_still_matches_its_phone_copy_at_tier_2(self):
+        world = World(self)
+        jo = world.person("jo")
+        account = world.account("jo@x.test", jo)
+        tags = {**exif(DateTimeOriginal="2023:11:14 22:13:20"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0,
+                "IFD0:Make": "Apple", "IFD0:Model": "iPhone 15 Pro", "File:ImageWidth": 64, "File:ImageHeight": 48}
+        found = self.build(tags, taken_at("2023-11-15 03:13:20", 35.68, 139.69))
+        self.assertEqual((found.lat, found.lon, found.gps_source, found.captured_utc, found.offset_minutes), (35.68, 139.69, "google", utc("2023-11-15 03:13:20"), -300))
+        world.item(jo, captured_utc=utc("2023-11-15 03:13:20"), captured_local="2023-11-14T22:13:20", offset_minutes=-300, width=64, height=48, suffix=".jpg")
+        candidate = dedupe.candidate_of(TakeoutItem(path=self.path, sha1="", copies=(self.path,), sidecar=None), found, self.root)
+        decision = dedupe.decide(world.index(account), candidate, dedupe.DedupeSettings())
+        self.assertEqual((decision.tier, decision.action), (2, "skip"))
 
     def test_a_scan_dated_decades_apart_from_the_sidecar_keeps_only_the_exif_wall_clock(self):
         side = taken_at("1979-06-15 10:00:00", 40.7, -74.0)

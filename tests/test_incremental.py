@@ -1,11 +1,16 @@
 import dataclasses
+import json
 import unittest
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe, exports, media, pixel_folder, review
+from darkroom.domain import dedupe, exports, media, pixel_folder, review, xmp
+from darkroom.domain.ingest import place
+from darkroom.domain.ingest.pairing import TakeoutItem
+from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, GoogleAccount, MediaItem, PixelCopy, PixelPerson
+from tests.fixtures import media as fixtures
 from tests.import_world import DAY, NOW, World
 from tests.takeout_fixtures import TakeoutBuilder
 
@@ -400,6 +405,130 @@ class IncrementalTests(IncrementalCase):
         self.assertEqual((item.lat, item.lon, item.gps_source), (None, None, "none"))
         self.assertIn(item.id, self.missing_gps_ids())
         self.assertEqual(self.refreshed(), [])
+
+    def with_own_place(self):
+        path = fixtures.make_jpeg(self.world.base / "own-place.jpg", colour=(9, 99, 199), gps=(1.0, 2.0))
+        self.canal = path.read_bytes()
+
+    def test_a_place_google_adds_later_replaces_the_files_own_in_the_sidecar(self):
+        self.with_own_place()
+        self.imported(place=None)
+        self.imported(place=NEW_PLACE, at=NOW + DAY)
+        tags = exiftool.read([self.canal_sidecar()])[self.canal_sidecar()]
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], NEW_PLACE[0], places=5)
+        self.assertEqual(len(self.refreshed()), 1)
+
+    def refresh_with(self, place_of, from_still, taken=None, description=CANAL):
+        data = {"title": "IMG_2.JPG", "description": description, "geoData": {"latitude": place_of[0], "longitude": place_of[1]}}
+        item = self.canal_item()
+        taken = xmp.GoogleMetadata.of(item.sidecar_json).taken_utc if taken is None else taken
+        if taken is not None:
+            data["photoTakenTime"] = {"timestamp": str(int(taken))}
+        raw = json.dumps(data)
+        entry = place.Entry(TakeoutItem(path=self.canal_sidecar(), sha1="", copies=(), sidecar=None, sidecar_from_still=from_still),
+                            MediaItem(sidecar_json=raw), None)
+        report = place.PlaceReport()
+        place.refresh_takeout(self.world.photos, item, entry, report, exiftool.read, exiftool.write_xmp)
+        self.world.opened.commit()
+        return item, report
+
+    def test_a_later_export_that_borrows_a_stills_sidecar_corrects_nothing_the_video_has_and_stores_that(self):
+        self.with_own_place()
+        self.imported(place=(1.0, 2.0))
+        self.assertFalse(self.canal_item().sidecar_from_still)
+        item, report = self.refresh_with(NEW_PLACE, from_still=True)
+        self.assertNotIn("XMP-exif:GPSLatitude", exiftool.read([self.canal_sidecar()])[self.canal_sidecar()])
+        self.assertEqual(report.refreshed, [])
+        self.assertTrue(item.sidecar_from_still)
+        self.assertEqual(media.location(exiftool.read([self.world.root / item.path])[self.world.root / item.path])[:2], (1.0, 2.0))
+
+    def test_a_later_export_that_gives_the_video_its_own_sidecar_corrects_again_and_stores_that(self):
+        self.with_own_place()
+        self.imported(place=(1.0, 2.0))
+        row = self.canal_item()
+        row.sidecar_from_still = True
+        self.world.opened.commit()
+        item, report = self.refresh_with(NEW_PLACE, from_still=False)
+        tags = exiftool.read([self.canal_sidecar()])[self.canal_sidecar()]
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], NEW_PLACE[0], places=5)
+        self.assertEqual(report.refreshed, [item.id])
+        self.assertFalse(item.sidecar_from_still)
+
+    def test_a_later_export_that_borrows_the_same_values_still_records_the_borrowing(self):
+        self.with_own_place()
+        self.imported(place=NEW_PLACE)
+        self.assertFalse(self.canal_item().sidecar_from_still)
+        item, report = self.refresh_with(NEW_PLACE, from_still=True)
+        self.assertTrue(item.sidecar_from_still)
+        self.assertEqual(report.refreshed, [])
+        self.assertEqual(json.loads(item.sidecar_json)["title"], "IMG_2.JPG")
+
+    def test_a_later_export_that_gives_the_video_its_own_sidecar_with_the_same_values_records_that(self):
+        self.with_own_place()
+        self.imported(place=NEW_PLACE)
+        row = self.canal_item()
+        row.sidecar_from_still = True
+        self.world.opened.commit()
+        item, _ = self.refresh_with(NEW_PLACE, from_still=False)
+        self.assertFalse(item.sidecar_from_still)
+
+    def test_a_later_export_that_borrows_different_values_stores_them_with_the_flag(self):
+        self.with_own_place()
+        self.imported(place=OLD_PLACE)
+        item, _ = self.refresh_with(NEW_PLACE, from_still=True)
+        self.assertTrue(item.sidecar_from_still)
+        self.assertEqual(xmp.GoogleMetadata.of(item.sidecar_json).lat, NEW_PLACE[0])
+
+    def test_an_own_sidecar_with_no_place_replaces_a_borrowed_one_whole_and_keeps_the_stills_place_out(self):
+        self.with_own_place()
+        self.imported(place=OLD_PLACE)
+        row = self.canal_item()
+        row.sidecar_json = json.dumps({"title": "IMG_2.JPG", "description": CANAL, "geoData": {"latitude": NEW_PLACE[0], "longitude": NEW_PLACE[1]}})
+        row.sidecar_from_still = True
+        self.world.opened.commit()
+        item, _ = self.refresh_with((0.0, 0.0), from_still=False)
+        self.assertFalse(item.sidecar_from_still)
+        stored = xmp.GoogleMetadata.of(item.sidecar_json)
+        self.assertEqual((stored.lat, stored.lon), (None, None))
+        self.assertFalse(json.loads(item.sidecar_json).get("geoData", {}).get("latitude"))
+
+    def test_a_later_export_without_a_usable_sidecar_keeps_the_stored_json_and_its_flag(self):
+        self.with_own_place()
+        self.imported(place=OLD_PLACE)
+        stored = self.canal_item().sidecar_json
+        for flag in (False, True):
+            with self.subTest(stored_flag=flag):
+                row = self.canal_item()
+                row.sidecar_from_still = flag
+                row.sidecar_json = stored
+                self.world.opened.commit()
+                entry = place.Entry(TakeoutItem(path=self.canal_sidecar(), sha1="", copies=(), sidecar=None, sidecar_from_still=not flag),
+                                    MediaItem(sidecar_json=None), None)
+                place.refresh_takeout(self.world.photos, row, entry, place.PlaceReport(), exiftool.read, exiftool.write_xmp)
+                self.assertEqual((row.sidecar_json, row.sidecar_from_still), (stored, flag))
+
+    def refresh_over_a_sidecar_the_owner_trimmed(self, flag, incoming=None):
+        self.with_own_place()
+        self.imported(place=None)
+        sidecar = self.world.root / f"{self.canal_item().path}.xmp"
+        sidecar.unlink()
+        exiftool.write_xmp(sidecar, {"XMP-dc:Title": "kept"})
+        row = self.canal_item()
+        row.sidecar_from_still = flag
+        self.world.opened.commit()
+        self.refresh_with(NEW_PLACE, from_still=flag if incoming is None else incoming, taken=1562243415, description="Words that arrive later")
+        tags = exiftool.read([sidecar])[sidecar]
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+        self.assertNotIn("XMP-dc:Description", tags)
+
+    def test_a_refresh_never_writes_a_date_or_re_adds_a_value_the_owner_removed(self):
+        self.refresh_over_a_sidecar_the_owner_trimmed(False)
+
+    def test_a_refresh_of_a_borrowed_sidecar_never_writes_a_date_or_re_adds_a_value_the_owner_removed(self):
+        self.refresh_over_a_sidecar_the_owner_trimmed(True)
+
+    def test_an_own_sidecar_replacing_a_borrowed_one_never_writes_a_date_or_re_adds_a_value_the_owner_removed(self):
+        self.refresh_over_a_sidecar_the_owner_trimmed(True, incoming=False)
 
     def test_a_reversed_decision_is_made_again_by_the_next_export(self):
         self.imported()

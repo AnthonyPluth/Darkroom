@@ -60,26 +60,40 @@ def offset_text(minutes: int) -> str:
     return f"{sign}{hours:02d}:{rest:02d}"
 
 
-def created_text(utc: float, lat: float | None, lon: float | None) -> str | None:
+def created_text(utc: float, lat: float | None, lon: float | None, own_offset: int | None = None) -> str | None:
     try:
         moment = datetime.fromtimestamp(utc, UTC)
     except (OverflowError, OSError, ValueError):
         return None
-    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
+    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else own_offset
     if offset is None:
         return f"{moment:%Y:%m:%d %H:%M:%S}"
     local = moment + timedelta(minutes=offset)
     return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(offset)}"
 
 
-def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
+def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
+    own_lat, own_lon, _ = media.location(own)
+    return own_lat is None or not media.same_place(own_lat, own_lon, lat, lon)
+
+
+def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool, corrects: bool = True) -> str | None:
+    if google.taken_utc is None:
+        return None
+    if not has_date(own, still):
+        return "missing" if with_date else None
+    return "corrected" if corrects and media.date_corrected_by(own, google.taken_utc) else None
+
+
+def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False, corrects: bool = True) -> dict[str, str]:
     fields: dict[str, str] = {}
-    if google.lat is not None and google.lon is not None and not has_gps(own) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
+    if google.lat is not None and google.lon is not None and (place_set_by_google(own, google.lat, google.lon) if corrects else not has_gps(own)) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
         fields[LATITUDE], fields[LONGITUDE] = f"{google.lat:.7f}", f"{google.lon:.7f}"
-    if with_date and google.taken_utc is not None and not has_date(own, still) and not has_tag(existing, CREATED):
+    kind = date_kind(own, google, with_date, still, corrects)
+    if google.taken_utc is not None and kind is not None and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
-        created = created_text(google.taken_utc, lat, lon)
+        created = created_text(google.taken_utc, lat, lon, None if kind == "missing" else media.capture(own, own_lat, own_lon)[2])
         if created is not None:
             fields[CREATED] = created
     if google.description is not None and not has_description(own) and not has_tag(existing, DESCRIPTION):
@@ -87,7 +101,11 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     return fields
 
 
-def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp) -> bool:
+def is_still(media_path: Path) -> bool:
+    return media_path.suffix.lower() not in media.VIDEO_SUFFIXES
+
+
+def fill_fields(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, corrects: bool = True) -> dict[str, str] | None:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -96,24 +114,38 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     own = tags.get(media_path)
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
+        return None
+    return gaps(own, existing, google, with_date, still=is_still(media_path), corrects=corrects)
+
+
+def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp, corrects: bool = True) -> bool:
+    fields = fill_fields(media_path, google, with_date, read, corrects)
+    return False if fields is None else write(paths.sidecar_of(media_path), fields)
+
+
+def place_refreshable(own: dict[str, object], old: GoogleMetadata, new: GoogleMetadata, corrects: bool = True) -> bool:
+    if new.lat is None or new.lon is None or media.same_place(new.lat, new.lon, old.lat, old.lon):
         return False
-    return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES))
+    if not corrects:
+        return not has_gps(own)
+    return old.lat is not None or place_set_by_google(own, new.lat, new.lon)
 
 
-def same_place(lat: float | None, lon: float | None, other_lat: float | None, other_lon: float | None) -> bool:
-    if lat is None or lon is None or other_lat is None or other_lon is None:
-        return lat is None and lon is None and other_lat is None and other_lon is None
-    return abs(lat - other_lat) < 1e-6 and abs(lon - other_lon) < 1e-6
+def nothing_written_for(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata) -> bool:
+    if old.lat is None or old.lon is None or has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE):
+        return False
+    own_lat, own_lon, _ = media.location(own)
+    return own_lat is not None and media.same_place(own_lat, own_lon, old.lat, old.lon)
 
 
-def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> dict[str, str]:
+def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata, corrects: bool = True) -> dict[str, str]:
     fields: dict[str, str] = {}
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and new.description is not None and media.text(media.tag(existing, "Description")) == old.description:
         fields[DESCRIPTION] = new.description
-    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+    if place_refreshable(own, old, new, corrects):
         lat, lon, _ = media.location(existing)
-        if same_place(lat, lon, old.lat, old.lon):
+        if new.lat is not None and new.lon is not None and (media.same_place(lat, lon, old.lat, old.lon) or nothing_written_for(own, existing, old)):
             fields[LATITUDE], fields[LONGITUDE] = f"{new.lat:.7f}", f"{new.lon:.7f}"
     return fields
 
@@ -158,20 +190,20 @@ def baseline(old_raw: str | None, new_raw: str | None) -> str | None:
     return json.dumps(new_data)
 
 
-def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> frozenset[str]:
+def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata, corrects: bool = True) -> frozenset[str]:
     done: set[str] = set()
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and media.text(media.tag(existing, "Description")) == new.description:
         done.add(DESCRIPTION)
-    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+    if place_refreshable(own, old, new, corrects):
         lat, lon, _ = media.location(existing)
-        if same_place(lat, lon, new.lat, new.lon):
+        if new.lat is not None and new.lon is not None and media.same_place(lat, lon, new.lat, new.lon):
             done.update((LATITUDE, LONGITUDE))
     return frozenset(done)
 
 
 def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Reader = exiftool.read,
-            write: Writer = exiftool.write_xmp) -> frozenset[str] | None:
+            write: Writer = exiftool.write_xmp, corrects: bool = True) -> frozenset[str] | None:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -181,6 +213,6 @@ def refresh(media_path: Path, old: GoogleMetadata, new: GoogleMetadata, read: Re
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
         return None
-    fields = changes(own, existing, old, new)
+    fields = changes(own, existing, old, new, corrects)
     write(sidecar, fields)
-    return frozenset(fields) | applied(own, existing, old, new)
+    return frozenset(fields) | applied(own, existing, old, new, corrects)

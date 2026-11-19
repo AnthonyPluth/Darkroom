@@ -64,7 +64,7 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
     dated = scan_dates_dropped(item, tags, sidecar)
     print_ = media.fingerprint(opened or item.path, dated, item.path)
     lat, lon, gps_source = print_.lat, print_.lon, print_.gps_source
-    if gps_source == "none" and sidecar is not None and sidecar.lat is not None and sidecar.lon is not None:
+    if sidecar is not None and sidecar.lat is not None and sidecar.lon is not None and (gps_source == "none" or not (item.sidecar_from_still or media.same_place(lat, lon, sidecar.lat, sidecar.lon))):
         lat, lon, gps_source = sidecar.lat, sidecar.lon, "google"
     utc, local, offset, time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
     if time_source == "quicktime_utc" and utc is not None and offset is None:
@@ -85,5 +85,5 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
         person_id=person_id, source="takeout", path=relative, sha1=print_.sha1, bytes=print_.bytes, phash=print_.phash, dhash=print_.dhash,
         captured_utc=utc, captured_local=local, offset_minutes=offset, time_source=time_source,
         width=print_.width, height=print_.height, duration_ms=print_.duration_ms, make=print_.make, model=print_.model,
-        lat=lat, lon=lon, gps_source=gps_source, sidecar_json=sidecar.raw if sidecar else None, export_id=export_id, indexed_at=now,
+        lat=lat, lon=lon, gps_source=gps_source, sidecar_json=sidecar.raw if sidecar else None, sidecar_from_still=item.sidecar_from_still, export_id=export_id, indexed_at=now,
     )

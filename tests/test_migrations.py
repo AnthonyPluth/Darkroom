@@ -234,7 +234,7 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaises(IntegrityError), connection.begin_nested():
                 connection.exec_driver_sql("INSERT INTO index_skips (person_id, path, bytes, mtime, reason, skipped_at) VALUES (1, 'jo/originals/x.jpg', 1, 2.5, 'r', 3.0)")
             for table, rows in before.items():
-                self.assertEqual(connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all(), rows)
+                self.assertEqual([tuple(row)[:len(rows[0])] for row in connection.exec_driver_sql(f"SELECT * FROM {table} ORDER BY id").all()], [tuple(row) for row in rows])
             config.attributes["connection"] = connection
             command.downgrade(config, "0028")
         self.assertNotIn("index_skips", inspect(self.engine).get_table_names())
@@ -492,7 +492,7 @@ class MigrationTests(unittest.TestCase):
         db.migrate(self.engine)
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
-            self.assertEqual(connection.exec_driver_sql("SELECT * FROM media_items ORDER BY id").all(), before)
+            self.assertEqual([tuple(row)[:len(before[0])] for row in connection.exec_driver_sql("SELECT * FROM media_items ORDER BY id").all()], [tuple(row) for row in before])
             connection.execute(text(insert), {"path": "jo/google-only/b.jpg", "source": "sidecar_offset"})
             with self.assertRaises(IntegrityError), connection.begin_nested():
                 connection.execute(text(insert), {"path": "jo/google-only/c.jpg", "source": "guessed"})
@@ -550,6 +550,24 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("sign_in_prompts", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql(f"SELECT {columns} FROM exports").all(), before)
+        db.migrate(self.engine)
+
+    def test_0041_media_items_start_without_a_borrowed_sidecar_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0040")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO media_items (id, person_id, source, path, sha1, bytes, indexed_at) VALUES (1, 1, 'takeout', 'jo/google-only/a.jpg', 'ab', 7, 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, path, sidecar_from_still FROM media_items").all(), [(1, "jo/google-only/a.jpg", False)])
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0040")
+        self.assertNotIn("sidecar_from_still", {column["name"] for column in inspect(self.engine).get_columns("media_items")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, path FROM media_items").all(), [(1, "jo/google-only/a.jpg")])
         db.migrate(self.engine)
 
     def test_0040_held_reviews_start_without_a_borrowed_sidecar_and_it_can_be_undone(self):

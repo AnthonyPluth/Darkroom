@@ -354,6 +354,7 @@ class MediaItem(Base):
     gps_source: Mapped[str] = mapped_column(String, nullable=False, default="none", server_default="none")
     confirmed_in_google: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     sidecar_json: Mapped[str | None] = mapped_column(Text)
+    sidecar_from_still: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     export_id: Mapped[int | None] = mapped_column(ForeignKey("exports.id", ondelete="SET NULL"))
     indexed_at: Mapped[float] = mapped_column(Float, nullable=False)
 

@@ -125,7 +125,7 @@ class World:
         builder.photo("IMG_1002.JPG", data=shared, part=1)
         moment = {"taken": "2019:07:04 08:30:15", "offset": "+02:00", "make": "Apple", "model": "iPhone 11"}
         self.original("jo", "IMG_1003.JPG", self.scratch_jpeg("t2a.jpg", colour=(10, 120, 30), **moment))
-        builder.photo("IMG_1003.JPG", data=self.scratch_jpeg("t2b.jpg", colour=(12, 118, 33), **moment), gps=None)
+        builder.photo("IMG_1003.JPG", data=self.scratch_jpeg("t2b.jpg", colour=(12, 118, 33), **moment), gps=None, taken=1562221815)
         edited_of = builder.image_bytes(".JPG")
         self.original("sam", "IMG_1004.JPG", edited_of)
         builder.photo("IMG_1004.JPG", data=edited_of)

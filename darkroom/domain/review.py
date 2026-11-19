@@ -649,7 +649,7 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
             if had_sidecar:
                 raise paths.AlreadyExists("a different sidecar is already at the target")
             xmp.fill(placed.path, xmp.GoogleMetadata.of(item.sidecar_json), True, read,
-                     lambda sidecar, tags: paths.write_new_sidecar(sidecar, lambda temp: write(temp, tags), recording))
+                     lambda sidecar, tags: paths.write_new_sidecar(sidecar, lambda temp: write(temp, tags), recording), not item.sidecar_from_still)
         carries = CARRIES_FOUND if "found" in lineage and placed.copied and not had_sidecar else ""
         adopted = [name for name, kept in (("photo", not placed.copied or "photo" in lineage),
                                            ("sidecar", had_sidecar or (carried and "sidecar" in lineage))) if kept]

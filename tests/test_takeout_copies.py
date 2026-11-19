@@ -14,6 +14,7 @@ from darkroom.storage import paths
 from darkroom.storage.models import (
     DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, MediaItem, Person, Pixel, PixelCopy, PixelPerson, ReviewItem,
 )
+from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database, try_elsewhere, write_elsewhere
 
 MOMENT = 1_615_000_000.0
@@ -304,6 +305,138 @@ class ResolveTests(CopiesCase):
         self.takeout(b"same bytes")
         self.phone(b"same bytes").person_id = sam.id
         self.assertEqual([takeout_copies.resolve_person(self.opened, self.photos, who, 2.0).removed for who in (self.jo, sam)], [0, 0])
+
+
+class CorrectedMetadataCarryTests(CopiesCase):
+    TAKEN = 1562243415
+    CORRECTED = json.dumps({"photoTakenTime": {"timestamp": str(TAKEN)}, "geoData": {"latitude": 45.434, "longitude": 12.3388}})
+
+    def pair(self, **tags):
+        source = fixtures.make_jpeg(self.root / "made.jpg", **tags)
+        data = source.read_bytes()
+        source.unlink()
+        takeout, _ = self.takeout(data)
+        takeout.sidecar_json = self.CORRECTED
+        self.opened.commit()
+        keeper = self.phone(data)
+        (self.root / f"{keeper.path}.xmp").unlink(missing_ok=True)
+        return takeout, keeper
+
+    def resolve_for_real(self, write=exiftool.write_xmp):
+        return takeout_copies.resolve_person(self.opened, self.photos, self.jo, 2.0, takeout_copies.Tools(exiftool.read, write))
+
+    def sidecar_of(self, keeper):
+        path = self.root / f"{keeper.path}.xmp"
+        return exiftool.read([path])[path]
+
+    def test_a_place_and_a_date_google_corrected_reach_the_keepers_sidecar_before_the_loser_goes(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        before = (self.root / keeper.path).read_bytes()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
+        self.assertTrue(str(tags["XMP-photoshop:DateCreated"]).startswith("2019:07:04 14:30:15"))
+        self.assertEqual((self.root / keeper.path).read_bytes(), before)
+        self.assertFalse((self.root / takeout.path).exists())
+
+    def test_a_sidecar_borrowed_from_a_still_corrects_nothing_the_keeper_has(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        takeout.sidecar_from_still = True
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+        self.assertFalse((self.root / takeout.path).exists())
+
+    def test_an_own_sidecar_with_no_place_carries_no_place_to_the_keeper(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        takeout.sidecar_json = json.dumps({"description": "Own words", "geoData": {"latitude": 0.0, "longitude": 0.0}})
+        takeout.sidecar_from_still = False
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertNotIn("XMP-exif:GPSLatitude", tags)
+        self.assertEqual(tags["XMP-dc:Description"], "Own words")
+
+    def test_a_sidecar_borrowed_from_a_still_still_fills_what_the_keeper_lacks(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00")
+        takeout.sidecar_from_still = True
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+
+    def test_a_place_and_a_date_the_keepers_sidecar_already_holds_are_kept(self):
+        _, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        exiftool.write_xmp(self.root / f"{keeper.path}.xmp", {"XMP-exif:GPSLatitude": "9.0000000", "XMP-exif:GPSLongitude": "9.0000000",
+                                                              "XMP-photoshop:DateCreated": "2001:01:01 00:00:00+00:00"})
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 9.0, places=5)
+        self.assertTrue(str(tags["XMP-photoshop:DateCreated"]).startswith("2001:01:01 00:00:00"))
+
+    def test_a_date_within_14_hours_of_the_keepers_own_is_not_carried(self):
+        takeout, keeper = self.pair(taken="2019:07:04 08:30:15", offset="-04:00", gps=(45.434, 12.3388))
+        takeout.sidecar_json = json.dumps({"photoTakenTime": {"timestamp": str(self.TAKEN + 8 * 3600)}, "geoData": {"latitude": 45.434, "longitude": 12.3388}})
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+        self.assertFalse((self.root / takeout.path).exists())
+
+    def pair_with_a_create_date_only(self, suffix):
+        source = fixtures.make_jpeg(self.root / "made.jpg", gps=(45.434, 12.3388))
+        fixtures.set_tags(source, {"CreateDate": "2020:02:09 12:47:20"})
+        data = source.read_bytes()
+        source.unlink()
+        takeout, _ = self.takeout(data, name=f"IMG_0001{suffix}")
+        takeout.sidecar_json = self.CORRECTED
+        self.opened.commit()
+        return self.phone(data, name=f"IMG_0001-aaaa{suffix}")
+
+    def test_a_still_with_only_a_create_date_has_no_capture_date_to_correct_in_the_carry(self):
+        keeper = self.pair_with_a_create_date_only(".jpg")
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
+
+    def test_a_video_with_only_a_create_date_has_it_corrected_in_the_carry(self):
+        source = fixtures.make_video(self.root / "made.mp4")
+        fixtures.set_tags(source, {"CreateDate": "2020:02:09 12:47:20"})
+        data = source.read_bytes()
+        source.unlink()
+        takeout, _ = self.takeout(data, name="IMG_0001.mp4", **VIDEO)
+        takeout.sidecar_json = self.CORRECTED
+        self.opened.commit()
+        keeper = self.phone(data, name="IMG_0001-aaaa.mp4", **VIDEO)
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper))
+
+    def test_a_correction_with_no_known_zone_is_written_with_no_offset(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20")
+        takeout.sidecar_json = json.dumps({"photoTakenTime": {"timestamp": str(self.TAKEN)}})
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        self.assertEqual(self.sidecar_of(keeper)["XMP-photoshop:DateCreated"], "2019:07:04 12:30:15")
+
+    def carry_for_a_keeper_dated(self, wall, gps):
+        _, keeper = self.pair(taken=wall, gps=gps)
+        resolved = self.resolve_for_real()
+        self.assertEqual((resolved.removed, resolved.refused), (1, 0))
+        self.assertNotIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper))
+
+    def test_a_keeper_dated_in_year_one_east_of_greenwich_never_crashes_the_carry(self):
+        self.carry_for_a_keeper_dated("0001:01:01 00:00:00", (41.9, 12.5))
+
+    def test_a_keeper_dated_in_year_9999_west_of_greenwich_never_crashes_the_carry(self):
+        self.carry_for_a_keeper_dated("9999:12:31 23:30:00", (40.7, -74.0))
+
+    def test_a_write_the_re_read_cannot_verify_refuses_the_removal_and_leaves_both_copies(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        before = self.files()
+        resolved = self.resolve_for_real(write=lambda sidecar, fields: False)
+        self.assertEqual((resolved.removed, resolved.refused), (0, 1))
+        self.assertEqual(self.files(), before)
+        self.assertIsNotNone(self.opened.get(MediaItem, takeout.id))
+        self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
 
 
 class CameraRawTests(CopiesCase):

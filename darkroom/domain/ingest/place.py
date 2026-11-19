@@ -193,7 +193,7 @@ def place_google_only(opened: Session, photos: Photos, export: Export, entry: En
         opened.add(row)
         opened.flush()
     entry.decision.takeout_item_id = row.id
-    if xmp.fill(placed.path, xmp.GoogleMetadata.of(entry.fields.sidecar_json), True, read, write):
+    if xmp.fill(placed.path, xmp.GoogleMetadata.of(entry.fields.sidecar_json), True, read, write, not entry.item.sidecar_from_still):
         report.sidecars += 1
     return row
 
@@ -234,7 +234,7 @@ def fill_original(opened: Session, photos: Photos, entry: Entry, report: PlaceRe
     if original is None:
         report.skipped += 1
         return
-    if xmp.fill(original, xmp.GoogleMetadata.of(entry.fields.sidecar_json), False, read, write):
+    if xmp.fill(original, xmp.GoogleMetadata.of(entry.fields.sidecar_json), False, read, write, not entry.item.sidecar_from_still):
         report.sidecars += 1
 
 
@@ -247,7 +247,9 @@ def matched_takeout(opened: Session, decision: DedupeDecision) -> MediaItem | No
 
 def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> None:
     old, new = xmp.GoogleMetadata.of(matched.sidecar_json), xmp.GoogleMetadata.of(entry.fields.sidecar_json)
-    if old == new:
+    incoming_borrowed = entry.item.sidecar_from_still
+    provenance_changed = xmp.json_object(entry.fields.sidecar_json) is not None and incoming_borrowed != matched.sidecar_from_still
+    if old == new and not provenance_changed:
         report.skipped += 1
         return
     try:
@@ -258,11 +260,14 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     except (paths.NotALibraryCopy, paths.OutsideRoot, paths.NotASidecar):
         report.skipped += 1
         return
-    done = xmp.refresh(path, old, new, read, write)
+    done = xmp.refresh(path, old, new, read, write, not incoming_borrowed)
     if done is None:
         report.skipped += 1
         return
-    matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
+    if provenance_changed:
+        matched.sidecar_json, matched.sidecar_from_still = entry.fields.sidecar_json, incoming_borrowed
+    else:
+        matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
     if not done:
         report.skipped += 1
         return

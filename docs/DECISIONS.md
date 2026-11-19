@@ -97,6 +97,20 @@ Two known gaps from review remain open in the design (the order of the reconcile
 
 Everything the design says about Syncthing's REST API, Chromium in the merged image and Unraid's networking is unverified until its spikes are written up; none of it has been run.
 
+## A date or place corrected in Google Photos wins (#438, 2026-11-18)
+
+**Owner decision** (comment on [#438](https://github.com/AnthonyPluth/Darkroom/issues/438), relayed by the coordinating session): use the corrected value from Google Photos when the person edited a date or place there. The sidecar's edited values win, for dates and for places, and for what is carried into a matched phone original's XMP; the file's own EXIF is the fallback.
+
+| Item | As built |
+| --- | --- |
+| Places | `geoData` (the person's edit) is read before `geoDataExif`; a non-zero sidecar place replaces the file's EXIF place in the record (`gps_source` `google`) and is written to XMP where it differs from the file's own. |
+| Dates | The record's capture time stays the file's own, so matching against the phone copy and the `google-only/` folder are unchanged (the owner's decision on #469: keep the file's time for matching and carry Google's corrected date separately). A `photoTakenTime` more than 14 hours from the file's own capture time is a correction that is written to XMP only, recomputed from the stored sidecar JSON. |
+| Matching time | A place Google corrected changes the record's place only. Every time field (instant, wall clock, offset, source) stays what the file itself gives, including a `gps_lookup` at the file's own GPS, so a Takeout copy matches its phone copy as before. |
+| XMP | The same rules for a Takeout copy and for a matched phone original; a date is written for an original only as a correction, never to fill a gap, with the zone of Google's position, the file's position or the file's own offset, and with no offset when none is known (#445); an existing XMP value is never overwritten; nothing is written to media (promise 5). |
+| Not decided by the owner | The 14-hour threshold (the issue's), no distance threshold for places (any difference beyond rounding counts), no review hold, and taking the file's own offset as a zone source for a correction. A correction with no zone follows #445: the clock with no offset, never `+00:00`. |
+| A borrowed sidecar replaced by the video's own | A later export stores the incoming JSON and its flag together; the refresh rules are unchanged (no dates, no re-added values), so an own place that differs from a borrowed one the video's GPS never matched is not corrected by the refresh (a known limitation, not a regression against main). |
+| A video whose place Google moved across zones | A QuickTime video (UTC instant) keeps the file's own wall clock, offset and month folder, so matching reads the same time on both sides; only the corrected place is carried (the owner's decision on #469). |
+
 ## The XMP date when the time zone is unknown (#445, 2026-11-18)
 
 **Owner decision.** [Issue #445](https://github.com/AnthonyPluth/Darkroom/issues/445) asked what `xmp.created_text` should write when a Google-only item has Google's `photoTakenTime` instant but no position to give its zone. The owner answered, relayed by the coordinating session: "when a photo's time zone is unknown, write the local time with no offset in XMP. Do not invent `+00:00`."

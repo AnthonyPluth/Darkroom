@@ -52,8 +52,92 @@ class GapsTests(unittest.TestCase):
         })
 
     def test_fields_the_file_has_are_left_alone(self):
-        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "ExifIFD:DateTimeOriginal": "2019:07:04 12:30:15", "IFD0:ImageDescription": "mine"}
+        own = {"GPS:GPSLatitude": 45.4340, "GPS:GPSLongitude": 12.3388, "ExifIFD:DateTimeOriginal": "2019:07:04 12:30:15", "IFD0:ImageDescription": "mine"}
         self.assertEqual(xmp.gaps(own, {}, GOOGLE, with_date=True), {})
+
+    def test_a_place_google_has_that_differs_from_the_files_own_is_written_because_the_person_set_it(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "ExifIFD:DateTimeOriginal": "2019:07:04 12:30:15", "IFD0:ImageDescription": "mine"}
+        for with_date in (True, False):
+            with self.subTest(with_date=with_date):
+                self.assertEqual(xmp.gaps(own, {}, GOOGLE, with_date=with_date), {xmp.LATITUDE: "45.4340000", xmp.LONGITUDE: "12.3388000"})
+
+    def test_a_place_in_an_existing_sidecar_is_not_overwritten_by_a_differing_one(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        existing = {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0}
+        self.assertNotIn(xmp.LATITUDE, xmp.gaps(own, existing, GOOGLE, with_date=False))
+
+    def test_a_date_correction_carries_the_zone_known_and_no_offset_when_none_is_known(self):
+        for own_date in ("2020:02:09 12:47:20", "1979:06:15 10:00:00"):
+            own = {"ExifIFD:DateTimeOriginal": own_date, "IFD0:ImageDescription": "mine"}
+            for with_date in (True, False):
+                with self.subTest(own_date=own_date, with_date=with_date):
+                    unknown = xmp.GoogleMetadata(None, None, float(TAKEN), None)
+                    self.assertEqual(xmp.gaps(own, {}, unknown, with_date=with_date), {xmp.CREATED: "2019:07:04 12:30:15"})
+                    placed = xmp.GoogleMetadata(45.434, 12.3388, float(TAKEN), None)
+                    self.assertEqual(xmp.gaps({**own, "GPS:GPSLatitude": 45.434, "GPS:GPSLongitude": 12.3388}, {}, placed, with_date=with_date),
+                                     {xmp.CREATED: "2019:07:04 14:30:15+02:00"})
+                    self.assertEqual(xmp.gaps(own, {}, placed, with_date=with_date)[xmp.CREATED], "2019:07:04 14:30:15+02:00")
+
+    def test_a_correction_is_judged_at_the_files_own_place_so_a_moved_place_alone_is_no_correction(self):
+        new_york = {"ExifIFD:DateTimeOriginal": "2019:07:04 12:00:00", "GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
+        london = xmp.GoogleMetadata(51.5, -0.12, 1562256000.0, None)
+        self.assertNotIn(xmp.CREATED, xmp.gaps(new_york, {}, london, with_date=False))
+        san_francisco = {"ExifIFD:DateTimeOriginal": "2023:11:14 19:13:20", "GPS:GPSLatitude": 37.77, "GPS:GPSLongitude": -122.42, "GPS:GPSLongitudeRef": "W"}
+        tokyo = xmp.GoogleMetadata(35.68, 139.69, 1700018000.0, None)
+        self.assertNotIn(xmp.CREATED, xmp.gaps(san_francisco, {}, tokyo, with_date=False))
+        later = xmp.GoogleMetadata(51.5, -0.12, 1562256000.0 + 20 * 3600, None)
+        self.assertIn(xmp.CREATED, xmp.gaps(new_york, {}, later, with_date=False))
+
+    def test_a_wall_clock_with_no_zone_is_a_correction_only_if_every_possible_instant_is_over_14_hours_away(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:07:04 12:00:00"}
+        base = 1562241600.0
+        for taken, written in ((base + 15 * 3600, False), (base + 26 * 3600, False), (base + 26 * 3600 + 1, True), (base - 28 * 3600, False),
+                               (base - 28 * 3600 - 1, True), (base - 14 * 365 * 86400, True)):
+            with self.subTest(taken=taken):
+                fields = xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, taken, None), with_date=False)
+                self.assertEqual(xmp.CREATED in fields, written)
+
+    def test_a_date_at_the_edge_of_the_calendar_never_raises_and_is_no_correction(self):
+        rome = {"GPS:GPSLatitude": 41.9, "GPS:GPSLongitude": 12.5}
+        new_york = {"GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
+        for name, tags in (("0001:01:01 00:00:00", rome), ("9999:12:31 23:30:00", new_york), ("0001:01:01 00:00:00", {}), ("9999:12:31 23:30:00", {})):
+            with self.subTest(wall=name, place=bool(tags)):
+                own = {"ExifIFD:DateTimeOriginal": name, **tags}
+                fields = xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=False)
+                self.assertNotIn(xmp.CREATED, fields)
+
+    def test_a_sidecar_borrowed_from_a_still_fills_gaps_and_corrects_nothing(self):
+        own = {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20", "GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(xmp.gaps(own, {}, GOOGLE, with_date=True, corrects=False), {xmp.DESCRIPTION: "A made-up square"})
+        self.assertEqual(set(xmp.gaps({}, {}, GOOGLE, with_date=True, corrects=False)), {xmp.LATITUDE, xmp.LONGITUDE, xmp.CREATED, xmp.DESCRIPTION})
+
+    def test_a_wall_clock_in_a_daylight_saving_overlap_is_judged_against_both_possible_instants(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:11:03 01:30:00", "GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
+        near = xmp.GoogleMetadata(None, None, 1572796800.0, None)
+        self.assertNotIn(xmp.CREATED, xmp.gaps(own, {}, near, with_date=False))
+        far = xmp.GoogleMetadata(None, None, 1572796800.0 + 5 * 3600, None)
+        self.assertIn(xmp.CREATED, xmp.gaps(own, {}, far, with_date=False))
+        unambiguous = {**own, "ExifIFD:DateTimeOriginal": "2019:11:04 01:30:00"}
+        self.assertIn(xmp.CREATED, xmp.gaps(unambiguous, {}, near, with_date=False))
+
+    def test_a_date_correction_takes_the_zone_of_the_files_own_offset_when_no_position_is_known(self):
+        own = {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20", "ExifIFD:OffsetTimeOriginal": "-05:00"}
+        google = xmp.GoogleMetadata(None, None, float(TAKEN), None)
+        self.assertEqual(xmp.gaps(own, {}, google, with_date=False), {xmp.CREATED: "2019:07:04 07:30:15-05:00"})
+
+    def test_a_date_google_has_over_14_hours_from_the_files_own_instant_is_written(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:07:04 12:30:15", "ExifIFD:OffsetTimeOriginal": "-05:00"}
+        self.assertNotIn(xmp.CREATED, xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN + 50400), None), with_date=False))
+        self.assertIn(xmp.CREATED, xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN + 99999), None), with_date=False))
+
+    def test_a_date_within_14_hours_of_the_files_own_is_not_a_correction(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:07:04 08:30:15"}
+        self.assertEqual(xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=True), {})
+
+    def test_a_date_correction_leaves_an_existing_sidecar_date_alone(self):
+        own = {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}
+        existing = {"XMP-photoshop:DateCreated": "2001:01:01 00:00:00"}
+        self.assertEqual(xmp.gaps(own, existing, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=False), {})
 
     def test_a_create_date_alone_is_no_capture_date_for_a_still_but_is_for_a_video(self):
         scanned = {"ExifIFD:CreateDate": "2020:02:09 12:47:20"}
@@ -61,7 +145,7 @@ class GapsTests(unittest.TestCase):
         self.assertTrue(xmp.has_date(scanned, still=False))
         self.assertTrue(xmp.has_date({**scanned, "ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}, still=True))
         self.assertEqual(xmp.gaps(scanned, {}, GOOGLE, with_date=True, still=True)[xmp.CREATED], "2019:07:04 14:30:15+02:00")
-        self.assertNotIn(xmp.CREATED, xmp.gaps(scanned, {}, GOOGLE, with_date=True, still=False))
+        self.assertNotIn(xmp.CREATED, xmp.gaps({"ExifIFD:CreateDate": "2019:07:04 12:30:15"}, {}, GOOGLE, with_date=True, still=False))
 
     def test_fields_an_existing_sidecar_has_are_left_alone(self):
         existing = {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0, "XMP-photoshop:DateCreated": "2001:01:01 00:00:00", "XMP-dc:Description": "kept"}
@@ -125,8 +209,41 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(xmp.changes({}, {}, self.OLD, self.NEW), {})
 
     def test_a_value_the_file_itself_carries_is_left_alone(self):
-        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "IFD0:ImageDescription": "mine"}
-        self.assertEqual(xmp.changes(own, self.WROTE, self.OLD, self.NEW), {})
+        own = {"GPS:GPSLatitude": 45.5, "GPS:GPSLongitude": 12.4, "IFD0:ImageDescription": "mine"}
+        self.assertEqual(xmp.changes(own, {"XMP-dc:Description": "Old words"}, self.OLD, self.NEW), {})
+
+    def test_a_new_place_that_differs_from_the_files_own_replaces_the_one_darkroom_wrote(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(set(xmp.changes(own, self.WROTE, self.OLD, self.NEW)) & {xmp.LATITUDE, xmp.LONGITUDE}, {xmp.LATITUDE, xmp.LONGITUDE})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}, self.OLD, self.NEW) & {xmp.LATITUDE}, {xmp.LATITUDE})
+
+    def test_a_place_restored_to_the_files_own_replaces_the_correction_darkroom_wrote(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        corrected = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)
+        restored = xmp.GoogleMetadata(lat=1.0, lon=2.0, taken_utc=None, description=None)
+        wrote = {"XMP-exif:GPSLatitude": 45.4, "XMP-exif:GPSLongitude": 12.3}
+        self.assertEqual(xmp.changes(own, wrote, corrected, restored), {xmp.LATITUDE: "1.0000000", xmp.LONGITUDE: "2.0000000"})
+        self.assertEqual(xmp.changes(own, {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0}, corrected, restored), {})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 1.0, "XMP-exif:GPSLongitude": 2.0}, corrected, restored), {xmp.LATITUDE, xmp.LONGITUDE})
+        self.assertEqual(xmp.applied(own, wrote, corrected, restored), frozenset())
+
+    def test_a_place_corrected_after_one_that_equalled_the_files_own_is_written_to_a_sidecar_without_one(self):
+        own = {"GPS:GPSLatitude": 45.4, "GPS:GPSLongitude": 12.3}
+        same = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)
+        moved = xmp.GoogleMetadata(lat=48.8, lon=2.3, taken_utc=None, description=None)
+        self.assertEqual(xmp.changes(own, {}, same, moved), {xmp.LATITUDE: "48.8000000", xmp.LONGITUDE: "2.3000000"})
+        self.assertEqual(xmp.changes(own, {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0}, same, moved), {})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 48.8, "XMP-exif:GPSLongitude": 2.3}, same, moved), {xmp.LATITUDE, xmp.LONGITUDE})
+
+    def test_a_borrowed_sidecar_refreshes_only_a_place_the_file_lacks(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(xmp.changes(own, self.WROTE, self.OLD, self.NEW, corrects=False), {xmp.DESCRIPTION: "New words"})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}, self.OLD, self.NEW, corrects=False), frozenset())
+        self.assertEqual(set(xmp.changes({}, self.WROTE, self.OLD, self.NEW, corrects=False)), {xmp.DESCRIPTION, xmp.LATITUDE, xmp.LONGITUDE})
+
+    def test_a_new_place_is_not_written_where_the_sidecar_has_none_and_the_file_has_its_own(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(xmp.changes(own, {}, self.OLD, self.NEW), {})
 
     def test_only_the_changed_field_is_written(self):
         same_place = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description="New words")
@@ -186,10 +303,10 @@ class ChangesTests(unittest.TestCase):
 
     def test_nothing_counts_as_applied_unless_google_changed_it_and_the_sidecar_holds_the_new_value(self):
         refreshed = {"XMP-dc:Description": "New words", "XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}
-        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0, "IFD0:ImageDescription": "mine"}
+        own = {"GPS:GPSLatitude": 45.5, "GPS:GPSLongitude": 12.4, "IFD0:ImageDescription": "mine"}
         self.assertEqual(xmp.applied({}, self.WROTE, self.OLD, self.NEW), frozenset())
         self.assertEqual(xmp.applied({}, refreshed, self.NEW, self.NEW), frozenset())
-        self.assertEqual(xmp.applied(own, refreshed, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied(own, {"XMP-dc:Description": "New words"}, self.OLD, self.NEW), frozenset())
         self.assertEqual(xmp.applied({}, {}, self.OLD, self.NEW), frozenset())
 
 
@@ -239,10 +356,17 @@ class FillTests(Folder):
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.jpg", "a.jpg.xmp"])
 
     def test_a_file_with_everything_gets_no_sidecar(self):
-        photo = fixtures.make_jpeg(self.folder / "a.jpg", taken="2019:07:04 12:30:15", gps=(1.0, 2.0))
+        photo = fixtures.make_jpeg(self.folder / "a.jpg", taken="2019:07:04 12:30:15", gps=(45.4340, 12.3388))
         fixtures.set_tags(photo, {"ImageDescription": "mine"})
         self.assertFalse(xmp.fill(photo, GOOGLE, with_date=True))
         self.assertFalse((self.folder / "a.jpg.xmp").exists())
+
+    def test_a_borrowed_sidecar_writes_nothing_over_the_files_own_place_and_date(self):
+        photo = fixtures.make_jpeg(self.folder / "a.jpg", taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        fixtures.set_tags(photo, {"ImageDescription": "mine"})
+        self.assertFalse(xmp.fill(photo, GOOGLE, with_date=True, corrects=False))
+        self.assertFalse((self.folder / "a.jpg.xmp").exists())
+        self.assertTrue(xmp.fill(photo, GOOGLE, with_date=True))
 
     def test_a_still_dated_only_by_create_date_gets_the_google_date(self):
         photo = fixtures.make_jpeg(self.folder / "a.jpg")
