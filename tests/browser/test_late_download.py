@@ -128,10 +128,10 @@ class LiveTabsTests(unittest.TestCase):
         browser.watch_downloads()
         self.assertEqual(len(browser.tabs()), 1)
 
-    def click_that_times_out(self, selector=CLICK_1.selector):
+    def click_that_times_out(self, part=CLICK_1):
         self.main.expect_download = lambda timeout: TimedOut()
         with self.assertRaises(TimeoutError):
-            self.browser.start_download(selector, PartClick(selector, CLICK_1.href, CLICK_1.number))
+            self.browser.start_download(part.selector, part)
 
     def arrives(self, url=PART_1, page=None, name=None):
         (self.downloads / "guid").write_bytes(b"part")
@@ -237,7 +237,7 @@ class LiveTabsTests(unittest.TestCase):
         self.assert_not_kept(PART_1, click=False)
 
     def test_a_download_after_a_click_on_another_link_is_not_kept(self):
-        self.click_that_times_out('a[href="takeout/download?j=export-1&i=1&user=made-up"]')
+        self.click_that_times_out(PartClick('a[href="takeout/download?j=export-1&i=1&user=made-up"]', PART_2, 2))
         self.assert_not_kept(PART_1, click=False)
 
     def test_this_parts_download_is_kept_and_another_one_is_cancelled(self):

@@ -231,7 +231,8 @@ class DownloadBrowser:
 
     def drop_strays(self):
         self.strays += 1
-        arrived = [number for number, due in self.late.items() if self.clock.now >= due]
+        last = self.downloaded[-1] if self.downloaded else None
+        arrived = [number for number, due in self.late.items() if due is not None and self.clock.now >= due and number != last]
         for number in arrived:
             del self.late[number]
             self.cancelled.append(number)

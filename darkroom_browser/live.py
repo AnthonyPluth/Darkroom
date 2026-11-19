@@ -34,6 +34,7 @@ class Live:
         self.clicked: str | None = None
         self.flights: dict[str, Any] = {}
         self.before_click: set[str] = set()
+        self.last_click: PartClick | None = None
 
     def watch_downloads(self) -> None:
         if self.context is None:
@@ -126,7 +127,7 @@ class Live:
         if self.downloads is None:
             raise DownloadInterrupted("staggered downloads need Chromium's download folder")
         before = self.stems()
-        self.clicked, self.before_click = selector, before
+        self.clicked, self.before_click, self.last_click = selector, before, part
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
             self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
         download = started.value
@@ -176,7 +177,10 @@ class Live:
             remove_download(self.downloads, handle)
 
     def drop_strays(self) -> int:
-        strays, self.arrived = self.arrived, []
+        last = self.last_click
+        own = [each for each in self.arrived if last is not None and self.is_from(each, last)]
+        strays = [each for each in self.arrived if not any(each is mine for mine in own)]
+        self.arrived = own
         for stray in strays:
             with contextlib.suppress(Exception):
                 stray.cancel()

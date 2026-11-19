@@ -50,6 +50,14 @@ class Expecting:
         return self.tab.started[-1]
 
 
+class TimedOutClick:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        raise TimeoutError("no download within 30 seconds")
+
+
 class StaggerTab(Tab):
     def __init__(self, clock, folder):
         super().__init__(clock, folder, "https://takeout.google.com/manage/archive/x", "<h1>Takeout</h1>")
@@ -236,6 +244,20 @@ class LiveStaggerTests(unittest.TestCase):
                 with self.assertRaises(download.DownloadsFolderRefused):
                     download.remove_download(folder, "guid-1")
                 self.assertTrue((folder / "guid-1").is_file())
+
+    def test_dropping_strays_keeps_a_late_download_of_the_part_last_clicked_and_cancels_the_rest(self):
+        self.tab.expect_download = lambda timeout: TimedOutClick()
+        self.tab.file_after_polls = 1000
+        with self.assertRaises(TimeoutError):
+            self.browser.start_download(CLICK_1.selector, CLICK_1)
+        own = Download(self.downloads, "guid-late-1", REDIRECTED_1, "takeout-20261102T031000Z-001.zip", self.tab)
+        other = Download(self.downloads, "guid-late-2", REDIRECTED_2, "takeout-20261102T031000Z-002.zip", self.tab)
+        self.tab.emit("download", own)
+        self.tab.emit("download", other)
+        self.assertEqual(self.browser.drop_strays(), 1)
+        self.assertEqual((own.cancelled, other.cancelled), (False, True))
+        (self.downloads / "guid-late-1.crdownload").write_bytes(b"l")
+        self.assertEqual(self.browser.late_download(CLICK_1), "guid-late-1")
 
     def test_a_late_download_is_kept_only_for_the_part_last_clicked(self):
         self.browser.clicked = CLICK_1.selector

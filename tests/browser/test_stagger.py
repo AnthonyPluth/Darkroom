@@ -102,7 +102,12 @@ class StaggerBrowser(DownloadBrowser):
 
     def drop_strays(self):
         self.strays += 1
-        return 0
+        last = self.downloaded[-1] if self.downloaded else None
+        arrived = [number for number, due in self.late.items() if due is not None and self.clock.now >= due and number != last]
+        for number in arrived:
+            del self.late[number]
+            self.cancelled.append(number)
+        return len(arrived)
 
 
 class StaggerWorld(DownloadWorld):
@@ -279,6 +284,34 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(browser.collected, [2])
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+
+    def test_a_requeued_parts_own_late_download_arriving_while_it_waits_behind_a_part_in_flight_is_kept(self):
+        browser = StaggerBrowser(["ok", "unrecognised", "ok", "ok"], self.clock)
+        original = browser.start_download
+
+        def arriving_after_the_back_off(selector, part):
+            if part.number == 2 and 2 not in browser.downloaded:
+                browser.late[2] = self.clock.now + download.BACKOFF_SECONDS + 2 * MINUTE
+            return original(selector, part)
+
+        browser.start_download = arriving_after_the_back_off
+        self.run_job(browser)
+        self.assertEqual((browser.downloaded, browser.collected, browser.cancelled), ([1, 2, 3], [2], []))
+        self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 2: not_started"])
+
+    def test_a_late_download_delivered_during_the_sign_in_check_after_a_prompt_is_kept(self):
+        browser = StaggerBrowser(["verify", "ok", "ok"], self.clock)
+        original = browser.goto
+
+        def goto(url):
+            original(url)
+            if url == selectors.TAKEOUT_URL and browser.downloaded == [1] and 1 not in browser.collected:
+                browser.late[1] = self.clock.now
+
+        browser.goto = goto
+        self.run_job(browser)
+        self.assertEqual((browser.downloaded, browser.collected, browser.cancelled), ([1, 2, 3], [1], []))
+        self.assertEqual(self.parts()[0], ("done", 2, 1))
 
     def test_a_click_that_never_starts_is_not_started_after_the_back_off(self):
         browser = StaggerBrowser(["ok", "unrecognised", "ok", "ok"], self.clock)
