@@ -114,14 +114,20 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES))
 
 
+def place_refreshable(own: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> bool:
+    if new.lat is None or new.lon is None or media.same_place(new.lat, new.lon, old.lat, old.lon):
+        return False
+    return old.lat is not None or place_set_by_google(own, new.lat, new.lon)
+
+
 def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> dict[str, str]:
     fields: dict[str, str] = {}
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and new.description is not None and media.text(media.tag(existing, "Description")) == old.description:
         fields[DESCRIPTION] = new.description
-    if new.lat is not None and new.lon is not None and not media.same_place(new.lat, new.lon, old.lat, old.lon) and place_set_by_google(own, new.lat, new.lon):
+    if place_refreshable(own, old, new):
         lat, lon, _ = media.location(existing)
-        if media.same_place(lat, lon, old.lat, old.lon):
+        if new.lat is not None and new.lon is not None and media.same_place(lat, lon, old.lat, old.lon):
             fields[LATITUDE], fields[LONGITUDE] = f"{new.lat:.7f}", f"{new.lon:.7f}"
     return fields
 
@@ -171,9 +177,9 @@ def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and media.text(media.tag(existing, "Description")) == new.description:
         done.add(DESCRIPTION)
-    if new.lat is not None and new.lon is not None and not media.same_place(new.lat, new.lon, old.lat, old.lon) and place_set_by_google(own, new.lat, new.lon):
+    if place_refreshable(own, old, new):
         lat, lon, _ = media.location(existing)
-        if media.same_place(lat, lon, new.lat, new.lon):
+        if new.lat is not None and new.lon is not None and media.same_place(lat, lon, new.lat, new.lon):
             done.update((LATITUDE, LONGITUDE))
     return frozenset(done)
 

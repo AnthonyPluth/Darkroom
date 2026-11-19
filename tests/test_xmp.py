@@ -151,12 +151,22 @@ class ChangesTests(unittest.TestCase):
 
     def test_a_value_the_file_itself_carries_is_left_alone(self):
         own = {"GPS:GPSLatitude": 45.5, "GPS:GPSLongitude": 12.4, "IFD0:ImageDescription": "mine"}
-        self.assertEqual(xmp.changes(own, self.WROTE, self.OLD, self.NEW), {})
+        self.assertEqual(xmp.changes(own, {"XMP-dc:Description": "Old words"}, self.OLD, self.NEW), {})
 
     def test_a_new_place_that_differs_from_the_files_own_replaces_the_one_darkroom_wrote(self):
         own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
         self.assertEqual(set(xmp.changes(own, self.WROTE, self.OLD, self.NEW)) & {xmp.LATITUDE, xmp.LONGITUDE}, {xmp.LATITUDE, xmp.LONGITUDE})
         self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 45.5, "XMP-exif:GPSLongitude": 12.4}, self.OLD, self.NEW) & {xmp.LATITUDE}, {xmp.LATITUDE})
+
+    def test_a_place_restored_to_the_files_own_replaces_the_correction_darkroom_wrote(self):
+        own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        corrected = xmp.GoogleMetadata(lat=45.4, lon=12.3, taken_utc=None, description=None)
+        restored = xmp.GoogleMetadata(lat=1.0, lon=2.0, taken_utc=None, description=None)
+        wrote = {"XMP-exif:GPSLatitude": 45.4, "XMP-exif:GPSLongitude": 12.3}
+        self.assertEqual(xmp.changes(own, wrote, corrected, restored), {xmp.LATITUDE: "1.0000000", xmp.LONGITUDE: "2.0000000"})
+        self.assertEqual(xmp.changes(own, {"XMP-exif:GPSLatitude": 9.0, "XMP-exif:GPSLongitude": 9.0}, corrected, restored), {})
+        self.assertEqual(xmp.applied(own, {"XMP-exif:GPSLatitude": 1.0, "XMP-exif:GPSLongitude": 2.0}, corrected, restored), {xmp.LATITUDE, xmp.LONGITUDE})
+        self.assertEqual(xmp.applied(own, wrote, corrected, restored), frozenset())
 
     def test_a_new_place_is_not_written_where_the_sidecar_has_none_and_the_file_has_its_own(self):
         own = {"GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
@@ -223,7 +233,7 @@ class ChangesTests(unittest.TestCase):
         own = {"GPS:GPSLatitude": 45.5, "GPS:GPSLongitude": 12.4, "IFD0:ImageDescription": "mine"}
         self.assertEqual(xmp.applied({}, self.WROTE, self.OLD, self.NEW), frozenset())
         self.assertEqual(xmp.applied({}, refreshed, self.NEW, self.NEW), frozenset())
-        self.assertEqual(xmp.applied(own, refreshed, self.OLD, self.NEW), frozenset())
+        self.assertEqual(xmp.applied(own, {"XMP-dc:Description": "New words"}, self.OLD, self.NEW), frozenset())
         self.assertEqual(xmp.applied({}, {}, self.OLD, self.NEW), frozenset())
 
 
