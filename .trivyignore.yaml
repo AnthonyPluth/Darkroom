@@ -7,10 +7,6 @@
 #   "Add ignore-file support to fleet (Recommended)"
 #   "Since darkroom isn't deployed, let's just merge with these CVEs and fix when fleet bump is merged in so we can keep moving"
 # Scope: this one CVE, this one path, until a fixed Syncthing is pinned or the entry expires, whichever comes first.
-#
-# CVE-2026-97054: the owner's acceptance is recorded on #470 (the pull request that adds the entry), where the owner confirms it.
-# Scope: this one CVE, this one path, until a Syncthing release built with Go 1.27.4 or later is pinned or the entry expires,
-# whichever comes first.
 vulnerabilities:
   - id: CVE-2026-78661
     paths:
@@ -24,5 +20,5 @@ vulnerabilities:
       - usr/local/bin/syncthing
     purls:
       - pkg:golang/stdlib
-    statement: "Accepted by the owner (decision relayed in a session on 2026-11-19, confirmation recorded on #470) until a Syncthing release built with Go 1.27.4 or later is pinned: the pinned Syncthing v2.1.7 (the newest release as of 2026-11-19) embeds Go stdlib v1.27.3, and the CVE is fixed in Go 1.26.11 and 1.27.4; the repository shows Darkroom's own web server is Python's, Syncthing's API is only on a private 0600 Unix socket and its sync listeners are 22000 TCP and QUIC, but whether Syncthing's code reaches the affected net/http path from an untrusted party is not verified."
+    statement: "Until a Syncthing release built with Go 1.27.4 or later is pinned (v2.1.7 is the newest release as of 2026-11-19 and embeds Go stdlib v1.27.3): in Syncthing's v2.1.7 source the only http.MaxBytesReader is the GUI login handler (lib/api/api_auth.go), served by the GUI/REST server that darkroom_init/syncthing.py puts only on a private 0600 Unix socket; the 22000 TCP and QUIC listeners carry Syncthing's own sync protocol, not HTTP (lib/connections imports no net/http); its other net/http servers (a temporary database-migration page on the GUI address and a profiler that only STPROFILER starts, which the init never sets) read no request body; global discovery, relays, NAT traversal, crash and usage reporting and automatic upgrades are off, so its outbound HTTP clients are unused."
     expired_at: 2027-02-14
