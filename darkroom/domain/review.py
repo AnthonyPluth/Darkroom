@@ -288,14 +288,19 @@ def thumb(opened: Session, photos: Photos, review_id: int, side: str, preview: t
     return thumbs.thumbnail(photos, slug, path, preview)
 
 
-def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path: str) -> tuple[Path | None, Path | None]:
+def staged_pairing(opened: Session, photos: Photos, export: Export, source_path: str) -> tuple[Path | None, TakeoutItem | None]:
     staged = cleanup.staged_copy(opened, photos, export, source_path)
     if staged is None:
         return None, None
     for item in pairing.pair(staged.parent).items:
         if item.path == staged:
-            return staged, item.sidecar
+            return staged, item
     return staged, None
+
+
+def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path: str) -> tuple[Path | None, Path | None]:
+    staged, item = staged_pairing(opened, photos, export, source_path)
+    return staged, None if item is None else item.sidecar
 
 
 def staged_text(photos: Photos, path: Path) -> str | None:
@@ -308,10 +313,13 @@ def staged_text(photos: Photos, path: Path) -> str | None:
 
 
 def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_id: int, now: float, read: xmp.Reader) -> tuple[TakeoutItem, MediaItem]:
-    staged, found_sidecar = (None, None) if hit.decision.source_path is None else staged_sidecar(opened, photos, hit.export, hit.decision.source_path)
+    staged, paired = (None, None) if hit.decision.source_path is None else staged_pairing(opened, photos, hit.export, hit.decision.source_path)
+    found_sidecar = None if paired is None else paired.sidecar
     text = None if found_sidecar is None else staged_text(photos, found_sidecar)
-    parsed = (sidecar.parse(text) if text else None) or (sidecar.parse(hit.review.sidecar_json) if hit.review.sidecar_json else None)
-    item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
+    staged_parsed = sidecar.parse(text) if text else None
+    parsed = staged_parsed or (sidecar.parse(hit.review.sidecar_json) if hit.review.sidecar_json else None)
+    from_still = paired is not None and paired.sidecar_from_still if staged_parsed is not None else hit.review.sidecar_from_still
+    item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar, sidecar_from_still=from_still)
     with paths.pinned_inbox_files(photos, [hold]) as pinned:
         if hold not in pinned:
             raise WrongState("the held copy is a link or not a plain file, so it was not kept")

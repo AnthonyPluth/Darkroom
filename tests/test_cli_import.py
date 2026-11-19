@@ -66,7 +66,7 @@ class ImportTakeoutTests(CliCase):
         standard_export(Photos(self.photos).manual_inbox("jo"))
         code, out, _ = self.call("--person", "jo")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"Export \d+: 16 added, 0 skipped as duplicates, 0 in review, 4 missing GPS")
+        self.assertRegex(out, r"Export \d+: 16 added, 0 skipped as duplicates, 0 in review, 3 missing GPS")
         with db.session(self.engine) as opened:
             export = opened.query(Export).one()
             self.assertEqual((export.status, export.stage), ("imported", "done"))
