@@ -174,7 +174,7 @@ def staged_sidecar(photos: Photos, path: Path) -> tuple[sidecar.Sidecar | None, 
     try:
         with paths.open_inbox_file(photos, path) as handle:
             decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
-    except (OSError, paths.OutsideRoot):
+    except paths.OutsideRoot:
         return None, "unreadable"
     parsed = None if decoded is None else sidecar.parse(decoded.text)
     if decoded is None or parsed is None:
@@ -435,6 +435,10 @@ def left_out_of(run: ImportRun) -> str:
         text += f", {run.orphan_sidecars} {'sidecar' if run.orphan_sidecars == 1 else 'sidecars'} matched no file"
     if run.unpaired_media:
         text += f", {run.unpaired_media} without a sidecar"
+    if run.sidecars_unreadable:
+        text += f", {run.sidecars_unreadable} {'sidecar' if run.sidecars_unreadable == 1 else 'sidecars'} could not be read, so imported without Google metadata"
+    if run.sidecars_repaired:
+        text += f", {run.sidecars_repaired} {'sidecar' if run.sidecars_repaired == 1 else 'sidecars'} read with characters replaced"
     return text
 
 

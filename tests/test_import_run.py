@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import alerts, dedupe, media
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, run, sidecar, unpack
-from darkroom.storage import locks
+from darkroom.storage import locks, paths
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, Person, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
 from tests.privacy import no_leaks
@@ -602,6 +602,39 @@ class BadSidecarTests(unittest.TestCase):
         self.assertEqual(set(placed), set(cases))
         self.assertEqual([name for name, row in placed.items() if row.time_source == "sidecar" or row.lat is not None or row.sidecar_json is not None], [])
         self.assertFalse(self.world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars().all())
+        self.assertTrue(self.import_done().endswith(", 6 sidecars could not be read, so imported without Google metadata"), self.import_done())
+
+    def import_done(self):
+        return self.world.opened.execute(select(Event).where(Event.type == "import_done")).scalar_one().detail
+
+    def test_the_import_done_event_names_both_counts_in_fixed_words_and_the_summary_alert_is_unchanged(self):
+        done = self.world.run_import(self.export_with({"IMG_4801.JPG": lambda raw: raw[:10], "IMG_4802.JPG": lambda raw: raw.replace(b"CAPTION", b"\xe9"),
+                                                       "IMG_4803.JPG": lambda raw: raw.replace(b"CAPTION", b"\xe9")}))
+        self.assertEqual((done.sidecars_unreadable, done.sidecars_repaired), (1, 2))
+        self.assertTrue(self.import_done().endswith(", 1 sidecar could not be read, so imported without Google metadata, 2 sidecars read with characters replaced"),
+                        self.import_done())
+        summaries = [message for title, message in self.world.recorder.sent if title == SUMMARY]
+        self.assertEqual(len(summaries), 1)
+        self.assertNotIn("sidecar", summaries[0])
+
+    def test_a_clean_run_adds_no_sidecar_words_to_the_event(self):
+        self.world.run_import(self.export_with({"IMG_4901.JPG": lambda raw: raw}))
+        self.assertNotIn("sidecar", self.import_done())
+
+    def test_an_error_reading_the_sidecar_is_a_failed_item_not_a_photo_without_metadata(self):
+        export = self.export_with({"IMG_5001.JPG": lambda raw: raw, "IMG_5002.JPG": lambda raw: raw})
+        real = paths.open_inbox_file
+
+        def failing(photos, path):
+            if path.name == "IMG_5001.JPG.json":
+                raise OSError(5, "made-up I/O error")
+            return real(photos, path)
+
+        with mock.patch.object(paths, "open_inbox_file", side_effect=failing):
+            done = self.world.run_import(export)
+        self.assertEqual((done.added, done.failed, done.sidecars_unreadable), (1, 1, 0))
+        failures = self.world.opened.execute(select(Event.detail).where(Event.type == "import_item_failed")).scalars().all()
+        self.assertEqual(failures, ["metadata: OSError"])
 
     def test_a_sidecar_up_to_the_limit_is_still_read(self):
         def padded(raw):
