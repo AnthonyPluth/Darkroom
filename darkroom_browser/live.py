@@ -2,23 +2,21 @@ from __future__ import annotations
 
 import contextlib
 import shutil
-import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from darkroom_browser import monitoring, selectors
 from darkroom_browser.config import env
 from darkroom_browser.context import DownloadInterrupted, Look, PartClick
-from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
+from darkroom_browser.jobs.download import downloads_folder, remove_download, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
 from darkroom_browser.pages import takeout
-from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
+from darkroom_browser.stall import IN_PROGRESS_SUFFIX, FolderState, file_state
 
 DEFAULT_TIMEOUT_MS = 30_000
-PROGRESS_SECONDS = 30.0
 MAX_OPENERS = 8
-CANCELLED = "canceled"
+FILE_WAIT_MS = 10_000
+FILE_POLL_MS = 200
 
 
 class NotTypeable(ValueError):
@@ -26,16 +24,17 @@ class NotTypeable(ValueError):
 
 
 class Live:
-    def __init__(self, page: Any, context: Any = None, playwright: Any = None, downloads: Path | None = None, profile: Path | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, page: Any, context: Any = None, playwright: Any = None, downloads: Path | None = None, profile: Path | None = None) -> None:
         self.page = page
         self.context = context
         self.playwright = playwright
         self.downloads = downloads
         self.profile = profile
-        self.clock = clock
         self.arrived: list[Any] = []
         self.clicked: str | None = None
+        self.flights: dict[str, Any] = {}
+        self.before_click: set[str] = set()
+        self.last_click: PartClick | None = None
 
     def watch_downloads(self) -> None:
         if self.context is None:
@@ -56,11 +55,6 @@ class Live:
 
     def tabs(self) -> list[Look]:
         return [Look(str(page.url), read_page(page), page is self.page) for page in self.open_pages()]
-
-    def download_started(self) -> bool:
-        if self.arrived:
-            return True
-        return self.downloads is not None and folder_state(self.downloads).files > 0
 
     def goto(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
@@ -88,36 +82,6 @@ class Live:
         found = self.page.eval_on_selector_all(selector, "links => links.map(link => link.href)")
         return [each if isinstance(each, str) else "" for each in found]
 
-    def download_to(self, selector: str, folder: Path, progress: Callable[[int], None] | None = None) -> Path:
-        folder.mkdir(parents=True, exist_ok=True)
-        self.arrived.clear()
-        self.clicked = selector
-        with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
-            self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
-        download = started.value
-        self.arrived[:] = [each for each in self.arrived if each is not download]
-        return self.keep(download, folder, progress)
-
-    def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path:
-        folder.mkdir(parents=True, exist_ok=True)
-        if not self.arrived and self.downloads is not None:
-            watch = StallWatch(self.clock())
-            while not self.arrived and watch.judge(self.clock(), folder_state(self.downloads)) is Verdict.WAIT:
-                self.page.wait_for_timeout(POLL_MS)
-        if not self.arrived:
-            self.sweep()
-            raise DownloadInterrupted("a download appeared in Chromium's folder without Playwright's event")
-        arrived, self.arrived = self.arrived, []
-        own = [each for each in arrived if self.is_from(each, part)]
-        for other in arrived:
-            if other is not (own[0] if own else None):
-                with contextlib.suppress(Exception):
-                    other.cancel()
-        if not own:
-            self.sweep()
-            raise DownloadInterrupted("a download started by itself, but it was not this part's from Takeout")
-        return self.keep(own[0], folder, progress)
-
     def is_from(self, download: Any, part: PartClick) -> bool:
         if self.clicked != part.selector or not self.started_in_own_tab(download):
             return False
@@ -136,57 +100,93 @@ class Live:
                 return False
         return False
 
-    def sweep(self) -> None:
-        if self.downloads is not None:
-            sweep_downloads(self.downloads)
-
-    def keep(self, download: Any, folder: Path, progress: Callable[[int], None] | None) -> Path:
-        target = folder / Path(download.suggested_filename).name
-        self.wait_for_download(download, progress)
-        shutil.move(download.path(), target)
-        return target
-
-    def wait_for_download(self, download: Any, progress: Callable[[int], None] | None) -> None:
+    def stems(self) -> set[str]:
         if self.downloads is None:
-            self.raise_if_failed(download)
-            return
-        started = self.clock()
-        watch = StallWatch(started)
-        reported = started
+            return set()
+        found = set()
+        for each in self.downloads.iterdir():
+            if each.is_symlink() or not each.is_file():
+                continue
+            found.add(each.name.removesuffix(IN_PROGRESS_SUFFIX))
+        return found
+
+    def own_file(self, download: Any, before: set[str]) -> str:
+        waited = 0
         while True:
-            now = self.clock()
-            state = folder_state(self.downloads)
-            verdict = watch.judge(now, state)
-            if verdict is not Verdict.WAIT:
-                break
-            if progress is not None and now - reported >= PROGRESS_SECONDS:
-                reported = now
+            new = self.stems() - before - set(self.flights)
+            if len(new) == 1:
+                return new.pop()
+            if len(new) > 1 or waited >= FILE_WAIT_MS:
                 with contextlib.suppress(Exception):
-                    progress(state.size)
-            self.page.wait_for_timeout(POLL_MS)
-        if verdict is Verdict.STALLED:
-            self.cancel_stalled(download)
-        else:
-            self.raise_if_failed(download)
+                    download.cancel()
+                raise DownloadInterrupted("Darkroom could not tell which file in Chromium's download folder is this part's")
+            self.page.wait_for_timeout(FILE_POLL_MS)
+            waited += FILE_POLL_MS
 
-    def cancel_stalled(self, download: Any) -> None:
-        with contextlib.suppress(Exception):
-            download.cancel()
-        failure = download.failure()
-        if failure is None:
-            return
-        if self.downloads is not None:
-            sweep_downloads(self.downloads)
-        if str(failure) == CANCELLED:
-            raise DownloadInterrupted(f"no data arrived for {int(STALL_SECONDS)} seconds")
-        raise DownloadInterrupted(str(failure)[:200])
+    def start_download(self, selector: str, part: PartClick) -> str:
+        if self.downloads is None:
+            raise DownloadInterrupted("staggered downloads need Chromium's download folder")
+        before = self.stems()
+        self.clicked, self.before_click, self.last_click = selector, before, part
+        with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
+            self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
+        download = started.value
+        self.arrived[:] = [each for each in self.arrived if each is not download]
+        handle = self.own_file(download, before)
+        self.flights[handle] = download
+        self.last_click = None
+        return handle
 
-    def raise_if_failed(self, download: Any) -> None:
+    def late_download(self, part: PartClick) -> str | None:
+        own = [each for each in self.arrived if self.is_from(each, part)]
+        if not own:
+            return None
+        self.arrived[:] = [each for each in self.arrived if each is not own[0]]
+        handle = self.own_file(own[0], self.before_click)
+        self.flights[handle] = own[0]
+        self.last_click = None
+        return handle
+
+    def download_state(self, handle: str) -> FolderState:
+        if self.downloads is None:
+            return FolderState(0, 0, False)
+        return file_state(self.downloads, handle)
+
+    def keep_download(self, handle: str, folder: Path) -> Path:
+        download = self.flights.pop(handle)
+        folder.mkdir(parents=True, exist_ok=True)
         failure = download.failure()
         if failure is not None:
-            if self.downloads is not None:
-                sweep_downloads(self.downloads)
+            self.remove_files(handle)
             raise DownloadInterrupted(str(failure)[:200])
+        source = Path(download.path())
+        if source.name != handle:
+            self.remove_files(handle)
+            raise DownloadInterrupted("Chromium saved this part's download under another file")
+        target = folder / Path(download.suggested_filename).name
+        shutil.move(source, target)
+        return target
+
+    def cancel_download(self, handle: str) -> None:
+        download = self.flights.pop(handle, None)
+        if download is not None:
+            with contextlib.suppress(Exception):
+                download.cancel()
+        self.remove_files(handle)
+
+    def remove_files(self, handle: str) -> None:
+        if self.downloads is not None:
+            remove_download(self.downloads, handle)
+
+    def drop_strays(self) -> int:
+        last = self.last_click
+        own = [each for each in self.arrived if last is not None and self.is_from(each, last)]
+        strays = [each for each in self.arrived if not any(each is mine for mine in own)]
+        self.arrived = own
+        for stray in strays:
+            with contextlib.suppress(Exception):
+                stray.cancel()
+        return len(strays)
 
     def screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

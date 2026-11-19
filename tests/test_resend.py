@@ -258,7 +258,7 @@ class PushPassTests(unittest.TestCase):
         self.assertEqual(self.alert().push_due, 0.0)
         self.assertEqual(self.push(pusher, 30.0), 1)
         self.assertEqual(self.push(pusher, 90.0), 0)
-        self.assertEqual(pusher.notes, [Note("Google sign-in needed", alert_push.OPEN_TEXT, "https://d.example", pusher.notes[0].key)])
+        self.assertEqual(pusher.notes, [Note("Google sign-in needed", alert_push.OPEN_TEXT, "https://d.example/browser", pusher.notes[0].key)])
         self.assertEqual(len(pusher.notes[0].key), 64)
         self.assertNotIn(EMAIL, repr(pusher.notes))
         self.assertEqual(self.recorded(), [("alert_sent", "sign_in_needed")])

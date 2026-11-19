@@ -1,9 +1,6 @@
-import tempfile
 import unittest
-from pathlib import Path
 
-from darkroom_browser import live, stall
-from darkroom_browser.context import DownloadInterrupted
+from darkroom_browser import stall
 from darkroom_browser.stall import FolderState, StallWatch, Verdict
 
 
@@ -52,49 +49,6 @@ class StallWatchTests(unittest.TestCase):
 
     def test_the_default_limit_is_five_minutes(self):
         self.assertEqual(stall.STALL_SECONDS, 300.0)
-
-
-class FolderStateTests(unittest.TestCase):
-    def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.folder = Path(folder.name)
-
-    def test_an_empty_folder(self):
-        self.assertEqual(stall.folder_state(self.folder), FolderState(0, 0, False))
-
-    def test_it_sums_regular_files_and_sees_chromiums_unfinished_marker(self):
-        (self.folder / "guid.crdownload").write_bytes(b"x" * 30)
-        (self.folder / "other").write_bytes(b"y" * 12)
-        self.assertEqual(stall.folder_state(self.folder), FolderState(42, 2, True))
-
-    def test_a_finished_file_has_no_marker(self):
-        (self.folder / "guid").write_bytes(b"x" * 30)
-        self.assertEqual(stall.folder_state(self.folder), FolderState(30, 1, False))
-
-    def test_links_and_folders_are_not_counted(self):
-        outside = self.folder / "outside"
-        outside.write_bytes(b"z" * 100)
-        inside = self.folder / "inside"
-        inside.mkdir()
-        (inside / "a-link").symlink_to(outside)
-        (inside / "a-folder").mkdir()
-        self.assertEqual(stall.folder_state(inside), FolderState(0, 0, False))
-
-
-    def test_a_file_renamed_between_listing_and_reading_is_skipped_not_an_error(self):
-        from unittest import mock
-
-        (self.folder / "guid.crdownload").write_bytes(b"x" * 30)
-        real = Path.stat
-
-        def vanishing(path, *args, **kwargs):
-            if path.name == "guid.crdownload":
-                raise FileNotFoundError(path)
-            return real(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "stat", vanishing):
-            self.assertEqual(stall.folder_state(self.folder), FolderState(0, 0, False))
 
 
 class FakeDownload:
@@ -162,132 +116,6 @@ class Clock:
 
     def __call__(self):
         return self.now
-
-
-class LiveDownloadTests(unittest.TestCase):
-    def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.downloads = Path(folder.name) / "downloads"
-        self.downloads.mkdir()
-        self.target = Path(folder.name) / "partial"
-        self.clock = Clock()
-
-    def browser(self, steps, **script):
-        page = FakePage(self.clock, self.downloads, steps, script)
-        return live.Live(page, downloads=self.downloads, clock=self.clock), page
-
-    def write(self, name, size):
-        (self.downloads / name).write_bytes(b"x" * size)
-
-    def finish(self):
-        (self.downloads / "guid.crdownload").rename(self.downloads / "guid")
-
-    def test_a_download_that_grows_then_finishes_is_moved_without_being_cancelled(self):
-        steps = [lambda i=i: self.write("guid.crdownload", 10 + i) for i in range(200)]
-        steps.append(self.finish)
-        browser, page = self.browser(steps, done=True)
-        (self.downloads / "guid.crdownload").write_bytes(b"whole")
-        path = browser.download_to("a", self.target)
-        self.assertEqual(path, self.target / "takeout-001.zip")
-        self.assertFalse(page.download.cancelled)
-        self.assertEqual(page.download.failures, 1)
-
-    def test_a_stalled_download_is_cancelled_on_the_job_thread_and_reported_interrupted(self):
-        steps = [lambda: self.write("guid.crdownload", 1000)]
-        browser, page = self.browser(steps, blocks=True)
-        with self.assertRaises(DownloadInterrupted) as raised:
-            browser.download_to("a", self.target)
-        self.assertIn("300 seconds", str(raised.exception))
-        self.assertTrue(page.download.cancelled)
-        self.assertGreaterEqual(self.clock.now - 1000.0, stall.STALL_SECONDS)
-        self.assertLess(self.clock.now - 1000.0, stall.STALL_SECONDS + 10)
-        self.assertEqual(list(self.downloads.iterdir()), [])
-        self.assertEqual(list(self.target.iterdir()), [])
-
-    def test_a_download_that_never_writes_a_byte_is_cancelled_too(self):
-        browser, page = self.browser([], blocks=True)
-        with self.assertRaises(DownloadInterrupted):
-            browser.download_to("a", self.target)
-        self.assertTrue(page.download.cancelled)
-
-    def test_a_download_that_finished_just_as_it_stalled_is_kept(self):
-        class Finished(FakeDownload):
-            def cancel(self):
-                (self.folder / "guid.crdownload").rename(self.folder / "guid")
-                super().cancel()
-
-            def failure(self):
-                return None
-
-        browser, page = self.browser([])
-        page.download = Finished(self.downloads, {"cancel_raises": True})
-        self.write("guid.crdownload", 5)
-        page.steps = [lambda: None]
-        path = browser.download_to("a", self.target)
-        self.assertEqual(path.name, "takeout-001.zip")
-        self.assertTrue(page.download.cancelled)
-
-    def test_a_download_chromium_already_failed_keeps_its_own_reason_when_the_wait_ends(self):
-        class Failed(FakeDownload):
-            def failure(self):
-                return "net::ERR_CONNECTION_RESET" + "!" * 400
-
-        browser, page = self.browser([])
-        page.download = Failed(self.downloads, {})
-        self.write("guid.crdownload", 5)
-        with self.assertRaises(DownloadInterrupted) as raised:
-            browser.download_to("a", self.target)
-        self.assertEqual(len(str(raised.exception)), 200)
-        self.assertTrue(str(raised.exception).startswith("net::ERR_CONNECTION_RESET"))
-        self.assertEqual(list(self.downloads.iterdir()), [])
-
-    def test_a_failure_chromium_reports_is_interrupted_with_its_text(self):
-        self.write("guid", 5)
-        browser, _page = self.browser([], error="net::ERR_CONNECTION_RESET" + "!" * 400, done=True)
-        with self.assertRaises(DownloadInterrupted) as raised:
-            browser.download_to("a", self.target)
-        self.assertEqual(len(str(raised.exception)), 200)
-        self.assertTrue(str(raised.exception).startswith("net::ERR_CONNECTION_RESET"))
-
-    def test_progress_is_reported_every_thirty_seconds_from_the_job_thread(self):
-        reports = []
-        steps = [lambda i=i: self.write("guid.crdownload", 100 + i) for i in range(40)]
-        steps.append(self.finish)
-        browser, _page = self.browser(steps, done=True)
-        browser.download_to("a", self.target, reports.append)
-        self.assertEqual(len(reports), 2)
-        self.assertEqual(reports, sorted(reports))
-        self.assertGreater(reports[0], 100)
-
-    def test_a_progress_callback_that_raises_does_not_stop_the_download(self):
-        def broken(size):
-            raise RuntimeError("darkroom is down")
-
-        steps = [lambda i=i: self.write("guid.crdownload", 100 + i) for i in range(40)]
-        steps.append(self.finish)
-        browser, _page = self.browser(steps, done=True)
-        self.assertEqual(browser.download_to("a", self.target, broken).name, "takeout-001.zip")
-
-    def test_without_a_downloads_folder_it_waits_on_chromium_as_before(self):
-        page = FakePage(self.clock, self.downloads, [], {"error": "boom"})
-        browser = live.Live(page)
-        with self.assertRaises(DownloadInterrupted):
-            browser.download_to("a", self.target)
-        self.assertEqual(page.polls, 0)
-        page = FakePage(self.clock, self.downloads, [], {})
-        self.write("guid", 3)
-        self.assertEqual(live.Live(page).download_to("a", self.target).name, "takeout-001.zip")
-
-    def test_no_thread_is_started_to_watch_the_folder(self):
-        import threading
-
-        before = threading.active_count()
-        steps = [self.finish]
-        self.write("guid.crdownload", 1)
-        browser, _page = self.browser(steps, done=True)
-        browser.download_to("a", self.target)
-        self.assertEqual(threading.active_count(), before)
 
 
 if __name__ == "__main__":
