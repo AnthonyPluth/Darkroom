@@ -8,7 +8,7 @@ from unittest import mock
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, takeout_copies
+from darkroom.domain import dedupe, takeout_copies, xmp
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import (
@@ -356,6 +356,18 @@ class CorrectedMetadataCarryTests(CopiesCase):
         tags = self.sidecar_of(keeper)
         self.assertNotIn("XMP-exif:GPSLatitude", tags)
         self.assertEqual(tags["XMP-dc:Description"], "Own words")
+
+    def test_a_description_kept_as_the_baseline_when_a_borrowed_sidecar_refreshes_an_own_one_reaches_the_keeper(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        own = json.dumps({"description": "Own words", "geoData": {"latitude": 0.0, "longitude": 0.0}})
+        borrowed = json.dumps({"geoData": {"latitude": 0.0, "longitude": 0.0}})
+        takeout.sidecar_json = xmp.baseline(own, borrowed)
+        takeout.sidecar_from_still = True
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertEqual(tags["XMP-dc:Description"], "Own words")
+        self.assertNotIn("XMP-exif:GPSLatitude", tags)
 
     def test_a_sidecar_borrowed_from_a_still_still_fills_what_the_keeper_lacks(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00")

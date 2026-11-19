@@ -264,10 +264,10 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     if done is None:
         report.skipped += 1
         return
+    own_replaces_borrowed = provenance_changed and matched.sidecar_from_still
+    matched.sidecar_json = entry.fields.sidecar_json if own_replaces_borrowed else xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
     if provenance_changed:
-        matched.sidecar_json, matched.sidecar_from_still = entry.fields.sidecar_json, incoming_borrowed
-    else:
-        matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
+        matched.sidecar_from_still = incoming_borrowed
     if not done:
         report.skipped += 1
         return
