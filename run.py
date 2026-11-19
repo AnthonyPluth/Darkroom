@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, share_check
+from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
@@ -317,6 +317,36 @@ def run_reconcile_immich(slug: str | None) -> int:
     return code
 
 
+def run_reread_video_times(slug: str | None, apply: bool) -> int:
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
+    code = 0
+    with db.session(engine) as opened:
+        people = opened.query(Person).order_by(Person.id)
+        found = people.filter(Person.slug == slug).all() if slug else people.all()
+        if slug and not found:
+            print("reread-video-times: no such person", file=sys.stderr)
+            code = 1
+        else:
+            try:
+                done = video_times.reread(opened, settings, found, utc_now().timestamp(), apply=apply)
+            except video_times.Busy as error:
+                print(f"reread-video-times: {error}", file=sys.stderr)
+                code = 1
+            else:
+                if not apply:
+                    print(video_times.DRY_RUN_HEADING)
+                print(done.summary(apply))
+                if not apply:
+                    print(video_times.DRY_RUN_NOTE)
+    engine.dispose()
+    return code
+
+
 def legacy_report() -> int:
     settings = config.load()
     engine = db.make_engine(db.database_url(settings))
@@ -572,7 +602,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup",
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup",
                                             "copy-browser-state"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
@@ -586,6 +616,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source")
     parser.add_argument("--target")
     parser.add_argument("--set-aside", action="store_true")
+    parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(args.data)
@@ -607,6 +638,8 @@ def main(argv: list[str]) -> int:
         return run_import_legacy(args.person, args.dir)
     if args.command == "reconcile-immich":
         return run_reconcile_immich(args.person)
+    if args.command == "reread-video-times":
+        return run_reread_video_times(args.person, args.apply)
     if args.command == "legacy-report":
         return legacy_report()
     if args.command == "jobs":

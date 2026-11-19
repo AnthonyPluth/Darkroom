@@ -105,6 +105,28 @@ docker compose exec darkroom python run.py legacy-report
 
 Darkroom only reads that folder. Each photo or video is matched against that person's own Takeout: a match proves Google has it and nothing is copied. Any other file is copied once into the person's `originals/legacy/` and waits for their Pixel folder. A folder that cannot be listed, or a file that cannot be read or copied, counts as failed and is tried again on the next run. `legacy-report` prints, per person, the files seen, how many are matched in Google, and how many are not backed up (unmatched plus failed), with how many are already in the Pixel folder and how many wait for it. "Everything is backed up" is true when the not-backed-up count is 0. A second run changes nothing for files already seen.
 
+### Re-reading video times once, before the Takeout import (#452)
+
+Since #451 (for #436), a video's QuickTime creation date is read as the UTC instant it is. A video indexed before that kept a time where that UTC clock was read as a wall-clock time. With a GPS position, that gives an instant off by the place's offset (`gps_lookup`). Without one, it gives a wall-clock time that is really UTC (`unknown`). The phone index reads a file again only when it changes, so these rows stay wrong. A Takeout copy imported later gets the right instant and no longer lines up with its phone copy at tier 2. It goes to tier 5 instead: an extra copy in `google-only/`, never a deletion. Run this once after upgrading past #451, before the Takeout import, for the people whose phone originals, legacy library or Immich copies were indexed before the upgrade:
+
+```
+docker compose exec darkroom python run.py reread-video-times [--person <slug>]
+docker compose exec darkroom python run.py reread-video-times [--person <slug>] --apply
+```
+
+Without `--apply` it is a dry run: it reads the files and writes nothing to the database. Both print one line of counts, for example "Indexed videos read again: 40. Would change: 31. Unchanged: 0. No QuickTime date: 7. Unreadable file: 1. Changed since indexed: 1."
+
+- **Read again**: the indexed phone videos it looked at: every video in the phone index with known contents, from `originals/` (the phone backup, `legacy/` and `immich/`).
+- **Would change** (with `--apply`, **Corrected**): exiftool finds a QuickTime UTC date and the stored time differs. These are the rows it corrects.
+- **Unchanged**: the stored time already is that QuickTime UTC reading. After `--apply`, a second run reports every corrected row here.
+- **No QuickTime date**: the video's time comes from a date that carries its own offset (an iPhone video's `Keys:CreationDate`), or it has no date. #451 changed nothing for it, and it is never written.
+- **Unreadable file**: the file is gone or exiftool cannot read it. It is left as it is.
+- **Changed since indexed**: the file's size, modification time or SHA-1 no longer match its row, or the row changed while the files were read. The phone index handles it on its next run.
+
+`--apply` writes only `captured_utc`, `captured_local`, `offset_minutes` and `time_source` of the rows it corrects, in batches of 50, each a short transaction. It records one `video_times_reread` event with the counts. It is safe to stop and run again: a corrected row is then counted unchanged. It never changes a fingerprint (SHA-1, pHash, dHash), path, size or any other column. It never changes a recorded decision, review item, Pixel copy or placed `google-only/` file. It writes nothing to an original or the share; it only reads them. Takeout rows keep the time their import gave them, because a new Takeout item is compared only with phone times.
+
+It refuses while an import is running or a Takeout import is in flight (an export of an account serving the person, or owned by them, that is unpacking, importing or queued, or that has a queued or running import), and while a legacy import or an Immich reconcile runs for the person. It then prints "an import is running or a Takeout import is in flight for a person it would read; nothing was changed. Run this again once the import has finished." While it runs it holds those jobs' locks, so an import that starts meanwhile is told it is busy and runs on the next import tick. Its output and logs hold counts only, never a path, name or slug.
+
 ### The schedule renewal
 
 About 3 weeks before an account's export schedule ends, Darkroom opens "Takeout schedule ending" and queues one renew job, which creates next year's schedule. When it succeeds the alert closes and "Takeout schedule renewed" confirms the new end date. Darkroom never retries a renewal on its own (#40); you can ask for one with Renew now (below). The first export after a renewal is a full export again; keep disk headroom for about twice your largest library while it is imported.
