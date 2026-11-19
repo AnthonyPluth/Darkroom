@@ -100,5 +100,5 @@ def parse(raw: str) -> Sidecar | None:
         return None
     taken = data.get("photoTakenTime")
     seconds = whole_seconds(taken.get("timestamp")) if isinstance(taken, dict) else None
-    found = place(data.get("geoDataExif")) or place(data.get("geoData"))
+    found = place(data.get("geoData")) or place(data.get("geoDataExif"))
     return Sidecar(seconds, found[0] if found else None, found[1] if found else None, text(data.get("description")), text(data.get("title")), origin_of(data), raw)

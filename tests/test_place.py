@@ -33,9 +33,9 @@ def tree(root):
     return {str(p.relative_to(root)): sha1_of(p) for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-def takeout_json(gps=(45.434, 12.3388), description="A made-up square", people=()):
+def takeout_json(gps=(45.434, 12.3388), description="A made-up square", people=(), taken=TAKEN):
     geo = {"latitude": gps[0], "longitude": gps[1]} if gps else {"latitude": 0.0, "longitude": 0.0}
-    return json.dumps({"photoTakenTime": {"timestamp": str(TAKEN)}, "geoData": geo, "description": description,
+    return json.dumps({"photoTakenTime": {"timestamp": str(taken)}, "geoData": geo, "description": description,
                        "people": [{"name": name} for name in people]})
 
 
@@ -111,10 +111,10 @@ class GoogleOnlyFolderTests(Household):
         self.place(self.entry(path, captured_local=fields.captured_local, captured_utc=fields.captured_utc, raw=raw))
         return fields
 
-    def test_a_scan_whose_sidecar_disagrees_by_decades_goes_by_its_exif_wall_clock_alone(self):
+    def test_a_scan_whose_sidecar_disagrees_by_decades_goes_by_the_sidecar_time_alone(self):
         fields = self.placed_from_takeout(self.staged(), {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}, 298_303_200)
-        self.assertEqual((fields.captured_local, fields.captured_utc, fields.offset_minutes), ("2020-02-09T12:47:20", None, None))
-        self.assertTrue((self.root / "jo/google-only/2020/02/IMG_0001.JPG").is_file())
+        self.assertEqual((fields.captured_local, fields.captured_utc, fields.time_source), ("1979-06-15T10:00:00", 298_303_200.0, "sidecar"))
+        self.assertTrue((self.root / "jo/google-only/1979/06/IMG_0001.JPG").is_file())
 
     def test_a_still_dated_only_by_its_scan_goes_by_the_sidecar_time(self):
         fields = self.placed_from_takeout(self.staged(), {"ExifIFD:CreateDate": "2020:02:09 12:47:20"}, 298_303_200)
@@ -454,12 +454,39 @@ class OriginalSidecarTests(Household):
         self.assertTrue(original.with_name("IMG_0100.JPG.xmp").is_file())
 
     def test_an_original_that_has_location_and_description_gets_no_sidecar(self):
-        original, mine = self.phone("sam", self.sam, gps=(1.0, 2.0))
+        original, mine = self.phone("sam", self.sam, gps=(45.434, 12.3388))
         fixtures.set_tags(original, {"ImageDescription": "mine"})
         mine.sha1 = sha1_of(original)
         report = self.place(self.entry(self.staged(), tier=1, person=self.sam, matched=mine))
         self.assertEqual(sorted(p.name for p in original.parent.iterdir()), ["IMG_0100.JPG"])
         self.assertEqual(report.sidecars, 0)
+
+    def test_a_place_the_person_set_in_google_is_written_next_to_an_original_with_another_place(self):
+        original, mine = self.phone("sam", self.sam, gps=(1.0, 2.0), taken="2019:07:04 08:30:15", offset="-04:00")
+        fixtures.set_tags(original, {"ImageDescription": "mine"})
+        mine.sha1 = sha1_of(original)
+        before = sha1_of(original)
+        report = self.place(self.entry(self.staged(), tier=1, person=self.sam, matched=mine))
+        sidecar = original.with_name("IMG_0100.JPG.xmp")
+        tags = exiftool.read([sidecar])[sidecar]
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLongitude"], 12.3388, places=5)
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+        self.assertEqual(sha1_of(original), before)
+        self.assertEqual(report.sidecars, 1)
+
+    def test_a_date_the_person_set_in_google_is_written_next_to_an_original_dated_over_14_hours_away(self):
+        original, mine = self.phone("sam", self.sam, gps=(45.434, 12.3388), taken="2020:02:09 12:47:20", offset="+01:00")
+        fixtures.set_tags(original, {"ImageDescription": "mine"})
+        mine.sha1 = sha1_of(original)
+        before = sha1_of(original)
+        report = self.place(self.entry(self.staged(), tier=1, person=self.sam, matched=mine))
+        sidecar = original.with_name("IMG_0100.JPG.xmp")
+        tags = exiftool.read([sidecar])[sidecar]
+        self.assertTrue(str(tags["XMP-photoshop:DateCreated"]).startswith("2019:07:04 14:30:15"))
+        self.assertNotIn("XMP-exif:GPSLatitude", tags)
+        self.assertEqual(sha1_of(original), before)
+        self.assertEqual(report.sidecars, 1)
 
     def test_an_existing_sidecar_next_to_the_original_is_merged(self):
         original, mine = self.phone("sam", self.sam)

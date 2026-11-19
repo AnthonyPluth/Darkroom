@@ -95,3 +95,14 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 Two known gaps from review remain open in the design (the order of the reconciler and the placed-copy check; the placement cutoff when a queued copy is adopted).
 
 Everything the design says about Syncthing's REST API, Chromium in the merged image and Unraid's networking is unverified until its spikes are written up; none of it has been run.
+
+## A date or place corrected in Google Photos wins (#438, 2026-11-18)
+
+**Owner decision** (comment on [#438](https://github.com/AnthonyPluth/Darkroom/issues/438), relayed by the coordinating session): use the corrected value from Google Photos when the person edited a date or place there. The sidecar's edited values win, for dates and for places, and for what is carried into a matched phone original's XMP; the file's own EXIF is the fallback.
+
+| Item | As built |
+| --- | --- |
+| Places | `geoData` (the person's edit) is read before `geoDataExif`; a non-zero sidecar place replaces the file's EXIF place in the record (`gps_source` `google`) and is written to XMP where it differs from the file's own. |
+| Dates | A `photoTakenTime` more than 14 hours from the file's own capture instant (or, for a wall clock with no offset, from the wall clock) replaces it whole, with `time_source` `sidecar`; within that the file's time stands. One record never mixes an EXIF wall clock with a sidecar instant (#437). |
+| XMP | The same rules for a Takeout copy and for a matched phone original; a date is written for an original only as a correction, never to fill a gap; an existing XMP value is never overwritten; nothing is written to media (promise 5). |
+| Not decided by the owner | The 14-hour threshold for both dates (the issue's), no distance threshold for places (any difference beyond rounding counts), and no review hold. |

@@ -71,11 +71,26 @@ def created_text(utc: float, lat: float | None, lon: float | None) -> str | None
     return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(minutes)}"
 
 
+def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
+    own_lat, own_lon, _ = media.location(own)
+    return own_lat is None or not media.same_place(own_lat, own_lon, lat, lon)
+
+
+def date_wanted(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool) -> bool:
+    if google.taken_utc is None:
+        return False
+    if not has_date(own, still):
+        return with_date
+    lat, lon, _ = media.location(own)
+    utc, local, _, _ = media.capture(own, lat, lon)
+    return media.corrected_by(utc, None if local is None else datetime.fromisoformat(local), google.taken_utc)
+
+
 def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
     fields: dict[str, str] = {}
-    if google.lat is not None and google.lon is not None and not has_gps(own) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
+    if google.lat is not None and google.lon is not None and place_set_by_google(own, google.lat, google.lon) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
         fields[LATITUDE], fields[LONGITUDE] = f"{google.lat:.7f}", f"{google.lon:.7f}"
-    if with_date and google.taken_utc is not None and not has_date(own, still) and not has_tag(existing, CREATED):
+    if google.taken_utc is not None and date_wanted(own, google, with_date, still) and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
         created = created_text(google.taken_utc, lat, lon)
@@ -99,20 +114,14 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES))
 
 
-def same_place(lat: float | None, lon: float | None, other_lat: float | None, other_lon: float | None) -> bool:
-    if lat is None or lon is None or other_lat is None or other_lon is None:
-        return lat is None and lon is None and other_lat is None and other_lon is None
-    return abs(lat - other_lat) < 1e-6 and abs(lon - other_lon) < 1e-6
-
-
 def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> dict[str, str]:
     fields: dict[str, str] = {}
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and new.description is not None and media.text(media.tag(existing, "Description")) == old.description:
         fields[DESCRIPTION] = new.description
-    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+    if new.lat is not None and new.lon is not None and not media.same_place(new.lat, new.lon, old.lat, old.lon) and place_set_by_google(own, new.lat, new.lon):
         lat, lon, _ = media.location(existing)
-        if same_place(lat, lon, old.lat, old.lon):
+        if media.same_place(lat, lon, old.lat, old.lon):
             fields[LATITUDE], fields[LONGITUDE] = f"{new.lat:.7f}", f"{new.lon:.7f}"
     return fields
 
@@ -162,9 +171,9 @@ def applied(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
     described = new.description is not None and new.description != old.description and not has_description(own)
     if described and media.text(media.tag(existing, "Description")) == new.description:
         done.add(DESCRIPTION)
-    if new.lat is not None and new.lon is not None and not same_place(new.lat, new.lon, old.lat, old.lon) and not has_gps(own):
+    if new.lat is not None and new.lon is not None and not media.same_place(new.lat, new.lon, old.lat, old.lon) and place_set_by_google(own, new.lat, new.lon):
         lat, lon, _ = media.location(existing)
-        if same_place(lat, lon, new.lat, new.lon):
+        if media.same_place(lat, lon, new.lat, new.lon):
             done.update((LATITUDE, LONGITUDE))
     return frozenset(done)
 

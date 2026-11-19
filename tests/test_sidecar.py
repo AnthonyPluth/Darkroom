@@ -16,15 +16,20 @@ class SidecarTests(unittest.TestCase):
     def test_reads_time_place_description_title_and_origin(self):
         parsed = sidecar.parse(build())
         self.assertEqual(parsed.photo_taken_utc, 1562243415.0)
-        self.assertEqual((parsed.lat, parsed.lon), (40.7, -74.0))
+        self.assertEqual((parsed.lat, parsed.lon), (10.0, 20.0))
         self.assertEqual((parsed.description, parsed.title, parsed.origin), ("Beach day", "IMG_1.JPG", "mobile_upload"))
 
     def test_the_raw_json_is_kept(self):
         raw = build()
         self.assertEqual(sidecar.parse(raw).raw, raw)
 
-    def test_exif_geo_wins_over_plain_geo(self):
-        self.assertEqual(sidecar.parse(build()).lat, 40.7)
+    def test_the_place_the_person_set_wins_over_the_one_the_file_had(self):
+        parsed = sidecar.parse(build())
+        self.assertEqual((parsed.lat, parsed.lon), (10.0, 20.0))
+
+    def test_a_zero_plain_geo_falls_back_to_the_files_own_place(self):
+        parsed = sidecar.parse(build(geoData={"latitude": 0.0, "longitude": 0.0}))
+        self.assertEqual((parsed.lat, parsed.lon), (40.7, -74.0))
 
     def test_zero_exif_geo_falls_back_to_plain_geo(self):
         parsed = sidecar.parse(build(geoDataExif={"latitude": 0.0, "longitude": 0.0}))
@@ -65,7 +70,7 @@ class SidecarTests(unittest.TestCase):
     def test_a_byte_order_mark_is_ignored(self):
         raw = build()
         parsed = sidecar.parse("﻿" + raw)
-        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.raw), (1562243415.0, 40.7, raw))
+        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.raw), (1562243415.0, 10.0, raw))
 
     def test_deep_nesting_or_a_huge_number_is_none_and_never_raises(self):
         for raw in ("[" * 200_000, "{\"a\":" * 200_000, '{"photoTakenTime": {"timestamp": ' + "9" * 5000 + "}}"):
@@ -94,7 +99,7 @@ class DecodeTests(unittest.TestCase):
         decoded = sidecar.decode(data)
         self.assertTrue(decoded.repaired)
         parsed = sidecar.parse(decoded.text)
-        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.lon, parsed.description), (1562243415.0, 40.7, -74.0, "Caf� made-up"))
+        self.assertEqual((parsed.photo_taken_utc, parsed.lat, parsed.lon, parsed.description), (1562243415.0, 10.0, 20.0, "Caf� made-up"))
 
     def test_broken_utf16_is_repaired_not_refused(self):
         decoded = sidecar.decode(b"\xff\xfe" + build().encode("utf-16-le")[:-1])
