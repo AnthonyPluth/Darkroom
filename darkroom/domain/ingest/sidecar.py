@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 import math
 from dataclasses import dataclass
@@ -18,6 +19,14 @@ class Sidecar:
     raw: str
 
 
+@dataclass(frozen=True)
+class Decoded:
+    text: str
+    repaired: bool
+
+
+LIMIT = 1024 * 1024
+BYTE_ORDER_MARKS = ((codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be"))
 EARLIEST = -62135596800.0
 LATEST = 253402300799.0
 
@@ -57,10 +66,35 @@ def origin_of(data: dict[str, object]) -> str:
     return "other"
 
 
+def decoded_as(data: bytes, codec: str) -> Decoded:
+    try:
+        return Decoded(data.decode(codec), repaired=False)
+    except UnicodeDecodeError:
+        return Decoded(data.decode(codec, errors="replace"), repaired=True)
+
+
+def codec_of(data: bytes) -> tuple[bytes, str]:
+    for mark, codec in BYTE_ORDER_MARKS:
+        if data.startswith(mark):
+            return data[len(mark):], codec
+    if len(data) >= 4 and data[0] and not data[1] and data[2] and not data[3]:
+        return data, "utf-16-le"
+    if len(data) >= 4 and not data[0] and data[1] and not data[2] and data[3]:
+        return data, "utf-16-be"
+    return data, "utf-8"
+
+
+def decode(data: bytes) -> Decoded | None:
+    if len(data) > LIMIT:
+        return None
+    return decoded_as(*codec_of(data))
+
+
 def parse(raw: str) -> Sidecar | None:
+    raw = raw.removeprefix("\ufeff")
     try:
         data = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None

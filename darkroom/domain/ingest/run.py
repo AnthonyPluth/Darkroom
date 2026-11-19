@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ UNPLACED = "unplaced"
 PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
 LOCKS_GUARD = threading.Lock()
+SidecarState = Literal["none", "read", "repaired", "unreadable"]
 
 
 class NotReady(RuntimeError):
@@ -68,6 +70,8 @@ class Prepared:
     not_imported: dict[str, int] = field(default_factory=dict)
     orphan_sidecars: int = 0
     unpaired_media: int = 0
+    sidecars_unreadable: int = 0
+    sidecars_repaired: int = 0
 
     def source_of(self, item: TakeoutItem) -> str:
         return str(item.path.relative_to(self.staging))
@@ -156,18 +160,26 @@ def prepare(opened: Session, photos: Photos, export: Export, now: float, tools: 
                     source = pinned.get(item.path)
                     if source is None:
                         raise paths.LinkRefused("the staged file is a link or not a plain file")
-                    raw = staged_text(photos, item.sidecar) if item.sidecar is not None else None
-                    parsed = sidecar.parse(raw) if raw else None
+                    parsed, state = staged_sidecar(photos, item.sidecar) if item.sidecar is not None else (None, "none")
                     prepared.fields[item.path] = metadata.candidate(item, tags.get(source, {}), parsed, person.id, UNPLACED, now, export.id, source)
+                    prepared.sidecars_unreadable += state == "unreadable"
+                    prepared.sidecars_repaired += state == "repaired"
                 except Exception as error:
                     if report:
                         item_failed(opened, export, "metadata", error, now)
     return prepared
 
 
-def staged_text(photos: Photos, path: Path) -> str:
-    with paths.open_inbox_file(photos, path) as handle:
-        return handle.read().decode("utf-8")
+def staged_sidecar(photos: Photos, path: Path) -> tuple[sidecar.Sidecar | None, SidecarState]:
+    try:
+        with paths.open_inbox_file(photos, path) as handle:
+            decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+    except paths.OutsideRoot:
+        return None, "unreadable"
+    parsed = None if decoded is None else sidecar.parse(decoded.text)
+    if decoded is None or parsed is None:
+        return None, "unreadable"
+    return parsed, "repaired" if decoded.repaired else "read"
 
 
 def stored_decisions(opened: Session, export: Export) -> dict[str, DedupeDecision]:
@@ -249,6 +261,7 @@ def stage_place(opened: Session, photos: Photos, export: Export, run: ImportRun,
     run.failed, run.repeated = failed, repeated
     run.not_imported = json.dumps(prepared.not_imported, sort_keys=True)
     run.orphan_sidecars, run.unpaired_media = prepared.orphan_sidecars, prepared.unpaired_media
+    run.sidecars_unreadable, run.sidecars_repaired = prepared.sidecars_unreadable, prepared.sidecars_repaired
     run.changed_people = json.dumps(sorted(changed))
     mark(opened, export, run, "placed")
 
@@ -422,6 +435,10 @@ def left_out_of(run: ImportRun) -> str:
         text += f", {run.orphan_sidecars} {'sidecar' if run.orphan_sidecars == 1 else 'sidecars'} matched no file"
     if run.unpaired_media:
         text += f", {run.unpaired_media} without a sidecar"
+    if run.sidecars_unreadable:
+        text += f", {run.sidecars_unreadable} {'sidecar' if run.sidecars_unreadable == 1 else 'sidecars'} could not be read, so imported without Google metadata"
+    if run.sidecars_repaired:
+        text += f", {run.sidecars_repaired} {'sidecar' if run.sidecars_repaired == 1 else 'sidecars'} read with characters replaced"
     return text
 
 

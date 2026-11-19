@@ -301,16 +301,16 @@ def staged_sidecar(opened: Session, photos: Photos, export: Export, source_path:
 def staged_text(photos: Photos, path: Path) -> str | None:
     try:
         with paths.open_inbox_file(photos, path) as handle:
-            return handle.read().decode("utf-8", errors="replace")
+            decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
     except paths.OutsideRoot:
         return None
+    return None if decoded is None else decoded.text
 
 
 def kept_fields(opened: Session, photos: Photos, hit: Found, hold: Path, person_id: int, now: float, read: xmp.Reader) -> tuple[TakeoutItem, MediaItem]:
     staged, found_sidecar = (None, None) if hit.decision.source_path is None else staged_sidecar(opened, photos, hit.export, hit.decision.source_path)
     text = None if found_sidecar is None else staged_text(photos, found_sidecar)
-    raw = hit.review.sidecar_json if text is None else text
-    parsed = sidecar.parse(raw) if raw else None
+    parsed = (sidecar.parse(text) if text else None) or (sidecar.parse(hit.review.sidecar_json) if hit.review.sidecar_json else None)
     item = TakeoutItem(path=hold, sha1="", copies=(), sidecar=found_sidecar)
     with paths.pinned_inbox_files(photos, [hold]) as pinned:
         if hold not in pinned:

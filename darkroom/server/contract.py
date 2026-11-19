@@ -408,6 +408,8 @@ class ImportView(TypedDict):
     review: int
     missing_gps: int
     failed: int
+    sidecars_unreadable: int | None
+    sidecars_repaired: int | None
     unmatched_by_person: dict[str, int]
     not_imported: dict[str, int] | None
     orphan_sidecars: int | None
