@@ -52,6 +52,7 @@ class ImportsApiTests(unittest.TestCase):
                          {"export_id": self.export_id, "account_id": self.world.account, "status": "done", "stage": "done", "added": 2,
                           "skipped_t1": 3, "skipped_t2": 1, "skipped_t3": 1, "review": 1, "missing_gps": 1, "failed": 0,
                           "unmatched_by_person": {"jo": 2, "sam": 0}, "error": None})
+        self.assertEqual((listed["not_imported"], listed["orphan_sidecars"], listed["unpaired_media"]), ({}, 0, 0))
         self.assertEqual(self.call("GET", f"/api/imports/{listed['id']}"), (200, {"run": listed}))
 
     def test_an_imported_export_cannot_be_requested_again(self):
@@ -126,6 +127,30 @@ class ImportsApiTests(unittest.TestCase):
         runs = sorted(self.call("GET", "/api/imports")[1]["imports"], key=lambda r: r["id"])
         self.assertEqual([(r["status"], r["failed"], r["added"]) for r in runs], [("done", 1, 1), ("done", 0, 2)])
         self.assertEqual(self.call("POST", f"/api/exports/{self.export_id}/import"), (409, {"error": "this export is already imported"}))
+
+    def test_files_left_out_of_an_import_are_counted_by_kind(self):
+        self.call("POST", f"/api/exports/{self.export_id}/import")
+        self.import_now()
+        opened = self.world.reopen()
+        row = opened.query(ImportRun).one()
+        for stored, shown in (('{".txt": 2, "none": 1, "other": 1}', {".txt": 2, "none": 1, "other": 1}), ("not json", {}), ('[".txt"]', {}),
+                              ('{".txt": "two"}', {})):
+            with self.subTest(stored=stored):
+                row.not_imported, row.orphan_sidecars, row.unpaired_media = stored, 3, 4
+                opened.commit()
+                (listed,) = self.call("GET", "/api/imports")[1]["imports"]
+                self.assertEqual((listed["not_imported"], listed["orphan_sidecars"], listed["unpaired_media"]), (shown, 3, 4))
+
+    def test_a_run_that_never_counted_what_was_left_out_lists_null_counts_not_zero(self):
+        self.call("POST", f"/api/exports/{self.export_id}/import")
+        self.import_now()
+        opened = self.world.reopen()
+        row = opened.query(ImportRun).one()
+        row.not_imported = row.orphan_sidecars = row.unpaired_media = None
+        opened.commit()
+        (listed,) = self.call("GET", "/api/imports")[1]["imports"]
+        self.assertEqual((listed["not_imported"], listed["orphan_sidecars"], listed["unpaired_media"]), (None, None, None))
+        self.assertEqual(self.call("GET", f"/api/imports/{listed['id']}")[1]["run"]["not_imported"], None)
 
     def test_a_retry_whose_staging_is_gone_is_refused(self):
         import shutil

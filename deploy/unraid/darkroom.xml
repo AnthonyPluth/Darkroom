@@ -34,7 +34,6 @@
   <Config Name="IMMICH_URL" Target="IMMICH_URL" Default="" Mode="" Description="Immich's address." Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="IMMICH_ADMIN_KEY" Target="IMMICH_ADMIN_KEY" Default="" Mode="" Description="An Immich admin API key, for the external-library rescans." Type="Variable" Display="always" Required="false" Mask="true"/>
   <Config Name="DARKROOM_SECRET_KEY" Target="DARKROOM_SECRET_KEY" Default="" Mode="" Description="Leave empty: Darkroom generates the key into the appdata folder on first start. Set it only to keep the key apart from appdata." Type="Variable" Display="advanced" Required="false" Mask="true"/>
-  <Config Name="DARKROOM_SYNCTHING" Target="DARKROOM_SYNCTHING" Default="1" Mode="" Description="1 runs Darkroom's own Syncthing, which sends each Pixel its folder; 0 turns it off." Type="Variable" Display="always" Required="false" Mask="false">1</Config>
   <Config Name="POLL_SECONDS" Target="POLL_SECONDS" Default="15" Mode="" Description="How often the idle browser worker asks for a job." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
   <Config Name="BROWSER_CHANNEL" Target="BROWSER_CHANNEL" Default="chrome" Mode="" Description="chrome: Google Chrome; chromium: always the bundled Chromium." Type="Variable" Display="advanced" Required="false" Mask="false">chrome</Config>
 </Container>

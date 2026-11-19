@@ -98,13 +98,14 @@ jobs:
       - name: Copy browser profiles across mounts with the deployment sandbox, where cp -a is refused
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom:smoke bash /probe.sh
-      - name: Run the one container's default command with the deployment sandbox (a noop job, the viewer through the relay, the worker killed under its browser, no secret in any process)
+      - name: Run the one container's default command with the deployment sandbox (a noop job, the viewer through the relay, the worker killed under its browser, no secret in any process, Darkroom's Syncthing started even with the removed DARKROOM_SYNCTHING=0, one warning for it, and stopped last)
         run: |
-          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 darkroom:smoke
+          docker run -d --name init --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g --tmpfs /photos:uid=99,gid=100 -e POLL_SECONDS=1 -e DARKROOM_SYNCTHING=0 -e OIDC_ISSUER=https://id.example -e OIDC_CLIENT_ID=darkroom -e DARKROOM_PUBLIC_URL=http://127.0.0.1:8000 -p 8766:8000 darkroom:smoke
           bash tests/browser/one_container.sh init 8766
-          docker exec init test ! -e /data/syncthing
+          docker exec init test -d /data/syncthing
+          docker logs init 2>&1 | grep -c -F '"event": "DARKROOM_SYNCTHING is no longer supported and is ignored' | grep -Fx 1
           docker stop init
-          docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" '
+          docker logs init 2>&1 | grep -F '"event": "child stopped"' | grep -o '"child": "[a-z]*"' | tr '\n' ' ' | grep -Fx '"child": "worker" "child": "viewer" "child": "vnc" "child": "display" "child": "app" "child": "syncthing" '
       - name: Run the one container with Syncthing on under the deployment sandbox (the pinned release, started paused, its API on a private socket only, nothing synced with a peer until resumed)
         run: bash tests/browser/syncthing_paused.sh darkroom:smoke 8767
       - name: Run the one container with Syncthing on and a made-up Pixel against a hostile peer (the whole share's SHA-1 unchanged by the peer's edits, a removed folder keeps both sides' files, a persisted folder that is not Send Only never runs)

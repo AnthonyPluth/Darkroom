@@ -41,6 +41,7 @@ STILL_OPEN_WORDS = "The download job that stopped is still finishing; try again 
 PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
+MAX_GOOGLE_DOWNLOADS = 1000
 EXACT_FLOAT_LIMIT = 2**53
 
 
@@ -56,6 +57,7 @@ class NoSuchExport(LookupError):
 class ListedPart:
     number: int
     bytes: int
+    google_downloads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,9 @@ def whole_of(value: object, name: str, minimum: int, maximum: int) -> int:
 def part_of(raw: object) -> ListedPart:
     if not isinstance(raw, dict):
         raise UnreadableListing("the export listing has a bad part")
-    return ListedPart(whole_of(raw.get("number"), "part number", 1, MAX_PART_NUMBER), whole_of(raw.get("bytes"), "part size", 0, MAX_PART_BYTES))
+    counted = raw.get("google_downloads")
+    google_downloads = None if counted is None else whole_of(counted, "download count", 0, MAX_GOOGLE_DOWNLOADS)
+    return ListedPart(whole_of(raw.get("number"), "part number", 1, MAX_PART_NUMBER), whole_of(raw.get("bytes"), "part size", 0, MAX_PART_BYTES), google_downloads)
 
 
 def listed_of(raw: object) -> Listed:
@@ -296,11 +300,21 @@ def update_known(opened: Session, account: GoogleAccount, export: Export, item: 
     return None
 
 
+def count_googles_downloads(opened: Session, account: GoogleAccount, item: Listed) -> None:
+    counted = {part.number: part.google_downloads for part in item.parts if part.google_downloads is not None}
+    export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == item.google_id)).scalar_one_or_none() if counted else None
+    for part in [] if export is None else parts_of(opened, export.id):
+        google = counted.get(part.number)
+        if google is not None and part.status != "done":
+            part.downloads_used = max(part.downloads_used, google)
+
+
 def reconcile(opened: Session, account: GoogleAccount, listing: Sequence[Listed], now: float) -> Reconciled:
     counts = {"announced": 0, "in_progress": 0, "expired": 0, "requeued": 0}
     for item in sorted(listing, key=lambda each: each.created_at):
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == item.google_id)).scalar_one_or_none()
         outcome = record_new(opened, account, item, now) if export is None else update_known(opened, account, export, item, now)
+        count_googles_downloads(opened, account, item)
         if outcome is not None:
             counts[outcome] += 1
     return Reconciled(**counts)

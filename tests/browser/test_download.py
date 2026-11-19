@@ -502,7 +502,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         browser = DownloadBrowser(["reauth"] * 6)
         with self.assertRaises(download.DownloadFailed) as raised:
             self.run_job(browser)
-        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 that did not finish and 5 that ended at Google's sign-in prompt; "
+        self.assertEqual(str(raised.exception), "part 1 used all 5 of Google's downloads for it: 0 that did not finish or that Google counted elsewhere and 5 that ended at Google's sign-in prompt; "
                                                 "Darkroom stopped before using more")
         self.assertEqual(len(browser.downloaded), 5)
         self.assertEqual(self.parts()[0], ("failed", 5, 0))
@@ -1152,7 +1152,7 @@ class GaveUpMessageTests(unittest.TestCase):
 
     def test_a_retried_part_does_not_blame_sign_in_prompts_that_never_happened(self):
         said = download.gave_up_message(2, self.plan(2, 5, 0), "")
-        self.assertEqual(said, "part 2 used all 5 of Google's downloads for it: 5 that did not finish and 0 that ended at Google's sign-in prompt; Darkroom stopped before using more")
+        self.assertEqual(said, "part 2 used all 5 of Google's downloads for it: 5 that did not finish or that Google counted elsewhere and 0 that ended at Google's sign-in prompt; Darkroom stopped before using more")
 
     def test_a_part_with_a_lost_lease_and_one_prompt_counts_each_as_it_was(self):
         said = download.gave_up_message(2, self.plan(3, 4, 1), "")
@@ -1162,7 +1162,7 @@ class GaveUpMessageTests(unittest.TestCase):
     def test_a_plan_without_the_count_falls_back_to_what_attempts_leave_out(self):
         plan = self.plan(1, 3, 0)
         del plan["sign_in_prompts"]
-        self.assertIn("(2 ended at Google's sign-in prompt)", download.gave_up_message(2, plan, ""))
+        self.assertIn("(2 ended at Google's sign-in prompt or Google counted elsewhere)", download.gave_up_message(2, plan, ""))
         self.assertIn("(2 ended", download.gave_up_message(2, {**plan, "sign_in_prompts": 9}, ""))
 
 
