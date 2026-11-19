@@ -317,6 +317,7 @@ class DownloadPartPlan(TypedDict):
     attempts: int
     max_downloads: int
     max_attempts: int
+    sign_in_prompts: int
 
 
 class DownloadPlan(TypedDict):
@@ -371,6 +372,8 @@ class ExportView(TypedDict):
     status: str
     stage: str | None
     parts: list[ExportPartDetail]
+    retry_allowed: bool
+    retry_refusal: str | None
 
 
 class ExportSchedule(TypedDict):
@@ -386,6 +389,11 @@ class Exports(TypedDict):
 
 class ExportReply(TypedDict):
     export: ExportView
+
+
+class RetryDownloadReply(TypedDict):
+    export: ExportView
+    retried: bool
 
 
 class CheckNowReply(TypedDict):

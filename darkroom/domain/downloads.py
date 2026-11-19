@@ -8,17 +8,21 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy import update as sql_update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import dates
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import run
+from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
 
-MAX_DOWNLOADS = 5
+MAX_DOWNLOADS = exports.PART_DOWNLOADS
 MAX_ATTEMPTS = 3
+MAX_INTERRUPTIONS = 3
 EXPIRY_NOTICE = 4 * alerts.DAY
 PART_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.zip$")
 ASKED_TO_VERIFY = "asked_to_verify"
@@ -28,6 +32,7 @@ MIN_SLACK = 1024 * 1024
 MAX_PART_BYTES = 1 << 40
 ATTEMPTED = json.dumps({"attempted": True})
 EXPIRING = "export_expiring"
+RESET_ON_RETRY = ("failed", "downloading", "corrupt")
 MAX_DOWNLOADING = 10
 MAX_GAP_SECONDS = 30 * 86400
 MAX_CLICKS = 10_000
@@ -38,6 +43,10 @@ class NotADownload(ValueError):
 
 
 class Refused(ValueError):
+    pass
+
+
+class CannotRetry(ValueError):
     pass
 
 
@@ -97,7 +106,8 @@ def export_folder(settings: Settings, person: Person, export: Export) -> Path:
 
 def part_plan(part: ExportPart) -> dict[str, object]:
     return {"number": part.number, "bytes": part.bytes, "status": part.status, "filename": part.filename,
-            "downloads_used": part.downloads_used, "attempts": part.attempts, "max_downloads": MAX_DOWNLOADS, "max_attempts": MAX_ATTEMPTS}
+            "downloads_used": part.downloads_used, "attempts": part.attempts, "max_downloads": MAX_DOWNLOADS, "max_attempts": MAX_ATTEMPTS,
+            "sign_in_prompts": part.sign_in_prompts}
 
 
 def plan(opened: Session, settings: Settings, job_id: int) -> dict[str, object]:
@@ -236,6 +246,7 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
     events.record(opened, now, "export_part_attempt_failed", str(export.id), f"part {number}: {reason}")
     if reason == ASKED_TO_VERIFY and part.status == "downloading":
         part.attempts = max(0, part.attempts - 1)
+        part.sign_in_prompts += 1
     if exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)
@@ -256,7 +267,7 @@ def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Expo
     return export
 
 
-def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
+def job_failed(opened: Session, job: BrowserJob, now: float, lease_expired: bool = False) -> Export | None:
     export = export_of(opened, job)
     if export is None or export.status not in exports.STILL_WAITING:
         return None
@@ -266,14 +277,58 @@ def job_failed(opened: Session, job: BrowserJob, now: float) -> Export | None:
             part.bytes_done = None
     if (job.result == ATTEMPTED) == exports.all_done(opened, export):
         return export
+    if lease_expired and export.download_interruptions < MAX_INTERRUPTIONS:
+        export.download_interruptions += 1
+        events.record(opened, now, "export_download_interrupted", str(export.id), f"{export.download_interruptions} of {MAX_INTERRUPTIONS} interruptions used")
+        return export
     export.download_tries += 1
     if export.download_tries >= exports.MAX_DOWNLOAD_JOBS:
         exports.give_up_downloading(opened, export, now)
     return export
 
 
-def jobs_failed(opened: Session, jobs: Sequence[BrowserJob], now: float) -> int:
-    return sum(1 for job in jobs if job_failed(opened, job, now) is not None)
+def leases_expired(opened: Session, jobs: Sequence[BrowserJob], now: float) -> int:
+    return sum(1 for job in jobs if job_failed(opened, job, now, lease_expired=True) is not None)
+
+
+def lock_for_retry(opened: Session, export_id: int) -> None:
+    try:
+        db.write_lock(opened)
+        opened.execute(sql_update(Export).where(Export.id == export_id).values(id=Export.id))
+    except OperationalError as error:
+        if not db.is_busy(error):
+            raise
+        raise browser_jobs.Busy("Darkroom is busy with another change; try again in a moment") from None
+
+
+def retried_detail(reset: int) -> str:
+    if not reset:
+        return "every part is downloaded"
+    return "1 part reset" if reset == 1 else f"{reset} parts reset"
+
+
+def retry_failed(opened: Session, export_id: int, now: float) -> tuple[Export, bool]:
+    lock_for_retry(opened, export_id)
+    export = exports.one(opened, export_id)
+    if export.status in exports.STILL_WAITING and export.ready_at is not None:
+        return export, False
+    parts = exports.parts_of(opened, export.id)
+    refusal = exports.retry_refusal(export, parts, now, exports.download_open(opened, export))
+    if refusal is not None:
+        raise CannotRetry(refusal)
+    reset = [part for part in parts if part.status != "done"]
+    for part in reset:
+        if part.status in RESET_ON_RETRY:
+            part.status = "pending"
+        part.attempts = 0
+        part.bytes_done = None
+    export.download_tries = 0
+    export.download_interruptions = 0
+    export.status = "downloading"
+    exports.queue_download(opened, browser_jobs.account_of(opened, export.account_id), export, now)
+    events.record(opened, now, "export_download_retried", str(export.id), retried_detail(len(reset)))
+    opened.flush()
+    return export, True
 
 
 def on_day(moment: float, zone: str) -> str:

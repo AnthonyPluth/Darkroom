@@ -270,7 +270,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         current = live()
         with db.session(engine, writing=True) as opened:
             expired = browser_jobs.expire_leases(opened, current, at)
-            downloads.jobs_failed(opened, expired, at)
+            downloads.leases_expired(opened, expired, at)
             renewal.jobs_failed(opened, current, expired, at)
         if expired:
             monitoring.log("browser jobs lost their lease", count=len(expired))

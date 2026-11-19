@@ -80,16 +80,16 @@ export const noExports: Exports = { exports: [], schedules: [] };
 const part = (number: number, status: string, downloads: number): ExportPartDetail => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status });
 
 export const downloadingExport: ExportView = {
-  id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null,
+  id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null, retry_allowed: false, retry_refusal: null,
   parts: [part(1, "done", 1), part(2, "downloading", 1), part(3, "pending", 0)],
 };
-export const preparingExport: ExportView = { id: 41, account_id: 10, kind: "incremental", created_at: 990_000, ready_at: null, expires_at: null, part_count: null, status: "announced", stage: null, parts: [] };
+export const preparingExport: ExportView = { id: 41, account_id: 10, kind: "incremental", created_at: 990_000, ready_at: null, expires_at: null, part_count: null, status: "announced", stage: null, parts: [], retry_allowed: false, retry_refusal: null };
 export const importedExport: ExportView = {
-  id: 38, account_id: 10, kind: "incremental", created_at: 300_000, ready_at: 301_000, expires_at: 900_000, part_count: 2, status: "imported", stage: "done",
+  id: 38, account_id: 10, kind: "incremental", created_at: 300_000, ready_at: 301_000, expires_at: 900_000, part_count: 2, status: "imported", stage: "done", retry_allowed: false, retry_refusal: null,
   parts: [part(1, "done", 1), part(2, "done", 1)],
 };
-export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", parts: [part(1, "done", 1), part(2, "failed", 3)] };
-export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [] };
+export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", parts: [part(1, "done", 1), part(2, "failed", 3)], retry_refusal: "This export was downloaded and its import failed; retry it on the Imports page." };
+export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [], retry_allowed: false, retry_refusal: null };
 
 export const transport = (pixel_id: number, name: string, state: PixelSyncthing["state"], extra: Partial<PixelSyncthing> = {}): PixelSyncthing => ({
   pixel_id, name, state, copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [], ...extra,
