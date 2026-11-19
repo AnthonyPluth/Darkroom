@@ -109,7 +109,7 @@ def candidate_of(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
     return dedupe.TakeoutCandidate(
         source_path=item.path, sha1=item.sha1, phash=item.phash, captured_utc=item.captured_utc, captured_local=item.captured_local,
         width=item.width, height=item.height, duration_ms=item.duration_ms, make=item.make, model=item.model, is_video=shot.is_video,
-        is_edited=any(edited(decision) for decision in decisions_of(opened, item)),
+        is_raw=shot.is_raw, is_edited=any(edited(decision) for decision in decisions_of(opened, item)),
     )
 
 

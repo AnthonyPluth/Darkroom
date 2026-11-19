@@ -148,13 +148,10 @@ class TransportWordingTests(unittest.TestCase):
         self.assertEqual(alerts.syncthing_version().message, "The Syncthing in this container is not a version Darkroom was tested with, so Darkroom has not started it and "
                          "nothing reaches the Pixels. Run the published Darkroom image, which carries a tested Syncthing.")
 
-    def test_the_share_check_text_depends_on_whose_syncthing_serves_the_pixels(self):
-        self.assertEqual(alerts.share_check_failed(True).message, "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, "
+    def test_the_share_check_text_says_syncing_to_the_pixels_is_paused_too(self):
+        self.assertEqual(alerts.share_check_failed().message, "The photo share did not pass Darkroom's check, so placing, pruning and syncing to the Pixels are paused, "
                          "and nothing on the share is changed. If the share is not mounted, fix the mapping and restart the container. If it really was replaced, bind the new "
                          "one as the runbook says. The Status page gives the reason.")
-        self.assertEqual(alerts.share_check_failed(False).message, "The photo share did not pass Darkroom's check, so placing and pruning are paused, and nothing on the share "
-                         "is changed. Pause the Syncthing that serves the Pixels until it passes again. If the share is not mounted, fix the mapping and restart the container. "
-                         "If it really was replaced, bind the new one as the runbook says.")
 
     def test_a_held_pixel_is_named_and_counted_in_the_singular_at_one(self):
         self.assertEqual(alerts.pixel_held("Pixel 5", 3, 0).message, "3 photos could not be written to Pixel 5's folder again, so Darkroom is not sharing the folder with it. "
@@ -189,7 +186,7 @@ class TransportAlertTests(unittest.TestCase):
 
     def setUp(self):
         self.setUp_folders()
-        self.settings = dataclasses.replace(config.load(), syncthing=True, public_url="https://d.example")
+        self.settings = dataclasses.replace(config.load(), public_url="https://d.example")
         self.notifier = Notifier()
         jo_pixel = self.opened.get(Pixel, self.jo_pixel)
         jo_pixel.name, jo_pixel.syncthing_device_id = "Pixel 5", DEVICE_CANARY
@@ -273,19 +270,10 @@ class TransportAlertTests(unittest.TestCase):
         self.event(share_check.FAILED, share_check.SUBJECT, share_check.MISSING)
         self.review(START)
         self.assertEqual(self.open_kinds(), [("share_check_failed", "share")])
-        self.assertEqual(self.notifier.sent, [("Photo share check failed", alerts.share_check_failed(True).message, "https://d.example/")])
+        self.assertEqual(self.notifier.sent, [("Photo share check failed", alerts.share_check_failed().message, "https://d.example/")])
         self.event(share_check.PASSED, share_check.SUBJECT)
         self.review(START + 1)
         self.assertEqual(self.open_kinds(), [])
-
-    def test_with_a_syncthing_set_up_by_hand_only_the_share_check_alerts_in_its_own_words(self):
-        by_hand = dataclasses.replace(self.settings, syncthing=False)
-        self.event(share_check.FAILED, share_check.SUBJECT, share_check.CHANGED)
-        self.event(transport.FAILED, transport.SUBJECT, transport.UNREACHABLE, at=START - DAY)
-        self.event(syncthing_version.EVENT, syncthing_version.SUBJECT, "Syncthing reported v2.2.0, outside the tested range v2.1.7")
-        self.review(START + DAY, by_hand)
-        self.assertEqual(self.open_kinds(), [("share_check_failed", "share")])
-        self.assertEqual(self.notifier.sent[0][1], alerts.share_check_failed(False).message)
 
     def test_a_share_that_recovers_closes_its_alert_without_clearing_the_newer_syncthing_warning(self):
         self.event(transport.FAILED, transport.SUBJECT, transport.UNREACHABLE)
@@ -394,17 +382,13 @@ class TransportAlertTests(unittest.TestCase):
         self.review(START + 4, dataclasses.replace(self.settings, alerts_off=("pixel_held",)))
         self.assertEqual(self.open_kinds(), [])
 
-    def test_an_open_held_alert_closes_once_darkrooms_syncthing_is_off_switched_off_or_not(self):
-        for alerts_off in ((), ("pixel_held",)):
-            with self.subTest(alerts_off=alerts_off):
-                self.opened.query(Alert).delete()
-                self.opened.commit()
-                self.event(transport.RECOVERED, transport.SUBJECT)
-                self.held_by_strays()
-                self.review(START + 1)
-                self.assertEqual(self.open_kinds(), [("pixel_held", f"pixel {self.jo_pixel}")])
-                self.review(START + 2, dataclasses.replace(self.settings, syncthing=False, alerts_off=alerts_off))
-                self.assertEqual(self.open_kinds(), [])
+    def test_an_open_held_alert_closes_once_it_is_switched_off(self):
+        self.event(transport.RECOVERED, transport.SUBJECT)
+        self.held_by_strays()
+        self.review(START + 1)
+        self.assertEqual(self.open_kinds(), [("pixel_held", f"pixel {self.jo_pixel}")])
+        self.review(START + 2, dataclasses.replace(self.settings, alerts_off=("pixel_held",)))
+        self.assertEqual(self.open_kinds(), [])
 
     def test_a_kind_switched_off_never_opens_and_an_open_one_closes(self):
         self.event(share_check.FAILED, share_check.SUBJECT, share_check.MISSING)

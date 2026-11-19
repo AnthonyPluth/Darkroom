@@ -156,15 +156,13 @@ def syncthing_client(settings: Settings) -> syncthing.Client | None:
         return None
 
 
-def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syncthing_version.Gate | None = None) -> syncthing_version.Gate | None:
-    if not settings.syncthing:
-        return None
+def check_syncthing(settings: Settings, engine: Engine, at: float, previous: syncthing_version.Gate | None = None) -> syncthing_version.Gate:
     with db.session(engine, writing=True) as opened:
         return syncthing_version.at_startup(opened, syncthing_client(settings), at, previous)
 
 
 def transport_client(scheduler: Scheduler, settings: Settings) -> syncthing.Client | None:
-    if not settings.syncthing or scheduler.syncthing is None or not scheduler.syncthing.on:
+    if scheduler.syncthing is None or not scheduler.syncthing.on:
         return None
     return syncthing_client(settings)
 
@@ -212,12 +210,11 @@ def gate_syncthing(scheduler: Scheduler, settings: Settings, engine: Engine, now
             reconcile(at, True)
             review_transport(settings, engine, at)
 
-    if settings.syncthing:
-        scheduler.guarded(Registered("syncthing.reconcile", lambda at: reconcile(at, True), None, None, now), now)
-        scheduler.guarded(Registered("syncthing.alerts", lambda at: review_transport(settings, engine, at), None, None, now), now)
-        scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
-        scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now,
-                        own_thread=True)
+    scheduler.guarded(Registered("syncthing.reconcile", lambda at: reconcile(at, True), None, None, now), now)
+    scheduler.guarded(Registered("syncthing.alerts", lambda at: review_transport(settings, engine, at), None, None, now), now)
+    scheduler.every("syncthing.gate", SYNCTHING_RECHECK_SECONDS, recheck_syncthing, first_after=SYNCTHING_RECHECK_SECONDS, now=now)
+    scheduler.every("syncthing.reconcile", SYNCTHING_RECONCILE_SECONDS, lambda at: reconcile(at, False), first_after=SYNCTHING_RECONCILE_SECONDS, now=now,
+                    own_thread=True)
     return scheduler
 
 
