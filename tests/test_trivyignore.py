@@ -109,6 +109,13 @@ class TrivyIgnoreListTests(unittest.TestCase):
         self.assertEqual(syncthing[0]["paths"], ["usr/local/bin/syncthing"])
         self.assertEqual(syncthing[0]["purls"], ["pkg:golang/golang.org/x/net"])
 
+    def test_the_accepted_go_stdlib_finding_is_limited_to_the_syncthing_binary(self):
+        found = check(LIST.read_text(), datetime.date(2026, 11, 19))
+        stdlib = [entry for entry in found if entry["id"] == "CVE-2026-97054"]
+        self.assertEqual(len(stdlib), 1)
+        self.assertEqual(stdlib[0]["paths"], ["usr/local/bin/syncthing"])
+        self.assertEqual(stdlib[0]["purls"], ["pkg:golang/stdlib"])
+
     def test_the_list_is_owned_and_gets_the_second_review(self):
         owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
         self.assertIn("/.trivyignore.yaml @AnthonyPluth", owners)

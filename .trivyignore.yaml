@@ -7,6 +7,10 @@
 #   "Add ignore-file support to fleet (Recommended)"
 #   "Since darkroom isn't deployed, let's just merge with these CVEs and fix when fleet bump is merged in so we can keep moving"
 # Scope: this one CVE, this one path, until a fixed Syncthing is pinned or the entry expires, whichever comes first.
+#
+# CVE-2026-97054: the owner's acceptance is recorded on #470 (the pull request that adds the entry), where the owner confirms it.
+# Scope: this one CVE, this one path, until a Syncthing release built with Go 1.27.4 or later is pinned or the entry expires,
+# whichever comes first.
 vulnerabilities:
   - id: CVE-2026-78661
     paths:
@@ -14,4 +18,11 @@ vulnerabilities:
     purls:
       - pkg:golang/golang.org/x/net
     statement: "Accepted by the owner on #341 (issuecomment-6926210618) until a fixed Syncthing is pinned: the pinned Syncthing v2.1.7 embeds golang.org/x/net v0.60.0, but the vulnerable x/net/html package is not linked into the binary (its Go build info and symbols show 12 x/net packages, none of them html), its API is only on a private 0600 Unix socket, and no Syncthing release with a fixed x/net exists yet."
+    expired_at: 2027-02-14
+  - id: CVE-2026-97054
+    paths:
+      - usr/local/bin/syncthing
+    purls:
+      - pkg:golang/stdlib
+    statement: "Accepted by the owner (decision relayed in a session on 2026-11-19, confirmation recorded on #470) until a Syncthing release built with Go 1.27.4 or later is pinned: the pinned Syncthing v2.1.7 (the newest release as of 2026-11-19) embeds Go stdlib v1.27.3, and the CVE is fixed in Go 1.26.11 and 1.27.4; the repository shows Darkroom's own web server is Python's, Syncthing's API is only on a private 0600 Unix socket and its sync listeners are 22000 TCP and QUIC, but whether Syncthing's code reaches the affected net/http path from an untrusted party is not verified."
     expired_at: 2027-02-14
