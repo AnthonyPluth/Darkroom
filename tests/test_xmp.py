@@ -88,6 +88,24 @@ class GapsTests(unittest.TestCase):
         later = xmp.GoogleMetadata(51.5, -0.12, 1562256000.0 + 20 * 3600, None)
         self.assertIn(xmp.CREATED, xmp.gaps(new_york, {}, later, with_date=False))
 
+    def test_a_wall_clock_with_no_zone_is_a_correction_only_if_every_possible_instant_is_over_14_hours_away(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:07:04 12:00:00"}
+        base = 1562241600.0
+        for taken, written in ((base + 15 * 3600, False), (base + 26 * 3600, False), (base + 26 * 3600 + 1, True), (base - 28 * 3600, False),
+                               (base - 28 * 3600 - 1, True), (base - 14 * 365 * 86400, True)):
+            with self.subTest(taken=taken):
+                fields = xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, taken, None), with_date=False)
+                self.assertEqual(xmp.CREATED in fields, written)
+
+    def test_a_date_at_the_edge_of_the_calendar_never_raises_and_is_no_correction(self):
+        rome = {"GPS:GPSLatitude": 41.9, "GPS:GPSLongitude": 12.5}
+        new_york = {"GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
+        for name, tags in (("0001:01:01 00:00:00", rome), ("9999:12:31 23:30:00", new_york), ("0001:01:01 00:00:00", {}), ("9999:12:31 23:30:00", {})):
+            with self.subTest(wall=name, place=bool(tags)):
+                own = {"ExifIFD:DateTimeOriginal": name, **tags}
+                fields = xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=False)
+                self.assertNotIn(xmp.CREATED, fields)
+
     def test_a_wall_clock_in_a_daylight_saving_overlap_is_judged_against_both_possible_instants(self):
         own = {"ExifIFD:DateTimeOriginal": "2019:11:03 01:30:00", "GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
         near = xmp.GoogleMetadata(None, None, 1572796800.0, None)

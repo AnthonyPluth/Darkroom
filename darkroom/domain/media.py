@@ -20,6 +20,8 @@ CHUNK = 1024 * 1024
 DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$")
 OFFSET = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
 CORRECTION_SECONDS = 14 * 3600
+WESTMOST_OFFSET_MINUTES = -12 * 60
+EASTMOST_OFFSET_MINUTES = 14 * 60
 PHASH_SIZE = 8
 DHASH_SIZE = 8
 MAX_PIXELS = 120_000_000
@@ -201,11 +203,10 @@ def corrected_by(utc: float | None, local: datetime | None, taken: float) -> boo
         return abs(utc - taken) > CORRECTION_SECONDS
     if local is None:
         return False
-    try:
-        moment = datetime.fromtimestamp(taken, UTC).replace(tzinfo=None)
-    except (OverflowError, OSError, ValueError):
+    earliest, latest = utc_or_none(local, EASTMOST_OFFSET_MINUTES), utc_or_none(local, WESTMOST_OFFSET_MINUTES)
+    if earliest is None or latest is None:
         return False
-    return abs((local - moment).total_seconds()) > CORRECTION_SECONDS
+    return taken < earliest - CORRECTION_SECONDS or taken > latest + CORRECTION_SECONDS
 
 
 def date_corrected_by(own: dict[str, object], taken: float) -> bool:
@@ -215,7 +216,8 @@ def date_corrected_by(own: dict[str, object], taken: float) -> bool:
     if utc is None and wall is not None and lat is not None and lon is not None:
         offsets = timezones.candidate_offsets(lat, lon, wall)
         if offsets:
-            return all(corrected_by(local_to_utc(wall, offset), None, taken) for offset in offsets)
+            instants = [utc_or_none(wall, offset) for offset in offsets]
+            return all(instant is not None and corrected_by(instant, None, taken) for instant in instants)
     return corrected_by(utc, wall, taken)
 
 

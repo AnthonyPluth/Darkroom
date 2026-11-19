@@ -363,6 +363,19 @@ class CorrectedMetadataCarryTests(CopiesCase):
         self.assertEqual(self.resolve_for_real().removed, 1)
         self.assertEqual(self.sidecar_of(keeper)["XMP-photoshop:DateCreated"], "2019:07:04 12:30:15")
 
+    def carry_for_a_keeper_dated(self, wall, gps):
+        _, keeper = self.pair(taken=wall, gps=gps)
+        resolved = self.resolve_for_real()
+        self.assertEqual(resolved.removed + resolved.refused, 1)
+        sidecar = self.root / f"{keeper.path}.xmp"
+        self.assertNotIn("XMP-photoshop:DateCreated", self.sidecar_of(keeper) if sidecar.exists() else {})
+
+    def test_a_keeper_dated_in_year_one_east_of_greenwich_never_crashes_the_carry(self):
+        self.carry_for_a_keeper_dated("0001:01:01 00:00:00", (41.9, 12.5))
+
+    def test_a_keeper_dated_in_year_9999_west_of_greenwich_never_crashes_the_carry(self):
+        self.carry_for_a_keeper_dated("9999:12:31 23:30:00", (40.7, -74.0))
+
     def test_a_write_the_re_read_cannot_verify_refuses_the_removal_and_leaves_both_copies(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
         before = self.files()
