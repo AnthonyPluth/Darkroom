@@ -6,7 +6,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, retryDownloadSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -68,6 +68,14 @@
     });
     if (queued) notice = `Renewal queued for ${email}.`;
     if (queued || refused) await loader.load(true);
+  }
+
+  async function retryDownload(exportId: number, email: string): Promise<void> {
+    error = "";
+    notice = "";
+    const reply = await actGet(() => apiCall<"POST /api/exports/{id}/retry-download">(`/api/exports/${exportId}/retry-download`, { method: "POST" }), { busy: (on) => (busy += on ? 1 : -1), onError: (message) => (error = message) });
+    if (reply !== null) notice = retryDownloadSentence(reply.retried, email);
+    await loader.load(true);
   }
 
   const connect = (id: number) => start(id, () => apiCall<"POST /api/accounts/{id}/connect">(`/api/accounts/${id}/connect`, { method: "POST" }));
@@ -207,6 +215,7 @@
       </section>
       {#if current}
         {@const chip = exportChip(current)}
+        {@const stopped = failedDownloadSentence(current)}
         <section class="card" aria-label="Current export parts for {account.email}">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h2 class="text-md font-semibold">Export started {onDay(current.created_at ?? 0)}{current.part_count === null ? "" : `, ${partsLabel(current.part_count)}`}</h2>
@@ -236,6 +245,10 @@
             </Table>
             <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and keeps the file until it is imported.</p>
           {/if}
+          {#if stopped}
+            <p id="retry-note-{current.id}" class="text-ink-muted">{stopped}</p>
+            <button type="button" class="btn btn-primary w-full md:w-auto md:self-start" disabled={busy > 0} aria-describedby="retry-note-{current.id}" onclick={() => retryDownload(current.id, account.email)}>Retry download</button>
+          {/if}
         </section>
       {/if}
       {#if earlier.length > 0}
@@ -245,6 +258,7 @@
             {#snippet row(item)}
               {@const chip = exportChip(item)}
               {@const review = reviewCount(data.imports, item.id)}
+              {@const retryNote = failedDownloadSentence(item)}
               <tr>
                 <td data-label="Exported">{onDay(item.created_at ?? 0)}</td>
                 <td data-label="Parts">{item.part_count ?? "None"}</td>
@@ -253,6 +267,11 @@
                     <Chip tone={chip.tone} label={chip.label} />
                     {#if item.status === "expired"}
                       <span>Never downloaded</span>
+                    {:else if retryNote}
+                      <span id="retry-note-{item.id}">{retryNote}</span>
+                      <button type="button" class="btn" disabled={busy > 0} aria-describedby="retry-note-{item.id}" onclick={() => retryDownload(item.id, account.email)}>Retry download</button>
+                    {:else if item.status === "failed" && item.retry_refusal}
+                      <span>{item.retry_refusal}</span>
                     {:else if review > 0}
                       <span>{review} sent to review</span>
                     {/if}

@@ -540,7 +540,9 @@
       "route": "POST /api/exports/{id}/retry-download",
       "auth": "session",
       "handler": "darkroom.server.api.exports.retry_download",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py"
       ]

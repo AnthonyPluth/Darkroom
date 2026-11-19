@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
-import { downloadingExport, expiredExport, failedExport, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
+import { downloadingExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -276,5 +276,34 @@ describe("syncthingCard", () => {
     expect(syncthingCard(down, 3600).line).toMatch(/^Syncthing has not answered for 1 hour\./);
     expect(syncthingCard(down, 3 * 86_400).line).toMatch(/^Syncthing has not answered for 3 days\./);
     expect(syncthingCard({ ...down, since: null }, 99).line).toMatch(/^Syncthing has not answered for less than a minute\./);
+  });
+});
+
+describe("a failed download", () => {
+  it("is the current export while it can be retried, and an earlier one once it cannot", () => {
+    expect(currentExport([failedDownload, importedExport])?.id).toBe(42);
+    expect(currentExport([spentDownload, importedExport])).toBeUndefined();
+    expect(currentExport([failedExport])).toBeUndefined();
+    expect(currentExport([downloadingExport, olderFailedDownload])?.id).toBe(40);
+    expect(earlierExports([downloadingExport, olderFailedDownload], downloadingExport).map((item) => item.id)).toEqual([44]);
+  });
+
+  it("says why it stopped and what Retry download does", () => {
+    expect(failedDownloadSentence(failedDownload)).toBe("Download stopped: part 2 failed after 3 attempts. Retry download tries the parts that are not downloaded yet again and keeps the ones that are. Google's downloads already used still count.");
+    const jobs = { ...failedDownload, parts: failedDownload.parts.map((part) => (part.status === "failed" ? { ...part, status: "pending" } : part)) };
+    expect(failedDownloadSentence(jobs)).toBe("Download stopped: the download failed 3 times. Retry download tries the parts that are not downloaded yet again and keeps the ones that are. Google's downloads already used still count.");
+    const once = { ...failedDownload, parts: failedDownload.parts.map((part) => (part.status === "failed" ? { ...part, attempts: 1 } : part)) };
+    expect(failedDownloadSentence(once)).toMatch(/^Download stopped: part 2 failed after 1 attempt\./);
+  });
+
+  it("has no sentence when it cannot be retried or did not fail", () => {
+    expect(failedDownloadSentence(spentDownload)).toBeNull();
+    expect(failedDownloadSentence(failedExport)).toBeNull();
+    expect(failedDownloadSentence(downloadingExport)).toBeNull();
+  });
+
+  it("says what pressing Retry download did", () => {
+    expect(retryDownloadSentence(true, "jo.photos@example.com")).toBe("Download queued again for jo.photos@example.com.");
+    expect(retryDownloadSentence(false, "jo.photos@example.com")).toBe("This export is already downloading.");
   });
 });
