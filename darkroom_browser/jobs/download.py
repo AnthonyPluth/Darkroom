@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from darkroom_browser import selectors
+from darkroom_browser.config import local_zone
 from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, PartClick
 from darkroom_browser.jobs.session import POLL_SECONDS, SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
 from darkroom_browser.jobs.status import open_archive
@@ -154,7 +155,7 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
 
 def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks, wait: bool = True) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered, wait), google_id, needed)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered, wait), google_id, needed, zone=local_zone())
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
@@ -195,11 +196,11 @@ def gave_up_message(number: int, part: dict[str, Any], seen: str) -> str:
     attempts, used, most = part["attempts"], part["downloads_used"], part.get("max_downloads")
     prompts = max(0, used - attempts)
     if isinstance(most, int) and used >= most:
-        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt"
+        said = f"part {number} used all {used} of Google's downloads for it: {attempts} failed attempts and {prompts} that ended at Google's sign-in prompt or that Google counted elsewhere"
     else:
         limit = f"Google's {most}" if isinstance(most, int) else "Google's"
         said = f"part {number} failed after {attempts} attempts, using {used} of {limit} downloads"
-        said += f" ({prompts} ended at Google's sign-in prompt)" if prompts else ""
+        said += f" ({prompts} ended at Google's sign-in prompt or Google counted elsewhere)" if prompts else ""
     led_to = f"; the last click led to: {seen}" if seen else ""
     return f"{said}; Darkroom stopped before using more{led_to}"
 

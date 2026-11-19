@@ -383,5 +383,73 @@ class ViewTests(ReconcileCase):
             self.assertEqual(exports.schedule_dicts(opened, NOW)[0]["last_export_at"], SCHEDULED + 61 * DAY)
 
 
+def counted(google_id="g-1", counts=(2, None), state="ready"):
+    parts = tuple(exports.ListedPart(number, size, count) for (number, size), count in zip(((1, 100), (2, 50)), counts, strict=True))
+    return exports.Listed(google_id, SCHEDULED + 600, state, SCHEDULED + 7 * DAY, parts if state == "ready" else ())
+
+
+class GoogleDownloadCountTests(ReconcileCase):
+    def set_part(self, number, status, used):
+        with db.session(self.engine) as opened:
+            part = opened.execute(select(ExportPart).where(ExportPart.number == number)).scalar_one()
+            part.status, part.downloads_used = status, used
+
+    def used(self):
+        (mine,) = [export for export in self.rows() if export.account_id == self.account and export.google_id == "g-1"]
+        return [(number, status, used) for number, _, status, used in self.parts(mine.id)]
+
+    def test_a_new_export_starts_from_googles_own_count(self):
+        self.reconcile([counted(counts=(3, None))])
+        self.assertEqual(self.used(), [(1, "pending", 3), (2, "pending", 0)])
+
+    def test_a_known_part_takes_the_larger_count_and_never_a_smaller_one(self):
+        self.reconcile([listed()])
+        self.set_part(1, "pending", 1)
+        self.set_part(2, "corrupt", 4)
+        self.reconcile([counted(counts=(3, 2))])
+        self.assertEqual(self.used(), [(1, "pending", 3), (2, "corrupt", 4)])
+        self.reconcile([counted(counts=(0, 0))])
+        self.assertEqual(self.used(), [(1, "pending", 3), (2, "corrupt", 4)])
+
+    def test_a_done_part_and_a_part_without_a_count_are_left_alone(self):
+        self.reconcile([listed()])
+        self.set_part(1, "done", 1)
+        self.set_part(2, "pending", 1)
+        self.reconcile([counted(counts=(5, None))])
+        self.assertEqual(self.used(), [(1, "done", 1), (2, "pending", 1)])
+
+    def test_googles_count_reaching_the_cap_stops_further_downloads(self):
+        from darkroom.domain import downloads
+
+        self.reconcile([counted(counts=(downloads.MAX_DOWNLOADS, 1))])
+        with db.session(self.engine) as opened:
+            first, second = exports.parts_of(opened, opened.execute(select(Export.id)).scalar_one())
+            self.assertEqual((downloads.exhausted(first), downloads.exhausted(second)), (True, False))
+
+    def test_a_count_for_another_accounts_export_or_an_unknown_part_changes_nothing(self):
+        self.reconcile([listed()])
+        with db.session(self.engine) as opened:
+            other = GoogleAccount(email="sam.takeout@example.test", default_person_id=add_person(opened, "sam"), created=1.0, session_state="ok")
+            opened.add(other)
+            opened.flush()
+            exports.reconcile(opened, other, [counted("g-2", counts=(4, 4))], NOW)
+        self.reconcile([exports.Listed("g-1", SCHEDULED + 600, "ready", SCHEDULED + 7 * DAY, (exports.ListedPart(1, 100), exports.ListedPart(3, 10, 4)))])
+        self.assertEqual(self.used(), [(1, "pending", 0), (2, "pending", 0)])
+
+    def test_the_count_is_read_from_the_result_and_bad_ones_are_refused(self):
+        good = {"google_id": "a", "created_at": 5, "state": "ready", "expires_at": 9}
+
+        def part(**extra):
+            return exports.listing_from_result({"exports": [{**good, "parts": [{"number": 1, "bytes": 3, **extra}]}]})[0].parts[0]
+
+        self.assertEqual(part(), exports.ListedPart(1, 3, None))
+        self.assertEqual(part(google_downloads=None), exports.ListedPart(1, 3, None))
+        self.assertEqual(part(google_downloads=4), exports.ListedPart(1, 3, 4))
+        self.assertEqual(part(google_downloads=2.0), exports.ListedPart(1, 3, 2))
+        for value in (-1, exports.MAX_GOOGLE_DOWNLOADS + 1, 1.5, True, "2", float("nan"), [1]):
+            with self.subTest(value=value), self.assertRaises(exports.UnreadableListing):
+                part(google_downloads=value)
+
+
 if __name__ == "__main__":
     unittest.main()
