@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from darkroom.domain import media
 from darkroom.domain.ingest import sidecar
@@ -16,6 +17,8 @@ SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
 EDITED = "-edited"
 YEAR_FOLDER = re.compile(r"^Photos from \d{4}$")
+SPECIAL_FOLDERS: dict[str, Literal["trash", "archive"]] = {"trash": "trash", "bin": "trash", "archive": "archive"}
+TRASHED = "trash"
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
 STILL_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".bmp", ".avif", ".jxl"} | media.CAMERA_RAW_SUFFIXES
 MEDIA_SUFFIXES = STILL_SUFFIXES | media.VIDEO_SUFFIXES
@@ -28,6 +31,7 @@ NAMED_KINDS = MEDIA_SUFFIXES | {
     ".jp2", ".jfif", ".mpo", ".crw", ".x3f", ".flv", ".vob", ".insp", ".insv", ".lrv", ".thm", ".aae", ".xmp",
 }
 
+Special = Literal["trash", "archive"]
 Sidecars = dict[str, Path]
 Rule = Callable[[Path, Sidecars], Path | None]
 Digest = Callable[[Path], str]
@@ -44,6 +48,7 @@ class TakeoutItem:
     in_year_folder: bool = False
     edited_of: Path | None = None
     live_pair_of: Path | None = None
+    special: Special | None = None
 
 
 @dataclass
@@ -204,8 +209,19 @@ def folder_sidecars(media_paths: Iterable[Path], sidecars: Sidecars, reading: Re
     return {path: settled.get(owners[path]) if match in shared else match for path, match in found.items()}
 
 
+def special_of(folder: Path) -> Special | None:
+    return SPECIAL_FOLDERS.get(folded(folder.name))
+
+
 def album_of(folder: Path) -> str | None:
-    return None if YEAR_FOLDER.match(folder.name) else folder.name
+    return None if YEAR_FOLDER.match(folder.name) or special_of(folder) is not None else folder.name
+
+
+def special_of_copies(folders: list[Path]) -> Special | None:
+    found = {special_of(folder) for folder in folders}
+    if not found or None in found:
+        return None
+    return "archive" if "archive" in found else "trash"
 
 
 def scan(root: Path) -> dict[Path, list[str]]:
@@ -280,13 +296,14 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
             found_copies.setdefault(digests[path], []).append((path, found))
     by_copy: dict[Path, TakeoutItem] = {}
     for digest, copies in sorted((digest, slot) for digest, found in found_copies.items() for slot in slots_of(found)):
-        copies.sort(key=lambda c: (album_of(c[0].parent) is not None, str(c[0])))
+        copies.sort(key=lambda c: (not YEAR_FOLDER.match(c[0].parent.name), special_of(c[0].parent) is not None, str(c[0])))
         first = copies[0]
         item = TakeoutItem(
             path=first[0], sha1=digest, copies=tuple(c[0] for c in copies),
             sidecar=next((c[1] for c in copies if c[1] is not None), None),
             albums=sorted({a for c in copies if (a := album_of(c[0].parent))}),
-            in_year_folder=any(album_of(c[0].parent) is None for c in copies),
+            in_year_folder=any(YEAR_FOLDER.match(c[0].parent.name) for c in copies),
+            special=special_of_copies([c[0].parent for c in copies]),
         )
         report.items.append(item)
         for copy in copies:
@@ -298,7 +315,7 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
             item.edited_of = original_item.path if original_item else None
         if item.path.suffix.lower() in media.VIDEO_SUFFIXES:
             item.live_pair_of = live_still(item, by_copy)
-    report.unpaired_media = [item for item in report.items if item.sidecar is None]
+    report.unpaired_media = [item for item in report.items if item.sidecar is None and item.special != TRASHED]
     report.orphan_sidecars = sorted(p for p in json_files if p not in used)
     return report
 
