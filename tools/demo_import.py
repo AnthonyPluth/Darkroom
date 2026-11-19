@@ -47,6 +47,10 @@ def variant(shot: demo.Shot, today: date, suffix: str, colour_step: int, seconds
     return demo.encoded(moved, local + timedelta(seconds=seconds), "HEIF" if suffix == HEIC else "JPEG")
 
 
+def taken_of(slug: str, stem: str, today: date) -> int:
+    return int(demo.taken_at(shot_of(slug, stem), today)[1])
+
+
 def days_ago(today: date, days: int) -> int:
     return int(demo.noon(today)) - days * 86_400
 
@@ -55,19 +59,20 @@ def build_export(photos_root: Path, folder: Path, today: date) -> Manifest:
     builder = TakeoutBuilder(folder, seed=EXPORT_SEED, parts=PARTS)
     year = FOLDER_YEAR
     avery_gps = shot_of("avery", "IMG_0001").gps
-    builder.photo("IMG_0001.JPG", year, data=phone_file(photos_root, "avery", "IMG_0001", JPEG), gps=avery_gps)
+    builder.photo("IMG_0001.JPG", year, data=phone_file(photos_root, "avery", "IMG_0001", JPEG), gps=avery_gps, taken=taken_of("avery", "IMG_0001", today))
     builder.photo("IMG_0102.JPG", year, form="supplemental", part=0, sidecar_part=1, data=phone_file(photos_root, "blair", "IMG_0102", JPEG),
-                  gps=shot_of("blair", "IMG_0102").gps)
-    still = builder.photo("IMG_0003.HEIC", year, data=phone_file(photos_root, "avery", "IMG_0003", HEIC), gps=shot_of("avery", "IMG_0003").gps)
-    movie = builder.add("IMG_0003.MOV", phone_file(photos_root, "avery", "IMG_0003", VIDEO), f"Photos from {year}", 0, "json", None, None, "")
+                  gps=shot_of("blair", "IMG_0102").gps, taken=taken_of("blair", "IMG_0102", today))
+    still = builder.photo("IMG_0003.HEIC", year, data=phone_file(photos_root, "avery", "IMG_0003", HEIC), gps=shot_of("avery", "IMG_0003").gps, taken=taken_of("avery", "IMG_0003", today))
+    movie = builder.add("IMG_0003.MOV", phone_file(photos_root, "avery", "IMG_0003", VIDEO), f"Photos from {year}", 0, "json", None, None, "",
+                         taken=taken_of("avery", "IMG_0003", today))
     builder.manifest.live_pairs[movie.media_name] = still.media_name
-    builder.photo("IMG_0002.JPG", year, data=variant(shot_of("avery", "IMG_0002"), today, JPEG, 12), gps=None)
-    builder.photo("IMG_0103.HEIC", year, part=1, data=phone_file(photos_root, "blair", "IMG_0103", HEIC), gps=None)
+    builder.photo("IMG_0002.JPG", year, data=variant(shot_of("avery", "IMG_0002"), today, JPEG, 12), gps=None, taken=taken_of("avery", "IMG_0002", today))
+    builder.photo("IMG_0103.HEIC", year, part=1, data=phone_file(photos_root, "blair", "IMG_0103", HEIC), gps=None, taken=taken_of("blair", "IMG_0103", today))
     edit = builder.add("IMG_0103-edited.HEIC", variant(shot_of("blair", "IMG_0103"), today, HEIC, 30), f"Photos from {year}", 1, None, None, None, "")
     builder.manifest.edited_of[edit.media_name] = "IMG_0103.HEIC"
     for number, (slug, stem) in enumerate(LIKELY_RE_ENCODES):
         builder.add(f"{stem}(1).JPG", variant(shot_of(slug, stem), today, JPEG, 24, seconds=1), f"Photos from {year}", number, None, None, None, "",
-                    sidecar_name=f"{stem}.JPG(1).json")
+                    sidecar_name=f"{stem}.JPG(1).json", taken=taken_of(slug, stem, today))
     builder.photo("IMG_5001.JPG", year, gps=demo.NORTH_ATLANTIC, description="A made-up harbour", taken=days_ago(today, 20))
     builder.photo("IMG_5002.JPG", year, part=1, gps=None, taken=days_ago(today, 5))
     google_still = builder.photo("IMG_5003.HEIC", year, gps=None, data=builder.image_bytes(HEIC), taken=days_ago(today, 8))
