@@ -9,12 +9,14 @@ from sqlalchemy import select
 from darkroom.domain import events, exports
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
-from darkroom_browser import client
+from darkroom_browser import client, selectors
+from darkroom_browser.jobs import session
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Stagger
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from darkroom_browser.stall import FolderState
 from tests.browser.takeout_pages import COMPLETED_ID
-from tests.browser.test_download import AFTER_THE_CLICK, NOW, SIZES, DownloadBrowser, DownloadWorld
+from tests.browser.test_classify import SIGN_IN_NEEDED
+from tests.browser.test_download import AFTER_THE_CLICK, ARCHIVE, NOW, SIZES, DownloadBrowser, DownloadWorld
 
 MINUTE = 60.0
 PART_SECONDS = 25 * MINUTE
@@ -343,6 +345,49 @@ class StaggeredDownloadTests(StaggerWorld):
         self.reporter.part = part
         _, result = self.run_job(StaggerBrowser(["ok", "ok", "ok"], self.clock))
         self.assertEqual(result["downloaded"], 3)
+
+    def signed_out_while_reopening(self, browser, minutes):
+        until = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if url == ARCHIVE and browser.downloaded == [1] and not until:
+                until.append(self.clock.now + minutes * MINUTE)
+
+        def content():
+            if until and self.clock.now < until[0] and browser.url in (ARCHIVE, selectors.TAKEOUT_URL):
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+
+    def test_a_sign_in_while_the_next_parts_page_reopens_keeps_the_parts_in_flight_landing(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.signed_out_while_reopening(browser, 30)
+        _, result = self.run_job(browser)
+        events_seen = self.reporter.events
+        waited = events_seen.index(("waiting", "sign_in"))
+        resumed = events_seen.index(("progress", "signed in"))
+        between = events_seen[waited + 1:resumed]
+        self.assertIn(("done", 1), between)
+        self.assertFalse([event for event in between if event[0] in ("attempt", "clicked") or (event[0] == "progress" and isinstance(event[1], str))])
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 40), (3, 50)])
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+        clicked = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"]
+        self.assertEqual(clicked[1]["since_answer"], 0)
+        with db.session(self.engine) as opened:
+            sign_in = opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalars().all()
+            self.assertEqual(len(sign_in), 1)
+            self.assertIsNotNone(sign_in[0].closed)
+
+    def test_a_sign_in_that_never_comes_while_parts_download_times_out(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.signed_out_while_reopening(browser, 60 * 60)
+        with self.assertRaises(session.SignInTimedOut):
+            self.run_job(browser)
+        self.assertEqual(self.parts()[0], ("done", 1, 1))
 
     def test_without_the_setting_the_job_is_one_part_at_a_time(self):
         job_id = self.claim()
