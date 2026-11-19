@@ -492,6 +492,15 @@ class IncrementalTests(IncrementalCase):
         self.assertEqual((stored.lat, stored.lon), (None, None))
         self.assertFalse(json.loads(item.sidecar_json).get("geoData", {}).get("latitude"))
 
+    def test_a_borrowed_sidecar_refreshing_an_own_one_keeps_the_baseline_of_what_it_removed(self):
+        self.with_own_place()
+        self.imported(place=OLD_PLACE)
+        row = self.canal_item()
+        self.assertFalse(row.sidecar_from_still)
+        item, _ = self.refresh_with(NEW_PLACE, from_still=True, description=None)
+        self.assertTrue(item.sidecar_from_still)
+        self.assertEqual(xmp.GoogleMetadata.of(item.sidecar_json).description, CANAL)
+
     def test_a_later_export_without_a_usable_sidecar_keeps_the_stored_json_and_its_flag(self):
         self.with_own_place()
         self.imported(place=OLD_PLACE)
