@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Stagger, Unreachable
+from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Unreachable
 from darkroom_browser.jobs import download
 from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in, waiting_reason
 from darkroom_browser.jobs.status import SignedOut
 from darkroom_browser.jobs.telemetry import Clicks, counted
 from darkroom_browser.stall import StallWatch, Verdict
 
+INTERVAL_SECONDS = 10 * 60.0
+MOST_PARTS = 2
 POLL_SECONDS = 5.0
 PROGRESS_SECONDS = 30.0
 FLOOR_SECONDS = 120.0
@@ -52,16 +54,15 @@ class Waiting:
 
 
 class Staggered:
-    def __init__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str],
-                 stagger: Stagger, clicks: Clicks) -> None:
+    def __init__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> None:
         self.ctx = ctx
         self.browser = browser
         self.folder = folder
         self.plan = plan
         self.queue = [part for part in parts if part.get("status") != "done"]
         self.taken = taken
-        self.interval = stagger.interval
-        self.most = stagger.most
+        self.interval = INTERVAL_SECONDS
+        self.most = MOST_PARTS
         self.clicks = clicks
         self.flights: dict[int, Flight] = {}
         self.waiting: Waiting | None = None
@@ -305,12 +306,9 @@ class Staggered:
 
 
 def staggered(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]:
-    assert ctx.stagger is not None
-    run = Staggered(ctx, browser, folder, plan, parts, taken, ctx.stagger, clicks)
+    run = Staggered(ctx, browser, folder, plan, parts, taken, clicks)
     return run.run(), run.ending()
 
 
 def download_export(ctx: JobContext) -> dict[str, object]:
-    if ctx.stagger is None:
-        return download.download_export(ctx)
     return download.download_export(ctx, staggered)

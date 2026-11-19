@@ -11,7 +11,7 @@ from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom_browser import client, selectors
 from darkroom_browser.jobs import session
-from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Stagger
+from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from darkroom_browser.stall import FolderState
 from tests.browser.takeout_pages import COMPLETED_ID
@@ -108,15 +108,19 @@ class StaggerBrowser(DownloadBrowser):
 
 
 class StaggerWorld(DownloadWorld):
-    interval = 10 * MINUTE
-    most = 2
+    interval = None
+    most = None
 
-    def run_job(self, browser, job_id=None, stagger_with=None):
+    def context(self, browser, job_id):
+        return JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
+                          lambda profile: browser, threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW)
+
+    def run_job(self, browser, job_id=None):
         job_id = job_id or self.claim()
-        chosen = stagger_with if stagger_with is not None else Stagger(self.interval, self.most)
-        ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
-                         lambda profile: browser, threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW, stagger=chosen)
-        return job_id, REGISTRY["download"](ctx)
+        interval = stagger.INTERVAL_SECONDS if self.interval is None else self.interval
+        most = stagger.MOST_PARTS if self.most is None else self.most
+        with mock.patch.object(stagger, "INTERVAL_SECONDS", interval), mock.patch.object(stagger, "MOST_PARTS", most):
+            return job_id, REGISTRY["download"](self.context(browser, job_id))
 
     def started_after(self, browser):
         first = browser.started[0][1]
@@ -389,15 +393,16 @@ class StaggeredDownloadTests(StaggerWorld):
             self.run_job(browser)
         self.assertEqual(self.parts()[0], ("done", 1, 1))
 
-    def test_without_the_setting_the_job_is_one_part_at_a_time(self):
+    def test_the_download_job_always_staggers_every_ten_minutes_with_at_most_two_parts_whatever_the_environment(self):
+        self.assertEqual((stagger.INTERVAL_SECONDS, stagger.MOST_PARTS), (10 * MINUTE, 2))
         job_id = self.claim()
-        browser = DownloadBrowser(["ok", "ok", "ok"])
-        ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
-                         lambda profile: browser, threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW)
-        result = REGISTRY["download"](ctx)
-        self.assertEqual((result["downloaded"], browser.downloaded), (3, [1, 2, 3]))
-        self.assertNotIn("stagger", " ".join(self.messages()))
-
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock, seconds=60 * MINUTE)
+        old = {"TAKEOUT_STAGGER": "0", "TAKEOUT_STAGGER_MINUTES": "60", "TAKEOUT_STAGGER_MAX_PARTS": "4"}
+        with mock.patch.dict("os.environ", old):
+            result = REGISTRY["download"](self.context(browser, job_id))
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 10), (3, 60)])
+        self.assertEqual((result["downloaded"], result["telemetry"]["most_downloading"]), (3, 2))
+        self.assertTrue(self.messages()[-1].endswith("; staggered every 10 minutes at the end"))
 
 if __name__ == "__main__":
     unittest.main()

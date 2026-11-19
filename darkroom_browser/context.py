@@ -24,12 +24,6 @@ class PartClick:
     number: int
 
 
-@dataclass(frozen=True)
-class Stagger:
-    interval: float
-    most: int
-
-
 class Browser(Protocol):
     def goto(self, url: str) -> None: ...
 
@@ -121,7 +115,6 @@ class JobContext:
     clock: Callable[[], float] = time.monotonic
     wall: Callable[[], float] = time.time
     browser_root: Path | None = None
-    stagger: Stagger | None = None
 
     def state_root(self) -> Path:
         return self.photos_root / "_browser" if self.browser_root is None else self.browser_root

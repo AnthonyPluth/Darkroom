@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from darkroom_browser import capture, config, jobs, monitoring
+from darkroom_browser import capture, jobs, monitoring
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from darkroom_browser.config import Settings
 from darkroom_browser.context import Browser, Cancelled, JobContext, JobFailure
@@ -125,8 +125,7 @@ class Runner:
     def context_for(self, job: dict[str, Any]) -> JobContext:
         payload = job.get("payload") or {}
         return JobContext(int(job["id"]), str(job["kind"]), str(job["account"]), dict(payload) if isinstance(payload, dict) else {},
-                          self.settings.photos_root, self.client, self.open_browser, browser_root=self.settings.browser_root,
-                          stagger=config.stagger_of(self.settings))
+                          self.settings.photos_root, self.client, self.open_browser, browser_root=self.settings.browser_root)
 
     def run_job(self, job: dict[str, Any], claim_sent: float | None = None) -> str:
         ctx = self.context_for(job)
