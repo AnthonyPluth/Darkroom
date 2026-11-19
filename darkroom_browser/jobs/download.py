@@ -6,7 +6,7 @@ import shutil
 import stat
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from darkroom_browser import selectors
 from darkroom_browser.config import local_zone
@@ -153,9 +153,9 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
     return bool(targets) and set(targets) == {checked}
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks) -> dict[int, takeout.ListedPart]:
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks, wait: bool = True) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered), google_id, needed, zone=local_zone())
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered, wait), google_id, needed, zone=local_zone())
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
@@ -326,6 +326,7 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
             path = clicked(ctx, browser, number, clicking, partial, report, clicks)
         if path is None:
             continue
+        clicks.saw(1)
         ctx.check()
         problem = problem_with(path, part.get("bytes"), taken)
         if problem is not None:
@@ -338,7 +339,21 @@ def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, 
         return path.name
 
 
-def download_export(ctx: JobContext) -> dict[str, object]:
+class PartsRunner(Protocol):
+    def __call__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]: ...
+
+
+def one_at_a_time(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]:
+    fetched = 0
+    for part in parts:
+        if part.get("status") == "done":
+            continue
+        taken.add(fetch_part(ctx, browser, folder, plan, part, taken, clicks))
+        fetched += 1
+    return fetched, ""
+
+
+def download_export(ctx: JobContext, run_parts: PartsRunner = one_at_a_time) -> dict[str, object]:
     plan = ctx.reporter.download_plan(ctx.job_id)
     folder = inbox_folder(ctx.photos_root, plan)
     parts = checked_parts(plan)
@@ -350,12 +365,7 @@ def download_export(ctx: JobContext) -> dict[str, object]:
     clicks = Clicks(ctx)
     if ensure_signed_in(ctx, browser):
         clicks.answered()
-    fetched = 0
-    for part in parts:
-        if part.get("status") == "done":
-            continue
-        taken.add(fetch_part(ctx, browser, folder, plan, part, taken, clicks))
-        fetched += 1
+    fetched, ending = run_parts(ctx, browser, folder, plan, parts, taken, clicks)
     discard_partial(folder)
-    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}")
+    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}{f'; {ending}' if ending else ''}")
     return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched, "telemetry": clicks.result()}

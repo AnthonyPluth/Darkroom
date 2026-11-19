@@ -13,11 +13,13 @@ from darkroom_browser.context import DownloadInterrupted, Look, PartClick
 from darkroom_browser.jobs.download import downloads_folder, share_tree, sweep_downloads
 from darkroom_browser.launch import CHROME_CHANNEL, BrowserLaunchFailed, choose_channel, launch_failure_reason, launch_options
 from darkroom_browser.pages import takeout
-from darkroom_browser.stall import POLL_MS, STALL_SECONDS, StallWatch, Verdict, folder_state
+from darkroom_browser.stall import IN_PROGRESS_SUFFIX, POLL_MS, STALL_SECONDS, FolderState, StallWatch, Verdict, file_state, folder_state
 
 DEFAULT_TIMEOUT_MS = 30_000
 PROGRESS_SECONDS = 30.0
 MAX_OPENERS = 8
+FILE_WAIT_MS = 10_000
+FILE_POLL_MS = 200
 CANCELLED = "canceled"
 
 
@@ -36,6 +38,7 @@ class Live:
         self.clock = clock
         self.arrived: list[Any] = []
         self.clicked: str | None = None
+        self.flights: dict[str, Any] = {}
 
     def watch_downloads(self) -> None:
         if self.context is None:
@@ -187,6 +190,96 @@ class Live:
             if self.downloads is not None:
                 sweep_downloads(self.downloads)
             raise DownloadInterrupted(str(failure)[:200])
+
+    def stems(self) -> set[str]:
+        if self.downloads is None:
+            return set()
+        found = set()
+        for each in self.downloads.iterdir():
+            if each.is_symlink() or not each.is_file():
+                continue
+            found.add(each.name.removesuffix(IN_PROGRESS_SUFFIX))
+        return found
+
+    def own_file(self, download: Any, before: set[str]) -> str:
+        waited = 0
+        while True:
+            new = self.stems() - before - set(self.flights)
+            if len(new) == 1:
+                return new.pop()
+            if len(new) > 1 or waited >= FILE_WAIT_MS:
+                with contextlib.suppress(Exception):
+                    download.cancel()
+                raise DownloadInterrupted("Darkroom could not tell which file in Chromium's download folder is this part's")
+            self.page.wait_for_timeout(FILE_POLL_MS)
+            waited += FILE_POLL_MS
+
+    def start_download(self, selector: str, part: PartClick) -> str:
+        if self.downloads is None:
+            raise DownloadInterrupted("staggered downloads need Chromium's download folder")
+        before = self.stems()
+        self.clicked = selector
+        with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
+            self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
+        download = started.value
+        self.arrived[:] = [each for each in self.arrived if each is not download]
+        handle = self.own_file(download, before)
+        self.flights[handle] = download
+        return handle
+
+    def late_download(self, part: PartClick) -> str | None:
+        own = [each for each in self.arrived if self.is_from(each, part)]
+        if not own:
+            return None
+        self.arrived[:] = [each for each in self.arrived if each is not own[0]]
+        handle = self.own_file(own[0], set())
+        self.flights[handle] = own[0]
+        return handle
+
+    def download_state(self, handle: str) -> FolderState:
+        if self.downloads is None:
+            return FolderState(0, 0, False)
+        return file_state(self.downloads, handle)
+
+    def keep_download(self, handle: str, folder: Path) -> Path:
+        download = self.flights.pop(handle)
+        folder.mkdir(parents=True, exist_ok=True)
+        failure = download.failure()
+        if failure is not None:
+            self.remove_files(handle)
+            raise DownloadInterrupted(str(failure)[:200])
+        source = Path(download.path())
+        if source.name != handle:
+            self.remove_files(handle)
+            raise DownloadInterrupted("Chromium saved this part's download under another file")
+        target = folder / Path(download.suggested_filename).name
+        shutil.move(source, target)
+        return target
+
+    def cancel_download(self, handle: str) -> None:
+        download = self.flights.pop(handle, None)
+        if download is not None:
+            with contextlib.suppress(Exception):
+                download.cancel()
+        self.remove_files(handle)
+
+    def remove_files(self, handle: str) -> None:
+        if self.downloads is None:
+            return
+        for name in (handle, handle + IN_PROGRESS_SUFFIX):
+            path = self.downloads / name
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+
+    def drop_strays(self) -> int:
+        strays, self.arrived = self.arrived, []
+        for stray in strays:
+            with contextlib.suppress(Exception):
+                stray.cancel()
+        leftovers = self.stems() - set(self.flights)
+        for handle in leftovers:
+            self.remove_files(handle)
+        return len(strays) + len(leftovers)
 
     def screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
