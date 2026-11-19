@@ -16,6 +16,7 @@ LONGITUDE = "XMP-exif:GPSLongitude"
 CREATED = "XMP-photoshop:DateCreated"
 DESCRIPTION = "XMP-dc:Description"
 DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate", "CreateDate")
+STILL_DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate")
 DESCRIPTION_TAGS = ("ImageDescription", "Description", "Caption-Abstract")
 
 Reader = Callable[[list[Path]], dict[Path, dict[str, object]]]
@@ -41,8 +42,8 @@ def has_gps(tags: dict[str, object]) -> bool:
     return media.location(tags)[2] != "none"
 
 
-def has_date(tags: dict[str, object]) -> bool:
-    return media.parse_local(media.tag(tags, *DATE_TAGS)) is not None
+def has_date(tags: dict[str, object], still: bool = False) -> bool:
+    return media.parse_local(media.tag(tags, *(STILL_DATE_TAGS if still else DATE_TAGS))) is not None
 
 
 def has_description(tags: dict[str, object]) -> bool:
@@ -70,11 +71,11 @@ def created_text(utc: float, lat: float | None, lon: float | None) -> str | None
     return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(minutes)}"
 
 
-def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool) -> dict[str, str]:
+def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
     fields: dict[str, str] = {}
     if google.lat is not None and google.lon is not None and not has_gps(own) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
         fields[LATITUDE], fields[LONGITUDE] = f"{google.lat:.7f}", f"{google.lon:.7f}"
-    if with_date and google.taken_utc is not None and not has_date(own) and not has_tag(existing, CREATED):
+    if with_date and google.taken_utc is not None and not has_date(own, still) and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
         created = created_text(google.taken_utc, lat, lon)
@@ -95,7 +96,7 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
         return False
-    return write(sidecar, gaps(own, existing, google, with_date))
+    return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES))
 
 
 def same_place(lat: float | None, lon: float | None, other_lat: float | None, other_lon: float | None) -> bool:
