@@ -644,7 +644,8 @@ class ZoneTests(unittest.TestCase):
         with self.assertRaises(takeout.UnreadableExports):
             takeout.parse_archive(page, ARCHIVE_PAGE, COMPLETED_ID, 2, zone=UTC)
         with mock.patch.dict("os.environ", {"TZ": "Australia/Brisbane"}), mock.patch.object(download, "open_archive", return_value=(page, ARCHIVE_PAGE)):
-            self.assertEqual(sorted(download.part_links(mock.Mock(), mock.Mock(), COMPLETED_ID, 3, 2)), [2, 3])
+            ctx = mock.Mock()
+            self.assertEqual(sorted(download.part_links(ctx, mock.Mock(), COMPLETED_ID, 3, 2, download.Clicks(ctx))), [2, 3])
 
     def test_without_embedded_data_the_pages_date_is_read_as_before(self):
         listing = takeout.parse_exports(summary(completed_row(available=None)), MANAGE_PAGE, NOW, NEW_YORK)[0]
