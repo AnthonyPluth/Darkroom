@@ -153,6 +153,13 @@ class LiveTabsTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"part")
         self.assertIsNone(self.browser.late_download(CLICK_1))
 
+    def test_a_late_download_beside_a_file_left_from_before_the_click_is_kept(self):
+        (self.downloads / "left-over").write_bytes(b"old")
+        self.click_that_times_out()
+        self.arrives()
+        self.assertEqual(self.kept().read_bytes(), b"part")
+        self.assertEqual((self.downloads / "left-over").read_bytes(), b"old")
+
     def test_a_download_that_starts_in_a_popup_the_click_opened_is_kept_too(self):
         self.click_that_times_out()
         popup = Tab(self.clock, self.downloads, "https://takeout.google.com/takeout/download", "")

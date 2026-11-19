@@ -33,6 +33,7 @@ class Live:
         self.arrived: list[Any] = []
         self.clicked: str | None = None
         self.flights: dict[str, Any] = {}
+        self.before_click: set[str] = set()
 
     def watch_downloads(self) -> None:
         if self.context is None:
@@ -125,7 +126,7 @@ class Live:
         if self.downloads is None:
             raise DownloadInterrupted("staggered downloads need Chromium's download folder")
         before = self.stems()
-        self.clicked = selector
+        self.clicked, self.before_click = selector, before
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:
             self.page.click(selector, timeout=DEFAULT_TIMEOUT_MS)
         download = started.value
@@ -139,7 +140,7 @@ class Live:
         if not own:
             return None
         self.arrived[:] = [each for each in self.arrived if each is not own[0]]
-        handle = self.own_file(own[0], set())
+        handle = self.own_file(own[0], self.before_click)
         self.flights[handle] = own[0]
         return handle
 

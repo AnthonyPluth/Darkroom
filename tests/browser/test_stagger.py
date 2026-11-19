@@ -86,6 +86,8 @@ class StaggerBrowser(DownloadBrowser):
         self.kept.append(number)
         if outcome == "fails":
             raise DownloadInterrupted("network")
+        if outcome == "refused":
+            raise download.DownloadsFolderRefused("Chromium's download folder is a link or not where it should be")
         name = "Takeout.zip?" if outcome == "bad name" else f"takeout-20261102T031000Z-00{number}.zip"
         path = folder / name
         if outcome == "corrupt":
@@ -175,6 +177,13 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 1: interrupted"])
         self.assertEqual(self.parts()[0], ("done", 2, 2))
         self.assertEqual(self.started_after(browser)[:2], [(1, 0), (1, 5)])
+
+    def test_a_download_folder_refused_while_a_part_lands_stops_the_job_without_a_retry(self):
+        browser = StaggerBrowser(["refused", "ok", "ok", "ok"], self.clock)
+        with self.assertRaisesRegex(download.DownloadsFolderRefused, "is a link"):
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [1, 2])
+        self.assertEqual(self.recorded("export_part_attempt_failed"), [])
 
     def test_a_prompt_pauses_new_clicks_and_leaves_the_part_in_flight_running_and_counted_once(self):
         browser = StaggerBrowser(["ok", "verify", "ok", "ok"], self.clock)

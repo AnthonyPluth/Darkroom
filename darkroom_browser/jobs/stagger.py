@@ -314,7 +314,7 @@ class Staggered:
         partial = download.fresh_partial(self.folder)
         try:
             path = self.browser.keep_download(flight.handle, partial)
-        except Cancelled:
+        except (Cancelled, download.DownloadsFolderRefused):
             raise
         except Exception:
             download.report_failure(self.ctx, number, "interrupted")
