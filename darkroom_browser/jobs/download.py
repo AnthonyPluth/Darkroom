@@ -152,9 +152,9 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
     return bool(targets) and set(targets) == {checked}
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int) -> dict[int, takeout.ListedPart]:
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id)), google_id, needed)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered), google_id, needed)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":
@@ -308,7 +308,7 @@ def clicked(ctx: JobContext, browser: Browser, number: int, part: PartClick, par
 def fetch_part(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], part: dict[str, Any], taken: set[str], clicks: Clicks) -> str:
     number = part["number"]
     while True:
-        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"], number)[number]
+        listed = part_links(ctx, browser, str(plan.get("google_id", "")), plan["part_count"], number, clicks)[number]
         selector = part_link(listed.link)
         if not leads_where_checked(browser, selector, listed.href):
             raise DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
