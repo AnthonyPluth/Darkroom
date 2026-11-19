@@ -66,9 +66,10 @@ def created_text(utc: float, lat: float | None, lon: float | None) -> str | None
     except (OverflowError, OSError, ValueError):
         return None
     offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
-    minutes = 0 if offset is None else offset
-    local = moment + timedelta(minutes=minutes)
-    return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(minutes)}"
+    if offset is None:
+        return f"{moment:%Y:%m:%d %H:%M:%S}"
+    local = moment + timedelta(minutes=offset)
+    return f"{local:%Y:%m:%d %H:%M:%S}{offset_text(offset)}"
 
 
 def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
