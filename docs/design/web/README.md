@@ -259,7 +259,7 @@ The build pull requests then carry, beside these boards, the `make verify` image
 
 ### When Pixel pairing can't be read (follow-up to decision 6, signed off)
 
-Status: **signed off by the owner on 2026-11-18, as a follow-up to #322 decision 6**, after #430 (PR #455) removed the `DARKROOM_SYNCTHING` switch. No board changes, and none is re-exported: the state reuses the People page's existing load failure card as built (`frontend/src/components/LoadFailed.svelte`), with no new token, colour or layout.
+Status: **signed off by the owner on 2026-11-18, as a follow-up to #322 decision 6** (given by the owner in a Claude Code session on 2026-11-18), after #430 (PR #455) removed the `DARKROOM_SYNCTHING` switch. No board changes, and none is re-exported: the state reuses the People page's existing load failure card as built (`frontend/src/components/LoadFailed.svelte`), with no new token, colour or layout.
 
 - **When.** The People page reads `GET /api/pairing/device` with the people, Google accounts and Pixels. Success, or 503 (Darkroom's Syncthing not running), means pairing is on, and the page is drawn as signed off above: the Syncthing column, Pair, Pair again, Unpair and the pairing step. Any other answer (a 500, a 401, a 409, no answer at all) means the page cannot be drawn correctly.
 - **What shows.** In place of the page's content, under the page heading, the load failure card the page already shows when the people, accounts or Pixels can't be loaded: `role="alert"`, the danger border, the message, and a "Try again" button that loads the whole page again. The message is "Couldn't load Pixel pairing" with the status, as the page's other load failures carry theirs ("Couldn't load Pixel pairing (500)"); as for every other load, Darkroom's own message is shown when the answer carries one, and the app's own texts when Darkroom can't be reached or the session has ended.
@@ -301,9 +301,11 @@ The Syncthing column shows the chip and line above. The actions cell gains one s
 
 | State | Button | What it does |
 | --- | --- | --- |
-| 2a, 2b | "Pair again" (label for screen readers: "Pair {name} again") | Opens the modal at the pairing step, as Edit Pixel's Pair again does (#322): the old ID stays until a new one is approved or saved. Until #323 lands, as for Pair, it opens the existing Edit Pixel form |
-| 2c | "Share again" (label: "Share {name}'s folder again") | Opens the confirmation below |
+| 2a, 2b | "Pair again" (label for screen readers: "Pair again, {name}"; see the note below the table) | Opens the modal at the pairing step, as Edit Pixel's Pair again does (#322): the old ID stays until a new one is approved or saved. Until #323 lands, as for Pair, it opens the existing Edit Pixel form |
+| 2c | "Share again" (label: "Share again, {name}'s folder"; see the note below the table) | Opens the confirmation below |
 | 2d | none | Nothing on the row can help: the folder's place is set on the Pixel, not by pairing or sharing again |
+
+The screen-reader labels were "Pair {name} again" and "Share {name}'s folder again" until the owner signed off the current ones on 2026-11-19 (given by the owner in a Claude Code session on 2026-11-19): an accessible name must contain the button's visible text (WCAG 2.5.3, label in name, which `make verify`'s accessibility audit checks), so a voice-control user can press the button by saying what it shows. Nothing visible changes.
 
 The Edit Pixel form is unchanged: its Syncthing row shows the saved value in mono with Pair again, whatever the state. The pairing step does not offer sharing again: pairing is about the device, and in (c) the device is fine.
 
