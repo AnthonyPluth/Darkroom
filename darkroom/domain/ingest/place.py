@@ -247,8 +247,9 @@ def matched_takeout(opened: Session, decision: DedupeDecision) -> MediaItem | No
 
 def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer) -> None:
     old, new = xmp.GoogleMetadata.of(matched.sidecar_json), xmp.GoogleMetadata.of(entry.fields.sidecar_json)
-    now_own = matched.sidecar_from_still and not entry.item.sidecar_from_still
-    if old == new and not now_own:
+    incoming_borrowed = entry.item.sidecar_from_still
+    provenance_changed = xmp.json_object(entry.fields.sidecar_json) is not None and incoming_borrowed != matched.sidecar_from_still
+    if old == new and not provenance_changed:
         report.skipped += 1
         return
     try:
@@ -259,20 +260,14 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
     except (paths.NotALibraryCopy, paths.OutsideRoot, paths.NotASidecar):
         report.skipped += 1
         return
-    done = xmp.refresh(path, old, new, read, write, not entry.item.sidecar_from_still)
+    done = xmp.refresh(path, old, new, read, write, not incoming_borrowed)
     if done is None:
         report.skipped += 1
         return
-    if now_own:
-        corrected = xmp.fill_fields(path, new, True, read)
-        if corrected is None:
-            report.skipped += 1
-            return
-        if corrected:
-            write(sidecar, corrected)
-        done = done | frozenset(corrected)
-    matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
-    matched.sidecar_from_still = entry.item.sidecar_from_still
+    if provenance_changed:
+        matched.sidecar_json, matched.sidecar_from_still = entry.fields.sidecar_json, incoming_borrowed
+    else:
+        matched.sidecar_json = xmp.baseline(matched.sidecar_json, entry.fields.sidecar_json)
     if not done:
         report.skipped += 1
         return
