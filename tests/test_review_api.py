@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import unittest
@@ -309,7 +310,10 @@ class ResolveTests(ReviewCase):
         pending = self.pending()
         old = self.hold()
         hit = review.found(self.opened, pending.id)
-        staged_still, _ = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
+        staged_still, still_sidecar = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
+        stills_data = json.loads(still_sidecar.read_text(encoding="utf-8"))
+        stills_data["photoTakenTime"]["timestamp"] = "1562243415"
+        still_sidecar.write_text(json.dumps(stills_data), encoding="utf-8")
         staged_video = staged_still.with_name("IMG_1005.MP4")
         fixtures.make_video(staged_video)
         if own_sidecar:
