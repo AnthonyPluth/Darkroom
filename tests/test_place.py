@@ -111,10 +111,10 @@ class GoogleOnlyFolderTests(Household):
         self.place(self.entry(path, captured_local=fields.captured_local, captured_utc=fields.captured_utc, raw=raw))
         return fields
 
-    def test_a_scan_whose_sidecar_disagrees_by_decades_goes_by_the_sidecar_time_alone(self):
+    def test_a_scan_whose_sidecar_disagrees_by_decades_goes_by_its_exif_wall_clock_alone(self):
         fields = self.placed_from_takeout(self.staged(), {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20"}, 298_303_200)
-        self.assertEqual((fields.captured_local, fields.captured_utc, fields.time_source), ("1979-06-15T10:00:00", 298_303_200.0, "sidecar"))
-        self.assertTrue((self.root / "jo/google-only/1979/06/IMG_0001.JPG").is_file())
+        self.assertEqual((fields.captured_local, fields.captured_utc, fields.offset_minutes), ("2020-02-09T12:47:20", None, None))
+        self.assertTrue((self.root / "jo/google-only/2020/02/IMG_0001.JPG").is_file())
 
     def test_a_still_dated_only_by_its_scan_goes_by_the_sidecar_time(self):
         fields = self.placed_from_takeout(self.staged(), {"ExifIFD:CreateDate": "2020:02:09 12:47:20"}, 298_303_200)

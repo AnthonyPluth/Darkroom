@@ -59,12 +59,6 @@ def scan_dates_dropped(item: TakeoutItem, tags: dict[str, object], sidecar: Side
     return {key: value for key, value in tags.items() if key.rsplit(":", 1)[-1] != SCAN_DATE_TAG}
 
 
-def from_sidecar(taken: float, moment: datetime, lat: float | None, lon: float | None) -> tuple[float, str | None, int | None, str]:
-    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
-    local = None if offset is None else (moment + timedelta(minutes=offset)).replace(tzinfo=None).isoformat(timespec="seconds")
-    return taken, local, offset, "sidecar"
-
-
 def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | None, person_id: int, relative: str, now: float, export_id: int | None = None,
               opened: Path | None = None) -> MediaItem:
     dated = scan_dates_dropped(item, tags, sidecar)
@@ -84,16 +78,17 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
             utc, offset, time_source = None, None, "unknown"
     if time_source == "quicktime_utc" and utc is not None and offset is None:
         local, offset = media.wall_clock_at(utc, lat, lon)
-    moment = moment_of(sidecar)
-    if moment is not None and sidecar is not None and sidecar.photo_taken_utc is not None:
-        wall = None if local is None else datetime.fromisoformat(local)
-        if utc is None and local is not None and wall is not None:
-            derived = zone_offset(local, moment)
-            exif_utc = None if derived is None else media.utc_or_none(wall, derived)
-            if derived is not None and exif_utc is not None:
-                utc, offset, time_source = exif_utc + media.seconds_fraction(dated), derived, "sidecar_offset"
-        if (utc is None and wall is None) or media.corrected_by(utc, wall, sidecar.photo_taken_utc):
-            utc, local, offset, time_source = from_sidecar(sidecar.photo_taken_utc, moment, lat, lon)
+    moment = moment_of(sidecar) if utc is None else None
+    if moment is not None and local is not None:
+        derived = zone_offset(local, moment)
+        exif_utc = None if derived is None else media.utc_or_none(datetime.fromisoformat(local), derived)
+        if derived is not None and exif_utc is not None:
+            utc, offset, time_source = exif_utc + media.seconds_fraction(dated), derived, "sidecar_offset"
+    elif moment is not None and sidecar is not None and sidecar.photo_taken_utc is not None:
+        utc, time_source = sidecar.photo_taken_utc, "sidecar"
+        offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else None
+        if offset is not None:
+            local = (moment + timedelta(minutes=offset)).replace(tzinfo=None).isoformat(timespec="seconds")
     return MediaItem(
         person_id=person_id, source="takeout", path=relative, sha1=print_.sha1, bytes=print_.bytes, phash=print_.phash, dhash=print_.dhash,
         captured_utc=utc, captured_local=local, offset_minutes=offset, time_source=time_source,

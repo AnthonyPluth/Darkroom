@@ -50,6 +50,11 @@ class CandidateTests(unittest.TestCase):
         found = self.build(path, parsed(40.7, -74.0))
         self.assertEqual((found.lat, found.lon, found.gps_source), (40.7, -74.0, "exif"))
 
+    def test_a_sidecar_time_far_from_the_exif_instant_never_replaces_the_matching_time(self):
+        path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
+        found = self.build(path, parsed(taken=TAKEN + 99999))
+        self.assertEqual((found.time_source, found.offset_minutes, found.captured_utc), ("exif_offset", -300, 1562261415.0))
+
     def test_without_exif_gps_the_sidecar_location_is_used(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
         found = self.build(path, parsed(10.0, 20.0))
@@ -71,16 +76,11 @@ class CandidateTests(unittest.TestCase):
         found = self.build(path, parsed())
         self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "sidecar", None, None))
 
-    def test_a_sidecar_time_over_14_hours_from_the_exif_instant_beats_it(self):
+    def test_exif_time_beats_the_sidecar_time(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
         found = self.build(path, parsed(taken=TAKEN + 99999))
-        self.assertEqual((found.time_source, found.offset_minutes, found.captured_local), ("sidecar", None, None))
-        self.assertEqual(found.captured_utc, float(TAKEN + 99999))
-
-    def test_a_sidecar_time_within_14_hours_of_the_exif_instant_does_not(self):
-        path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00")
-        found = self.build(path, parsed(taken=TAKEN + 50400))
-        self.assertEqual((found.time_source, found.offset_minutes, found.captured_utc), ("exif_offset", -300, 1562261415.0))
+        self.assertEqual((found.time_source, found.offset_minutes), ("exif_offset", -300))
+        self.assertEqual(found.captured_utc, 1562261415.0)
 
     def test_an_exif_local_time_without_offset_that_agrees_with_the_sidecar_takes_its_utc_and_the_offset_between_them(self):
         path = fixtures.make_jpeg(self.root / "a.jpg", taken="2019:07:04 12:30:15")
@@ -179,31 +179,28 @@ class CaptureAgreementTests(unittest.TestCase):
         found = self.build(exif(DateTimeOriginal="2019:07:04 19:30:00"), taken_at("2019-07-04 23:30:00"))
         self.assertEqual(self.times(found), ("2019-07-04T19:30:00", utc("2019-07-04 23:30:00"), -240, "sidecar_offset"))
 
-    def test_a_scan_dated_decades_apart_from_the_sidecar_takes_the_sidecar_instant_and_never_the_exif_wall_clock(self):
+    def test_a_looked_up_offset_follows_the_sidecar_place_that_replaced_the_files_own(self):
+        tags = {**exif(DateTimeOriginal="2019:07:04 12:30:15"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0}
+        found = self.build(tags, taken_at("2019-07-04 03:30:15", 35.68, 139.69))
+        self.assertEqual(self.times(found), ("2019-07-04T12:30:15", utc("2019-07-04 03:30:15"), 540, "gps_lookup"))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (35.68, 139.69, "google"))
+        self.assertOneCaptureTime(found)
+
+    def test_a_scan_dated_decades_apart_from_the_sidecar_keeps_only_the_exif_wall_clock(self):
         side = taken_at("1979-06-15 10:00:00", 40.7, -74.0)
         found = self.build(exif(DateTimeOriginal="2020:02:09 12:47:20"), side)
-        self.assertEqual(self.times(found), ("1979-06-15T06:00:00", utc("1979-06-15 10:00:00"), -240, "sidecar"))
+        self.assertEqual(self.times(found), ("2020-02-09T12:47:20", None, None, "unknown"))
         self.assertEqual(found.sidecar_json, side.raw)
-        found = self.build(exif(DateTimeOriginal="2020:02:09 12:47:20"), taken_at("1979-06-15 10:00:00"))
-        self.assertEqual(self.times(found), (None, utc("1979-06-15 10:00:00"), None, "sidecar"))
 
     def test_no_sidecar_leaves_a_wall_clock_without_offset_unknown(self):
         found = self.build(exif(DateTimeOriginal="2019:07:04 19:30:00"), None)
         self.assertEqual(self.times(found), ("2019-07-04T19:30:00", None, None, "unknown"))
 
-    def test_an_exif_offset_is_kept_while_the_sidecar_is_within_14_hours_of_it(self):
-        for sidecar_time in ("2019-07-04 23:30:00", "2019-07-05 09:00:00", "2019-07-05 14:30:00"):
+    def test_an_exif_offset_is_kept_whatever_the_sidecar_says(self):
+        for sidecar_time in ("2019-07-04 23:30:00", "2019-07-05 09:00:00", "1979-06-15 10:00:00"):
             with self.subTest(sidecar_time=sidecar_time):
                 found = self.build(exif(DateTimeOriginal="2019:07:04 19:30:00", OffsetTimeOriginal="-05:00"), taken_at(sidecar_time))
                 self.assertEqual(self.times(found), ("2019-07-04T19:30:00", utc("2019-07-05 00:30:00"), -300, "exif_offset"))
-
-    def test_an_exif_offset_yields_to_a_sidecar_time_over_14_hours_away(self):
-        for sidecar_time in ("2019-07-05 14:30:01", "2019-07-04 10:29:59", "1979-06-15 10:00:00"):
-            with self.subTest(sidecar_time=sidecar_time):
-                found = self.build(exif(DateTimeOriginal="2019:07:04 19:30:00", OffsetTimeOriginal="-05:00"), taken_at(sidecar_time, 40.7, -74.0))
-                self.assertEqual(found.time_source, "sidecar")
-                self.assertEqual(found.captured_utc, utc(sidecar_time))
-                self.assertOneCaptureTime(found)
 
     def test_an_exif_position_with_an_agreeing_sidecar_keeps_its_looked_up_offset(self):
         tags = {**exif(DateTimeOriginal="2019:07:04 19:30:00"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0}
@@ -218,27 +215,12 @@ class CaptureAgreementTests(unittest.TestCase):
                 self.assertEqual((found.offset_minutes, found.captured_utc, found.time_source), (minutes, utc("2019-07-04 23:30:00"), "sidecar_offset"))
 
     def test_the_widest_offsets_are_accepted_and_anything_beyond_them_is_not(self):
-        cases = (("2019:07:05 13:30:00", 840), ("2019:07:04 11:30:00", -720), ("2019:07:04 11:15:00", None))
+        cases = (("2019:07:05 13:30:00", 840), ("2019:07:04 11:30:00", -720), ("2019:07:05 13:45:00", None), ("2019:07:04 11:15:00", None))
         for wall, minutes in cases:
             with self.subTest(wall=wall):
                 found = self.build(exif(DateTimeOriginal=wall), taken_at("2019-07-04 23:30:00"))
                 self.assertEqual(found.offset_minutes, minutes)
                 self.assertEqual(found.captured_utc, None if minutes is None else utc("2019-07-04 23:30:00"))
-
-    def test_a_looked_up_offset_follows_the_sidecar_place_that_replaced_the_files_own(self):
-        tags = {**exif(DateTimeOriginal="2019:07:04 12:30:15"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0}
-        found = self.build(tags, taken_at("2019-07-04 03:30:15", 35.68, 139.69))
-        self.assertEqual(self.times(found), ("2019-07-04T12:30:15", utc("2019-07-04 03:30:15"), 540, "gps_lookup"))
-        self.assertEqual((found.lat, found.lon, found.gps_source), (35.68, 139.69, "google"))
-        self.assertOneCaptureTime(found)
-
-    def test_a_wall_clock_over_14_hours_from_the_sidecar_instant_is_a_correction_and_the_sidecar_wins(self):
-        for wall in ("2019:07:05 14:30:01", "2019:07:04 09:29:59"):
-            with self.subTest(wall=wall):
-                found = self.build(exif(DateTimeOriginal=wall), taken_at("2019-07-04 23:30:00"))
-                self.assertEqual(self.times(found), (None, utc("2019-07-04 23:30:00"), None, "sidecar"))
-        found = self.build(exif(DateTimeOriginal="2019:07:05 14:30:01"), taken_at("2019-07-04 23:30:00", 40.7, -74.0))
-        self.assertEqual(self.times(found), ("2019-07-04T19:30:00", utc("2019-07-04 23:30:00"), -240, "sidecar"))
 
     def test_a_difference_that_is_no_whole_quarter_hour_is_not_an_offset(self):
         for wall in ("2019:07:04 19:37:00", "2019:07:04 19:30:03", "2019:07:04 19:29:57", "2019:07:04 23:38:00"):
@@ -275,7 +257,7 @@ class CaptureAgreementTests(unittest.TestCase):
         found = self.build(exif(DateTimeOriginal="1964:03:01 10:00:00"), taken_at("1964-03-01 15:00:00"))
         self.assertEqual(self.times(found), ("1964-03-01T10:00:00", utc("1964-03-01 15:00:00"), -300, "sidecar_offset"))
         found = self.build(exif(DateTimeOriginal="1964:03:01 10:00:00"), taken_at("2001-03-01 15:00:00"))
-        self.assertEqual(self.times(found), (None, utc("2001-03-01 15:00:00"), None, "sidecar"))
+        self.assertEqual(self.times(found), ("1964-03-01T10:00:00", None, None, "unknown"))
 
     def test_a_still_whose_only_date_is_create_date_takes_the_sidecar_time(self):
         found = self.build(exif(CreateDate="2020:02:09 12:47:20"), taken_at("1979-06-15 14:00:00", 40.7, -74.0))
@@ -296,18 +278,14 @@ class CaptureAgreementTests(unittest.TestCase):
             apart = timedelta(minutes=rng.choice((rng.randrange(-900, 900), rng.randrange(-60, 61) * 15)), seconds=rng.choice((0, 0, 1, -2, 7)))
             found = self.build(exif(DateTimeOriginal=wall.strftime("%Y:%m:%d %H:%M:%S")), taken_at((wall - apart).isoformat(sep=" ")))
             self.assertOneCaptureTime(found)
-            if found.time_source == "sidecar":
-                self.assertIsNone(found.captured_local)
-                self.assertGreater(abs(apart), timedelta(hours=14))
-            else:
-                self.assertEqual(found.captured_local, wall.isoformat(timespec="seconds"))
+            self.assertEqual(found.captured_local, wall.isoformat(timespec="seconds"))
 
-    def test_a_scan_with_a_disagreeing_sidecar_within_14_hours_still_matches_its_phone_copy_by_wall_clock(self):
+    def test_a_scan_with_a_disagreeing_sidecar_still_matches_its_phone_copy_by_wall_clock(self):
         world = World(self)
         jo = world.person("jo")
         account = world.account("jo@x.test", jo)
         tags = {**exif(DateTimeOriginal="2023:11:14 22:13:20"), "IFD0:Make": "Apple", "IFD0:Model": "iPhone 15 Pro", "File:ImageWidth": 64, "File:ImageHeight": 48}
-        found = self.build(tags, taken_at("2023-11-15 03:13:25"))
+        found = self.build(tags, taken_at("1979-06-15 14:00:00"))
         world.item(jo, captured_utc=utc("2023-11-14 22:13:20"), captured_local="2023-11-14T22:13:20", width=64, height=48, suffix=".jpg")
         candidate = dedupe.candidate_of(TakeoutItem(path=self.path, sha1="", copies=(self.path,), sidecar=None), found, self.root)
         decision = dedupe.decide(world.index(account), candidate, dedupe.DedupeSettings())

@@ -350,6 +350,8 @@ class CorrectedMetadataCarryTests(CopiesCase):
 
     def test_a_date_within_14_hours_of_the_keepers_own_is_not_carried(self):
         takeout, keeper = self.pair(taken="2019:07:04 08:30:15", offset="-04:00", gps=(45.434, 12.3388))
+        takeout.sidecar_json = json.dumps({"photoTakenTime": {"timestamp": str(self.TAKEN + 8 * 3600)}, "geoData": {"latitude": 45.434, "longitude": 12.3388}})
+        self.opened.commit()
         self.assertEqual(self.resolve_for_real().removed, 1)
         self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
         self.assertFalse((self.root / takeout.path).exists())

@@ -78,6 +78,13 @@ class GapsTests(unittest.TestCase):
                                      {xmp.CREATED: "2019:07:04 14:30:15+02:00"})
                     self.assertEqual(xmp.gaps(own, {}, placed, with_date=with_date)[xmp.CREATED], "2019:07:04 14:30:15+02:00")
 
+    def test_a_correction_is_judged_at_googles_corrected_place_not_the_files_old_one(self):
+        own = {"ExifIFD:DateTimeOriginal": "2019:07:04 12:00:00", "GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
+        london = xmp.GoogleMetadata(51.5, -0.12, 1562306400.0, None)
+        self.assertEqual(xmp.gaps(own, {}, london, with_date=False)[xmp.CREATED], "2019:07:05 07:00:00+01:00")
+        same_zone = xmp.GoogleMetadata(40.8, -73.9, 1562306400.0, None)
+        self.assertNotIn(xmp.CREATED, xmp.gaps(own, {}, same_zone, with_date=False))
+
     def test_a_date_correction_takes_the_zone_of_the_files_own_offset_when_no_position_is_known(self):
         own = {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20", "ExifIFD:OffsetTimeOriginal": "-05:00"}
         google = xmp.GoogleMetadata(None, None, float(TAKEN), None)

@@ -92,9 +92,7 @@ def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, s
         return None
     if not has_date(own, still):
         return "missing" if with_date else None
-    lat, lon, _ = media.location(own)
-    utc, local, _, _ = media.capture(own, lat, lon)
-    return "corrected" if media.corrected_by(utc, None if local is None else datetime.fromisoformat(local), google.taken_utc) else None
+    return "corrected" if media.date_corrected_by(own, google.lat, google.lon, google.taken_utc) else None
 
 
 def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
