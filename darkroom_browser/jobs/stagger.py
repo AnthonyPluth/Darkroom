@@ -94,7 +94,8 @@ class Staggered:
         return f"staggered every {every(self.interval)} at the end"
 
     def room_for(self, part: dict[str, Any]) -> bool:
-        needed = part.get("bytes") if isinstance(part.get("bytes"), int) else 0
+        listed_bytes = part.get("bytes")
+        needed = listed_bytes if isinstance(listed_bytes, int) else 0
         for flight in self.flights.values():
             listed = flight.part.get("bytes")
             if isinstance(listed, int):
