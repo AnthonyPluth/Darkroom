@@ -1,10 +1,12 @@
 import dataclasses
 import random
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from darkroom.domain import dedupe
+from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage.models import MediaItem, Setting
 from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
@@ -214,6 +216,35 @@ class TierThreeTests(SinglePerson):
         self.world.item(self.jo)
         decided = dedupe.decide_all(self.world.index(self.account), list(self.pair()), OFF)
         self.assertEqual([d.tier for d in decided], [2, 3])
+
+    def test_a_localised_edited_copy_found_by_pairing_is_skipped_at_tier_three(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            year = root / "Photos from 2023"
+            year.mkdir()
+            (year / "garden.jpg").write_bytes(b"original")
+            (year / "garden-bearbeitet.jpg").write_bytes(b"edit")
+            (year / "garden.jpg.json").write_text("{}")
+            report = pairing.pair(root)
+        phone = self.world.item(self.jo)
+        items = {item.path.name: item for item in report.items}
+        original = dedupe.candidate_of(items["garden.jpg"], MediaItem(sha1=phone.sha1, phash=PHASH, captured_utc=MOMENT, captured_local=LOCAL, width=10, height=20, make="Apple", model="X"), root)
+        edited = dedupe.candidate_of(items["garden-bearbeitet.jpg"], MediaItem(sha1="e" * 40, phash=None, captured_utc=MOMENT, captured_local=LOCAL, width=10, height=20, make="Apple", model="X"), root)
+        self.assertEqual((edited.is_edited, edited.edited_of), (True, original.source_path))
+        decided = dedupe.decide_all(self.world.index(self.account), [original, edited], OFF)
+        self.assertEqual([(d.tier, d.action) for d in decided], [(1, "skip"), (3, "skip")])
+        self.assertEqual(decided[1].matched_item_id, phone.id)
+
+    def test_a_creation_found_by_pairing_is_not_an_edited_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "garden.jpg").write_bytes(b"original")
+            (root / "garden-smile.jpg").write_bytes(b"smile")
+            (root / "garden.jpg.json").write_text("{}")
+            report = pairing.pair(root)
+        smile = next(item for item in report.items if item.path.name == "garden-smile.jpg")
+        made = dedupe.candidate_of(smile, MediaItem(sha1="e" * 40, phash=None, captured_utc=MOMENT, captured_local=LOCAL, width=10, height=20, make="Apple", model="X"), root)
+        self.assertEqual((made.is_edited, made.edited_of), (False, None))
 
     def test_keeping_edited_copies_places_them(self):
         self.world.item(self.jo)

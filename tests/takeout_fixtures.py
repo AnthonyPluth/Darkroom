@@ -11,6 +11,7 @@ from tests.fixtures import media as fixtures
 
 GOOGLE_PHOTOS = "Takeout/Google Photos"
 SIDECAR_NAME_LIMIT = 46
+SUPPLEMENTAL = ".supplemental-metadata"
 FIXED_ZIP_TIME = (2026, 1, 1, 0, 0, 0)
 SIDECAR_FORMS = {
     "json": ".json",
@@ -128,11 +129,32 @@ class TakeoutBuilder:
             items.append(item)
         return items
 
-    def edited(self, base: str, extension: str, year: int = 2019, part: int = 0) -> tuple[Item, Item]:
+    def edited(self, base: str, extension: str, year: int = 2019, part: int = 0, suffix: str = "-edited") -> tuple[Item, Item]:
         original = self.photo(f"{base}{extension}", year, part=part)
-        edit = self.add(f"{base}-edited{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, None, "")
+        edit = self.add(f"{base}{suffix}{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, None, "")
         self.manifest.edited_of[edit.media_name] = original.media_name
         return original, edit
+
+    def creation(self, base: str, extension: str, suffix: str, year: int = 2019, part: int = 0) -> tuple[Item, Item]:
+        original = self.photo(f"{base}{extension}", year, part=part)
+        made = self.add(f"{base}{suffix}{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, None, "")
+        return original, made
+
+    def edited_with_counter(self, base: str, extension: str, number: int = 1, year: int = 2019, part: int = 0) -> tuple[Item, Item]:
+        original = self.photo(f"{base}{extension}", year, part=part)
+        edit = self.add(f"{base}-edited({number}){extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, None, "")
+        self.manifest.edited_of[edit.media_name] = original.media_name
+        return original, edit
+
+    def without_extension(self, stem: str, extension: str, tail: str = ".json", year: int = 2019, part: int = 0) -> Item:
+        return self.add(f"{stem}{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, (40.7, -74.0), "",
+                        sidecar_name=f"{stem}{tail}")
+
+    def cut_with_counter(self, stem: str, extension: str, number: int, cut_length: int = SIDECAR_NAME_LIMIT, year: int = 2019, part: int = 0) -> Item:
+        tag = f"({number})"
+        cut = f"{stem}{extension}{SUPPLEMENTAL}"[:cut_length]
+        return self.add(f"{stem}{tag}{extension}", self.image_bytes(extension), f"Photos from {year}", part, None, None, (40.7, -74.0), "",
+                        sidecar_name=f"{cut}{tag}.json")
 
     def live_photo(self, base: str, still_extension: str = ".HEIC", video_extension: str = ".MOV", year: int = 2019, part: int = 0,
                    video_sidecar: bool = True) -> tuple[Item, Item]:

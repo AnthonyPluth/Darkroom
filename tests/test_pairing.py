@@ -17,6 +17,8 @@ from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder, standard_expor
 YEAR = f"{GOOGLE_PHOTOS}/Photos from 2019"
 CUT = "screen_capture_of_a_chat_with_a_long_title_AAA"
 ONE, TWO = f"{CUT}_one.jpg", f"{CUT}_two.jpg"
+LONG = "a_long_name_written_by_some_messaging_app_xy"
+LOCALISED_EDITS = ("-edited", "-bearbeitet", "-modifié", "-edytowane", "-bewerkt", "-modificato", "-editat", "-ha editado", "-編集済み")
 
 
 def unzip(manifest, target):
@@ -268,6 +270,189 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(item.sidecar.name, "IMG_1.JPG.json")
         self.assertIsNone(item.edited_of)
 
+    def test_a_media_file_without_the_extension_it_was_uploaded_with_pairs_by_its_name(self):
+        for number, tail in enumerate((".json", ".supplemental-metadata.json", ".supplemental-metada.json", ".s.json")):
+            with self.subTest(tail=tail):
+                builder = TakeoutBuilder(self.root / f"bare-{number}")
+                builder.without_extension("scan20030616", ".jpg", tail)
+                _, staging = self.staged(builder)
+                report = self.pair(staging)
+                self.assertEqual(self.sidecars_of(report), {"scan20030616.jpg": f"scan20030616{tail}"})
+                self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+
+    def test_two_media_with_one_stem_do_not_claim_the_sidecar_without_an_extension(self):
+        folder = self.root / "clip"
+        folder.mkdir()
+        (folder / "clip.HEIC").write_bytes(b"still")
+        (folder / "clip.MP4").write_bytes(b"video")
+        (folder / "clip.json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {"clip.HEIC": None, "clip.MP4": None})
+        self.assertEqual([p.name for p in report.orphan_sidecars], ["clip.json"])
+
+    def test_the_sidecar_without_an_extension_does_not_replace_a_rule_that_already_paired(self):
+        folder = self.root / "both"
+        folder.mkdir()
+        (folder / "scan.jpg").write_bytes(b"x")
+        (folder / "scan.jpg.json").write_text("{}")
+        (folder / "scan.json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {"scan.jpg": "scan.jpg.json"})
+        self.assertEqual([p.name for p in report.orphan_sidecars], ["scan.json"])
+
+    def test_an_edited_copy_in_another_language_shares_its_originals_sidecar_and_is_flagged(self):
+        for number, suffix in enumerate(LOCALISED_EDITS):
+            with self.subTest(suffix=suffix):
+                builder = TakeoutBuilder(self.root / f"edit-{number}")
+                builder.edited("garden", ".jpg", suffix=suffix)
+                _, staging = self.staged(builder)
+                report = self.pair(staging)
+                original, edit = self.only(report, "garden.jpg"), self.only(report, f"garden{suffix}.jpg")
+                self.assertEqual(original.sidecar.name, "garden.jpg.json")
+                self.assertEqual(edit.sidecar, original.sidecar)
+                self.assertEqual(edit.edited_of, original.path)
+                self.assertEqual(pairing.original_name(edit.path), "garden.jpg")
+                self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+
+    def test_an_edited_suffix_matches_ignoring_case_and_unicode_composition(self):
+        folder = self.root / "composed"
+        folder.mkdir()
+        names = ("garden-BEARBEITET.jpg", "garden-modifié.jpg", "garden-Modifié.jpg")
+        (folder / "garden.jpg").write_bytes(b"original")
+        (folder / "garden.jpg.json").write_text("{}")
+        for number, name in enumerate(names):
+            (folder / name).write_bytes(f"edit {number}".encode())
+        report = self.pair(folder)
+        for name in names:
+            with self.subTest(name=name):
+                item = self.only(report, name)
+                self.assertEqual((item.sidecar.name, item.edited_of), ("garden.jpg.json", folder / "garden.jpg"))
+
+    def test_a_suffix_that_is_not_an_edited_one_is_not_an_edited_copy(self):
+        folder = self.root / "near"
+        folder.mkdir()
+        names = ("garden-edit.jpg", "garden-editor.jpg", "garden-edited-by-me.jpg")
+        (folder / "garden.jpg").write_bytes(b"original")
+        (folder / "garden.jpg.json").write_text("{}")
+        for number, name in enumerate(names):
+            (folder / name).write_bytes(f"other {number}".encode())
+        report = self.pair(folder)
+        for name in names:
+            with self.subTest(name=name):
+                item = self.only(report, name)
+                self.assertEqual((item.sidecar, item.edited_of, pairing.original_name(item.path)), (None, None, None))
+
+    def test_a_creation_uses_its_originals_sidecar_but_is_not_an_edited_copy(self):
+        for number, suffix in enumerate(("-effects", "-smile", "-mix")):
+            with self.subTest(suffix=suffix):
+                builder = TakeoutBuilder(self.root / f"creation-{number}")
+                builder.creation("garden", ".jpg", suffix)
+                _, staging = self.staged(builder)
+                report = self.pair(staging)
+                original, made = self.only(report, "garden.jpg"), self.only(report, f"garden{suffix}.jpg")
+                self.assertEqual(made.sidecar, original.sidecar)
+                self.assertEqual(made.sidecar.name, "garden.jpg.json")
+                self.assertIsNone(made.edited_of)
+                self.assertIsNone(pairing.original_name(made.path))
+                self.assertEqual(len(report.items), 2)
+                self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+
+    def test_a_creation_with_a_sidecar_of_its_own_keeps_it(self):
+        folder = self.root / "own"
+        folder.mkdir()
+        for name in ("garden.jpg", "garden-smile.jpg"):
+            (folder / name).write_bytes(name.encode())
+            (folder / f"{name}.json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {"garden.jpg": "garden.jpg.json", "garden-smile.jpg": "garden-smile.jpg.json"})
+
+    def test_an_edited_copy_with_a_counter_uses_the_original_without_the_counter(self):
+        builder = TakeoutBuilder(self.root / "counted")
+        builder.edited_with_counter("garden", ".jpg")
+        _, staging = self.staged(builder)
+        report = self.pair(staging)
+        original, edit = self.only(report, "garden.jpg"), self.only(report, "garden-edited(1).jpg")
+        self.assertEqual((edit.sidecar.name, edit.sidecar), ("garden.jpg.json", original.sidecar))
+        self.assertEqual(edit.edited_of, original.path)
+        self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+
+    def test_an_edited_copy_with_a_counter_in_another_language_uses_the_original_without_the_counter(self):
+        folder = self.root / "counted-german"
+        folder.mkdir()
+        (folder / "garden.jpg").write_bytes(b"original")
+        (folder / "garden.jpg.json").write_text("{}")
+        (folder / "garden-bearbeitet(2).jpg").write_bytes(b"edit")
+        item = self.only(self.pair(folder), "garden-bearbeitet(2).jpg")
+        self.assertEqual((item.sidecar.name, item.edited_of), ("garden.jpg.json", folder / "garden.jpg"))
+
+    def test_an_edited_copy_with_a_counter_still_takes_the_numbered_originals_sidecar(self):
+        builder = TakeoutBuilder(self.root / "numbered")
+        builder.numbered_duplicate("garden", ".jpg")
+        builder.add("garden-edited(1).jpg", builder.image_bytes(".jpg"), "Photos from 2019", 0, None, None, None, "")
+        _, staging = self.staged(builder)
+        report = self.pair(staging)
+        edit = self.only(report, "garden-edited(1).jpg")
+        self.assertEqual(edit.sidecar.name, "garden.jpg(1).json")
+        self.assertEqual(edit.edited_of, self.only(report, "garden(1).jpg").path)
+        self.assertEqual(self.only(report, "garden.jpg").sidecar.name, "garden.jpg.json")
+
+    def test_an_edited_copy_with_a_counter_does_not_pass_over_a_numbered_original_without_a_sidecar(self):
+        folder = self.root / "numbered-bare"
+        folder.mkdir()
+        for name in ("garden.jpg", "garden(1).jpg", "garden-edited(1).jpg"):
+            (folder / name).write_bytes(name.encode())
+        (folder / "garden.jpg.json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {"garden.jpg": "garden.jpg.json", "garden(1).jpg": None, "garden-edited(1).jpg": None})
+        self.assertEqual(self.only(report, "garden-edited(1).jpg").edited_of, folder / "garden(1).jpg")
+
+    def test_a_long_name_with_a_counter_pairs_with_a_sidecar_cut_before_the_counter(self):
+        for number, (counter, cut) in enumerate(((1, 46), (1, 43), (12, 46), (12, 42))):
+            with self.subTest(counter=counter, cut=cut):
+                builder = TakeoutBuilder(self.root / f"cut-{number}")
+                item = builder.cut_with_counter(LONG, ".jpg", counter, cut)
+                _, staging = self.staged(builder)
+                report = self.pair(staging)
+                self.assertEqual(self.sidecars_of(report), {item.media_name: item.sidecar_name})
+                self.assertEqual((report.orphan_sidecars, report.unpaired_media), ([], []))
+
+    def test_a_long_name_with_a_counter_does_not_pair_with_a_sidecar_cut_at_another_length(self):
+        for number, cut in enumerate((40, 42, 45, 47)):
+            with self.subTest(cut=cut):
+                builder = TakeoutBuilder(self.root / f"wrong-{number}")
+                item = builder.cut_with_counter(LONG, ".jpg", 1, cut)
+                _, staging = self.staged(builder)
+                report = self.pair(staging)
+                self.assertEqual(self.sidecars_of(report), {item.media_name: None})
+                self.assertEqual(len(report.orphan_sidecars), 1)
+
+    def test_a_long_name_with_a_counter_does_not_pair_with_another_counters_sidecar(self):
+        folder = self.root / "other-counter"
+        folder.mkdir()
+        (folder / f"{LONG}(1).jpg").write_bytes(b"x")
+        (folder / f"{LONG}.j(2).json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {f"{LONG}(1).jpg": None})
+        self.assertEqual(len(report.orphan_sidecars), 1)
+
+    def test_two_long_names_with_one_cut_and_counter_do_not_claim_the_sidecar(self):
+        builder = TakeoutBuilder(self.root / "cut-shared")
+        builder.cut_with_counter(LONG, ".jpg", 1)
+        builder.add(f"{LONG}(1).jpeg", builder.image_bytes(".jpg"), "Photos from 2019", 0, None, None, None, "")
+        _, staging = self.staged(builder)
+        report = self.pair(staging)
+        self.assertEqual(self.sidecars_of(report), {f"{LONG}(1).jpg": None, f"{LONG}(1).jpeg": None})
+        self.assertEqual(len(report.orphan_sidecars), 1)
+
+    def test_a_short_name_with_a_counter_does_not_pair_with_a_sidecar_cut_at_the_limit(self):
+        folder = self.root / "short-counter"
+        folder.mkdir()
+        (folder / "IMG_1(1).jpg").write_bytes(b"x")
+        (folder / "IMG_1.j(1).json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.sidecars_of(report), {"IMG_1(1).jpg": None})
+        self.assertEqual(len(report.orphan_sidecars), 1)
+
     def test_a_live_photo_video_pairs_with_its_still_and_keeps_its_own_sidecar(self):
         builder = TakeoutBuilder(self.root / "live")
         builder.live_photo("IMG_0010")
@@ -502,6 +687,21 @@ class PairingNamesTests(unittest.TestCase):
                 self.assertGreater(len(expected.items), 10)
                 self.assertTrue(expected.orphan_sidecars)
                 self.assertEqual(pairing.pair_names(folders, digests), expected)
+
+    def test_names_from_the_zips_give_the_walkers_report_for_the_forms_the_first_rules_missed(self):
+        builder = TakeoutBuilder(self.root / "missed", seed=21, parts=3)
+        builder.without_extension("scan20030616", ".jpg", part=0).sidecar_part = 2
+        builder.edited("garden", ".jpg", suffix="-bearbeitet", part=1)
+        builder.creation("pond", ".jpg", "-smile", part=2)
+        builder.edited_with_counter("lake", ".jpg", part=0)
+        builder.cut_with_counter(LONG, ".jpg", 1, part=1).sidecar_part = 0
+        manifest = builder.build()
+        staging = unzip(manifest, self.root / "stage-missed")
+        report = pairing.pair(staging)
+        folders, digests = listed_from_zips(manifest, staging)
+        self.assertEqual(pairing.pair_names(folders, digests, reading=zip_reader(manifest, staging)), report)
+        self.assertEqual((report.orphan_sidecars, [i.path.name for i in report.unpaired_media]), ([], []))
+        self.assertEqual(sorted(i.path.name for i in report.items if i.edited_of is not None), ["garden-bearbeitet.jpg", "lake-edited(1).jpg"])
 
     def test_the_order_folders_come_in_does_not_change_the_report(self):
         manifest = mixed_export(self.root / "order", 11, 3)
