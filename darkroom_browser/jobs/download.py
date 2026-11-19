@@ -152,9 +152,9 @@ def leads_where_checked(browser: Browser, selector: str, checked: str) -> bool:
     return bool(targets) and set(targets) == {checked}
 
 
-def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks) -> dict[int, takeout.ListedPart]:
+def part_links(ctx: JobContext, browser: Browser, google_id: str, count: int, needed: int, clicks: Clicks, wait: bool = True) -> dict[int, takeout.ListedPart]:
     try:
-        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered), google_id, needed)
+        detail = takeout.parse_archive(*open_archive(ctx, browser, takeout.archive_url(google_id), clicks.answered, wait), google_id, needed)
     except takeout.UnreadableExports as error:
         raise DownloadFailed(str(error)) from error
     if detail.state != "ready":

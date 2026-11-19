@@ -8,7 +8,8 @@ from typing import Any
 
 from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Stagger, Unreachable
 from darkroom_browser.jobs import download
-from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
+from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in, waiting_reason
+from darkroom_browser.jobs.status import SignedOut
 from darkroom_browser.jobs.telemetry import Clicks, counted
 from darkroom_browser.stall import StallWatch, Verdict
 
@@ -64,13 +65,14 @@ class Staggered:
         self.clicks = clicks
         self.flights: dict[int, Flight] = {}
         self.waiting: Waiting | None = None
+        self.signing_in: float | None = None
         self.last_click: float | None = None
         self.prompts = 0
         self.fetched = 0
         self.short_of_disk = False
 
     def say(self, message: str) -> None:
-        if self.waiting is None or not self.waiting.asking:
+        if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
             self.ctx.progress(message)
 
     def run(self) -> int:
@@ -79,7 +81,8 @@ class Staggered:
             self.ctx.check()
             self.advance_flights()
             self.advance_waiting()
-            if self.waiting is None:
+            self.advance_signing_in()
+            if self.waiting is None and self.signing_in is None:
                 self.browser.drop_strays()
                 if self.may_start():
                     self.start(self.queue.pop(0))
@@ -122,7 +125,13 @@ class Staggered:
 
     def start(self, part: dict[str, Any]) -> None:
         number = part["number"]
-        listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks)[number]
+        try:
+            listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks, wait=False)[number]
+        except SignedOut as signed_out:
+            self.requeue(part)
+            self.signing_in = self.ctx.clock()
+            self.ctx.wait_for_user(waiting_reason(signed_out.state))
+            return
         selector = download.part_link(listed.link)
         if not download.leads_where_checked(self.browser, selector, listed.href):
             raise download.DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
@@ -202,6 +211,19 @@ class Staggered:
         self.waiting = None
         ensure_signed_in(self.ctx, self.browser)
         self.ctx.progress(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
+
+    def advance_signing_in(self) -> None:
+        if self.signing_in is None:
+            return
+        state, _ = download.what_the_click_led_to(self.browser)
+        if state in SIGN_IN_STATES:
+            if self.ctx.clock() - self.signing_in > WAIT_LIMIT_SECONDS:
+                raise SignInTimedOut("nobody signed in to the right Google account within 48 hours")
+            return
+        self.signing_in = None
+        ensure_signed_in(self.ctx, self.browser)
+        self.clicks.answered()
+        self.ctx.progress("signed in")
 
     def advance_waiting(self) -> None:
         waiting = self.waiting

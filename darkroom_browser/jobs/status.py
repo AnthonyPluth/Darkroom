@@ -19,13 +19,19 @@ class ExportsUnreadable(UnexpectedPage):
     pass
 
 
+class SignedOut(Exception):
+    def __init__(self, state: str) -> None:
+        super().__init__("Takeout asked for a sign-in")
+        self.state = state
+
+
 class Loaded(NamedTuple):
     page: str
     address: str
 
 
 def open_page(ctx: JobContext, browser: Browser, url: str, ready: Callable[[str, str], bool], findings: Callable[[str, str], str], failure: str,
-              signed_in: Callable[[], None] | None = None) -> Loaded:
+              signed_in: Callable[[], None] | None = None, wait: bool = True) -> Loaded:
     page, address = "", url
     for _ in range(MAX_ROUNDS):
         browser.goto(url)
@@ -34,7 +40,10 @@ def open_page(ctx: JobContext, browser: Browser, url: str, ready: Callable[[str,
             page, address = browser.content(), browser.current_url()
             if ready(page, address):
                 return Loaded(page, address)
-            if takeout.classify(page) in SIGN_IN_STATES:
+            state = takeout.classify(page)
+            if state in SIGN_IN_STATES:
+                if not wait:
+                    raise SignedOut(state)
                 signed_out = True
                 break
             if attempt < LIST_POLLS:
@@ -55,8 +64,8 @@ def archive_ready(page: str, _address: str) -> bool:
     return takeout.archive_page_ready(page)
 
 
-def open_archive(ctx: JobContext, browser: Browser, url: str, signed_in: Callable[[], None] | None = None) -> Loaded:
-    return open_page(ctx, browser, url, archive_ready, takeout.archive_findings, "an export's own page on Takeout did not load", signed_in)
+def open_archive(ctx: JobContext, browser: Browser, url: str, signed_in: Callable[[], None] | None = None, wait: bool = True) -> Loaded:
+    return open_page(ctx, browser, url, archive_ready, takeout.archive_findings, "an export's own page on Takeout did not load", signed_in, wait)
 
 
 def with_parts(ctx: JobContext, browser: Browser, listing: takeout.ExportListing, zone: tzinfo) -> takeout.ExportListing:
