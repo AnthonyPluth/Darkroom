@@ -37,6 +37,7 @@ class StaggerBrowser(DownloadBrowser):
         self.handles = 0
 
     def flight(self, number, outcome):
+        self.awaiting = None
         self.handles += 1
         handle = f"guid-{self.handles}"
         self.flying[handle] = {"number": number, "from": self.clock.now, "outcome": outcome}
@@ -44,6 +45,7 @@ class StaggerBrowser(DownloadBrowser):
         return handle
 
     def start_download(self, selector, part):
+        self.awaiting = part.number
         self.selectors.append(selector)
         number = int(re.search(r"i=(\d+)", selector).group(1)) + 1
         self.downloaded.append(number)
@@ -102,7 +104,7 @@ class StaggerBrowser(DownloadBrowser):
 
     def drop_strays(self):
         self.strays += 1
-        last = self.downloaded[-1] if self.downloaded else None
+        last = getattr(self, "awaiting", None)
         arrived = [number for number, due in self.late.items() if due is not None and self.clock.now >= due and number != last]
         for number in arrived:
             del self.late[number]

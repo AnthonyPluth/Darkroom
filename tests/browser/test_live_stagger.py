@@ -259,6 +259,29 @@ class LiveStaggerTests(unittest.TestCase):
         (self.downloads / "guid-late-1.crdownload").write_bytes(b"l")
         self.assertEqual(self.browser.late_download(CLICK_1), "guid-late-1")
 
+    def test_a_second_download_of_a_part_already_downloading_is_cancelled_by_drop_strays(self):
+        first = self.browser.start_download(CLICK_1.selector, CLICK_1)
+        again = Download(self.downloads, "guid-again", REDIRECTED_1, "takeout-20261102T031000Z-001.zip", self.tab)
+        self.tab.emit("download", again)
+        self.assertEqual(self.browser.drop_strays(), 1)
+        self.assertTrue(again.cancelled)
+        self.assertFalse(self.tab.started[0].cancelled)
+        self.assertIn(first, self.browser.flights)
+
+    def test_a_second_download_of_a_part_kept_late_is_cancelled_by_drop_strays(self):
+        self.tab.expect_download = lambda timeout: TimedOutClick()
+        self.tab.file_after_polls = 1000
+        with self.assertRaises(TimeoutError):
+            self.browser.start_download(CLICK_1.selector, CLICK_1)
+        late = self.tab.started[0]
+        (self.downloads / "guid-1.crdownload").write_bytes(b"l")
+        self.assertEqual(self.browser.late_download(CLICK_1), "guid-1")
+        again = Download(self.downloads, "guid-again", REDIRECTED_1, "takeout-20261102T031000Z-001.zip", self.tab)
+        self.tab.emit("download", again)
+        self.browser.drop_strays()
+        self.assertEqual((late.cancelled, again.cancelled), (False, True))
+        self.assertEqual(self.browser.arrived, [])
+
     def test_a_late_download_is_kept_only_for_the_part_last_clicked(self):
         self.browser.clicked = CLICK_1.selector
         self.assertIsNone(self.browser.late_download(CLICK_1))

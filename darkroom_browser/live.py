@@ -134,6 +134,7 @@ class Live:
         self.arrived[:] = [each for each in self.arrived if each is not download]
         handle = self.own_file(download, before)
         self.flights[handle] = download
+        self.last_click = None
         return handle
 
     def late_download(self, part: PartClick) -> str | None:
@@ -143,6 +144,7 @@ class Live:
         self.arrived[:] = [each for each in self.arrived if each is not own[0]]
         handle = self.own_file(own[0], self.before_click)
         self.flights[handle] = own[0]
+        self.last_click = None
         return handle
 
     def download_state(self, handle: str) -> FolderState:

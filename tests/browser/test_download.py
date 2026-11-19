@@ -159,6 +159,7 @@ class DownloadBrowser:
         return [Look(self.current_url(), self.content(), True), *[Look(address, page, False)] * (count - 1)]
 
     def flight(self, number, outcome):
+        self.awaiting = None
         self.handles += 1
         handle = f"guid-{self.handles}"
         self.flying[handle] = {"number": number, "from": self.clock.now, "outcome": outcome}
@@ -166,6 +167,7 @@ class DownloadBrowser:
         return handle
 
     def start_download(self, selector, part):
+        self.awaiting = part.number
         self.selectors.append(selector)
         number = int(re.search(r"i=(\d+)", selector).group(1)) + 1
         self.downloaded.append(number)
@@ -231,7 +233,7 @@ class DownloadBrowser:
 
     def drop_strays(self):
         self.strays += 1
-        last = self.downloaded[-1] if self.downloaded else None
+        last = getattr(self, "awaiting", None)
         arrived = [number for number, due in self.late.items() if due is not None and self.clock.now >= due and number != last]
         for number in arrived:
             del self.late[number]
@@ -539,7 +541,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
             with self.subTest(outcome=outcome):
                 browser = DownloadBrowser([outcome])
                 with self.assertRaises(TimeoutError):
-                    browser.start_download(download.part_link("x?i=0"), None)
+                    browser.start_download(download.part_link("x?i=0"), PartClick(download.part_link("x?i=0"), "x?i=0", 1))
                 state, seen = download.what_the_click_led_to(browser)
                 self.assertEqual(state, "VERIFY_ITS_YOU")
                 self.assertTrue(seen.startswith(said), seen)
