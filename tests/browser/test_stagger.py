@@ -10,7 +10,7 @@ from darkroom.domain import events, exports
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom_browser import client, selectors
-from darkroom_browser.jobs import session
+from darkroom_browser.jobs import session, status
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from darkroom_browser.stall import FolderState
@@ -306,6 +306,30 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 2: interrupted"])
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertEqual(self.parts()[1], ("done", 2, 2))
+
+    def test_a_part_whose_page_cannot_be_read_lets_the_parts_in_flight_land_before_the_job_stops(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        real_content = browser.content
+
+        def content():
+            if browser.url == ARCHIVE and browser.downloaded == [1]:
+                return "<html><head><title>Something else</title></head><body><h1>Nothing here</h1></body></html>"
+            return real_content()
+
+        browser.content = content
+        with self.assertRaises(status.ExportsUnreadable):
+            self.run_job(browser)
+        self.assertEqual(browser.kept, [1])
+        self.assertEqual(self.parts(), [("done", 1, 1), ("pending", 0, 0), ("pending", 0, 0)])
+        self.assertIn("part 2 could not be started, so Darkroom lets the 1 part still downloading finish before it stops", self.messages())
+
+    def test_a_part_whose_page_cannot_be_read_with_nothing_in_flight_stops_at_once(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        real_content = browser.content
+        browser.content = lambda: "<html><body><h1>Nothing here</h1></body></html>" if browser.url == ARCHIVE else real_content()
+        with self.assertRaises(status.ExportsUnreadable):
+            self.run_job(browser)
+        self.assertEqual(browser.downloaded, [])
 
     def darkroom_answering(self, status, raw):
         darkroom = client.Client(self.root / "no-socket-here" / "worker-api.sock", "t" * 40)

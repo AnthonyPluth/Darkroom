@@ -16,8 +16,10 @@ from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos, remove_inbox_tree
 from darkroom_browser import client, selectors
+from darkroom_browser.jobs import session
+from darkroom_browser.stall import FolderState
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext, Look, PartClick
-from darkroom_browser.jobs import REGISTRY, download
+from darkroom_browser.jobs import REGISTRY, download, stagger
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGN_IN_NEEDED, SIGNED_IN, TOKEN_CANARY, VERIFY
 from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked, part_item, part_names
@@ -41,6 +43,7 @@ AFTER_THE_CLICK = {
     "takeout on the own tab, reauth in an earlier one": [[Look(ARCHIVE, EXPORT_PAGE, True), Look(REAUTH_URL, REAUTH_UNWORDED, False), Look(ARCHIVE, SIGNED_IN, False)]] * 3,
 }
 ARRIVES_ON = {"reauth then it arrives": 3, "unrecognised then it arrives": 4}
+QUICK = ("corrupt", "bad name", "fails")
 
 
 class DomainReporter:
@@ -102,6 +105,15 @@ class DownloadBrowser:
         self.collected = []
         self.collected_for = []
         self.looks = 0
+        self.clock = None
+        self.seconds = 60.0
+        self.flying = {}
+        self.started = []
+        self.cancelled = []
+        self.kept = []
+        self.strays = 0
+        self.late = {}
+        self.handles = 0
 
     def goto(self, url):
         self.url = url
@@ -118,7 +130,7 @@ class DownloadBrowser:
         return EXPORT_PAGE if self.url == ARCHIVE else SIGNED_IN
 
     def click(self, selector):
-        raise AssertionError("the download job only clicks through download_to")
+        raise AssertionError("the download job only clicks through start_download")
 
     def type_text(self, selector, text):
         raise AssertionError("the download job types nothing")
@@ -146,28 +158,23 @@ class DownloadBrowser:
             return [Look(address, page, True)]
         return [Look(self.current_url(), self.content(), True), *[Look(address, page, False)] * (count - 1)]
 
+    def download_to(self, selector, folder, progress=None):
+        raise AssertionError("the download job starts downloads with start_download")
+
     def download_started(self):
-        if self.arriving is None:
-            return False
-        self.arriving -= 1
-        return self.arriving <= 0
+        raise AssertionError("the download job asks for its own part's late download")
 
     def collect_download(self, folder, part, progress=None):
-        self.collected_for.append(part)
-        number = self.downloaded[-1]
-        self.collected.append(number)
-        self.arriving = None
-        return self.write_part(folder, f"takeout-20261102T031000Z-00{number}.zip", number, progress)
+        raise AssertionError("the download job keeps a late download with late_download")
 
-    def write_part(self, folder, name, number, progress):
-        path = folder / name
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
-            archive.writestr(f"Takeout/Google Photos/{number}.bin", bytes(40 * 1024))
-        if progress is not None:
-            progress(20 * 1024)
-        return path
+    def flight(self, number, outcome):
+        self.handles += 1
+        handle = f"guid-{self.handles}"
+        self.flying[handle] = {"number": number, "from": self.clock.now, "outcome": outcome}
+        self.started.append((number, self.clock.now))
+        return handle
 
-    def download_to(self, selector, folder, progress=None):
+    def start_download(self, selector, part):
         self.selectors.append(selector)
         number = int(re.search(r"i=(\d+)", selector).group(1)) + 1
         self.downloaded.append(number)
@@ -183,16 +190,57 @@ class DownloadBrowser:
             raise DownloadInterrupted("network")
         if outcome == "lease lost":
             raise Cancelled("lost")
+        return self.flight(number, outcome)
+
+    def late_download(self, part):
+        due = self.late.get(part.number)
+        if due is not None and self.clock.now >= due:
+            del self.late[part.number]
+            return self.adopted(part)
+        if self.arriving is None:
+            return None
+        self.arriving -= 1
+        if self.arriving > 0:
+            return None
+        self.arriving = None
+        return self.adopted(part)
+
+    def adopted(self, part):
+        self.collected_for.append(part)
+        self.collected.append(part.number)
+        return self.flight(part.number, "ok")
+
+    def download_state(self, handle):
+        flight = self.flying[handle]
+        elapsed = self.clock.now - flight["from"]
+        if flight["outcome"] == "stall":
+            elapsed = min(elapsed, 15 * 60.0)
+        seconds = 60.0 if flight["outcome"] in QUICK else self.seconds
+        if elapsed >= seconds:
+            return FolderState(40 * 1024, 1, False)
+        return FolderState(int(40 * 1024 * elapsed / seconds) + 1, 1, True)
+
+    def keep_download(self, handle, folder):
+        flight = self.flying.pop(handle)
+        number, outcome = flight["number"], flight["outcome"]
+        self.kept.append(number)
+        if outcome == "fails":
+            raise DownloadInterrupted("network")
         name = "Takeout.zip?" if outcome == "bad name" else f"takeout-20261102T031000Z-00{number}.zip"
         path = folder / name
         if outcome == "corrupt":
             path.write_bytes(b"PK\x03\x04 not really a zip" * 2000)
-        else:
-            with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
-                archive.writestr(f"Takeout/Google Photos/{number}.bin", bytes(40 * 1024))
-        if progress is not None:
-            progress(20 * 1024)
+            return path
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr(f"Takeout/Google Photos/{number}.bin", bytes(40 * 1024))
         return path
+
+    def cancel_download(self, handle):
+        self.cancelled.append(self.flying.pop(handle)["number"])
+
+    def drop_strays(self):
+        self.strays += 1
+        return 0
 
     def screenshot(self, path):
         path.write_bytes(b"\x89PNG")
@@ -226,9 +274,11 @@ class DownloadWorld(unittest.TestCase):
 
     def run_job(self, browser, job_id=None):
         job_id = job_id or self.claim()
+        if getattr(browser, "clock", None) is None:
+            browser.clock = self.clock
         ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
                          lambda profile: browser, threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW)
-        return job_id, download.download_export(ctx)
+        return job_id, REGISTRY["download"](ctx)
 
     def finish(self, job_id):
         with db.session(self.engine) as opened:
@@ -273,7 +323,7 @@ class DownloadJobTests(DownloadWorld):
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertIn(("progress", "verified; resuming part 2 (prompt 1 of this job, after 2 part clicks since the last answered prompt)"), self.reporter.events)
         self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
-        self.assertEqual(self.clock.slept, [download.POLL_SECONDS])
+        self.assertEqual(set(self.clock.slept), {stagger.POLL_SECONDS})
         with db.session(self.engine) as opened:
             sign_in = opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalars().all()
             self.assertEqual(len(sign_in), 1)
@@ -493,7 +543,7 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
             with self.subTest(outcome=outcome):
                 browser = DownloadBrowser([outcome])
                 with self.assertRaises(TimeoutError):
-                    browser.download_to(download.part_link("x?i=0"), self.root)
+                    browser.start_download(download.part_link("x?i=0"), None)
                 state, seen = download.what_the_click_led_to(browser)
                 self.assertEqual(state, "VERIFY_ITS_YOU")
                 self.assertTrue(seen.startswith(said), seen)
@@ -542,14 +592,14 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
 
     def test_a_download_already_under_way_before_a_retry_is_kept_rather_than_clicked(self):
         browser = DownloadBrowser(["unrecognised", "ok", "ok"])
-        original = browser.download_started
-        calls = []
+        original = browser.late_download
 
-        def started():
-            calls.append(len(browser.downloaded))
-            return len(calls) == 8 or original()
+        def under_way_by_the_retry(part):
+            if ("failed", 1) in self.reporter.events and not browser.collected:
+                return browser.adopted(part)
+            return original(part)
 
-        browser.download_started = started
+        browser.late_download = under_way_by_the_retry
         _, result = self.run_job(browser)
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.downloaded, [1, 2, 3])
@@ -561,7 +611,9 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         _, result = self.run_job(browser)
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.downloaded, [1, 1, 2, 3])
-        self.assertEqual(self.clock.slept, [download.POLL_SECONDS] * int(download.BACKOFF_SECONDS / download.POLL_SECONDS))
+        backed_off = self.clock.slept[:int(download.BACKOFF_SECONDS / stagger.POLL_SECONDS)]
+        self.assertEqual(backed_off, [stagger.POLL_SECONDS] * int(download.BACKOFF_SECONDS / stagger.POLL_SECONDS))
+        self.assertGreaterEqual(self.reporter.telemetry[1][1]["since_click"], download.BACKOFF_SECONDS)
         self.assertGreaterEqual(download.BACKOFF_SECONDS, 120)
         self.assertEqual(self.waits(), [])
         self.assertIn("part 1: clicking its link started no download (the job's own tab: page host other; no password field; an unrecognised title; 2 other headings; 1 tab open); "
@@ -607,19 +659,24 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
 
         ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
                          lambda profile: browser, cancelled, None, sleep, self.clock.monotonic, lambda: NOW)
+        browser.clock = self.clock
         with self.assertRaises(Cancelled):
-            download.download_export(ctx)
-        self.assertEqual(self.clock.slept, [download.POLL_SECONDS])
+            REGISTRY["download"](ctx)
+        self.assertEqual(self.clock.slept, [stagger.POLL_SECONDS])
         self.assertEqual(browser.downloaded, [1])
 
     def test_a_kept_download_that_breaks_counts_as_interrupted(self):
         browser = DownloadBrowser(["reauth then it arrives", "ok", "ok", "ok"])
 
-        def broken(folder, part, progress=None):
-            browser.arriving = None
+        original = browser.late_download
+
+        def broken(part):
+            if original(part) is None:
+                return None
+            browser.flying.clear()
             raise DownloadInterrupted("network")
 
-        browser.collect_download = broken
+        browser.late_download = broken
         _, result = self.run_job(browser)
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(browser.downloaded, [1, 1, 2, 3])
@@ -628,14 +685,14 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
     def test_an_interrupted_download_that_lands_on_a_prompt_counts_once_and_waits(self):
         browser = DownloadBrowser(["interrupted", "ok", "ok", "ok"])
         browser.after_click = []
-        original = browser.download_to
+        original = browser.start_download
 
-        def interrupted_onto_a_prompt(selector, folder, progress=None):
+        def interrupted_onto_a_prompt(selector, part):
             if not browser.downloaded:
                 browser.after_click = list(AFTER_THE_CLICK["reauth"])
-            return original(selector, folder, progress)
+            return original(selector, part)
 
-        browser.download_to = interrupted_onto_a_prompt
+        browser.start_download = interrupted_onto_a_prompt
         self.run_job(browser)
         self.assertEqual(self.waits(), [("waiting", "verify")])
         self.assertEqual(self.parts()[0], ("done", 2, 2))
@@ -1057,11 +1114,6 @@ class SlowDownloadBrowser(DownloadBrowser):
         self.clock = clock
         self.seconds = seconds
 
-    def download_to(self, selector, folder, progress=None):
-        path = super().download_to(selector, folder, progress)
-        self.clock.now += self.seconds
-        return path
-
 
 class TelemetryTests(DownloadWorld):
     def recorded(self, kind):
@@ -1076,20 +1128,20 @@ class TelemetryTests(DownloadWorld):
         _, result = self.run_job(browser)
         self.assertEqual([(number, body["event"]) for number, body in self.reporter.telemetry], [(1, "clicked"), (2, "clicked"), (2, "prompted"), (2, "clicked"), (3, "clicked")])
         self.assertEqual([{key: value for key, value in body.items() if key != "event"} for _, body in self.reporter.telemetry],
-                         [{"downloading": 0}, {"downloading": 0, "since_click": 1200}, {"downloading": 0, "clicks": 2, "since_click": 1200},
-                          {"downloading": 0, "since_click": 60, "since_answer": 0}, {"downloading": 0, "since_click": 1200, "since_answer": 1200}])
+                         [{"downloading": 0}, {"downloading": 1, "since_click": 600}, {"downloading": 1, "clicks": 2, "since_click": 600},
+                          {"downloading": 1, "since_click": 300, "since_answer": 290}, {"downloading": 1, "since_click": 305, "since_answer": 595}])
         self.assertEqual(self.recorded("export_part_clicked"), [
             "part 1: clicked with 0 other parts downloading, the first click of this job, no prompt answered yet in this job",
-            "part 2: clicked with 0 other parts downloading, 20 minutes after the previous click, no prompt answered yet in this job",
-            "part 2: clicked with 0 other parts downloading, 1 minute after the previous click, 0 minutes after the last answered prompt",
-            "part 3: clicked with 0 other parts downloading, 20 minutes after the previous click, 20 minutes after the last answered prompt",
+            "part 2: clicked with 1 other part downloading, 10 minutes after the previous click, no prompt answered yet in this job",
+            "part 2: clicked with 1 other part downloading, 5 minutes after the previous click, 4 minutes after the last answered prompt",
+            "part 3: clicked with 1 other part downloading, 5 minutes after the previous click, 9 minutes after the last answered prompt",
         ])
-        self.assertEqual(self.recorded("export_part_prompt"), ["part 2: Google asked to verify after 2 clicks since the last answered prompt, with 0 other parts downloading, "
-                                                               "20 minutes after the previous click, no prompt answered yet in this job"])
-        self.assertIn("downloading part 3 of 3; 20 minutes after the previous click, 20 minutes after the last answered prompt", self.messages())
-        self.assertEqual(self.messages()[-1], "downloaded 3 of 3 parts; 4 part clicks and 1 verification prompt in 1 hour 1 minute; "
-                                              "at most 2 part clicks in a row without a prompt; at most 1 part downloading at once")
-        self.assertEqual(result["telemetry"], {"clicks": 4, "prompts": 1, "most_clicks_in_a_row_without_a_prompt": 2, "most_downloading": 1})
+        self.assertEqual(self.recorded("export_part_prompt"), ["part 2: Google asked to verify after 2 clicks since the last answered prompt, with 1 other part downloading, "
+                                                               "10 minutes after the previous click, no prompt answered yet in this job"])
+        self.assertIn("downloading part 3 of 3 with 1 other part downloading; 5 minutes after the previous click, 9 minutes after the last answered prompt", self.messages())
+        self.assertEqual(self.messages()[-1], "downloaded 3 of 3 parts; 4 part clicks and 1 verification prompt in 40 minutes; "
+                                              "at most 2 part clicks in a row without a prompt; at most 2 parts downloading at once; staggered every 5 minutes at the end")
+        self.assertEqual(result["telemetry"], {"clicks": 4, "prompts": 1, "most_clicks_in_a_row_without_a_prompt": 2, "most_downloading": 2})
 
     def test_a_sign_in_at_the_start_counts_as_an_answer(self):
         browser = DownloadBrowser(["ok", "ok", "ok"])
@@ -1194,9 +1246,12 @@ class TelemetryTests(DownloadWorld):
             if url == selectors.TAKEOUT_URL and browser.downloaded == [1, 2] and not asked_again:
                 asked_again.append(4)
 
+        last_sign_in_page = []
+
         def content():
             if asked_again and asked_again[0] > 0 and browser.url == selectors.TAKEOUT_URL:
                 asked_again[0] -= 1
+                last_sign_in_page[:] = [self.clock.now]
                 return SIGN_IN_NEEDED
             return real_content()
 
@@ -1205,7 +1260,10 @@ class TelemetryTests(DownloadWorld):
         self.assertEqual(asked_again, [0])
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify"), ("waiting", "sign_in")])
         reclick = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"][2]
-        self.assertEqual((reclick["since_answer"], reclick["since_click"]), (0, 30 + 4 * 30))
+        reclicked_at = next(at for number, at in browser.started if number == 2)
+        signed_in_at = last_sign_in_page[0] + session.POLL_SECONDS
+        self.assertEqual(reclick["since_answer"], int(reclicked_at - signed_in_at))
+        self.assertGreater(reclick["since_click"] - reclick["since_answer"], 4 * 30)
 
     def test_a_sign_in_while_the_next_parts_archive_reopens_counts_as_the_answer(self):
         browser = SlowDownloadBrowser(["ok", "ok", "verify", "ok", "ok"], self.clock, 20 * 60)
@@ -1230,7 +1288,8 @@ class TelemetryTests(DownloadWorld):
         clicked = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"]
         prompted = [body for number, body in self.reporter.telemetry if body["event"] == "prompted"]
         self.assertEqual(clicked[1]["since_answer"], 0)
-        self.assertEqual((prompted[0]["clicks"], prompted[0]["since_answer"]), (2, 20 * 60))
+        self.assertEqual(prompted[0]["clicks"], 2)
+        self.assertEqual(prompted[0]["since_answer"], prompted[0]["since_click"])
 
     def test_the_words_for_long_and_short_runs(self):
         from darkroom_browser.jobs import telemetry
@@ -1259,7 +1318,8 @@ class TwoRootsDownloadTests(DownloadWorld):
         job_id = self.claim()
         ctx = JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
                          self.open_browser(browser), threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW, browser_root=self.browser_root)
-        return job_id, download.download_export(ctx)
+        browser.clock = self.clock
+        return job_id, REGISTRY["download"](ctx)
 
     def test_a_download_writes_its_parts_under_the_working_roots_inbox_and_never_under_appdata(self):
         job_id, result = self.run_apart(DownloadBrowser(["ok", "ok", "ok"]))
@@ -1338,6 +1398,26 @@ class RegistryTests(unittest.TestCase):
         kinds = self.queued_kinds()
         self.assertTrue({"noop", "connect", "schedule", "status", "download", "renew"} <= kinds)
         self.assertEqual(sorted(kinds - set(REGISTRY)), [])
+
+    def test_the_download_worlds_run_the_job_production_runs(self):
+        ran = []
+
+        def registered(ctx):
+            ran.append(ctx.job_id)
+            return {"downloaded": 0}
+
+        world = DownloadWorld("setUp")
+        world.setUp()
+        try:
+            original = REGISTRY["download"]
+            REGISTRY["download"] = registered
+            try:
+                job_id, result = world.run_job(DownloadBrowser([]))
+            finally:
+                REGISTRY["download"] = original
+        finally:
+            world.doCleanups()
+        self.assertEqual((ran, result), ([job_id], {"downloaded": 0}))
 
     def test_the_download_job_is_registered(self):
         from darkroom_browser.jobs import stagger

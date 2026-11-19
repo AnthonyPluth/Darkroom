@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from darkroom_browser import live
+from darkroom_browser.jobs import download
 from darkroom_browser.context import DownloadInterrupted, PartClick
 from darkroom_browser.stall import FolderState
 from tests.browser.test_late_download import PART_1, PART_2, REDIRECTED_1, REDIRECTED_2, Context, Tab
@@ -86,8 +87,9 @@ class LiveStaggerTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.downloads = Path(folder.name) / "downloads"
-        self.downloads.mkdir()
+        self.root = Path(folder.name)
+        self.downloads = self.root / "_inbox" / ".downloads" / "3"
+        self.downloads.mkdir(parents=True)
         self.target = Path(folder.name) / "partial"
         self.clock = Clock()
         self.tab = StaggerTab(self.clock, self.downloads)
@@ -154,15 +156,66 @@ class LiveStaggerTests(unittest.TestCase):
         self.assertEqual(self.names(), ["guid-2.crdownload"])
         self.browser.cancel_download(first)
 
-    def test_strays_are_cancelled_and_files_no_download_owns_are_removed(self):
+    def test_strays_are_cancelled_and_no_file_is_removed(self):
         own = self.browser.start_download(CLICK_1.selector, CLICK_1)
         stray = Download(self.downloads, "guid-x", REDIRECTED_2, "takeout-20261102T031000Z-002.zip", self.tab)
         self.tab.emit("download", stray)
-        (self.downloads / "guid-x.crdownload").write_bytes(b"s")
+        outside = self.root / "held.jpg"
+        outside.write_bytes(b"held")
         (self.downloads / "left-over").write_bytes(b"s")
-        self.assertEqual(self.browser.drop_strays(), 2)
+        (self.downloads / "a-link").symlink_to(outside)
+        (self.downloads / "a-folder").mkdir()
+        self.assertEqual(self.browser.drop_strays(), 1)
         self.assertTrue(stray.cancelled)
-        self.assertEqual(self.names(), [f"{own}.crdownload"])
+        self.assertFalse(self.tab.started[0].cancelled)
+        self.assertEqual(self.names(), ["a-folder", "a-link", f"{own}.crdownload", "left-over"])
+        self.assertEqual(outside.read_bytes(), b"held")
+
+    def test_a_downloads_own_files_are_removed_but_never_a_link_or_a_folder_in_their_place(self):
+        outside = self.root / "held.jpg"
+        outside.write_bytes(b"held")
+        (self.downloads / "guid-7").symlink_to(outside)
+        (self.downloads / "guid-7.crdownload").mkdir()
+        (self.downloads / "guid-8.crdownload").write_bytes(b"x")
+        (self.downloads / "foreign").write_bytes(b"f")
+        self.assertEqual(download.remove_download(self.downloads, "guid-7"), 0)
+        self.assertEqual(download.remove_download(self.downloads, "guid-8"), 1)
+        self.assertEqual(self.names(), ["foreign", "guid-7", "guid-7.crdownload"])
+        self.assertEqual(outside.read_bytes(), b"held")
+        for bad in ("../foreign", "", ".hidden", "guid/8", "x" * 65):
+            with self.assertRaises(download.DownloadsFolderRefused):
+                download.remove_download(self.downloads, bad)
+        self.assertEqual(self.names(), ["foreign", "guid-7", "guid-7.crdownload"])
+
+    def test_no_file_is_removed_once_the_download_folder_or_a_folder_above_it_is_a_link(self):
+        victim = self.root / "_inbox" / "jo" / "review" / "export-1"
+        victim.mkdir(parents=True)
+        (victim / "guid-9").write_bytes(b"held")
+        cases = {"the account's folder": self.downloads, ".downloads": self.downloads.parent, "_inbox": self.downloads.parent.parent}
+        for name, swapped in cases.items():
+            with self.subTest(name):
+                moved = swapped.with_name(swapped.name + "-moved")
+                swapped.rename(moved)
+                swapped.symlink_to(moved if name == "_inbox" else victim)
+                if name == "_inbox":
+                    target = moved / ".downloads" / "3"
+                    (target / "guid-9").write_bytes(b"held")
+                with self.assertRaises(download.DownloadsFolderRefused):
+                    download.remove_download(self.downloads, "guid-9")
+                with self.assertRaises(download.DownloadsFolderRefused):
+                    self.browser.cancel_download("guid-9")
+                self.assertEqual((victim / "guid-9").read_bytes(), b"held")
+                swapped.unlink()
+                moved.rename(swapped)
+
+    def test_a_folder_that_is_not_an_accounts_download_folder_is_refused(self):
+        for folder in (self.root / "downloads", self.root / "_inbox" / ".downloads" / "not-an-id", self.root / "_inbox" / "jo" / "3"):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "guid-1").write_bytes(b"x")
+            with self.subTest(folder=str(folder)):
+                with self.assertRaises(download.DownloadsFolderRefused):
+                    download.remove_download(folder, "guid-1")
+                self.assertTrue((folder / "guid-1").is_file())
 
     def test_a_late_download_is_kept_only_for_the_part_last_clicked(self):
         self.browser.clicked = CLICK_1.selector
