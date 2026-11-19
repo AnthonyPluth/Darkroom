@@ -479,6 +479,19 @@ class IncrementalTests(IncrementalCase):
         self.assertTrue(item.sidecar_from_still)
         self.assertEqual(xmp.GoogleMetadata.of(item.sidecar_json).lat, NEW_PLACE[0])
 
+    def test_an_own_sidecar_with_no_place_replaces_a_borrowed_one_whole_and_keeps_the_stills_place_out(self):
+        self.with_own_place()
+        self.imported(place=OLD_PLACE)
+        row = self.canal_item()
+        row.sidecar_json = json.dumps({"title": "IMG_2.JPG", "description": CANAL, "geoData": {"latitude": NEW_PLACE[0], "longitude": NEW_PLACE[1]}})
+        row.sidecar_from_still = True
+        self.world.opened.commit()
+        item, _ = self.refresh_with((0.0, 0.0), from_still=False)
+        self.assertFalse(item.sidecar_from_still)
+        stored = xmp.GoogleMetadata.of(item.sidecar_json)
+        self.assertEqual((stored.lat, stored.lon), (None, None))
+        self.assertFalse(json.loads(item.sidecar_json).get("geoData", {}).get("latitude"))
+
     def test_a_later_export_without_a_usable_sidecar_keeps_the_stored_json_and_its_flag(self):
         self.with_own_place()
         self.imported(place=OLD_PLACE)

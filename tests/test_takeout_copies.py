@@ -347,6 +347,16 @@ class CorrectedMetadataCarryTests(CopiesCase):
         self.assertFalse((self.root / f"{keeper.path}.xmp").exists())
         self.assertFalse((self.root / takeout.path).exists())
 
+    def test_an_own_sidecar_with_no_place_carries_no_place_to_the_keeper(self):
+        takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00", gps=(1.0, 2.0))
+        takeout.sidecar_json = json.dumps({"description": "Own words", "geoData": {"latitude": 0.0, "longitude": 0.0}})
+        takeout.sidecar_from_still = False
+        self.opened.commit()
+        self.assertEqual(self.resolve_for_real().removed, 1)
+        tags = self.sidecar_of(keeper)
+        self.assertNotIn("XMP-exif:GPSLatitude", tags)
+        self.assertEqual(tags["XMP-dc:Description"], "Own words")
+
     def test_a_sidecar_borrowed_from_a_still_still_fills_what_the_keeper_lacks(self):
         takeout, keeper = self.pair(taken="2020:02:09 12:47:20", offset="+01:00")
         takeout.sidecar_from_still = True
