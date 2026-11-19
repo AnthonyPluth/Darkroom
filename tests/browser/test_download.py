@@ -1339,8 +1339,10 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue({"noop", "connect", "schedule", "status", "download", "renew"} <= kinds)
         self.assertEqual(sorted(kinds - set(REGISTRY)), [])
 
-    def test_the_download_job_is_registered(self):
-        self.assertIs(REGISTRY["download"], download.download_export)
+    def test_the_download_job_is_registered_through_the_stagger_switch(self):
+        from darkroom_browser.jobs import stagger
+
+        self.assertIs(REGISTRY["download"], stagger.download_export)
 
 
 if __name__ == "__main__":
