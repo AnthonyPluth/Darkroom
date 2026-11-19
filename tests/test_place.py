@@ -157,6 +157,12 @@ class GoogleOnlyFolderTests(Household):
         self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 45.434, places=5)
         self.assertEqual((report.placed, report.sidecars), (1, 1))
 
+    def test_an_item_with_no_position_gets_a_sidecar_date_with_no_offset(self):
+        raw = takeout_json(gps=None)
+        self.place(self.entry(self.staged(), raw=raw))
+        sidecar = self.root / "jo/google-only/2019/07/IMG_0001.JPG.xmp"
+        self.assertEqual(exiftool.read([sidecar])[sidecar]["XMP-photoshop:DateCreated"], "2019:07:04 12:30:15")
+
     def test_an_account_without_its_default_person_fails(self):
         entry = self.entry(self.staged())
         with mock.patch.object(self.opened, "get", return_value=None), self.assertRaises(place.PlaceFailed):

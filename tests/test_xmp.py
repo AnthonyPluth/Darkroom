@@ -73,9 +73,17 @@ class GapsTests(unittest.TestCase):
     def test_without_the_date_target_no_date_is_written(self):
         self.assertNotIn(xmp.CREATED, xmp.gaps({}, {}, GOOGLE, with_date=False))
 
-    def test_an_unknown_offset_is_written_as_the_utc_instant(self):
+    def test_an_unknown_offset_is_written_without_one(self):
         google = xmp.GoogleMetadata(None, None, float(TAKEN), None)
-        self.assertEqual(xmp.gaps({}, {}, google, with_date=True), {xmp.CREATED: "2019:07:04 12:30:15+00:00"})
+        self.assertEqual(xmp.gaps({}, {}, google, with_date=True), {xmp.CREATED: "2019:07:04 12:30:15"})
+
+    def test_no_text_for_an_unknown_zone_carries_an_offset(self):
+        self.assertEqual(xmp.created_text(float(TAKEN), None, None), "2019:07:04 12:30:15")
+        self.assertEqual(xmp.created_text(float(TAKEN), 45.434, None), "2019:07:04 12:30:15")
+
+    def test_a_known_zone_at_utc_zero_still_writes_its_offset(self):
+        self.assertEqual(xmp.created_text(float(TAKEN), 51.5, -0.12), "2019:07:04 13:30:15+01:00")
+        self.assertEqual(xmp.created_text(1546344000.0, 51.5, -0.12), "2019:01:01 12:00:00+00:00")
 
     def test_the_offset_comes_from_the_files_own_location_when_google_has_none(self):
         google = xmp.GoogleMetadata(None, None, float(TAKEN), None)
@@ -186,6 +194,12 @@ class ChangesTests(unittest.TestCase):
 
 
 class FillTests(Folder):
+    def test_a_sidecar_for_an_unknown_zone_reads_back_a_date_with_no_offset(self):
+        photo = fixtures.make_jpeg(self.folder / "IMG_0002.JPG")
+        self.assertTrue(xmp.fill(photo, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=True))
+        created = str(tags_of(self.folder / "IMG_0002.JPG.xmp")["XMP-photoshop:DateCreated"])
+        self.assertEqual(created, "2019:07:04 12:30:15")
+
     def test_a_sidecar_carries_the_missing_fields_and_reads_back(self):
         photo = fixtures.make_jpeg(self.folder / "IMG_0001.JPG")
         before = sha1(photo)

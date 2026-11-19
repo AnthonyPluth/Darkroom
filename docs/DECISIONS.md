@@ -95,3 +95,14 @@ Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, m
 Two known gaps from review remain open in the design (the order of the reconciler and the placed-copy check; the placement cutoff when a queued copy is adopted).
 
 Everything the design says about Syncthing's REST API, Chromium in the merged image and Unraid's networking is unverified until its spikes are written up; none of it has been run.
+
+## The XMP date when the time zone is unknown (#445, 2026-11-18)
+
+**Owner decision.** [Issue #445](https://github.com/AnthonyPluth/Darkroom/issues/445) asked what `xmp.created_text` should write when a Google-only item has Google's `photoTakenTime` instant but no position to give its zone. The owner answered, relayed by the coordinating session: "when a photo's time zone is unknown, write the local time with no offset in XMP. Do not invent `+00:00`."
+
+| Item | Decision | Source |
+| --- | --- | --- |
+| `XMP-photoshop:DateCreated` with a position | Unchanged: the local time at the position's offset at that instant, with the offset | #445 |
+| `XMP-photoshop:DateCreated` with no position | The clock time with no offset (`2019:07:04 12:30:15`). With no zone known, the clock written is the UTC reading of Google's instant, so it is not a claim about where the photo was taken; the stored `captured_utc` is unchanged. Never `+00:00` | #445 |
+| Options not taken | No XMP date at all; a household default offset setting | #445 |
+
