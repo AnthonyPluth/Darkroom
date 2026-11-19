@@ -36,4 +36,7 @@
   <Config Name="DARKROOM_SECRET_KEY" Target="DARKROOM_SECRET_KEY" Default="" Mode="" Description="Leave empty: Darkroom generates the key into the appdata folder on first start. Set it only to keep the key apart from appdata." Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="POLL_SECONDS" Target="POLL_SECONDS" Default="15" Mode="" Description="How often the idle browser worker asks for a job." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
   <Config Name="BROWSER_CHANNEL" Target="BROWSER_CHANNEL" Default="chrome" Mode="" Description="chrome: Google Chrome; chromium: always the bundled Chromium." Type="Variable" Display="advanced" Required="false" Mask="false">chrome</Config>
+  <Config Name="TAKEOUT_STAGGER" Target="TAKEOUT_STAGGER" Default="0" Mode="" Description="1: start the next Takeout part's download while earlier parts still download (an experiment, see the browser docs); 0: one part at a time." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="TAKEOUT_STAGGER_MINUTES" Target="TAKEOUT_STAGGER_MINUTES" Default="10" Mode="" Description="Minutes between part clicks when staggering (1 to 120)." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+  <Config Name="TAKEOUT_STAGGER_MAX_PARTS" Target="TAKEOUT_STAGGER_MAX_PARTS" Default="2" Mode="" Description="Most parts downloading at once when staggering (2 to 4)." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
 </Container>

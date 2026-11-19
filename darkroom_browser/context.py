@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from darkroom_browser.stall import FolderState
+
 
 @dataclass(frozen=True)
 class Look:
@@ -20,6 +22,12 @@ class PartClick:
     selector: str
     href: str
     number: int
+
+
+@dataclass(frozen=True)
+class Stagger:
+    interval: float
+    most: int
 
 
 class Browser(Protocol):
@@ -44,6 +52,18 @@ class Browser(Protocol):
     def download_started(self) -> bool: ...
 
     def collect_download(self, folder: Path, part: PartClick, progress: Callable[[int], None] | None = None) -> Path: ...
+
+    def start_download(self, selector: str, part: PartClick) -> str: ...
+
+    def late_download(self, part: PartClick) -> str | None: ...
+
+    def download_state(self, handle: str) -> FolderState: ...
+
+    def keep_download(self, handle: str, folder: Path) -> Path: ...
+
+    def cancel_download(self, handle: str) -> None: ...
+
+    def drop_strays(self) -> int: ...
 
     def screenshot(self, path: Path) -> None: ...
 
@@ -101,6 +121,7 @@ class JobContext:
     clock: Callable[[], float] = time.monotonic
     wall: Callable[[], float] = time.time
     browser_root: Path | None = None
+    stagger: Stagger | None = None
 
     def state_root(self) -> Path:
         return self.photos_root / "_browser" if self.browser_root is None else self.browser_root

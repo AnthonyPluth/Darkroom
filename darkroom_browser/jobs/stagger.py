@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Stagger, Unreachable
+from darkroom_browser.jobs import download
+from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in
+from darkroom_browser.jobs.telemetry import Clicks, counted
+from darkroom_browser.stall import StallWatch, Verdict
+
+POLL_SECONDS = 5.0
+PROGRESS_SECONDS = 30.0
+FLOOR_SECONDS = 120.0
+PROMPTS_BEFORE_ONE_AT_A_TIME = 2
+DISK_SLACK = 1 << 30
+
+
+def every(interval: float) -> str:
+    minutes = interval / 60
+    return "1 minute" if minutes == 1 else f"{minutes:g} minutes"
+
+
+def backed_off(interval: float) -> float:
+    return max(interval / 2, min(interval, FLOOR_SECONDS))
+
+
+def disk_free(folder: Path) -> int:
+    return shutil.disk_usage(folder).free
+
+
+@dataclass
+class Flight:
+    part: dict[str, Any]
+    handle: str
+    watch: StallWatch
+    reported: float
+
+
+@dataclass
+class Waiting:
+    part: dict[str, Any]
+    click: PartClick
+    since: float
+    asking: bool
+    reported: bool
+    seen: str = ""
+
+
+class Staggered:
+    def __init__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str],
+                 stagger: Stagger, clicks: Clicks) -> None:
+        self.ctx = ctx
+        self.browser = browser
+        self.folder = folder
+        self.plan = plan
+        self.queue = [part for part in parts if part.get("status") != "done"]
+        self.taken = taken
+        self.interval = stagger.interval
+        self.most = stagger.most
+        self.clicks = clicks
+        self.flights: dict[int, Flight] = {}
+        self.waiting: Waiting | None = None
+        self.last_click: float | None = None
+        self.prompts = 0
+        self.fetched = 0
+        self.short_of_disk = False
+
+    def say(self, message: str) -> None:
+        if self.waiting is None or not self.waiting.asking:
+            self.ctx.progress(message)
+
+    def run(self) -> int:
+        self.ctx.progress(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
+        while self.queue or self.flights or self.waiting is not None:
+            self.ctx.check()
+            self.advance_flights()
+            self.advance_waiting()
+            if self.waiting is None:
+                self.browser.drop_strays()
+                if self.may_start():
+                    self.start(self.queue.pop(0))
+                    continue
+            if self.queue or self.flights or self.waiting is not None:
+                self.ctx.sleep(POLL_SECONDS)
+        return self.fetched
+
+    def ending(self) -> str:
+        if self.most == 1:
+            return "back to one part at a time after Google asked to verify twice"
+        return f"staggered every {every(self.interval)} at the end"
+
+    def room_for(self, part: dict[str, Any]) -> bool:
+        needed = part.get("bytes") if isinstance(part.get("bytes"), int) else 0
+        for flight in self.flights.values():
+            listed = flight.part.get("bytes")
+            if isinstance(listed, int):
+                needed += max(0, listed - self.browser.download_state(flight.handle).size)
+        return disk_free(self.folder) >= needed + DISK_SLACK
+
+    def may_start(self) -> bool:
+        if not self.queue or len(self.flights) >= self.most:
+            return False
+        if not self.flights:
+            return True
+        if self.last_click is not None and self.ctx.clock() - self.last_click < self.interval:
+            return False
+        if not self.room_for(self.queue[0]):
+            if not self.short_of_disk:
+                self.short_of_disk = True
+                self.say(f"waiting for a part to finish before starting part {self.queue[0]['number']}: the disk has too little room for another part at once")
+            return False
+        self.short_of_disk = False
+        return True
+
+    def requeue(self, part: dict[str, Any]) -> None:
+        self.queue.insert(0, part)
+
+    def start(self, part: dict[str, Any]) -> None:
+        number = part["number"]
+        listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks)[number]
+        selector = download.part_link(listed.link)
+        if not download.leads_where_checked(self.browser, selector, listed.href):
+            raise download.DownloadFailed(f"the browser could not confirm that the link to part {number} on Takeout leads to the address Darkroom checked, so Darkroom downloaded nothing")
+        reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt"})
+        if not reply.get("allowed"):
+            raise download.DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
+        clicking = PartClick(selector, listed.href, number)
+        others = counted(len(self.flights), "other part")
+        self.say(f"downloading part {number} of {self.plan['part_count']} with {others} downloading; {self.clicks.words()}")
+        self.clicks.clicked(number, len(self.flights))
+        self.last_click = self.ctx.clock()
+        try:
+            handle = self.browser.start_download(selector, clicking)
+        except Cancelled:
+            raise
+        except Exception as error:
+            self.no_download(part, clicking, isinstance(error, DownloadInterrupted))
+            return
+        self.fly(part, handle)
+
+    def fly(self, part: dict[str, Any], handle: str) -> None:
+        now = self.ctx.clock()
+        self.flights[part["number"]] = Flight(part, handle, StallWatch(now), now)
+        self.clicks.saw(len(self.flights))
+
+    def no_download(self, part: dict[str, Any], clicking: PartClick, interrupted: bool) -> None:
+        number = part["number"]
+        state, seen = download.what_the_click_led_to(self.browser)
+        if interrupted:
+            download.report_failure(self.ctx, number, "interrupted")
+            self.requeue(part)
+            if state in SIGN_IN_STATES:
+                self.prompt(Waiting(part, clicking, self.ctx.clock(), True, True))
+            return
+        if state in SIGN_IN_STATES:
+            self.prompt(Waiting(part, clicking, self.ctx.clock(), True, False))
+            return
+        self.say(f"part {number}: clicking its link started no download ({seen}); "
+                 f"waiting {int(download.BACKOFF_SECONDS // 60)} minutes in case it starts late before Darkroom tries again")
+        self.waiting = Waiting(part, clicking, self.ctx.clock(), False, False, seen)
+
+    def prompt(self, waiting: Waiting) -> None:
+        number = waiting.part["number"]
+        self.clicks.prompted(number, len(self.flights))
+        self.prompts += 1
+        self.interval = backed_off(self.interval)
+        if self.prompts >= PROMPTS_BEFORE_ONE_AT_A_TIME and self.most > 1:
+            self.most = 1
+            self.ctx.progress("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
+        self.waiting = waiting
+        self.ctx.wait_for_user("verify")
+
+    def adopt_late(self, waiting: Waiting) -> bool:
+        if waiting.reported:
+            return False
+        number = waiting.part["number"]
+        try:
+            handle = self.browser.late_download(waiting.click)
+        except Cancelled:
+            raise
+        except Exception:
+            self.waiting = None
+            download.report_failure(self.ctx, number, "interrupted")
+            self.requeue(waiting.part)
+            return True
+        if handle is None:
+            return False
+        if waiting.asking:
+            self.answered(waiting)
+        self.waiting = None
+        self.say(f"part {number} started downloading by itself; Darkroom is keeping it rather than clicking again")
+        self.fly(waiting.part, handle)
+        return True
+
+    def answered(self, waiting: Waiting) -> None:
+        self.clicks.answered()
+        self.waiting = None
+        ensure_signed_in(self.ctx, self.browser)
+        self.ctx.progress(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
+
+    def advance_waiting(self) -> None:
+        waiting = self.waiting
+        if waiting is None or self.adopt_late(waiting):
+            return
+        number = waiting.part["number"]
+        state, _ = download.what_the_click_led_to(self.browser)
+        now = self.ctx.clock()
+        if not waiting.asking:
+            if state in SIGN_IN_STATES:
+                self.prompt(Waiting(waiting.part, waiting.click, now, True, False))
+            elif now - waiting.since >= download.BACKOFF_SECONDS:
+                self.waiting = None
+                download.report_failure(self.ctx, number, "not_started", waiting.seen)
+                self.requeue(waiting.part)
+            return
+        if state in SIGN_IN_STATES:
+            if now - waiting.since > WAIT_LIMIT_SECONDS:
+                raise SignInTimedOut("nobody confirmed it was them within 48 hours")
+            return
+        if self.adopt_late(Waiting(waiting.part, waiting.click, waiting.since, False, waiting.reported)):
+            self.clicks.answered()
+            return
+        self.answered(waiting)
+        if not waiting.reported:
+            download.report_failure(self.ctx, number, download.ASKED_TO_VERIFY)
+            self.requeue(waiting.part)
+
+    def report_bytes(self, number: int, size: int) -> None:
+        try:
+            self.ctx.reporter.part(self.ctx.job_id, number, {"event": "progress", "bytes": size})
+        except (Refused, Unreachable, ValueError) as error:
+            if isinstance(error, LeaseLost):
+                raise
+            return
+
+    def advance_flights(self) -> None:
+        for number, flight in list(self.flights.items()):
+            state = self.browser.download_state(flight.handle)
+            now = self.ctx.clock()
+            verdict = flight.watch.judge(now, state)
+            if verdict is Verdict.WAIT:
+                if now - flight.reported >= PROGRESS_SECONDS:
+                    flight.reported = now
+                    self.report_bytes(number, state.size)
+                continue
+            del self.flights[number]
+            if verdict is Verdict.STALLED:
+                self.browser.cancel_download(flight.handle)
+                download.report_failure(self.ctx, number, "interrupted")
+                self.requeue(flight.part)
+                continue
+            self.land(flight)
+
+    def land(self, flight: Flight) -> None:
+        number = flight.part["number"]
+        partial = download.fresh_partial(self.folder)
+        try:
+            path = self.browser.keep_download(flight.handle, partial)
+        except Cancelled:
+            raise
+        except Exception:
+            download.report_failure(self.ctx, number, "interrupted")
+            self.requeue(flight.part)
+            return
+        self.ctx.check()
+        problem = download.problem_with(path, flight.part.get("bytes"), self.taken)
+        if problem is not None:
+            download.report_failure(self.ctx, number, problem)
+            self.requeue(flight.part)
+            return
+        size = path.stat().st_size
+        os.replace(path, self.folder / path.name)
+        os.chmod(self.folder / path.name, download.PART_MODE)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- Darkroom reads parts through the shared group, others get nothing
+        self.ctx.reporter.part(self.ctx.job_id, number, {"event": "done", "filename": path.name, "bytes": size})
+        self.taken.add(path.name)
+        self.fetched += 1
+        self.say(f"part {number} downloaded; {counted(len(self.flights), 'part')} still downloading")
+
+
+def staggered(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]:
+    assert ctx.stagger is not None
+    run = Staggered(ctx, browser, folder, plan, parts, taken, ctx.stagger, clicks)
+    return run.run(), run.ending()
+
+
+def download_export(ctx: JobContext) -> dict[str, object]:
+    if ctx.stagger is None:
+        return download.download_export(ctx)
+    return download.download_export(ctx, staggered)

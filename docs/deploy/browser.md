@@ -30,6 +30,9 @@ Chrome makes the image larger (a few hundred MB; not measured here, so check the
 | `DARKROOM_BROWSER_ROOT` | Where the browser profiles and failure captures live: `/data/browser`, set by the image. The init gives the worker the same folder as its `BROWSER_ROOT`. |
 | `POLL_SECONDS` | How often an idle worker asks for a job (15). |
 | `BROWSER_CHANNEL` | `chrome` (default): Google Chrome when the image has it; `chromium`: always the bundled Chromium. |
+| `TAKEOUT_STAGGER` | `0` (default): Takeout parts download one at a time. `1`: staggered parts, an experiment (below). Any other value stops the worker from starting, with the reason in its log. |
+| `TAKEOUT_STAGGER_MINUTES` | Minutes between part clicks when staggering, 1 to 120 (10). |
+| `TAKEOUT_STAGGER_MAX_PARTS` | Most parts downloading at once when staggering, 2 to 4 (2). |
 | `DISPLAY` | The Xvfb display (`:99`). |
 
 The init sets the worker's own `PHOTOS_ROOT`, `BROWSER_ROOT` and the pipe its token arrives on (`DARKROOM_BROWSER_TOKEN_FD`); nobody sets those by hand. The worker takes no address or port: it reaches the app only on `/run/darkroom/worker-api.sock`.
@@ -80,7 +83,7 @@ How long Google lets a download go without asking you to verify it's you again i
 - `part 3: clicked with 0 other parts downloading, 52 minutes after the previous click, 53 minutes after the last answered prompt`
 - `part 4: Google asked to verify after 2 clicks since the last answered prompt, with 0 other parts downloading, 52 minutes after the previous click, 105 minutes after the last answered prompt`
 
-"The previous click" and "the last answered prompt" are within the same job (a restarted job starts counting again). An answer is timed when the prompt is gone and Takeout is signed in again: a sign-in the job waited for at its start, one Google asked for right after a prompt, or one it asked for while the job reopened the export's page for the next part, counts as the answer at the moment it finished. The minutes in a prompt's event are those of the click that led to it. Parts download one at a time today, so the number of other parts downloading is always 0 and the summary says `at most 1 part downloading at once`; the field is there for downloads that overlap, which a later change adds. The job's message shows the same words while it runs (`downloading part 3 of 25; 52 minutes after the previous click, ...`, and after a prompt `verified; resuming part 4 (prompt 2 of this job, after 2 part clicks since the last answered prompt)`), and its last message sums it up, for example `downloaded 25 of 25 parts; 31 part clicks and 6 verification prompts in 21 hours 4 minutes; at most 9 part clicks in a row without a prompt; at most 1 part downloading at once`. The same counts are in the job's result under `telemetry`.
+"The previous click" and "the last answered prompt" are within the same job (a restarted job starts counting again). An answer is timed when the prompt is gone and Takeout is signed in again: a sign-in the job waited for at its start, one Google asked for right after a prompt, or one it asked for while the job reopened the export's page for the next part, counts as the answer at the moment it finished. The minutes in a prompt's event are those of the click that led to it. With one part at a time (the default) the number of other parts downloading is always 0 and the summary says `at most 1 part downloading at once`; with staggered downloads (below) it counts the parts still downloading at each click. The job's message shows the same words while it runs (`downloading part 3 of 25; 52 minutes after the previous click, ...`, and after a prompt `verified; resuming part 4 (prompt 2 of this job, after 2 part clicks since the last answered prompt)`), and its last message sums it up, for example `downloaded 25 of 25 parts; 31 part clicks and 6 verification prompts in 21 hours 4 minutes; at most 9 part clicks in a row without a prompt; at most 1 part downloading at once`. The same counts are in the job's result under `telemetry`.
 
 How to read them:
 
@@ -89,6 +92,23 @@ How to read them:
 - A click that comes soon after the previous click but long after the last answer, and does not prompt, means activity refreshes the window, not only an answer.
 
 The events cost nothing to record and change no part's state, Google's download count or the attempts; if Darkroom cannot record one, the download carries on.
+
+## Staggered part downloads (an experiment, off by default)
+
+Google asks you to verify it's you before most part downloads, and with one 53 GB part at a time each click comes 14 to 70 minutes after the last. Whether clicks that come closer together, inside Google's window, are asked less often is not known (spike #432). `TAKEOUT_STAGGER=1` tries it: the job clicks a part, waits `TAKEOUT_STAGGER_MINUTES`, clicks the next part while the first is still downloading, and so on, with at most `TAKEOUT_STAGGER_MAX_PARTS` parts downloading at once. When nothing is downloading the next part starts at once. With it off (the default) the job is exactly the one-part-at-a-time download described above. There is no screen for it: set the variables and restart the container.
+
+What stays the same: each click is one attempt and one of Google's 5 downloads for that part, a prompt after a click costs no attempt (`asked_to_verify`), the 3-attempt and 5-download limits and the give-up messages, the file name, size and zip checks, and a download that starts late is kept only if it is the clicked part's.
+
+What staggering changes:
+
+- **Each download is watched on its own.** The worker matches each download to the one file Chromium makes for it in `_inbox/.downloads/<account id>/` (a new file that appears after the click; if none or more than one appears, the download is cancelled and the part counted `interrupted`). A part whose own file has not grown for five minutes is cancelled and retried, whatever the other parts are doing; cancelling or failing one part removes only its own files.
+- **A prompt pauses new clicks.** When a click leads to Google's prompt, the job waits for you as before ("waiting for you", reason `verify`, and the "Google sign-in needed" alert and email), starts no new part until the prompt is answered, and keeps watching the parts already downloading: they carry on, finish and are recorded while it waits, and are neither cancelled nor counted again. Afterwards the prompted part is clicked again first.
+- **The interval backs off.** Each prompt after a click while staggering halves the interval for later clicks, never below 2 minutes (or below the configured interval when that is shorter): 10, 5, 2.5, 2, 2 minutes. After the second prompt in a job, the job goes back to one part at a time for the rest of that job and says so in its message. A setting that does not help therefore costs at most two prompts more than one part at a time would; the next job starts again from the configured values.
+- **Disk.** A part is started next to others only when the share has room for what the downloads in flight still need plus the new part (Takeout's listed sizes) and 1 GB to spare; otherwise the job says it is waiting for a part to finish and starts the next one when it has.
+- **A restart** (a lost lease, a crash, the container stopping) returns every part that was downloading to pending, the same as for one part today, and the next job empties Chromium's download folder and clicks them again. A part that gives up also returns the other parts that were downloading to pending, so a failed export never shows a part as still downloading.
+- **Job messages** name how many other parts are downloading at each click (`downloading part 3 of 25 with 1 other part downloading; 10 minutes after the previous click, ...`), and the last message ends with the interval the job finished on or that it went back to one part at a time.
+
+Read the result in the event log as the section above says: `export_part_clicked` events now show "with 1 other part downloading" and the summary "at most 2 parts downloading at once". Clicks that keep starting without a prompt mean the interval is inside Google's window; prompts that come back at a steady number of minutes after the last answer, whatever the interval, mean the window runs from the answer, not from the last click. Unverified until you run it: whether Google or Chrome limits parallel Takeout downloads, and whether a click inside the window avoids the prompt at all.
 
 ## The browser profiles in appdata (the one container)
 

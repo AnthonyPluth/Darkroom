@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from darkroom_browser.context import Stagger
+
 MIN_TOKEN = 32
+STAGGER_MINUTES = (1, 120)
+STAGGER_PARTS = (2, 4)
+DEFAULT_STAGGER_MINUTES = "10"
+DEFAULT_STAGGER_PARTS = "2"
 
 
 def env(name: str, default: str = "") -> str:
@@ -41,6 +47,23 @@ class Settings:
     poll_seconds: float
     worker_name: str
     browser_root: Path | None = None
+    stagger: str = "0"
+    stagger_minutes: str = DEFAULT_STAGGER_MINUTES
+    stagger_parts: str = DEFAULT_STAGGER_PARTS
+
+
+def whole_in(raw: str, bounds: tuple[int, int]) -> int | None:
+    if not raw.isascii() or not raw.isdigit():
+        return None
+    value = int(raw)
+    return value if bounds[0] <= value <= bounds[1] else None
+
+
+def stagger_of(settings: Settings) -> Stagger | None:
+    minutes, parts = whole_in(settings.stagger_minutes, STAGGER_MINUTES), whole_in(settings.stagger_parts, STAGGER_PARTS)
+    if settings.stagger != "1" or minutes is None or parts is None:
+        return None
+    return Stagger(minutes * 60.0, parts)
 
 
 def load() -> Settings:
@@ -51,6 +74,9 @@ def load() -> Settings:
         poll_seconds=float(env("POLL_SECONDS", "15")),
         worker_name=env("WORKER_NAME") or platform.node() or "browser-worker",
         browser_root=Path(env("BROWSER_ROOT")) if env("BROWSER_ROOT") else None,
+        stagger=env("TAKEOUT_STAGGER") or "0",
+        stagger_minutes=env("TAKEOUT_STAGGER_MINUTES") or DEFAULT_STAGGER_MINUTES,
+        stagger_parts=env("TAKEOUT_STAGGER_MAX_PARTS") or DEFAULT_STAGGER_PARTS,
     )
 
 
@@ -77,4 +103,10 @@ def problems(settings: Settings) -> list[str]:
         found.append("BROWSER_ROOT must not be PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it")
     if settings.poll_seconds < 1:
         found.append("POLL_SECONDS must be at least 1")
+    if settings.stagger not in ("0", "1"):
+        found.append("TAKEOUT_STAGGER must be 0 (one Takeout part at a time) or 1 (staggered parts)")
+    if whole_in(settings.stagger_minutes, STAGGER_MINUTES) is None:
+        found.append(f"TAKEOUT_STAGGER_MINUTES must be a whole number of minutes from {STAGGER_MINUTES[0]} to {STAGGER_MINUTES[1]}")
+    if whole_in(settings.stagger_parts, STAGGER_PARTS) is None:
+        found.append(f"TAKEOUT_STAGGER_MAX_PARTS must be a whole number from {STAGGER_PARTS[0]} to {STAGGER_PARTS[1]}")
     return found

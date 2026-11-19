@@ -40,6 +40,18 @@ def folder_state(folder: Path) -> FolderState:
     return FolderState(size, files, in_progress)
 
 
+def file_state(folder: Path, handle: str) -> FolderState:
+    for name, in_progress in ((handle + IN_PROGRESS_SUFFIX, True), (handle, False)):
+        path = folder / name
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            return FolderState(path.stat().st_size, 1, in_progress)
+        except FileNotFoundError:
+            continue
+    return FolderState(0, 0, False)
+
+
 class StallWatch:
     def __init__(self, started: float, stall_seconds: float = STALL_SECONDS, settle_seconds: float = SETTLE_SECONDS) -> None:
         self.stall_seconds = stall_seconds

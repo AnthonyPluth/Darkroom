@@ -127,6 +127,10 @@ def give_up(opened: Session, export: Export, part: ExportPart, now: float) -> No
     part.status = "failed"
     part.bytes_done = None
     export.status = "failed"
+    for other in exports.parts_of(opened, export.id):
+        if other.id != part.id and other.status == "downloading":
+            other.status = "pending"
+            other.bytes_done = None
     events.record(opened, now, "export_part_failed", str(export.id), f"part {part.number}: {part.attempts} attempts, {part.downloads_used} downloads used")
 
 

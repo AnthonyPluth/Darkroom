@@ -75,7 +75,9 @@ class Clicks:
         self.clicks += 1
         self.since_answer += 1
         self.in_a_row += 1
-        self.most_downloading = max(self.most_downloading, downloading + 1)
+
+    def saw(self, downloading: int) -> None:
+        self.most_downloading = max(self.most_downloading, downloading)
 
     def prompted(self, number: int, downloading: int) -> None:
         self.send(number, {"event": "prompted", "downloading": downloading, "clicks": self.since_answer} | self.last_gaps)
