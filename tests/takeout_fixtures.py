@@ -202,3 +202,13 @@ def standard_export(root: Path, seed: int = 0, parts: int = 2) -> Manifest:
     builder.orphan_sidecar("IMG_9999.JPG")
     builder.non_media()
     return builder.build()
+
+
+def corrupt_compressed_stream(path: Path, name: str, keep: int = 0) -> None:
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo(name)
+    raw = bytearray(path.read_bytes())
+    local = info.header_offset
+    start = local + 30 + int.from_bytes(raw[local + 26:local + 28], "little") + int.from_bytes(raw[local + 28:local + 30], "little")
+    raw[start + keep:start + info.compress_size] = b"\xff" * (info.compress_size - keep)
+    path.write_bytes(bytes(raw))
