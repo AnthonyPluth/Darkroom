@@ -38,7 +38,7 @@ jobs:
     permissions:
       contents: read           # the checkout; the pull request is pushed with the App token
       issues: write            # the migration issue
-    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@58c0f754fc1d5391ce1a96cdc7463e212976dd34   # v4.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@1ba44a8f0b92f5205e9be1501979b6ac9cd9377e   # v5.0.0
     with:
       app-id: ${{ vars.FLEET_BOT_APP_ID }}
       dry-run: ${{ inputs.dry-run || false }}
