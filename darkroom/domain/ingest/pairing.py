@@ -14,6 +14,8 @@ from darkroom.storage import paths
 
 SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
+METADATA_TAIL = ".metadata"
+MOTION_CLIP_SUFFIX = ".mp"
 EDITED = "-edited"
 YEAR_FOLDER = re.compile(r"^Photos from \d{4}$")
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
@@ -44,6 +46,7 @@ class TakeoutItem:
     in_year_folder: bool = False
     edited_of: Path | None = None
     live_pair_of: Path | None = None
+    sidecar_from_still: bool = False
 
 
 @dataclass
@@ -59,7 +62,7 @@ def stem_of(sidecar: str) -> str:
 
 
 def is_family_tail(tail: str) -> bool:
-    return tail.startswith(".") and SUPPLEMENTAL.startswith(tail)
+    return tail == METADATA_TAIL or (tail.startswith(".") and SUPPLEMENTAL.startswith(tail))
 
 
 def exact(media_path: Path, sidecars: Sidecars) -> Path | None:
@@ -298,6 +301,9 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
             item.edited_of = original_item.path if original_item else None
         if item.path.suffix.lower() in media.VIDEO_SUFFIXES:
             item.live_pair_of = live_still(item, by_copy)
+            if item.sidecar is None and item.live_pair_of is not None:
+                item.sidecar = by_copy[item.live_pair_of].sidecar
+                item.sidecar_from_still = item.sidecar is not None
     report.unpaired_media = [item for item in report.items if item.sidecar is None]
     report.orphan_sidecars = sorted(p for p in json_files if p not in used)
     return report
@@ -316,8 +322,9 @@ def slots_of(copies: list[tuple[Path, Path | None]]) -> list[list[tuple[Path, Pa
 
 
 def live_still(video: TakeoutItem, by_copy: dict[Path, TakeoutItem]) -> Path | None:
+    stems = {video.path.stem.lower()} | ({video.path.name.lower()} if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else set())
     stills = {
         item.path for sibling, item in by_copy.items()
-        if sibling.parent == video.path.parent and sibling.stem.lower() == video.path.stem.lower() and sibling.suffix.lower() in STILL_SUFFIXES
+        if sibling.parent == video.path.parent and sibling.stem.lower() in stems and sibling.suffix.lower() in STILL_SUFFIXES
     }
     return next(iter(stills)) if len(stills) == 1 else None

@@ -3,6 +3,7 @@ import random
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -28,8 +29,8 @@ class CandidateTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
 
-    def build(self, path, side, **kwargs):
-        item = TakeoutItem(path=path, sha1="", copies=(path,), sidecar=None)
+    def build(self, path, side, from_still=False, **kwargs):
+        item = TakeoutItem(path=path, sha1="", copies=(path,), sidecar=None, sidecar_from_still=from_still)
         tags = exiftool.read([path])[path]
         return metadata.candidate(item, tags, side, 1, "x/y.jpg", 50.0, **kwargs)
 
@@ -116,6 +117,27 @@ class CandidateTests(unittest.TestCase):
         path = fixtures.make_video(self.root / "v.mov", creation="2019:07:04 08:30:15-04:00")
         found = self.build(path, parsed(10.0, 20.0, taken=TAKEN + 3600))
         self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes, found.captured_local), (float(TAKEN), "exif_offset", -240, "2019-07-04T08:30:15"))
+
+    def test_a_video_without_a_date_takes_the_position_and_time_of_its_stills_sidecar(self):
+        path = fixtures.make_video(self.root / "v.mp4")
+        found = self.build(path, parsed(40.7, -74.0), from_still=True)
+        self.assertEqual((found.lat, found.lon, found.gps_source), (40.7, -74.0, "google"))
+        self.assertEqual((found.captured_utc, found.time_source, found.offset_minutes), (float(TAKEN), "sidecar", -240))
+
+    def test_a_video_with_its_own_date_and_position_keeps_them_over_its_stills_sidecar(self):
+        path = fixtures.make_video(self.root / "v.mp4", quicktime_utc="2019:07:04 12:30:15", gps=(40.7, -74.0))
+        found = self.build(path, parsed(10.0, 20.0, taken=TAKEN + 7200), from_still=True)
+        self.assertEqual((found.captured_utc, found.time_source), (float(TAKEN), "quicktime_utc"))
+        self.assertEqual((found.lat, found.lon), (40.7, -74.0))
+
+    def test_a_video_with_only_a_local_date_keeps_it_and_takes_no_instant_from_its_stills_sidecar(self):
+        path = fixtures.make_video(self.root / "v.mp4")
+        item = TakeoutItem(path=path, sha1="", copies=(path,), sidecar=None, sidecar_from_still=True)
+        local = media.fingerprint(path, {"Keys:CreationDate": "2019:07:04 08:30:15"}, path)
+        with mock.patch.object(media, "fingerprint", return_value=local):
+            found = metadata.candidate(item, {}, parsed(40.7, -74.0), 1, "x/y.mp4", 50.0)
+        self.assertEqual((found.captured_local, found.captured_utc, found.time_source), (local.captured_local, local.captured_utc, local.time_source))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (40.7, -74.0, "google"))
 
     def test_the_raw_sidecar_is_kept(self):
         path = fixtures.make_jpeg(self.root / "a.jpg")
@@ -290,7 +312,7 @@ class CountsTests(unittest.TestCase):
                 with zipfile.ZipFile(part) as archive:
                     archive.extractall(staging)
             counts = metadata.summarize(pairing.pair(staging))
-        self.assertEqual(counts.unpaired, 2)
+        self.assertEqual(counts.unpaired, 1)
         self.assertEqual(counts.orphans, 1)
         self.assertEqual(counts.edited, 1)
         self.assertEqual(counts.live_pairs, 2)

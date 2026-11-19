@@ -18,6 +18,7 @@ SIDECAR_FORMS = {
     "truncated": ".supplemental-metada.json",
     "short": ".supplemental-me.json",
     "tiny": ".s.json",
+    "metadata": ".metadata.json",
 }
 
 
