@@ -409,6 +409,9 @@ class ImportView(TypedDict):
     missing_gps: int
     failed: int
     unmatched_by_person: dict[str, int]
+    not_imported: dict[str, int] | None
+    orphan_sidecars: int | None
+    unpaired_media: int | None
     error: str | None
 
 

@@ -127,6 +127,14 @@ class TakeoutBuilder:
         self.extra_files.append((part, name, self.sidecar_json(media_name, 1_400_000_000, None, "")))
         self.manifest.orphan_sidecars.append(name)
 
+    def video(self, name: str, year: int = 2019, form: str | None = "json", part: int = 0) -> Item:
+        return self.add(name, self.video_bytes(), f"Photos from {year}", part, form, None, None, "")
+
+    def loose_file(self, name: str, data: bytes = b"made-up bytes", year: int = 2019, part: int = 0) -> str:
+        path = f"{GOOGLE_PHOTOS}/Photos from {year}/{name}"
+        self.extra_files.append((part, path, data))
+        return path
+
     def non_media(self, part: int = 0) -> None:
         for name, data in (("Takeout/archive_browser.html", b"<html>archive</html>"),
                            (f"{GOOGLE_PHOTOS}/print-subscriptions.json", b"[]"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,7 @@ class World:
         self.settings = settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=str(self.base / "data"), **immich_env)
         self.recorder = Recorder()
         self.tools = run.Tools(notifier=self.recorder)
+        self.extra_items: Callable[[TakeoutBuilder], object] | None = None
 
     def reopen(self) -> Session:
         self.opened.rollback()
@@ -134,6 +136,8 @@ class World:
         builder.photo("IMG_2001.JPG", gps=(45.4, 12.3), description="A made-up canal")
         builder.photo("IMG_2002.JPG", gps=None, part=1)
         self.original("jo", "IMG_3001.JPG", builder.image_bytes(".JPG"))
+        if self.extra_items is not None:
+            self.extra_items(builder)
         return builder.build().parts
 
     def hand_dropped(self) -> Export:
