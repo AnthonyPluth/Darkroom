@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 NNBSP = " "
 COMPLETED_ID = "0a1b2c3d-1111-4aaa-8bbb-000000000001"
 EXPIRED_ID = "0a1b2c3d-2222-4aaa-8bbb-000000000002"
@@ -123,3 +125,63 @@ def archive(google_id: str = COMPLETED_ID, status: str = "Completed", created: s
 <div role="main"><c-wiz><div><div data-export-type="1" data-download-quota-exceeded="false" data-job-id="{google_id}" data-retry-archive-count="0"><div><div><div>
 <h2><div>SUMMARY</div></h2><ul><div><div><div style="display: none;"><div>Loading export summary...</div></div><div><span>Export summary</span></div><div>{summary_items}</div></div></div>{report}</ul><hr></div>
 {section}</div></div></div></c-wiz></div></body></html>"""
+
+
+EXPORT_ARITY = 32
+SCHEDULE_ID = "0a1b2c3d-9999-4aaa-8bbb-000000000009"
+DOWNLOAD_RECORD = ("made-up-download-a", "made-up-download-b", "made-up-download-c")
+
+
+def embedded_part(name: str, size: int, index: int, downloads: int = 0) -> list[object]:
+    return [name, size, downloads, None, [list(DOWNLOAD_RECORD) for _ in range(downloads)] or None, 7, None, "made-up-kind", index]
+
+
+def embedded_parts(sizes: tuple[int, ...] = SIZES, downloaded: tuple[int, ...] = (), names: list[str] | None = None) -> list[list[object]]:
+    names = names or part_names(len(sizes))
+    return [embedded_part(names[index], size, index, 2 if index + 1 in downloaded else 0) for index, size in enumerate(sizes)]
+
+
+def embedded_export(google_id: str, created_ms: int, expires_ms: int | None, parts: list[list[object]] | None = None, expired: bool = False,
+                    total: int = 0) -> list[object]:
+    export: list[object] = [None] * EXPORT_ARITY
+    export[1] = google_id
+    export[6] = created_ms - 987_654
+    export[7] = [[None, None, None, None, total]]
+    export[22] = export[23] = created_ms
+    if expired:
+        export[5], export[25] = "made-up-expired", expires_ms
+    else:
+        export[4], export[24], export[8] = "made-up-ready", expires_ms, parts
+        if parts is not None:
+            export[27] = ["archive_browser.html", 1234, 0, None, None, 7, None, "made-up-report", 0]
+    return export
+
+
+def schedule() -> list[object]:
+    return [SCHEDULE_ID, 2, 12, 11, "made-up-schedule"]
+
+
+def list_blocks(exports: list[list[object]]) -> dict[str, object]:
+    return {"ds:0": [exports[:1], "made-up", exports, [schedule()], 4],
+            "ds:1": [[[None, export] for export in exports], None, [schedule()], "made-up", 5, ["made-up", "made-up"]],
+            "ds:2": [[f"made-up-product-{number}", number, [f"made-up-{number}"] * 3] for number in range(40)]}
+
+
+def detail_blocks(exports: list[list[object]]) -> dict[str, object]:
+    return {"ds:0": list_blocks(exports)["ds:1"]}
+
+
+def callback(key: str, data: object = None, raw: str | None = None) -> str:
+    value = json.dumps(data) if raw is None else raw
+    return f"<script nonce=\"made-up\">AF_initDataCallback({{key: '{key}', hash: '1', data:{value}, sideChannel: {{}}}});</script>"
+
+
+OTHER_CALLBACK = "<script nonce=\"made-up\">AF_initDataCallback({key: 'made-up', isError: false, hash: '2', data:[1, 2], sideChannel: {}});</script>"
+
+
+def with_blocks(page: str, blocks: dict[str, object] | list[str], order: list[str] | None = None) -> str:
+    if isinstance(blocks, dict):
+        scripts = [callback(key, blocks[key]) for key in (order or list(blocks))] + [OTHER_CALLBACK]
+    else:
+        scripts = blocks
+    return page.replace("</body>", "".join(scripts) + "</body>")
