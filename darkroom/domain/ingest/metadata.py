@@ -70,9 +70,18 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
     dated = scan_dates_dropped(item, tags, sidecar)
     print_ = media.fingerprint(opened or item.path, dated, item.path)
     lat, lon, gps_source = print_.lat, print_.lon, print_.gps_source
+    place_replaced = False
     if sidecar is not None and sidecar.lat is not None and sidecar.lon is not None and not media.same_place(lat, lon, sidecar.lat, sidecar.lon):
-        lat, lon, gps_source = sidecar.lat, sidecar.lon, "google"
+        lat, lon, gps_source, place_replaced = sidecar.lat, sidecar.lon, "google", True
     utc, local, offset, time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
+    if place_replaced and time_source == "gps_lookup" and local is not None and lat is not None and lon is not None:
+        stamped = datetime.fromisoformat(local)
+        looked_up = timezones.offset_minutes(lat, lon, stamped)
+        moved = None if looked_up is None else media.utc_or_none(stamped, looked_up)
+        if looked_up is not None and moved is not None:
+            utc, offset = moved + media.seconds_fraction(dated), looked_up
+        else:
+            utc, offset, time_source = None, None, "unknown"
     if time_source == "quicktime_utc" and utc is not None and offset is None:
         local, offset = media.wall_clock_at(utc, lat, lon)
     moment = moment_of(sidecar)

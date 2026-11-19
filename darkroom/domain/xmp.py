@@ -76,24 +76,39 @@ def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
     return own_lat is None or not media.same_place(own_lat, own_lon, lat, lon)
 
 
-def date_wanted(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool) -> bool:
+def corrected_text(utc: float, lat: float | None, lon: float | None, own_offset: int | None) -> str | None:
+    try:
+        moment = datetime.fromtimestamp(utc, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+    offset = timezones.offset_at(lat, lon, moment) if lat is not None and lon is not None else own_offset
+    if offset is None:
+        return None
+    return f"{moment + timedelta(minutes=offset):%Y:%m:%d %H:%M:%S}{offset_text(offset)}"
+
+
+def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool) -> str | None:
     if google.taken_utc is None:
-        return False
+        return None
     if not has_date(own, still):
-        return with_date
+        return "missing" if with_date else None
     lat, lon, _ = media.location(own)
     utc, local, _, _ = media.capture(own, lat, lon)
-    return media.corrected_by(utc, None if local is None else datetime.fromisoformat(local), google.taken_utc)
+    return "corrected" if media.corrected_by(utc, None if local is None else datetime.fromisoformat(local), google.taken_utc) else None
 
 
 def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
     fields: dict[str, str] = {}
     if google.lat is not None and google.lon is not None and place_set_by_google(own, google.lat, google.lon) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
         fields[LATITUDE], fields[LONGITUDE] = f"{google.lat:.7f}", f"{google.lon:.7f}"
-    if google.taken_utc is not None and date_wanted(own, google, with_date, still) and not has_tag(existing, CREATED):
+    kind = date_kind(own, google, with_date, still)
+    if google.taken_utc is not None and kind is not None and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
-        created = created_text(google.taken_utc, lat, lon)
+        if kind == "missing":
+            created = created_text(google.taken_utc, lat, lon)
+        else:
+            created = corrected_text(google.taken_utc, lat, lon, media.capture(own, own_lat, own_lon)[2])
         if created is not None:
             fields[CREATED] = created
     if google.description is not None and not has_description(own) and not has_tag(existing, DESCRIPTION):
@@ -120,6 +135,13 @@ def place_refreshable(own: dict[str, object], old: GoogleMetadata, new: GoogleMe
     return old.lat is not None or place_set_by_google(own, new.lat, new.lon)
 
 
+def nothing_written_for(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata) -> bool:
+    if old.lat is None or old.lon is None or has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE):
+        return False
+    own_lat, own_lon, _ = media.location(own)
+    return own_lat is not None and media.same_place(own_lat, own_lon, old.lat, old.lon)
+
+
 def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> dict[str, str]:
     fields: dict[str, str] = {}
     described = new.description is not None and new.description != old.description and not has_description(own)
@@ -127,7 +149,7 @@ def changes(own: dict[str, object], existing: dict[str, object], old: GoogleMeta
         fields[DESCRIPTION] = new.description
     if place_refreshable(own, old, new):
         lat, lon, _ = media.location(existing)
-        if new.lat is not None and new.lon is not None and media.same_place(lat, lon, old.lat, old.lon):
+        if new.lat is not None and new.lon is not None and (media.same_place(lat, lon, old.lat, old.lon) or nothing_written_for(own, existing, old)):
             fields[LATITUDE], fields[LONGITUDE] = f"{new.lat:.7f}", f"{new.lon:.7f}"
     return fields
 

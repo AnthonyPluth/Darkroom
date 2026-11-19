@@ -225,6 +225,13 @@ class CaptureAgreementTests(unittest.TestCase):
                 self.assertEqual(found.offset_minutes, minutes)
                 self.assertEqual(found.captured_utc, None if minutes is None else utc("2019-07-04 23:30:00"))
 
+    def test_a_looked_up_offset_follows_the_sidecar_place_that_replaced_the_files_own(self):
+        tags = {**exif(DateTimeOriginal="2019:07:04 12:30:15"), "Composite:GPSLatitude": 40.7, "Composite:GPSLongitude": -74.0}
+        found = self.build(tags, taken_at("2019-07-04 03:30:15", 35.68, 139.69))
+        self.assertEqual(self.times(found), ("2019-07-04T12:30:15", utc("2019-07-04 03:30:15"), 540, "gps_lookup"))
+        self.assertEqual((found.lat, found.lon, found.gps_source), (35.68, 139.69, "google"))
+        self.assertOneCaptureTime(found)
+
     def test_a_wall_clock_over_14_hours_from_the_sidecar_instant_is_a_correction_and_the_sidecar_wins(self):
         for wall in ("2019:07:05 14:30:01", "2019:07:04 09:29:59"):
             with self.subTest(wall=wall):
