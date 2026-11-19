@@ -240,7 +240,11 @@ class DownloadBrowser:
 
     def drop_strays(self):
         self.strays += 1
-        return 0
+        arrived = [number for number, due in self.late.items() if self.clock.now >= due]
+        for number in arrived:
+            del self.late[number]
+            self.cancelled.append(number)
+        return len(arrived)
 
     def screenshot(self, path):
         path.write_bytes(b"\x89PNG")
@@ -605,6 +609,27 @@ class GooglesPromptAfterTheClickTests(DownloadWorld):
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(browser.collected, [1])
         self.assertEqual(self.parts()[0], ("done", 2, 2))
+
+    def test_a_download_that_arrives_while_the_last_back_off_poll_reads_the_tabs_is_kept_not_cancelled(self):
+        browser = DownloadBrowser(["unrecognised", "ok", "ok"])
+        clicked, real_start, real_tabs = [], browser.start_download, browser.tabs
+
+        def start_download(selector, part):
+            clicked.append(self.clock.now)
+            return real_start(selector, part)
+
+        def tabs():
+            if len(clicked) == 1 and self.clock.now - clicked[0] >= download.BACKOFF_SECONDS and 1 not in browser.late:
+                browser.late[1] = self.clock.now
+            return real_tabs()
+
+        browser.start_download, browser.tabs = start_download, tabs
+        _, result = self.run_job(browser)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(browser.downloaded, [1, 2, 3])
+        self.assertEqual((browser.collected, browser.cancelled), ([1], []))
+        self.assertNotIn(("failed", 1), self.reporter.events)
+        self.assertEqual(self.parts()[0], ("done", 1, 1))
 
     def test_an_unrecognised_page_backs_off_between_attempts_and_says_what_it_saw(self):
         browser = DownloadBrowser(["unrecognised", "ok", "ok", "ok"])

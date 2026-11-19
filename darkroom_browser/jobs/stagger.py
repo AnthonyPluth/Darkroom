@@ -266,7 +266,7 @@ class Staggered:
         if not waiting.asking:
             if state in SIGN_IN_STATES:
                 self.prompt(Waiting(waiting.part, waiting.click, now, True, False))
-            elif now - waiting.since >= download.BACKOFF_SECONDS:
+            elif now - waiting.since >= download.BACKOFF_SECONDS and not self.adopt_late(waiting):
                 self.waiting = None
                 download.report_failure(self.ctx, number, "not_started", waiting.seen)
                 self.requeue(waiting.part)
