@@ -106,6 +106,11 @@ class GapsTests(unittest.TestCase):
                 fields = xmp.gaps(own, {}, xmp.GoogleMetadata(None, None, float(TAKEN), None), with_date=False)
                 self.assertNotIn(xmp.CREATED, fields)
 
+    def test_a_sidecar_borrowed_from_a_still_fills_gaps_and_corrects_nothing(self):
+        own = {"ExifIFD:DateTimeOriginal": "2020:02:09 12:47:20", "GPS:GPSLatitude": 1.0, "GPS:GPSLongitude": 2.0}
+        self.assertEqual(xmp.gaps(own, {}, GOOGLE, with_date=True, corrects=False), {xmp.DESCRIPTION: "A made-up square"})
+        self.assertEqual(set(xmp.gaps({}, {}, GOOGLE, with_date=True, corrects=False)), {xmp.LATITUDE, xmp.LONGITUDE, xmp.CREATED, xmp.DESCRIPTION})
+
     def test_a_wall_clock_in_a_daylight_saving_overlap_is_judged_against_both_possible_instants(self):
         own = {"ExifIFD:DateTimeOriginal": "2019:11:03 01:30:00", "GPS:GPSLatitude": 40.7, "GPS:GPSLongitude": -74.0, "GPS:GPSLongitudeRef": "W"}
         near = xmp.GoogleMetadata(None, None, 1572796800.0, None)

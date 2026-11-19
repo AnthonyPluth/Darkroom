@@ -77,19 +77,19 @@ def place_set_by_google(own: dict[str, object], lat: float, lon: float) -> bool:
     return own_lat is None or not media.same_place(own_lat, own_lon, lat, lon)
 
 
-def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool) -> str | None:
+def date_kind(own: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool, corrects: bool = True) -> str | None:
     if google.taken_utc is None:
         return None
     if not has_date(own, still):
         return "missing" if with_date else None
-    return "corrected" if media.date_corrected_by(own, google.taken_utc) else None
+    return "corrected" if corrects and media.date_corrected_by(own, google.taken_utc) else None
 
 
-def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False) -> dict[str, str]:
+def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMetadata, with_date: bool, still: bool = False, corrects: bool = True) -> dict[str, str]:
     fields: dict[str, str] = {}
-    if google.lat is not None and google.lon is not None and place_set_by_google(own, google.lat, google.lon) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
+    if google.lat is not None and google.lon is not None and (place_set_by_google(own, google.lat, google.lon) if corrects else not has_gps(own)) and not (has_tag(existing, LATITUDE) or has_tag(existing, LONGITUDE)):
         fields[LATITUDE], fields[LONGITUDE] = f"{google.lat:.7f}", f"{google.lon:.7f}"
-    kind = date_kind(own, google, with_date, still)
+    kind = date_kind(own, google, with_date, still, corrects)
     if google.taken_utc is not None and kind is not None and not has_tag(existing, CREATED):
         own_lat, own_lon, _ = media.location(own)
         lat, lon = (google.lat, google.lon) if google.lat is not None and google.lon is not None else (own_lat, own_lon)
@@ -101,7 +101,7 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     return fields
 
 
-def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp) -> bool:
+def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader = exiftool.read, write: Writer = exiftool.write_xmp, corrects: bool = True) -> bool:
     sidecar = paths.sidecar_of(media_path)
     present = sidecar.exists() or sidecar.is_symlink()
     if present:
@@ -111,7 +111,7 @@ def fill(media_path: Path, google: GoogleMetadata, with_date: bool, read: Reader
     existing = tags.get(sidecar, {}) if present else {}
     if own is None or "Error" in own or (present and (not existing or "Error" in existing)):
         return False
-    return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES))
+    return write(sidecar, gaps(own, existing, google, with_date, still=media_path.suffix.lower() not in media.VIDEO_SUFFIXES, corrects=corrects))
 
 
 def place_refreshable(own: dict[str, object], old: GoogleMetadata, new: GoogleMetadata) -> bool:

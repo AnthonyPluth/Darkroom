@@ -193,7 +193,7 @@ def place_google_only(opened: Session, photos: Photos, export: Export, entry: En
         opened.add(row)
         opened.flush()
     entry.decision.takeout_item_id = row.id
-    if xmp.fill(placed.path, xmp.GoogleMetadata.of(entry.fields.sidecar_json), True, read, write):
+    if xmp.fill(placed.path, xmp.GoogleMetadata.of(entry.fields.sidecar_json), True, read, write, not entry.item.sidecar_from_still):
         report.sidecars += 1
     return row
 
@@ -234,7 +234,7 @@ def fill_original(opened: Session, photos: Photos, entry: Entry, report: PlaceRe
     if original is None:
         report.skipped += 1
         return
-    if xmp.fill(original, xmp.GoogleMetadata.of(entry.fields.sidecar_json), False, read, write):
+    if xmp.fill(original, xmp.GoogleMetadata.of(entry.fields.sidecar_json), False, read, write, not entry.item.sidecar_from_still):
         report.sidecars += 1
 
 

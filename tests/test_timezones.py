@@ -4,6 +4,25 @@ from datetime import datetime
 from darkroom.domain import timezones
 
 
+class CandidateOffsetTests(unittest.TestCase):
+    def test_an_overlap_has_both_offsets_and_any_other_time_one(self):
+        self.assertEqual(timezones.candidate_offsets(40.7, -74.0, datetime(2024, 11, 3, 1, 30)), {-240, -300})
+        self.assertEqual(timezones.candidate_offsets(40.7, -74.0, datetime(2024, 7, 15, 12)), {-240})
+        self.assertEqual(timezones.candidate_offsets(28.6, 77.2, datetime(2024, 1, 15, 12)), {330})
+
+    def test_a_skipped_wall_time_still_names_the_offsets_around_it(self):
+        self.assertEqual(timezones.candidate_offsets(40.7, -74.0, datetime(2024, 3, 10, 2, 30)), {-240, -300})
+
+    def test_no_zone_or_an_unknown_zone_has_no_candidates(self):
+        from unittest import mock
+
+        with mock.patch.object(timezones, "finder") as finder:
+            finder.return_value.timezone_at.return_value = None
+            self.assertEqual(timezones.candidate_offsets(1.0, 2.0, datetime(2024, 1, 15, 12)), frozenset())
+            finder.return_value.timezone_at.return_value = "Nowhere/Land"
+            self.assertEqual(timezones.candidate_offsets(1.0, 2.0, datetime(2024, 1, 15, 12)), frozenset())
+
+
 class OffsetTests(unittest.TestCase):
     def test_ambiguous_and_nonexistent_wall_times_have_no_offset(self):
         self.assertIsNone(timezones.offset_minutes(40.7, -74.0, datetime(2024, 11, 3, 1, 30)))

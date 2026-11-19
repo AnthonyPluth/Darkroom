@@ -64,7 +64,7 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
     dated = scan_dates_dropped(item, tags, sidecar)
     print_ = media.fingerprint(opened or item.path, dated, item.path)
     lat, lon, gps_source = print_.lat, print_.lon, print_.gps_source
-    if sidecar is not None and sidecar.lat is not None and sidecar.lon is not None and not media.same_place(lat, lon, sidecar.lat, sidecar.lon):
+    if sidecar is not None and sidecar.lat is not None and sidecar.lon is not None and (gps_source == "none" or not (item.sidecar_from_still or media.same_place(lat, lon, sidecar.lat, sidecar.lon))):
         lat, lon, gps_source = sidecar.lat, sidecar.lon, "google"
     utc, local, offset, time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
     if time_source == "quicktime_utc" and utc is not None and offset is None:
