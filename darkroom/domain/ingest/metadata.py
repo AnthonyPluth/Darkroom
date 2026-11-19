@@ -69,7 +69,8 @@ def candidate(item: TakeoutItem, tags: dict[str, object], sidecar: Sidecar | Non
     utc, local, offset, time_source = print_.captured_utc, print_.captured_local, print_.offset_minutes, print_.time_source
     if time_source == "quicktime_utc" and utc is not None and offset is None:
         local, offset = media.wall_clock_at(utc, lat, lon)
-    moment = moment_of(sidecar) if utc is None else None
+    has_own_date = utc is not None or (item.sidecar_from_still and local is not None)
+    moment = None if has_own_date else moment_of(sidecar)
     if moment is not None and local is not None:
         derived = zone_offset(local, moment)
         exif_utc = None if derived is None else media.utc_or_none(datetime.fromisoformat(local), derived)

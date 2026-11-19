@@ -464,8 +464,143 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(video.sidecar.name, "IMG_0010.MOV.json")
         quiet = self.only(report, "IMG_0011.MP4")
         self.assertEqual(quiet.live_pair_of, self.only(report, "IMG_0011.JPG").path)
-        self.assertIsNone(quiet.sidecar)
+        self.assertEqual(quiet.sidecar.name, "IMG_0011.JPG.json")
         self.assertIsNone(self.only(report, "IMG_0010.HEIC").live_pair_of)
+
+    def test_a_live_photo_video_without_a_sidecar_of_its_own_uses_its_stills_sidecar_and_says_so(self):
+        builder = TakeoutBuilder(self.root / "borrowed")
+        builder.live_photo("clip0005", video_extension=".MP4", video_sidecar=False)
+        builder.live_photo("clip0007", video_extension=".MP4")
+        _, staging = self.staged(builder)
+        report = self.pair(staging)
+        still, video = self.only(report, "clip0005.HEIC"), self.only(report, "clip0005.MP4")
+        self.assertEqual(video.live_pair_of, still.path)
+        self.assertEqual(video.sidecar, still.sidecar)
+        self.assertEqual(video.sidecar.name, "clip0005.HEIC.json")
+        self.assertTrue(video.sidecar_from_still)
+        self.assertFalse(still.sidecar_from_still)
+        own = self.only(report, "clip0007.MP4")
+        self.assertEqual(own.sidecar.name, "clip0007.MP4.json")
+        self.assertFalse(own.sidecar_from_still)
+        self.assertEqual(report.orphan_sidecars, [])
+        self.assertEqual(report.unpaired_media, [])
+
+    def test_a_live_photo_video_takes_the_stills_supplemental_sidecar(self):
+        folder = self.root / "supplemental"
+        folder.mkdir()
+        for name, data in (("clip0005.HEIC", b"a"), ("clip0005.MP4", b"b")):
+            (folder / name).write_bytes(data)
+        (folder / "clip0005.HEIC.supplemental-metadata.json").write_text("{}")
+        video = self.only(self.pair(folder), "clip0005.MP4")
+        self.assertEqual(video.sidecar.name, "clip0005.HEIC.supplemental-metadata.json")
+        self.assertTrue(video.sidecar_from_still)
+
+    def test_a_metadata_json_sidecar_pairs_with_its_video(self):
+        folder = self.root / "dotmetadata"
+        folder.mkdir()
+        (folder / "clip0006.MP4").write_bytes(b"b")
+        (folder / "clip0006.MP4.metadata.json").write_text("{}")
+        report = self.pair(folder)
+        video = self.only(report, "clip0006.MP4")
+        self.assertEqual(video.sidecar.name, "clip0006.MP4.metadata.json")
+        self.assertFalse(video.sidecar_from_still)
+        self.assertEqual(report.orphan_sidecars, [])
+
+    def test_a_metadata_json_sidecar_pairs_with_a_still_and_not_with_a_longer_name(self):
+        folder = self.root / "dotmetadata-still"
+        folder.mkdir()
+        for name in ("a.JPG", "b.JPG"):
+            (folder / name).write_bytes(name.encode())
+        (folder / "a.JPG.metadata.json").write_text("{}")
+        (folder / "b.JPG.metadata-x.json").write_text("{}")
+        report = self.pair(folder)
+        self.assertEqual(self.only(report, "a.JPG").sidecar.name, "a.JPG.metadata.json")
+        self.assertIsNone(self.only(report, "b.JPG").sidecar)
+        self.assertEqual([p.name for p in report.orphan_sidecars], ["b.JPG.metadata-x.json"])
+
+    def test_a_metadata_tail_is_not_a_prefix_rule_of_the_supplemental_name(self):
+        self.assertTrue(pairing.is_family_tail(".metadata"))
+        self.assertTrue(pairing.is_family_tail(".supplemental-me"))
+        self.assertFalse(pairing.is_family_tail(".meta"))
+        self.assertFalse(pairing.is_family_tail(".metadat"))
+        self.assertFalse(pairing.is_family_tail(".metadata-x"))
+
+    def test_a_video_with_two_same_stem_stills_takes_no_stills_sidecar(self):
+        folder = self.root / "two-stills"
+        folder.mkdir()
+        for name, data in (("IMG_0001.jpg", b"a"), ("IMG_0001.JPG", b"b"), ("IMG_0001.MOV", b"c")):
+            (folder / name).write_bytes(data)
+        (folder / "IMG_0001.jpg.json").write_text("{}")
+        video = self.only(self.pair(folder), "IMG_0001.MOV")
+        self.assertIsNone(video.live_pair_of)
+        self.assertIsNone(video.sidecar)
+        self.assertFalse(video.sidecar_from_still)
+
+    def test_a_still_whose_name_differs_only_in_case_pairs_as_a_live_photo_but_lends_no_sidecar(self):
+        folder = self.root / "case"
+        folder.mkdir()
+        for name, data in (("img_3.HEIC", b"a"), ("IMG_3.MOV", b"c")):
+            (folder / name).write_bytes(data)
+        (folder / "img_3.HEIC.json").write_text("{}")
+        video = self.only(self.pair(folder), "IMG_3.MOV")
+        self.assertEqual(video.live_pair_of, folder / "img_3.HEIC")
+        self.assertIsNone(video.sidecar)
+        self.assertFalse(video.sidecar_from_still)
+
+    def test_a_video_beside_a_renamed_copy_of_its_still_takes_the_sidecar_found_for_the_still(self):
+        folder = self.root / "renamed-copy"
+        (folder / "Photos from 2019").mkdir(parents=True)
+        (folder / "Family").mkdir()
+        (folder / "Photos from 2019" / "IMG_1.JPG").write_bytes(b"same-still")
+        (folder / "Family" / "IMG_1(1).JPG").write_bytes(b"same-still")
+        (folder / "Family" / "IMG_1(1).MOV").write_bytes(b"a-video")
+        (folder / "Photos from 2019" / "IMG_1.JPG.json").write_text("{}")
+        report = self.pair(folder)
+        video = self.only(report, "IMG_1(1).MOV")
+        still = self.only(report, "IMG_1.JPG")
+        self.assertEqual(video.live_pair_of, still.path)
+        self.assertEqual(video.sidecar, still.sidecar)
+        self.assertEqual(video.sidecar.name, "IMG_1.JPG.json")
+        self.assertTrue(video.sidecar_from_still)
+
+    def test_a_live_photo_next_to_a_localised_edit_and_a_counter_variant_still_lends_its_still_sidecar(self):
+        folder = self.root / "localised"
+        folder.mkdir()
+        for name, data in (("IMG_5.HEIC", b"a"), ("IMG_5-bearbeitet.HEIC", b"b"), ("IMG_5.MOV", b"c"),
+                           ("IMG_6(1).HEIC", b"d"), ("IMG_6(1).MOV", b"e")):
+            (folder / name).write_bytes(data)
+        (folder / "IMG_5.HEIC.supplemental-metadata.json").write_text("{}")
+        (folder / "IMG_6.HEIC(1).json").write_text("{}")
+        report = self.pair(folder)
+        edit = self.only(report, "IMG_5-bearbeitet.HEIC")
+        self.assertEqual(edit.edited_of, self.only(report, "IMG_5.HEIC").path)
+        video = self.only(report, "IMG_5.MOV")
+        self.assertEqual(video.sidecar.name, "IMG_5.HEIC.supplemental-metadata.json")
+        self.assertTrue(video.sidecar_from_still)
+        counted = self.only(report, "IMG_6(1).MOV")
+        self.assertEqual(counted.sidecar.name, "IMG_6.HEIC(1).json")
+        self.assertTrue(counted.sidecar_from_still)
+        self.assertEqual(report.orphan_sidecars, [])
+
+    def test_a_live_photo_video_whose_still_has_no_sidecar_stays_without_one(self):
+        folder = self.root / "bare-still"
+        folder.mkdir()
+        for name, data in (("IMG_2.HEIC", b"a"), ("IMG_2.MOV", b"c")):
+            (folder / name).write_bytes(data)
+        video = self.only(self.pair(folder), "IMG_2.MOV")
+        self.assertIsNone(video.sidecar)
+        self.assertFalse(video.sidecar_from_still)
+
+    def test_a_pixel_motion_clip_takes_the_sidecar_of_its_mp_jpg_still(self):
+        folder = self.root / "pixel"
+        folder.mkdir()
+        for name, data in (("PXL_1.MP.jpg", b"a"), ("PXL_1.MP", b"c")):
+            (folder / name).write_bytes(data)
+        (folder / "PXL_1.MP.jpg.json").write_text("{}")
+        video = self.only(self.pair(folder), "PXL_1.MP")
+        self.assertEqual(video.live_pair_of, self.only(self.pair(folder), "PXL_1.MP.jpg").path)
+        self.assertEqual(video.sidecar.name, "PXL_1.MP.jpg.json")
+        self.assertTrue(video.sidecar_from_still)
 
     def test_a_video_without_a_matching_still_is_not_a_live_photo(self):
         builder = TakeoutBuilder(self.root / "solo")
@@ -535,14 +670,16 @@ class PairingTests(unittest.TestCase):
             item = self.only(report, Path(media_path).name)
             if Path(media_path).name.endswith("-edited.JPG"):
                 continue
-            if expected is None:
+            if expected is None and Path(media_path).name in manifest.live_pairs:
+                self.assertEqual(item.sidecar.name, f"{manifest.live_pairs[Path(media_path).name]}.json", media_path)
+            elif expected is None:
                 self.assertIsNone(item.sidecar, media_path)
             else:
                 self.assertEqual(item.sidecar.name, Path(expected).name, media_path)
         self.assertEqual(sorted(str(p.relative_to(staging)) for p in report.orphan_sidecars), sorted(manifest.orphan_sidecars))
         self.assertEqual(len(report.items), len({Path(m).name for m in manifest.media}))
         unpaired = {i.path.name for i in report.unpaired_media}
-        self.assertEqual(unpaired, {"IMG_0006.JPG", "IMG_0011.MP4"})
+        self.assertEqual(unpaired, {"IMG_0006.JPG"})
 
     def test_non_media_files_are_neither_items_nor_orphans(self):
         manifest = standard_export(self.root / "std2")

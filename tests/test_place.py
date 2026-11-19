@@ -305,6 +305,15 @@ class ReviewHoldTests(Household):
         self.assertFalse(list((self.root / "sam/google-only").rglob("*")))
         self.assertIsNone(self.opened.execute(select(MediaItem).where(MediaItem.source == "takeout")).scalar_one_or_none())
 
+    def test_a_held_review_remembers_whether_its_sidecar_came_from_a_still(self):
+        _, mine = self.phone("sam", self.sam)
+        plain = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
+        borrowed = self.entry(self.staged("IMG_0002.JPG", colour=(10, 200, 10)), tier=4, person=self.sam, matched=mine)
+        borrowed.item.sidecar_from_still = True
+        self.place(plain, borrowed)
+        flags = {row.decision_id: row.sidecar_from_still for row in self.opened.execute(select(ReviewItem)).scalars()}
+        self.assertEqual(flags, {plain.decision.id: False, borrowed.decision.id: True})
+
     def test_holding_twice_keeps_one_copy(self):
         _, mine = self.phone("sam", self.sam)
         entry = self.entry(self.staged(), tier=4, person=self.sam, matched=mine)
@@ -628,6 +637,28 @@ class FixtureExportRun(unittest.TestCase):
         self.assertEqual(set(after) - set(before), {"jo/originals/IMG_0001.JPG.xmp", "sam/originals/2019/IMG_0012.JPG.xmp"})
         placed = {key.rsplit("/", 1)[-1] for key in tree(self.root) if key.startswith("jo/google-only/")}
         self.assertLessEqual({"shot.CR2", "shot.CR2.xmp", "pic.avif", "pic.avif.xmp", "cam.MTS", "PXL_20200101_101010101.MP"}, placed)
+
+    def placed_xmp(self, name):
+        (found,) = [p for p in (self.root / "jo/google-only").rglob(name)]
+        return exiftool.read([found])[found]
+
+    def test_a_live_photo_video_without_a_sidecar_gets_its_stills_position_in_its_xmp(self):
+        self.run_once()
+        tags = self.placed_xmp("IMG_0011.MP4.xmp")
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 40.7, places=5)
+        self.assertAlmostEqual(tags["XMP-exif:GPSLongitude"], -74.0, places=5)
+
+    def test_a_live_photo_video_with_a_date_of_its_own_gets_no_xmp_date_from_its_stills_sidecar(self):
+        video = self.staging / "Takeout/Google Photos/Photos from 2019/IMG_0011.MP4"
+        fixtures.make_video(video, quicktime_utc="2019:07:04 12:30:15")
+        self.run_once()
+        tags = self.placed_xmp("IMG_0011.MP4.xmp")
+        self.assertAlmostEqual(tags["XMP-exif:GPSLatitude"], 40.7, places=5)
+        self.assertNotIn("XMP-photoshop:DateCreated", tags)
+
+    def test_a_live_photo_video_without_a_date_takes_the_date_of_its_stills_sidecar_in_its_xmp(self):
+        self.run_once()
+        self.assertIn("XMP-photoshop:DateCreated", self.placed_xmp("IMG_0011.MP4.xmp"))
 
     def test_sidecars_read_back_with_the_takeout_values(self):
         self.run_once()

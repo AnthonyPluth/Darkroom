@@ -533,6 +533,7 @@ class ReviewItem(Base):
     resolved_at: Mapped[float | None] = mapped_column(Float)
     sidecar_json: Mapped[str | None] = mapped_column(Text)
     hold_sha1: Mapped[str | None] = mapped_column(String)
+    sidecar_from_still: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
 
 
 class ImportRun(Base):
