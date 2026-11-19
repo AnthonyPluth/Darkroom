@@ -331,6 +331,36 @@ class ResolveTests(ReviewCase):
         self.assertEqual(status, 200, body)
         return self.opened.get(MediaItem, body["review"]["kept_item_id"])
 
+    def test_a_held_video_whose_stills_only_sidecar_is_beside_the_album_copy_keeps_its_local_only_date_with_staging_present(self):
+        staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
+        pending = self.pending()
+        old = self.hold()
+        hit = review.found(self.opened, pending.id)
+        staged_still, still_sidecar = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
+        borrowed = json.loads(still_sidecar.read_text(encoding="utf-8"))
+        borrowed["photoTakenTime"]["timestamp"] = "1562243415"
+        album = staged_still.parent.parent / "Family"
+        album.mkdir()
+        (album / staged_still.name).write_bytes(staged_still.read_bytes())
+        (album / still_sidecar.name).write_text(json.dumps(borrowed), encoding="utf-8")
+        still_sidecar.unlink()
+        staged_video = staged_still.with_name("IMG_1005.MP4")
+        fixtures.make_video(staged_video)
+        hit.decision.source_path = str(staged_video.relative_to(staging))
+        video = old.with_name("IMG_1005.MP4")
+        video.write_bytes(staged_video.read_bytes())
+        old.unlink()
+        pending.hold_path = str(video.relative_to(self.world.root))
+        pending.hold_sha1 = sha1_of(video)
+        pending.sidecar_from_still = True
+        pending.sidecar_json = json.dumps(borrowed)
+        self.world.opened.commit()
+        with mock.patch.object(review, "read_tags", return_value={"Keys:CreationDate": "2019:07:04 08:30:15"}):
+            status, body = self.call("POST", f"/api/review/{pending.id}/resolve", {"action": "keep_both"})
+        self.assertEqual(status, 200, body)
+        kept = self.opened.get(MediaItem, body["review"]["kept_item_id"])
+        self.assertEqual((kept.captured_local, kept.captured_utc, kept.time_source), ("2019-07-04T08:30:15", None, "unknown"))
+
     def test_a_held_video_without_a_sidecar_of_its_own_keeps_its_local_only_date_when_kept_with_staging_present(self):
         kept = self.held_video_kept_with_staging(False)
         self.assertEqual((kept.captured_local, kept.captured_utc, kept.time_source), ("2019-07-04T08:30:15", None, "unknown"))

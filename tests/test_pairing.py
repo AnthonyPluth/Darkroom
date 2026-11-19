@@ -362,6 +362,22 @@ class PairingTests(unittest.TestCase):
         self.assertIsNone(video.sidecar)
         self.assertFalse(video.sidecar_from_still)
 
+    def test_a_video_beside_a_renamed_copy_of_its_still_takes_the_sidecar_found_for_the_still(self):
+        folder = self.root / "renamed-copy"
+        (folder / "Photos from 2019").mkdir(parents=True)
+        (folder / "Family").mkdir()
+        (folder / "Photos from 2019" / "IMG_1.JPG").write_bytes(b"same-still")
+        (folder / "Family" / "IMG_1(1).JPG").write_bytes(b"same-still")
+        (folder / "Family" / "IMG_1(1).MOV").write_bytes(b"a-video")
+        (folder / "Photos from 2019" / "IMG_1.JPG.json").write_text("{}")
+        report = self.pair(folder)
+        video = self.only(report, "IMG_1(1).MOV")
+        still = self.only(report, "IMG_1.JPG")
+        self.assertEqual(video.live_pair_of, still.path)
+        self.assertEqual(video.sidecar, still.sidecar)
+        self.assertEqual(video.sidecar.name, "IMG_1.JPG.json")
+        self.assertTrue(video.sidecar_from_still)
+
     def test_a_live_photo_video_whose_still_has_no_sidecar_stays_without_one(self):
         folder = self.root / "bare-still"
         folder.mkdir()
