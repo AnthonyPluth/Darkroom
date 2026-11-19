@@ -396,7 +396,7 @@ describe("the People page with Darkroom's Syncthing", () => {
     expect(cell(invalid)).toHaveTextContent(/Device ID not valid\s*Its saved device ID is not a Syncthing device ID, so nothing is shared with it\. Pair it again\./);
     expect(cell(sharing)).toHaveTextContent(/Same device ID\s*Pixel 7 has the same device ID, so Darkroom shares neither folder\. Pair again whichever one is wrong\./);
     for (const row of [invalid, sharing]) expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pair again", "Edit"]);
-    await userEvent.click(within(sharing).getByRole("button", { name: "Pair Pixel 8 again" }));
+    await userEvent.click(within(sharing).getByRole("button", { name: "Pair again, Pixel 8" }));
     const dialog = await screen.findByRole("dialog", { name: "Pair Pixel 8" });
     expect(within(dialog).getByRole("img", { name: "QR code of Darkroom's device ID" })).toBeInTheDocument();
   });
@@ -424,7 +424,7 @@ describe("the People page with Darkroom's Syncthing", () => {
     const row = within(await screen.findByRole("table", { name: "Pixels" })).getAllByRole("row")[1];
     expect(row).toHaveTextContent(/Folder removed\s*Darkroom removed its folder because it was changed outside Darkroom\. It stays unshared until you share it again\./);
     expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["Share again", "Edit"]);
-    await userEvent.click(within(row).getByRole("button", { name: "Share Pixel 9a's folder again" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Share again, Pixel 9a's folder" }));
     const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
     expectFullWidth(ask);
     for (const paragraph of [
@@ -457,7 +457,7 @@ describe("the People page with Darkroom's Syncthing", () => {
     const server = serve({ ...seeded(), "GET /api/pixels": { pixels: [solo], syncthing: [transport(20, "Pixel 9a", "folder_removed")] } });
     vi.stubGlobal("fetch", (url: string, init: RequestInit = {}) => url === "/api/pixels/20/release-folder" ? Promise.reject(new TypeError("offline")) : server.mock(url, init));
     render(People);
-    await userEvent.click(await screen.findByRole("button", { name: "Share Pixel 9a's folder again" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Share again, Pixel 9a's folder" }));
     const ask = await screen.findByRole("dialog", { name: "Share Pixel 9a's folder again?" });
     await userEvent.click(within(ask).getByRole("button", { name: "Share folder again" }));
     expect(await within(ask).findByRole("alert")).toHaveTextContent(/^Couldn't share Pixel 9a's folder again: Can't reach Darkroom\. Check your connection and try again\.$/);
