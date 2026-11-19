@@ -1,6 +1,7 @@
 import io
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import tempfile
@@ -201,17 +202,17 @@ def part_zip(number):
 
 
 STAGGER_ZIPS = {number: part_zip(number) for number in (1, 2)}
+STAGGER_REDIRECTS = {link.removeprefix(f"https://{TAKEOUT}"): f"https://{GOOGLES_DOWNLOAD_HOST}/download/{STAGGER_NAMES[number]}?{link.partition('?')[2]}"
+                     for number, link in STAGGER_LINKS.items()}
 STAGGER_PAGE = "<html><body>" + "".join(f'<a id="part{n}" href="{link}">part {n}</a>' for n, link in STAGGER_LINKS.items()) + "</body></html>"
 
 
 class SlowGoogle(BaseHTTPRequestHandler):
     def do_GET(self):
         host = self.headers.get("Host", "")
-        path, _, query = self.path.partition("?")
-        if host == TAKEOUT and path == "/takeout/download":
-            number = int(dict(pair.split("=") for pair in query.split("&"))["i"]) + 1
-            self.answer(302, {"Location": f"https://{GOOGLES_DOWNLOAD_HOST}/download/{STAGGER_NAMES[number]}?{query}", "Content-Length": "0"})
-            self.wfile.write(b"")
+        path = self.path.partition("?")[0]
+        if host == TAKEOUT and self.path in STAGGER_REDIRECTS:
+            self.answer(302, {"Location": STAGGER_REDIRECTS[self.path], "Content-Length": "0"})
         elif host == GOOGLES_DOWNLOAD_HOST and path.startswith("/download/"):
             number = next(n for n, name in STAGGER_NAMES.items() if path.endswith(name))
             body = STAGGER_ZIPS[number]
@@ -239,6 +240,36 @@ class SlowGoogle(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         return None
+
+
+class SlowGoogleHeaderTests(unittest.TestCase):
+    def setUp(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SlowGoogle)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+
+    def ask(self, path):
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as connection:
+            connection.sendall(f"GET {path} HTTP/1.0\r\nHost: {TAKEOUT}\r\n\r\n".encode())
+            answer = b""
+            while chunk := connection.recv(4096):
+                answer += chunk
+        head = answer.partition(b"\r\n\r\n")[0].decode()
+        return head.split("\r\n")
+
+    def test_the_redirect_is_one_of_the_fixed_addresses(self):
+        lines = self.ask(STAGGER_LINKS[1].removeprefix(f"https://{TAKEOUT}"))
+        self.assertIn(" 302 ", lines[0])
+        self.assertIn(f"Location: {STAGGER_REDIRECTS[STAGGER_LINKS[1].removeprefix(f'https://{TAKEOUT}')]}", lines)
+
+    def test_a_request_carrying_a_line_break_cannot_add_a_header(self):
+        for injected in ("%0D%0ASet-Cookie:%20split=1", "%0ASet-Cookie:%20split=1", "&x=%0D%0A%0D%0Abody"):
+            with self.subTest(injected=injected):
+                lines = self.ask(STAGGER_LINKS[1].removeprefix(f"https://{TAKEOUT}") + injected)
+                self.assertIn(" 404 ", lines[0])
+                self.assertFalse([line for line in lines if line.lower().startswith(("set-cookie", "location"))])
 
 
 class ChromiumStaggerTests(ChromiumWorld):
