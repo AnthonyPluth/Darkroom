@@ -67,6 +67,8 @@ class Reporter(Protocol):
 
     def waiting(self, job_id: int, reason: str) -> None: ...
 
+    def on_screen(self, job_id: int) -> None: ...
+
     def download_plan(self, job_id: int) -> dict[str, Any]: ...
 
     def part(self, job_id: int, number: int, body: dict[str, object]) -> dict[str, Any]: ...
@@ -178,6 +180,11 @@ class JobContext:
             self.browser_open.bring_to_front()
         except Exception as error:
             monitoring.log("could not bring the browser window to the front", job=self.job_id, error=type(error).__name__)
+            return
+        try:
+            self.reporter.on_screen(self.job_id)
+        except (Unreachable, Refused) as error:
+            monitoring.log("could not tell darkroom which window is on screen", job=self.job_id, error=type(error).__name__)
 
     def progress(self, message: str) -> None:
         self.check()

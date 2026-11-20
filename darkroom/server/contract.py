@@ -252,6 +252,7 @@ class BrowserJobView(TypedDict):
 class BrowserView(TypedDict):
     vnc_url: str | None
     worker_last_seen: float | None
+    on_screen_job: int | None
 
 
 class BrowserJobs(TypedDict):
@@ -289,6 +290,10 @@ class HeartbeatBody(TypedDict):
 
 class ProgressBody(TypedDict):
     message: str
+
+
+class OnScreenBody(TypedDict):
+    pass
 
 
 class WaitingBody(TypedDict):

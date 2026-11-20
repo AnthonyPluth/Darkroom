@@ -620,6 +620,28 @@ class BrowserJobTests(unittest.TestCase):
         self.assertEqual(seen, ["locked"])
         self.assertIsNone(self.claimed(6.0, browser_jobs.INTERACTIVE_LANE))
 
+    def test_the_job_on_screen_is_the_last_one_the_worker_raised_while_it_still_waits(self):
+        sam = self.another_account("sam")
+        first, second = self.enqueue("connect", now=1.0), self.enqueue("connect", now=2.0, account=sam)
+        self.assertEqual([self.claimed(), self.claimed()], [first, second])
+        with db.session(self.engine) as opened:
+            self.assertIsNone(browser_jobs.job_on_screen(opened))
+            for job_id in (first, second):
+                browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 6.0)
+            browser_jobs.on_screen(opened, first, 7.0)
+            self.assertEqual(browser_jobs.job_on_screen(opened), first)
+            self.assertEqual(opened.get(BrowserJob, first).heartbeat, 7.0)
+            browser_jobs.progress(opened, first, "signed in", 8.0)
+            self.assertIsNone(browser_jobs.job_on_screen(opened), "a job that resumed is not on screen for anyone")
+            browser_jobs.on_screen(opened, second, 9.0)
+            self.assertEqual(browser_jobs.job_on_screen(opened), second)
+            opened.delete(opened.get(BrowserJob, second))
+            opened.flush()
+            self.assertIsNone(browser_jobs.job_on_screen(opened))
+            browser_jobs.done(opened, first, {}, 10.0)
+            with self.assertRaises(browser_jobs.NotOpen):
+                browser_jobs.on_screen(opened, first, 11.0)
+
     def test_a_claim_that_cannot_get_the_write_lock_is_busy_and_claims_nothing(self):
         queued = self.enqueue()
         impatient = impatient_engine(self, self.engine, 0.05)

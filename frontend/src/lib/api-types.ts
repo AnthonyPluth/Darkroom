@@ -73,6 +73,7 @@ export interface BrowserJobs {
 export interface BrowserView {
   vnc_url: string | null;
   worker_last_seen: number | null;
+  on_screen_job: number | null;
 }
 
 export interface CheckNowReply {
@@ -338,6 +339,8 @@ export interface MediaView {
 export interface Ok {
   ok: boolean;
 }
+
+export type OnScreenBody = Record<string, never>;
 
 export interface OwnDevice {
   device_id: string;
@@ -688,6 +691,7 @@ export interface Endpoints {
   "POST /internal/browser/jobs/{id}/heartbeat": { body: HeartbeatBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/progress": { body: ProgressBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/waiting": { body: WaitingBody; reply: WorkerReply };
+  "POST /internal/browser/jobs/{id}/on-screen": { body: OnScreenBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/done": { body: DoneBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/failed": { body: FailedBody; reply: WorkerReply };
   "POST /internal/browser/jobs/{id}/download": { body: DownloadPlanBody; reply: DownloadPlan };

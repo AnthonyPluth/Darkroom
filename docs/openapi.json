@@ -358,6 +358,16 @@
       "BrowserView": {
         "additionalProperties": false,
         "properties": {
+          "on_screen_job": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "vnc_url": {
             "anyOf": [
               {
@@ -380,6 +390,7 @@
           }
         },
         "required": [
+          "on_screen_job",
           "vnc_url",
           "worker_last_seen"
         ],
@@ -1837,6 +1848,12 @@
         "required": [
           "ok"
         ],
+        "type": "object"
+      },
+      "OnScreenBody": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
         "type": "object"
       },
       "OwnDevice": {
@@ -4683,6 +4700,37 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/HeartbeatBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/on-screen": {
+      "post": {
+        "operationId": "on_screen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnScreenBody"
               }
             }
           },

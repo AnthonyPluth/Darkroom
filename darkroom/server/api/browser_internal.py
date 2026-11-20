@@ -104,6 +104,14 @@ def progress(request: Annotated[Request, contract.ProgressBody]) -> Annotated[Re
     return answer(request, work)
 
 
+def on_screen(request: Annotated[Request, contract.OnScreenBody]) -> Annotated[Response, contract.WorkerReply]:
+    def work(opened: Session, moment: float) -> BrowserJob:
+        body_of(request)
+        return browser_jobs.on_screen(opened, job_id_of(request), moment)
+
+    return answer(request, work)
+
+
 def waiting(request: Annotated[Request, contract.WaitingBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob:
         reason = validate.text(body_of(request), "reason", limit=20)

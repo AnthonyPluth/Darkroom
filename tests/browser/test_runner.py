@@ -682,6 +682,7 @@ class ScreenTests(unittest.TestCase):
         first.progress("signed in")
         second.check()
         self.assertEqual(self.fronted(second_browser), 1, "once the first job resumes, the next longest-waiting comes to the front")
+        self.assertEqual([call.args for call in first.reporter.on_screen.call_args_list], [(1,), (1,)], "each raise tells Darkroom which job is on screen")
         third, third_browser = self.context(3, screen)
         third.browser()
         second.check()
@@ -714,6 +715,25 @@ class ScreenTests(unittest.TestCase):
         alone.browser()
         alone.wait_for_user("verify")
         self.assertEqual(self.fronted(browser), 2)
+
+    def test_a_window_on_screen_that_cannot_be_reported_is_logged_and_the_job_goes_on(self):
+        ctx, browser = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = Unreachable("ConnectionRefusedError")
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()) as logged:
+            ctx.wait_for_user("sign_in")
+        self.assertEqual(self.fronted(browser), 1)
+        self.assertIn("could not tell darkroom which window is on screen", logged.getvalue())
+        ctx.reporter.on_screen.side_effect = LeaseLost(409, "this job is no longer running")
+        ctx.progress("signed in")
+        ctx.wait_for_user("verify")
+        self.assertEqual(self.fronted(browser), 2)
+
+    def test_the_worker_reports_the_window_on_screen_to_darkroom(self):
+        fake = FakeDarkroom().start()
+        self.addCleanup(fake.stop)
+        client_of(fake).on_screen(4)
+        self.assertEqual(fake.calls, [("/internal/browser/jobs/4/on-screen", {})])
 
     def test_a_window_that_cannot_come_to_the_front_is_logged_and_the_job_goes_on(self):
         class Stuck(FakeBrowser):

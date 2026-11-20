@@ -176,6 +176,9 @@ class Client:
     def waiting(self, job_id: int, reason: str) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/waiting", {"reason": reason})
 
+    def on_screen(self, job_id: int) -> None:
+        self.post(f"/internal/browser/jobs/{job_id}/on-screen", {})
+
     def download_plan(self, job_id: int) -> dict[str, Any]:
         return self.post(f"/internal/browser/jobs/{job_id}/download", {})
 

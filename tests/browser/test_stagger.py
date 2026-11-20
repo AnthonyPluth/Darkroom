@@ -10,13 +10,14 @@ from sqlalchemy import select
 from darkroom.domain import events, exports
 from darkroom.storage.paths import Photos
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom_browser import client, selectors
 from darkroom_browser.jobs import session, status
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from darkroom_browser.stall import FolderState
 from tests.browser.takeout_pages import COMPLETED_ID
+from tests.shared import add_person
 from tests.browser.test_classify import SIGN_IN_NEEDED
 from tests.browser.test_download import AFTER_THE_CLICK, ARCHIVE, NOW, SIZES, DownloadBrowser, DownloadWorld
 
@@ -346,6 +347,39 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertTrue(landed)
         self.assertEqual([message for message in landed if "paused for space" in message], [])
         self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
+
+    def another_accounts_part_downloading(self, size):
+        with db.session(self.engine) as opened:
+            person = add_person(opened, "sam")
+            account = GoogleAccount(email="sam@example.test", default_person_id=person, created=1.0, session_state="ok")
+            opened.add(account)
+            opened.flush()
+            exports.reconcile(opened, account, [exports.Listed("other-export", NOW - 600, "ready", NOW + 7 * 86400, (exports.ListedPart(1, size),))], NOW)
+            theirs = opened.execute(select(ExportPart).join(Export).where(Export.account_id == account.id)).scalar_one()
+            theirs.status = "downloading"
+            return theirs.id
+
+    def test_two_accounts_downloads_share_one_disk_and_the_first_part_waits_for_the_other_accounts_part(self):
+        free = 400 * 10**9
+        other = self.another_accounts_part_downloading(free - 10**9)
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        real_sleep = self.clock.sleep
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if self.clock.now >= 1000.0 + 12 * MINUTE:
+                with db.session(self.engine) as opened:
+                    opened.get(ExportPart, other).status = "done"
+            real_sleep(seconds)
+
+        self.clock.sleep = sleep
+        with mock.patch.object(Photos, "free_bytes", lambda photos: free):
+            _, result = self.run_job(browser)
+        self.assertGreaterEqual(browser.started[0][1] - 1000.0, 12 * MINUTE, "no part of this job started while the other account's part still needed the room")
+        self.assertEqual(sum(1 for message in self.messages() if message == stagger.PAUSED_WORDS), 1)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3, "the wait spent no attempt and none of Google's downloads")
 
     def test_a_cancel_during_a_pause_ends_the_job_as_before(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)

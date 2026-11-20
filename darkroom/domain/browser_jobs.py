@@ -31,6 +31,7 @@ WAITING_REASONS = ("sign_in", "verify", "wrong_account")
 OPEN_STATUSES = ("running", "waiting_for_user")
 EXPIRED_MESSAGE = "the worker stopped reporting"
 WORKER_LAST_SEEN = "worker_last_seen"
+ON_SCREEN = "browser_on_screen"
 KIND = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_LIST = 200
 CAPTURE_FILES = ("screenshot.png", "page.html")
@@ -405,6 +406,20 @@ def list_jobs(opened: Session, account_id: int | None, limit: int = 50) -> Seque
 
 def worker_seen(opened: Session, now: float) -> None:
     db.upsert(opened, Setting, {"key": WORKER_LAST_SEEN, "value": repr(now)}, ("key",))
+
+
+def on_screen(opened: Session, job_id: int, now: float) -> BrowserJob:
+    job = heartbeat(opened, job_id, now)
+    db.upsert(opened, Setting, {"key": ON_SCREEN, "value": str(job.id)}, ("key",))
+    return job
+
+
+def job_on_screen(opened: Session) -> int | None:
+    setting = opened.get(Setting, ON_SCREEN)
+    if setting is None or not setting.value or not setting.value.isdigit():
+        return None
+    job = opened.get(BrowserJob, int(setting.value))
+    return job.id if job is not None and job.status == "waiting_for_user" else None
 
 
 def worker_last_seen(opened: Session) -> float | None:

@@ -29,6 +29,9 @@ class Reporter:
     def waiting(self, job_id: int, reason: str) -> None:
         self.events.append(("waiting", reason))
 
+    def on_screen(self, job_id: int) -> None:
+        self.events.append(("on_screen", str(job_id)))
+
     def kinds(self, kind: str) -> list[str]:
         return [message for name, message in self.events if name == kind]
 
