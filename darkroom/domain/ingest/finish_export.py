@@ -137,7 +137,8 @@ class Finish(part_ingest.Ingest):
 
     def candidate(self, unit: Unit) -> dedupe.TakeoutCandidate:
         edited_of = None if unit.item.edited_of is None else str(unit.item.edited_of)
-        return replace(part_pairing.candidate_of(unit.root), source_path=unit.path, edited_of=edited_of)
+        edited = pairing.original_name(unit.item.path) is not None
+        return replace(part_pairing.candidate_of(unit.root), source_path=unit.path, is_edited=edited, edited_of=edited_of)
 
     def judge(self, canon: Canon, held: Sequence[Unit]) -> dict[str, dedupe.Decision]:
         live = [unit for unit in canon.units if unit.root.outcome != part_ingest.FAILED or unit.root.decision_id is not None]
@@ -145,7 +146,7 @@ class Finish(part_ingest.Ingest):
         with_peers = replace(self.index, peers=tuple(candidates.values()), decided={})
         originals: dict[str, dedupe.Decision] = {}
         for unit in live:
-            if unit.root.is_edited:
+            if candidates[unit.path].is_edited:
                 continue
             stored = None if unit.root.decision_id is None else self.opened.get(DedupeDecision, unit.root.decision_id)
             if stored is None:

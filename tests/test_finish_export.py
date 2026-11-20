@@ -309,6 +309,27 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertIn("from the year folder", written)
         self.assertNotIn("from the album", written)
 
+    def test_an_edit_that_arrived_under_an_album_alias_is_decided_as_an_edit_of_its_canonical_name(self):
+        world = FinishWorld(self)
+
+        def scenario(each):
+            def build(builder):
+                base = builder.image_bytes(".JPG")
+                each.original("jo", "IMG_4000.JPG", base)
+                builder.photo("IMG_4000.JPG", data=base, part=0)
+                edit = builder.image_bytes(".JPG")
+                builder.add("alias.JPG", edit, "Holiday", 0, None, None, None, "")
+                builder.add("IMG_4000-edited.JPG", edit, "Photos from 2019", 1, None, None, None, "")
+
+            return build
+
+        export = world.create(scenario(world), parts=2)
+        world.ingest_all(export, (1, 2))
+        world.finish(export)
+        tiers = {name: tier for name, tier, _ in world.reasons()}
+        self.assertEqual(tiers["Photos from 2019/IMG_4000-edited.JPG"], 3)
+        self.assertEqual(world.reasons(), world.whole_export(scenario, parts=2).reasons())
+
     def test_identical_bytes_under_several_names_in_one_folder_leave_no_root_or_slot_behind(self):
         world = FinishWorld(self)
 
