@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Imports Ingest Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ph{width:100%;min-height:1500px;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;min-height:56px;background:#1B1813;border-bottom:1px solid #3A352C}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.pg{flex:1;padding:20px 16px 28px;display:flex;flex-direction:column;gap:20px}
+.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:#1B1813;border-top:1px solid #3A352C}
+.tabs a{min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:11px;font-weight:600;color:#F1ECE2;text-decoration:none}
+.tabs a.on{background:#F1ECE2;color:#1F1C17}
+.tabs a:focus-visible,.btn:focus-visible,select:focus-visible{outline:3px solid #E2693F;outline-offset:-3px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:11px;font-weight:700;padding:0 6px;line-height:16px}
+h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.01em}
+h2{margin:0;font-size:17px;line-height:1.3}
+.sub{color:#B3AB9D}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+.card{background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.btn{min-height:44px;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn[aria-pressed="true"]{background:#F1ECE2;border-color:#F1ECE2;color:#1F1C17}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.cnt{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.cnt div{background:#16140F;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column}
+.cnt b{font-size:20px;line-height:1.25;font-variant-numeric:tabular-nums}
+.cnt span{font-size:12px;color:#B3AB9D}
+.th{width:48px;height:48px;border-radius:6px;background:linear-gradient(135deg,#4A4439,#2F2B24);display:block;flex:none}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;overflow-wrap:anywhere}
+select{min-height:44px;width:100%;border:1px solid #7A7260;border-radius:8px;background:#1F1C17;color:#F1ECE2;font:inherit;padding:0 12px}
+label{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+.item{display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid #2B2721}
+.item:first-of-type{border-top:0}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.idle{color:#D8D1C3;background:#2B2721}.idle i{background:none;border:2px solid currentColor}
+.state{display:flex;flex-direction:column;gap:8px}
+.state .note{font-size:13px;color:#B3AB9D;margin:0}
+</style>
+</helmet>
+<div class="ph">
+<header class="top">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<button class="btn" type="button" style="width:auto;min-width:44px" aria-label="Account: jo@example.com">Jo</button>
+</header>
+<main class="pg">
+<div style="display:flex;flex-direction:column;gap:4px"><h1>Imports: a run still taking parts</h1><div class="sub">Draft for #490 (PP-13), not signed off, and not for PP-13 to build unless the owner chooses B. Today the Imports API has no per-part fields, and a per-part export opens no import run until it finishes, so a run still taking parts needs a backend issue first (the run opened at the first part, and its parts' ingest state on the Imports reply). Everything else is as in 05-imports and its approved departures.</div></div>
+<div class="state"><div class="lbl">A (recommended): unchanged</div><p class="note">Recommended for PP-13: no change to Imports. A per-part export shows on Exports while its parts arrive, and its run appears here once the export finishes, as runs do today.</p>
+<section style="display:flex;flex-direction:column;gap:10px" aria-label="Import runs"><div class="lbl">Runs</div><div class="card"><div class="row"><b>3 Oct 08:31</b><span class="sub">2 Oct export, 4 parts</span></div><div class="cnt"><div><b>1,090</b><span>Added</span></div><div><b>298</b><span>Skipped as duplicates</span></div><div><b>2</b><span>Sent to review</span></div><div><b>18</b><span>Missing GPS</span></div><div><b>0</b><span>Unmatched by person</span></div></div></div></section></div>
+<div class="state"><div class="lbl">B (needs a backend issue): a run still taking parts</div><p class="note">Needs a backend issue first. The run is listed from its first imported part, with the Importing chip and its counts so far; its line says how many parts are imported and downloaded.</p>
+<section style="display:flex;flex-direction:column;gap:10px" aria-label="Import runs, one still taking parts"><div class="lbl">Runs</div>
+<div class="card"><div class="row"><span class="chip idle"><i></i>Importing</span><span class="sub">Started today 09:42</span></div><span class="sub">2 of 6 parts imported, 5 of 6 downloaded</span><div class="cnt"><div><b>2,186</b><span>Added</span></div><div><b>716</b><span>Skipped as duplicates</span></div><div><b>4</b><span>Sent to review</span></div><div><b>58</b><span>Missing GPS</span></div><div><b>2</b><span>Unmatched by person</span></div></div></div>
+<div class="card"><div class="row"><b>3 Oct 08:31</b><span class="sub">2 Oct export, 4 parts</span></div><div class="cnt"><div><b>1,090</b><span>Added</span></div><div><b>298</b><span>Skipped as duplicates</span></div><div><b>2</b><span>Sent to review</span></div><div><b>18</b><span>Missing GPS</span></div><div><b>0</b><span>Unmatched by person</span></div></div></div></section></div>
+</main>
+<nav class="tabs" aria-label="Primary">
+<a href="02-status-phone.dc.html">Status</a>
+<a href="03-people-phone.dc.html">People</a>
+<a href="04-exports-phone.dc.html">Exports</a>
+<a class="on" href="05-imports-ingest-phone.dc.html" aria-current="page">Imports</a>
+<a href="06-review-phone.dc.html">Review<span class="badge">4</span></a>
+<a href="07-browser-phone.dc.html">Browser</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":440,"height":1500}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
