@@ -4,8 +4,9 @@ name: Agent review
 # (Nov 3, issue #76): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones.
 # That is fleet's default since v2.0.0, so this caller passes no `first-review` (no "Agent review" status and no
 # comment). On a risky pull request (labelled safety-critical or security, or changing anything under .github/ or
-# .claude/ but a skill's reference documents (.claude/skills/<name>/references/**/*.md, fleet's default since v6.0.0),
-# the root .mcp.json or the paths listed below, Darkroom's deletion-safety and trust boundaries, judged against
+# .claude/ but a skill's reference documents (.claude/skills/<name>/references/**/*.md, fleet's default since v6.0.0,
+# which this caller takes by passing no second-review-always: the owner's decision of Nov 20, issue #476), the root
+# .mcp.json or the paths listed below, Darkroom's deletion-safety and trust boundaries, judged against
 # .github/agent-review/invariants.md)
 # a fresh Claude Code session reads the change against main's AGENTS.md and .github/agent-review/context.md and sets
 # "Second review". A pull request that isn't risky gets a passing "Second review", which is the one status fleet's merge
