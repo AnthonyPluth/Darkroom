@@ -1,8 +1,9 @@
 import json
 import unittest
+from datetime import datetime
 
 from darkroom.domain import dedupe
-from darkroom.domain.ingest import part_pairing
+from darkroom.domain.ingest import part_pairing, sidecar
 from darkroom.storage import db
 from darkroom.storage.models import DedupeDecision, Export, TakeoutEntry, TakeoutSidecar
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder
@@ -300,9 +301,9 @@ class SidecarTimeTests(unittest.TestCase):
         found, row, _ = self.held(captured_utc=PHONE_SECOND + 30 * 86400)
         self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
 
-    def wall_clock_shot(self, local, gps):
+    def wall_clock_shot(self, local, gps, taken=int(PHONE_SECOND)):
         world = PairingWorld(self)
-        world.builder.photo("IMG_0072.JPG", taken=int(PHONE_SECOND), gps=gps)
+        world.builder.photo("IMG_0072.JPG", taken=taken, gps=gps)
         world.build()
         name = entry_name("IMG_0072.JPG")
         world.fingerprint(name, captured_utc=None, captured_local=None, make="Apple", model="iPhone 12", width=32, height=24)
@@ -342,6 +343,18 @@ class SidecarTimeTests(unittest.TestCase):
         world.fingerprint(name, captured_utc=None, captured_local="2017-07-14T04:40:01", make="Apple", model="iPhone 12", width=32, height=24)
         found = world.pair(1, index_of(shot(1, sha1="1" * 40, captured_utc=PHONE_SECOND + 1)))
         self.assertEqual((found["ready"], world.row(name).outcome), ([], "waiting_export"))
+
+    def test_a_sidecar_time_at_either_end_of_the_calendar_is_judged_without_failing(self):
+        entry = TakeoutEntry(name=entry_name("IMG_0075.JPG"), captured_utc=None, captured_local=None)
+        for taken, wall in ((sidecar.EARLIEST, "0001-01-01T01:00:00"), (sidecar.LATEST, "9999-12-31T22:59:59")):
+            with self.subTest(taken=taken):
+                text = json.dumps({"photoTakenTime": {"timestamp": str(int(taken))}})
+                found = part_pairing.sidecar_moments(entry, text, [datetime.fromisoformat(wall)])
+                self.assertIn((taken, wall), found)
+
+    def test_a_part_with_a_sidecar_time_at_the_end_of_the_calendar_is_paired_and_held(self):
+        found, row, _ = self.wall_clock_shot("9999-12-31T22:59:59", None, taken=int(sidecar.LATEST))
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
 
     def test_a_sidecar_that_does_not_parse_adds_no_time(self):
         entry = TakeoutEntry(name=entry_name("IMG_0071.JPG"), captured_utc=PHONE_SECOND, captured_local=None)
@@ -439,6 +452,12 @@ class CopyTests(unittest.TestCase):
         found = world.pair(1)
         self.assertEqual(found["copies"], [])
         self.assertEqual({world.row(entry_name(n)).outcome for n in ("IMG_0013.JPG", "IMG_0013(1).JPG")}, {"waiting_sidecar"})
+
+    def test_a_copy_whose_item_is_not_passed_in_is_left_alone(self):
+        copy = TakeoutEntry(id=2, part_number=1, name=entry_name("IMG_0016.JPG", "Trip"), kind="media", outcome="copy", copy_of_id=1, sha1="a" * 40,
+                            sidecar_entry_id=None, decision_id=None, metadata_pending=False, is_edited=False, is_video=False)
+        found = part_pairing.pair_part([copy], [], 1, index_of())
+        self.assertEqual((found.ready, found.copies, copy.outcome, copy.copy_of_id), ((), (), "copy", 1))
 
     def test_pairing_again_attaches_nothing_twice(self):
         world = PairingWorld(self)
