@@ -333,7 +333,7 @@ class Ingest:
             fields = self.light_fields(entry)
         return TakeoutItem(self.scratch.get(entry.id, Path(entry.name)), entry.sha1 or "", (), None), fields
 
-    def place_decided(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+    def place_decided(self, entry: TakeoutEntry, row: DedupeDecision, named: Path | None = None) -> None:
         self.lock()
         if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id)):
             self.finish_entry(entry, row)
@@ -344,8 +344,8 @@ class Ingest:
             self.commit()
             return
         try:
-            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name))], self.tools.read,
-                               self.tools.write)
+            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
+                               self.tools.read, self.tools.write)
         except Exception as error:
             self.opened.rollback()
             self.fail(entry, "place", error)

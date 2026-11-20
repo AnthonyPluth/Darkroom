@@ -302,6 +302,24 @@ class CopyAndHoldTests(unittest.TestCase):
         self.assertEqual(len(self.world.decisions()), 1)
 
 
+class HeldAcrossPartsTests(unittest.TestCase):
+    def test_a_burst_whose_rival_is_in_another_part_is_held_by_both_until_the_export_finishes(self):
+        world = PartWorld(self)
+        moment = {"taken": "2019:09:09 09:09:09", "offset": "+02:00", "make": "Apple", "model": "iPhone 11"}
+
+        def build(builder):
+            world.original("jo", "IMG_1006.JPG", world.scratch_jpeg("b0.jpg", colour=(200, 10, 10), **moment))
+            builder.photo("IMG_1006.JPG", data=world.scratch_jpeg("b1.jpg", colour=(201, 12, 10), **moment), gps=None, part=0)
+            builder.photo("IMG_1007.JPG", data=world.scratch_jpeg("b2.jpg", colour=(202, 14, 12), **moment), gps=None, part=1)
+
+        export = world.create(build, parts=2)
+        world.ingest_all(export, (1, 2))
+        self.assertEqual(world.outcomes(), {"Photos from 2019/IMG_1006.JPG": "waiting_export", "Photos from 2019/IMG_1007.JPG": "waiting_export"})
+        self.assertEqual(world.decisions(), [])
+        self.assertEqual(world.opened.execute(select(ReviewItem)).first(), None)
+        self.assertEqual(world.google_only(), set())
+
+
 class FailureTests(unittest.TestCase):
     def setUp(self):
         self.world = PartWorld(self)

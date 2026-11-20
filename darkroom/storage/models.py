@@ -558,6 +558,8 @@ class ImportRun(Base):
     unpaired_media: Mapped[int | None] = mapped_column(Integer)
     sidecars_unreadable: Mapped[int | None] = mapped_column(Integer)
     sidecars_repaired: Mapped[int | None] = mapped_column(Integer)
+    paths_renamed: Mapped[int | None] = mapped_column(Integer)
+    sidecars_differ: Mapped[int | None] = mapped_column(Integer)
     changed_people: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running", server_default="running")
     error: Mapped[str | None] = mapped_column(Text)
