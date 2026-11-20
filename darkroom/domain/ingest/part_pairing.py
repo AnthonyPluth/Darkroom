@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import bisect
 import dataclasses
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -62,7 +63,7 @@ def wall_clock(utc: float, found: sidecar.Sidecar) -> str | None:
     return media.wall_clock_at(utc, found.lat, found.lon)[0]
 
 
-def sidecar_moments(entry: TakeoutEntry, text: str | None, walls: Container[datetime] = frozenset()) -> list[Moment]:
+def sidecar_moments(entry: TakeoutEntry, text: str | None, walls: Sequence[datetime] = ()) -> list[Moment]:
     found = sidecar.parse(text) if text else None
     if found is None:
         return []
@@ -83,10 +84,18 @@ def sidecar_moments(entry: TakeoutEntry, text: str | None, walls: Container[date
     return moments
 
 
-def any_zone(walls: Container[datetime], utc: float, moment: datetime) -> list[Moment]:
+def shifted(start: datetime, minutes: int, limit: datetime) -> datetime:
+    try:
+        return start + timedelta(minutes=minutes)
+    except OverflowError:
+        return limit
+
+
+def any_zone(walls: Sequence[datetime], utc: float, moment: datetime) -> list[Moment]:
     start = moment.replace(tzinfo=None, microsecond=0)
-    steps = (start + timedelta(minutes=minutes) for minutes in range(-ANY_ZONE_MINUTES, ANY_ZONE_MINUTES + 1))
-    return [(utc, wall.isoformat(timespec="seconds")) for wall in steps if wall in walls]
+    low, high = shifted(start, -ANY_ZONE_MINUTES, datetime.min), shifted(start, ANY_ZONE_MINUTES, datetime.max)
+    found = walls[bisect.bisect_left(walls, low):bisect.bisect_right(walls, high)]
+    return [(utc, wall.isoformat(timespec="seconds")) for wall in found if (wall - start).total_seconds() % 60 == 0]
 
 
 def is_tier_2_candidate(index: dedupe.PersonIndex, item: dedupe.TakeoutCandidate, moments: Iterable[Moment] = ()) -> bool:
@@ -98,7 +107,8 @@ def is_trashed(members: Sequence[TakeoutEntry]) -> bool:
     return pairing.special_of_copies([folder_of(member) for member in members]) == pairing.TRASHED
 
 
-def verdict_for(index: dedupe.PersonIndex, root: TakeoutEntry, members: Sequence[TakeoutEntry], choice: Choice, text: str | None) -> Verdict:
+def verdict_for(index: dedupe.PersonIndex, root: TakeoutEntry, members: Sequence[TakeoutEntry], choice: Choice, text: str | None,
+                walls: Sequence[datetime] = ()) -> Verdict:
     if is_trashed(members):
         return WAITING_EXPORT
     item = candidate_of(root)
@@ -108,30 +118,47 @@ def verdict_for(index: dedupe.PersonIndex, root: TakeoutEntry, members: Sequence
         return WAITING_EXPORT
     if choice.entry_id is None:
         return WAITING_SIDECAR
-    if is_tier_2_candidate(index, item, sidecar_moments(root, text, index.phone_times.by_local)):
+    if is_tier_2_candidate(index, item, sidecar_moments(root, text, walls)):
         return WAITING_EXPORT
     return READY if choice.settled else WAITING_SIDECAR
 
 
+def is_fresh(row: TakeoutEntry, part_number: int) -> bool:
+    return row.part_number == part_number and row.copy_of_id is None and row.sha1 is not None and row.decision_id is None and not was_seen(row)
+
+
+def is_established(row: TakeoutEntry) -> bool:
+    return row.copy_of_id is None and row.sha1 is not None and (row.decision_id is not None or was_seen(row))
+
+
+def naming_order(row: TakeoutEntry) -> tuple[bool, bool, str]:
+    folder = folder_of(row)
+    return not pairing.YEAR_FOLDER.match(folder.name), pairing.special_of(folder) is not None, row.name
+
+
 def attach_copies(rows: Sequence[TakeoutEntry], part_number: int) -> tuple[dict[int, list[TakeoutEntry]], list[TakeoutEntry]]:
-    roots_of: dict[str, list[TakeoutEntry]] = {}
-    members: dict[int, list[TakeoutEntry]] = {}
-    attached: list[TakeoutEntry] = []
+    members: dict[int, list[TakeoutEntry]] = {row.id: [row] for row in rows if row.copy_of_id is None}
     for row in rows:
         if row.copy_of_id is not None and row.copy_of_id in members:
             members[row.copy_of_id].append(row)
-            continue
-        fresh = row.part_number == part_number and row.outcome == LISTED and row.copy_of_id is None
-        if row.sha1 is not None and fresh:
-            home = next((root for root in roots_of.get(row.sha1, ()) if folder_of(row) not in {folder_of(m) for m in members[root.id]}), None)
-            if home is not None:
-                row.outcome, row.copy_of_id = COPY, home.id
-                members[home.id].append(row)
-                attached.append(row)
-                continue
-        members[row.id] = [row]
-        if row.sha1 is not None:
+        elif row.copy_of_id is not None:
+            members[row.id] = [row]
+    roots_of: dict[str, list[TakeoutEntry]] = {}
+    for row in rows:
+        if is_established(row) and row.sha1 is not None:
             roots_of.setdefault(row.sha1, []).append(row)
+    attached: list[TakeoutEntry] = []
+    for row in sorted((row for row in rows if is_fresh(row, part_number)), key=naming_order):
+        sha1 = row.sha1 or ""
+        homes = [root for root in roots_of.get(sha1, ()) if folder_of(row) not in {folder_of(m) for m in members[root.id]}]
+        if not homes:
+            roots_of.setdefault(sha1, []).append(row)
+            continue
+        home = min(homes, key=lambda root: (-len(members[root.id]), root.id))
+        row.outcome, row.copy_of_id = COPY, home.id
+        members[home.id].append(row)
+        del members[row.id]
+        attached.append(row)
     return members, attached
 
 
@@ -187,6 +214,7 @@ def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar
     members, attached = attach_copies(rows, part_number)
     chosen = sidecar_choices(rows, sidecars)
     texts = {found.entry_id: found.text for found in sidecars}
+    walls = sorted(index.phone_times.by_local)
     for row in rows:
         if row.part_number == part_number and row.outcome == COPY:
             row.sidecar_entry_id = chosen[row.id].entry_id
@@ -205,7 +233,7 @@ def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar
             member.sidecar_entry_id = chosen[member.id].entry_id
         root.sidecar_entry_id = choice.entry_id
         if undecided:
-            ready.extend(decide_state(index, root, group, choice, texts.get(choice.entry_id) if choice.entry_id is not None else None))
+            ready.extend(decide_state(index, root, group, choice, texts.get(choice.entry_id) if choice.entry_id is not None else None, walls))
         elif choice.settled:
             due.append(root)
     return PartPairing(
@@ -217,8 +245,9 @@ def by_id(found: Iterable[TakeoutEntry]) -> tuple[TakeoutEntry, ...]:
     return tuple(sorted(found, key=lambda row: row.id))
 
 
-def decide_state(index: dedupe.PersonIndex, root: TakeoutEntry, group: Sequence[TakeoutEntry], choice: Choice, text: str | None) -> list[TakeoutEntry]:
-    verdict = verdict_for(index, root, group, choice, text)
+def decide_state(index: dedupe.PersonIndex, root: TakeoutEntry, group: Sequence[TakeoutEntry], choice: Choice, text: str | None,
+                 walls: Sequence[datetime] = ()) -> list[TakeoutEntry]:
+    verdict = verdict_for(index, root, group, choice, text, walls)
     root.outcome = LISTED if verdict == READY else verdict
     if verdict != READY:
         return []
