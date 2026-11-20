@@ -15,7 +15,7 @@ from unittest import mock
 
 from darkroom_browser import live
 from darkroom_browser.context import PartClick
-from darkroom_browser.stall import StallWatch, Verdict
+from darkroom_browser.stall import IN_PROGRESS_SUFFIX, StallWatch, Verdict
 
 try:
     from playwright.sync_api import TimeoutError as NoDownloadInTime
@@ -298,19 +298,26 @@ class SlowGoogleHeaderTests(unittest.TestCase):
 class ChromiumStaggerTests(ChromiumWorld):
     handler = SlowGoogle
 
-    def test_two_downloads_started_apart_overlap_and_each_lands_as_its_own_part(self):
+    def test_two_downloads_one_after_the_other_never_overlap_and_each_lands_as_its_own_part(self):
         first = self.browser.start_download("#part1", PartClick("#part1", STAGGER_LINKS[1], 1))
         self.browser.page.wait_for_timeout(int(APART_SECONDS * 1000))
         self.assertTrue(self.browser.download_state(first).in_progress)
+        verdicts, _ = self.until_finished([first])
+        self.assertEqual(verdicts, {first: Verdict.FINISHED})
+        path = self.browser.keep_download(first, self.target / "1")
+        self.assertEqual((path.name, path.read_bytes()), (STAGGER_NAMES[1], STAGGER_ZIPS[1]))
         self.browser.goto(PAGE_URL)
         second = self.browser.start_download("#part2", PartClick("#part2", STAGGER_LINKS[2], 2))
         self.assertNotEqual(first, second)
-        verdicts, overlapped = self.until_finished([first, second])
-        self.assertTrue(overlapped)
-        self.assertEqual(verdicts, {first: Verdict.FINISHED, second: Verdict.FINISHED})
-        for number, handle in ((2, second), (1, first)):
-            path = self.browser.keep_download(handle, self.target / str(number))
-            self.assertEqual((path.name, path.read_bytes()), (STAGGER_NAMES[number], STAGGER_ZIPS[number]))
+        self.browser.page.wait_for_timeout(int(APART_SECONDS * 1000))
+        self.assertTrue(self.browser.download_state(second).in_progress)
+        self.assertFalse(self.browser.download_state(first).in_progress)
+        in_progress = [entry.name for entry in (self.root / "_inbox" / ".downloads" / "3").iterdir() if entry.name.endswith(IN_PROGRESS_SUFFIX)]
+        self.assertEqual(in_progress, [second + IN_PROGRESS_SUFFIX])
+        verdicts, _ = self.until_finished([second])
+        self.assertEqual(verdicts, {second: Verdict.FINISHED})
+        path = self.browser.keep_download(second, self.target / "2")
+        self.assertEqual((path.name, path.read_bytes()), (STAGGER_NAMES[2], STAGGER_ZIPS[2]))
         self.assertEqual(list((self.root / "_inbox" / ".downloads" / "3").iterdir()), [])
 
     def test_dropping_strays_while_a_part_downloads_leaves_it_running_to_the_end(self):
