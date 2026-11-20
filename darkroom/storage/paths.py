@@ -153,6 +153,10 @@ class Photos:
             raise OutsideRoot(f"{'/'.join(parts)} is outside the photo folder")
         return path
 
+    def free_bytes(self) -> int:
+        found = os.statvfs(self.root)
+        return found.f_bavail * found.f_frsize
+
     def person_part(self, slug: str) -> str:
         if not SLUG.match(slug):
             raise OutsideRoot(f"{slug!r} is not a valid folder name")

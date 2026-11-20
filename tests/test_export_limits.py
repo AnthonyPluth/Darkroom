@@ -14,7 +14,7 @@ from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos
-from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, settings_from
+from tests.shared import add_person, another_writer_holds_the_lock, impatient_engine, own_database, plenty_of_space, settings_from
 
 NOW = 1_800_000_000.0
 DAY = 86400.0
@@ -27,6 +27,7 @@ def listed(google_id="g-1", parts=((1, 4 * MB), (2, 2 * MB)), expires=NOW + 7 * 
 
 class DownloadCase(unittest.TestCase):
     def setUp(self):
+        plenty_of_space(self)
         self.engine = own_database(self)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -57,7 +58,7 @@ class DownloadCase(unittest.TestCase):
             return work(opened, *args)
 
     def attempt(self, job, number, now=NOW):
-        return self.call(downloads.attempt, job, number, now)
+        return self.call(downloads.attempt, self.settings, job, number, now)
 
     def fail_part(self, job, number, reason="corrupt", now=NOW):
         return self.call(downloads.part_failed, job, number, reason, now)

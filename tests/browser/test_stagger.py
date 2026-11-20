@@ -1,3 +1,4 @@
+import itertools
 import re
 import threading
 import unittest
@@ -7,6 +8,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import events, exports
+from darkroom.storage.paths import Photos
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom_browser import client, selectors
@@ -116,9 +118,13 @@ class StaggerWorld(DownloadWorld):
     interval = None
     most = None
 
+    def setUp(self):
+        super().setUp()
+        self.cancelling = threading.Event()
+
     def context(self, browser, job_id):
         return JobContext(job_id, "download", str(self.account), {"email": "jo@example.test", "export_id": self.export}, self.root, self.reporter,
-                          lambda profile: browser, threading.Event(), None, self.clock.sleep, self.clock.monotonic, lambda: NOW)
+                          lambda profile: browser, self.cancelling, None, self.clock.sleep, self.clock.monotonic, lambda: NOW)
 
     def run_job(self, browser, job_id=None):
         job_id = job_id or self.claim()
@@ -248,6 +254,115 @@ class StaggeredDownloadTests(StaggerWorld):
         number, minutes = self.started_after(browser)[1]
         self.assertEqual(number, 2)
         self.assertIn(minutes, (12, 13))
+
+    def short_of_space_until(self, minutes):
+        start = self.clock.now
+        return mock.patch.object(Photos, "free_bytes", lambda photos: 0 if self.clock.now < start + minutes * MINUTE else 400 * 10**9)
+
+    def test_a_paused_answer_waits_and_asks_again_then_downloads_without_using_an_attempt(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        asked = []
+        real = self.reporter.part
+
+        def part(job_id, number, body):
+            reply = real(job_id, number, body)
+            if body["event"] == "attempt":
+                asked.append((number, reply["paused_for_space"], reply["part"]["attempts"], reply["part"]["downloads_used"]))
+            return reply
+
+        self.reporter.part = part
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        paused = [entry for entry in asked if entry[1]]
+        self.assertEqual(len(paused), 5)
+        self.assertEqual({entry[0] for entry in paused}, {1})
+        self.assertEqual({entry[2:] for entry in paused}, {(0, 0)})
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertNotIn("failed", [kind for kind, _ in self.reporter.events])
+        self.assertEqual(self.recorded("export_part_attempt_failed"), [])
+        self.assertEqual(sum(1 for message in self.messages() if message == stagger.PAUSED_WORDS), 1)
+        self.assertEqual(sum(1 for message in self.messages() if message == stagger.RESUMED_WORDS), 1)
+
+    def test_the_wait_between_asks_is_fixed(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        starts = []
+        real = self.reporter.part
+
+        def part(job_id, number, body):
+            if body["event"] == "attempt":
+                starts.append(self.clock.now)
+            return real(job_id, number, body)
+
+        self.reporter.part = part
+        with self.short_of_space_until(12):
+            self.run_job(browser)
+        gaps = {round(later - earlier) for earlier, later in itertools.pairwise(starts[:3])}
+        self.assertTrue(all(stagger.SPACE_RETRY_SECONDS <= gap < stagger.SPACE_RETRY_SECONDS + stagger.POLL_SECONDS for gap in gaps))
+
+    def test_only_new_parts_wait_a_part_already_downloading_finishes(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        start = self.clock.now
+        low = mock.patch.object(Photos, "free_bytes", lambda photos: 400 * 10**9 if self.clock.now < start + 1 * MINUTE else 0)
+        calls = []
+        real_space = stagger.Staggered.may_start
+
+        def may_start(run):
+            calls.append(self.clock.now)
+            if self.clock.now > start + 60 * MINUTE:
+                self.cancelling.set()
+            return real_space(run)
+
+        with low, mock.patch.object(stagger.Staggered, "may_start", may_start), self.assertRaises(Cancelled):
+            self.run_job(browser)
+        self.assertEqual(browser.kept, [1])
+        self.assertEqual(self.parts()[0], ("done", 1, 1))
+        self.assertEqual(self.parts()[1:], [("pending", 0, 0), ("pending", 0, 0)])
+
+    def test_the_pause_words_stay_on_the_message_when_a_part_in_flight_lands(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        start = self.clock.now
+        low = mock.patch.object(Photos, "free_bytes", lambda photos: 400 * 10**9 if self.clock.now < start + 1 * MINUTE else 0)
+        real_space = stagger.Staggered.may_start
+
+        def may_start(run):
+            if self.clock.now > start + 60 * MINUTE:
+                self.cancelling.set()
+            return real_space(run)
+
+        with low, mock.patch.object(stagger.Staggered, "may_start", may_start), self.assertRaises(Cancelled):
+            self.run_job(browser)
+        messages = self.messages()
+        landed = [message for message in messages if message.startswith("part 1 downloaded")]
+        self.assertEqual(len(landed), 1)
+        self.assertIn(stagger.PAUSED_WORDS, landed[0])
+        self.assertIn(stagger.PAUSED_WORDS, messages[-1])
+
+    def test_a_landing_after_the_pause_ends_says_nothing_of_it(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        with self.short_of_space_until(12):
+            self.run_job(browser)
+        landed = [message for message in self.messages() if " downloaded; " in message]
+        self.assertTrue(landed)
+        self.assertEqual([message for message in landed if "paused for space" in message], [])
+        self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
+
+    def test_a_cancel_during_a_pause_ends_the_job_as_before(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        real_sleep = self.clock.sleep
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 3:
+                self.cancelling.set()
+            real_sleep(seconds)
+
+        self.clock.sleep = sleep
+        with self.short_of_space_until(10_000), self.assertRaises(Cancelled):
+            self.run_job(browser)
+        self.assertEqual(browser.started, [])
+        self.assertEqual(self.parts(), [("pending", 0, 0)] * 3)
 
     def test_a_restart_requeues_every_part_that_was_in_flight(self):
         browser = StaggerBrowser(["ok", "lease lost"], self.clock)
@@ -457,6 +572,32 @@ class StaggeredDownloadTests(StaggerWorld):
             sign_in = opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalars().all()
             self.assertEqual(len(sign_in), 1)
             self.assertIsNotNone(sign_in[0].closed)
+
+    def test_a_sign_in_during_a_pause_keeps_the_pause_words_on_the_message(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        until = []
+        opened = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if url == ARCHIVE:
+                opened.append(url)
+                if len(opened) == 2:
+                    until.append(self.clock.now + 3 * MINUTE)
+
+        def content():
+            if until and self.clock.now < until[0] and browser.url in (ARCHIVE, selectors.TAKEOUT_URL):
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        with self.short_of_space_until(22):
+            self.run_job(browser)
+        self.assertEqual(len(until), 1)
+        signed_in = [message for message in self.messages() if message.startswith("signed in")]
+        self.assertTrue(signed_in)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
 
     def test_a_sign_in_that_never_comes_while_parts_download_times_out(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
