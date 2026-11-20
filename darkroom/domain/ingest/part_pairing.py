@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal
 
@@ -18,6 +18,8 @@ COPY: Final = "copy"
 LISTED: Final = "listed"
 UNDECIDED: Final = frozenset({LISTED, WAITING_SIDECAR, WAITING_EXPORT})
 NAME_ONLY_RULES: Final = (pairing.exact, pairing.supplemental, pairing.counter)
+
+ANY_ZONE_MINUTES: Final = 16 * 60
 
 Verdict = Literal["ready", "waiting_sidecar", "waiting_export"]
 Moment = tuple[float | None, str | None]
@@ -60,7 +62,7 @@ def wall_clock(utc: float, found: sidecar.Sidecar) -> str | None:
     return media.wall_clock_at(utc, found.lat, found.lon)[0]
 
 
-def sidecar_moments(entry: TakeoutEntry, text: str | None) -> list[Moment]:
+def sidecar_moments(entry: TakeoutEntry, text: str | None, walls: Container[datetime] = frozenset()) -> list[Moment]:
     found = sidecar.parse(text) if text else None
     if found is None:
         return []
@@ -76,7 +78,15 @@ def sidecar_moments(entry: TakeoutEntry, text: str | None) -> list[Moment]:
         if utc is not None:
             moments.append((utc, entry.captured_local))
     moments.extend([(found.photo_taken_utc, entry.captured_local), (found.photo_taken_utc, wall_clock(found.photo_taken_utc, found))])
+    if found.lat is None or found.lon is None:
+        moments.extend(any_zone(walls, found.photo_taken_utc, moment))
     return moments
+
+
+def any_zone(walls: Container[datetime], utc: float, moment: datetime) -> list[Moment]:
+    start = moment.replace(tzinfo=None, microsecond=0)
+    steps = (start + timedelta(minutes=minutes) for minutes in range(-ANY_ZONE_MINUTES, ANY_ZONE_MINUTES + 1))
+    return [(utc, wall.isoformat(timespec="seconds")) for wall in steps if wall in walls]
 
 
 def is_tier_2_candidate(index: dedupe.PersonIndex, item: dedupe.TakeoutCandidate, moments: Iterable[Moment] = ()) -> bool:
@@ -98,7 +108,7 @@ def verdict_for(index: dedupe.PersonIndex, root: TakeoutEntry, members: Sequence
         return WAITING_EXPORT
     if choice.entry_id is None:
         return WAITING_SIDECAR
-    if is_tier_2_candidate(index, item, sidecar_moments(root, text)):
+    if is_tier_2_candidate(index, item, sidecar_moments(root, text, index.phone_times.by_local)):
         return WAITING_EXPORT
     return READY if choice.settled else WAITING_SIDECAR
 

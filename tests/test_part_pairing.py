@@ -300,6 +300,35 @@ class SidecarTimeTests(unittest.TestCase):
         found, row, _ = self.held(captured_utc=PHONE_SECOND + 30 * 86400)
         self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
 
+    def wall_clock_shot(self, local, gps):
+        world = PairingWorld(self)
+        world.builder.photo("IMG_0072.JPG", taken=int(PHONE_SECOND), gps=gps)
+        world.build()
+        name = entry_name("IMG_0072.JPG")
+        world.fingerprint(name, captured_utc=None, captured_local=None, make="Apple", model="iPhone 12", width=32, height=24)
+        found = world.pair(1, index_of(shot(1, sha1="1" * 40, captured_utc=None, captured_local=local)))
+        return found, world.row(name), name
+
+    def test_a_sidecar_time_without_gps_is_held_when_the_files_own_gps_could_place_it_on_a_phone_shots_wall_clock(self):
+        found, row, _ = self.wall_clock_shot("2017-07-13T22:40:00", None)
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
+    def test_a_sidecar_time_without_gps_is_held_for_a_zone_with_an_odd_offset(self):
+        found, row, _ = self.wall_clock_shot("2017-07-14T08:25:00", None)
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
+    def test_a_wall_clock_no_zone_could_give_leaves_the_entry_ready(self):
+        for local in ("2017-07-13T22:40:07", "2017-07-15T22:40:00"):
+            with self.subTest(local=local):
+                found, row, name = self.wall_clock_shot(local, None)
+                self.assertEqual((found["ready"], row.outcome), ([name], "listed"))
+
+    def test_a_sidecar_with_gps_places_the_wall_clock_in_its_own_zone_only(self):
+        found, row, name = self.wall_clock_shot("2017-07-14T08:25:00", (40.7, -74.0))
+        self.assertEqual((found["ready"], row.outcome), ([name], "listed"))
+        found, row, _ = self.wall_clock_shot("2017-07-13T22:40:00", (40.7, -74.0))
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
     def test_a_sidecar_that_does_not_parse_adds_no_time(self):
         entry = TakeoutEntry(name=entry_name("IMG_0071.JPG"), captured_utc=PHONE_SECOND, captured_local=None)
         self.assertEqual((part_pairing.sidecar_moments(entry, "not json"), part_pairing.sidecar_moments(entry, None)), ([], []))
