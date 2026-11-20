@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import dates
 from darkroom.domain import browser_jobs, events
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person
+from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person, TakeoutEntry
 
 State = Literal["in_progress", "ready", "expired"]
 STATES: tuple[State, ...] = ("in_progress", "ready", "expired")
@@ -39,6 +39,12 @@ IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry i
 NO_PARTS_WORDS = "Takeout listed no parts for this export, so there is nothing to download."
 STILL_OPEN_WORDS = "The download job that stopped is still finishing; try again in a few minutes."
 PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
+INGESTED = "ingested"
+REFUSED = "refused"
+WAITING_SIDECAR = "waiting_sidecar"
+WAITING_EXPORT = "waiting_export"
+FAILED_ITEM = "failed_item"
+BYTES_FREED = 0
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
 MAX_GOOGLE_DOWNLOADS = 1000
@@ -372,10 +378,29 @@ def part_progress(part: ExportPart) -> int:
     return max(0, min(99, part.bytes_done * 100 // part.bytes))
 
 
-def part_dict(part: ExportPart) -> dict[str, object]:
+def held_by_part(opened: Session, export_id: int) -> dict[int, tuple[int, int]]:
+    rows = opened.execute(
+        select(TakeoutEntry.part_number, TakeoutEntry.outcome, func.count())
+        .where(TakeoutEntry.export_id == export_id, TakeoutEntry.outcome.in_((WAITING_SIDECAR, WAITING_EXPORT)))
+        .group_by(TakeoutEntry.part_number, TakeoutEntry.outcome)
+    ).all()
+    split: dict[int, tuple[int, int]] = {}
+    for number, outcome, count in rows:
+        sidecar, export = split.get(number, (0, 0))
+        split[number] = (sidecar + count, export) if outcome == WAITING_SIDECAR else (sidecar, export + count)
+    return split
+
+
+def kept_reason(part: ExportPart) -> str | None:
+    return FAILED_ITEM if part.failed_items > 0 and part.ingest_state != REFUSED else None
+
+
+def part_dict(part: ExportPart, held: tuple[int, int] = (0, 0)) -> dict[str, object]:
     return {
         "number": part.number, "filename": part.filename, "bytes": part.bytes, "progress": part_progress(part),
         "downloads_used": part.downloads_used, "attempts": part.attempts, "status": part.status,
+        "ingest_state": part.ingest_state, "entries": part.entries or 0, "entries_done": part.entries_done, "held": part.held,
+        "held_waiting_sidecar": held[0], "held_waiting_export": held[1], "failed_items": part.failed_items, "kept_reason": kept_reason(part),
     }
 
 
@@ -410,10 +435,14 @@ def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float, job_o
 def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
     parts = parts_of(opened, export.id)
     refusal = retry_refusal(export, parts, now, download_open(opened, export)) if export.status == "failed" else None
+    held = held_by_part(opened, export.id)
     return {
         "id": export.id, "account_id": export.account_id, "kind": export.kind, "created_at": dates.instant_or_none(export.created_at),
         "ready_at": dates.instant_or_none(export.ready_at), "expires_at": dates.instant_or_none(export.expires_at), "part_count": export.part_count, "status": export.status, "stage": export.stage,
-        "parts": [part_dict(part) for part in parts], "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
+        "parts": [part_dict(part, held.get(part.number, (0, 0))) for part in parts],
+        "parts_ingested": sum(1 for part in parts if part.ingest_state == INGESTED),
+        "held_waiting_sidecar": sum(sidecar for sidecar, _ in held.values()), "held_waiting_export": sum(export for _, export in held.values()),
+        "bytes_freed": BYTES_FREED, "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
     }
 
 

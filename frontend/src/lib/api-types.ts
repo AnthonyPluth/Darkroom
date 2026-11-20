@@ -168,6 +168,14 @@ export interface ExportPartDetail {
   downloads_used: number;
   attempts: number;
   status: string;
+  ingest_state: string;
+  entries: number;
+  entries_done: number;
+  held: number;
+  held_waiting_sidecar: number;
+  held_waiting_export: number;
+  failed_items: number;
+  kept_reason: "failed_item" | null;
 }
 
 export interface ExportPartView {
@@ -212,6 +220,10 @@ export interface ExportView {
   status: string;
   stage: string | null;
   parts: ExportPartDetail[];
+  parts_ingested: number;
+  held_waiting_sidecar: number;
+  held_waiting_export: number;
+  bytes_freed: number;
   retry_allowed: boolean;
   retry_refusal: string | null;
 }

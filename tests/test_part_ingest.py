@@ -1,3 +1,4 @@
+import json
 import unittest
 import zipfile
 from pathlib import Path
@@ -5,7 +6,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe
+from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
@@ -300,6 +301,73 @@ class CopyAndHoldTests(unittest.TestCase):
         outcomes = self.world.outcomes()
         self.assertEqual((outcomes["Photos from 2019/IMG_6001.HEIC"], outcomes["Photos from 2019/IMG_6001.MOV"]), ("placed", "waiting_sidecar"))
         self.assertEqual(len(self.world.decisions()), 1)
+
+
+class ExportsApiFieldTests(unittest.TestCase):
+    def setUp(self):
+        self.world = PartWorld(self)
+        self.export = self.world.create(self.world.scenario)
+
+    def view(self):
+        self.world.opened.expire_all()
+        return exports.as_dict(self.world.opened, self.world.opened.get(Export, self.export.id), NOW)
+
+    def ledger_held(self, number):
+        rows = self.world.opened.execute(select(TakeoutEntry).where(TakeoutEntry.part_number == number)).scalars()
+        counts = [row.outcome for row in rows]
+        return counts.count("waiting_sidecar"), counts.count("waiting_export")
+
+    def test_before_any_part_ingests_every_part_is_queued_with_zeros(self):
+        export = self.view()
+        self.assertEqual((export["parts_ingested"], export["held_waiting_sidecar"], export["held_waiting_export"], export["bytes_freed"]), (0, 0, 0, 0))
+        self.assertEqual([(part["ingest_state"], part["entries"], part["held"], part["held_waiting_sidecar"], part["held_waiting_export"], part["kept_reason"])
+                          for part in export["parts"]], [("queued", 0, 0, 0, 0, None)] * 3)
+
+    def test_the_view_matches_the_ledger_after_each_part(self):
+        self.world.ingest_all(self.export)
+        export = self.view()
+        self.assertEqual(export["parts_ingested"], 3)
+        for part in export["parts"]:
+            row = self.world.part(self.export, part["number"])
+            sidecar, held_export = self.ledger_held(part["number"])
+            self.assertEqual((part["ingest_state"], part["entries"], part["entries_done"], part["held"], part["failed_items"]),
+                             (row.ingest_state, row.entries, row.entries_done, row.held, row.failed_items))
+            self.assertEqual((part["held_waiting_sidecar"], part["held_waiting_export"]), (sidecar, held_export))
+            self.assertEqual(part["held"], sidecar + held_export)
+        self.assertEqual((export["held_waiting_sidecar"], export["held_waiting_export"]), (1, 2))
+        self.assertEqual(sum(part["held_waiting_sidecar"] for part in export["parts"]), 1)
+
+    def test_a_part_with_a_failed_item_is_kept_for_a_failed_item(self):
+        real = place.place
+
+        def broken(opened, photos, export, entries, *args, **kwargs):
+            if any(entry.named is not None and entry.named.name == "IMG_2001.JPG" for entry in entries):
+                raise place.PlaceFailed("both names are taken by other files")
+            return real(opened, photos, export, entries, *args, **kwargs)
+
+        with mock.patch.object(place, "place", side_effect=broken):
+            self.world.ingest(self.export, 1)
+        first = self.view()["parts"][0]
+        self.assertEqual((first["ingest_state"], first["failed_items"], first["kept_reason"]), ("ingested", 1, "failed_item"))
+
+    def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
+        self.world.ingest(self.export, 1)
+        row = self.world.part(self.export, 1)
+        with zipfile.ZipFile(Path(self.export.inbox_dir) / row.filename, "w") as archive:
+            archive.writestr(f"{PREFIX}Photos from 2019/OTHER_CANARY_NAME.JPG", b"other bytes")
+        row.ingest_state = "queued"
+        self.world.opened.commit()
+        self.world.ingest(self.export, 1)
+        first = self.view()["parts"][0]
+        self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", None))
+
+    def test_no_entry_name_or_sidecar_text_reaches_the_view(self):
+        self.world.ingest_all(self.export)
+        text = json.dumps(self.view())
+        for canary in ("IMG_", "canal", "late description", "Photos from 2019", ".JPG", ".json"):
+            self.assertNotIn(canary, text)
+        with no_leaks(self, "IMG_2003.JPG", "A made-up canal", "a late description", replies=[text.encode()]):
+            pass
 
 
 class FailureTests(unittest.TestCase):

@@ -236,7 +236,7 @@ With the dedupe index fixed while the export ingests (no phone items arriving fr
 
 The Exports page shows each part's download state today (`exports.part_dict`, `frontend/src/pages/Exports.svelte`'s parts table, and the line "Darkroom downloads each part once and keeps the file until it is imported"). Per-part ingest needs it to show, per part, one of: downloaded, ingesting, ingested, holding N items, freed, kept (with why: a failed item, a listing mismatch); and per export: parts ingested of the total, items held until the export completes and how many are waiting for a sidecar, and how much disk was freed. The Imports page may show a run that is still taking parts. The API gains the part fields (`contract.py`, `api-types.ts`, the feature map).
 
-**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design.
+**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design. The API reports `kept_reason` as `failed_item` only (from `failed_items`); a refused part carries no reason code until a later issue stores the reader's refusal reason on `export_parts`. `bytes_freed` is 0 and there is no `freed` part state until PP-10.
 
 ## 9. Plan
 
