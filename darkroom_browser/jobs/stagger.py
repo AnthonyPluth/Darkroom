@@ -20,6 +20,9 @@ PROGRESS_SECONDS = 30.0
 FLOOR_SECONDS = 120.0
 PROMPTS_BEFORE_ONE_AT_A_TIME = 2
 DISK_SLACK = 1 << 30
+SPACE_RETRY_SECONDS = 5 * 60.0
+PAUSED_WORDS = "paused for space: the share has too little free room, so no new part starts until it has more; Darkroom asks again every 5 minutes"
+RESUMED_WORDS = "free space is back on the share; resuming downloads"
 
 
 def every(interval: float) -> str:
@@ -72,6 +75,8 @@ class Staggered:
         self.prompts = 0
         self.fetched = 0
         self.short_of_disk = False
+        self.paused_until: float | None = None
+        self.paused = False
 
     def say(self, message: str) -> None:
         if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
@@ -115,6 +120,8 @@ class Staggered:
     def may_start(self) -> bool:
         if not self.queue or len(self.flights) >= self.most:
             return False
+        if self.paused_until is not None and self.ctx.clock() < self.paused_until:
+            return False
         if not self.flights:
             return True
         if self.last_click is not None and self.ctx.clock() - self.last_click < self.interval:
@@ -149,6 +156,17 @@ class Staggered:
             self.say(f"part {number} could not be started, so Darkroom lets the {counted(len(self.flights), 'part')} still downloading finish before it stops")
             return
         reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt"})
+        if reply.get("paused_for_space"):
+            self.requeue(part)
+            self.paused_until = self.ctx.clock() + SPACE_RETRY_SECONDS
+            if not self.paused:
+                self.paused = True
+                self.say(PAUSED_WORDS)
+            return
+        if self.paused:
+            self.paused = False
+            self.say(RESUMED_WORDS)
+        self.paused_until = None
         if not reply.get("allowed"):
             raise download.DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         clicking = PartClick(selector, listed.href, number)

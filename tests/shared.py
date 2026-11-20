@@ -63,6 +63,15 @@ def own_database_url(test: unittest.TestCase) -> str:
     return make_url(db.normalise_url(server)).set(database=name).render_as_string(hide_password=False)
 
 
+PLENTY_OF_SPACE = 1000 * 10**9
+
+
+def plenty_of_space(test: unittest.TestCase) -> None:
+    patch = mock.patch("darkroom.storage.paths.Photos.free_bytes", return_value=PLENTY_OF_SPACE)
+    patch.start()
+    test.addCleanup(patch.stop)
+
+
 def own_database(test: unittest.TestCase) -> Engine:
     engine = db.make_engine(own_database_url(test))
     db.Base.metadata.create_all(engine)

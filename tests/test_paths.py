@@ -30,6 +30,17 @@ class PhotosTests(unittest.TestCase):
         self.assertEqual(p.browser_profile("acct-1"), self.root / "_browser/acct-1/profile")
         self.assertEqual(p.failures("acct-1", "job-9"), self.root / "_browser/acct-1/failures/job-9")
 
+    def test_free_bytes_reads_the_share_filesystem(self):
+        usage = mock.Mock(f_bavail=1500, f_frsize=4096)
+        with mock.patch.object(paths.os, "statvfs", return_value=usage) as read:
+            self.assertEqual(self.photos.free_bytes(), 1500 * 4096)
+        read.assert_called_once_with(self.root)
+        self.assertGreater(self.photos.free_bytes(), 0)
+
+    def test_free_bytes_of_an_unreadable_share_raises_os_error(self):
+        with mock.patch.object(paths.os, "statvfs", side_effect=PermissionError("no")), self.assertRaises(OSError):
+            self.photos.free_bytes()
+
     def test_traversal_and_bad_names_are_refused(self):
         p = self.photos
         for bad in ("..", "../x", "a/b", "/etc", "Jo", ""):
