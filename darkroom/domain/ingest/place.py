@@ -33,6 +33,7 @@ class Entry:
     item: TakeoutItem
     fields: MediaItem
     decision: DedupeDecision
+    named: Path | None = None
 
 
 @dataclass
@@ -119,11 +120,11 @@ def staged_chunks(photos: Photos, source: Path) -> Iterator[bytes]:
 
 
 def copy_into(folder: Path, source: Path, sha1: str, marking: Callable[[Path, bool], None] | None = None,
-              read: Read | None = None, write: Write | None = None, adopts: Holds | None = None) -> Placed:
+              read: Read | None = None, write: Write | None = None, adopts: Holds | None = None, named: Path | None = None) -> Placed:
     reading = chunks if read is None else read
     writing = paths.write_once if write is None else write
     adopting = holds if adopts is None else adopts
-    for name in names(source, sha1):
+    for name in names(source if named is None else named, sha1):
         destination = folder / name
         if destination.parent != folder:
             raise PlaceFailed("the file name is not a plain name")
@@ -182,7 +183,7 @@ def place_google_only(opened: Session, photos: Photos, export: Export, entry: En
     if person is None:
         raise PlaceFailed("the export's account has no default person")
     folder = google_only_folder(photos, person.slug, entry.fields)
-    placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=lambda source: staged_chunks(photos, source))
+    placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=lambda source: staged_chunks(photos, source), named=entry.named)
     copied(placed)
     counted(report, placed)
     path = relative(photos, placed.path)
@@ -211,7 +212,7 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
     sha1 = entry.fields.sha1
     placed = copy_into(folder, entry.item.path, sha1, read=lambda source: staged_chunks(photos, source),
                        write=lambda destination, data: paths.write_inbox_once(photos, destination, data, sha1),
-                       adopts=lambda destination, expected: holds_in_the_inbox(photos, destination, expected))
+                       adopts=lambda destination, expected: holds_in_the_inbox(photos, destination, expected), named=entry.named)
     report.held += 1
     review.hold_path, review.sidecar_json, review.hold_sha1 = relative(photos, placed.path), entry.fields.sidecar_json, entry.fields.sha1
     review.sidecar_from_still = entry.item.sidecar_from_still

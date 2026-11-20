@@ -8,9 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import alerts, dedupe, media
-from darkroom.domain.ingest import cleanup, metadata, pairing, place, run, sidecar, unpack
+from darkroom.domain.ingest import cleanup, metadata, pairing, part_ingest, place, run, sidecar, unpack
 from darkroom.storage import locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem, Person, ReviewItem
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
 from tests.privacy import no_leaks
 from tests.takeout_fixtures import TakeoutBuilder
@@ -600,6 +600,29 @@ class HandDroppedAndDownloadedTests(unittest.TestCase):
         for world in (dropped, downloaded):
             held = world.root / "_inbox/jo/review/export-1/IMG_1005.JPG"
             self.assertEqual(sha1_of(held), sha1_of(world.root / "_inbox/jo/export-1/staging/Takeout/Google Photos/Photos from 2019/IMG_1005.JPG"))
+
+
+class PartQueueingTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+
+    def registered(self):
+        export = self.world.hand_dropped()
+        return [(part.number, part.ingest_state, part.ingest_queued_at) for part in
+                self.world.opened.execute(select(ExportPart).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars()]
+
+    def test_registered_zips_queue_each_part_when_the_switch_is_on(self):
+        with mock.patch.object(part_ingest, "ENABLED", True):
+            self.assertEqual(self.registered(), [(1, "queued", NOW), (2, "queued", NOW)])
+
+    def test_registered_zips_queue_nothing_with_the_switch_off(self):
+        self.assertFalse(part_ingest.ENABLED)
+        self.assertEqual(self.registered(), [(1, "not_queued", None), (2, "not_queued", None)])
+
+    def test_the_switch_off_leaves_whole_export_imports_as_they_were(self):
+        export = self.world.hand_dropped()
+        self.assertEqual(part_ingest.run_queued(self.world.opened, self.world.settings, NOW), [])
+        self.assertEqual(self.world.run_import(export).status, "done")
 
 
 TAKEN = 1_600_000_000

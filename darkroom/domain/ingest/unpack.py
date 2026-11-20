@@ -254,6 +254,8 @@ def recorded_folder(photos: Photos | None, inbox: Path) -> str:
 
 def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None,
                   photos: Photos | None = None) -> list[Export]:
+    from darkroom.domain.ingest import part_ingest
+
     account = chosen_account(opened, person, account_email)
     registered = []
     try:
@@ -273,7 +275,9 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
         known = {part.number for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id)).scalars()}
         for number, path in sorted(numbered.items()):
             if number not in known:
-                opened.add(ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.lstat().st_size, status="done"))
+                part = ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.lstat().st_size, status="done")
+                part_ingest.queue(part, now)
+                opened.add(part)
         registered.append(export)
     opened.flush()
     return registered
