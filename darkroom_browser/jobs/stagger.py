@@ -49,7 +49,7 @@ class OnePartAtATime:
         self.flight: Flight | None = None
         self.waiting: Waiting | None = None
         self.signing_in: float | None = None
-        self.started: set[int] = set()
+        self.counted: dict[int, int] = {}
         self.fetched = 0
         self.paused_until: float | None = None
         self.paused = False
@@ -106,8 +106,9 @@ class OnePartAtATime:
             self.signing_in = self.ctx.clock()
             self.ctx.wait_for_user(waiting_reason(signed_out.state))
             return
-        send_count = listed.google_downloads is not None and number not in self.started
-        reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt", "google_downloads": listed.google_downloads} if send_count else {"event": "attempt"})
+        google = listed.google_downloads
+        send_count = google is not None and (number not in self.counted or google > self.counted[number])
+        reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt", "google_downloads": google} if send_count else {"event": "attempt"})
         if reply.get("paused_for_space"):
             self.requeue(part)
             self.paused_until = self.ctx.clock() + SPACE_RETRY_SECONDS
@@ -121,7 +122,7 @@ class OnePartAtATime:
         self.paused_until = None
         if not reply.get("allowed"):
             raise download.DownloadFailed(download.gave_up_message(number, reply["part"], ""))
-        self.started.add(number)
+        self.counted[number] = reply["part"]["downloads_used"]
         clicking = PartClick(selector, listed.href, number)
         if self.kept_late(part, clicking):
             return

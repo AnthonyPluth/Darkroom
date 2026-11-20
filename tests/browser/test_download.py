@@ -370,6 +370,55 @@ class DownloadJobTests(DownloadWorld):
         self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, "unknown")])
         self.assertEqual(self.parts()[0], ("done", 3, 2))
 
+    def retrying_part_1(self, first_page, then_page, script=("interrupted", "ok", "ok", "ok")):
+        browser = DownloadBrowser(list(script))
+        browser.archive_page = first_page
+        real_start = browser.start_download
+
+        def start_download(selector, part):
+            browser.archive_page = then_page
+            return real_start(selector, part)
+
+        browser.start_download = start_download
+        return browser
+
+    def test_a_higher_count_on_a_retried_parts_reopened_page_reaches_the_server_and_raises_ours(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, 4)])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_googles_five_of_five_on_a_retried_parts_reopened_page_stops_the_job_before_clicking_it_again(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), archive_counting(5, 0, 0))
+        with self.assertRaisesRegex(download.DownloadFailed, "^part 1 used all 5 of Google's downloads for it"):
+            self.run_job(browser)
+        self.assertEqual((browser.downloaded, self.reporter.attempts), ([1], [(1, 1), (1, 5)]))
+        self.assertEqual(self.parts()[0][:2], ("failed", 5))
+
+    def test_a_first_known_count_on_a_retried_parts_page_reaches_the_server_when_it_is_higher_than_ours(self):
+        browser = self.retrying_part_1(EXPORT_PAGE, archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, "unknown"), (1, 4)])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_a_lower_count_on_a_retried_parts_page_is_not_sent_and_ours_stands(self):
+        browser = self.retrying_part_1(archive_counting(3, 0, 0), archive_counting(2, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 3), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_a_count_on_a_retried_parts_page_equal_to_ours_is_not_sent(self):
+        browser = self.retrying_part_1(archive_counting(3, 0, 0), archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 3), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_an_unknown_count_on_a_retried_parts_page_stays_unknown(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), EXPORT_PAGE)
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 3, 2))
+
     def test_a_verification_during_part_2_pauses_alerts_once_and_resumes_part_2(self):
         browser = DownloadBrowser(["ok", "verify", "ok", "ok"])
         job_id, _ = self.run_job(browser)
