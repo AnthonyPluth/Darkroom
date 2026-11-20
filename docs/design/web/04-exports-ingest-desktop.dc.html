@@ -68,7 +68,7 @@ td{padding:12px 12px 12px 0;border-top:1px solid #2B2721;vertical-align:middle}
 <main class="main">
 <div style="display:flex;flex-direction:column;gap:4px">
 <h1>Exports: per-part import</h1>
-<div class="sub">Draft for #490 (PP-13), not signed off. The current export parts card when Darkroom imports each part as it downloads, in each state. Everything else on the page (account cards, schedule, Earlier exports, Check exports now) is as in 04-exports-desktop and its approved departures. Shown fields are counts and fixed sentences only: no item names, paths or sidecar text. The File column is today's, unchanged.</div>
+<div class="sub">PP-13 (#490), signed off by the owner on 2026-11-20 (#424, #16): the freed state is not shown before PP-10, a refused part has one fixed sentence, Imports is unchanged. The current export parts card when Darkroom imports each part as it downloads, in each state. Everything else on the page (account cards, schedule, Earlier exports, Check exports now) is as in 04-exports-desktop and its approved departures. Shown fields are counts and fixed sentences only: no item names, paths or sidecar text. The File column is today's, unchanged.</div>
 </div>
 
 <div class="state">
@@ -180,7 +180,7 @@ td{padding:12px 12px 12px 0;border-top:1px solid #2B2721;vertical-align:middle}
 
 <div class="later">
 <div class="lbl">From PP-10 on: not built by PP-13</div>
-<p class="sub">Shown for the owner's review only. PP-13 builds nothing below this line: until PP-10 (#487) there is no Freed part state and bytes_freed is always 0. PP-10's own pull request builds it, once the owner has signed this part off.</p>
+<p class="sub">PP-10's design, not PP-13's. PP-13 builds nothing below this line (signed off 2026-11-20: no freed state or Disk freed before PP-10): until PP-10 (#487) there is no Freed part state and bytes_freed is always 0. PP-10's own pull request builds it.</p>
 </div>
 
 <div class="state">
