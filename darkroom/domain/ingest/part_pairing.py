@@ -84,6 +84,10 @@ def attach_copies(rows: Sequence[TakeoutEntry], part_number: int) -> tuple[dict[
     return members, attached
 
 
+def listed_media(entries: Iterable[TakeoutEntry]) -> list[TakeoutEntry]:
+    return sorted((entry for entry in entries if entry.kind == "media"), key=lambda entry: entry.id)
+
+
 def sidecar_choices(rows: Iterable[TakeoutEntry], sidecars: Sequence[TakeoutSidecar]) -> dict[int, int | None]:
     by_path: dict[Path, list[TakeoutEntry]] = {}
     for row in rows:
@@ -116,7 +120,7 @@ def own_sidecar(root: TakeoutEntry, group: Sequence[TakeoutEntry]) -> int | None
 
 
 def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar], part_number: int, index: dedupe.PersonIndex) -> PartPairing:
-    rows = sorted((entry for entry in entries if entry.kind == "media"), key=lambda entry: entry.id)
+    rows = listed_media(entries)
     members, attached = attach_copies(rows, part_number)
     here = [row for row in rows if row.part_number == part_number and row.sha1 is not None]
     here_ids = {row.id for row in here}
@@ -132,7 +136,7 @@ def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar
     pairing_rows = {row.id: row for row in here}
     for root in waiting:
         pairing_rows.update((member.id, member) for member in members[root.id] if member.sha1 is not None)
-    chosen = sidecar_choices([row for row in rows if row.sha1 is not None], sidecars)
+    chosen = sidecar_choices(rows, sidecars)
     for row in pairing_rows.values():
         if row.sidecar_entry_id is None:
             row.sidecar_entry_id = chosen[row.id]
