@@ -343,6 +343,7 @@ class PartBody(TypedDict):
 class PartReply(TypedDict):
     allowed: bool
     gave_up: bool
+    paused_for_space: bool
     part: DownloadPartPlan
 
 

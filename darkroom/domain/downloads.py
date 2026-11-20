@@ -12,7 +12,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom import dates
+from darkroom import dates, monitoring
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
 from darkroom.domain.ingest import part_ingest, run
@@ -36,6 +36,7 @@ RESET_ON_RETRY = ("failed", "downloading", "corrupt")
 MAX_DOWNLOADING = 10
 MAX_GAP_SECONDS = 30 * 86400
 MAX_CLICKS = 10_000
+MIN_FREE_BYTES = 300 * 10**9
 
 
 class NotADownload(ValueError):
@@ -144,11 +145,19 @@ def give_up(opened: Session, export: Export, part: ExportPart, now: float) -> No
     events.record(opened, now, "export_part_failed", str(export.id), f"part {part.number}: {part.attempts} attempts, {part.downloads_used} downloads used")
 
 
-def outcome(part: ExportPart, allowed: bool, gave_up: bool) -> dict[str, object]:
-    return {"allowed": allowed, "gave_up": gave_up, "part": part_plan(part)}
+def outcome(part: ExportPart, allowed: bool, gave_up: bool, paused_for_space: bool = False) -> dict[str, object]:
+    return {"allowed": allowed, "gave_up": gave_up, "paused_for_space": paused_for_space, "part": part_plan(part)}
 
 
-def attempt(opened: Session, job_id: int, number: int, now: float) -> dict[str, object]:
+def short_of_space(settings: Settings) -> bool:
+    try:
+        return Photos(settings.photos_root).free_bytes() < MIN_FREE_BYTES
+    except OSError:
+        monitoring.log("free space on the share could not be read; downloads are not paused")
+        return False
+
+
+def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: float) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     part = part_of(opened, export, number)
     if part.status == "done":
@@ -156,6 +165,8 @@ def attempt(opened: Session, job_id: int, number: int, now: float) -> dict[str, 
     if part.status == "failed" or exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)
+    if short_of_space(settings):
+        return outcome(part, False, False, paused_for_space=True)
     browser_jobs.open_job(opened, job_id).result = ATTEMPTED
     part.downloads_used += 1
     part.attempts += 1

@@ -7,7 +7,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import events, exports
+from darkroom.domain import downloads, events, exports
 from darkroom.domain.ingest import part_ingest
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
@@ -39,6 +39,82 @@ class DownloadApiServer(WorkerApiServer):
         with zipfile.ZipFile(folder / name, "w", zipfile.ZIP_STORED) as archive:
             archive.writestr("Takeout/x.bin", b"x" * 1900)
         return (folder / name).stat().st_size
+
+
+GB = 10**9
+
+
+class FreeSpaceTests(DownloadApiServer):
+    def free(self, size):
+        return mock.patch.object(Photos, "free_bytes", return_value=size)
+
+    def part_row(self):
+        with db.session(self.engine) as opened:
+            part = exports.parts_of(opened, self.export)[0]
+            return part.status, part.attempts, part.downloads_used
+
+    def test_the_threshold_is_300_decimal_gigabytes(self):
+        self.assertEqual(downloads.MIN_FREE_BYTES, 300 * 10**9)
+
+    def test_below_the_threshold_nothing_starts_and_nothing_is_used(self):
+        with self.free(299 * GB):
+            status, reply = self.part({"event": "attempt"})
+        self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, False, True))
+        self.assertEqual((reply["part"]["attempts"], reply["part"]["downloads_used"], reply["part"]["status"]), (0, 0, "pending"))
+        self.assertEqual(self.part_row(), ("pending", 0, 0))
+        with db.session(self.engine) as opened:
+            self.assertNotEqual(opened.get(Export, self.export).status, "downloading")
+            self.assertIsNone(opened.get(BrowserJob, self.job).result)
+            self.assertEqual([entry for entry in events.recent(opened, type="export_part_attempt")], [])
+
+    def test_one_byte_below_pauses_and_exactly_at_the_threshold_starts(self):
+        with self.free(300 * GB - 1):
+            self.assertTrue(self.part({"event": "attempt"})[1]["paused_for_space"])
+        with self.free(300 * GB):
+            status, reply = self.part({"event": "attempt"})
+        self.assertEqual((status, reply["allowed"], reply["paused_for_space"], reply["part"]["downloads_used"]), (200, True, False, 1))
+
+    def test_a_pause_that_ends_lets_the_same_part_start_with_all_its_attempts(self):
+        with self.free(0):
+            self.part({"event": "attempt"})
+            self.part({"event": "attempt"})
+        with self.free(400 * GB):
+            reply = self.part({"event": "attempt"})[1]
+        self.assertEqual((reply["allowed"], reply["part"]["attempts"], reply["part"]["downloads_used"]), (True, 1, 1))
+
+    def test_a_part_that_is_downloading_when_space_falls_finishes(self):
+        with self.free(400 * GB):
+            self.assertTrue(self.part({"event": "attempt"})[1]["allowed"])
+        with self.free(1 * GB):
+            self.assertEqual(self.part({"event": "progress", "bytes": 1024})[0], 200)
+            size = self.write_part(FILE_CANARY)
+            status, reply = self.part({"event": "done", "filename": FILE_CANARY, "bytes": size})
+        self.assertEqual((status, reply["part"]["status"], reply["paused_for_space"]), (200, "done", False))
+
+    def test_a_share_whose_space_cannot_be_read_stops_nothing_and_is_logged(self):
+        logged = io.StringIO()
+        with mock.patch.object(Photos, "free_bytes", side_effect=OSError("canary-path-0451")), mock.patch("sys.stderr", logged):
+            status, reply = self.part({"event": "attempt"})
+        self.assertEqual((status, reply["allowed"], reply["paused_for_space"]), (200, True, False))
+        self.assertIn("free space on the share could not be read", logged.getvalue())
+        self.assertNotIn("canary-path-0451", logged.getvalue())
+
+    def test_an_exhausted_part_still_gives_up_while_space_is_low(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].attempts = downloads.MAX_ATTEMPTS
+        with self.free(0):
+            reply = self.part({"event": "attempt"})[1]
+        self.assertEqual((reply["gave_up"], reply["paused_for_space"]), (True, False))
+
+    def test_the_expiry_alert_opens_during_a_pause(self):
+        with self.free(0):
+            self.part({"event": "attempt"})
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, self.export)
+            export.expires_at = NOW + 2 * 86400
+            opened.flush()
+            self.assertEqual(downloads.watch_expiry(opened, self.settings, NOW), 1)
+            self.assertEqual(opened.execute(select(Alert).where(Alert.kind == downloads.EXPIRING, Alert.closed.is_(None))).scalars().all()[0].key, downloads.expiry_key(self.export))
 
 
 class DownloadApiTests(DownloadApiServer):

@@ -19,7 +19,7 @@ from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
-from tests.shared import VIEWER_SECRET, fetch, own_database, private_socket_folder, serve_in_thread, settings_from, start_server, worker_fetch
+from tests.shared import VIEWER_SECRET, fetch, own_database, plenty_of_space, private_socket_folder, serve_in_thread, settings_from, start_server, worker_fetch
 from tests.test_browser_jobs import add_account
 
 TOKEN = "worker-token-canary-0123456789abcdef0123456789"
@@ -34,6 +34,7 @@ class WorkerApiServer(unittest.TestCase):
     extra_env = {}
 
     def setUp(self):
+        plenty_of_space(self)
         self.engine = own_database(self)
         photos = tempfile.TemporaryDirectory()
         self.addCleanup(photos.cleanup)

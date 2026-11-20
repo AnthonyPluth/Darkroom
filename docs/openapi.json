@@ -1903,12 +1903,16 @@
           },
           "part": {
             "$ref": "#/components/schemas/DownloadPartPlan"
+          },
+          "paused_for_space": {
+            "type": "boolean"
           }
         },
         "required": [
           "allowed",
           "gave_up",
-          "part"
+          "part",
+          "paused_for_space"
         ],
         "type": "object"
       },
