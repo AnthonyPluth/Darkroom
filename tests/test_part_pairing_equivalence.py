@@ -16,12 +16,18 @@ PARTS = (1, 2, 3)
 BATCHES = (1, 2, 100)
 
 
-def media(name, folder=YEAR, edited_of=None):
-    return {"name": f"{GOOGLE_PHOTOS}/{folder}/{name}", "edited_of": None if edited_of is None else f"{GOOGLE_PHOTOS}/{folder}/{edited_of}"}
+PHONE = {"make": "Apple", "model": "iPhone 12", "width": 32, "height": 24}
+TAKEN = 1_500_000_000
+SHOT_WALL_CLOCK = "2017-07-13T22:40:00"
 
 
-def sidecar(name, title, folder=YEAR):
-    return {"folder": f"{GOOGLE_PHOTOS}/{folder}", "name": name, "text": json.dumps({"title": title})}
+def media(name, folder=YEAR, edited_of=None, **fields):
+    return {"name": f"{GOOGLE_PHOTOS}/{folder}/{name}", "edited_of": None if edited_of is None else f"{GOOGLE_PHOTOS}/{folder}/{edited_of}", "fields": fields}
+
+
+def sidecar(name, title, folder=YEAR, taken=None):
+    data = {"title": title} | ({} if taken is None else {"photoTakenTime": {"timestamp": str(taken)}})
+    return {"folder": f"{GOOGLE_PHOTOS}/{folder}", "name": name, "text": json.dumps(data)}
 
 
 SUBJECTS = {
@@ -35,13 +41,15 @@ SUBJECTS = {
     "stem sidecar": ([media("IMG_7.jpg", "Stems"), media("IMG_7.mp4", "Stems")], [sidecar("IMG_7.json", "IMG_7.jpg", "Stems")]),
     "creation": ([media("IMG_8.jpg", "Made"), media("IMG_8-effects.jpg", "Made")],
                  [sidecar("IMG_8.jpg.json", "IMG_8.jpg", "Made"), sidecar("IMG_8-effects.jpg.json", "IMG_8-effects.jpg", "Made")]),
+    "embedded gps, no date": ([media("IMG_6.JPG", "Gps", **PHONE)], [sidecar("IMG_6.JPG.json", "IMG_6.JPG", "Gps", taken=TAKEN)]),
 }
+WHOLE_EXPORT_TIER_2 = {f"{GOOGLE_PHOTOS}/Gps/IMG_6.JPG"}
 LAYOUTS = {
     "together": {name: (1, 1) for name in SUBJECTS},
     "sidecars first": {name: (2, 1) for name in SUBJECTS},
     "sidecars last": {name: (1, 3) for name in SUBJECTS},
-    "mixed": dict(zip(SUBJECTS, ((1, 2), (3, 1), (2, 2), (1, 3), (3, 2), (2, 1), (1, 1), (2, 3)), strict=True)),
-    "split pairs": dict(zip(SUBJECTS, ((2, 3), (1, 1), (3, 3), (2, 1), (1, 2), (3, 1), (3, 2), (1, 2)), strict=True)),
+    "mixed": dict(zip(SUBJECTS, ((1, 2), (3, 1), (2, 2), (1, 3), (3, 2), (2, 1), (1, 1), (2, 3), (3, 1)), strict=True)),
+    "split pairs": dict(zip(SUBJECTS, ((2, 3), (1, 1), (3, 3), (2, 1), (1, 2), (3, 1), (3, 2), (1, 2), (1, 3)), strict=True)),
 }
 
 
@@ -63,12 +71,12 @@ class Ledger:
             files, sidecars = SUBJECTS[subject]
             media_parts, sidecar_parts = spread(subject, parts)
             for found, part in zip(files, media_parts, strict=True):
-                self.add_media(part, found["name"], found["edited_of"])
+                self.add_media(part, found["name"], found["edited_of"], found["fields"])
             for found, part in zip(sidecars, sidecar_parts, strict=True):
                 self.add_sidecar(part, found)
         if repeated_path:
-            self.add_media(1, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None)
-            self.add_media(3, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None)
+            self.add_media(1, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None, {})
+            self.add_media(3, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None, {})
             self.add_sidecar(2, sidecar("IMG_9.JPG.json", "IMG_9.JPG"))
 
     def entry(self, part, name, kind, edited_of=None):
@@ -79,8 +87,10 @@ class Ledger:
         self.all_entries.append(row)
         return row
 
-    def add_media(self, part, name, edited_of):
+    def add_media(self, part, name, edited_of, fields):
         row = self.entry(part, name, "media", edited_of)
+        for key, value in fields.items():
+            setattr(row, key, value)
         self.pending[part].append(row)
 
     def add_sidecar(self, part, found):
@@ -103,14 +113,21 @@ def index_of_everything(ledger):
     return dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=shots)
 
 
-INDEXES = {"nothing matches": index_of_nothing, "every entry is tier 1": index_of_everything}
+def index_of_a_wall_clock_shot(ledger):
+    shot = dedupe.Shot(id=1, sha1="f" * 40, person_id=1, source="phone", phash=None, captured_utc=None, captured_local=SHOT_WALL_CLOCK, duration_ms=None,
+                       is_video=False, is_raw=False, **PHONE)
+    return dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=(shot,))
+
+
+INDEXES = {"nothing matches": index_of_nothing, "every entry is tier 1": index_of_everything, "a phone shot on a wall clock": index_of_a_wall_clock_shot}
 
 
 def sha1_of(row):
     return f"{row.id:040d}"
 
 
-def act_on(result):
+def act_on(result, released):
+    released.update(row.name for row in result.ready)
     for row in result.ready:
         row.outcome, row.decision_id = "placed", row.id
     for row in result.metadata_due:
@@ -137,7 +154,7 @@ def whole_export(ledger):
     return expected
 
 
-def run(ledger, order, batch, listed_first, index):
+def run(ledger, order, batch, listed_first, index, released):
     entries: list[TakeoutEntry] = []
     sidecars: list[TakeoutSidecar] = []
     if listed_first:
@@ -152,7 +169,7 @@ def run(ledger, order, batch, listed_first, index):
         for start in range(0, max(len(here), 1), batch):
             for row in here[start:start + batch]:
                 row.sha1 = sha1_of(row)
-            act_on(part_pairing.pair_part(entries, sidecars, part, index))
+            act_on(part_pairing.pair_part(entries, sidecars, part, index), released)
     return entries
 
 
@@ -160,9 +177,12 @@ class PartPairingEquivalenceTests(unittest.TestCase):
     def check(self, layout, repeated, order, batch, listed_first, index):
         ledger = Ledger(layout, repeated)
         expected = whole_export(ledger)
-        for row in run(ledger, order, batch, listed_first, index(ledger)):
+        released: set[str] = set()
+        for row in run(ledger, order, batch, listed_first, index(ledger), released):
             if row.kind == "media":
                 self.assertEqual(row.sidecar_entry_id, expected[row.name], row.name)
+        if index is index_of_a_wall_clock_shot:
+            self.assertEqual(released & WHOLE_EXPORT_TIER_2, set())
 
     def test_every_arrival_order_and_batch_split_pairs_as_the_whole_export_does(self):
         checked = 0
