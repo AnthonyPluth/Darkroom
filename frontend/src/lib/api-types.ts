@@ -357,6 +357,7 @@ export interface PartBody {
 export interface PartReply {
   allowed: boolean;
   gave_up: boolean;
+  paused_for_space: boolean;
   part: DownloadPartPlan;
 }
 

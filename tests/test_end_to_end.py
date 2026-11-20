@@ -10,7 +10,7 @@ from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Event, Export, GoogleAccount, ImportRun, MediaItem
 from tests.import_world import ADMIN_KEY, DAY, NOW, World
-from tests.shared import worker_fetch, settings_from, start_server
+from tests.shared import plenty_of_space, worker_fetch, settings_from, start_server
 from tests.takeout_fixtures import TakeoutBuilder
 
 TOKEN = "end-to-end-worker-token-0123456789abcdef0123456789"
@@ -35,6 +35,7 @@ class Clock:
 
 class EndToEndTests(unittest.TestCase):
     def setUp(self):
+        plenty_of_space(self)
         self.world = World(self, people=("jo", "sam"), pixel_people=("jo", "sam"))
         self.clock = Clock(NOW)
         for patch in (mock.patch("darkroom.server.api.browser_internal.now", new=self.clock),

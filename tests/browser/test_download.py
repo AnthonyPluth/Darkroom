@@ -23,7 +23,7 @@ from darkroom_browser.jobs import REGISTRY, download, stagger
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGN_IN_NEEDED, SIGNED_IN, TOKEN_CANARY, VERIFY
 from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked, part_item, part_names
-from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
+from tests.shared import VIEWER_SECRET, add_person, own_database, plenty_of_space, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = 1_793_750_400.0
@@ -74,7 +74,7 @@ class DomainReporter:
         self.events.append((body["event"], number))
         with self.session() as opened:
             if body["event"] == "attempt":
-                return downloads.attempt(opened, job_id, number, NOW)
+                return downloads.attempt(opened, self.settings, job_id, number, NOW)
             if body["event"] == "progress":
                 return downloads.progress(opened, job_id, number, body["bytes"], NOW)
             if body["event"] == "done":
@@ -253,6 +253,7 @@ class DownloadBrowser:
 
 class DownloadWorld(unittest.TestCase):
     def setUp(self):
+        plenty_of_space(self)
         self.engine = own_database(self)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

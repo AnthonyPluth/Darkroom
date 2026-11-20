@@ -187,7 +187,7 @@ def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, 
         event = validate.text(body, "event", limit=20)
         browser_jobs.heartbeat(opened, job_id, moment)
         if event == "attempt":
-            reply = downloads.attempt(opened, job_id, number, moment)
+            reply = downloads.attempt(opened, request.settings, job_id, number, moment)
         elif event == "progress":
             reply = downloads.progress(opened, job_id, number, validate.whole_number(body, "bytes", maximum=downloads.MAX_PART_BYTES), moment)
         elif event == "done":

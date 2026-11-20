@@ -20,6 +20,9 @@ PROGRESS_SECONDS = 30.0
 FLOOR_SECONDS = 120.0
 PROMPTS_BEFORE_ONE_AT_A_TIME = 2
 DISK_SLACK = 1 << 30
+SPACE_RETRY_SECONDS = 5 * 60.0
+PAUSED_WORDS = "paused for space: the share has too little free room, so no new part starts until it has more; Darkroom asks again every 5 minutes"
+RESUMED_WORDS = "free space is back on the share; resuming downloads"
 
 
 def every(interval: float) -> str:
@@ -72,13 +75,18 @@ class Staggered:
         self.prompts = 0
         self.fetched = 0
         self.short_of_disk = False
+        self.paused_until: float | None = None
+        self.paused = False
 
     def say(self, message: str) -> None:
         if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
-            self.ctx.progress(message)
+            self.tell(message)
+
+    def tell(self, message: str) -> None:
+        self.ctx.progress(f"{message}; {PAUSED_WORDS}" if self.paused and message != PAUSED_WORDS else message)
 
     def run(self) -> int:
-        self.ctx.progress(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
+        self.tell(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
         while self.busy():
             self.ctx.check()
             self.advance_flights()
@@ -115,6 +123,8 @@ class Staggered:
     def may_start(self) -> bool:
         if not self.queue or len(self.flights) >= self.most:
             return False
+        if self.paused_until is not None and self.ctx.clock() < self.paused_until:
+            return False
         if not self.flights:
             return True
         if self.last_click is not None and self.ctx.clock() - self.last_click < self.interval:
@@ -126,6 +136,12 @@ class Staggered:
             return False
         self.short_of_disk = False
         return True
+
+    def signed_in(self) -> bool:
+        waited = ensure_signed_in(self.ctx, self.browser)
+        if waited and self.paused:
+            self.tell("signed in")
+        return waited
 
     def requeue(self, part: dict[str, Any]) -> None:
         self.queue.insert(0, part)
@@ -149,6 +165,17 @@ class Staggered:
             self.say(f"part {number} could not be started, so Darkroom lets the {counted(len(self.flights), 'part')} still downloading finish before it stops")
             return
         reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt"})
+        if reply.get("paused_for_space"):
+            self.requeue(part)
+            self.paused_until = self.ctx.clock() + SPACE_RETRY_SECONDS
+            if not self.paused:
+                self.paused = True
+                self.say(PAUSED_WORDS)
+            return
+        if self.paused:
+            self.paused = False
+            self.say(RESUMED_WORDS)
+        self.paused_until = None
         if not reply.get("allowed"):
             raise download.DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
         clicking = PartClick(selector, listed.href, number)
@@ -210,7 +237,7 @@ class Staggered:
         self.interval = backed_off(self.interval)
         if self.prompts >= PROMPTS_BEFORE_ONE_AT_A_TIME and self.most > 1:
             self.most = 1
-            self.ctx.progress("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
+            self.tell("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
         self.waiting = waiting
         self.ctx.wait_for_user("verify")
 
@@ -239,9 +266,9 @@ class Staggered:
     def answered(self, waiting: Waiting) -> None:
         self.clicks.answered()
         self.waiting = None
-        if ensure_signed_in(self.ctx, self.browser):
+        if self.signed_in():
             self.clicks.answered()
-        self.ctx.progress(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
+        self.tell(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
 
     def advance_signing_in(self) -> None:
         if self.signing_in is None:
@@ -252,9 +279,9 @@ class Staggered:
                 raise SignInTimedOut("nobody signed in to the right Google account within 48 hours")
             return
         self.signing_in = None
-        ensure_signed_in(self.ctx, self.browser)
+        self.signed_in()
         self.clicks.answered()
-        self.ctx.progress("signed in")
+        self.tell("signed in")
 
     def advance_waiting(self) -> None:
         waiting = self.waiting
