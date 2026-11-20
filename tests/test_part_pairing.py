@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from darkroom.domain import dedupe
@@ -63,6 +64,7 @@ class PairingWorld:
                 "ready": sorted(row.name for row in result.ready),
                 "newly_paired": sorted(row.name for row in result.newly_paired),
                 "copies": sorted(row.name for row in result.copies),
+                "metadata_due": sorted(row.name for row in result.metadata_due),
                 "names": names,
             }
 
@@ -122,8 +124,9 @@ class SidecarPairingTests(unittest.TestCase):
         index = index_of(shot(7, sha1=world.sha1_of(media)))
         first = world.pair(1, index)
         self.assertEqual((first["ready"], world.row(media).metadata_pending, world.row(media).outcome), ([media], True, "listed"))
+        world.fingerprint(media, outcome="skipped")
         second = world.pair(2, index)
-        self.assertEqual((second["ready"], second["newly_paired"]), ([], [media]))
+        self.assertEqual((second["ready"], second["newly_paired"], second["metadata_due"]), ([], [media], [media]))
         self.assertEqual(world.sidecar_entry_of(media), entry_name(photo.sidecar_name))
         self.assertEqual(world.pair(2, index)["newly_paired"], [])
 
@@ -216,6 +219,132 @@ class LateSidecarTests(unittest.TestCase):
         found = world.pair(2)
         self.assertIsNotNone(world.row(name).sidecar_entry_id)
         self.assertEqual((world.row(name).outcome, found["newly_paired"], found["ready"]), ("waiting_export", [name], []))
+
+
+class CompetingNameTests(unittest.TestCase):
+    def test_swapped_titles_pair_as_the_whole_export_does_when_the_second_name_arrives_in_a_later_part(self):
+        world = PairingWorld(self, parts=2)
+        one, two = world.builder.shared_cut(CUT, ("_one.jpg", "_two.jpg"), titles=(f"{CUT}_two.jpg", f"{CUT}_one.jpg"), sidecar_part=0)
+        two.part = 1
+        world.build()
+        first, second = entry_name(one.media_name), entry_name(two.media_name)
+        self.assertEqual(world.pair(1)["ready"], [])
+        self.assertEqual(world.row(first).outcome, "waiting_sidecar")
+        self.assertEqual(world.pair(2)["ready"], [])
+        self.assertEqual(world.sidecar_entry_of(first), entry_name(f"{CUT}(1).json"))
+        self.assertEqual(world.sidecar_entry_of(second), entry_name(f"{CUT}.json"))
+        self.assertEqual({world.row(first).outcome, world.row(second).outcome}, {"waiting_sidecar"})
+
+    def test_a_stem_sidecar_is_left_unpaired_when_a_video_of_the_same_stem_arrives_in_a_later_part(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.without_extension("IMG_0060", ".jpg")
+        world.builder.add("IMG_0060.mp4", world.builder.video_bytes(), "Photos from 2019", 1, None, None, None, "")
+        world.build()
+        still, video = entry_name("IMG_0060.jpg"), entry_name("IMG_0060.mp4")
+        self.assertEqual(world.pair(1)["ready"], [])
+        self.assertEqual(world.row(still).outcome, "waiting_sidecar")
+        world.pair(2)
+        self.assertEqual((world.sidecar_entry_of(still), world.sidecar_entry_of(video)), (None, None))
+
+    def test_a_creation_waits_for_its_own_sidecar_rather_than_keeping_its_base_files(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.photo("IMG_0061.jpg")
+        made = world.builder.photo("IMG_0061-effects.jpg", sidecar_part=1)
+        world.build()
+        name = entry_name("IMG_0061-effects.jpg")
+        self.assertNotIn(name, world.pair(1)["ready"])
+        self.assertEqual(world.row(name).outcome, "waiting_sidecar")
+        self.assertIn(name, world.pair(2)["ready"])
+        self.assertEqual(world.sidecar_entry_of(name), entry_name(made.sidecar_name))
+
+    def test_a_placed_entry_keeps_the_sidecar_it_was_placed_with_even_when_a_later_name_contests_it(self):
+        world = PairingWorld(self, parts=2)
+        item = world.builder.photo("IMG_0063.jpg")
+        item.sidecar_data = json.dumps(json.loads(item.sidecar_data) | {"title": "renamed.jpg"}).encode()
+        world.builder.add("IMG_0063.jpg.mp4", world.builder.video_bytes(), "Photos from 2019", 1, None, None, None, "")
+        world.build()
+        name = entry_name("IMG_0063.jpg")
+        self.assertIn(name, world.pair(1)["ready"])
+        world.fingerprint(name, outcome="placed")
+        world.pair(2)
+        self.assertEqual(world.sidecar_entry_of(name), entry_name(item.sidecar_name))
+
+
+class SidecarTimeTests(unittest.TestCase):
+    def held(self, sidecar_part=None, **fields):
+        world = PairingWorld(self, parts=2)
+        world.builder.photo("IMG_0070.JPG", taken=int(PHONE_SECOND), sidecar_part=sidecar_part)
+        world.build()
+        name = entry_name("IMG_0070.JPG")
+        world.fingerprint(name, **({"captured_utc": None, "captured_local": None, "make": "Apple", "model": "iPhone 12", "width": 32, "height": 24} | fields))
+        index = index_of(shot(1, sha1="1" * 40))
+        found = [world.pair(1, index)]
+        if sidecar_part is not None:
+            self.assertEqual(world.row(name).outcome, "waiting_sidecar")
+            found.append(world.pair(2, index))
+        return found[-1], world.row(name), name
+
+    def test_a_sidecar_dated_tier_2_candidate_is_held_for_the_export(self):
+        found, row, _ = self.held()
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
+    def test_a_sidecar_dated_tier_2_candidate_released_by_a_later_part_is_held_for_the_export(self):
+        found, row, name = self.held(sidecar_part=1)
+        self.assertEqual((found["ready"], found["newly_paired"], row.outcome), ([], [name], "waiting_export"))
+
+    def test_a_wall_clock_time_the_sidecar_places_on_a_phone_shot_is_held_for_the_export(self):
+        found, row, _ = self.held(captured_local="2017-07-14T02:40:00")
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
+    def test_a_scan_date_the_sidecar_can_replace_is_held_for_the_export(self):
+        found, row, _ = self.held(captured_utc=PHONE_SECOND + 30 * 86400)
+        self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
+
+    def test_a_sidecar_that_does_not_parse_adds_no_time(self):
+        entry = TakeoutEntry(name=entry_name("IMG_0071.JPG"), captured_utc=PHONE_SECOND, captured_local=None)
+        self.assertEqual((part_pairing.sidecar_moments(entry, "not json"), part_pairing.sidecar_moments(entry, None)), ([], []))
+
+    def test_a_sidecar_time_on_no_phone_shot_leaves_the_entry_ready(self):
+        found, row, name = self.held(captured_utc=PHONE_SECOND + 30 * 86400, make="Canon")
+        self.assertEqual((found["ready"], row.outcome), ([name], "listed"))
+
+
+class RepeatTests(unittest.TestCase):
+    def test_pairing_the_same_part_twice_re_returns_an_undecided_released_entry(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.photo("IMG_0062.JPG", part=0, sidecar_part=1)
+        world.build()
+        media = entry_name("IMG_0062.JPG")
+        world.pair(1)
+        self.assertEqual(world.pair(2)["ready"], [media])
+        again = world.pair(2)
+        self.assertEqual((again["ready"], again["newly_paired"]), ([media], []))
+        world.fingerprint(media, outcome="placed")
+        self.assertEqual(world.pair(2)["ready"], [])
+
+    def test_a_late_sidecars_metadata_fill_is_returned_until_it_is_done(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.photo("IMG_0064.JPG", part=0, sidecar_part=1)
+        world.build()
+        media = entry_name("IMG_0064.JPG")
+        index = index_of(shot(7, sha1=world.sha1_of(media)))
+        world.pair(1, index)
+        world.fingerprint(media, outcome="skipped")
+        self.assertEqual(world.pair(2, index)["metadata_due"], [media])
+        self.assertEqual(world.pair(2, index)["metadata_due"], [media])
+        world.fingerprint(media, metadata_pending=False)
+        self.assertEqual(world.pair(2, index)["metadata_due"], [])
+
+    def test_a_tier_1_entry_paired_by_a_contestable_rule_keeps_its_metadata_pending(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.without_extension("IMG_0065", ".jpg")
+        world.build()
+        name = entry_name("IMG_0065.jpg")
+        index = index_of(shot(7, sha1=world.sha1_of(name)))
+        found = world.pair(1, index)
+        self.assertEqual((found["ready"], found["metadata_due"], world.row(name).metadata_pending), ([name], [], True))
+        world.fingerprint(name, outcome="skipped")
+        self.assertEqual(world.pair(2, index)["metadata_due"], [])
 
 
 class CopyTests(unittest.TestCase):
@@ -317,7 +446,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(world.pair(1, index)["ready"], [name])
 
     def test_a_paired_entry_with_no_phone_shot_matching_is_ready(self):
-        world, name = self.one()
+        world, name = self.one(taken=int(PHONE_SECOND) + 600)
         world.fingerprint(name, captured_utc=PHONE_SECOND + 600, make="Apple", model="iPhone 12", width=32, height=24)
         found = world.pair(1, index_of(shot(1, sha1="1" * 40)))
         self.assertEqual((found["ready"], world.row(name).outcome), ([name], "listed"))

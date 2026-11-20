@@ -32,14 +32,26 @@ SUBJECTS = {
     "edited": ([media("IMG_2.JPG"), media("IMG_2-edited.JPG", edited_of="IMG_2.JPG")], [sidecar("IMG_2.JPG.json", "IMG_2.JPG")]),
     "trash": ([media("IMG_3.JPG", "Trash")], [sidecar("IMG_3.JPG.json", "IMG_3.JPG", "Trash")]),
     "numbered": ([media("IMG_5.JPG"), media("IMG_5(1).JPG")], [sidecar("IMG_5.JPG.json", "IMG_5.JPG"), sidecar("IMG_5.JPG(1).json", "IMG_5(1).JPG")]),
+    "stem sidecar": ([media("IMG_7.jpg", "Stems"), media("IMG_7.mp4", "Stems")], [sidecar("IMG_7.json", "IMG_7.jpg", "Stems")]),
+    "creation": ([media("IMG_8.jpg", "Made"), media("IMG_8-effects.jpg", "Made")],
+                 [sidecar("IMG_8.jpg.json", "IMG_8.jpg", "Made"), sidecar("IMG_8-effects.jpg.json", "IMG_8-effects.jpg", "Made")]),
 }
 LAYOUTS = {
     "together": {name: (1, 1) for name in SUBJECTS},
     "sidecars first": {name: (2, 1) for name in SUBJECTS},
     "sidecars last": {name: (1, 3) for name in SUBJECTS},
-    "mixed": dict(zip(SUBJECTS, ((1, 2), (3, 1), (2, 2), (1, 3), (3, 2), (2, 1)), strict=True)),
-    "split pairs": dict(zip(SUBJECTS, ((2, 3), (1, 1), (3, 3), (2, 1), (1, 2), (3, 1)), strict=True)),
+    "mixed": dict(zip(SUBJECTS, ((1, 2), (3, 1), (2, 2), (1, 3), (3, 2), (2, 1), (1, 1), (2, 3)), strict=True)),
+    "split pairs": dict(zip(SUBJECTS, ((2, 3), (1, 1), (3, 3), (2, 1), (1, 2), (3, 1), (3, 2), (1, 2)), strict=True)),
 }
+
+
+def spread(subject, parts):
+    files, sidecars = SUBJECTS[subject]
+    every = tuple(parts) if isinstance(parts, tuple) and len(parts) == len(files) + len(sidecars) else None
+    if every is None:
+        media_part, sidecar_part = parts
+        every = (media_part,) * len(files) + (sidecar_part,) * len(sidecars)
+    return every[:len(files)], every[len(files):]
 
 
 class Ledger:
@@ -47,12 +59,13 @@ class Ledger:
         self.all_entries: list[TakeoutEntry] = []
         self.pending: dict[int, list[TakeoutEntry]] = {part: [] for part in PARTS}
         self.pending_sidecars: dict[int, list[TakeoutSidecar]] = {part: [] for part in PARTS}
-        for subject, (media_part, sidecar_part) in layout.items():
+        for subject, parts in layout.items():
             files, sidecars = SUBJECTS[subject]
-            for found in files:
-                self.add_media(media_part, found["name"], found["edited_of"])
-            for found in sidecars:
-                self.add_sidecar(sidecar_part, found)
+            media_parts, sidecar_parts = spread(subject, parts)
+            for found, part in zip(files, media_parts, strict=True):
+                self.add_media(part, found["name"], found["edited_of"])
+            for found, part in zip(sidecars, sidecar_parts, strict=True):
+                self.add_sidecar(part, found)
         if repeated_path:
             self.add_media(1, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None)
             self.add_media(3, f"{GOOGLE_PHOTOS}/{YEAR}/IMG_9.JPG", None)
@@ -77,8 +90,31 @@ class Ledger:
         self.pending_sidecars[part].append(row)
 
 
-def index_of_nothing():
+def index_of_nothing(ledger):
     return dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=())
+
+
+def index_of_everything(ledger):
+    shots = tuple(
+        dedupe.Shot(id=row.id, sha1=sha1_of(row), person_id=1, source="phone", phash=None, captured_utc=None, captured_local=None, width=None, height=None,
+                    duration_ms=None, make=None, model=None, is_video=False, is_raw=False)
+        for row in ledger.all_entries if row.kind == "media"
+    )
+    return dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=shots)
+
+
+INDEXES = {"nothing matches": index_of_nothing, "every entry is tier 1": index_of_everything}
+
+
+def sha1_of(row):
+    return f"{row.id:040d}"
+
+
+def act_on(result):
+    for row in result.ready:
+        row.outcome, row.decision_id = "placed", row.id
+    for row in result.metadata_due:
+        row.metadata_pending = False
 
 
 def whole_export(ledger):
@@ -101,7 +137,7 @@ def whole_export(ledger):
     return expected
 
 
-def run(ledger, order, batch, listed_first):
+def run(ledger, order, batch, listed_first, index):
     entries: list[TakeoutEntry] = []
     sidecars: list[TakeoutSidecar] = []
     if listed_first:
@@ -115,12 +151,19 @@ def run(ledger, order, batch, listed_first):
         here = ledger.pending[part]
         for start in range(0, max(len(here), 1), batch):
             for row in here[start:start + batch]:
-                row.sha1 = f"{row.id:040d}"
-            part_pairing.pair_part(entries, sidecars, part, index_of_nothing())
+                row.sha1 = sha1_of(row)
+            act_on(part_pairing.pair_part(entries, sidecars, part, index))
     return entries
 
 
 class PartPairingEquivalenceTests(unittest.TestCase):
+    def check(self, layout, repeated, order, batch, listed_first, index):
+        ledger = Ledger(layout, repeated)
+        expected = whole_export(ledger)
+        for row in run(ledger, order, batch, listed_first, index(ledger)):
+            if row.kind == "media":
+                self.assertEqual(row.sidecar_entry_id, expected[row.name], row.name)
+
     def test_every_arrival_order_and_batch_split_pairs_as_the_whole_export_does(self):
         checked = 0
         for layout_name, layout in LAYOUTS.items():
@@ -128,16 +171,22 @@ class PartPairingEquivalenceTests(unittest.TestCase):
                 for order in itertools.permutations(PARTS):
                     for batch in BATCHES:
                         for listed_first in (False, True):
-                            with self.subTest(layout=layout_name, repeated=repeated, order=order, batch=batch, listed_first=listed_first):
-                                ledger = Ledger(layout, repeated)
-                                expected = whole_export(ledger)
-                                got = run(ledger, order, batch, listed_first)
-                                for row in got:
-                                    if row.kind != "media":
-                                        continue
-                                    self.assertEqual(row.sidecar_entry_id, expected[row.name], row.name)
-                                checked += 1
-        self.assertEqual(checked, len(LAYOUTS) * 2 * 6 * len(BATCHES) * 2)
+                            for index_name, index in INDEXES.items():
+                                with self.subTest(layout=layout_name, repeated=repeated, order=order, batch=batch, listed_first=listed_first, index=index_name):
+                                    self.check(layout, repeated, order, batch, listed_first, index)
+                                    checked += 1
+        self.assertEqual(checked, len(LAYOUTS) * 2 * 6 * len(BATCHES) * 2 * len(INDEXES))
+
+    def test_a_subjects_files_spread_over_parts_in_every_way_pair_as_the_whole_export_does(self):
+        checked = 0
+        for subject, (files, sidecars) in SUBJECTS.items():
+            for parts in itertools.product(PARTS, repeat=len(files) + len(sidecars)):
+                for order in itertools.permutations(PARTS):
+                    for index_name, index in INDEXES.items():
+                        with self.subTest(subject=subject, parts=parts, order=order, index=index_name):
+                            self.check({subject: parts}, False, order, 1, False, index)
+                            checked += 1
+        self.assertEqual(checked, sum(len(PARTS) ** (len(f) + len(c)) for f, c in SUBJECTS.values()) * 6 * len(INDEXES))
 
 
 if __name__ == "__main__":
