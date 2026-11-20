@@ -18,7 +18,7 @@ from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
+from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -27,6 +27,7 @@ STAGES = ("queued", "unpacked", "deduped", "placed", "counted", "rescanned", "re
 IMPORTABLE = frozenset({"downloaded", "unpacking", "importing", "failed"})
 EARLY_STAGES = frozenset({None, "unpack", "queued", "unpacked"})
 WAITING = frozenset({"queued", "running"})
+PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
 UNPLACED = "unplaced"
 PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
@@ -591,7 +592,8 @@ def waiting_exports(opened: Session) -> list[int]:
     queued = select(Export.id).where(Export.stage == "queued", Export.status.in_(IMPORTABLE - {"failed"}))
     resumed = (select(Export.id).join(ImportRun, ImportRun.export_id == Export.id)
                .where(ImportRun.status.in_(WAITING), Export.status.in_(IMPORTABLE)))
-    return sorted(set(opened.execute(queued).scalars()) | set(opened.execute(resumed).scalars()))
+    per_part = select(ExportPart.export_id).where(ExportPart.ingest_state.in_(PER_PART_STATES))
+    return sorted((set(opened.execute(queued).scalars()) | set(opened.execute(resumed).scalars())) - set(opened.execute(per_part).scalars()))
 
 
 def run_waiting(opened: Session, settings: config.Settings, now: float, tools: Tools | None = None) -> list[int]:

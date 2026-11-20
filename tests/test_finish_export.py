@@ -464,6 +464,34 @@ class TickTests(unittest.TestCase):
             self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW, world.tools), [])
         self.assertEqual(world.opened.get(Export, export.id).status, "imported")
 
+    def test_the_whole_export_worker_leaves_an_export_with_per_part_rows_alone(self):
+        world = FinishWorld(self)
+        export = world.create(small_scenario(world), parts=2)
+        world.ingest_all(export, (1, 2))
+        found = world.opened.get(Export, export.id)
+        found.status, found.stage = "downloaded", "queued"
+        world.opened.commit()
+        self.assertEqual(run.waiting_exports(world.opened), [])
+        self.assertEqual(run.run_waiting(world.opened, world.settings, NOW, world.tools), [])
+        self.assertEqual(world.count(ImportRun), 0)
+        with mock.patch.object(finish_export, "COMMIT_HOOK", crashing_at(3)):
+            with self.assertRaises(Crash):
+                world.finish(export)
+        world.opened.rollback()
+        self.assertEqual(world.opened.get(Export, export.id).status, "downloaded")
+        self.assertEqual(run.waiting_exports(world.opened), [])
+        self.assertEqual(run.run_waiting(world.opened, world.settings, NOW + 1, world.tools), [])
+        world.finish(export)
+        self.assertEqual(world.opened.get(Export, export.id).status, "imported")
+
+    def test_a_whole_export_without_per_part_rows_is_still_picked_up(self):
+        world = FinishWorld(self)
+        export = world.create(small_scenario(world), parts=2, status="downloaded", queue=False)
+        found = world.opened.get(Export, export.id)
+        found.stage = "queued"
+        world.opened.commit()
+        self.assertEqual(run.waiting_exports(world.opened), [export.id])
+
     def test_a_busy_account_is_skipped_and_the_export_stays_unfinished(self):
         world = FinishWorld(self)
         export = world.create(small_scenario(world), parts=2)
