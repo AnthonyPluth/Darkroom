@@ -175,8 +175,15 @@ class SingleImageTests(unittest.TestCase):
         self.assertNotIn("file:", job)
         self.assertIn("tags: darkroom:smoke", job)
         run_lines = [line.strip() for line in job.splitlines() if line.strip().startswith("docker run")]
-        self.assertEqual(len(run_lines), 5)
-        healthz, smoke, links, copy, init = run_lines
+        self.assertEqual(len(run_lines), 6)
+        healthz, smoke, links, windows, copy, init = run_lines
+        self.assertIn(f"{SANDBOX} --shm-size=1g", windows)
+        self.assertIn('-v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app darkroom:smoke', windows)
+        self.assertIn("Xvfb :99 -screen 0 1280x900x24 -nolisten tcp -nolisten local &", windows)
+        self.assertNotRegex(windows, r"openbox|fluxbox|xfwm|metacity|wmctrl|xdotool", "no window manager: the check is that bring_to_front alone raises the window")
+        self.assertTrue(windows.endswith("DISPLAY=:99 /opt/worker/bin/python -m tests.browser.two_windows'"), "the worker's own venv and Chrome run the two-window check")
+        step = job[job.rindex("- name:", 0, job.index(windows)):job.index(windows)]
+        self.assertIn("continue-on-error: true", step, "the new image check does not gate merges until it has passed in CI once")
         self.assertIn(f"{SANDBOX} --shm-size=1g", links)
         self.assertIn('-v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke', links)
         self.assertTrue(links.endswith("/opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links tests.browser.test_chromium_downloads"),
