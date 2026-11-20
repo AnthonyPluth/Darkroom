@@ -80,10 +80,13 @@ class Staggered:
 
     def say(self, message: str) -> None:
         if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
-            self.ctx.progress(f"{message}; {PAUSED_WORDS}" if self.paused and message != PAUSED_WORDS else message)
+            self.tell(message)
+
+    def tell(self, message: str) -> None:
+        self.ctx.progress(f"{message}; {PAUSED_WORDS}" if self.paused and message != PAUSED_WORDS else message)
 
     def run(self) -> int:
-        self.ctx.progress(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
+        self.tell(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
         while self.busy():
             self.ctx.check()
             self.advance_flights()
@@ -133,6 +136,12 @@ class Staggered:
             return False
         self.short_of_disk = False
         return True
+
+    def signed_in(self) -> bool:
+        waited = ensure_signed_in(self.ctx, self.browser)
+        if waited and self.paused:
+            self.tell("signed in")
+        return waited
 
     def requeue(self, part: dict[str, Any]) -> None:
         self.queue.insert(0, part)
@@ -228,7 +237,7 @@ class Staggered:
         self.interval = backed_off(self.interval)
         if self.prompts >= PROMPTS_BEFORE_ONE_AT_A_TIME and self.most > 1:
             self.most = 1
-            self.ctx.progress("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
+            self.tell("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
         self.waiting = waiting
         self.ctx.wait_for_user("verify")
 
@@ -257,9 +266,9 @@ class Staggered:
     def answered(self, waiting: Waiting) -> None:
         self.clicks.answered()
         self.waiting = None
-        if ensure_signed_in(self.ctx, self.browser):
+        if self.signed_in():
             self.clicks.answered()
-        self.ctx.progress(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
+        self.tell(f"verified; resuming part {waiting.part['number']} ({self.clicks.answer_words()})")
 
     def advance_signing_in(self) -> None:
         if self.signing_in is None:
@@ -270,9 +279,9 @@ class Staggered:
                 raise SignInTimedOut("nobody signed in to the right Google account within 48 hours")
             return
         self.signing_in = None
-        ensure_signed_in(self.ctx, self.browser)
+        self.signed_in()
         self.clicks.answered()
-        self.ctx.progress("signed in")
+        self.tell("signed in")
 
     def advance_waiting(self) -> None:
         waiting = self.waiting

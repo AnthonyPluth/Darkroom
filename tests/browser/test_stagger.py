@@ -573,6 +573,32 @@ class StaggeredDownloadTests(StaggerWorld):
             self.assertEqual(len(sign_in), 1)
             self.assertIsNotNone(sign_in[0].closed)
 
+    def test_a_sign_in_during_a_pause_keeps_the_pause_words_on_the_message(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        until = []
+        opened = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if url == ARCHIVE:
+                opened.append(url)
+                if len(opened) == 2:
+                    until.append(self.clock.now + 3 * MINUTE)
+
+        def content():
+            if until and self.clock.now < until[0] and browser.url in (ARCHIVE, selectors.TAKEOUT_URL):
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        with self.short_of_space_until(22):
+            self.run_job(browser)
+        self.assertEqual(len(until), 1)
+        signed_in = [message for message in self.messages() if message.startswith("signed in")]
+        self.assertTrue(signed_in)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+
     def test_a_sign_in_that_never_comes_while_parts_download_times_out(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         self.signed_out_while_reopening(browser, 60 * 60)
