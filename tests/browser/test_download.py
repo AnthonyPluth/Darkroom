@@ -79,6 +79,8 @@ class DomainReporter:
         with self.session() as opened:
             if body["event"] == "attempt":
                 return downloads.attempt(opened, self.settings, job_id, number, NOW)
+            if body["event"] == "space":
+                return downloads.space(opened, self.settings, job_id, number)
             if body["event"] == "progress":
                 return downloads.progress(opened, job_id, number, body["bytes"], NOW)
             if body["event"] == "done":

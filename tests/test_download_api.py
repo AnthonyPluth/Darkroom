@@ -117,6 +117,74 @@ class FreeSpaceTests(DownloadApiServer):
             self.assertEqual(opened.execute(select(Alert).where(Alert.kind == downloads.EXPIRING, Alert.closed.is_(None))).scalars().all()[0].key, downloads.expiry_key(self.export))
 
 
+class SpaceCheckTests(FreeSpaceTests):
+    def unchanged(self):
+        self.assertEqual(self.part_row(), ("pending", 0, 0))
+        with db.session(self.engine) as opened:
+            self.assertNotEqual(opened.get(Export, self.export).status, "downloading")
+            self.assertIsNone(opened.get(BrowserJob, self.job).result)
+            self.assertEqual(events.recent(opened, type="export_part_attempt"), [])
+            self.assertEqual(events.recent(opened, type="export_part_failed"), [])
+
+    def test_below_the_threshold_the_space_check_pauses_and_uses_nothing(self):
+        with self.free(300 * GB - 1):
+            status, reply = self.part({"event": "space"})
+        self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, False, True))
+        self.assertEqual((reply["part"]["attempts"], reply["part"]["downloads_used"]), (0, 0))
+        self.unchanged()
+
+    def test_with_room_the_space_check_allows_and_still_uses_nothing(self):
+        with self.free(300 * GB):
+            status, reply = self.part({"event": "space"})
+        self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, True, False, False))
+        self.unchanged()
+
+    def test_the_space_check_counts_what_other_parts_still_have_to_come(self):
+        with self.free(400 * GB):
+            self.assertFalse(self.part({"event": "space"})[1]["paused_for_space"])
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].bytes = 400 * GB
+        with self.free(400 * GB):
+            self.assertTrue(self.part({"event": "space"})[1]["paused_for_space"])
+
+    def test_a_share_whose_space_cannot_be_read_pauses_nothing_in_the_space_check(self):
+        logged = io.StringIO()
+        with mock.patch.object(Photos, "free_bytes", side_effect=OSError("canary-path-0452")), mock.patch("sys.stderr", logged):
+            status, reply = self.part({"event": "space"})
+        self.assertEqual((status, reply["allowed"], reply["paused_for_space"]), (200, True, False))
+        self.assertIn("free space on the share could not be read", logged.getvalue())
+        self.assertNotIn("canary-path-0452", logged.getvalue())
+        self.unchanged()
+
+    def test_an_exhausted_part_is_not_paused_so_its_attempt_gives_up(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].attempts = downloads.MAX_ATTEMPTS
+        with self.free(0):
+            status, reply = self.part({"event": "space"})
+            self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, False, False))
+            self.assertEqual(self.part_row()[0], "pending", "the space check itself gives up nothing")
+            reply = self.part({"event": "attempt"})[1]
+        self.assertEqual((reply["gave_up"], reply["paused_for_space"]), (True, False))
+
+    def test_a_downloaded_part_is_refused(self):
+        with self.free(400 * GB):
+            self.part({"event": "attempt"})
+            size = self.write_part(FILE_CANARY)
+            self.part({"event": "done", "filename": FILE_CANARY, "bytes": size})
+            status, _ = self.part({"event": "space"})
+        self.assertEqual(status, 400)
+
+    def test_the_expiry_alert_opens_while_the_space_check_keeps_pausing(self):
+        with self.free(0):
+            for _ in range(3):
+                self.assertTrue(self.part({"event": "space"})[1]["paused_for_space"])
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).expires_at = NOW + 2 * 86400
+            opened.flush()
+            self.assertEqual(downloads.watch_expiry(opened, self.settings, NOW), 1)
+            self.assertEqual([alert.key for alert in opened.execute(select(Alert).where(Alert.kind == downloads.EXPIRING, Alert.closed.is_(None))).scalars()], [downloads.expiry_key(self.export)])
+
+
 class DownloadApiTests(DownloadApiServer):
     def test_a_download_runs_through_the_worker_routes_and_queues_the_import(self):
         logged = io.StringIO()

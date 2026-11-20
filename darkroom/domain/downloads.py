@@ -164,6 +164,17 @@ def short_of_space(opened: Session, settings: Settings, part: ExportPart) -> boo
     return free < MIN_FREE_BYTES or free < still_to_come(opened, part) + (part.bytes or 0) + IN_FLIGHT_SLACK
 
 
+def space(opened: Session, settings: Settings, job_id: int, number: int) -> dict[str, object]:
+    export = waiting_export(opened, job_id)
+    part = part_of(opened, export, number)
+    if part.status == "done":
+        raise Refused(f"part {number} is already downloaded")
+    if part.status == "failed" or exhausted(part):
+        return outcome(part, False, False)
+    paused = short_of_space(opened, settings, part)
+    return outcome(part, not paused, False, paused_for_space=paused)
+
+
 def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: float) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     part = part_of(opened, export, number)

@@ -146,8 +146,21 @@ class Staggered:
     def requeue(self, part: dict[str, Any]) -> None:
         self.queue.insert(0, part)
 
+    def held_for_space(self, part: dict[str, Any]) -> bool:
+        reply = self.ctx.reporter.part(self.ctx.job_id, part["number"], {"event": "space"})
+        if not reply.get("paused_for_space"):
+            return False
+        self.requeue(part)
+        self.paused_until = self.ctx.clock() + SPACE_RETRY_SECONDS
+        if not self.paused:
+            self.paused = True
+            self.say(PAUSED_WORDS)
+        return True
+
     def start(self, part: dict[str, Any]) -> None:
         number = part["number"]
+        if self.held_for_space(part):
+            return
         try:
             listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks, wait=False)[number]
             selector = download.part_link(listed.link)
