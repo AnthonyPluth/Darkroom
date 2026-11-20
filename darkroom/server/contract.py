@@ -361,6 +361,14 @@ class ExportPartDetail(TypedDict):
     downloads_used: int
     attempts: int
     status: str
+    ingest_state: str
+    entries: int
+    entries_done: int
+    held: int
+    held_waiting_sidecar: int
+    held_waiting_export: int
+    failed_items: int
+    kept_reason: Literal["failed_item"] | None
 
 
 class ExportPartView(TypedDict):
@@ -379,6 +387,10 @@ class ExportView(TypedDict):
     status: str
     stage: str | None
     parts: list[ExportPartDetail]
+    parts_ingested: int
+    held_waiting_sidecar: int
+    held_waiting_export: int
+    bytes_freed: int
     retry_allowed: bool
     retry_refusal: str | None
 
