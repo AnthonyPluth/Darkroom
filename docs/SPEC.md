@@ -121,7 +121,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 - One container: Chromium driven by Playwright, running headed on a virtual display (Xvfb), with noVNC for remote viewing.
 - One persistent browser profile per Google account, stored on Unraid.
-- Jobs for different accounts run at the same time, at most `BROWSER_WORKERS` (3) at once, each in its own Chrome; one account never has two jobs at once. Sign-ins and other short jobs go before downloads, and one of the worker's loops never takes a download, so a sign-in never waits for another account's download. When two jobs wait for a person, the one that has waited longest is the window on the Remote browser, and the page names that account and tells the others they are next ([browser.md](deploy/browser.md#jobs-for-several-accounts-at-once)).
+- Jobs for different accounts run at the same time, at most `BROWSER_WORKERS` (3) at once, each in its own Chrome; one account never has two jobs at once. Sign-ins and other short jobs go before downloads, and one of the worker's loops never takes a download, so a sign-in never waits for another account's download. When two jobs wait for a person, the one that has waited longest is the window on the Remote browser, and the page names that account and tells the others they are waiting for the window ([browser.md](deploy/browser.md#jobs-for-several-accounts-at-once)).
 - Runs from the home connection, a few visits a week at most.
 
 **Jobs**

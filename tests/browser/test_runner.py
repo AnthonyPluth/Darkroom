@@ -729,6 +729,45 @@ class ScreenTests(unittest.TestCase):
         ctx.wait_for_user("verify")
         self.assertEqual(self.fronted(browser), 2)
 
+    def test_a_third_jobs_window_opening_over_the_front_job_is_covered_again_and_reported_again(self):
+        screen = context.Screen()
+        front, front_browser = self.context(1, screen)
+        behind, _ = self.context(2, screen)
+        front.browser()
+        behind.browser()
+        front.wait_for_user("sign_in")
+        behind.wait_for_user("sign_in")
+        front.check()
+        reported = len(front.reporter.on_screen.call_args_list)
+        third, third_browser = self.context(3, screen)
+        third.browser()
+        front.check()
+        self.assertEqual(self.fronted(third_browser), 0)
+        self.assertEqual(self.fronted(front_browser), 3, "the front job raises itself over the new window")
+        self.assertEqual(len(front.reporter.on_screen.call_args_list), reported + 1, "and tells Darkroom again that its window is the one on screen")
+        self.assertEqual(behind.reporter.on_screen.call_args_list, [])
+
+    def test_a_failed_on_screen_report_is_retried_on_the_next_check_without_raising_the_window_again(self):
+        ctx, browser = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = [Unreachable("ConnectionRefusedError"), None]
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            ctx.wait_for_user("sign_in")
+        self.assertEqual((self.fronted(browser), ctx.reporter.on_screen.call_count), (1, 1))
+        ctx.check()
+        self.assertEqual((self.fronted(browser), ctx.reporter.on_screen.call_count), (1, 2))
+        ctx.check()
+        self.assertEqual(ctx.reporter.on_screen.call_count, 2, "once told, it is not told again until the screen changes")
+
+    def test_a_job_darkroom_no_longer_runs_is_not_reported_again(self):
+        ctx, _ = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = LeaseLost(409, "this job is no longer running")
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            ctx.wait_for_user("sign_in")
+        ctx.check()
+        self.assertEqual(ctx.reporter.on_screen.call_count, 1)
+
     def test_the_worker_reports_the_window_on_screen_to_darkroom(self):
         fake = FakeDarkroom().start()
         self.addCleanup(fake.stop)

@@ -92,8 +92,24 @@ describe("the Remote browser page", () => {
     const [jo, family] = tasks;
     expect(within(family).getByText(/The window below is family\.photos@example\.com's\./)).toBeInTheDocument();
     expect(within(family).getByText(/Sign in in the window below as you normally would/)).toBeInTheDocument();
-    expect(within(jo).getByText("Waiting for the window below, which shows family.photos@example.com now. This account is next after family.photos@example.com; its window comes up once that sign-in is done.")).toBeInTheDocument();
+    expect(within(jo).getByText("Waiting for the window below, which shows family.photos@example.com now. Its window comes up once that sign-in is done.")).toBeInTheDocument();
     expect(within(jo).queryByText(/Sign in in the window below/)).not.toBeInTheDocument();
+  });
+
+  it("with three accounts waiting, every account not on screen waits for the window and none is called next", async () => {
+    const third = { ...joAccount, id: 12, email: "sam.photos@example.com" };
+    const joWaiting = { ...waitingConnect, id: 7, account_id: 10 };
+    const samWaiting = { ...waitingConnect, id: 8, account_id: 12, kind: "download" };
+    show({ "GET /api/browser/view": { vnc_url: VNC, worker_last_seen: 995, on_screen_job: 6 }, "GET /api/accounts": { accounts: [joAccount, familyAccount, third] }, "GET /api/browser/jobs": { jobs: [waitingConnect, joWaiting, samWaiting] } });
+    const tasks = await screen.findAllByRole("region", { name: "Sign-in task" });
+    expect(tasks).toHaveLength(3);
+    const [jo, family, sam] = tasks;
+    expect(within(family).getByText(/The window below is family\.photos@example\.com's\./)).toBeInTheDocument();
+    for (const waiting of [jo, sam]) {
+      expect(within(waiting).getByText("Waiting for the window below, which shows family.photos@example.com now. Its window comes up once that sign-in is done.")).toBeInTheDocument();
+      expect(within(waiting).queryByText(/Sign in in the window below/)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByText(/next after/)).not.toBeInTheDocument();
   });
 
   it("with two accounts waiting and no window known to be on screen, keeps the plain sign-in task for each", async () => {

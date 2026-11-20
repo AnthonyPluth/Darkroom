@@ -96,7 +96,7 @@
             <b class="text-md">{reason === "wrong_account" ? `Switch to ${account.email}` : `Sign in to ${account.email}`}</b>
           </div>
           {#if shown && shown.id !== account.id}
-          <p>Waiting for the window below, which shows {shown.email} now. This account is next after {shown.email}; its window comes up once that sign-in is done.</p>
+          <p>Waiting for the window below, which shows {shown.email} now. Its window comes up once that sign-in is done.</p>
           {:else}
           <p>
             {#if shown}The window below is {account.email}'s.{/if}

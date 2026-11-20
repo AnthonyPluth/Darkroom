@@ -146,6 +146,7 @@ class JobContext:
     browser_root: Path | None = None
     screen: Screen = field(default_factory=Screen)
     shown: int | None = None
+    told: bool = True
 
     def state_root(self) -> Path:
         return self.photos_root / "_browser" if self.browser_root is None else self.browser_root
@@ -173,18 +174,29 @@ class JobContext:
 
     def show_if_first(self) -> None:
         turn = self.screen.turn_of(self.job_id)
-        if turn is None or turn == self.shown or self.browser_open is None:
+        if turn is None or self.browser_open is None:
             return
-        self.shown = turn
-        try:
-            self.browser_open.bring_to_front()
-        except Exception as error:
-            monitoring.log("could not bring the browser window to the front", job=self.job_id, error=type(error).__name__)
-            return
+        if turn != self.shown:
+            self.shown = turn
+            try:
+                self.browser_open.bring_to_front()
+            except Exception as error:
+                monitoring.log("could not bring the browser window to the front", job=self.job_id, error=type(error).__name__)
+                self.told = True
+                return
+            self.told = False
+        if not self.told:
+            self.tell_on_screen()
+
+    def tell_on_screen(self) -> None:
         try:
             self.reporter.on_screen(self.job_id)
+        except LeaseLost:
+            self.told = True
         except (Unreachable, Refused) as error:
             monitoring.log("could not tell darkroom which window is on screen", job=self.job_id, error=type(error).__name__)
+        else:
+            self.told = True
 
     def progress(self, message: str) -> None:
         self.check()
