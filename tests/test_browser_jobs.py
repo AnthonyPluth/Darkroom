@@ -4,14 +4,14 @@ import threading
 import unittest
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from darkroom import config
 from darkroom.domain import alerts, browser_jobs
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, GoogleAccount
-from tests.shared import VIEWER_SECRET, add_person, own_database, settings_from
+from tests.shared import VIEWER_SECRET, add_person, another_writer_holds_the_lock, impatient_engine, own_database, settings_from
 
 RELAYED = config.relay_address("https://darkroom.example")
 
@@ -34,9 +34,19 @@ class BrowserJobTests(unittest.TestCase):
         with db.session(self.engine) as opened:
             self.account = add_account(opened)
 
-    def enqueue(self, kind="noop", now=10.0):
+    def enqueue(self, kind="noop", now=10.0, account=None):
         with db.session(self.engine) as opened:
-            return (browser_jobs.queue if kind in browser_jobs.GUARDED_KINDS else browser_jobs.enqueue)(opened, self.account, kind, {"n": 1}, now).id
+            queued = browser_jobs.queue if kind in (*browser_jobs.GUARDED_KINDS, *browser_jobs.LONG_KINDS) else browser_jobs.enqueue
+            return queued(opened, self.account if account is None else account, kind, {"n": 1}, now).id
+
+    def another_account(self, name):
+        with db.session(self.engine) as opened:
+            return add_account(opened, f"{name}.takeout@example.test", name)
+
+    def claimed(self, now=5.0, lane=browser_jobs.ANY_LANE):
+        with db.session(self.engine) as opened:
+            job = browser_jobs.claim(opened, now, lane)
+            return None if job is None else job.id
 
     def write_capture(self, job_id, *names):
         folder = self.photos / "_browser" / str(self.account) / "failures" / str(job_id)
@@ -65,7 +75,7 @@ class BrowserJobTests(unittest.TestCase):
                 browser_jobs.enqueue(opened, self.account + 7, "noop", None, 1.0)
 
     def test_claim_takes_the_oldest_queued_job_and_leases_it(self):
-        first, second = self.enqueue(now=1.0), self.enqueue(now=2.0)
+        first, second = self.enqueue(now=1.0), self.enqueue(now=2.0, account=self.another_account("sam"))
         with db.session(self.engine) as opened:
             claimed = browser_jobs.claim(opened, 5.0)
             self.assertEqual((claimed.id, claimed.status, claimed.started, claimed.heartbeat), (first, "running", 5.0, 5.0))
@@ -75,8 +85,8 @@ class BrowserJobTests(unittest.TestCase):
 
     def test_two_workers_never_hold_the_same_job(self):
         wanted = 6
-        for _ in range(wanted):
-            self.enqueue()
+        for number in range(wanted):
+            self.enqueue(account=self.another_account(f"p{number}"))
         claimed, errors = [], []
         start = threading.Barrier(8)
 
@@ -396,7 +406,7 @@ class BrowserJobTests(unittest.TestCase):
 
     def test_lease_expiry_fails_the_job_and_alerts(self):
         job_id = self.enqueue()
-        kept = self.enqueue()
+        kept = self.enqueue(account=self.another_account("sam"))
         with db.session(self.engine) as opened:
             browser_jobs.claim(opened, 100.0)
             browser_jobs.claim(opened, 100.0)
@@ -452,6 +462,172 @@ class BrowserJobTests(unittest.TestCase):
             types = [event.type for event in opened.execute(select(Event).order_by(Event.id)).scalars()]
         self.assertEqual(types, ["browser_job_queued", "browser_job_claimed", "browser_job_done"])
         self.assertEqual(alerts.failure("x").title, "Darkroom needs a look")
+
+    def test_claim_skips_an_account_with_a_running_or_waiting_job_and_takes_another_accounts(self):
+        for status in browser_jobs.OPEN_STATUSES:
+            with self.subTest(status=status):
+                with db.session(self.engine) as opened:
+                    opened.query(BrowserJob).delete()
+                    mine = add_account(opened, f"a{status.replace('_', '')}@example.test", f"a{status.replace('_', '')}")
+                    theirs = add_account(opened, f"b{status.replace('_', '')}@example.test", f"b{status.replace('_', '')}")
+                open_job = self.enqueue("download", now=1.0, account=mine)
+                self.assertEqual(self.claimed(), open_job)
+                if status == "waiting_for_user":
+                    with db.session(self.engine) as opened:
+                        browser_jobs.waiting(opened, self.settings, open_job, "sign_in", 6.0)
+                behind = self.enqueue("status", now=2.0, account=mine)
+                self.assertIsNone(self.claimed(7.0), "never two jobs for one account at once")
+                other = self.enqueue("status", now=3.0, account=theirs)
+                self.assertEqual(self.claimed(8.0), other, "another account's job starts at once")
+                self.assertIsNone(self.claimed(9.0))
+                with db.session(self.engine) as opened:
+                    browser_jobs.done(opened, open_job, {}, 10.0)
+                self.assertEqual(self.claimed(11.0), behind, "the account's queued job starts once its open job has ended")
+
+    def test_a_job_waiting_days_for_a_person_does_not_hold_other_accounts(self):
+        waiting = self.enqueue("download", now=1.0)
+        self.assertEqual(self.claimed(2.0), waiting)
+        with db.session(self.engine) as opened:
+            browser_jobs.waiting(opened, self.settings, waiting, "verify", 3.0)
+        later = 3.0 + 47 * 3600.0
+        others = [self.enqueue(kind, now=4.0, account=self.another_account(f"w{number}")) for number, kind in enumerate(("connect", "download"))]
+        with db.session(self.engine) as opened:
+            browser_jobs.heartbeat(opened, waiting, later)
+        self.assertEqual([self.claimed(later), self.claimed(later)], others)
+        self.assertEqual(self.job(waiting).status, "waiting_for_user")
+
+    def test_claim_skips_an_account_whose_lease_just_expired_until_the_lease_window_has_passed(self):
+        lost = self.enqueue(now=1.0)
+        self.assertEqual(self.claimed(100.0), lost)
+        with db.session(self.engine) as opened:
+            expired_at = 100.0 + browser_jobs.LEASE_SECONDS + 1
+            self.assertEqual([job.id for job in browser_jobs.expire_leases(opened, self.settings, expired_at)], [lost])
+            self.assertEqual(browser_jobs.holds_profile(opened, self.account, expired_at + 1), "lease_expired")
+        behind = self.enqueue(now=2.0)
+        other = self.enqueue(now=3.0, account=self.another_account("sam"))
+        self.assertEqual(self.claimed(expired_at + 1), other)
+        self.assertIsNone(self.claimed(expired_at + browser_jobs.LEASE_SECONDS - 1), "its Chrome may still be open until the worker's watchdog fires")
+        self.assertEqual(self.claimed(expired_at + browser_jobs.LEASE_SECONDS + 1), behind)
+
+    def test_finished_jobs_and_other_failures_do_not_hold_the_account(self):
+        for status, message in (("done", ""), ("failed", "TimeoutError")):
+            with self.subTest(status=status):
+                with db.session(self.engine) as opened:
+                    opened.query(BrowserJob).delete()
+                ended = self.enqueue(now=1.0)
+                with db.session(self.engine) as opened:
+                    job = opened.get(BrowserJob, ended)
+                    job.status, job.message, job.finished = status, message, 100.0
+                queued = self.enqueue(now=2.0)
+                self.assertEqual(self.claimed(101.0), queued)
+
+    def test_claim_puts_interactive_kinds_before_long_ones_then_takes_the_oldest(self):
+        self.assertEqual(browser_jobs.LONG_KINDS, ("download",))
+        accounts = [self.another_account(f"k{number}") for number in range(5)]
+        download = self.enqueue("download", now=1.0, account=accounts[0])
+        later_download = self.enqueue("download", now=2.0, account=accounts[1])
+        status = self.enqueue("status", now=3.0, account=accounts[2])
+        connect = self.enqueue("connect", now=4.0, account=accounts[3])
+        noop = self.enqueue("noop", now=5.0, account=accounts[4])
+        self.assertEqual([self.claimed() for _ in range(6)], [status, connect, noop, download, later_download, None])
+
+    def test_every_interactive_kind_comes_before_a_download(self):
+        for kind in ("connect", "status", "schedule", "renew", "noop"):
+            with self.subTest(kind=kind):
+                with db.session(self.engine) as opened:
+                    opened.query(BrowserJob).delete()
+                download = self.enqueue("download", now=1.0, account=self.another_account(f"d{kind}"))
+                interactive = self.enqueue(kind, now=2.0, account=self.another_account(f"i{kind}"))
+                self.assertEqual([self.claimed(), self.claimed()], [interactive, download])
+
+    def test_the_interactive_lane_takes_no_download_and_the_other_lane_does(self):
+        download = self.enqueue("download", now=1.0)
+        self.assertIsNone(self.claimed(lane=browser_jobs.INTERACTIVE_LANE))
+        connect = self.enqueue("connect", now=2.0, account=self.another_account("sam"))
+        self.assertEqual(self.claimed(lane=browser_jobs.INTERACTIVE_LANE), connect)
+        self.assertIsNone(self.claimed(lane=browser_jobs.INTERACTIVE_LANE))
+        self.assertEqual(self.job(download).status, "queued")
+        self.assertEqual(self.claimed(lane=browser_jobs.ANY_LANE), download)
+        with db.session(self.engine) as opened:
+            self.assertIsNone(browser_jobs.claim(opened, 6.0))
+
+    def test_an_unknown_lane_is_refused_and_claims_nothing(self):
+        queued = self.enqueue()
+        with db.session(self.engine) as opened:
+            with self.assertRaisesRegex(browser_jobs.UnknownLane, "not a claim lane"):
+                browser_jobs.claim(opened, 5.0, "downloads-only")
+        self.assertEqual(self.job(queued).status, "queued")
+
+    def test_a_download_waits_only_for_the_interactive_jobs_ahead_of_it(self):
+        statuses = [self.enqueue("status", now=float(number), account=self.another_account(f"s{number}")) for number in range(3)]
+        download = self.enqueue("download", now=0.5, account=self.another_account("big"))
+        self.assertEqual([self.claimed(lane=browser_jobs.INTERACTIVE_LANE), self.claimed(), self.claimed()], statuses)
+        self.assertEqual(self.job(download).status, "queued")
+        self.assertEqual(self.claimed(), download, "the next free lane that may take a download takes it")
+
+    def test_two_claimers_racing_for_one_account_get_one_job_between_them(self):
+        accounts = [self.another_account(f"r{number}") for number in range(3)]
+        for account in accounts:
+            self.enqueue("download", account=account)
+            self.enqueue("status", account=account)
+        claimed, errors = [], []
+        start = threading.Barrier(8)
+
+        def worker(lane):
+            start.wait()
+            for _ in range(4):
+                try:
+                    with db.session(self.engine) as opened:
+                        job = browser_jobs.claim(opened, 1.0, lane)
+                        if job is not None:
+                            claimed.append((job.id, job.account_id))
+                except browser_jobs.Busy:
+                    pass
+                except Exception as error:
+                    errors.append(error)
+
+        threads = [threading.Thread(target=worker, args=(browser_jobs.INTERACTIVE_LANE if number % 2 else browser_jobs.ANY_LANE,)) for number in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(account for _, account in claimed), sorted(accounts), "one job per account, each handed out once")
+        self.assertEqual(len({job for job, _ in claimed}), len(claimed))
+
+    def test_a_claim_holds_the_lock_from_its_first_statement_so_a_second_claimer_waits(self):
+        self.enqueue("download", now=1.0)
+        status = self.enqueue("status", now=2.0)
+        seen = []
+
+        def claim_elsewhere():
+            try:
+                with db.session(impatient_engine(self, self.engine, 0.1)) as opened:
+                    return "claimed" if browser_jobs.claim(opened, 5.0, browser_jobs.INTERACTIVE_LANE) is not None else "nothing"
+            except browser_jobs.Busy:
+                return "locked"
+
+        def claim_meanwhile(conn, cursor, statement, parameters, context, executemany):
+            if not seen:
+                seen.append(claim_elsewhere())
+
+        event.listen(self.engine, "after_cursor_execute", claim_meanwhile)
+        try:
+            with db.session(self.engine) as opened:
+                self.assertEqual(browser_jobs.claim(opened, 5.0).id, status)
+        finally:
+            event.remove(self.engine, "after_cursor_execute", claim_meanwhile)
+        self.assertEqual(seen, ["locked"])
+        self.assertIsNone(self.claimed(6.0, browser_jobs.INTERACTIVE_LANE))
+
+    def test_a_claim_that_cannot_get_the_write_lock_is_busy_and_claims_nothing(self):
+        queued = self.enqueue()
+        impatient = impatient_engine(self, self.engine, 0.05)
+        with another_writer_holds_the_lock(self.engine):
+            with db.session(impatient) as opened:
+                with self.assertRaisesRegex(browser_jobs.Busy, "try again in a moment"):
+                    browser_jobs.claim(opened, 5.0)
+        self.assertEqual(self.job(queued).status, "queued")
 
 
 if __name__ == "__main__":

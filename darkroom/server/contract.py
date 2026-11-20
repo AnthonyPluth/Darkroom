@@ -280,6 +280,7 @@ class EnqueueBody(TypedDict):
 
 class ClaimBody(TypedDict):
     worker: NotRequired[str]
+    lane: NotRequired[Literal["any", "interactive"]]
 
 
 class HeartbeatBody(TypedDict):

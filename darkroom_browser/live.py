@@ -192,6 +192,9 @@ class Live:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.page.screenshot(path=str(path), full_page=True)
 
+    def bring_to_front(self) -> None:
+        self.page.bring_to_front()
+
     def close(self) -> None:
         failure: Exception | None = None
         for closable in (self.context, self.playwright):

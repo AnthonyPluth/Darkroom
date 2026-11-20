@@ -109,6 +109,7 @@ class DownloadBrowser:
         self.seconds = 60.0
         self.flying = {}
         self.started = []
+        self.fronted = 0
         self.cancelled = []
         self.kept = []
         self.strays = 0
@@ -242,6 +243,9 @@ class DownloadBrowser:
 
     def screenshot(self, path):
         path.write_bytes(b"\x89PNG")
+
+    def bring_to_front(self):
+        self.fronted += 1
 
     def close(self):
         self.closed = True

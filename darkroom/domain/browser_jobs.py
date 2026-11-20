@@ -5,9 +5,9 @@ import re
 from collections.abc import Sequence
 from typing import Literal
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import ColumnElement, and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from darkroom import dates
 from darkroom.config import Settings, viewer_link
@@ -18,6 +18,10 @@ from darkroom.storage.paths import OutsideRoot, browser_state
 
 LEASE_SECONDS = 180.0
 KINDS = ("noop", "connect", "schedule")
+LONG_KINDS = ("download",)
+ANY_LANE = "any"
+INTERACTIVE_LANE = "interactive"
+LANES = (ANY_LANE, INTERACTIVE_LANE)
 RENEW_KIND = "renew"
 GUARDED_KINDS = ("connect", "schedule", "status", RENEW_KIND)
 SCHEDULE_KINDS = ("schedule", RENEW_KIND)
@@ -67,6 +71,10 @@ class BadReason(ValueError):
 
 
 class NotExtended(ValueError):
+    pass
+
+
+class UnknownLane(ValueError):
     pass
 
 
@@ -212,11 +220,42 @@ def enqueue_once(opened: Session, account_id: int, kind: str, now: float) -> Bro
     return queue(opened, account_id, kind, {"email": account.email}, now)
 
 
-def claim(opened: Session, now: float) -> BrowserJob | None:
-    oldest = select(BrowserJob.id).where(BrowserJob.status == "queued").order_by(BrowserJob.id).limit(1).scalar_subquery()
+def lock_queued_accounts(opened: Session) -> None:
+    try:
+        db.write_lock(opened)
+        opened.execute(update(GoogleAccount).where(GoogleAccount.id.in_(select(BrowserJob.account_id).where(BrowserJob.status == "queued"))).values(id=GoogleAccount.id))
+    except OperationalError as error:
+        if not db.is_busy(error):
+            raise
+        raise Busy("Darkroom is busy with another change; try again in a moment") from None
+
+
+def is_open(job: type[BrowserJob]) -> ColumnElement[bool]:
+    return job.status.in_(OPEN_STATUSES)
+
+
+def lease_just_expired(job: type[BrowserJob], now: float) -> ColumnElement[bool]:
+    return and_(job.status == "failed", job.message == EXPIRED_MESSAGE, job.finished > now - LEASE_SECONDS)
+
+
+def may_start(now: float, lane: str) -> ColumnElement[bool]:
+    other = aliased(BrowserJob)
+    profile_free = ~exists().where(other.account_id == BrowserJob.account_id, or_(is_open(other), lease_just_expired(other, now)))
+    allowed = and_(BrowserJob.status == "queued", profile_free)
+    return and_(allowed, BrowserJob.kind.not_in(LONG_KINDS)) if lane == INTERACTIVE_LANE else allowed
+
+
+def claim(opened: Session, now: float, lane: str = ANY_LANE) -> BrowserJob | None:
+    if lane not in LANES:
+        raise UnknownLane(f"{lane!r} is not a claim lane")
+    lock_queued_accounts(opened)
+    first = case((BrowserJob.kind.in_(LONG_KINDS), 1), else_=0)
+    chosen = opened.execute(select(BrowserJob.id).where(may_start(now, lane)).order_by(first, BrowserJob.id).limit(1)).scalar_one_or_none()
+    if chosen is None:
+        return None
     taken = opened.execute(
         update(BrowserJob)
-        .where(BrowserJob.id == oldest, BrowserJob.status == "queued")
+        .where(BrowserJob.id == chosen, BrowserJob.status == "queued")
         .values(status="running", started=now, heartbeat=now)
         .returning(BrowserJob.id)
     ).scalar_one_or_none()
@@ -410,9 +449,8 @@ def for_worker(job: BrowserJob) -> dict[str, object]:
 
 def holds_profile(opened: Session, account_id: int, now: float) -> Literal["open", "lease_expired"] | None:
     mine = BrowserJob.account_id == account_id
-    if opened.execute(select(func.count(BrowserJob.id)).where(mine, BrowserJob.status.in_(OPEN_STATUSES))).scalar_one():
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, is_open(BrowserJob))).scalar_one():
         return "open"
-    expired = and_(BrowserJob.status == "failed", BrowserJob.message == EXPIRED_MESSAGE, BrowserJob.finished > now - LEASE_SECONDS)
-    if opened.execute(select(func.count(BrowserJob.id)).where(mine, expired)).scalar_one():
+    if opened.execute(select(func.count(BrowserJob.id)).where(mine, lease_just_expired(BrowserJob, now))).scalar_one():
         return "lease_expired"
     return None

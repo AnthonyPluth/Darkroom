@@ -86,6 +86,21 @@ class WorkerRoundTripTests(WorkerApiServer):
             self.assertEqual(status, 200)
             self.assertIsInstance(json.loads(body)["worker_last_seen"], float)
 
+    def test_the_claim_body_names_a_lane_and_the_interactive_lane_takes_no_download(self):
+        with db.session(self.engine) as opened:
+            download = browser_jobs.queue(opened, self.account, "download", {}, 1.0).id
+        claim = "/internal/browser/jobs/claim"
+        with no_leaks(self, TOKEN, database=self.engine, replies=self.replies):
+            self.assertEqual(self.worker("POST", claim, {"worker": "w", "lane": "interactive"}), (200, {"job": None}))
+            self.assertEqual(self.worker("POST", claim, {"worker": "w", "lane": "any"})[1]["job"]["id"], download)
+
+    def test_an_unknown_or_malformed_lane_answers_400_and_claims_nothing(self):
+        job_id = self.enqueue()
+        claim = "/internal/browser/jobs/claim"
+        self.assertEqual(self.worker("POST", claim, {"lane": "downloads"}), (400, {"error": "'downloads' is not a claim lane"}))
+        self.assertEqual(self.worker("POST", claim, {"lane": 1}), (400, {"error": "lane must be text"}))
+        self.assertEqual(self.worker("POST", claim, {"worker": "w"})[1]["job"]["id"], job_id)
+
     def test_a_renewal_done_over_the_worker_api_records_the_new_end_and_confirms_it(self):
         with db.session(self.engine) as opened:
             opened.get(GoogleAccount, self.account).schedule_end = 1_000_000.0

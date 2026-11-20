@@ -45,6 +45,7 @@ class ScriptedBrowser:
         self.after_click = after_click or {}
         self.closed = False
         self.address = "about:blank"
+        self.fronted = 0
 
     def goto(self, url: str) -> None:
         self.visited.append(url)
@@ -77,6 +78,9 @@ class ScriptedBrowser:
 
     def screenshot(self, path: Path) -> None:
         path.write_bytes(b"\x89PNG")
+
+    def bring_to_front(self) -> None:
+        self.fronted += 1
 
     def close(self) -> None:
         self.closed = True

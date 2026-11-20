@@ -82,6 +82,7 @@ export interface CheckNowReply {
 
 export interface ClaimBody {
   worker?: string;
+  lane?: "any" | "interactive";
 }
 
 export interface DecisionReply {

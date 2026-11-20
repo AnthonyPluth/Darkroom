@@ -328,6 +328,36 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertEqual(self.parts()[1], ("done", 2, 1))
 
+    def fronts_in_order(self, browser):
+        browser.bring_to_front = lambda: self.reporter.events.append(("front", None))
+
+    def test_a_prompt_while_staggering_brings_the_window_to_the_front_when_the_job_starts_waiting(self):
+        browser = StaggerBrowser(["ok", "unrecognised then reauth", "ok", "ok"], self.clock)
+        self.fronts_in_order(browser)
+        self.run_job(browser)
+        seen = self.reporter.events
+        waited = seen.index(("waiting", "verify"))
+        self.assertEqual(seen[waited + 1], ("front", None))
+        self.assertEqual(seen.count(("front", None)), 1)
+        self.assertEqual(self.parts()[1], ("done", 2, 1), "nothing else about the stagger changes")
+
+    def test_a_sign_in_while_staggering_brings_the_window_to_the_front_once(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.signed_out_while_reopening(browser, 30)
+        self.fronts_in_order(browser)
+        _, result = self.run_job(browser)
+        seen = self.reporter.events
+        waited = seen.index(("waiting", "sign_in"))
+        self.assertEqual(seen[waited + 1], ("front", None))
+        self.assertEqual(seen.count(("front", None)), 1)
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 40), (3, 50)])
+        self.assertEqual(result["downloaded"], 3)
+
+    def test_a_download_that_never_waits_never_takes_the_front(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.run_job(browser)
+        self.assertEqual(browser.fronted, 0)
+
     def test_a_broken_finished_file_is_retried(self):
         for outcome, reason in (("bad name", "bad_name"), ("corrupt", "corrupt"), ("fails", "interrupted")):
             with self.subTest(outcome):

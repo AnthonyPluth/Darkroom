@@ -407,6 +407,12 @@
       "ClaimBody": {
         "additionalProperties": false,
         "properties": {
+          "lane": {
+            "enum": [
+              "any",
+              "interactive"
+            ]
+          },
           "worker": {
             "type": "string"
           }

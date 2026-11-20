@@ -39,7 +39,7 @@ SECRETS = {"token": TOKEN, "viewer": VIEWER}
 GIVEN = {"PATH": "/x", "HOME": "/home/darkroom", "LANG": "C.UTF-8", "HOSTNAME": "abc", "PYTHON_SHA256": "f" * 64, "DARKROOM_SECRET_KEY": "key-canary",
          "OIDC_CLIENT_SECRET": "oidc-canary", "IMMICH_ADMIN_KEY": "immich-canary", "DATABASE_URL": "postgresql://u:p@h/d", "RESEND_API_KEY": "resend-canary",
          "DARKROOM_BROWSER_TOKEN": "someone-set-this-token-0123456789abcdef", "DARKROOM_VNC_SECRET": "someone-set-this-secret-0123456789abc",
-         "DARKROOM_PORT": "8123", "DARKROOM_PHOTOS_ROOT": "/share", "TZ": "Europe/Paris", "POLL_SECONDS": "5", "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"}
+         "DARKROOM_PORT": "8123", "DARKROOM_PHOTOS_ROOT": "/share", "TZ": "Europe/Paris", "POLL_SECONDS": "5", "BROWSER_WORKERS": "2", "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"}
 APP_SECRETS = ("DARKROOM_SECRET_KEY", "OIDC_CLIENT_SECRET", "IMMICH_ADMIN_KEY", "DATABASE_URL", "RESEND_API_KEY")
 
 
@@ -57,7 +57,7 @@ class PlanTests(unittest.TestCase):
                                                          plan.SYNCTHING_SWITCH})
         env = plan.app_env(GIVEN)
         self.assertEqual((env[plan.TOKEN_FD], env[plan.VIEWER_FD], env[plan.ONE_CONTAINER]), (plan.PIPE["token"], plan.PIPE["viewer"], "1"))
-        self.assertFalse({"HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
+        self.assertFalse({"HOSTNAME", "PYTHON_SHA256", "POLL_SECONDS", "BROWSER_WORKERS", "PLAYWRIGHT_BROWSERS_PATH"} & set(env))
         self.assertEqual((env["DARKROOM_BROWSER_TOKEN"], env["DARKROOM_VNC_SECRET"]), ("set", "set"))
         self.assertFalse({GIVEN["DARKROOM_BROWSER_TOKEN"], GIVEN["DARKROOM_VNC_SECRET"]} & set(env.values()))
         self.assertEqual(env["DARKROOM_SECRET_KEY"], "key-canary")
@@ -69,7 +69,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(read - set(env) - set(plan.WORKER_SETTINGS), set())
         self.assertNotIn("DARKROOM_PORT", env)
         self.assertNotIn("DARKROOM_PORT", plan.worker_env({}))
-        self.assertEqual((env["PHOTOS_ROOT"], env["DISPLAY"], env["TZ"], env["POLL_SECONDS"]), ("/share", ":99", "Europe/Paris", "5"))
+        self.assertEqual((env["PHOTOS_ROOT"], env["DISPLAY"], env["TZ"], env["POLL_SECONDS"], env["BROWSER_WORKERS"]), ("/share", ":99", "Europe/Paris", "5", "2"))
         self.assertFalse({*APP_SECRETS, "DARKROOM_BROWSER_TOKEN", "DARKROOM_VNC_SECRET", "DARKROOM_URL", "HOSTNAME"} & set(env))
 
     def test_the_worker_and_the_app_get_the_same_browser_root(self):

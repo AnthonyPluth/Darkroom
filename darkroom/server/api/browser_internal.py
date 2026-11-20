@@ -79,8 +79,8 @@ def reply_with(request: Request, work: Callable[[Session, float], dict[str, obje
 
 def claim(request: Annotated[Request, contract.ClaimBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob | None:
-        body_of(request)
-        job = browser_jobs.claim(opened, moment)
+        lane = validate.text(body_of(request), "lane", required=False, limit=20) or browser_jobs.ANY_LANE
+        job = browser_jobs.claim(opened, moment, lane)
         if job is not None:
             monitoring.log("browser job claimed", kind=job.kind)
         return job
