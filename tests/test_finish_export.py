@@ -5,7 +5,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import exports
-from darkroom.domain.ingest import finish_export, part_ingest, run
+from darkroom.domain.ingest import finish_export, part_ingest, part_reader, run
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -261,6 +261,74 @@ def crashing_at(target):
             raise Crash
 
     return hook
+
+
+class ReviewFindingTests(unittest.TestCase):
+    def test_placing_held_items_keeps_scratch_in_bounded_batches_and_empties_it(self):
+        world = FinishWorld(self)
+
+        def build(builder):
+            for number in range(5):
+                builder.photo(f"IMG_85{number}.JPG", form=None, part=0)
+
+        export = world.create(build, parts=2)
+        world.ingest_all(export, (1, 2))
+        self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "waiting_sidecar"), 5)
+        scratch = world.photos.scratch("jo", f"export-{export.id}")
+        high = [0]
+        real_stream = part_reader.stream_one
+
+        def stream(*args, **kwargs):
+            streamed = real_stream(*args, **kwargs)
+            high[0] = max(high[0], len(list(scratch.glob("*"))))
+            return streamed
+
+        with mock.patch.object(part_reader, "BATCH_FILES", 2), mock.patch.object(part_reader, "stream_one", side_effect=stream):
+            world.finish(export)
+        self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "placed"), 5)
+        self.assertGreater(high[0], 0)
+        self.assertLessEqual(high[0], 2)
+        self.assertEqual(list(scratch.glob("*")), [])
+
+    def test_a_pending_tier_1_entry_is_filled_from_the_canonical_copys_sidecar_not_the_arrival_copys(self):
+        world = FinishWorld(self)
+        original = "jo/originals/IMG_8101.JPG"
+
+        def build(builder):
+            exact = builder.image_bytes(".JPG")
+            world.original("jo", "IMG_8101.JPG", exact)
+            builder.add("IMG_8101.JPG", exact, "Holiday", 0, None, None, (10.0, 20.0), "from the album", sidecar_name="IMG_8101.json")
+            builder.add("IMG_8101.JPG", exact, "Photos from 2019", 1, "json", None, (30.0, 40.0), "from the year folder")
+
+        export = world.create(build, parts=2)
+        world.ingest_all(export, (1, 2))
+        self.assertTrue(world.entry("Holiday/IMG_8101.JPG").metadata_pending)
+        world.finish(export)
+        self.assertFalse(world.entry("Holiday/IMG_8101.JPG").metadata_pending)
+        written = world.xmp_of(original).read_text()
+        self.assertIn("from the year folder", written)
+        self.assertNotIn("from the album", written)
+
+    def test_identical_bytes_under_several_names_in_one_folder_leave_no_root_or_slot_behind(self):
+        world = FinishWorld(self)
+
+        def build(twin):
+            def add(builder):
+                data = builder.image_bytes(".JPG")
+                builder.add("Z.JPG", data, "Holiday", 0, "json", None, (10.0, 20.0), "", taken=1_500_000_000)
+                builder.add("B.JPG", data, "Photos from 2019", 1, "json", None, (10.0, 20.0), "", taken=1_500_000_000)
+                builder.add("A.JPG", data, "Photos from 2019", 2, "json", None, (10.0, 20.0), "", taken=1_500_000_000)
+
+            return add
+
+        export = world.create(build(world), parts=3)
+        world.ingest_all(export, (1, 2, 3))
+        world.finish(export)
+        self.assertEqual(world.opened.get(Export, export.id).status, "imported")
+        self.assertEqual({outcome for name, outcome in world.outcomes().items()} & {"waiting_sidecar", "waiting_export", "listed"}, set())
+        twin = world.whole_export(build, parts=3)
+        self.assertEqual([row[:3] for row in world.decisions()], [row[:3] for row in twin.decisions()])
+        self.assertEqual(len(world.google_only()), len(twin.google_only()))
 
 
 class CrashTests(unittest.TestCase):

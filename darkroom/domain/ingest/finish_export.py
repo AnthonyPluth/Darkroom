@@ -64,13 +64,28 @@ def canonical(opened: Session, export: Export) -> Canon:
     owners = {path: row.id for path, row in by_path.items() if row.id in texts}
     units: list[Unit] = []
     trashed: list[Unit] = []
+    roots = [row for row in rows if row.kind == "media" and row.copy_of_id is None and row.sha1 is not None]
+    taken: set[int] = set()
+    pending: list[tuple[pairing.TakeoutItem, TakeoutEntry | None]] = []
     for item in report.items:
-        roots = [row for path in item.copies if (row := by_path.get(path)) is not None and row.copy_of_id is None]
-        if not roots:
-            continue
-        root = min(roots, key=lambda row: (row.decision_id is None, row.id))
-        found = None if item.sidecar is None or item.sidecar_from_still else owners.get(item.sidecar)
-        (trashed if item.special == pairing.TRASHED else units).append(Unit(item, root, found))
+        own = [row for path in item.copies if (row := by_path.get(path)) is not None and row.copy_of_id is None and row.id not in taken]
+        found = min(own, key=lambda row: (row.name != str(item.path), row.decision_id is None, row.id)) if own else None
+        if found is not None:
+            taken.add(found.id)
+        pending.append((item, found))
+    for item, found in pending:
+        if found is None:
+            spare = [row for row in roots if row.id not in taken and row.sha1 == item.sha1]
+            found = min(spare, key=lambda row: (row.name != str(item.path), row.decision_id is None, row.id)) if spare else None
+            if found is not None:
+                taken.add(found.id)
+        if found is not None:
+            chosen = None if item.sidecar is None or item.sidecar_from_still else owners.get(item.sidecar)
+            (trashed if item.special == pairing.TRASHED else units).append(Unit(item, found, chosen))
+    for row in roots:
+        if row.id not in taken:
+            alone = pairing.TakeoutItem(Path(row.name), row.sha1 or "", (Path(row.name),), None)
+            units.append(Unit(alone, row, row.sidecar_entry_id))
     return Canon(report, tuple(sorted(units, key=lambda unit: unit.root.id)), tuple(sorted(trashed, key=lambda unit: unit.root.id)))
 
 
@@ -166,9 +181,16 @@ class Finish(part_ingest.Ingest):
             return
         self.remeasure(held)
         judged = self.judge(canon, held)
-        for unit in held:
-            if unit.path in judged and needs_decision(unit.root):
-                self.settle(unit, judged[unit.path])
+        by_id = {unit.root.id: unit for unit in held}
+        for chunk in self.in_batches([unit.root for unit in held]):
+            try:
+                for entry in chunk:
+                    unit = by_id[entry.id]
+                    if unit.path in judged and needs_decision(unit.root):
+                        self.settle(unit, judged[unit.path])
+            finally:
+                self.close_archive()
+                self.release_scratch()
 
     def fill_pending(self, canon: Canon) -> None:
         self.sidecar_rows()
@@ -176,11 +198,13 @@ class Finish(part_ingest.Ingest):
             root = unit.root
             if not root.metadata_pending:
                 continue
+            self.lock()
             root.sidecar_entry_id = unit.sidecar_id
             if unit.sidecar_id is None:
                 root.metadata_pending = False
                 self.commit()
             else:
+                self.opened.flush()
                 self.fill(root)
 
     def canonicalise(self, canon: Canon) -> None:
@@ -210,7 +234,8 @@ class Finish(part_ingest.Ingest):
         for unit in canon.trashed:
             if unit.root.outcome in UNDECIDED:
                 unit.root.outcome, unit.root.done_at = part_ingest.SKIPPED, self.now
-        still = [unit.root.id for unit in canon.units if unit.root.outcome in part_ingest.HELD or needs_decision(unit.root)]
+        still = [entry.id for entry in entries_of(self.opened, self.export) if entry.kind == "media" and entry.copy_of_id is None
+                 and entry.sha1 is not None and entry.outcome in UNDECIDED]
         if still:
             self.commit()
             raise run.StageFailed(f"{len(still)} held items could not be decided")
