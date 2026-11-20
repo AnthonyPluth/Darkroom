@@ -46,6 +46,8 @@ PIXEL_FOLDER_MODE = 0o755
 SHARED_FOLDER_MODE = 0o2770
 INBOX = "_inbox"
 SCRATCH = "scratch"
+HELD_STORE = "held"
+HELD_FILE = re.compile(r"^[0-9]{1,18}(?:\.[a-z0-9]{1,10})?$")
 SCRATCH_FILE = re.compile(r"^(?:[0-9]{1,18}(?:\.[a-z0-9]{1,10})?|\.write-once-[0-9a-f]{16})$")
 BROWSER = "_browser"
 OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
@@ -197,6 +199,9 @@ class Photos:
 
     def scratch(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), self.name_part(export), SCRATCH)
+
+    def held(self, person: str, export: str) -> Path:
+        return self.in_the_inbox(self.person_part(person), HELD_STORE, self.name_part(export))
 
     def review_hold(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), "review", self.name_part(export))
@@ -1773,6 +1778,18 @@ def write_inbox_once(photos: Photos, destination: Path, chunks: Iterable[bytes],
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temp, dir_fd=folder)
     return digest.hexdigest()
+
+
+def write_held(photos: Photos, person: str, export: str, name: str, chunks: Iterable[bytes], sha1: str) -> Path:
+    if not HELD_FILE.match(name):
+        raise OutsideRoot("not a held file name")
+    target = photos.held(person, export) / name
+    try:
+        write_inbox_once(photos, target, chunks, sha1)
+    except AlreadyExists:
+        if inbox_sha1(photos, target) != sha1:
+            raise
+    return target
 
 
 def scratch_file(photos: Photos, person: str, export: str, name: str) -> Path:

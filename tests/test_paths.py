@@ -1,5 +1,6 @@
 import contextlib
 import json
+import hashlib
 import os
 import tempfile
 import unittest
@@ -1164,6 +1165,101 @@ class InboxLinkTests(unittest.TestCase):
         with paths.inbox_folder(self.photos, hold.parent, create=False) as folder, self.assertRaises(paths.AlreadyExists):
             paths.copy_entry("a.jpg", "c.jpg", folder)
         self.assertEqual(self.kept.read_bytes(), b"an original")
+
+
+    def held_folder(self):
+        return self.root / "_inbox/jo/held/export-1"
+
+    def written(self, name="12.jpg", data=b"held bytes"):
+        return paths.write_held(self.photos, "jo", "export-1", name, [data[:4], data[4:]], hashlib.sha1(data, usedforsecurity=False).hexdigest())
+
+    def everything_under_the_share(self):
+        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
+
+    def test_the_held_store_is_the_exports_folder_in_the_persons_inbox(self):
+        self.assertEqual(self.photos.held("jo", "export-1"), self.held_folder())
+        for person, export in (("../jo", "export-1"), ("jo", "../export-1"), ("jo", ".hidden"), ("jo", "a/b"), ("", "export-1"), ("jo", "")):
+            with self.subTest(person=person, export=export), self.assertRaises(paths.OutsideRoot):
+                self.photos.held(person, export)
+
+    def test_a_held_file_is_written_once_with_its_sha1_checked(self):
+        before = self.everything_under_the_share()
+        written = self.written()
+        self.assertEqual((written, written.read_bytes()), (self.held_folder() / "12.jpg", b"held bytes"))
+        self.assertEqual(self.everything_under_the_share(), sorted([*before, "_inbox/jo/held/export-1/12.jpg"]))
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+
+    def test_an_identical_file_already_held_is_adopted_and_a_different_one_is_never_replaced(self):
+        first = self.written()
+        before = first.stat()
+        self.assertEqual(self.written(), first)
+        self.assertEqual((first.read_bytes(), first.stat().st_ino, first.stat().st_mtime_ns), (b"held bytes", before.st_ino, before.st_mtime_ns))
+        self.assertEqual([p.name for p in first.parent.iterdir()], ["12.jpg"])
+        other = b"other bytes"
+        with self.assertRaises(paths.AlreadyExists):
+            paths.write_held(self.photos, "jo", "export-1", "12.jpg", [other], hashlib.sha1(other, usedforsecurity=False).hexdigest())
+        self.assertEqual(first.read_bytes(), b"held bytes")
+        self.assertEqual([p.name for p in first.parent.iterdir()], ["12.jpg"])
+
+    def test_a_sha1_mismatch_writes_nothing(self):
+        with self.assertRaises(paths.ChangedWhileCopied):
+            paths.write_held(self.photos, "jo", "export-1", "12.jpg", [b"held bytes"], "0" * 40)
+        self.assertEqual(list(self.held_folder().iterdir()) if self.held_folder().exists() else [], [])
+
+    def test_a_held_file_that_is_a_link_or_another_kind_of_file_is_not_adopted(self):
+        self.held_folder().mkdir(parents=True)
+        digest = hashlib.sha1(b"an original", usedforsecurity=False).hexdigest()
+        (self.held_folder() / "12.jpg").symlink_to(self.kept)
+        with self.assertRaises(paths.LinkRefused):
+            paths.write_held(self.photos, "jo", "export-1", "12.jpg", [b"an original"], digest)
+        os.link(self.kept, self.held_folder() / "13.jpg")
+        with self.assertRaises(paths.LinkRefused):
+            paths.write_held(self.photos, "jo", "export-1", "13.jpg", [b"an original"], digest)
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+        self.assertEqual(self.kept.read_bytes(), b"an original")
+
+    def test_a_link_anywhere_on_the_way_to_the_held_store_is_refused(self):
+        digest = hashlib.sha1(b"held bytes", usedforsecurity=False).hexdigest()
+        for link in (self.root / "_inbox/jo/held", self.root / "_inbox/jo/held/export-1"):
+            with self.subTest(link=link):
+                if link.name == "export-1":
+                    (self.root / "_inbox/jo/held").mkdir()
+                link.symlink_to(self.originals, target_is_directory=True)
+                with self.assertRaises(paths.LinkRefused):
+                    paths.write_held(self.photos, "jo", "export-1", "12.jpg", [b"held bytes"], digest)
+                link.unlink()
+                if link.name == "export-1":
+                    (self.root / "_inbox/jo/held").rmdir()
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
+
+    def test_a_link_in_the_inbox_above_the_held_store_is_refused(self):
+        digest = hashlib.sha1(b"held bytes", usedforsecurity=False).hexdigest()
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "_inbox/jo").rename(self.root / "_inbox/jo-real")
+        (self.root / "_inbox/jo").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(paths.LinkRefused):
+            paths.write_held(self.photos, "jo", "export-1", "12.jpg", [b"held bytes"], digest)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_only_a_held_file_name_inside_the_export_folder_is_written(self):
+        digest = hashlib.sha1(b"held bytes", usedforsecurity=False).hexdigest()
+        before = self.everything_under_the_share()
+        for name in ("../12.jpg", "a/12.jpg", "/etc/12.jpg", ".12.jpg", "..", ".", "", "IMG_1.JPG", "12.jpg.json", "12.", "12.JPG", ".write-once-0123456789abcdef"):
+            with self.subTest(name=name), self.assertRaises(paths.OutsideRoot):
+                paths.write_held(self.photos, "jo", "export-1", name, [b"held bytes"], digest)
+        for person, export in (("../jo", "export-1"), ("jo", "../export-1"), ("jo", "a/b"), ("jo", ".")):
+            with self.subTest(person=person, export=export), self.assertRaises(paths.OutsideRoot):
+                paths.write_held(self.photos, person, export, "12.jpg", [b"held bytes"], digest)
+        self.assertEqual(self.everything_under_the_share(), before)
+        self.assertFalse(self.held_folder().exists())
+
+    def test_a_person_without_an_inbox_folder_gets_the_held_store_made_only_inside_their_own_inbox(self):
+        self.photos.ensure_person_tree("al")
+        digest = hashlib.sha1(b"held bytes", usedforsecurity=False).hexdigest()
+        written = paths.write_held(self.photos, "al", "export-9", "5.mov", [b"held bytes"], digest)
+        self.assertEqual(written, self.root / "_inbox/al/held/export-9/5.mov")
+        self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
 
 
 class BrowserStateTests(unittest.TestCase):
