@@ -329,6 +329,20 @@ class SidecarTimeTests(unittest.TestCase):
         found, row, _ = self.wall_clock_shot("2017-07-13T22:40:00", (40.7, -74.0))
         self.assertEqual((found["ready"], row.outcome), ([], "waiting_export"))
 
+    def test_a_wall_clock_s_offset_derived_from_the_sidecar_gives_its_utc_time(self):
+        entry = TakeoutEntry(name=entry_name("IMG_0073.JPG"), captured_utc=None, captured_local="2017-07-14T04:40:01")
+        text = json.dumps({"photoTakenTime": {"timestamp": str(int(PHONE_SECOND))}})
+        self.assertIn((PHONE_SECOND + 1, "2017-07-14T04:40:01"), part_pairing.sidecar_moments(entry, text))
+
+    def test_a_phone_shot_only_the_offset_derived_utc_time_matches_is_held_for_the_export(self):
+        world = PairingWorld(self)
+        world.builder.photo("IMG_0074.JPG", taken=int(PHONE_SECOND), gps=None)
+        world.build()
+        name = entry_name("IMG_0074.JPG")
+        world.fingerprint(name, captured_utc=None, captured_local="2017-07-14T04:40:01", make="Apple", model="iPhone 12", width=32, height=24)
+        found = world.pair(1, index_of(shot(1, sha1="1" * 40, captured_utc=PHONE_SECOND + 1)))
+        self.assertEqual((found["ready"], world.row(name).outcome), ([], "waiting_export"))
+
     def test_a_sidecar_that_does_not_parse_adds_no_time(self):
         entry = TakeoutEntry(name=entry_name("IMG_0071.JPG"), captured_utc=PHONE_SECOND, captured_local=None)
         self.assertEqual((part_pairing.sidecar_moments(entry, "not json"), part_pairing.sidecar_moments(entry, None)), ([], []))
