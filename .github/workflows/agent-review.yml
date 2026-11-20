@@ -33,7 +33,7 @@ jobs:
       pull-requests: write     # the comment
       statuses: write          # the "Second review" status
       actions: write           # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@1ba44a8f0b92f5205e9be1501979b6ac9cd9377e   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@bf386593387dcbb56303dcb11f16c93dcc59a5d9   # v7.1.0
     with:
       generated: |
         docs/openapi.json
