@@ -330,6 +330,50 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertEqual(tiers["Photos from 2019/IMG_4000-edited.JPG"], 3)
         self.assertEqual(world.reasons(), world.whole_export(scenario, parts=2).reasons())
 
+    def test_a_decided_item_whose_late_sidecar_gives_it_a_time_is_a_rival_of_a_held_candidate(self):
+        world = FinishWorld(self)
+
+        def scenario(each):
+            def build(builder):
+                camera = {"make": "Apple", "model": "iPhone 11"}
+                undated = each.scratch_jpeg("q.jpg", colour=(5, 5, 5), **camera)
+                each.original("jo", "IMG_Q.JPG", undated)
+                builder.add("IMG_Q.JPG", undated, "Photos from 2019", 0, "json", 1, None, "", taken=1562221815)
+                moment = {"taken": "2019:07:04 08:30:15", "offset": "+02:00", **camera}
+                each.original("jo", "IMG_X.JPG", each.scratch_jpeg("x.jpg", colour=(10, 120, 30), **moment))
+                builder.photo("IMG_C.JPG", data=each.scratch_jpeg("c.jpg", colour=(12, 118, 33), **moment), gps=None, taken=1562221815, part=0)
+
+            return build
+
+        export = world.create(scenario(world), parts=2)
+        world.ingest_all(export, (1, 2))
+        self.assertEqual(world.entry("Photos from 2019/IMG_C.JPG").outcome, "waiting_export")
+        world.finish(export)
+        tiers = {name: tier for name, tier, _ in world.reasons()}
+        self.assertEqual(tiers["Photos from 2019/IMG_C.JPG"], 4)
+        self.assertEqual(world.reasons(), world.whole_export(scenario, parts=2).reasons())
+
+    def test_a_failed_remeasurement_sweeps_its_scratch_copies(self):
+        world = FinishWorld(self)
+
+        def build(builder):
+            for number in range(3):
+                builder.photo(f"IMG_86{number}.JPG", form=None, part=0)
+
+        export = world.create(build, parts=2)
+        world.ingest_all(export, (1, 2))
+
+        def broken(paths):
+            raise TimeoutError("exiftool is slow")
+
+        found = world.opened.get(Export, export.id)
+        tools = run.Tools(read=broken, notifier=world.recorder)
+        finished = finish_export.finish(world.opened, world.settings, found, NOW, tools)
+        self.assertEqual(finished.status, "failed")
+        self.assertEqual(world.opened.get(Export, export.id).status, "failed")
+        scratch = world.photos.scratch("jo", f"export-{export.id}")
+        self.assertEqual(list(scratch.glob("*")) if scratch.exists() else [], [])
+
     def test_identical_bytes_under_several_names_in_one_folder_leave_no_root_or_slot_behind(self):
         world = FinishWorld(self)
 

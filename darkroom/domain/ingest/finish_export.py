@@ -113,6 +113,7 @@ class Finish(part_ingest.Ingest):
         super().__init__(opened, settings, photos, export, part, person, now, tools, stack)
         self.row = row
         self.before = {int(each) for each in json.loads(row.changed_people or "[]")}
+        stack.callback(self.release_scratch)
 
     def commit(self) -> None:
         if COMMIT_HOOK is not None:
@@ -127,13 +128,29 @@ class Finish(part_ingest.Ingest):
         for unit in held:
             unit.root.sidecar_entry_id = unit.sidecar_id
         self.commit()
-        by_id = {unit.root.id: unit for unit in held}
-        for chunk in self.in_batches([unit.root for unit in held]):
+        self.measure_in_batches(held, restore=False)
+
+    def measure_in_batches(self, units: Sequence[Unit], restore: bool) -> None:
+        by_id = {unit.root.id: unit for unit in units}
+        kept = {unit.root.id: (unit.root.outcome, unit.root.done_at, unit.root.metadata_pending) for unit in units}
+        try:
+            for chunk in self.in_batches([unit.root for unit in units]):
+                self.release_scratch()
+                self.measure([part_ingest.Target(entry, by_id[entry.id].sidecar_id) for entry in chunk])
+                if restore:
+                    for entry in chunk:
+                        entry.outcome, entry.done_at, entry.metadata_pending = kept[entry.id]
+                self.commit()
+        finally:
+            self.close_archive()
             self.release_scratch()
-            self.measure([part_ingest.Target(entry, by_id[entry.id].sidecar_id) for entry in chunk])
-            self.commit()
-        self.close_archive()
-        self.release_scratch()
+
+    def refresh_peers(self, canon: Canon, held: Sequence[Unit]) -> None:
+        waiting = {unit.root.id for unit in held}
+        stale = [unit for unit in canon.units if unit.root.id not in waiting and unit.root.decision_id is not None and unit.sidecar_id is not None
+                 and unit.root.sha1 is not None and unit.root.captured_utc is None]
+        if stale:
+            self.measure_in_batches(stale, restore=True)
 
     def candidate(self, unit: Unit) -> dedupe.TakeoutCandidate:
         edited_of = None if unit.item.edited_of is None else str(unit.item.edited_of)
@@ -181,6 +198,7 @@ class Finish(part_ingest.Ingest):
         if not held:
             return
         self.remeasure(held)
+        self.refresh_peers(canon, held)
         judged = self.judge(canon, held)
         by_id = {unit.root.id: unit for unit in held}
         for chunk in self.in_batches([unit.root for unit in held]):
