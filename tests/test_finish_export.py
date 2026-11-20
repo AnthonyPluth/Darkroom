@@ -396,6 +396,34 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertEqual(len(world.google_only()), len(twin.google_only()))
 
 
+class UnreadableSidecarTests(unittest.TestCase):
+    def build(self, builder):
+        broken = builder.photo("IMG_9101.JPG", part=0, sidecar_part=1)
+        broken.sidecar_data = b"{not json at all"
+        replaced = builder.photo("IMG_9102.JPG", part=1)
+        replaced.sidecar_data = b'{"title": "x\xff", "photoTakenTime": {"timestamp": "1500000000"}}'
+        builder.photo("IMG_9103.JPG", part=0, sidecar_part=1)
+        builder.photo("IMG_9104.JPG", part=1)
+
+    def counts(self, world):
+        row = world.opened.execute(select(ImportRun)).scalar_one()
+        return row.sidecars_unreadable, row.sidecars_repaired
+
+    def test_unreadable_and_repaired_sidecars_are_counted_as_whole_export_ingest_counts_them_and_named_nowhere(self):
+        world = FinishWorld(self)
+        export = world.create(self.build, parts=2)
+        world.ingest_all(export, (1, 2))
+        with no_leaks(self, "IMG_9101.JPG", "IMG_9102.JPG"):
+            world.finish(export)
+        twin = world.whole_export(lambda each: self.build, parts=2)
+        self.assertEqual(self.counts(world), self.counts(twin))
+        self.assertEqual(self.counts(world), (1, 1))
+        done = world.import_done()
+        self.assertIn(", 1 sidecar could not be read, so imported without Google metadata, 1 sidecar read with characters replaced", done)
+        self.assertNotIn("IMG_91", done)
+        self.assertEqual(world.run_row()[:14], twin.run_row()[:14])
+
+
 class CrashTests(unittest.TestCase):
     def ready(self):
         world = FinishWorld(self)

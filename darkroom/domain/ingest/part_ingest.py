@@ -209,6 +209,20 @@ class Ingest:
     def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
         return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
 
+    def sidecar_state(self, entry: TakeoutEntry) -> run.SidecarState:
+        archive, infos = self.archive_of(entry.part_number)
+        info = infos.get(entry.name)
+        if info is None:
+            return "unreadable"
+        try:
+            with archive.open(info) as handle:
+                decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+        except part_reader.READ_ERRORS:
+            return "unreadable"
+        if decoded is None or sidecar.parse(decoded.text) is None:
+            return "unreadable"
+        return "repaired" if decoded.repaired else "read"
+
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
         if found is None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,6 +31,7 @@ class Unit:
     item: pairing.TakeoutItem
     root: TakeoutEntry
     sidecar_id: int | None
+    sidecar_entry: TakeoutEntry | None = None
 
     @property
     def path(self) -> str:
@@ -82,7 +84,7 @@ def canonical(opened: Session, export: Export) -> Canon:
                 taken.add(found.id)
         if found is not None:
             chosen = None if item.sidecar is None or item.sidecar_from_still else owners.get(item.sidecar)
-            (trashed if item.special == pairing.TRASHED else units).append(Unit(item, found, chosen))
+            (trashed if item.special == pairing.TRASHED else units).append(Unit(item, found, chosen, None if item.sidecar is None else by_path.get(item.sidecar)))
     for row in roots:
         if row.id not in taken:
             alone = pairing.TakeoutItem(Path(row.name), row.sha1 or "", (Path(row.name),), None)
@@ -251,6 +253,18 @@ class Finish(part_ingest.Ingest):
         self.export.stage = self.row.stage = "deduped"
         self.commit()
 
+    def sidecar_counts(self, canon: Canon) -> tuple[int, int]:
+        paired = sorted((unit.sidecar_entry for unit in canon.units
+                         if unit.sidecar_entry is not None and (unit.root.outcome != part_ingest.FAILED or unit.root.decision_id is not None)),
+                        key=lambda entry: (entry.part_number, entry.id))
+        states: Counter[str] = Counter()
+        try:
+            for entry in paired:
+                states[self.sidecar_state(entry)] += 1
+        finally:
+            self.close_archive()
+        return states["unreadable"], states["repaired"]
+
     def leave_out(self, canon: Canon) -> None:
         self.lock()
         for unit in canon.trashed:
@@ -269,7 +283,7 @@ class Finish(part_ingest.Ingest):
         self.row.repeated = sum(1 for unit in canon.units if unit.root.outcome == part_ingest.SKIPPED and unit.root.decision_id is None)
         self.row.not_imported = json.dumps(kinds, sort_keys=True)
         self.row.orphan_sidecars, self.row.unpaired_media = len(canon.report.orphan_sidecars), len(canon.report.unpaired_media)
-        self.row.sidecars_unreadable = self.row.sidecars_repaired = 0
+        self.row.sidecars_unreadable, self.row.sidecars_repaired = self.sidecar_counts(canon)
         self.tally()
         self.export.stage = self.row.stage = "placed"
         self.commit()
