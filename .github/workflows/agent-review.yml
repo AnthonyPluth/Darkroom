@@ -3,11 +3,9 @@ name: Agent review
 # Fleet's reusable review workflow (docs/agent-review.md there), here for the second review only. The owner's decision
 # (Nov 3, issue #76): Codex reviews every pull request, and the Claude review runs only for security-sensitive ones.
 # That is fleet's default since v2.0.0, so this caller passes no `first-review` (no "Agent review" status and no
-# comment). On a risky pull request (labelled safety-critical or security, or changing anything under .github/ or
-# .claude/ but a skill's reference documents (.claude/skills/<name>/references/**/*.md, fleet's default since v6.0.0,
-# which this caller takes by passing no second-review-always: the owner's decision of Nov 20, issue #476), the root
-# .mcp.json or the paths listed below, Darkroom's deletion-safety and trust boundaries, judged against
-# .github/agent-review/invariants.md)
+# comment). On a risky pull request (labelled safety-critical or security, or changing .github/**, .claude/** (a
+# skill's references/ documents included, see second-review-always below), the root .mcp.json or the paths listed
+# below, Darkroom's deletion-safety and trust boundaries, judged against .github/agent-review/invariants.md)
 # a fresh Claude Code session reads the change against main's AGENTS.md and .github/agent-review/context.md and sets
 # "Second review". A pull request that isn't risky gets a passing "Second review", which is the one status fleet's merge
 # gate requires by default (merge-gate.yml). To bring the Claude first review back on every pull request, pass
@@ -44,6 +42,15 @@ jobs:
         docs/feature-map.json
       budget-usd: ${{ vars.AGENT_REVIEW_BUDGET_USD || '3' }}
       max-turns: ${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}
+      # fleet 6.0.0's default leaves a skill's reference documents out (!.claude/skills/*/references/**/*.md), so a
+      # pull request changing only those, such as verify-darkroom's references, would get no second review. Darkroom
+      # keeps every .claude/ change risky with fleet's documented list for the old behaviour, which also counts the root
+      # .mcp.json (Darkroom has none). Taking fleet's default loosens the second review, so it is a later change that
+      # needs the owner's own comment on the issue it is linked to.
+      second-review-always: |
+        .github/**
+        .claude/**
+        .mcp.json
       second-review-paths: |
         darkroom/domain/dedupe.py
         darkroom/domain/eligibility.py
