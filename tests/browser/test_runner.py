@@ -52,14 +52,25 @@ class FakeBrowser:
             raise RuntimeError("no display")
         path.write_bytes(b"\x89PNG")
 
+    def bring_to_front(self):
+        self.fronted = getattr(self, "fronted", 0) + 1
+
     def close(self):
         if self.on_close is not None:
             self.on_close()
         self.closed = True
 
 
-def settings_for(photos, poll=0.01):
-    return config.Settings(TOKEN, photos, ":99", poll, "test-worker")
+def settings_for(photos, poll=0.01, workers=1):
+    return config.Settings(TOKEN, photos, ":99", poll, "test-worker", workers=workers)
+
+
+def until(condition, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting")
+        time.sleep(0.01)
 
 
 def client_of(fake, token=TOKEN):
@@ -398,6 +409,384 @@ class RunnerAgainstFakeDarkroom(unittest.TestCase):
         self.assertEqual(len(self.fake.bodies("failed")), 1)
 
 
+class ParallelRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDarkroom().start()
+        self.addCleanup(self.fake.stop)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.photos = Path(folder.name)
+        self.browsers = {}
+        self.lock = threading.Lock()
+        self.abandoned = threading.Event()
+        self.release = threading.Event()
+        self.addCleanup(self.release.set)
+        self.ran = []
+
+    def open_browser(self, profile_dir):
+        account = profile_dir.parent.name
+        browser = FakeBrowser()
+        with self.lock:
+            opened = [each for each in self.browsers.get(account, []) if not each.closed]
+            self.assertEqual(opened, [], "one profile is never opened twice at once")
+            self.browsers.setdefault(account, []).append(browser)
+        return browser
+
+    def opened(self, account):
+        with self.lock:
+            return list(self.browsers.get(account, []))
+
+    def blocks(self, ctx):
+        ctx.browser()
+        self.ran.append((ctx.kind, ctx.account))
+        while not self.release.wait(0.01):
+            ctx.check()
+        return {"ok": True}
+
+    def quick(self, ctx):
+        ctx.browser()
+        self.ran.append((ctx.kind, ctx.account))
+        return {"ok": True}
+
+    def make_runner(self, workers, registry=None):
+        registry = registry or {"download": self.blocks, "connect": self.quick, "status": self.quick}
+        return runner.Runner(settings_for(self.photos, workers=workers), client_of(self.fake), self.open_browser, registry, heartbeat_seconds=0.05,
+                             give_up_seconds=30.0, abandon=self.abandoned.set)
+
+    def start(self, worker):
+        thread = threading.Thread(target=worker.run_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            self.release.set()
+            worker.stop()
+            thread.join(10)
+
+        self.addCleanup(stop)
+        return thread
+
+    def reports(self, job_id):
+        return [action for path, _ in self.fake.calls if path.startswith(f"/internal/browser/jobs/{job_id}/") for action in [path.rsplit("/", 1)[-1]] if action in ("done", "failed")]
+
+    def test_a_second_accounts_job_starts_while_the_first_accounts_download_runs(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        self.fake.enqueue(2, kind="connect", account="2")
+        self.start(self.make_runner(workers=2))
+        until(lambda: self.reports(2) == ["done"])
+        self.assertEqual(self.reports(1), [], "the download is still running")
+        self.assertIn(("download", "1"), self.ran)
+        self.release.set()
+        until(lambda: self.reports(1) == ["done"])
+
+    def test_a_download_paused_for_space_holds_only_its_own_accounts_loop(self):
+        def paused(ctx):
+            ctx.browser()
+            self.ran.append((ctx.kind, ctx.account))
+            ctx.progress("paused for space")
+            while not self.release.wait(0.01):
+                ctx.sleep(0.01)
+                ctx.check()
+            return {"ok": True}
+
+        self.fake.enqueue(1, kind="download", account="1")
+        self.start(self.make_runner(workers=3, registry={"download": paused, "connect": self.quick, "status": self.quick}))
+        until(lambda: ("download", "1") in self.ran)
+        self.fake.enqueue(2, kind="status", account="2")
+        self.fake.enqueue(3, kind="download", account="3")
+        until(lambda: self.reports(2) == ["done"] and ("download", "3") in self.ran)
+        self.assertEqual(self.reports(1), [], "the paused download goes on waiting in its own loop")
+        self.release.set()
+        until(lambda: self.reports(1) == ["done"] and self.reports(3) == ["done"])
+
+    def test_a_queued_sign_in_starts_at_once_while_downloads_fill_every_other_lane(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        self.fake.enqueue(2, kind="download", account="2")
+        self.start(self.make_runner(workers=2))
+        until(lambda: ("download", "1") in self.ran)
+        self.fake.enqueue(3, kind="connect", account="3")
+        until(lambda: self.reports(3) == ["done"])
+        self.assertEqual([job["id"] for job in self.fake.queue], [2], "the second download waits for a lane that may take it")
+        lanes = {body.get("lane") for body in self.fake.bodies("claim")}
+        self.assertEqual(lanes, {None, "interactive"})
+        self.assertNotIn(("download", "2"), self.ran)
+        self.release.set()
+        until(lambda: self.reports(2) == ["done"])
+
+    def test_the_interactive_lane_takes_no_download(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        worker = self.make_runner(workers=2)
+        self.assertEqual(worker.lanes(), ["interactive", None])
+        self.assertFalse(worker.tick("interactive"))
+        self.assertEqual([job["id"] for job in self.fake.queue], [1])
+        self.assertEqual(self.fake.bodies("claim"), [{"worker": "test-worker", "lane": "interactive"}])
+        self.release.set()
+        self.assertTrue(worker.tick())
+        self.assertEqual(self.reports(1), ["done"])
+
+    def test_one_worker_takes_every_kind_on_its_one_loop_as_before(self):
+        worker = self.make_runner(workers=1)
+        self.assertEqual(worker.lanes(), [None])
+        self.assertEqual(self.make_runner(workers=3).lanes(), ["interactive", None, None])
+        self.release.set()
+        self.fake.enqueue(1, kind="download", account="1")
+        self.assertTrue(worker.tick())
+        self.assertEqual(self.fake.bodies("claim"), [{"worker": "test-worker"}])
+
+    def test_the_pool_runs_one_claim_loop_per_worker(self):
+        worker = self.make_runner(workers=3)
+        self.start(worker)
+        until(lambda: len(worker.threads) == 3 and all(thread.is_alive() for thread in worker.threads))
+        self.assertEqual(sorted(thread.name for thread in worker.threads), ["claims-0", "claims-1", "claims-2"])
+
+    def test_never_two_jobs_for_one_account_even_if_darkroom_hands_out_a_second(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        self.start(self.make_runner(workers=2))
+        until(lambda: ("download", "1") in self.ran)
+        with mock.patch.object(runner, "TAKE_SECONDS", 0.05):
+            self.fake.enqueue(2, kind="connect", account="1")
+            until(lambda: self.reports(2) == ["failed"])
+        self.assertEqual(self.fake.bodies("failed"), [{"message": runner.IN_USE_MESSAGE}])
+        self.assertEqual(self.ran, [("download", "1")], "the refused job ran nothing and opened no second browser")
+        self.assertEqual(len(self.opened("1")), 1)
+        self.release.set()
+        until(lambda: self.reports(1) == ["done"])
+        self.fake.enqueue(3, kind="connect", account="1")
+        until(lambda: self.reports(3) == ["done"])
+        self.assertEqual(self.ran[-1], ("connect", "1"), "once its job has ended the account's next job runs")
+
+    def test_an_account_freed_just_after_the_claim_is_waited_for_not_refused(self):
+        worker = self.make_runner(workers=2)
+        self.assertTrue(worker.take("1"))
+        threading.Timer(0.1, worker.give_back, ("1",)).start()
+        self.fake.enqueue(1, kind="connect", account="1")
+        self.assertTrue(worker.tick())
+        self.assertEqual(self.reports(1), ["done"])
+
+    def test_a_refusal_that_cannot_be_reported_is_logged_not_raised(self):
+        worker = self.make_runner(workers=2)
+        self.assertTrue(worker.take("1"))
+        self.fake.enqueue(1, kind="connect", account="1")
+        with mock.patch.object(runner, "TAKE_SECONDS", 0.01), mock.patch.object(worker.client, "failed", side_effect=Unreachable("x")), contextlib.redirect_stderr(io.StringIO()) as logged:
+            self.assertFalse(worker.tick())
+        self.assertIn("could not report the refused job", logged.getvalue())
+        self.assertEqual(self.ran, [])
+
+    def test_a_lost_lease_cancels_only_its_own_job(self):
+        self.fake.lost.add(1)
+        self.fake.enqueue(1, kind="download", account="1")
+        self.fake.enqueue(2, kind="download", account="2")
+        self.start(self.make_runner(workers=3))
+        until(lambda: len(self.opened("1")) == 1 and self.opened("1")[0].closed)
+        self.assertEqual(self.reports(1), [])
+        self.assertIn(("download", "2"), self.ran)
+        self.assertFalse(self.opened("2")[0].closed, "the other account's job keeps running")
+        self.release.set()
+        until(lambda: self.reports(2) == ["done"])
+
+    def test_the_browser_is_closed_before_done_or_failed_is_reported_for_two_jobs_at_once(self):
+        both = threading.Barrier(2, timeout=10)
+        seen = {}
+
+        def opens(ctx):
+            ctx.browser()
+            both.wait()
+            return {"ok": True}
+
+        def explodes(ctx):
+            ctx.browser()
+            both.wait()
+            raise TimeoutError("x")
+
+        worker = self.make_runner(workers=2, registry={"connect": opens, "status": explodes})
+        for report in ("done", "failed"):
+            original = getattr(worker.client, report)
+
+            def spy(job_id, *args, original=original, report=report):
+                seen[report] = [browser.closed for browser in self.opened(str(job_id))]
+                return original(job_id, *args)
+
+            setattr(worker.client, report, spy)
+        self.fake.enqueue(1, kind="connect", account="1")
+        self.fake.enqueue(2, kind="status", account="2")
+        self.start(worker)
+        until(lambda: len(seen) == 2)
+        self.assertEqual(seen, {"done": [True], "failed": [True]})
+
+    def test_stopping_with_two_jobs_running_ends_every_thread_and_closes_both_browsers(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        self.fake.enqueue(2, kind="download", account="2")
+        worker = self.make_runner(workers=3)
+        thread = self.start(worker)
+        until(lambda: len(self.ran) == 2)
+        worker.stop()
+        self.assertFalse(thread.is_alive() and thread.join(5))
+        self.assertFalse(any(each.is_alive() for each in worker.threads))
+        self.assertTrue(all(browser.closed for account in ("1", "2") for browser in self.opened(account)))
+        self.assertEqual(self.reports(1) + self.reports(2), [], "a stopped job is not reported; its lease runs out as when the worker is interrupted")
+        self.assertFalse(self.abandoned.is_set())
+
+    def test_a_claim_loop_that_fails_stops_every_job_and_the_worker(self):
+        self.fake.enqueue(1, kind="download", account="1")
+        worker = self.make_runner(workers=2)
+        original = worker.client.claim
+
+        def claim(name, lane=None):
+            if lane is None:
+                until(lambda: ("status", "1") in self.ran)
+                raise RuntimeError("an answer the worker cannot read")
+            return original(name, lane) if self.fake.queue else None
+
+        worker.client.claim = claim
+        self.fake.queue[0]["kind"] = "status"
+        worker.registry["status"] = self.blocks
+        with contextlib.redirect_stderr(io.StringIO()) as logged, self.assertRaisesRegex(RuntimeError, "cannot read"):
+            worker.run_forever()
+        self.assertIn("a claim loop failed", logged.getvalue())
+        self.assertTrue(all(browser.closed for browser in self.opened("1")))
+        self.assertFalse(any(each.is_alive() for each in worker.threads))
+
+    def test_every_job_shares_the_one_client_and_the_one_screen(self):
+        worker = self.make_runner(workers=3)
+        first = worker.context_for({"id": 1, "kind": "connect", "account": "1", "payload": {}})
+        second = worker.context_for({"id": 2, "kind": "connect", "account": "2", "payload": {}})
+        self.assertIs(first.screen, second.screen)
+        self.assertIs(first.reporter, second.reporter)
+        self.assertIs(first.reporter, worker.client)
+
+
+class ScreenTests(unittest.TestCase):
+    def context(self, job_id, screen, browser=None):
+        browser = browser or FakeBrowser()
+        reporter = mock.Mock()
+        return context.JobContext(job_id, "download", str(job_id), {}, Path("/photos-unused"), reporter, lambda profile: browser, screen=screen), browser
+
+    def fronted(self, browser):
+        return getattr(browser, "fronted", 0)
+
+    def test_the_longest_waiting_job_is_in_front(self):
+        screen = context.Screen()
+        first, first_browser = self.context(1, screen)
+        second, second_browser = self.context(2, screen)
+        first.browser()
+        second.browser()
+        first.wait_for_user("sign_in")
+        self.assertEqual(self.fronted(first_browser), 1, "a job that starts waiting with nobody else waiting comes to the front at once")
+        second.wait_for_user("verify")
+        self.assertEqual(self.fronted(second_browser), 0, "a job that starts waiting later stays behind")
+        second.check()
+        self.assertEqual(self.fronted(second_browser), 0)
+        first.check()
+        self.assertEqual(self.fronted(first_browser), 2, "the longest-waiting job raises itself again after another window changed")
+        first.check()
+        self.assertEqual(self.fronted(first_browser), 2, "and only once per change")
+        first.progress("signed in")
+        second.check()
+        self.assertEqual(self.fronted(second_browser), 1, "once the first job resumes, the next longest-waiting comes to the front")
+        self.assertEqual([call.args for call in first.reporter.on_screen.call_args_list], [(1,), (1,)], "each raise tells Darkroom which job is on screen")
+        third, third_browser = self.context(3, screen)
+        third.browser()
+        second.check()
+        self.assertEqual(self.fronted(second_browser), 2, "a window opened over the waiting one is covered again")
+        self.assertEqual(self.fronted(third_browser), 0)
+        second.close_browser()
+        third.wait_for_user("sign_in")
+        self.assertEqual(self.fronted(third_browser), 1, "a job that ended no longer holds the front")
+
+    def test_a_job_that_waits_again_for_another_reason_keeps_its_place(self):
+        screen = context.Screen()
+        first, _ = self.context(1, screen)
+        second, second_browser = self.context(2, screen)
+        first.browser()
+        second.browser()
+        first.wait_for_user("sign_in")
+        second.wait_for_user("sign_in")
+        first.wait_for_user("wrong_account")
+        second.check()
+        self.assertEqual(self.fronted(second_browser), 0)
+
+    def test_a_job_alone_comes_to_the_front_when_it_starts_waiting(self):
+        ctx, browser = self.context(1, context.Screen())
+        ctx.wait_for_user("sign_in")
+        self.assertEqual(self.fronted(browser), 0, "no window is open yet")
+        ctx.browser()
+        ctx.check()
+        self.assertEqual(self.fronted(browser), 1)
+        alone = context.JobContext(5, "connect", "5", {}, Path("/photos-unused"), mock.Mock(), lambda profile: browser)
+        alone.browser()
+        alone.wait_for_user("verify")
+        self.assertEqual(self.fronted(browser), 2)
+
+    def test_a_window_on_screen_that_cannot_be_reported_is_logged_and_the_job_goes_on(self):
+        ctx, browser = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = Unreachable("ConnectionRefusedError")
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()) as logged:
+            ctx.wait_for_user("sign_in")
+        self.assertEqual(self.fronted(browser), 1)
+        self.assertIn("could not tell darkroom which window is on screen", logged.getvalue())
+        ctx.reporter.on_screen.side_effect = LeaseLost(409, "this job is no longer running")
+        ctx.progress("signed in")
+        ctx.wait_for_user("verify")
+        self.assertEqual(self.fronted(browser), 2)
+
+    def test_a_third_jobs_window_opening_over_the_front_job_is_covered_again_and_reported_again(self):
+        screen = context.Screen()
+        front, front_browser = self.context(1, screen)
+        behind, _ = self.context(2, screen)
+        front.browser()
+        behind.browser()
+        front.wait_for_user("sign_in")
+        behind.wait_for_user("sign_in")
+        front.check()
+        reported = len(front.reporter.on_screen.call_args_list)
+        third, third_browser = self.context(3, screen)
+        third.browser()
+        front.check()
+        self.assertEqual(self.fronted(third_browser), 0)
+        self.assertEqual(self.fronted(front_browser), 3, "the front job raises itself over the new window")
+        self.assertEqual(len(front.reporter.on_screen.call_args_list), reported + 1, "and tells Darkroom again that its window is the one on screen")
+        self.assertEqual(behind.reporter.on_screen.call_args_list, [])
+
+    def test_a_failed_on_screen_report_is_retried_on_the_next_check_without_raising_the_window_again(self):
+        ctx, browser = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = [Unreachable("ConnectionRefusedError"), None]
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            ctx.wait_for_user("sign_in")
+        self.assertEqual((self.fronted(browser), ctx.reporter.on_screen.call_count), (1, 1))
+        ctx.check()
+        self.assertEqual((self.fronted(browser), ctx.reporter.on_screen.call_count), (1, 2))
+        ctx.check()
+        self.assertEqual(ctx.reporter.on_screen.call_count, 2, "once told, it is not told again until the screen changes")
+
+    def test_a_job_darkroom_no_longer_runs_is_not_reported_again(self):
+        ctx, _ = self.context(1, context.Screen())
+        ctx.reporter.on_screen.side_effect = LeaseLost(409, "this job is no longer running")
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            ctx.wait_for_user("sign_in")
+        ctx.check()
+        self.assertEqual(ctx.reporter.on_screen.call_count, 1)
+
+    def test_the_worker_reports_the_window_on_screen_to_darkroom(self):
+        fake = FakeDarkroom().start()
+        self.addCleanup(fake.stop)
+        client_of(fake).on_screen(4)
+        self.assertEqual(fake.calls, [("/internal/browser/jobs/4/on-screen", {})])
+
+    def test_a_window_that_cannot_come_to_the_front_is_logged_and_the_job_goes_on(self):
+        class Stuck(FakeBrowser):
+            def bring_to_front(self):
+                raise RuntimeError("Target page, context or browser has been closed")
+
+        ctx, _ = self.context(1, context.Screen(), Stuck())
+        ctx.browser()
+        with contextlib.redirect_stderr(io.StringIO()) as logged:
+            ctx.wait_for_user("sign_in")
+        self.assertIn("could not bring the browser window to the front", logged.getvalue())
+        self.assertIn("RuntimeError", logged.getvalue())
+
+
 class OnlyTheAppSocketTests(unittest.TestCase):
     def private_folder(self):
         folder = tempfile.TemporaryDirectory()
@@ -562,6 +951,25 @@ class ConfigTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"DARKROOM_PORT": "8123", "DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "POLL_SECONDS": "5", "WORKER_NAME": "w1"}, clear=True):
             loaded = config.load()
         self.assertEqual((loaded.token, str(loaded.photos_root), loaded.display, loaded.poll_seconds, loaded.worker_name), (TOKEN, "/p", ":99", 5.0, "w1"))
+
+    def test_browser_workers_defaults_to_three_and_is_read_from_the_environment(self):
+        from unittest import mock
+
+        with mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p"}, clear=True):
+            self.assertEqual(config.load().workers, 3)
+        for raw, read in (("1", 1), (" 5 ", 5), ("8", 8), ("0", 0), ("9", 9), ("two", 0), ("-1", 0), ("2.5", 0), ("", 3)):
+            with self.subTest(raw=raw), mock.patch.dict("os.environ", {"DARKROOM_BROWSER_TOKEN_FD": str(handed(TOKEN)), "PHOTOS_ROOT": "/p", "BROWSER_WORKERS": raw}, clear=True):
+                self.assertEqual(config.load().workers, read)
+
+    def test_browser_workers_must_be_between_one_and_the_most(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for workers in (1, 3, config.MOST_WORKERS):
+                with self.subTest(workers=workers):
+                    self.assertEqual(config.problems(config.Settings(TOKEN, Path(folder), ":99", 15.0, "w", workers=workers)), [])
+            for workers in (0, -1, config.MOST_WORKERS + 1):
+                with self.subTest(workers=workers):
+                    self.assertEqual(config.problems(config.Settings(TOKEN, Path(folder), ":99", 15.0, "w", workers=workers)),
+                                     [f"BROWSER_WORKERS must be a whole number from 1 to {config.MOST_WORKERS}"])
 
     def test_a_separate_browser_root_is_read_and_must_be_absolute(self):
         from unittest import mock

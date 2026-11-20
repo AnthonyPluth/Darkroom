@@ -98,6 +98,65 @@ class DownloadCase(unittest.TestCase):
             return [(json.loads(job.payload)["export_id"], job.status) for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "download").order_by(BrowserJob.id)).scalars()]
 
 
+GIB = 1 << 30
+
+
+class SpaceAcrossJobsTests(DownloadCase):
+    def other_download(self, parts, done=0):
+        with db.session(self.engine) as opened:
+            person = add_person(opened, "sam")
+            account = GoogleAccount(email="sam.takeout@example.test", default_person_id=person, created=1.0, session_state="ok", schedule_created=NOW - DAY,
+                                    schedule_end=NOW + 365 * DAY)
+            opened.add(account)
+            opened.flush()
+            exports.reconcile(opened, account, [listed(google_id="g-2", parts=parts)], NOW)
+        job = self.claim()
+        for number, _ in parts:
+            self.assertTrue(self.attempt(job, number)["allowed"])
+            self.call(downloads.progress, job, number, done, NOW)
+        return job
+
+    def free(self, size):
+        return mock.patch.object(Photos, "free_bytes", return_value=size)
+
+    def test_a_start_is_paused_while_parts_downloading_in_other_jobs_would_take_the_room(self):
+        mine = self.claim()
+        with mock.patch.object(downloads, "MIN_FREE_BYTES", 0):
+            self.other_download(((1, 10 * GIB),), done=5 * GIB)
+            with self.free(12 * GIB):
+                self.assertTrue(self.attempt(mine, 1)["allowed"], "5 GiB still to come elsewhere, 4 MB here: there is room")
+            self.fail_part(mine, 1, "interrupted")
+            with self.free(5 * GIB + 4 * MB):
+                reply = self.attempt(mine, 1)
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (False, False, True))
+        self.assertEqual(self.part(1)[:3], ("pending", 1, 1), "a pause spends no attempt and none of Google's downloads")
+
+    def test_above_the_floor_a_start_is_still_paused_when_other_jobs_have_more_to_come_than_is_free(self):
+        mine = self.claim()
+        self.other_download(((1, 200 * 10**9), (2, 200 * 10**9)), done=40 * 10**9)
+        with self.free(310 * 10**9):
+            reply = self.attempt(mine, 1)
+        self.assertEqual((reply["allowed"], reply["paused_for_space"]), (False, True))
+        with self.free(330 * 10**9):
+            self.assertTrue(self.attempt(mine, 1)["allowed"], "320 GB still to come, 330 GB free: room for this part with 1 GiB to spare")
+
+    def test_a_part_that_finished_or_failed_elsewhere_no_longer_holds_room(self):
+        mine = self.claim()
+        other = self.other_download(((1, 400 * 10**9),))
+        with self.free(301 * 10**9):
+            self.assertTrue(self.attempt(mine, 1)["paused_for_space"])
+            self.call(downloads.part_failed, other, 1, "interrupted", NOW)
+            self.assertTrue(self.attempt(mine, 1)["allowed"])
+
+    def test_a_job_alone_keeps_the_floor_rule_unchanged(self):
+        mine = self.claim()
+        with self.free(300 * 10**9):
+            self.assertTrue(self.attempt(mine, 1)["allowed"])
+        self.fail_part(mine, 1, "interrupted")
+        with self.free(300 * 10**9 - 1):
+            self.assertTrue(self.attempt(mine, 1)["paused_for_space"])
+
+
 class AttemptTests(DownloadCase):
     def test_every_attempt_counts_a_download_and_an_attempt_before_the_click(self):
         job = self.claim()

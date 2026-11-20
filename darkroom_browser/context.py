@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from collections.abc import Callable
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from darkroom_browser import monitoring
 from darkroom_browser.stall import FolderState
 
 
@@ -55,6 +57,8 @@ class Browser(Protocol):
 
     def screenshot(self, path: Path) -> None: ...
 
+    def bring_to_front(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -62,6 +66,8 @@ class Reporter(Protocol):
     def progress(self, job_id: int, message: str) -> None: ...
 
     def waiting(self, job_id: int, reason: str) -> None: ...
+
+    def on_screen(self, job_id: int) -> None: ...
 
     def download_plan(self, job_id: int) -> dict[str, Any]: ...
 
@@ -94,6 +100,35 @@ class LeaseLost(Refused):
     pass
 
 
+class Screen:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.waiting: dict[int, int] = {}
+        self.arrivals = itertools.count()
+        self.turn = 0
+
+    def waits(self, job_id: int) -> None:
+        with self.lock:
+            if job_id not in self.waiting:
+                self.waiting[job_id] = next(self.arrivals)
+                self.turn += 1
+
+    def resumed(self, job_id: int) -> None:
+        with self.lock:
+            if self.waiting.pop(job_id, None) is not None:
+                self.turn += 1
+
+    def opened(self) -> None:
+        with self.lock:
+            self.turn += 1
+
+    def turn_of(self, job_id: int) -> int | None:
+        with self.lock:
+            if not self.waiting or min(self.waiting, key=self.waiting.__getitem__) != job_id:
+                return None
+            return self.turn
+
+
 @dataclass
 class JobContext:
     job_id: int
@@ -109,6 +144,9 @@ class JobContext:
     clock: Callable[[], float] = time.monotonic
     wall: Callable[[], float] = time.time
     browser_root: Path | None = None
+    screen: Screen = field(default_factory=Screen)
+    shown: int | None = None
+    told: bool = True
 
     def state_root(self) -> Path:
         return self.photos_root / "_browser" if self.browser_root is None else self.browser_root
@@ -126,21 +164,53 @@ class JobContext:
         self.check()
         if self.browser_open is None:
             self.browser_open = self.open_browser(self.profile_dir())
+            self.screen.opened()
         return self.browser_open
 
     def check(self) -> None:
         if self.cancelled.is_set():
             raise Cancelled(f"job {self.job_id} lost its lease")
+        self.show_if_first()
+
+    def show_if_first(self) -> None:
+        turn = self.screen.turn_of(self.job_id)
+        if turn is None or self.browser_open is None:
+            return
+        if turn != self.shown:
+            self.shown = turn
+            try:
+                self.browser_open.bring_to_front()
+            except Exception as error:
+                monitoring.log("could not bring the browser window to the front", job=self.job_id, error=type(error).__name__)
+                self.told = True
+                return
+            self.told = False
+        if not self.told:
+            self.tell_on_screen()
+
+    def tell_on_screen(self) -> None:
+        try:
+            self.reporter.on_screen(self.job_id)
+        except LeaseLost:
+            self.told = True
+        except (Unreachable, Refused) as error:
+            monitoring.log("could not tell darkroom which window is on screen", job=self.job_id, error=type(error).__name__)
+        else:
+            self.told = True
 
     def progress(self, message: str) -> None:
         self.check()
         self.reporter.progress(self.job_id, message)
+        self.screen.resumed(self.job_id)
 
     def wait_for_user(self, reason: str) -> None:
         self.check()
         self.reporter.waiting(self.job_id, reason)
+        self.screen.waits(self.job_id)
+        self.show_if_first()
 
     def close_browser(self) -> None:
+        self.screen.resumed(self.job_id)
         if self.browser_open is not None:
             opened, self.browser_open = self.browser_open, None
             opened.close()

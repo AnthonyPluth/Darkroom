@@ -56,6 +56,10 @@ class DomainReporter:
     def session(self):
         return db.session(self.engine)
 
+    def on_screen(self, job_id):
+        with self.session() as opened:
+            browser_jobs.on_screen(opened, job_id, NOW)
+
     def progress(self, job_id, message):
         self.events.append(("progress", message))
         with self.session() as opened:
@@ -109,6 +113,7 @@ class DownloadBrowser:
         self.seconds = 60.0
         self.flying = {}
         self.started = []
+        self.fronted = 0
         self.cancelled = []
         self.kept = []
         self.strays = 0
@@ -243,6 +248,9 @@ class DownloadBrowser:
     def screenshot(self, path):
         path.write_bytes(b"\x89PNG")
 
+    def bring_to_front(self):
+        self.fronted += 1
+
     def close(self):
         self.closed = True
 
@@ -291,7 +299,7 @@ class DownloadWorld(unittest.TestCase):
 
     def parts(self):
         with db.session(self.engine) as opened:
-            return [(part.status, part.downloads_used, part.attempts) for part in opened.execute(select(ExportPart).order_by(ExportPart.number)).scalars()]
+            return [(part.status, part.downloads_used, part.attempts) for part in opened.execute(select(ExportPart).where(ExportPart.export_id == self.export).order_by(ExportPart.number)).scalars()]
 
     def status(self):
         with db.session(self.engine) as opened:

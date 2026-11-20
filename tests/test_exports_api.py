@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from darkroom.dates import utc_now
 from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db
-from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount
+from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount, TakeoutEntry
 from tests.api_world import ApiCase
 from tests.privacy import no_leaks
 from tests.shared import worker_fetch
@@ -325,3 +325,101 @@ class RetryDownloadApiTests(ApiCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportsApiIngestFieldTests(ApiCase):
+    extra_env = {"browser_token": TOKEN}
+    PART_DEFAULTS = {"ingest_state": "not_queued", "entries": 0, "entries_done": 0, "held": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0,
+                     "failed_items": 0, "kept_reason": None}
+    EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0}
+
+    def setUp(self):
+        super().setUp()
+        self.account_id = self.account(self.person()["id"])["id"]
+        self.now = utc_now().timestamp()
+
+    def add_export(self, google_id, states):
+        with db.session(self.engine) as opened:
+            export = Export(account_id=self.account_id, kind="manual", google_id=google_id, created_at=self.now - DAY, status="downloading", part_count=len(states))
+            opened.add(export)
+            opened.flush()
+            for number, values in enumerate(states, start=1):
+                opened.add(ExportPart(export_id=export.id, number=number, filename=f"part-{number}.zip", bytes=100, status="done", **values))
+            opened.flush()
+            return export.id
+
+    def entries(self, export_id, part_number, **outcomes):
+        with db.session(self.engine) as opened:
+            for outcome, count in outcomes.items():
+                for index in range(count):
+                    opened.add(TakeoutEntry(export_id=export_id, part_number=part_number, name=f"canary-{part_number}-{outcome}-{index}.jpg", kind="media", bytes=1,
+                                            crc32=1, outcome=outcome, listed_at=self.now))
+
+    def listed(self, export_id):
+        status, reply = self.call("GET", f"/api/exports/{export_id}")
+        self.assertEqual(status, 200, reply)
+        status, every = self.call("GET", "/api/exports")
+        self.assertEqual(status, 200, every)
+        self.assertEqual([each for each in every["exports"] if each["id"] == export_id], [reply["export"]])
+        return reply["export"]
+
+    def test_an_export_that_never_went_per_part_reports_the_defaults(self):
+        export_id = self.add_export("g-old", [{}, {}])
+        export = self.listed(export_id)
+        self.assertEqual({key: export[key] for key in self.EXPORT_DEFAULTS}, self.EXPORT_DEFAULTS)
+        for part in export["parts"]:
+            self.assertEqual({key: part[key] for key in self.PART_DEFAULTS}, self.PART_DEFAULTS)
+            self.assertEqual(sorted(part), sorted([*self.PART_DEFAULTS, "number", "filename", "bytes", "progress", "downloads_used", "attempts", "status"]))
+        self.assertEqual([(part["number"], part["filename"], part["bytes"], part["progress"], part["status"]) for part in export["parts"]],
+                         [(1, "part-1.zip", 100, 100, "done"), (2, "part-2.zip", 100, 100, "done")])
+
+    def test_a_part_by_part_export_reports_each_part_and_the_held_split_from_the_ledger(self):
+        export_id = self.add_export("g-new", [
+            {"ingest_state": "ingested", "entries": 5, "entries_done": 5, "held": 3},
+            {"ingest_state": "ingested", "entries": 4, "entries_done": 4, "held": 1, "failed_items": 2},
+            {"ingest_state": "ingesting", "entries": 6, "entries_done": 2},
+            {"ingest_state": "queued"},
+        ])
+        self.entries(export_id, 1, waiting_sidecar=2, waiting_export=1, placed=2)
+        self.entries(export_id, 2, waiting_export=1, failed=2, skipped=1)
+        other = self.add_export("g-other", [{"ingest_state": "ingested", "entries": 1, "entries_done": 1, "held": 7}])
+        self.entries(other, 1, waiting_sidecar=7)
+        export = self.listed(export_id)
+        self.assertEqual({key: export[key] for key in self.EXPORT_DEFAULTS}, {"parts_ingested": 2, "held_waiting_sidecar": 2, "held_waiting_export": 2, "bytes_freed": 0})
+        self.assertEqual([(part["ingest_state"], part["entries"], part["entries_done"], part["held"], part["held_waiting_sidecar"], part["held_waiting_export"],
+                           part["failed_items"], part["kept_reason"]) for part in export["parts"]], [
+            ("ingested", 5, 5, 3, 2, 1, 0, None),
+            ("ingested", 4, 4, 1, 0, 1, 2, "failed_item"),
+            ("ingesting", 6, 2, 0, 0, 0, 0, None),
+            ("queued", 0, 0, 0, 0, 0, 0, None),
+        ])
+        self.assertEqual(self.listed(other)["held_waiting_sidecar"], 7)
+
+    def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
+        export_id = self.add_export("g-refused", [{"ingest_state": "refused", "entries": 3, "entries_done": 1, "failed_items": 1}, {"ingest_state": "failed"}])
+        self.entries(export_id, 1, waiting_sidecar=1)
+        export = self.listed(export_id)
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", None), ("failed", None)])
+        self.assertEqual(export["parts_ingested"], 0)
+
+    def test_every_export_is_counted_in_one_ledger_query_not_one_per_part(self):
+        export_id = self.add_export("g-queries", [{"ingest_state": "ingested", "entries": 1, "held": 1} for _ in range(6)])
+        statements = []
+
+        def count(connection, cursor, statement, *rest):
+            if "takeout_entries" in statement:
+                statements.append(statement)
+
+        from sqlalchemy import event
+        event.listen(self.engine, "before_cursor_execute", count)
+        try:
+            self.assertEqual(len(self.listed(export_id)["parts"]), 6)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", count)
+        self.assertEqual(len(statements), 2)
+
+    def test_entry_names_never_appear_in_the_reply(self):
+        export_id = self.add_export("g-private", [{"ingest_state": "ingested", "entries": 2, "held": 2, "failed_items": 1}])
+        self.entries(export_id, 1, waiting_sidecar=1, waiting_export=1)
+        with no_leaks(self, "canary-1-waiting_sidecar-0.jpg", "canary-1-waiting_export-0.jpg", replies=self.replies):
+            self.listed(export_id)

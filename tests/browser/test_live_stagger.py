@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from darkroom_browser import live
 from darkroom_browser.jobs import download
@@ -8,6 +9,13 @@ from darkroom_browser.context import DownloadInterrupted, PartClick
 from darkroom_browser.stall import FolderState
 from tests.browser.test_late_download import PART_1, PART_2, REDIRECTED_1, REDIRECTED_2, Context, Tab
 from tests.browser.test_stall import Clock
+
+class BringToFrontTests(unittest.TestCase):
+    def test_the_live_browser_brings_its_page_to_the_front(self):
+        page = mock.Mock()
+        live.Live(page).bring_to_front()
+        page.bring_to_front.assert_called_once_with()
+
 
 CLICK_1 = PartClick('a[href="1"]', PART_1, 1)
 CLICK_2 = PartClick('a[href="2"]', PART_2, 2)

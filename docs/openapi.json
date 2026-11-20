@@ -358,6 +358,16 @@
       "BrowserView": {
         "additionalProperties": false,
         "properties": {
+          "on_screen_job": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "vnc_url": {
             "anyOf": [
               {
@@ -380,6 +390,7 @@
           }
         },
         "required": [
+          "on_screen_job",
           "vnc_url",
           "worker_last_seen"
         ],
@@ -407,6 +418,12 @@
       "ClaimBody": {
         "additionalProperties": false,
         "properties": {
+          "lane": {
+            "enum": [
+              "any",
+              "interactive"
+            ]
+          },
           "worker": {
             "type": "string"
           }
@@ -777,10 +794,41 @@
           "downloads_used": {
             "type": "integer"
           },
+          "entries": {
+            "type": "integer"
+          },
+          "entries_done": {
+            "type": "integer"
+          },
+          "failed_items": {
+            "type": "integer"
+          },
           "filename": {
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "held": {
+            "type": "integer"
+          },
+          "held_waiting_export": {
+            "type": "integer"
+          },
+          "held_waiting_sidecar": {
+            "type": "integer"
+          },
+          "ingest_state": {
+            "type": "string"
+          },
+          "kept_reason": {
+            "anyOf": [
+              {
+                "const": "failed_item"
               },
               {
                 "type": "null"
@@ -801,7 +849,15 @@
           "attempts",
           "bytes",
           "downloads_used",
+          "entries",
+          "entries_done",
+          "failed_items",
           "filename",
+          "held",
+          "held_waiting_export",
+          "held_waiting_sidecar",
+          "ingest_state",
+          "kept_reason",
           "number",
           "progress",
           "status"
@@ -1013,6 +1069,9 @@
           "account_id": {
             "type": "integer"
           },
+          "bytes_freed": {
+            "type": "integer"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -1032,6 +1091,12 @@
                 "type": "null"
               }
             ]
+          },
+          "held_waiting_export": {
+            "type": "integer"
+          },
+          "held_waiting_sidecar": {
+            "type": "integer"
           },
           "id": {
             "type": "integer"
@@ -1054,6 +1119,9 @@
               "$ref": "#/components/schemas/ExportPartDetail"
             },
             "type": "array"
+          },
+          "parts_ingested": {
+            "type": "integer"
           },
           "ready_at": {
             "anyOf": [
@@ -1094,12 +1162,16 @@
         },
         "required": [
           "account_id",
+          "bytes_freed",
           "created_at",
           "expires_at",
+          "held_waiting_export",
+          "held_waiting_sidecar",
           "id",
           "kind",
           "part_count",
           "parts",
+          "parts_ingested",
           "ready_at",
           "retry_allowed",
           "retry_refusal",
@@ -1831,6 +1903,12 @@
         "required": [
           "ok"
         ],
+        "type": "object"
+      },
+      "OnScreenBody": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
         "type": "object"
       },
       "OwnDevice": {
@@ -4677,6 +4755,37 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/HeartbeatBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "worker"
+      }
+    },
+    "/internal/browser/jobs/{id}/on-screen": {
+      "post": {
+        "operationId": "on_screen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnScreenBody"
               }
             }
           },

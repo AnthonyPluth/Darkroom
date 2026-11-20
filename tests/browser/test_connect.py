@@ -26,6 +26,22 @@ class ConnectStateMachineTests(unittest.TestCase):
         self.assertEqual(browser.clicks, [])
         self.assertEqual(browser.typed, [])
 
+    def test_the_window_comes_to_the_front_when_the_job_starts_waiting_and_only_then(self):
+        browser = ScriptedBrowser([SIGN_IN_NEEDED, SIGN_IN_NEEDED, VERIFY, VERIFY, SIGNED_IN])
+        ctx, _, reporter = context_for(browser)
+        original = reporter.waiting
+
+        def waiting(job_id, reason):
+            original(job_id, reason)
+            self.assertEqual(browser.fronted, 0, "the window comes forward after Darkroom has been told the job waits")
+
+        reporter.waiting = waiting
+        connect(ctx)
+        self.assertEqual(browser.fronted, 1)
+        signed_in = ScriptedBrowser([SIGNED_IN])
+        connect(context_for(signed_in)[0])
+        self.assertEqual(signed_in.fronted, 0, "a job that never waits never takes the front")
+
     def test_already_signed_in_reports_nothing_and_never_waits(self):
         ctx, clock, reporter = context_for(ScriptedBrowser([SIGNED_IN]))
         self.assertEqual(connect(ctx), {"session_state": "ok"})

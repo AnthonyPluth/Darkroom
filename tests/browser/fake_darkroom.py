@@ -10,6 +10,7 @@ from typing import Any
 
 TOKEN = "fake-darkroom-worker-token-canary-0123456789abcdef"
 SOCKET_NAME = "worker-api.sock"
+LONG_KINDS = ("download",)
 
 
 class FakeDarkroom:
@@ -49,7 +50,7 @@ class FakeDarkroom:
                         self.reply({"error": "something went wrong"}, 500)
                         return
                     if self.path == "/internal/browser/jobs/claim":
-                        self.reply({"job": fake.queue.pop(0) if fake.queue else None})
+                        self.reply({"job": fake.next_job(body.get("lane"))})
                         return
                     parts = self.path.split("/")
                     job_id, action = int(parts[4]), parts[5]
@@ -88,6 +89,13 @@ class FakeDarkroom:
         if self.held is not None:
             self.held.cleanup()
             self.held = None
+
+    def next_job(self, lane: object) -> dict[str, Any] | None:
+        allowed = [job for job in self.queue if lane != "interactive" or job["kind"] not in LONG_KINDS]
+        if not allowed:
+            return None
+        self.queue.remove(allowed[0])
+        return allowed[0]
 
     def enqueue(self, job_id: int, kind: str = "noop", account: str = "1", payload: dict[str, Any] | None = None) -> None:
         self.queue.append({"id": job_id, "kind": kind, "account": account, "payload": payload or {}})

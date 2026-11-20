@@ -252,6 +252,7 @@ class BrowserJobView(TypedDict):
 class BrowserView(TypedDict):
     vnc_url: str | None
     worker_last_seen: float | None
+    on_screen_job: int | None
 
 
 class BrowserJobs(TypedDict):
@@ -280,6 +281,7 @@ class EnqueueBody(TypedDict):
 
 class ClaimBody(TypedDict):
     worker: NotRequired[str]
+    lane: NotRequired[Literal["any", "interactive"]]
 
 
 class HeartbeatBody(TypedDict):
@@ -288,6 +290,10 @@ class HeartbeatBody(TypedDict):
 
 class ProgressBody(TypedDict):
     message: str
+
+
+class OnScreenBody(TypedDict):
+    pass
 
 
 class WaitingBody(TypedDict):
@@ -355,6 +361,14 @@ class ExportPartDetail(TypedDict):
     downloads_used: int
     attempts: int
     status: str
+    ingest_state: str
+    entries: int
+    entries_done: int
+    held: int
+    held_waiting_sidecar: int
+    held_waiting_export: int
+    failed_items: int
+    kept_reason: Literal["failed_item"] | None
 
 
 class ExportPartView(TypedDict):
@@ -373,6 +387,10 @@ class ExportView(TypedDict):
     status: str
     stage: str | None
     parts: list[ExportPartDetail]
+    parts_ingested: int
+    held_waiting_sidecar: int
+    held_waiting_export: int
+    bytes_freed: int
     retry_allowed: bool
     retry_refusal: str | None
 

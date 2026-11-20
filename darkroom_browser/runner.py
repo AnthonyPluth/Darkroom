@@ -10,7 +10,7 @@ from typing import Any
 from darkroom_browser import capture, jobs, monitoring
 from darkroom_browser.client import Client, LeaseLost, Refused, Unreachable
 from darkroom_browser.config import Settings
-from darkroom_browser.context import Browser, Cancelled, JobContext, JobFailure
+from darkroom_browser.context import Browser, Cancelled, JobContext, JobFailure, Screen
 
 HEARTBEAT_SECONDS = 30.0
 BACKOFF_SECONDS = 60.0
@@ -20,6 +20,9 @@ ABANDONED_EXIT = 3
 SCHEDULE_KINDS = ("schedule", "renew")
 MAX_MESSAGE = 500
 CUT = "..."
+TAKE_SECONDS = 5.0
+INTERACTIVE_LANE = "interactive"
+IN_USE_MESSAGE = "AccountInUse: the worker already had a job open for this account, so it ran none of this one"
 
 OpenBrowser = Callable[[Path], Browser]
 
@@ -110,25 +113,50 @@ class Heartbeat:
 
 class Runner:
     def __init__(self, settings: Settings, client: Client, open_browser: OpenBrowser, registry: dict[str, jobs.Job] | None = None,
-                 sleep: Callable[[float], None] = time.sleep, heartbeat_seconds: float = HEARTBEAT_SECONDS,
+                 sleep: Callable[[float], None] | None = None, heartbeat_seconds: float = HEARTBEAT_SECONDS,
                  give_up_seconds: float = GIVE_UP_SECONDS, abandon: Callable[[], None] = exit_now) -> None:
         self.settings = settings
         self.client = client
         self.open_browser = open_browser
         self.registry = registry if registry is not None else jobs.REGISTRY
-        self.sleep = sleep
+        self.sleep = sleep if sleep is not None else self.pause
         self.heartbeat_seconds = heartbeat_seconds
         self.give_up_seconds = give_up_seconds
         self.abandon = abandon
         self.stopping = threading.Event()
+        self.screen = Screen()
+        self.held = threading.Condition()
+        self.in_use: set[str] = set()
+        self.running: dict[int, JobContext] = {}
+        self.threads: list[threading.Thread] = []
+        self.failure: Exception | None = None
+
+    def pause(self, seconds: float) -> None:
+        self.stopping.wait(seconds)
+
+    def lanes(self) -> list[str | None]:
+        if self.settings.workers <= 1:
+            return [None]
+        return [INTERACTIVE_LANE, *[None] * (self.settings.workers - 1)]
 
     def context_for(self, job: dict[str, Any]) -> JobContext:
         payload = job.get("payload") or {}
         return JobContext(int(job["id"]), str(job["kind"]), str(job["account"]), dict(payload) if isinstance(payload, dict) else {},
-                          self.settings.photos_root, self.client, self.open_browser, browser_root=self.settings.browser_root)
+                          self.settings.photos_root, self.client, self.open_browser, browser_root=self.settings.browser_root, screen=self.screen)
 
     def run_job(self, job: dict[str, Any], claim_sent: float | None = None) -> str:
         ctx = self.context_for(job)
+        with self.held:
+            self.running[ctx.job_id] = ctx
+            if self.stopping.is_set():
+                ctx.cancelled.set()
+        try:
+            return self.run_context(ctx, claim_sent)
+        finally:
+            with self.held:
+                self.running.pop(ctx.job_id, None)
+
+    def run_context(self, ctx: JobContext, claim_sent: float | None) -> str:
         monitoring.log("browser job started", job=ctx.job_id, kind=ctx.kind)
         watchdog = Watchdog(ctx.job_id, self.give_up_seconds, self.abandon, claim_sent if claim_sent is not None else time.monotonic())
         beat = Heartbeat(self.client, ctx, self.heartbeat_seconds, watchdog.acknowledged)
@@ -192,10 +220,29 @@ class Runner:
             monitoring.log("could not report the failure", error=type(report_error).__name__)
         return "failed"
 
-    def tick(self) -> bool:
+    def take(self, account: str) -> bool:
+        with self.held:
+            if not self.held.wait_for(lambda: account not in self.in_use, timeout=TAKE_SECONDS):
+                return False
+            self.in_use.add(account)
+            return True
+
+    def give_back(self, account: str) -> None:
+        with self.held:
+            self.in_use.discard(account)
+            self.held.notify_all()
+
+    def refuse(self, job: dict[str, Any]) -> None:
+        monitoring.log("darkroom handed out a job for an account that already has one open here; it is reported failed, not run", job=str(job.get("id")))
+        try:
+            self.client.failed(int(job["id"]), IN_USE_MESSAGE, None)
+        except (Unreachable, Refused) as error:
+            monitoring.log("could not report the refused job", error=type(error).__name__)
+
+    def tick(self, lane: str | None = None) -> bool:
         claim_sent = time.monotonic()
         try:
-            job = self.client.claim(self.settings.worker_name)
+            job = self.client.claim(self.settings.worker_name, lane)
         except Refused as error:
             monitoring.log("claim refused", status=error.status)
             self.sleep(BACKOFF_SECONDS)
@@ -207,13 +254,45 @@ class Runner:
         if job is None:
             self.sleep(self.settings.poll_seconds)
             return False
-        self.run_job(job, claim_sent)
+        account = str(job.get("account", ""))
+        if not self.take(account):
+            self.refuse(job)
+            self.sleep(self.settings.poll_seconds)
+            return False
+        try:
+            self.run_job(job, claim_sent)
+        finally:
+            self.give_back(account)
         return True
 
+    def claims(self, lane: str | None) -> None:
+        try:
+            while not self.stopping.is_set():
+                self.tick(lane)
+        except Exception as error:
+            monitoring.log("a claim loop failed; the worker stops every job and exits", error=type(error).__name__)
+            self.failure = self.failure or error
+            self.halt()
+
     def run_forever(self) -> None:
-        monitoring.log("browser worker ready", poll_seconds=self.settings.poll_seconds)
-        while not self.stopping.is_set():
-            self.tick()
+        lanes = self.lanes()
+        monitoring.log("browser worker ready", poll_seconds=self.settings.poll_seconds, workers=len(lanes))
+        self.threads = [threading.Thread(target=self.claims, args=(lane,), daemon=True, name=f"claims-{number}") for number, lane in enumerate(lanes)]
+        for thread in self.threads:
+            thread.start()
+        for thread in self.threads:
+            thread.join()
+        if self.failure is not None:
+            raise self.failure
+
+    def halt(self) -> None:
+        self.stopping.set()
+        with self.held:
+            for ctx in self.running.values():
+                ctx.cancelled.set()
 
     def stop(self) -> None:
-        self.stopping.set()
+        self.halt()
+        for thread in self.threads:
+            if thread is not threading.current_thread():
+                thread.join()

@@ -25,7 +25,7 @@ from tests.test_browser_jobs import add_account
 TOKEN = "worker-token-canary-0123456789abcdef0123456789"
 WORKER_ROUTES = ("/internal/browser/jobs/claim", "/internal/browser/jobs/{id}/heartbeat", "/internal/browser/jobs/{id}/progress",
                  "/internal/browser/jobs/{id}/waiting", "/internal/browser/jobs/{id}/done", "/internal/browser/jobs/{id}/failed",
-                 "/internal/browser/jobs/{id}/download", "/internal/browser/jobs/{id}/parts/{number}")
+                 "/internal/browser/jobs/{id}/download", "/internal/browser/jobs/{id}/parts/{number}", "/internal/browser/jobs/{id}/on-screen")
 SESSION_ROUTES = ("/api/status", "/api/browser/jobs", "/api/browser/failures/{id}/screenshot.png", "/api/browser/failures/{id}/page.html")
 
 
@@ -86,6 +86,35 @@ class WorkerRoundTripTests(WorkerApiServer):
             status, _, body = self.owner("GET", "/api/status")
             self.assertEqual(status, 200)
             self.assertIsInstance(json.loads(body)["worker_last_seen"], float)
+
+    def test_the_claim_body_names_a_lane_and_the_interactive_lane_takes_no_download(self):
+        with db.session(self.engine) as opened:
+            download = browser_jobs.queue(opened, self.account, "download", {}, 1.0).id
+        claim = "/internal/browser/jobs/claim"
+        with no_leaks(self, TOKEN, database=self.engine, replies=self.replies):
+            self.assertEqual(self.worker("POST", claim, {"worker": "w", "lane": "interactive"}), (200, {"job": None}))
+            self.assertEqual(self.worker("POST", claim, {"worker": "w", "lane": "any"})[1]["job"]["id"], download)
+
+    def test_the_worker_reports_the_job_on_screen_and_a_finished_job_cannot_be(self):
+        job_id = self.enqueue()
+        self.claim()
+        with no_leaks(self, TOKEN, database=self.engine, replies=self.replies):
+            self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/on-screen")[0], 200)
+        with db.session(self.engine) as opened:
+            browser_jobs.waiting(opened, self.settings, job_id, "sign_in", 2.0)
+            self.assertEqual(browser_jobs.job_on_screen(opened), job_id)
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/done", {"result": {}})[0], 200)
+        self.assertEqual(self.worker("POST", f"/internal/browser/jobs/{job_id}/on-screen"), (409, {"error": "this job is no longer running"}))
+        self.assertEqual(self.worker("POST", "/internal/browser/jobs/999/on-screen"), (404, {"error": "no such job"}))
+        with db.session(self.engine) as opened:
+            self.assertIsNone(browser_jobs.job_on_screen(opened))
+
+    def test_an_unknown_or_malformed_lane_answers_400_and_claims_nothing(self):
+        job_id = self.enqueue()
+        claim = "/internal/browser/jobs/claim"
+        self.assertEqual(self.worker("POST", claim, {"lane": "downloads"}), (400, {"error": "'downloads' is not a claim lane"}))
+        self.assertEqual(self.worker("POST", claim, {"lane": 1}), (400, {"error": "lane must be text"}))
+        self.assertEqual(self.worker("POST", claim, {"worker": "w"})[1]["job"]["id"], job_id)
 
     def test_a_renewal_done_over_the_worker_api_records_the_new_end_and_confirms_it(self):
         with db.session(self.engine) as opened:

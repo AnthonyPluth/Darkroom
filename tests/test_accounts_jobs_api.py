@@ -415,9 +415,19 @@ class AccountJobsApiTests(ApiCase):
 
     def test_the_view_gives_the_viewer_address_and_when_the_worker_was_last_seen(self):
         status, reply = self.call("GET", "/api/browser/view")
-        self.assertEqual((status, reply), (200, {"vnc_url": RELAYED, "worker_last_seen": None}))
+        self.assertEqual((status, reply), (200, {"vnc_url": RELAYED, "worker_last_seen": None, "on_screen_job": None}))
         self.worker("/internal/browser/jobs/claim")
         self.assertIsInstance(self.call("GET", "/api/browser/view")[1]["worker_last_seen"], float)
+
+    def test_the_view_names_the_waiting_job_whose_window_is_on_screen_and_only_while_it_waits(self):
+        self.call("POST", f"/api/accounts/{self.account_id}/connect")
+        job = self.worker("/internal/browser/jobs/claim")[1]["job"]["id"]
+        self.assertEqual(self.worker(f"/internal/browser/jobs/{job}/on-screen")[0], 200)
+        self.assertIsNone(self.call("GET", "/api/browser/view")[1]["on_screen_job"], "a running job is not waiting for anyone")
+        self.worker(f"/internal/browser/jobs/{job}/waiting", {"reason": "sign_in"})
+        self.assertEqual(self.call("GET", "/api/browser/view")[1]["on_screen_job"], job)
+        self.worker(f"/internal/browser/jobs/{job}/progress", {"message": "signed in"})
+        self.assertIsNone(self.call("GET", "/api/browser/view")[1]["on_screen_job"])
 
 
 class ViewWithoutAViewerTests(ApiCase):
@@ -431,7 +441,7 @@ class ViewMalformedTests(ApiCase):
     extra_env = {"viewer_secret": VIEWER_SECRET, "DARKROOM_PUBLIC_URL": "https://[::1"}
 
     def test_a_malformed_address_is_unavailable_not_an_error(self):
-        self.assertEqual(self.call("GET", "/api/browser/view"), (200, {"vnc_url": None, "worker_last_seen": None}))
+        self.assertEqual(self.call("GET", "/api/browser/view"), (200, {"vnc_url": None, "worker_last_seen": None, "on_screen_job": None}))
         status, headers, _ = fetch(self.base, "GET", "/")
         self.assertNotIn(status, (500,))
         self.assertNotIn("frame-src", headers.get("Content-Security-Policy", ""))
@@ -439,7 +449,7 @@ class ViewMalformedTests(ApiCase):
 
 class ViewUnsetTests(ApiCase):
     def test_no_address_is_null(self):
-        self.assertEqual(self.call("GET", "/api/browser/view")[1], {"vnc_url": None, "worker_last_seen": None})
+        self.assertEqual(self.call("GET", "/api/browser/view")[1], {"vnc_url": None, "worker_last_seen": None, "on_screen_job": None})
 
 
 class TwoRootsTests(ApiCase):
