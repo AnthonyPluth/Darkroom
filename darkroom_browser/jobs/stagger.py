@@ -1,41 +1,22 @@
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, JobFailure, LeaseLost, PartClick, Refused, Unreachable
+from darkroom_browser.context import Browser, Cancelled, DownloadInterrupted, JobContext, LeaseLost, PartClick, Refused, Unreachable
 from darkroom_browser.jobs import download
 from darkroom_browser.jobs.session import SIGN_IN_STATES, WAIT_LIMIT_SECONDS, SignInTimedOut, ensure_signed_in, waiting_reason
 from darkroom_browser.jobs.status import SignedOut
-from darkroom_browser.jobs.telemetry import Clicks, counted
+from darkroom_browser.jobs.telemetry import Clicks
 from darkroom_browser.stall import StallWatch, Verdict
 
-INTERVAL_SECONDS = 10 * 60.0
-MOST_PARTS = 2
 POLL_SECONDS = 5.0
 PROGRESS_SECONDS = 30.0
-FLOOR_SECONDS = 120.0
-PROMPTS_BEFORE_ONE_AT_A_TIME = 2
-DISK_SLACK = 1 << 30
 SPACE_RETRY_SECONDS = 5 * 60.0
 PAUSED_WORDS = "paused for space: the share has too little free room, so no new part starts until it has more; Darkroom asks again every 5 minutes"
 RESUMED_WORDS = "free space is back on the share; resuming downloads"
-
-
-def every(interval: float) -> str:
-    minutes = interval / 60
-    return "1 minute" if minutes == 1 else f"{minutes:g} minutes"
-
-
-def backed_off(interval: float) -> float:
-    return max(interval / 2, min(interval, FLOOR_SECONDS))
-
-
-def disk_free(folder: Path) -> int:
-    return shutil.disk_usage(folder).free
 
 
 @dataclass
@@ -56,7 +37,7 @@ class Waiting:
     seen: str = ""
 
 
-class Staggered:
+class OnePartAtATime:
     def __init__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> None:
         self.ctx = ctx
         self.browser = browser
@@ -64,17 +45,12 @@ class Staggered:
         self.plan = plan
         self.queue = [part for part in parts if part.get("status") != "done"]
         self.taken = taken
-        self.interval = INTERVAL_SECONDS
-        self.most = MOST_PARTS
         self.clicks = clicks
-        self.flights: dict[int, Flight] = {}
+        self.flight: Flight | None = None
         self.waiting: Waiting | None = None
         self.signing_in: float | None = None
-        self.stopping: JobFailure | None = None
-        self.last_click: float | None = None
-        self.prompts = 0
+        self.counted: dict[int, int] = {}
         self.fetched = 0
-        self.short_of_disk = False
         self.paused_until: float | None = None
         self.paused = False
 
@@ -86,56 +62,28 @@ class Staggered:
         self.ctx.progress(f"{message}; {PAUSED_WORDS}" if self.paused and message != PAUSED_WORDS else message)
 
     def run(self) -> int:
-        self.tell(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
+        self.tell("downloading one part at a time; the next part starts when the one before it has been kept or has failed")
         while self.busy():
             self.ctx.check()
-            self.advance_flights()
+            self.advance_flight()
             self.advance_waiting()
             self.advance_signing_in()
             if self.waiting is None and self.signing_in is None:
                 self.browser.drop_strays()
-                if self.stopping is None and self.may_start():
+                if self.may_start():
                     self.start(self.queue.pop(0))
                     continue
             if self.busy():
                 self.ctx.sleep(POLL_SECONDS)
-        if self.stopping is not None:
-            raise self.stopping
         return self.fetched
 
     def busy(self) -> bool:
-        return bool(self.queue and self.stopping is None) or bool(self.flights) or self.waiting is not None or self.signing_in is not None
-
-    def ending(self) -> str:
-        if self.most == 1:
-            return "back to one part at a time after Google asked to verify twice"
-        return f"staggered every {every(self.interval)} at the end"
-
-    def room_for(self, part: dict[str, Any]) -> bool:
-        listed_bytes = part.get("bytes")
-        needed = listed_bytes if isinstance(listed_bytes, int) else 0
-        for flight in self.flights.values():
-            listed = flight.part.get("bytes")
-            if isinstance(listed, int):
-                needed += max(0, listed - self.browser.download_state(flight.handle).size)
-        return disk_free(self.folder) >= needed + DISK_SLACK
+        return bool(self.queue) or self.flight is not None or self.waiting is not None or self.signing_in is not None
 
     def may_start(self) -> bool:
-        if not self.queue or len(self.flights) >= self.most:
+        if not self.queue or self.flight is not None:
             return False
-        if self.paused_until is not None and self.ctx.clock() < self.paused_until:
-            return False
-        if not self.flights:
-            return True
-        if self.last_click is not None and self.ctx.clock() - self.last_click < self.interval:
-            return False
-        if not self.room_for(self.queue[0]):
-            if not self.short_of_disk:
-                self.short_of_disk = True
-                self.say(f"waiting for a part to finish before starting part {self.queue[0]['number']}: the disk has too little room for another part at once")
-            return False
-        self.short_of_disk = False
-        return True
+        return self.paused_until is None or self.ctx.clock() >= self.paused_until
 
     def signed_in(self) -> bool:
         waited = ensure_signed_in(self.ctx, self.browser)
@@ -171,13 +119,9 @@ class Staggered:
             self.signing_in = self.ctx.clock()
             self.ctx.wait_for_user(waiting_reason(signed_out.state))
             return
-        except JobFailure as failure:
-            if not self.flights:
-                raise
-            self.stopping = failure
-            self.say(f"part {number} could not be started, so Darkroom lets the {counted(len(self.flights), 'part')} still downloading finish before it stops")
-            return
-        reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt"})
+        google = listed.google_downloads
+        send_count = google is not None and (number not in self.counted or google > self.counted[number])
+        reply = self.ctx.reporter.part(self.ctx.job_id, number, {"event": "attempt", "google_downloads": google} if send_count else {"event": "attempt"})
         if reply.get("paused_for_space"):
             self.requeue(part)
             self.paused_until = self.ctx.clock() + SPACE_RETRY_SECONDS
@@ -190,14 +134,13 @@ class Staggered:
             self.say(RESUMED_WORDS)
         self.paused_until = None
         if not reply.get("allowed"):
-            raise download.DownloadFailed(f"part {number} has used its attempts or Google's downloads; Darkroom stopped before using more")
+            raise download.DownloadFailed(download.gave_up_message(number, reply["part"], ""))
+        self.counted[number] = reply["part"]["downloads_used"]
         clicking = PartClick(selector, listed.href, number)
         if self.kept_late(part, clicking):
             return
-        others = counted(len(self.flights), "other part")
-        self.say(f"downloading part {number} of {self.plan['part_count']} with {others} downloading; {self.clicks.words()}")
-        self.clicks.clicked(number, len(self.flights))
-        self.last_click = self.ctx.clock()
+        self.say(f"downloading part {number} of {self.plan['part_count']}; {self.clicks.words()}")
+        self.clicks.clicked(number, 0)
         try:
             handle = self.browser.start_download(selector, clicking)
         except Cancelled:
@@ -224,8 +167,8 @@ class Staggered:
 
     def fly(self, part: dict[str, Any], handle: str) -> None:
         now = self.ctx.clock()
-        self.flights[part["number"]] = Flight(part, handle, StallWatch(now), now)
-        self.clicks.saw(len(self.flights))
+        self.flight = Flight(part, handle, StallWatch(now), now)
+        self.clicks.saw(1)
 
     def no_download(self, part: dict[str, Any], clicking: PartClick, interrupted: bool) -> None:
         number = part["number"]
@@ -245,12 +188,7 @@ class Staggered:
 
     def prompt(self, waiting: Waiting) -> None:
         number = waiting.part["number"]
-        self.clicks.prompted(number, len(self.flights))
-        self.prompts += 1
-        self.interval = backed_off(self.interval)
-        if self.prompts >= PROMPTS_BEFORE_ONE_AT_A_TIME and self.most > 1:
-            self.most = 1
-            self.tell("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time")
+        self.clicks.prompted(number, 0)
         self.waiting = waiting
         self.ctx.wait_for_user("verify")
 
@@ -331,23 +269,26 @@ class Staggered:
                 raise
             return
 
-    def advance_flights(self) -> None:
-        for number, flight in list(self.flights.items()):
-            state = self.browser.download_state(flight.handle)
-            now = self.ctx.clock()
-            verdict = flight.watch.judge(now, state)
-            if verdict is Verdict.WAIT:
-                if now - flight.reported >= PROGRESS_SECONDS:
-                    flight.reported = now
-                    self.report_bytes(number, state.size)
-                continue
-            del self.flights[number]
-            if verdict is Verdict.STALLED:
-                self.browser.cancel_download(flight.handle)
-                download.report_failure(self.ctx, number, "interrupted")
-                self.requeue(flight.part)
-                continue
-            self.land(flight)
+    def advance_flight(self) -> None:
+        flight = self.flight
+        if flight is None:
+            return
+        number = flight.part["number"]
+        state = self.browser.download_state(flight.handle)
+        now = self.ctx.clock()
+        verdict = flight.watch.judge(now, state)
+        if verdict is Verdict.WAIT:
+            if now - flight.reported >= PROGRESS_SECONDS:
+                flight.reported = now
+                self.report_bytes(number, state.size)
+            return
+        self.flight = None
+        if verdict is Verdict.STALLED:
+            self.browser.cancel_download(flight.handle)
+            download.report_failure(self.ctx, number, "interrupted")
+            self.requeue(flight.part)
+            return
+        self.land(flight)
 
     def land(self, flight: Flight) -> None:
         number = flight.part["number"]
@@ -372,13 +313,12 @@ class Staggered:
         self.ctx.reporter.part(self.ctx.job_id, number, {"event": "done", "filename": path.name, "bytes": size})
         self.taken.add(path.name)
         self.fetched += 1
-        self.say(f"part {number} downloaded; {counted(len(self.flights), 'part')} still downloading")
+        self.say(f"part {number} downloaded")
 
 
-def staggered(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]:
-    run = Staggered(ctx, browser, folder, plan, parts, taken, clicks)
-    return run.run(), run.ending()
+def one_at_a_time(ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> int:
+    return OnePartAtATime(ctx, browser, folder, plan, parts, taken, clicks).run()
 
 
 def download_export(ctx: JobContext) -> dict[str, object]:
-    return download.download_export(ctx, staggered)
+    return download.download_export(ctx, one_at_a_time)

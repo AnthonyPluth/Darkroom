@@ -38,6 +38,8 @@ class StaggerBrowser(DownloadBrowser):
         self.strays = 0
         self.late = late or {}
         self.handles = 0
+        self.most_flying = 0
+        self.kept_at = {}
 
     def flight(self, number, outcome):
         self.awaiting = None
@@ -45,6 +47,7 @@ class StaggerBrowser(DownloadBrowser):
         handle = f"guid-{self.handles}"
         self.flying[handle] = {"number": number, "from": self.clock.now, "outcome": outcome}
         self.started.append((number, self.clock.now))
+        self.most_flying = max(self.most_flying, len(self.flying))
         return handle
 
     def start_download(self, selector, part):
@@ -89,6 +92,7 @@ class StaggerBrowser(DownloadBrowser):
         flight = self.flying.pop(handle)
         number, outcome = flight["number"], flight["outcome"]
         self.kept.append(number)
+        self.kept_at[number] = self.clock.now
         if outcome == "fails":
             raise DownloadInterrupted("network")
         if outcome == "refused":
@@ -116,9 +120,6 @@ class StaggerBrowser(DownloadBrowser):
 
 
 class StaggerWorld(DownloadWorld):
-    interval = None
-    most = None
-
     def setUp(self):
         super().setUp()
         self.cancelling = threading.Event()
@@ -129,10 +130,7 @@ class StaggerWorld(DownloadWorld):
 
     def run_job(self, browser, job_id=None):
         job_id = job_id or self.claim()
-        interval = stagger.INTERVAL_SECONDS if self.interval is None else self.interval
-        most = stagger.MOST_PARTS if self.most is None else self.most
-        with mock.patch.object(stagger, "INTERVAL_SECONDS", interval), mock.patch.object(stagger, "MOST_PARTS", most):
-            return job_id, REGISTRY["download"](self.context(browser, job_id))
+        return job_id, REGISTRY["download"](self.context(browser, job_id))
 
     def started_after(self, browser):
         first = browser.started[0][1]
@@ -147,27 +145,35 @@ class StaggerWorld(DownloadWorld):
 
 
 class StaggeredDownloadTests(StaggerWorld):
-    def test_parts_start_the_interval_apart_while_earlier_ones_download_up_to_the_most(self):
+    def test_one_part_downloads_at_a_time_and_the_next_starts_only_when_the_one_before_is_kept(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         job_id, result = self.run_job(browser)
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 10), (3, 25)])
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 25), (3, 50)])
+        self.assertEqual(browser.most_flying, 1)
+        for (number, at), kept_before in zip(browser.started[1:], browser.kept[:2], strict=True):
+            self.assertGreaterEqual(at, browser.kept_at[kept_before], f"part {number} was clicked before part {kept_before} was kept")
         self.assertEqual(browser.kept, [1, 2, 3])
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         self.assertEqual(sorted(path.name for path in self.folder().iterdir()), [f"takeout-20261102T031000Z-00{n}.zip" for n in (1, 2, 3)])
-        self.assertEqual(result["telemetry"]["most_downloading"], 2)
-        self.assertEqual([body["downloading"] for _, body in self.reporter.telemetry], [0, 1, 1])
-        self.assertIn("downloading part 2 of 3 with 1 other part downloading; 10 minutes after the previous click, no prompt answered yet in this job", self.messages())
+        self.assertEqual(result["telemetry"]["most_downloading"], 1)
+        self.assertEqual([body["downloading"] for _, body in self.reporter.telemetry], [0, 0, 0])
+        self.assertIn("downloading part 2 of 3; 25 minutes after the previous click, no prompt answered yet in this job", self.messages())
         self.assertTrue(self.messages()[-1].startswith("downloaded 3 of 3 parts; 3 part clicks and 0 verification prompts in "))
-        self.assertTrue(self.messages()[-1].endswith("; at most 2 parts downloading at once; staggered every 10 minutes at the end"))
+        self.assertTrue(self.messages()[-1].endswith("; at most 1 part downloading at once"))
         self.assertGreater(browser.strays, 0)
         self.finish(job_id)
         self.assertEqual(self.status(), "downloaded")
 
-    def test_three_at_once_when_allowed(self):
-        self.most = 3
+    def test_no_setting_of_the_environment_or_the_module_lets_two_parts_of_an_export_download_together(self):
+        for name in ("INTERVAL_SECONDS", "MOST_PARTS", "backed_off", "PROMPTS_BEFORE_ONE_AT_A_TIME"):
+            self.assertFalse(hasattr(stagger, name), name)
+        job_id = self.claim()
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock, seconds=60 * MINUTE)
-        self.run_job(browser)
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 10), (3, 20)])
+        old = {"TAKEOUT_STAGGER": "1", "TAKEOUT_STAGGER_MINUTES": "1", "TAKEOUT_STAGGER_MAX_PARTS": "4", "BROWSER_WORKERS": "8"}
+        with mock.patch.dict("os.environ", old):
+            result = REGISTRY["download"](self.context(browser, job_id))
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 60), (3, 120)])
+        self.assertEqual((browser.most_flying, result["telemetry"]["most_downloading"]), (1, 1))
 
     def test_each_part_reports_its_own_progress(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
@@ -175,14 +181,15 @@ class StaggeredDownloadTests(StaggerWorld):
         progressed = [number for kind, number in self.reporter.events if kind == "progress" and isinstance(number, int)]
         self.assertEqual(set(progressed), {1, 2, 3})
 
-    def test_a_stalled_part_is_judged_on_its_own_and_only_its_download_is_cancelled(self):
+    def test_a_stalled_part_is_cancelled_and_tried_again_before_the_next_part_starts(self):
         browser = StaggerBrowser(["stall", "ok", "ok", "ok"], self.clock)
         self.run_job(browser)
         self.assertEqual(browser.cancelled, [1])
-        self.assertEqual(browser.kept, [2, 1, 3])
+        self.assertEqual(browser.kept, [1, 2, 3])
+        self.assertEqual([number for number, _ in browser.started], [1, 1, 2, 3])
+        self.assertEqual(browser.most_flying, 1)
         self.assertEqual(self.parts(), [("done", 2, 2), ("done", 1, 1), ("done", 1, 1)])
         self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 1: interrupted"])
-        self.assertEqual(self.started_after(browser)[:3], [(1, 0), (2, 10), (1, 20)])
 
     def test_a_download_that_never_writes_a_byte_is_cancelled_after_the_stall_limit_and_retried(self):
         browser = StaggerBrowser(["empty", "ok", "ok", "ok"], self.clock)
@@ -196,65 +203,29 @@ class StaggeredDownloadTests(StaggerWorld):
         browser = StaggerBrowser(["refused", "ok", "ok", "ok"], self.clock)
         with self.assertRaisesRegex(download.DownloadsFolderRefused, "is a link"):
             self.run_job(browser)
-        self.assertEqual(browser.downloaded, [1, 2])
+        self.assertEqual(browser.downloaded, [1])
         self.assertEqual(self.recorded("export_part_attempt_failed"), [])
 
-    def test_a_prompt_pauses_new_clicks_and_leaves_the_part_in_flight_running_and_counted_once(self):
+    def test_a_prompt_on_a_click_waits_for_you_with_nothing_else_downloading_then_clicks_that_part_again_first(self):
         browser = StaggerBrowser(["ok", "verify", "ok", "ok"], self.clock)
         browser.verify_reads = 200
         job_id, _ = self.run_job(browser)
         self.assertEqual(browser.downloaded, [1, 2, 2, 3])
-        self.assertEqual(browser.kept[0], 1)
+        self.assertEqual(browser.most_flying, 1)
         events_seen = self.reporter.events
         waited = events_seen.index(("waiting", "verify"))
+        self.assertEqual(events_seen[:waited].count(("done", 1)), 1)
         resumed = next(i for i, event in enumerate(events_seen) if event[0] == "progress" and str(event[1]).startswith("verified; resuming part 2"))
         between = events_seen[waited + 1:resumed]
-        self.assertIn(("done", 1), between)
         self.assertFalse([event for event in between if event[0] == "progress" and isinstance(event[1], str)])
         self.assertFalse([event for event in between if event[0] == "attempt"])
         self.assertEqual(self.parts(), [("done", 1, 1), ("done", 2, 1), ("done", 1, 1)])
-        self.assertEqual([body["downloading"] for number, body in self.reporter.telemetry if body["event"] == "prompted"], [1])
+        self.assertEqual([body["downloading"] for number, body in self.reporter.telemetry if body["event"] == "prompted"], [0])
         with db.session(self.engine) as opened:
             sign_in = opened.execute(select(Alert).where(Alert.kind == "sign_in_needed")).scalars().all()
             self.assertEqual(len(sign_in), 1)
             self.assertIsNotNone(sign_in[0].closed)
             self.assertEqual(opened.get(BrowserJob, job_id).status, "running")
-
-    def test_a_prompt_halves_the_interval_and_a_second_returns_to_one_part_at_a_time(self):
-        self.interval = 20 * MINUTE
-        browser = StaggerBrowser(["ok", "verify", "ok", "verify", "ok", "ok"], self.clock, seconds=60 * MINUTE)
-        self.run_job(browser)
-        self.assertIn("Google asked to verify twice while staggering, so the rest of this job downloads one part at a time", self.messages())
-        self.assertTrue(self.messages()[-1].endswith("back to one part at a time after Google asked to verify twice"))
-        starts = [at for _, at in browser.started]
-        self.assertEqual(len(starts), 3)
-        self.assertGreaterEqual(starts[2] - starts[1], 60 * MINUTE)
-
-    def test_the_back_off_rule(self):
-        cases = {20 * MINUTE: [10, 5, 2.5, 2, 2], 3 * MINUTE: [2, 2], MINUTE: [1, 1]}
-        for start, expected in cases.items():
-            run = stagger.Staggered.__new__(stagger.Staggered)
-            run.interval = start
-            seen = []
-            for _ in expected:
-                run.interval = stagger.backed_off(run.interval)
-                seen.append(run.interval / MINUTE)
-            self.assertEqual(seen, expected, start)
-
-    def test_a_new_part_waits_for_disk_room_and_says_so_once_a_wait(self):
-        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        with mock.patch.object(stagger, "disk_free", lambda folder: stagger.DISK_SLACK + 40 * 1024):
-            self.run_job(browser)
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 25), (3, 50)])
-        self.assertEqual(sum(1 for message in self.messages() if "the disk has too little room" in message), 2)
-
-    def test_room_counts_what_the_parts_in_flight_still_need(self):
-        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        with mock.patch.object(stagger, "disk_free", lambda folder: stagger.DISK_SLACK + 60 * 1024):
-            self.run_job(browser)
-        number, minutes = self.started_after(browser)[1]
-        self.assertEqual(number, 2)
-        self.assertIn(minutes, (12, 13))
 
     def short_of_space_until(self, minutes):
         start = self.clock.now
@@ -329,7 +300,7 @@ class StaggeredDownloadTests(StaggerWorld):
         start = self.clock.now
         low = mock.patch.object(Photos, "free_bytes", lambda photos: 400 * 10**9 if self.clock.now < start + 1 * MINUTE else 0)
         calls = []
-        real_space = stagger.Staggered.may_start
+        real_space = stagger.OnePartAtATime.may_start
 
         def may_start(run):
             calls.append(self.clock.now)
@@ -337,36 +308,35 @@ class StaggeredDownloadTests(StaggerWorld):
                 self.cancelling.set()
             return real_space(run)
 
-        with low, mock.patch.object(stagger.Staggered, "may_start", may_start), self.assertRaises(Cancelled):
+        with low, mock.patch.object(stagger.OnePartAtATime, "may_start", may_start), self.assertRaises(Cancelled):
             self.run_job(browser)
         self.assertEqual(browser.kept, [1])
         self.assertEqual(self.parts()[0], ("done", 1, 1))
         self.assertEqual(self.parts()[1:], [("pending", 0, 0), ("pending", 0, 0)])
 
-    def test_the_pause_words_stay_on_the_message_when_a_part_in_flight_lands(self):
+    def test_the_pause_words_stay_on_the_last_message_while_the_next_part_waits_for_room(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         start = self.clock.now
         low = mock.patch.object(Photos, "free_bytes", lambda photos: 400 * 10**9 if self.clock.now < start + 1 * MINUTE else 0)
-        real_space = stagger.Staggered.may_start
+        real_space = stagger.OnePartAtATime.may_start
 
         def may_start(run):
             if self.clock.now > start + 60 * MINUTE:
                 self.cancelling.set()
             return real_space(run)
 
-        with low, mock.patch.object(stagger.Staggered, "may_start", may_start), self.assertRaises(Cancelled):
+        with low, mock.patch.object(stagger.OnePartAtATime, "may_start", may_start), self.assertRaises(Cancelled):
             self.run_job(browser)
         messages = self.messages()
         landed = [message for message in messages if message.startswith("part 1 downloaded")]
-        self.assertEqual(len(landed), 1)
-        self.assertIn(stagger.PAUSED_WORDS, landed[0])
+        self.assertEqual(landed, ["part 1 downloaded"])
         self.assertIn(stagger.PAUSED_WORDS, messages[-1])
 
     def test_a_landing_after_the_pause_ends_says_nothing_of_it(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         with self.short_of_space_until(12):
             self.run_job(browser)
-        landed = [message for message in self.messages() if " downloaded; " in message]
+        landed = [message for message in self.messages() if message.startswith("part ") and " downloaded" in message]
         self.assertTrue(landed)
         self.assertEqual([message for message in landed if "paused for space" in message], [])
         self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
@@ -512,27 +482,27 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(browser.started, [])
         self.assertEqual(self.parts(), [("pending", 0, 0)] * 3)
 
-    def test_a_restart_requeues_every_part_that_was_in_flight(self):
-        browser = StaggerBrowser(["ok", "lease lost"], self.clock)
+    def test_a_restart_requeues_the_part_that_was_in_flight(self):
+        browser = StaggerBrowser(["lease lost"], self.clock)
         job_id = self.claim()
         with self.assertRaises(Cancelled):
             self.run_job(browser, job_id)
-        self.assertEqual(self.parts(), [("downloading", 1, 1), ("downloading", 1, 1), ("pending", 0, 0)])
+        self.assertEqual(self.parts(), [("downloading", 1, 1), ("pending", 0, 0), ("pending", 0, 0)])
         self.fail(job_id)
-        self.assertEqual(self.parts(), [("pending", 1, 1), ("pending", 1, 1), ("pending", 0, 0)])
+        self.assertEqual(self.parts(), [("pending", 1, 1), ("pending", 0, 0), ("pending", 0, 0)])
         with db.session(self.engine) as opened:
             self.assertEqual(exports.reconcile(opened, opened.get(GoogleAccount, self.account), [exports.Listed(COMPLETED_ID, NOW - 600, "ready", NOW + 7 * 86400, tuple(exports.ListedPart(n, size) for n, size in enumerate(SIZES, start=1)))], NOW).requeued, 1)
         second = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         _, result = self.run_job(second)
         self.assertEqual((result["downloaded"], second.downloaded), (3, [1, 2, 3]))
-        self.assertEqual(self.parts(), [("done", 2, 2), ("done", 2, 2), ("done", 1, 1)])
+        self.assertEqual(self.parts(), [("done", 2, 2), ("done", 1, 1), ("done", 1, 1)])
 
-    def test_a_part_that_gives_up_returns_the_part_in_flight_to_pending(self):
+    def test_a_part_that_gives_up_leaves_the_parts_after_it_pending(self):
         browser = StaggerBrowser(["ok", "corrupt", "corrupt", "corrupt"], self.clock, seconds=60 * MINUTE)
         with self.assertRaisesRegex(download.DownloadFailed, "^part 2 failed after 3 attempts"):
             self.run_job(browser)
         self.assertEqual(self.status(), "failed")
-        self.assertEqual(self.parts(), [("pending", 1, 1), ("failed", 3, 3), ("pending", 0, 0)])
+        self.assertEqual(self.parts(), [("done", 1, 1), ("failed", 3, 3), ("pending", 0, 0)])
 
     def test_a_late_download_after_a_click_that_started_nothing_is_kept(self):
         browser = StaggerBrowser(["ok", "unrecognised then it arrives", "ok"], self.clock)
@@ -549,20 +519,6 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(browser.collected, [2])
         self.assertEqual(browser.downloaded, [1, 2, 3])
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
-
-    def test_a_requeued_parts_own_late_download_arriving_while_it_waits_behind_a_part_in_flight_is_kept(self):
-        browser = StaggerBrowser(["ok", "unrecognised", "ok", "ok"], self.clock)
-        original = browser.start_download
-
-        def arriving_after_the_back_off(selector, part):
-            if part.number == 2 and 2 not in browser.downloaded:
-                browser.late[2] = self.clock.now + download.BACKOFF_SECONDS + 2 * MINUTE
-            return original(selector, part)
-
-        browser.start_download = arriving_after_the_back_off
-        self.run_job(browser)
-        self.assertEqual((browser.downloaded, browser.collected, browser.cancelled), ([1, 2, 3], [2], []))
-        self.assertEqual(self.recorded("export_part_attempt_failed"), ["part 2: not_started"])
 
     def test_a_late_download_delivered_during_the_sign_in_check_after_a_prompt_is_kept(self):
         browser = StaggerBrowser(["verify", "ok", "ok"], self.clock)
@@ -613,7 +569,7 @@ class StaggeredDownloadTests(StaggerWorld):
         waited = seen.index(("waiting", "sign_in"))
         self.assertEqual(seen[waited + 1], ("front", None))
         self.assertEqual(seen.count(("front", None)), 1)
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 40), (3, 50)])
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 55), (3, 80)])
         self.assertEqual(result["downloaded"], 3)
 
     def test_a_download_that_never_waits_never_takes_the_front(self):
@@ -648,7 +604,7 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertEqual(self.parts()[1], ("done", 2, 2))
 
-    def test_a_part_whose_page_cannot_be_read_lets_the_parts_in_flight_land_before_the_job_stops(self):
+    def test_a_part_whose_page_cannot_be_read_after_the_one_before_it_landed_stops_the_job_with_that_part_pending(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         real_content = browser.content
 
@@ -662,7 +618,6 @@ class StaggeredDownloadTests(StaggerWorld):
             self.run_job(browser)
         self.assertEqual(browser.kept, [1])
         self.assertEqual(self.parts(), [("done", 1, 1), ("pending", 0, 0), ("pending", 0, 0)])
-        self.assertIn("part 2 could not be started, so Darkroom lets the 1 part still downloading finish before it stops", self.messages())
 
     def test_a_part_whose_page_cannot_be_read_with_nothing_in_flight_stops_at_once(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
@@ -731,7 +686,7 @@ class StaggeredDownloadTests(StaggerWorld):
 
         browser.goto, browser.content = goto, content
 
-    def test_a_sign_in_while_the_next_parts_page_reopens_keeps_the_parts_in_flight_landing(self):
+    def test_a_sign_in_while_the_next_parts_page_reopens_waits_for_you_and_clicks_nothing_until_then(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         self.signed_out_while_reopening(browser, 30)
         _, result = self.run_job(browser)
@@ -739,9 +694,8 @@ class StaggeredDownloadTests(StaggerWorld):
         waited = events_seen.index(("waiting", "sign_in"))
         resumed = events_seen.index(("progress", "signed in"))
         between = events_seen[waited + 1:resumed]
-        self.assertIn(("done", 1), between)
         self.assertFalse([event for event in between if event[0] in ("attempt", "clicked") or (event[0] == "progress" and isinstance(event[1], str))])
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 40), (3, 50)])
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 55), (3, 80)])
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         clicked = [body for number, body in self.reporter.telemetry if body["event"] == "clicked"]
@@ -798,16 +752,6 @@ class StaggeredDownloadTests(StaggerWorld):
             self.run_job(browser)
         self.assertEqual(self.parts()[0], ("done", 1, 1))
 
-    def test_the_download_job_always_staggers_every_ten_minutes_with_at_most_two_parts_whatever_the_environment(self):
-        self.assertEqual((stagger.INTERVAL_SECONDS, stagger.MOST_PARTS), (10 * MINUTE, 2))
-        job_id = self.claim()
-        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock, seconds=60 * MINUTE)
-        old = {"TAKEOUT_STAGGER": "0", "TAKEOUT_STAGGER_MINUTES": "60", "TAKEOUT_STAGGER_MAX_PARTS": "4"}
-        with mock.patch.dict("os.environ", old):
-            result = REGISTRY["download"](self.context(browser, job_id))
-        self.assertEqual(self.started_after(browser), [(1, 0), (2, 10), (3, 60)])
-        self.assertEqual((result["downloaded"], result["telemetry"]["most_downloading"]), (3, 2))
-        self.assertTrue(self.messages()[-1].endswith("; staggered every 10 minutes at the end"))
 
 if __name__ == "__main__":
     unittest.main()

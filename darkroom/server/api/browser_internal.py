@@ -195,7 +195,8 @@ def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, 
         event = validate.text(body, "event", limit=20)
         browser_jobs.heartbeat(opened, job_id, moment)
         if event == "attempt":
-            reply = downloads.attempt(opened, request.settings, job_id, number, moment)
+            counted = None if body.get("google_downloads") is None else validate.whole_number(body, "google_downloads", maximum=exports.MAX_GOOGLE_DOWNLOADS)
+            reply = downloads.attempt(opened, request.settings, job_id, number, moment, counted)
         elif event == "space":
             reply = downloads.space(opened, request.settings, job_id, number)
         elif event == "progress":

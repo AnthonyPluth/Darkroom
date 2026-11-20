@@ -367,6 +367,7 @@ export interface PartBody {
   since_click?: number;
   since_answer?: number;
   clicks?: number;
+  google_downloads?: number | null;
 }
 
 export interface PartReply {

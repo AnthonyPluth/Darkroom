@@ -169,6 +169,57 @@ class AttemptTests(DownloadCase):
         self.attempt(job, 1)
         self.assertEqual(self.part(1), ("downloading", 2, 2, 0))
 
+    def set_used(self, number, used, status="pending"):
+        with db.session(self.engine) as opened:
+            row = opened.execute(select(ExportPart).where(ExportPart.export_id == self.export, ExportPart.number == number)).scalar_one()
+            row.downloads_used, row.status = used, status
+
+    def counted_attempt(self, job, number, google):
+        return self.call(lambda opened: downloads.attempt(opened, self.settings, job, number, NOW, google))
+
+    def test_googles_four_of_five_allows_an_attempt_when_ours_says_five_and_the_counter_becomes_five_after_it(self):
+        self.set_used(1, 5)
+        job = self.claim()
+        reply = self.counted_attempt(job, 1, 4)
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["part"]["downloads_used"]), (True, False, 5))
+        self.assertEqual(self.part(1), ("downloading", 5, 1, 0))
+
+    def test_googles_five_of_five_gives_up_without_an_attempt(self):
+        self.set_used(1, 2)
+        job = self.claim()
+        reply = self.counted_attempt(job, 1, 5)
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["part"]["downloads_used"]), (False, True, 5))
+        self.assertEqual(self.part(1), ("failed", 5, 0, None))
+
+    def test_googles_higher_count_raises_ours_before_the_attempt(self):
+        self.set_used(1, 1)
+        job = self.claim()
+        reply = self.counted_attempt(job, 1, 3)
+        self.assertEqual((reply["allowed"], reply["part"]["downloads_used"]), (True, 4))
+
+    def test_an_unknown_count_keeps_ours_and_five_of_ours_still_gives_up(self):
+        self.set_used(1, 5)
+        job = self.claim()
+        reply = self.counted_attempt(job, 1, None)
+        self.assertEqual((reply["allowed"], reply["gave_up"]), (False, True))
+
+    def test_a_part_already_downloading_is_not_lowered_by_a_count_that_may_not_include_its_start(self):
+        job = self.claim()
+        self.counted_attempt(job, 1, 2)
+        self.assertEqual(self.part(1)[:2], ("downloading", 3))
+        self.counted_attempt(job, 1, 1)
+        self.assertEqual(self.part(1)[:2], ("downloading", 4))
+        self.set_used(1, 4, "downloading")
+        self.counted_attempt(job, 1, 0)
+        self.assertEqual(self.part(1)[1], 5)
+
+    def test_a_done_part_is_refused_whatever_googles_count_is(self):
+        self.set_used(1, 1, "done")
+        job = self.claim()
+        with self.assertRaises(downloads.Refused):
+            self.counted_attempt(job, 1, 0)
+        self.assertEqual(self.part(1)[1], 1)
+
     def test_a_corrupt_download_is_retried_twice_then_the_part_and_the_export_fail(self):
         job = self.claim()
         for tries in (1, 2):

@@ -175,11 +175,12 @@ def space(opened: Session, settings: Settings, job_id: int, number: int) -> dict
     return outcome(part, not paused, False, paused_for_space=paused)
 
 
-def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: float) -> dict[str, object]:
+def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: float, google_downloads: int | None = None) -> dict[str, object]:
     export = waiting_export(opened, job_id)
     part = part_of(opened, export, number)
     if part.status == "done":
         raise Refused(f"part {number} is already downloaded")
+    exports.take_googles_count(part, google_downloads)
     if part.status == "failed" or exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)
