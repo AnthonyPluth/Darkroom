@@ -5,8 +5,9 @@ from unittest import mock
 
 from sqlalchemy import select
 
+from darkroom.domain import dedupe
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import (
     Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
 )
@@ -556,6 +557,57 @@ class RescanCrashTests(unittest.TestCase):
                 before = len(world.scanned())
                 world.ingest(export, 3, at=NOW + 20, tools=world.immich_tools())
                 self.assertEqual(sorted(set(world.scanned()[before:])), ["lib-jo", "lib-sam"])
+
+
+class ReversalTests(unittest.TestCase):
+    def reversing(self, world, method, wanted):
+        real = getattr(part_ingest.Ingest, method)
+        done = []
+
+        def reverse_first(ingest, entry, *args, **kwargs):
+            if wanted(entry) and not done:
+                done.append(entry.name)
+                with db.session(world.engine, writing=True) as other:
+                    row = dedupe.stored_decision(other, entry.export_id, entry.name) if method == "place_decided" else other.get(
+                        DedupeDecision, entry.decision_id)
+                    dedupe.reverse(other, row.id, NOW, "owner")
+            return real(ingest, entry, *args, **kwargs)
+
+        return mock.patch.object(part_ingest.Ingest, method, reverse_first), done
+
+    def test_a_reversal_that_arrives_before_a_placement_stops_it(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        patched, done = self.reversing(world, "place_decided", lambda entry: entry.name.endswith("IMG_2001.JPG"))
+        with patched:
+            world.ingest(export, 1)
+        self.assertEqual(len(done), 1)
+        self.assertEqual({key.rsplit("/", 1)[-1] for key in world.google_only()}, set())
+        self.assertEqual(world.outcomes()["Photos from 2019/IMG_2001.JPG"], "skipped")
+        decision = world.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path.endswith("IMG_2001.JPG"))).scalar_one()
+        self.assertIsNotNone(decision.reversed_at)
+
+    def test_a_reversal_that_arrives_before_a_late_xmp_fill_stops_it(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        world.ingest(export, 1)
+        world.ingest(export, 2)
+        patched, done = self.reversing(world, "fill", lambda entry: entry.name.endswith("IMG_1002.JPG"))
+        with patched:
+            world.ingest(export, 3)
+        self.assertEqual(len(done), 1)
+        self.assertFalse(world.xmp_of("sam/originals/2019/IMG_1002.JPG").exists())
+
+    def test_a_reversal_that_arrives_before_a_review_hold_stops_the_hold(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        world.ingest(export, 1)
+        world.ingest(export, 2)
+        patched, done = self.reversing(world, "place_decided", lambda entry: entry.name.endswith("IMG_1005.JPG"))
+        with patched:
+            world.ingest(export, 3)
+        self.assertEqual(len(done), 1)
+        self.assertEqual([path for path in world.files() if "/review/" in f"/{path}"], [])
 
 
 class QueueingTests(unittest.TestCase):

@@ -15,7 +15,7 @@ from darkroom import config, dates, monitoring
 from darkroom.domain import alerts, dedupe, events, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
@@ -163,6 +163,10 @@ class Ingest:
             COMMIT_HOOK()
         self.opened.commit()
 
+    def lock(self) -> None:
+        db.write_lock(self.opened)
+        self.opened.expire_all()
+
     def media_rows(self) -> list[TakeoutEntry]:
         rows = self.opened.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.kind == "media")).scalars()
         return part_pairing.listed_media(rows)
@@ -287,6 +291,7 @@ class Ingest:
         return entry.id in self.measure([Target(entry, entry.sidecar_entry_id)])
 
     def decide(self, entry: TakeoutEntry) -> None:
+        self.lock()
         row = dedupe.stored_decision(self.opened, self.export.id, entry.name)
         if row is None:
             if not part_pairing.is_tier_1(self.index, part_pairing.candidate_of(entry)) and not self.fresh(entry):
@@ -329,6 +334,7 @@ class Ingest:
         return TakeoutItem(self.scratch.get(entry.id, Path(entry.name)), entry.sha1 or "", (), None), fields
 
     def place_decided(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+        self.lock()
         if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id)):
             self.finish_entry(entry, row)
             return
@@ -368,6 +374,7 @@ class Ingest:
         self.commit()
 
     def fill(self, entry: TakeoutEntry) -> None:
+        self.lock()
         row = self.opened.get(DedupeDecision, entry.decision_id) if entry.decision_id is not None else None
         if row is None:
             return
