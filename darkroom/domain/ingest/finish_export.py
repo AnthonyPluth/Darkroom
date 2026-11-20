@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, dedupe, events, exports
-from darkroom.domain.ingest import pairing, part_ingest, part_pairing, part_reader, run
+from darkroom.domain.ingest import pairing, part_ingest, part_pairing, run
 from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ImportRun, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
@@ -113,7 +113,7 @@ class Finish(part_ingest.Ingest):
             unit.root.sidecar_entry_id = unit.sidecar_id
         self.commit()
         by_id = {unit.root.id: unit for unit in held}
-        for chunk in part_reader.batches_of([unit.root for unit in held], part_reader.BATCH_FILES, part_reader.BATCH_BYTES):
+        for chunk in self.in_batches([unit.root for unit in held]):
             self.release_scratch()
             self.measure([part_ingest.Target(entry, by_id[entry.id].sidecar_id) for entry in chunk])
             self.commit()

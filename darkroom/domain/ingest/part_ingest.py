@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
@@ -205,6 +205,9 @@ class Ingest:
         self.scratch.clear()
         self.measured.clear()
         self.used.clear()
+
+    def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
+        return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
 
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
