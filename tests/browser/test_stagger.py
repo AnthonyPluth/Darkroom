@@ -341,13 +341,12 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual([message for message in landed if "paused for space" in message], [])
         self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
 
-    def archive_loads(self, browser):
+    def takeout_loads(self, browser):
         loads = []
         real_goto = browser.goto
 
         def goto(url):
-            if url == ARCHIVE:
-                loads.append(self.clock.now)
+            loads.append((self.clock.now, url))
             real_goto(url)
 
         browser.goto = goto
@@ -368,35 +367,35 @@ class StaggeredDownloadTests(StaggerWorld):
 
     def test_a_pause_loads_no_takeout_page_until_the_server_says_there_is_room(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        loads, answers = self.archive_loads(browser), self.space_answers()
+        loads, answers = self.takeout_loads(browser), self.space_answers()
         start = self.clock.now
         with self.short_of_space_until(22):
             _, result = self.run_job(browser)
         paused = [at for at, held in answers if held]
         self.assertEqual(len(paused), 5)
-        self.assertGreaterEqual(loads[0], start + 22 * MINUTE, "no Takeout page was loaded while the server answered paused")
-        self.assertGreater(loads[0], paused[-1])
-        self.assertEqual(len(loads), 3, "one Takeout page load per part, none for the pause")
+        self.assertGreaterEqual(loads[0][0], start + 22 * MINUTE, "no Takeout page, not even the sign-in check, was loaded while the server answered paused")
+        self.assertGreater(loads[0][0], paused[-1])
+        self.assertEqual([url for _, url in loads], [selectors.TAKEOUT_URL, ARCHIVE, ARCHIVE, ARCHIVE], "one sign-in check, then one page load per part, none for the pause")
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
 
     def test_with_room_the_page_is_loaded_at_once_after_one_space_check(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        loads, answers = self.archive_loads(browser), self.space_answers()
+        loads, answers = self.takeout_loads(browser), self.space_answers()
         start = self.clock.now
         _, result = self.run_job(browser)
         self.assertEqual([held for _, held in answers], [False, False, False])
-        self.assertLess(loads[0] - start, MINUTE)
+        self.assertLess(loads[0][0] - start, MINUTE)
         self.assertEqual(result["downloaded"], 3)
         self.assertNotIn(stagger.PAUSED_WORDS, " ".join(self.messages()))
 
     def test_an_unreadable_free_space_reading_pauses_nothing_and_loads_the_page_at_once(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        loads = self.archive_loads(browser)
+        loads = self.takeout_loads(browser)
         start = self.clock.now
         with mock.patch.object(Photos, "free_bytes", side_effect=OSError("unreadable")):
             _, result = self.run_job(browser)
-        self.assertLess(loads[0] - start, MINUTE)
+        self.assertLess(loads[0][0] - start, MINUTE)
         self.assertEqual(result["downloaded"], 3)
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         self.assertNotIn(stagger.PAUSED_WORDS, " ".join(self.messages()))
@@ -405,16 +404,53 @@ class StaggeredDownloadTests(StaggerWorld):
         with db.session(self.engine) as opened:
             exports.parts_of(opened, self.export)[0].attempts = 3
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        loads = self.archive_loads(browser)
+        loads = self.takeout_loads(browser)
         with mock.patch.object(Photos, "free_bytes", lambda photos: 0), self.assertRaisesRegex(download.DownloadFailed, "part 1"):
             self.run_job(browser)
         self.assertEqual(loads, [], "a part out of attempts gives up at the space check, before any Takeout page load")
         self.assertEqual(browser.started, [])
         self.assertEqual(self.parts()[0], ("failed", 0, 3))
 
+    def test_a_signed_out_account_is_not_asked_to_sign_in_while_the_job_starts_paused(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads = self.takeout_loads(browser)
+        signed_in_at = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if not signed_in_at:
+                signed_in_at.append(self.clock.now + 3 * MINUTE)
+
+        def content():
+            if (not signed_in_at or self.clock.now < signed_in_at[0]) and browser.url in (ARCHIVE, selectors.TAKEOUT_URL):
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        waits = []
+        real_waiting = self.reporter.waiting
+
+        def waiting(job_id, reason):
+            waits.append((self.clock.now, reason))
+            real_waiting(job_id, reason)
+
+        self.reporter.waiting = waiting
+        start = self.clock.now
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        self.assertGreaterEqual(loads[0][0], start + 22 * MINUTE, "the job opened no Takeout page to check the sign-in while it was paused")
+        self.assertTrue(waits)
+        self.assertGreaterEqual(waits[0][0], start + 22 * MINUTE, "nobody was asked to sign in while the job was paused for space")
+        signed_in = [message for message in self.messages() if message.startswith("signed in")]
+        self.assertTrue(signed_in)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+
     def test_a_long_pause_makes_no_page_loads_and_the_expiry_alert_still_opens(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        loads, answers = self.archive_loads(browser), self.space_answers()
+        loads, answers = self.takeout_loads(browser), self.space_answers()
         real_sleep = self.clock.sleep
         start = self.clock.now
 

@@ -53,6 +53,7 @@ class OnePartAtATime:
         self.fetched = 0
         self.paused_until: float | None = None
         self.paused = False
+        self.sign_in_checked = False
 
     def say(self, message: str) -> None:
         if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
@@ -86,10 +87,7 @@ class OnePartAtATime:
         return self.paused_until is None or self.ctx.clock() >= self.paused_until
 
     def signed_in(self) -> bool:
-        waited = ensure_signed_in(self.ctx, self.browser)
-        if waited and self.paused:
-            self.tell("signed in")
-        return waited
+        return ensure_signed_in(self.ctx, self.browser, self.tell)
 
     def requeue(self, part: dict[str, Any]) -> None:
         self.queue.insert(0, part)
@@ -111,6 +109,10 @@ class OnePartAtATime:
         number = part["number"]
         if self.held_for_space(part):
             return
+        if not self.sign_in_checked:
+            self.sign_in_checked = True
+            if self.signed_in():
+                self.clicks.answered()
         try:
             listed = download.part_links(self.ctx, self.browser, str(self.plan.get("google_id", "")), self.plan["part_count"], number, self.clicks, wait=False)[number]
             selector = download.part_link(listed.link)
