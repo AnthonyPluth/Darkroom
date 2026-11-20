@@ -478,6 +478,26 @@ class ParallelRunnerTests(unittest.TestCase):
         self.release.set()
         until(lambda: self.reports(1) == ["done"])
 
+    def test_a_download_paused_for_space_holds_only_its_own_accounts_loop(self):
+        def paused(ctx):
+            ctx.browser()
+            self.ran.append((ctx.kind, ctx.account))
+            ctx.progress("paused for space")
+            while not self.release.wait(0.01):
+                ctx.sleep(0.01)
+                ctx.check()
+            return {"ok": True}
+
+        self.fake.enqueue(1, kind="download", account="1")
+        self.start(self.make_runner(workers=3, registry={"download": paused, "connect": self.quick, "status": self.quick}))
+        until(lambda: ("download", "1") in self.ran)
+        self.fake.enqueue(2, kind="status", account="2")
+        self.fake.enqueue(3, kind="download", account="3")
+        until(lambda: self.reports(2) == ["done"] and ("download", "3") in self.ran)
+        self.assertEqual(self.reports(1), [], "the paused download goes on waiting in its own loop")
+        self.release.set()
+        until(lambda: self.reports(1) == ["done"] and self.reports(3) == ["done"])
+
     def test_a_queued_sign_in_starts_at_once_while_downloads_fill_every_other_lane(self):
         self.fake.enqueue(1, kind="download", account="1")
         self.fake.enqueue(2, kind="download", account="2")

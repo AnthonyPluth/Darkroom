@@ -628,6 +628,17 @@ class StaggeredDownloadTests(StaggerWorld):
         signed_in = [message for message in self.messages() if message.startswith("signed in")]
         self.assertTrue(signed_in)
         self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+        self.assertEqual(browser.fronted, 1, "a paused download that waits for a sign-in still brings its window to the front, once")
+
+    def test_a_pause_alone_never_takes_the_front_and_keeps_its_words_on_every_message(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        self.assertEqual(browser.fronted, 0, "waiting for free space is not waiting for a person")
+        messages = self.messages()
+        paused, resumed = messages.index(stagger.PAUSED_WORDS), messages.index(stagger.RESUMED_WORDS)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in messages[paused:resumed]))
+        self.assertEqual(result["downloaded"], 3)
 
     def test_a_sign_in_that_never_comes_while_parts_download_times_out(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
