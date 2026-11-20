@@ -85,12 +85,12 @@ def attach_copies(rows: Sequence[TakeoutEntry], part_number: int) -> tuple[dict[
 
 
 def sidecar_choices(rows: Iterable[TakeoutEntry], sidecars: Sequence[TakeoutSidecar]) -> dict[int, int | None]:
-    folders: dict[Path, list[str]] = {}
-    by_path: dict[Path, TakeoutEntry] = {}
+    by_path: dict[Path, list[TakeoutEntry]] = {}
     for row in rows:
-        path = Path(row.name)
+        by_path.setdefault(Path(row.name), []).append(row)
+    folders: dict[Path, list[str]] = {}
+    for path in by_path:
         folders.setdefault(path.parent, []).append(path.name)
-        by_path[path] = row
     known: dict[Path, list[str]] = {}
     texts: dict[Path, str] = {}
     owners: dict[Path, int] = {}
@@ -99,12 +99,13 @@ def sidecar_choices(rows: Iterable[TakeoutEntry], sidecars: Sequence[TakeoutSide
         known.setdefault(path.parent, []).append(path.name)
         texts.setdefault(path, sidecar.text)
         owners.setdefault(path, sidecar.entry_id)
-    digests = {path: str(row.id) for path, row in by_path.items()}
+    digests = {path: str(found[0].id) for path, found in by_path.items()}
     report = pairing.pair_names(sorted(folders.items()), digests, known, reading=texts.get)
-    chosen: dict[int, int | None] = {row.id: None for row in by_path.values()}
+    chosen: dict[int, int | None] = {row.id: None for found in by_path.values() for row in found}
     for item in report.items:
         if item.sidecar is not None and not item.sidecar_from_still:
-            chosen[by_path[item.path].id] = owners.get(item.sidecar)
+            for row in by_path[item.path]:
+                chosen[row.id] = owners.get(item.sidecar)
     return chosen
 
 
@@ -131,7 +132,7 @@ def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar
     pairing_rows = {row.id: row for row in here}
     for root in waiting:
         pairing_rows.update((member.id, member) for member in members[root.id] if member.sha1 is not None)
-    chosen = sidecar_choices(pairing_rows.values(), sidecars)
+    chosen = sidecar_choices([row for row in rows if row.sha1 is not None], sidecars)
     for row in pairing_rows.values():
         if row.sidecar_entry_id is None:
             row.sidecar_entry_id = chosen[row.id]

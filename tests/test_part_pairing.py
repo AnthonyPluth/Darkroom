@@ -5,6 +5,7 @@ from darkroom.domain.ingest import part_pairing
 from darkroom.storage import db
 from darkroom.storage.models import DedupeDecision, Export, TakeoutEntry, TakeoutSidecar
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder
+from tests.test_pairing import CUT
 from tests.test_part_reader import World
 
 YEAR = f"{GOOGLE_PHOTOS}/Photos from 2019"
@@ -148,6 +149,43 @@ class SidecarPairingTests(unittest.TestCase):
         world.pair(2)
         self.assertEqual(world.sidecar_entry_of(edit), world.sidecar_entry_of(original))
         self.assertEqual(len(world.sidecar_rows()), 1)
+
+
+class SharedPathAndNameTests(unittest.TestCase):
+    def entry_in_part(self, world, name, part):
+        with db.session(world.world.engine) as opened:
+            found = opened.query(TakeoutEntry).filter_by(name=name, part_number=part).one()
+            opened.expunge(found)
+            return found
+
+    def sidecar_name_of(self, world, found):
+        with db.session(world.world.engine) as opened:
+            return None if found.sidecar_entry_id is None else opened.get(TakeoutEntry, found.sidecar_entry_id).name
+
+    def test_two_long_names_with_one_cut_name_pair_correctly_when_they_arrive_in_different_parts(self):
+        world = PairingWorld(self, parts=2)
+        one, two = world.builder.shared_cut(CUT, ("_one.jpg", "_two.jpg"), sidecar_part=0)
+        two.part = 1
+        world.build()
+        first, second = entry_name(one.media_name), entry_name(two.media_name)
+        world.pair(1)
+        world.pair(2)
+        self.assertEqual(self.sidecar_name_of(world, world.row(first)), entry_name(f"{CUT}.json"))
+        self.assertEqual(self.sidecar_name_of(world, world.row(second)), entry_name(f"{CUT}(1).json"))
+
+    def test_a_path_repeated_in_a_later_part_pairs_every_entry_at_that_path(self):
+        world = PairingWorld(self, parts=2)
+        world.builder.photo("IMG_0040.JPG", part=0, form=None)
+        second = world.builder.photo("IMG_0040.JPG", part=1, form="json", sidecar_part=1, data=world.builder.image_bytes(".JPG") + b"x")
+        world.build()
+        name = entry_name("IMG_0040.JPG")
+        world.pair(1)
+        found = world.pair(2)
+        earlier, later = self.entry_in_part(world, name, 1), self.entry_in_part(world, name, 2)
+        self.assertNotEqual(earlier.id, later.id)
+        self.assertEqual(self.sidecar_name_of(world, later), entry_name(second.sidecar_name))
+        self.assertEqual(self.sidecar_name_of(world, earlier), entry_name(second.sidecar_name))
+        self.assertIn(name, found["ready"])
 
 
 class CopyTests(unittest.TestCase):
