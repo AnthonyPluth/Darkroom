@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring
 from darkroom.domain import alerts, dedupe, events, exports
 from darkroom.domain.ingest import pairing, part_ingest, part_pairing, run
+from darkroom.storage import db
 from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ImportRun, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
@@ -199,6 +200,7 @@ class Finish(part_ingest.Ingest):
             return
         self.remeasure(held)
         self.refresh_peers(canon, held)
+        self.lock()
         judged = self.judge(canon, held)
         by_id = {unit.root.id: unit for unit in held}
         for chunk in self.in_batches([unit.root for unit in held]):
@@ -250,6 +252,7 @@ class Finish(part_ingest.Ingest):
         self.commit()
 
     def leave_out(self, canon: Canon) -> None:
+        self.lock()
         for unit in canon.trashed:
             if unit.root.outcome in UNDECIDED:
                 unit.root.outcome, unit.root.done_at = part_ingest.SKIPPED, self.now
@@ -339,10 +342,14 @@ def finish(opened: Session, settings: config.Settings, export: Export, now: floa
     if export.status == "imported":
         raise run.AlreadyImported("this export is already imported")
     with run.account_lock(settings, export.account_id):
+        db.write_lock(opened)
         opened.refresh(export)
         if export.status == "imported":
+            opened.rollback()
             raise run.AlreadyImported("this export is already imported")
+        opened.expire_all()
         if export.status == "expired" or not complete(opened, export):
+            opened.rollback()
             raise run.NotReady("not every part of this export has been downloaded and ingested")
         return stages(opened, settings, export, now, tools or run.Tools())
 
@@ -355,16 +362,23 @@ def held_count(opened: Session, export: Export) -> int:
 
 def alert_unfinished(opened: Session, settings: config.Settings, now: float, tools: run.Tools) -> int:
     opened_now = 0
-    for export in opened.execute(select(Export).where(Export.status.in_(GAVE_UP)).order_by(Export.id)).scalars().all():
-        key = f"export:unfinished:{export.id}"
-        if complete(opened, export) or opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is not None:
+    for export_id in opened.execute(select(Export.id).where(Export.status.in_(GAVE_UP)).order_by(Export.id)).scalars().all():
+        db.write_lock(opened)
+        opened.expire_all()
+        export = opened.get(Export, export_id)
+        key = f"export:unfinished:{export_id}"
+        if export is None or export.status not in GAVE_UP or complete(opened, export):
+            opened.rollback()
+            continue
+        if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is not None:
+            opened.rollback()
             continue
         held = held_count(opened, export)
         if held:
             alerts.open_alert(opened, settings, key, "failure", f"export {export.id}", alerts.export_unfinished(str(export.id), held), None, now,
                               notifier=tools.notifier, about=alerts.account(export.account_id))
-            opened.commit()
             opened_now += 1
+        opened.commit()
     return opened_now
 
 

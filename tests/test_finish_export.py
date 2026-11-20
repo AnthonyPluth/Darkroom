@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from darkroom.domain import exports
 from darkroom.domain.ingest import finish_export, part_ingest, part_reader, run
@@ -484,6 +484,51 @@ class NeverCompletesTests(unittest.TestCase):
         self.assertEqual(self.world.sent("Darkroom needs a look"), 1)
         self.assertEqual((self.world.comparable(), self.zips()), before)
         self.assertEqual(self.world.opened.get(Export, self.export.id).status, "failed")
+
+    def test_the_alert_check_takes_the_write_lock_before_it_reads_any_alert_and_again_for_each_export(self):
+        last = self.world.part(self.export, 3)
+        last.status, last.ingest_state = "failed", "not_queued"
+        exports.give_up_downloading(self.world.opened, self.world.opened.get(Export, self.export.id), NOW)
+        self.world.opened.commit()
+        seen = []
+        real = finish_export.db.write_lock
+
+        def locking(opened):
+            seen.append("lock")
+            real(opened)
+
+        def statement(connection, cursor, text, *rest):
+            if "FROM alerts" in text:
+                seen.append("read")
+
+        event.listen(self.world.engine, "before_cursor_execute", statement)
+        try:
+            with mock.patch.object(finish_export.db, "write_lock", side_effect=locking):
+                finish_export.alert_unfinished(self.world.opened, self.world.settings, NOW + 1, self.world.tools)
+        finally:
+            event.remove(self.world.engine, "before_cursor_execute", statement)
+        self.assertIn("read", seen)
+        self.assertEqual(seen[0], "lock")
+        self.assertLess(seen.index("lock"), seen.index("read"))
+
+    def test_an_export_another_worker_already_alerted_about_is_not_alerted_again(self):
+        last = self.world.part(self.export, 3)
+        last.status, last.ingest_state = "failed", "not_queued"
+        exports.give_up_downloading(self.world.opened, self.world.opened.get(Export, self.export.id), NOW)
+        self.world.opened.commit()
+        real = finish_export.db.write_lock
+
+        def rival(opened):
+            real(opened)
+            if not self.world.opened.execute(select(Alert.id).where(Alert.key == f"export:unfinished:{self.export.id}")).first():
+                other = Alert(key=f"export:unfinished:{self.export.id}", kind="failure", subject="x", message="x", opened=NOW, closed=NOW)
+                self.world.opened.add(other)
+                self.world.opened.commit()
+
+        with mock.patch.object(finish_export.db, "write_lock", side_effect=rival):
+            finish_export.alert_unfinished(self.world.opened, self.world.settings, NOW + 1, self.world.tools)
+        self.assertEqual(self.world.count(Alert), 1)
+        self.assertEqual(self.world.sent("Darkroom needs a look"), 0)
 
     def test_an_export_nothing_is_held_for_raises_no_alert(self):
         other = FinishWorld(self)
