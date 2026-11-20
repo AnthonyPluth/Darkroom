@@ -377,7 +377,7 @@ NOT_SET_UP = "bind-share: the database has no settings table yet; start the serv
 BIND_BUSY = "bind-share: another bind-share is running in this container; nothing was written. Let it finish, then run this again if it failed"
 BIND_PROMPT = f"Type {CONFIRM_BIND} to write a new sentinel on this share and record it: "
 BOUND_NOTE = "Bound. Placing and pruning resume at the next hourly tend (or now with `python run.py jobs pixels.tend`); the placed-copy check first writes back every placed copy that is missing. "
-OWN_SYNCTHING_PROMPT = (f"Syncthing is Darkroom's own (DARKROOM_SYNCTHING=1), and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
+OWN_SYNCTHING_PROMPT = (f"Syncthing is Darkroom's own, and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
                         f"No other Syncthing may serve {PIXELS_NOTE} on this server, such as Unraid's Syncthing app or one on the host (docs/deploy/one-container.md, \"Ports already in use\"): "
                         f"an empty replacement would otherwise reach each Pixel as deletions. Type {SYNCTHING_PAUSED} once you have checked that none does: ")
 OWN_SYNCTHING_NOT_ALONE = f"bind-share: it was not confirmed that no other Syncthing serves {PIXELS_NOTE}; nothing was written"

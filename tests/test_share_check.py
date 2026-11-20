@@ -27,7 +27,7 @@ NOW = test_pixel_folder.NOW
 HOUR = jobs.PIXEL_TEND_SECONDS
 ROOT = Path(__file__).resolve().parent.parent
 SETUPS: tuple[dict[str, str], ...] = ({}, {"DARKROOM_ONE_CONTAINER": "1"}, {"DARKROOM_SYNCTHING": "0", "DARKROOM_ONE_CONTAINER": "1"})
-OWN_PROMPT = ("Syncthing is Darkroom's own (DARKROOM_SYNCTHING=1), and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
+OWN_PROMPT = ("Syncthing is Darkroom's own, and Darkroom keeps it paused for every Pixel while this share has no sentinel. "
               "No other Syncthing may serve _pixels/ on this server, such as Unraid's Syncthing app or one on the host (docs/deploy/one-container.md, \"Ports already in use\"): "
               "an empty replacement would otherwise reach each Pixel as deletions. Type paused once you have checked that none does: ")
 OWN_REFUSED = "bind-share: it was not confirmed that no other Syncthing serves _pixels/; nothing was written"
