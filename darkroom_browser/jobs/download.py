@@ -245,7 +245,7 @@ def what_the_click_led_to(browser: Browser) -> tuple[str, str]:
 
 
 class PartsRunner(Protocol):
-    def __call__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> tuple[int, str]: ...
+    def __call__(self, ctx: JobContext, browser: Browser, folder: Path, plan: dict[str, Any], parts: list[dict[str, Any]], taken: set[str], clicks: Clicks) -> int: ...
 
 
 def download_export(ctx: JobContext, run_parts: PartsRunner) -> dict[str, object]:
@@ -260,7 +260,7 @@ def download_export(ctx: JobContext, run_parts: PartsRunner) -> dict[str, object
     clicks = Clicks(ctx)
     if ensure_signed_in(ctx, browser):
         clicks.answered()
-    fetched, ending = run_parts(ctx, browser, folder, plan, parts, taken, clicks)
+    fetched = run_parts(ctx, browser, folder, plan, parts, taken, clicks)
     discard_partial(folder)
-    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}{f'; {ending}' if ending else ''}")
+    ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}")
     return {"export_id": plan.get("export_id"), "parts": len(parts), "downloaded": fetched, "telemetry": clicks.result()}

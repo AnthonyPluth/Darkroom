@@ -300,13 +300,24 @@ def update_known(opened: Session, account: GoogleAccount, export: Export, item: 
     return None
 
 
+def take_googles_count(part: ExportPart, google: int | None, lower: bool = True) -> None:
+    if google is None:
+        return
+    if lower and part.status != "downloading":
+        part.downloads_used = google
+    else:
+        part.downloads_used = max(part.downloads_used, google)
+
+
 def count_googles_downloads(opened: Session, account: GoogleAccount, item: Listed) -> None:
     counted = {part.number: part.google_downloads for part in item.parts if part.google_downloads is not None}
     export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == item.google_id)).scalar_one_or_none() if counted else None
-    for part in [] if export is None else parts_of(opened, export.id):
-        google = counted.get(part.number)
-        if google is not None and part.status != "done":
-            part.downloads_used = max(part.downloads_used, google)
+    if export is None:
+        return
+    lower = not download_open(opened, export)
+    for part in parts_of(opened, export.id):
+        if part.status != "done":
+            take_googles_count(part, counted.get(part.number), lower)
 
 
 def reconcile(opened: Session, account: GoogleAccount, listing: Sequence[Listed], now: float) -> Reconciled:

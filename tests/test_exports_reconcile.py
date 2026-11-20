@@ -402,14 +402,68 @@ class GoogleDownloadCountTests(ReconcileCase):
         self.reconcile([counted(counts=(3, None))])
         self.assertEqual(self.used(), [(1, "pending", 3), (2, "pending", 0)])
 
-    def test_a_known_part_takes_the_larger_count_and_never_a_smaller_one(self):
+    def test_googles_count_replaces_ours_when_the_part_is_not_downloading_and_no_download_job_is_open(self):
         self.reconcile([listed()])
-        self.set_part(1, "pending", 1)
+        self.close_download_jobs()
+        self.set_part(1, "pending", 5)
         self.set_part(2, "corrupt", 4)
+        self.reconcile([counted(counts=(4, 2))])
+        self.assertEqual(self.used(), [(1, "pending", 4), (2, "corrupt", 2)])
+        self.set_part(1, "failed", 5)
+        self.reconcile([counted(counts=(3, 0))])
+        self.assertEqual(self.used(), [(1, "failed", 3), (2, "corrupt", 0)])
+
+    def test_googles_higher_count_raises_ours(self):
+        self.reconcile([listed()])
+        self.close_download_jobs()
+        self.set_part(1, "pending", 1)
+        self.set_part(2, "downloading", 1)
         self.reconcile([counted(counts=(3, 2))])
-        self.assertEqual(self.used(), [(1, "pending", 3), (2, "corrupt", 4)])
-        self.reconcile([counted(counts=(0, 0))])
-        self.assertEqual(self.used(), [(1, "pending", 3), (2, "corrupt", 4)])
+        self.assertEqual(self.used(), [(1, "pending", 3), (2, "downloading", 2)])
+
+    def test_a_downloading_part_is_never_lowered_by_a_count_that_may_not_include_its_own_start(self):
+        self.reconcile([listed()])
+        self.close_download_jobs()
+        self.set_part(1, "downloading", 5)
+        self.reconcile([counted(counts=(4, None))])
+        self.assertEqual(self.used()[0], (1, "downloading", 5))
+
+    def test_an_open_download_job_keeps_ours_because_its_own_read_comes_before_each_attempt(self):
+        self.reconcile([listed()])
+        self.set_part(1, "pending", 5)
+        self.reconcile([counted(counts=(4, None))])
+        self.assertEqual(self.used()[0], (1, "pending", 5))
+
+    def test_an_unknown_count_keeps_ours(self):
+        self.reconcile([listed()])
+        self.close_download_jobs()
+        self.set_part(1, "pending", 4)
+        self.reconcile([counted(counts=(None, None))])
+        self.assertEqual(self.used()[0], (1, "pending", 4))
+
+    def test_a_part_googles_shows_at_four_of_five_is_allowed_another_attempt_and_five_is_not(self):
+        from darkroom.domain import downloads
+
+        self.reconcile([listed()])
+        self.close_download_jobs()
+        self.set_part(1, "pending", 5)
+        self.set_part(2, "pending", 5)
+        self.reconcile([counted(counts=(4, 5))])
+        with db.session(self.engine) as opened:
+            export = opened.execute(select(Export)).scalar_one()
+            first, second = exports.parts_of(opened, export.id)
+            self.assertEqual((downloads.exhausted(first), downloads.exhausted(second)), (False, True))
+            self.assertIn("Part 2 has used all 5", exports.retry_refusal(export, [first, second], NOW, False))
+        self.reconcile([counted(counts=(4, 4))])
+        with db.session(self.engine) as opened:
+            export = opened.execute(select(Export)).scalar_one()
+            self.assertIsNone(exports.retry_refusal(export, exports.parts_of(opened, export.id), NOW, False))
+
+    def close_download_jobs(self):
+        with db.session(self.engine) as opened:
+            for job in opened.execute(select(BrowserJob).where(BrowserJob.kind == "download")).scalars():
+                job.status = "failed"
+            opened.execute(select(Export)).scalar_one().status = "failed"
 
     def test_a_done_part_and_a_part_without_a_count_are_left_alone(self):
         self.reconcile([listed()])

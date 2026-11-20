@@ -121,3 +121,13 @@ Everything the design says about Syncthing's REST API, Chromium in the merged im
 | `XMP-photoshop:DateCreated` with no position | The clock time with no offset (`2019:07:04 12:30:15`). With no zone known, the clock written is the UTC reading of Google's instant, so it is not a claim about where the photo was taken; the stored `captured_utc` is unchanged. Never `+00:00` | #445 |
 | Options not taken | No XMP date at all; a household default offset setting | #445 |
 
+## One part at a time per export, and Google's download count (2026-11-20)
+
+**Owner decision.** The staggered downloads of #463 (a new part every 10 minutes, at most 2 downloading at once) are reversed: one part at a time per export, owner decision 2026-11-20. Downloads for different accounts' exports still run at the same time (#496). The owner also reported Darkroom refusing part 13 as "used all 5 of Google's downloads" while Takeout's page showed 4 of 5, so Google's own per-part count is now the source of truth for the budget.
+
+| Item | Decision | Source |
+| --- | --- | --- |
+| Parts of one export | One at a time: the next part is clicked when the one before has been kept or has failed. The interval, the "at most 2" and the back-off after prompts are gone, with no setting | owner, 2026-11-20 |
+| Parts of different accounts' exports | Still download at the same time; the free-space reservation counts every downloading part | #496 |
+| The download budget | Google's `Number of times already downloaded` for the part when it is known, read before each attempt and by the status check; Darkroom's own counter only when Google's is unknown | owner, 2026-11-20 |
+| When the counter goes down | Only when Google's count is read for a part that is not downloading, and (status check) no download job for the export is open, and (download job) the job has not already clicked that part itself. Never while downloading; never on an unknown count | owner, 2026-11-20 |

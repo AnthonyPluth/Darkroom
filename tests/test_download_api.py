@@ -44,6 +44,33 @@ class DownloadApiServer(WorkerApiServer):
 GB = 10**9
 
 
+class GoogleCountTests(DownloadApiServer):
+    def part_row(self):
+        with db.session(self.engine) as opened:
+            part = exports.parts_of(opened, self.export)[0]
+            return part.status, part.attempts, part.downloads_used
+
+    def test_the_count_googles_page_showed_reaches_the_budget_before_the_attempt(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].downloads_used = 5
+        status, reply = self.part({"event": "attempt", "google_downloads": 4})
+        self.assertEqual((status, reply["allowed"], reply["part"]["downloads_used"]), (200, True, 5))
+        self.assertEqual(self.part_row(), ("downloading", 1, 5))
+
+    def test_without_a_count_the_attempt_counts_on_its_own(self):
+        status, reply = self.part({"event": "attempt"})
+        self.assertEqual((status, reply["part"]["downloads_used"]), (200, 1))
+
+    def test_a_count_that_is_not_a_whole_number_in_range_is_refused_and_changes_nothing(self):
+        for bad in (-1, 1001, "4", 4.5, True, None):
+            with self.subTest(bad=bad):
+                status, reply = self.part({"event": "attempt", "google_downloads": bad})
+                self.assertEqual(status, 400 if bad is not None else 200, reply)
+                if status == 400:
+                    self.assertEqual(self.part_row(), ("pending", 0, 0))
+        self.assertEqual(self.part_row()[0], "downloading")
+
+
 class FreeSpaceTests(DownloadApiServer):
     def free(self, size):
         return mock.patch.object(Photos, "free_bytes", return_value=size)
