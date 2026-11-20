@@ -319,6 +319,34 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(self.parts()[0], ("done", 1, 1))
         self.assertEqual(self.parts()[1:], [("pending", 0, 0), ("pending", 0, 0)])
 
+    def test_the_pause_words_stay_on_the_message_when_a_part_in_flight_lands(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        start = self.clock.now
+        low = mock.patch.object(Photos, "free_bytes", lambda photos: 400 * 10**9 if self.clock.now < start + 1 * MINUTE else 0)
+        real_space = stagger.Staggered.may_start
+
+        def may_start(run):
+            if self.clock.now > start + 60 * MINUTE:
+                self.cancelling.set()
+            return real_space(run)
+
+        with low, mock.patch.object(stagger.Staggered, "may_start", may_start), self.assertRaises(Cancelled):
+            self.run_job(browser)
+        messages = self.messages()
+        landed = [message for message in messages if message.startswith("part 1 downloaded")]
+        self.assertEqual(len(landed), 1)
+        self.assertIn(stagger.PAUSED_WORDS, landed[0])
+        self.assertIn(stagger.PAUSED_WORDS, messages[-1])
+
+    def test_a_landing_after_the_pause_ends_says_nothing_of_it(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        with self.short_of_space_until(12):
+            self.run_job(browser)
+        landed = [message for message in self.messages() if " downloaded; " in message]
+        self.assertTrue(landed)
+        self.assertEqual([message for message in landed if "paused for space" in message], [])
+        self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
+
     def test_a_cancel_during_a_pause_ends_the_job_as_before(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         real_sleep = self.clock.sleep

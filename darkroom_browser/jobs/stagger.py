@@ -80,7 +80,7 @@ class Staggered:
 
     def say(self, message: str) -> None:
         if self.signing_in is None and (self.waiting is None or not self.waiting.asking):
-            self.ctx.progress(message)
+            self.ctx.progress(f"{message}; {PAUSED_WORDS}" if self.paused and message != PAUSED_WORDS else message)
 
     def run(self) -> int:
         self.ctx.progress(f"staggering parts: a new part every {every(self.interval)}, at most {counted(self.most, 'part')} downloading at once")
