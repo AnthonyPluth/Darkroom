@@ -96,6 +96,8 @@ class OnePartAtATime:
 
     def held_for_space(self, part: dict[str, Any]) -> bool:
         reply = self.ctx.reporter.part(self.ctx.job_id, part["number"], {"event": "space"})
+        if reply.get("gave_up"):
+            raise download.DownloadFailed(download.gave_up_message(part["number"], reply["part"], ""))
         if not reply.get("paused_for_space"):
             return False
         self.requeue(part)

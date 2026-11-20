@@ -71,7 +71,7 @@ class GoogleCountTests(DownloadApiServer):
         self.assertEqual(self.part_row()[0], "downloading")
 
 
-class FreeSpaceTests(DownloadApiServer):
+class SpaceHelpers(DownloadApiServer):
     def free(self, size):
         return mock.patch.object(Photos, "free_bytes", return_value=size)
 
@@ -79,6 +79,9 @@ class FreeSpaceTests(DownloadApiServer):
         with db.session(self.engine) as opened:
             part = exports.parts_of(opened, self.export)[0]
             return part.status, part.attempts, part.downloads_used
+
+
+class FreeSpaceTests(SpaceHelpers):
 
     def test_the_threshold_is_300_decimal_gigabytes(self):
         self.assertEqual(downloads.MIN_FREE_BYTES, 300 * 10**9)
@@ -144,7 +147,7 @@ class FreeSpaceTests(DownloadApiServer):
             self.assertEqual(opened.execute(select(Alert).where(Alert.kind == downloads.EXPIRING, Alert.closed.is_(None))).scalars().all()[0].key, downloads.expiry_key(self.export))
 
 
-class SpaceCheckTests(FreeSpaceTests):
+class SpaceCheckTests(SpaceHelpers):
     def unchanged(self):
         self.assertEqual(self.part_row(), ("pending", 0, 0))
         with db.session(self.engine) as opened:
@@ -183,14 +186,41 @@ class SpaceCheckTests(FreeSpaceTests):
         self.assertNotIn("canary-path-0452", logged.getvalue())
         self.unchanged()
 
-    def test_an_exhausted_part_is_not_paused_so_its_attempt_gives_up(self):
+    def test_a_part_out_of_attempts_gives_up_at_the_space_check_while_space_is_low(self):
         with db.session(self.engine) as opened:
             exports.parts_of(opened, self.export)[0].attempts = downloads.MAX_ATTEMPTS
         with self.free(0):
             status, reply = self.part({"event": "space"})
-            self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, False, False))
-            self.assertEqual(self.part_row()[0], "pending", "the space check itself gives up nothing")
-            reply = self.part({"event": "attempt"})[1]
+        self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, True, False))
+        self.assertEqual(self.part_row(), ("failed", downloads.MAX_ATTEMPTS, 0))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(Export, self.export).status, "failed")
+
+    def test_a_part_with_attempts_left_is_not_given_up_by_the_space_check(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].attempts = downloads.MAX_ATTEMPTS - 1
+        with self.free(0):
+            reply = self.part({"event": "space"})[1]
+        self.assertEqual((reply["gave_up"], reply["paused_for_space"]), (False, True))
+        self.assertEqual(self.part_row(), ("pending", downloads.MAX_ATTEMPTS - 1, 0))
+
+    def test_a_part_out_of_downloads_by_darkrooms_count_is_left_for_the_attempt_to_read_googles_count(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].downloads_used = downloads.MAX_DOWNLOADS
+        with self.free(0):
+            status, reply = self.part({"event": "space"})
+        self.assertEqual((status, reply["allowed"], reply["gave_up"], reply["paused_for_space"]), (200, False, False, False))
+        self.assertEqual(self.part_row(), ("pending", 0, downloads.MAX_DOWNLOADS), "the space check gives up nothing Google's count could still allow")
+        with self.free(400 * GB):
+            reply = self.part({"event": "attempt", "google_downloads": downloads.MAX_DOWNLOADS - 1})[1]
+        self.assertEqual((reply["allowed"], reply["gave_up"], reply["part"]["downloads_used"]), (True, False, downloads.MAX_DOWNLOADS))
+
+    def test_a_part_out_of_downloads_by_both_counts_still_gives_up_at_the_attempt(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].downloads_used = downloads.MAX_DOWNLOADS
+        with self.free(0):
+            self.assertFalse(self.part({"event": "space"})[1]["paused_for_space"])
+            reply = self.part({"event": "attempt", "google_downloads": downloads.MAX_DOWNLOADS})[1]
         self.assertEqual((reply["gave_up"], reply["paused_for_space"]), (True, False))
 
     def test_a_downloaded_part_is_refused(self):

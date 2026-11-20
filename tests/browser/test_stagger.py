@@ -401,12 +401,14 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
         self.assertNotIn(stagger.PAUSED_WORDS, " ".join(self.messages()))
 
-    def test_an_exhausted_part_still_gives_up_while_space_is_low(self):
+    def test_an_exhausted_part_still_gives_up_while_space_is_low_without_opening_takeout(self):
         with db.session(self.engine) as opened:
             exports.parts_of(opened, self.export)[0].attempts = 3
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
-        with mock.patch.object(Photos, "free_bytes", lambda photos: 0), self.assertRaisesRegex(download.DownloadFailed, "part 1 has used its attempts"):
+        loads = self.archive_loads(browser)
+        with mock.patch.object(Photos, "free_bytes", lambda photos: 0), self.assertRaisesRegex(download.DownloadFailed, "part 1"):
             self.run_job(browser)
+        self.assertEqual(loads, [], "a part out of attempts gives up at the space check, before any Takeout page load")
         self.assertEqual(browser.started, [])
         self.assertEqual(self.parts()[0], ("failed", 0, 3))
 
