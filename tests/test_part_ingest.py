@@ -408,6 +408,17 @@ def counting(counted):
     return mock.patch.object(part_ingest, "COMMIT_HOOK", lambda: counted.__setitem__(0, counted[0] + 1))
 
 
+def crashing_at(target):
+    seen = [0]
+
+    def hook():
+        seen[0] += 1
+        if seen[0] == target:
+            raise Crash
+
+    return mock.patch.object(part_ingest, "COMMIT_HOOK", hook)
+
+
 class CrashTests(unittest.TestCase):
     def crash_at(self, world, export, number, target):
         commits = [0]
@@ -459,6 +470,92 @@ class CrashTests(unittest.TestCase):
                     self.assertEqual(set(writes) & set(resumed), set())
                     self.assertEqual(len(writes + resumed), len(set(writes + resumed)))
                     self.assertEqual(world.state(), expected)
+
+
+class BoundedScratchTests(unittest.TestCase):
+    def test_a_late_part_that_unblocks_many_entries_restreams_them_in_bounded_batches(self):
+        world = PartWorld(self)
+
+        def build(builder):
+            for number in range(5):
+                builder.photo(f"IMG_80{number}.JPG", part=0, sidecar_part=2, gps=(45.0 + number, 12.0))
+            builder.photo("IMG_8100.JPG", part=1, form=None)
+
+        export = world.create(build)
+        world.ingest_all(export, (1, 2))
+        held = [name for name, outcome in world.outcomes().items() if outcome == "waiting_sidecar"]
+        self.assertEqual(len(held), 6)
+        scratch = world.photos.scratch("jo", f"export-{export.id}")
+        high, sweeps = [0], []
+        real_stream, real_sweep = part_reader.stream_one, part_reader.sweep
+
+        def stream(*args, **kwargs):
+            streamed = real_stream(*args, **kwargs)
+            high[0] = max(high[0], len(list(scratch.glob("*"))))
+            return streamed
+
+        def sweep(*args, **kwargs):
+            sweeps.append(len(list(scratch.glob("*"))))
+            return real_sweep(*args, **kwargs)
+
+        with (mock.patch.object(part_reader, "BATCH_FILES", 2), mock.patch.object(part_reader, "stream_one", side_effect=stream),
+              mock.patch.object(part_reader, "sweep", side_effect=sweep)):
+            world.ingest(export, 3)
+        self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "placed"), 5)
+        self.assertLessEqual(high[0], 2)
+        self.assertGreaterEqual(len(sweeps), 3)
+        self.assertEqual(list(scratch.glob("*")), [])
+
+    def test_the_bytes_bound_also_splits_a_late_parts_entries(self):
+        world = PartWorld(self)
+
+        def build(builder):
+            for number in range(3):
+                builder.photo(f"IMG_81{number}.JPG", part=0, sidecar_part=1, gps=(45.0 + number, 12.0))
+
+        export = world.create(build, parts=2)
+        world.ingest(export, 1)
+        scratch = world.photos.scratch("jo", f"export-{export.id}")
+        high = [0]
+        real_stream = part_reader.stream_one
+
+        def stream(*args, **kwargs):
+            streamed = real_stream(*args, **kwargs)
+            high[0] = max(high[0], len(list(scratch.glob("*"))))
+            return streamed
+
+        with mock.patch.object(part_reader, "BATCH_BYTES", 1), mock.patch.object(part_reader, "stream_one", side_effect=stream):
+            world.ingest(export, 2)
+        self.assertEqual((high[0], sum(1 for outcome in world.outcomes().values() if outcome == "placed")), (1, 3))
+
+
+class RescanCrashTests(unittest.TestCase):
+    def counts(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        world.ingest(export, 1, at=NOW - 100, tools=world.immich_tools())
+        world.ingest(export, 2, at=NOW - 100, tools=world.immich_tools())
+        counted = [0]
+        with counting(counted):
+            world.ingest(export, 3, at=NOW + 10, tools=world.immich_tools())
+        return counted[0]
+
+    def test_owners_changed_before_a_crash_are_rescanned_when_the_part_resumes(self):
+        commits = self.counts()
+        for target in range(1, commits + 1):
+            with self.subTest(commit=target):
+                world = PartWorld(self)
+                export = world.create(world.scenario)
+                world.ingest(export, 1, at=NOW - 100, tools=world.immich_tools())
+                world.ingest(export, 2, at=NOW - 100, tools=world.immich_tools())
+                with crashing_at(target):
+                    try:
+                        world.ingest(export, 3, at=NOW + 10, tools=world.immich_tools())
+                    except Crash:
+                        world.opened.rollback()
+                before = len(world.scanned())
+                world.ingest(export, 3, at=NOW + 20, tools=world.immich_tools())
+                self.assertEqual(sorted(set(world.scanned()[before:])), ["lib-jo", "lib-sam"])
 
 
 class QueueingTests(unittest.TestCase):

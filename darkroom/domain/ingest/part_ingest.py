@@ -38,7 +38,6 @@ FAILED: Final = "failed"
 RECORDED: Final = "recorded"
 HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
-CHANGED_BY_A_DECISION: Final = frozenset({PLACED, REVIEW})
 
 
 @dataclass
@@ -156,7 +155,8 @@ class Ingest:
         self.measured: dict[int, MediaItem] = {}
         self.used: dict[int, int | None] = {}
         self.texts: dict[int, str] = {}
-        self.archives: dict[int, tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]] = {}
+        self.slot: tuple[int, contextlib.ExitStack, zipfile.ZipFile, dict[str, zipfile.ZipInfo]] | None = None
+        stack.callback(self.close_archive)
 
     def commit(self) -> None:
         if COMMIT_HOOK is not None:
@@ -176,18 +176,31 @@ class Ingest:
         entry.outcome, entry.done_at, entry.metadata_pending = FAILED, self.now, False
         run.item_failed(self.opened, self.export, stage, error, self.now)
 
+    def close_archive(self) -> None:
+        if self.slot is not None:
+            self.slot[1].close()
+            self.slot = None
+
     def archive_of(self, number: int) -> tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]:
-        found = self.archives.get(number)
-        if found is None:
-            part = part_of(self.opened, self.export.id, number)
-            if part is None:
-                raise unpack.UnpackFailed("the part is not in the ledger")
-            path = unpack.part_path(self.export, part)
-            handle = self.stack.enter_context(unpack.open_part(self.photos, path, number))
-            archive = self.stack.enter_context(part_reader.zip_of(handle, path, number))
-            found = archive, {entry.name: entry.info for entry in part_reader.entry_listing(archive.infolist())}
-            self.archives[number] = found
-        return found
+        if self.slot is not None and self.slot[0] == number:
+            return self.slot[2], self.slot[3]
+        self.close_archive()
+        part = part_of(self.opened, self.export.id, number)
+        if part is None:
+            raise unpack.UnpackFailed("the part is not in the ledger")
+        path = unpack.part_path(self.export, part)
+        with contextlib.ExitStack() as opening:
+            handle = opening.enter_context(unpack.open_part(self.photos, path, number))
+            archive = opening.enter_context(part_reader.zip_of(handle, path, number))
+            infos = {entry.name: entry.info for entry in part_reader.entry_listing(archive.infolist())}
+            self.slot = number, opening.pop_all(), archive, infos
+        return archive, infos
+
+    def release_scratch(self) -> None:
+        part_reader.sweep(self.photos, self.person, self.export)
+        self.scratch.clear()
+        self.measured.clear()
+        self.used.clear()
 
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
@@ -254,9 +267,14 @@ class Ingest:
         result = part_pairing.pair_part(self.media_rows(), self.sidecar_rows(), self.part.number, self.index)
         self.commit()
         states = self.states()
-        for entry in result.ready:
-            if states.get(entry.part_number) in (INGESTING, INGESTED):
+        ready = [entry for entry in result.ready if states.get(entry.part_number) in (INGESTING, INGESTED)]
+        for entry in [entry for entry in ready if entry.id in sources]:
+            self.decide(entry)
+        for chunk in part_reader.batches_of([entry for entry in ready if entry.id not in sources], part_reader.BATCH_FILES, part_reader.BATCH_BYTES):
+            self.release_scratch()
+            for entry in chunk:
                 self.decide(entry)
+        self.close_archive()
         for entry in result.metadata_due:
             if states.get(entry.part_number) in (INGESTING, INGESTED):
                 self.fill(entry)
@@ -364,7 +382,7 @@ class Ingest:
             return
         self.refreshed(done)
         self.mark_changed(row, done, False)
-        entry.metadata_pending = False
+        entry.metadata_pending, entry.done_at = False, self.now
         self.commit()
 
     def tally(self) -> None:
@@ -381,9 +399,9 @@ class Ingest:
                 part.held = sum(found[outcome] for outcome in HELD)
                 part.failed_items = found[FAILED]
 
-    def placed_owners(self) -> set[int]:
-        query = select(TakeoutEntry.decision_id).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.part_number == self.part.number,
-                                                       TakeoutEntry.outcome.in_(CHANGED_BY_A_DECISION), TakeoutEntry.decision_id.is_not(None))
+    def changed_since_queued(self) -> set[int]:
+        query = select(TakeoutEntry.decision_id).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.decision_id.is_not(None),
+                                                       TakeoutEntry.done_at >= (self.part.ingest_queued_at or 0.0))
         owners = set()
         for decision_id in self.opened.execute(query).scalars():
             row = self.opened.get(DedupeDecision, decision_id)
@@ -400,7 +418,7 @@ class Ingest:
         found = Counter(self.opened.execute(select(TakeoutEntry.outcome).where(TakeoutEntry.export_id == self.export.id,
                                                                                TakeoutEntry.part_number == self.part.number)).scalars())
         if resumed:
-            self.changed |= self.placed_owners()
+            self.changed |= self.changed_since_queued()
         rescanned = run.rescan_people(self.opened, self.settings, sorted(self.changed), self.export, self.now, self.tools)
         self.part.ingest_state, self.part.ingested_at = INGESTED, self.now
         events.record(self.opened, self.now, "export_part_ingested", f"export {self.export.id}",
@@ -429,7 +447,8 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         with contextlib.ExitStack() as stack:
             ingest = Ingest(opened, settings, photos, export, part, person, now, tools, stack)
             try:
-                part_reader.read_part(opened, photos, person, export, part, now, each_batch=ingest.batch)
+                part_reader.read_part(opened, photos, person, export, part, now, each_batch=ingest.batch, batch_files=part_reader.BATCH_FILES,
+                                      batch_bytes=part_reader.BATCH_BYTES)
             except part_reader.PartRefused as refused:
                 return refuse(opened, settings, export, part, refused, now, tools)
             try:
