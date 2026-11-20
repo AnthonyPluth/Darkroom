@@ -3,14 +3,14 @@ import json
 import logging
 import unittest
 import zipfile
+from unittest import mock
 
 from sqlalchemy import select
 
-from unittest import mock
-
 from darkroom.domain import downloads, events, exports
+from darkroom.domain.ingest import part_ingest
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, Export, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
 from tests.test_browser_internal_api import TOKEN, WorkerApiServer
@@ -144,6 +144,24 @@ class DownloadApiTests(DownloadApiServer):
             export = opened.get(Export, self.export)
             self.assertEqual((export.status, export.stage), ("downloaded", "queued"))
             self.assertEqual(opened.get(BrowserJob, self.job).status, "done")
+
+    def ingest_state_after_done(self):
+        self.part({"event": "attempt"})
+        size = self.write_part(FILE_CANARY)
+        self.assertEqual(self.part({"event": "done", "filename": FILE_CANARY, "bytes": size})[0], 200)
+        with db.session(self.engine) as opened:
+            found = opened.execute(select(ExportPart)).scalar_one()
+            return found.ingest_state, found.ingest_queued_at
+
+    def test_a_finished_part_is_queued_for_ingest_only_with_the_switch_on(self):
+        self.assertFalse(part_ingest.ENABLED)
+        self.assertEqual(self.ingest_state_after_done(), ("not_queued", None))
+
+    def test_a_finished_part_is_queued_for_ingest_when_the_switch_is_on(self):
+        with mock.patch.object(part_ingest, "ENABLED", True):
+            state, queued_at = self.ingest_state_after_done()
+        self.assertEqual(state, "queued")
+        self.assertIsNotNone(queued_at)
 
     def test_done_before_every_part_is_downloaded_is_refused_and_the_job_stays_open(self):
         status, reply = self.worker("POST", f"/internal/browser/jobs/{self.job}/done", {"result": {}})

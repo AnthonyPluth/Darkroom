@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from darkroom import dates, monitoring
 from darkroom.config import Settings
 from darkroom.domain import alerts, browser_jobs, events, exports
-from darkroom.domain.ingest import run
+from darkroom.domain.ingest import part_ingest, run
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import NotInTheInbox, OutsideRoot, Photos
@@ -243,6 +243,7 @@ def part_done(opened: Session, settings: Settings, job_id: int, number: int, fil
     part.status = "done"
     part.filename = filename
     part.bytes_done = size
+    part_ingest.queue(part, now)
     events.record(opened, now, "export_part_downloaded", str(export.id), f"part {number}")
     return outcome(part, True, False)
 

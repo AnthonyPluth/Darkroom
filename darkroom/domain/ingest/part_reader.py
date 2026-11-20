@@ -378,6 +378,10 @@ def stream_media(opened: Session, photos: Photos, person: Person, export: Export
         read.batches += 1
 
 
+def sweep(photos: Photos, person: Person, export: Export) -> None:
+    paths.sweep_scratch(photos, person.slug, unpack.staging_name(export))
+
+
 def read_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, each_batch: EachBatch | None = None,
               batch_files: int = BATCH_FILES, batch_bytes: int = BATCH_BYTES) -> PartRead:
     read = PartRead()

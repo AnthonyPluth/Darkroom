@@ -208,9 +208,9 @@ class ListingTests(unittest.TestCase):
     def test_the_batch_size_is_the_existing_pinned_batch(self):
         self.assertEqual(part_reader.BATCH_FILES, run.PINNED_AT_ONCE)
 
-    def test_nothing_in_the_service_calls_the_reader_yet(self):
+    def test_only_part_ingest_calls_the_reader(self):
         users = [str(p.relative_to(ROOT)) for p in (ROOT / "darkroom").rglob("*.py") if "part_reader" in p.read_text() and p.name != "part_reader.py"]
-        self.assertEqual(users, [])
+        self.assertEqual(users, ["darkroom/domain/ingest/part_ingest.py"])
 
 
 class SameRefusalsAsUnpackTests(unittest.TestCase):
