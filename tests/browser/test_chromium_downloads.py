@@ -15,7 +15,7 @@ from unittest import mock
 
 from darkroom_browser import live
 from darkroom_browser.context import PartClick
-from darkroom_browser.stall import StallWatch, Verdict
+from darkroom_browser.stall import IN_PROGRESS_SUFFIX, StallWatch, Verdict
 
 try:
     from playwright.sync_api import TimeoutError as NoDownloadInTime
@@ -309,8 +309,12 @@ class ChromiumStaggerTests(ChromiumWorld):
         self.browser.goto(PAGE_URL)
         second = self.browser.start_download("#part2", PartClick("#part2", STAGGER_LINKS[2], 2))
         self.assertNotEqual(first, second)
-        verdicts, overlapped = self.until_finished([second])
-        self.assertFalse(overlapped)
+        self.browser.page.wait_for_timeout(int(APART_SECONDS * 1000))
+        self.assertTrue(self.browser.download_state(second).in_progress)
+        self.assertFalse(self.browser.download_state(first).in_progress)
+        in_progress = [entry.name for entry in (self.root / "_inbox" / ".downloads" / "3").iterdir() if entry.name.endswith(IN_PROGRESS_SUFFIX)]
+        self.assertEqual(in_progress, [second + IN_PROGRESS_SUFFIX])
+        verdicts, _ = self.until_finished([second])
         self.assertEqual(verdicts, {second: Verdict.FINISHED})
         path = self.browser.keep_download(second, self.target / "2")
         self.assertEqual((path.name, path.read_bytes()), (STAGGER_NAMES[2], STAGGER_ZIPS[2]))
