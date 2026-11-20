@@ -76,6 +76,8 @@
     {@const data = loader.current.data}
     {@const chip = workerChip(data.view.worker_last_seen, data.now)}
     {@const waiting = data.accounts.filter((a) => data.jobs.some((j) => j.account_id === a.id && j.status === "waiting_for_user"))}
+    {@const shownJob = data.jobs.find((j) => j.id === data.view.on_screen_job && j.status === "waiting_for_user")}
+    {@const shown = waiting.length > 1 ? waiting.find((a) => a.id === shownJob?.account_id) : undefined}
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div class="flex flex-col gap-1">
         <h1 class="text-xl font-bold tracking-tight">Remote browser</h1>
@@ -93,7 +95,11 @@
             <Chip tone="bad" label={reason === "wrong_account" ? "Wrong account" : "Sign-in needed"} />
             <b class="text-md">{reason === "wrong_account" ? `Switch to ${account.email}` : `Sign in to ${account.email}`}</b>
           </div>
+          {#if shown && shown.id !== account.id}
+          <p>Waiting for the window below, which shows {shown.email} now. Its window comes up once that sign-in is done.</p>
+          {:else}
           <p>
+            {#if shown}The window below is {account.email}'s.{/if}
             {#if reason === "wrong_account"}
               The browser is signed in to a different Google account. Sign out of it in the window below and sign in as {account.email}.
             {:else}
@@ -107,6 +113,7 @@
               The waiting browser job then carries on.
             {/if}
           </p>
+          {/if}
         </div>
       </section>
     {/each}

@@ -652,6 +652,7 @@ class RenewalLifecycleTests(RenewalCase):
             while (job := browser_jobs.claim(opened, now)) is not None:
                 if job.kind == "renew":
                     return job.id
+                browser_jobs.done(opened, job.id, {}, now)
         raise AssertionError("no renew job was queued")
 
     def test_over_two_years_an_unconfirmed_renewal_found_in_takeout_leads_to_next_years_renewal(self):

@@ -29,6 +29,9 @@ class Reporter:
     def waiting(self, job_id: int, reason: str) -> None:
         self.events.append(("waiting", reason))
 
+    def on_screen(self, job_id: int) -> None:
+        self.events.append(("on_screen", str(job_id)))
+
     def kinds(self, kind: str) -> list[str]:
         return [message for name, message in self.events if name == kind]
 
@@ -45,6 +48,7 @@ class ScriptedBrowser:
         self.after_click = after_click or {}
         self.closed = False
         self.address = "about:blank"
+        self.fronted = 0
 
     def goto(self, url: str) -> None:
         self.visited.append(url)
@@ -77,6 +81,9 @@ class ScriptedBrowser:
 
     def screenshot(self, path: Path) -> None:
         path.write_bytes(b"\x89PNG")
+
+    def bring_to_front(self) -> None:
+        self.fronted += 1
 
     def close(self) -> None:
         self.closed = True

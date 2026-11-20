@@ -37,6 +37,7 @@ MAX_DOWNLOADING = 10
 MAX_GAP_SECONDS = 30 * 86400
 MAX_CLICKS = 10_000
 MIN_FREE_BYTES = 300 * 10**9
+IN_FLIGHT_SLACK = 1 << 30
 
 
 class NotADownload(ValueError):
@@ -149,12 +150,18 @@ def outcome(part: ExportPart, allowed: bool, gave_up: bool, paused_for_space: bo
     return {"allowed": allowed, "gave_up": gave_up, "paused_for_space": paused_for_space, "part": part_plan(part)}
 
 
-def short_of_space(settings: Settings) -> bool:
+def still_to_come(opened: Session, part: ExportPart) -> int:
+    downloading = opened.execute(select(ExportPart.bytes, ExportPart.bytes_done).where(ExportPart.status == "downloading", ExportPart.id != part.id)).all()
+    return sum(max(0, (listed or 0) - (done or 0)) for listed, done in downloading)
+
+
+def short_of_space(opened: Session, settings: Settings, part: ExportPart) -> bool:
     try:
-        return Photos(settings.photos_root).free_bytes() < MIN_FREE_BYTES
+        free = Photos(settings.photos_root).free_bytes()
     except OSError:
         monitoring.log("free space on the share could not be read; downloads are not paused")
         return False
+    return free < MIN_FREE_BYTES or free < still_to_come(opened, part) + (part.bytes or 0) + IN_FLIGHT_SLACK
 
 
 def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: float) -> dict[str, object]:
@@ -165,7 +172,7 @@ def attempt(opened: Session, settings: Settings, job_id: int, number: int, now: 
     if part.status == "failed" or exhausted(part):
         give_up(opened, export, part, now)
         return outcome(part, False, True)
-    if short_of_space(settings):
+    if short_of_space(opened, settings, part):
         return outcome(part, False, False, paused_for_space=True)
     browser_jobs.open_job(opened, job_id).result = ATTEMPTED
     part.downloads_used += 1

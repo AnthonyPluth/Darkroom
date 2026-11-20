@@ -18,6 +18,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
+| `07-browser-several-waiting.md` | Remote browser: the copy when several accounts wait for a sign-in, naming the account whose window is on screen (text spec, signed off by the owner, AnthonyPluth, on 2026-11-20, #496) |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
 | `02-status-syncthing-desktop.dc.html`, `02-status-syncthing-phone.dc.html` | Status: the Syncthing card, the Pixel row and the new alerts (signed off, #322); its last block, the About card's states (approved 2026-11-18, #421) |
 | `03-people-pairing-states-desktop.dc.html`, `03-people-pairing-states-phone.dc.html` | People and Status: three per-Pixel states #322 did not draw, and sharing a removed folder again (addendum, signed off), with row 2d drawn in the full-width redraw |

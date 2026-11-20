@@ -79,8 +79,8 @@ def reply_with(request: Request, work: Callable[[Session, float], dict[str, obje
 
 def claim(request: Annotated[Request, contract.ClaimBody]) -> Annotated[Response, contract.WorkerReply]:
     def work(opened: Session, moment: float) -> BrowserJob | None:
-        body_of(request)
-        job = browser_jobs.claim(opened, moment)
+        lane = validate.text(body_of(request), "lane", required=False, limit=20) or browser_jobs.ANY_LANE
+        job = browser_jobs.claim(opened, moment, lane)
         if job is not None:
             monitoring.log("browser job claimed", kind=job.kind)
         return job
@@ -100,6 +100,14 @@ def progress(request: Annotated[Request, contract.ProgressBody]) -> Annotated[Re
     def work(opened: Session, moment: float) -> BrowserJob:
         message = validate.text(body_of(request), "message", limit=MAX_MESSAGE)
         return browser_jobs.progress(opened, job_id_of(request), message, moment)
+
+    return answer(request, work)
+
+
+def on_screen(request: Annotated[Request, contract.OnScreenBody]) -> Annotated[Response, contract.WorkerReply]:
+    def work(opened: Session, moment: float) -> BrowserJob:
+        body_of(request)
+        return browser_jobs.on_screen(opened, job_id_of(request), moment)
 
     return answer(request, work)
 

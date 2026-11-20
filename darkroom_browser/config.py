@@ -7,6 +7,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MIN_TOKEN = 32
+DEFAULT_WORKERS = 3
+MOST_WORKERS = 8
 
 
 def env(name: str, default: str = "") -> str:
@@ -33,6 +35,12 @@ def browser_token() -> str:
     return read_handed(int(raw)) if raw.isascii() and raw.isdigit() and int(raw) >= 3 else ""
 
 
+def whole_number(raw: str, default: int) -> int:
+    if not raw:
+        return default
+    return int(raw) if raw.isascii() and raw.isdigit() else 0
+
+
 @dataclass(frozen=True)
 class Settings:
     token: str
@@ -41,6 +49,7 @@ class Settings:
     poll_seconds: float
     worker_name: str
     browser_root: Path | None = None
+    workers: int = DEFAULT_WORKERS
 
 
 def load() -> Settings:
@@ -51,6 +60,7 @@ def load() -> Settings:
         poll_seconds=float(env("POLL_SECONDS", "15")),
         worker_name=env("WORKER_NAME") or platform.node() or "browser-worker",
         browser_root=Path(env("BROWSER_ROOT")) if env("BROWSER_ROOT") else None,
+        workers=whole_number(env("BROWSER_WORKERS"), DEFAULT_WORKERS),
     )
 
 
@@ -77,4 +87,6 @@ def problems(settings: Settings) -> list[str]:
         found.append("BROWSER_ROOT must not be PHOTOS_ROOT, a folder inside it other than its _browser folder, or a folder that holds it")
     if settings.poll_seconds < 1:
         found.append("POLL_SECONDS must be at least 1")
+    if not 1 <= settings.workers <= MOST_WORKERS:
+        found.append(f"BROWSER_WORKERS must be a whole number from 1 to {MOST_WORKERS}")
     return found

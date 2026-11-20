@@ -95,6 +95,10 @@ jobs:
       - name: Check that the image's Chromium resolves Takeout's links to the addresses the parser checked, with the deployment sandbox (tests/browser/test_chromium_links.py, which skips where there is no Chromium), and that the worker's real open_context records downloads on every tab (tests/browser/test_chromium_downloads.py)
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app -e DARKROOM_CHROMIUM_TESTS=1 darkroom:smoke /opt/worker/bin/python -m unittest -v tests.browser.test_chromium_links tests.browser.test_chromium_downloads
+      - name: Check that the Chrome window brought to the front with bring_to_front is the one on top of the virtual screen, under Xvfb with no window manager and the deployment sandbox (tests/browser/two_windows.py; not gating until it has passed here once, #494)
+        continue-on-error: true
+        run: |
+          docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --shm-size=1g -v "$PWD/tests:/opt/worker/app/tests:ro" -w /opt/worker/app darkroom:smoke bash -c 'Xvfb :99 -screen 0 1280x900x24 -nolisten tcp -nolisten local & for _ in $(seq 1 30); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 1; done; DISPLAY=:99 /opt/worker/bin/python -m tests.browser.two_windows'
       - name: Copy browser profiles across mounts with the deployment sandbox, where cp -a is refused
         run: |
           docker run --rm --cap-drop=ALL --security-opt no-new-privileges:true --security-opt seccomp=deploy/browser/seccomp.json --tmpfs /photos:uid=99,gid=100 --tmpfs /data:uid=99,gid=100 -v "$PWD/tests/browser/copy_under_profile.sh:/probe.sh:ro" -w /app darkroom:smoke bash /probe.sh

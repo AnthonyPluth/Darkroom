@@ -35,5 +35,6 @@
   <Config Name="IMMICH_ADMIN_KEY" Target="IMMICH_ADMIN_KEY" Default="" Mode="" Description="An Immich admin API key, for the external-library rescans." Type="Variable" Display="always" Required="false" Mask="true"/>
   <Config Name="DARKROOM_SECRET_KEY" Target="DARKROOM_SECRET_KEY" Default="" Mode="" Description="Leave empty: Darkroom generates the key into the appdata folder on first start. Set it only to keep the key apart from appdata." Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="POLL_SECONDS" Target="POLL_SECONDS" Default="15" Mode="" Description="How often the idle browser worker asks for a job." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
+  <Config Name="BROWSER_WORKERS" Target="BROWSER_WORKERS" Default="3" Mode="" Description="How many browser jobs the worker runs at once, for different Google accounts (1 to 8). One of them is kept for sign-ins and other short jobs. Each running job has its own Chrome." Type="Variable" Display="advanced" Required="false" Mask="false">3</Config>
   <Config Name="BROWSER_CHANNEL" Target="BROWSER_CHANNEL" Default="chrome" Mode="" Description="chrome: Google Chrome; chromium: always the bundled Chromium." Type="Variable" Display="advanced" Required="false" Mask="false">chrome</Config>
 </Container>

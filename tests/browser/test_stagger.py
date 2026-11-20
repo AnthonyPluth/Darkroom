@@ -10,13 +10,14 @@ from sqlalchemy import select
 from darkroom.domain import events, exports
 from darkroom.storage.paths import Photos
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom_browser import client, selectors
 from darkroom_browser.jobs import session, status
 from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from darkroom_browser.stall import FolderState
 from tests.browser.takeout_pages import COMPLETED_ID
+from tests.shared import add_person
 from tests.browser.test_classify import SIGN_IN_NEEDED
 from tests.browser.test_download import AFTER_THE_CLICK, ARCHIVE, NOW, SIZES, DownloadBrowser, DownloadWorld
 
@@ -347,6 +348,39 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual([message for message in landed if "paused for space" in message], [])
         self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
 
+    def another_accounts_part_downloading(self, size):
+        with db.session(self.engine) as opened:
+            person = add_person(opened, "sam")
+            account = GoogleAccount(email="sam@example.test", default_person_id=person, created=1.0, session_state="ok")
+            opened.add(account)
+            opened.flush()
+            exports.reconcile(opened, account, [exports.Listed("other-export", NOW - 600, "ready", NOW + 7 * 86400, (exports.ListedPart(1, size),))], NOW)
+            theirs = opened.execute(select(ExportPart).join(Export).where(Export.account_id == account.id)).scalar_one()
+            theirs.status = "downloading"
+            return theirs.id
+
+    def test_two_accounts_downloads_share_one_disk_and_the_first_part_waits_for_the_other_accounts_part(self):
+        free = 400 * 10**9
+        other = self.another_accounts_part_downloading(free - 10**9)
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        real_sleep = self.clock.sleep
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if self.clock.now >= 1000.0 + 12 * MINUTE:
+                with db.session(self.engine) as opened:
+                    opened.get(ExportPart, other).status = "done"
+            real_sleep(seconds)
+
+        self.clock.sleep = sleep
+        with mock.patch.object(Photos, "free_bytes", lambda photos: free):
+            _, result = self.run_job(browser)
+        self.assertGreaterEqual(browser.started[0][1] - 1000.0, 12 * MINUTE, "no part of this job started while the other account's part still needed the room")
+        self.assertEqual(sum(1 for message in self.messages() if message == stagger.PAUSED_WORDS), 1)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3, "the wait spent no attempt and none of Google's downloads")
+
     def test_a_cancel_during_a_pause_ends_the_job_as_before(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         real_sleep = self.clock.sleep
@@ -442,6 +476,36 @@ class StaggeredDownloadTests(StaggerWorld):
         self.run_job(browser)
         self.assertEqual([event for event in self.reporter.events if event[0] == "waiting"], [("waiting", "verify")])
         self.assertEqual(self.parts()[1], ("done", 2, 1))
+
+    def fronts_in_order(self, browser):
+        browser.bring_to_front = lambda: self.reporter.events.append(("front", None))
+
+    def test_a_prompt_while_staggering_brings_the_window_to_the_front_when_the_job_starts_waiting(self):
+        browser = StaggerBrowser(["ok", "unrecognised then reauth", "ok", "ok"], self.clock)
+        self.fronts_in_order(browser)
+        self.run_job(browser)
+        seen = self.reporter.events
+        waited = seen.index(("waiting", "verify"))
+        self.assertEqual(seen[waited + 1], ("front", None))
+        self.assertEqual(seen.count(("front", None)), 1)
+        self.assertEqual(self.parts()[1], ("done", 2, 1), "nothing else about the stagger changes")
+
+    def test_a_sign_in_while_staggering_brings_the_window_to_the_front_once(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.signed_out_while_reopening(browser, 30)
+        self.fronts_in_order(browser)
+        _, result = self.run_job(browser)
+        seen = self.reporter.events
+        waited = seen.index(("waiting", "sign_in"))
+        self.assertEqual(seen[waited + 1], ("front", None))
+        self.assertEqual(seen.count(("front", None)), 1)
+        self.assertEqual(self.started_after(browser), [(1, 0), (2, 40), (3, 50)])
+        self.assertEqual(result["downloaded"], 3)
+
+    def test_a_download_that_never_waits_never_takes_the_front(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        self.run_job(browser)
+        self.assertEqual(browser.fronted, 0)
 
     def test_a_broken_finished_file_is_retried(self):
         for outcome, reason in (("bad name", "bad_name"), ("corrupt", "corrupt"), ("fails", "interrupted")):
@@ -598,6 +662,17 @@ class StaggeredDownloadTests(StaggerWorld):
         signed_in = [message for message in self.messages() if message.startswith("signed in")]
         self.assertTrue(signed_in)
         self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+        self.assertEqual(browser.fronted, 1, "a paused download that waits for a sign-in still brings its window to the front, once")
+
+    def test_a_pause_alone_never_takes_the_front_and_keeps_its_words_on_every_message(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        self.assertEqual(browser.fronted, 0, "waiting for free space is not waiting for a person")
+        messages = self.messages()
+        paused, resumed = messages.index(stagger.PAUSED_WORDS), messages.index(stagger.RESUMED_WORDS)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in messages[paused:resumed]))
+        self.assertEqual(result["downloaded"], 3)
 
     def test_a_sign_in_that_never_comes_while_parts_download_times_out(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)

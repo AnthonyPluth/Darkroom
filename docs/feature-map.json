@@ -824,6 +824,15 @@
       ]
     },
     {
+      "route": "POST /internal/browser/jobs/{id}/on-screen",
+      "auth": "worker",
+      "handler": "darkroom.server.api.browser_internal.on_screen",
+      "frontend": [],
+      "tests": [
+        "tests/test_browser_internal_api.py"
+      ]
+    },
+    {
       "route": "POST /internal/browser/jobs/{id}/done",
       "auth": "worker",
       "handler": "darkroom.server.api.browser_internal.done",

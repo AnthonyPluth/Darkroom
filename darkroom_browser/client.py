@@ -162,8 +162,9 @@ class Client:
             return "unreadable error"
         return str(parsed.get("error", "unknown error")) if isinstance(parsed, dict) else "unknown error"
 
-    def claim(self, worker: str) -> dict[str, Any] | None:
-        job = self.post("/internal/browser/jobs/claim", {"worker": worker}).get("job")
+    def claim(self, worker: str, lane: str | None = None) -> dict[str, Any] | None:
+        body: dict[str, object] = {"worker": worker} if lane is None else {"worker": worker, "lane": lane}
+        job = self.post("/internal/browser/jobs/claim", body).get("job")
         return job if isinstance(job, dict) else None
 
     def heartbeat(self, job_id: int) -> None:
@@ -174,6 +175,9 @@ class Client:
 
     def waiting(self, job_id: int, reason: str) -> None:
         self.post(f"/internal/browser/jobs/{job_id}/waiting", {"reason": reason})
+
+    def on_screen(self, job_id: int) -> None:
+        self.post(f"/internal/browser/jobs/{job_id}/on-screen", {})
 
     def download_plan(self, job_id: int) -> dict[str, Any]:
         return self.post(f"/internal/browser/jobs/{job_id}/download", {})
