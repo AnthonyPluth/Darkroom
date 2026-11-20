@@ -126,7 +126,7 @@ def pair_part(entries: Sequence[TakeoutEntry], sidecars: Sequence[TakeoutSidecar
     waiting = [
         root for root in roots
         if root.copy_of_id is None and root.sidecar_entry_id is None and root.sha1 is not None and root.id not in {f.id for f in fresh}
-        and (root.outcome == WAITING_SIDECAR or root.metadata_pending)
+        and (root.outcome in {WAITING_SIDECAR, WAITING_EXPORT} or root.metadata_pending)
         and (brings_sidecars or any(member.id in here_ids for member in members[root.id]))
     ]
     pairing_rows = {row.id: row for row in here}

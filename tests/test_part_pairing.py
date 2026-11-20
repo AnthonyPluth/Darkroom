@@ -188,6 +188,36 @@ class SharedPathAndNameTests(unittest.TestCase):
         self.assertIn(name, found["ready"])
 
 
+class LateSidecarTests(unittest.TestCase):
+    def test_a_late_sidecar_pairs_with_an_edited_copy_held_for_the_export_and_keeps_it_held(self):
+        world = PairingWorld(self, parts=2)
+        original = world.builder.photo("IMG_0050.JPG", part=0, form="json", sidecar_part=1)
+        edit = world.builder.add("IMG_0050-edited.JPG", world.builder.image_bytes(".JPG"), "Photos from 2019", 0, "json", 1, (1.0, 2.0), "")
+        world.builder.manifest.edited_of[edit.media_name] = original.media_name
+        world.build()
+        name, edited = entry_name("IMG_0050.JPG"), entry_name("IMG_0050-edited.JPG")
+        world.fingerprint(edited, is_edited=True, edited_of=name)
+        world.pair(1)
+        self.assertEqual((world.row(edited).outcome, world.row(edited).sidecar_entry_id), ("waiting_export", None))
+        found = world.pair(2)
+        row = world.row(edited)
+        self.assertIsNotNone(row.sidecar_entry_id)
+        self.assertEqual(row.outcome, "waiting_export")
+        self.assertIn(edited, found["newly_paired"])
+        self.assertNotIn(edited, found["ready"])
+
+    def test_a_late_sidecar_pairs_with_a_trashed_entry_held_for_the_export_and_keeps_it_held(self):
+        world = PairingWorld(self, parts=2)
+        item = world.builder.add("IMG_0051.JPG", world.builder.image_bytes(".JPG"), "Trash", 0, "json", 1, (1.0, 2.0), "")
+        world.build()
+        name = entry_name(item.media_name, "Trash")
+        world.pair(1)
+        self.assertEqual((world.row(name).outcome, world.row(name).sidecar_entry_id), ("waiting_export", None))
+        found = world.pair(2)
+        self.assertIsNotNone(world.row(name).sidecar_entry_id)
+        self.assertEqual((world.row(name).outcome, found["newly_paired"], found["ready"]), ("waiting_export", [name], []))
+
+
 class CopyTests(unittest.TestCase):
     def test_a_copy_in_another_folder_attaches_to_the_first_item(self):
         world = PairingWorld(self)
