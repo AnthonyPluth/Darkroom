@@ -22,8 +22,8 @@ VERIFIED = "cleanup_holds_verified"
 REASSIGN_COPY = ", copy "
 MOVES = ("media_reassigned", "review_undone")
 NOT_QUEUED: Final = "not_queued"
-UNSETTLED_PARTS: Final = ("refused", "failed")
-UNSETTLED_ENTRIES: Final = ("failed", "listed", "waiting_sidecar", "waiting_export")
+SETTLED_PART: Final = "ingested"
+SETTLED_ENTRIES: Final = ("placed", "review", "skipped", "copy", "recorded")
 
 
 @dataclass
@@ -199,10 +199,10 @@ def ingested_by_part(opened: Session, export: Export) -> bool:
 
 def unsettled(opened: Session, export: Export) -> bool:
     part = opened.execute(
-        select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(UNSETTLED_PARTS)).limit(1)
+        select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state != SETTLED_PART).limit(1)
     ).first()
     entry = opened.execute(
-        select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.outcome.in_(UNSETTLED_ENTRIES)).limit(1)
+        select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.outcome.not_in(SETTLED_ENTRIES)).limit(1)
     ).first()
     return part is not None or entry is not None
 
@@ -244,12 +244,15 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
     opened.flush()
     db.write_lock(opened)
     opened.expire_all()
-    if export.status != "imported":
-        return
-    if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
-        report.kept += 1
-        return
-    remove_parts(opened, photos, export, report)
+    try:
+        if export.status != "imported":
+            return
+        if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
+            report.kept += 1
+            return
+        remove_parts(opened, photos, export, report)
+    finally:
+        opened.commit()
 
 
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:

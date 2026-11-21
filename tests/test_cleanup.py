@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, ReviewItem
+from darkroom.storage.models import (
+    ENTRY_OUTCOMES, PART_INGEST_STATES, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, ReviewItem,
+)
 from tests.import_world import DAY, NOW, World, tree
 from tests.privacy import no_leaks
 from tests.test_finish_export import FinishWorld
@@ -678,7 +680,7 @@ class PerPartExportTests(PerPartImported):
             return undo
 
         def clear_held():
-            if self.held.is_symlink():
+            if self.held.is_symlink() or self.held.is_file():
                 self.held.unlink()
             elif self.held.exists():
                 shutil.rmtree(self.held)
@@ -699,11 +701,18 @@ class PerPartExportTests(PerPartImported):
             os.symlink(elsewhere, self.held)
             return clear_held
 
-        reasons = {"failed entry": outcome("failed"), "listed entry": outcome("listed"), "waiting_sidecar entry": outcome("waiting_sidecar"),
-                   "waiting_export entry": outcome("waiting_export"), "refused part": part_state("refused"), "failed part": part_state("failed"),
-                   "hold missing": hold_missing, "hold different": hold_different, "hold a link": hold_a_link, "hold_sha1 different": sha1_different,
+        def held_a_file():
+            self.held.parent.mkdir(parents=True, exist_ok=True)
+            self.held.write_bytes(b"a file where the held store goes")
+            return clear_held
+
+        reasons = {f"{value} entry": outcome(value) for value in ENTRY_OUTCOMES if value not in cleanup.SETTLED_ENTRIES}
+        reasons |= {f"{value} part": part_state(value) for value in PART_INGEST_STATES if value != cleanup.SETTLED_PART}
+        self.assertEqual(set(reasons), {"listed entry", "waiting_sidecar entry", "waiting_export entry", "failed entry", "not_queued part",
+                                        "queued part", "ingesting part", "refused part", "failed part"})
+        reasons |= {"hold missing": hold_missing, "hold different": hold_different, "hold a link": hold_a_link, "hold_sha1 different": sha1_different,
                    "hold not in the ledger": not_in_the_ledger, "unaccounted held file": held_file, "folder in the held store": held_folder,
-                   "held store a link": held_link}
+                   "held store a link": held_link, "held store a file": held_a_file}
         for reason, apply in reasons.items():
             with self.subTest(reason=reason):
                 undo = apply()
@@ -754,6 +763,17 @@ class PerPartExportTests(PerPartImported):
             report = self.clean()
             self.assertEqual((report.parts, report.kept), (0, 1))
         self.assertTrue(self.zips_kept())
+
+
+class PerPartStateTests(unittest.TestCase):
+    def test_every_part_and_entry_state_is_classified_and_only_the_settled_ones_let_zips_go(self):
+        keeping_parts = {"not_queued", "queued", "ingesting", "refused", "failed"}
+        keeping_entries = {"listed", "waiting_sidecar", "waiting_export", "failed"}
+        self.assertEqual(cleanup.SETTLED_PART, "ingested")
+        self.assertEqual(set(cleanup.SETTLED_ENTRIES), {"placed", "review", "skipped", "copy", "recorded"})
+        self.assertEqual({cleanup.SETTLED_PART} | keeping_parts, set(PART_INGEST_STATES))
+        self.assertEqual(set(cleanup.SETTLED_ENTRIES) | keeping_entries, set(ENTRY_OUTCOMES))
+        self.assertFalse(keeping_parts & {cleanup.SETTLED_PART} or keeping_entries & set(cleanup.SETTLED_ENTRIES))
 
 
 class RemovableTests(unittest.TestCase):
