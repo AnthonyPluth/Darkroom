@@ -337,7 +337,7 @@ class FakeImmich:
         self.state = State(admin_key=admin_key, people=list(people))
         self.server = ThreadingHTTPServer((host, port), make_handler(self.state))
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
     @property
     def port(self) -> int:

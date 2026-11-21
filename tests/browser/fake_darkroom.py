@@ -75,7 +75,7 @@ class FakeDarkroom:
             self.folder = folder
             self.socket_path = folder / SOCKET_NAME
             self.server = socketserver.UnixStreamServer(str(self.socket_path), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
     def start(self) -> FakeDarkroom:
         self.thread.start()
