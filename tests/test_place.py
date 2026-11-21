@@ -52,7 +52,6 @@ class Household(unittest.TestCase):
         account = GoogleAccount(email="family@x.test", default_person_id=self.jo, created=1.0)
         self.opened.add(account)
         self.opened.flush()
-        self.account = account.id
         pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
         self.opened.add(pixel)
         self.opened.flush()
@@ -644,7 +643,7 @@ class FixtureExportRun(unittest.TestCase):
         data = tempfile.TemporaryDirectory()
         self.addCleanup(data.cleanup)
         settings = settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=data.name)
-        export = Export(account_id=self.account, kind="initial", google_id="google-fixture", part_count=len(self.manifest.parts), status="downloading",
+        export = Export(account_id=self.export.account_id, kind="initial", google_id="google-fixture", part_count=len(self.manifest.parts), status="downloading",
                         inbox_dir=str(self.root / "_inbox/jo/parts"))
         self.opened.add(export)
         self.opened.flush()
