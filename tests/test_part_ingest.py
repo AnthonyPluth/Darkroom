@@ -757,6 +757,46 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 2), (export.id, 3)])
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
 
+    def fail_every_part(self):
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("boom")):
+            self.run_queued()
+
+    def request(self, export, at=NOW):
+        run.request_import(self.world.opened, export.id, self.world.photos, at)
+        self.world.opened.commit()
+
+    def test_an_explicit_import_request_requeues_failed_parts_and_they_ingest(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        self.fail_every_part()
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["failed"] * 3)
+        self.assertEqual(self.run_queued(), [])
+        self.request(export, NOW + 5)
+        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_queued_at) for n in (1, 2, 3)], [("queued", NOW + 5)] * 3)
+        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
+
+    def test_an_explicit_import_request_leaves_a_refused_part_refused(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        self.fail_every_part()
+        found = self.world.part(export, 2)
+        found.ingest_state = "refused"
+        self.world.opened.commit()
+        self.request(export)
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["queued", "refused", "queued"])
+
+    def test_a_later_export_is_not_held_back_once_the_failed_part_is_retried(self):
+        from darkroom.domain.ingest import finish_export
+
+        first = self.world.create(self.world.scenario, google_id="google-123", created=NOW - 2 * DAY, status="downloaded")
+        second = self.world.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1, google_id="google-456", created=NOW - DAY)
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.run_queued(), [])
+        self.assertEqual(self.world.part(second, 1).ingest_state, "queued")
+        self.request(first)
+        self.assertEqual(self.run_queued(), [(first.id, 1), (first.id, 2), (first.id, 3)])
+        self.assertEqual(finish_export.finish_ready(self.world.opened, self.world.settings, NOW, self.world.tools), [first.id])
+        self.assertEqual(self.run_queued(), [(second.id, 1)])
+
     def test_the_import_tick_runs_queued_parts(self):
         from darkroom.server import jobs
 

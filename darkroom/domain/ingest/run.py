@@ -30,6 +30,7 @@ WAITING = frozenset({"queued", "running"})
 PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
 PART_NOT_QUEUED = "not_queued"
 PART_QUEUED = "queued"
+PART_FAILED = "failed"
 PER_PART = "per_part"
 WHOLE = "whole"
 STARTED_STAGES = frozenset(STAGES[1:])
@@ -590,6 +591,14 @@ def adopt(opened: Session, export: Export, now: float) -> int:
     return len(parts)
 
 
+def requeue_failed(opened: Session, export: Export, now: float) -> int:
+    parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
+                                                         ExportPart.ingest_state == PART_FAILED)).scalars())
+    for part in parts:
+        part.ingest_state, part.ingest_queued_at = PART_QUEUED, now
+    return len(parts)
+
+
 def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:
     db.write_lock(opened)
     photos = Photos(settings.photos_root)
@@ -629,7 +638,9 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
         raise NotReady("this export has not been downloaded yet")
     last = latest_run(opened, export.id)
     if route_of(opened, photos, export) == PER_PART:
-        adopt(opened, export, utc_now().timestamp() if now is None else now)
+        asked_at = utc_now().timestamp() if now is None else now
+        adopt(opened, export, asked_at)
+        requeue_failed(opened, export, asked_at)
         if export.status == "failed":
             if last is not None and last.status == "failed":
                 last.status = "queued"
