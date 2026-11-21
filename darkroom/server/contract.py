@@ -336,7 +336,7 @@ class DownloadPlan(TypedDict):
 
 
 class PartBody(TypedDict):
-    event: Literal["attempt", "progress", "done", "failed", "clicked", "prompted"]
+    event: Literal["space", "attempt", "progress", "done", "failed", "clicked", "prompted"]
     bytes: NotRequired[int]
     filename: NotRequired[str]
     reason: NotRequired[Literal["corrupt", "wrong_size", "not_started", "interrupted", "bad_name", "asked_to_verify"]]

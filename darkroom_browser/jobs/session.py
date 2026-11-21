@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from darkroom_browser import selectors
 from darkroom_browser.context import Browser, JobContext, JobFailure
 from darkroom_browser.pages import takeout
@@ -45,7 +47,7 @@ def waiting_reason(state: str) -> str:
     return "verify" if state == takeout.VERIFY_ITS_YOU else "sign_in"
 
 
-def ensure_signed_in(ctx: JobContext, browser: Browser) -> bool:
+def ensure_signed_in(ctx: JobContext, browser: Browser, say: Callable[[str], None] | None = None) -> bool:
     browser.goto(selectors.TAKEOUT_URL)
     started = ctx.clock()
     unknown_since: float | None = None
@@ -71,5 +73,5 @@ def ensure_signed_in(ctx: JobContext, browser: Browser) -> bool:
         ctx.check()
         state = read_state(ctx, browser.content())
     if reported is not None:
-        ctx.progress("signed in")
+        (say or ctx.progress)("signed in")
     return reported is not None

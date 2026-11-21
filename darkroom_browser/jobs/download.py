@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from darkroom_browser import selectors
 from darkroom_browser.config import local_zone
 from darkroom_browser.context import Browser, JobContext, JobFailure
-from darkroom_browser.jobs.session import SIGN_IN_STATES, ensure_signed_in
+from darkroom_browser.jobs.session import SIGN_IN_STATES
 from darkroom_browser.jobs.status import open_archive
 from darkroom_browser.jobs.telemetry import Clicks
 from darkroom_browser.pages import takeout
@@ -258,8 +258,6 @@ def download_export(ctx: JobContext, run_parts: PartsRunner) -> dict[str, object
             raise DownloadFailed(f"part {part['number']} is recorded as downloaded but is not in the inbox")
     browser = ctx.browser()
     clicks = Clicks(ctx)
-    if ensure_signed_in(ctx, browser):
-        clicks.answered()
     fetched = run_parts(ctx, browser, folder, plan, parts, taken, clicks)
     discard_partial(folder)
     ctx.progress(f"downloaded {fetched} of {len(parts)} parts; {clicks.summary()}")

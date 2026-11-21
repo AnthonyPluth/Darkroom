@@ -197,6 +197,8 @@ def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, 
         if event == "attempt":
             counted = None if body.get("google_downloads") is None else validate.whole_number(body, "google_downloads", maximum=exports.MAX_GOOGLE_DOWNLOADS)
             reply = downloads.attempt(opened, request.settings, job_id, number, moment, counted)
+        elif event == "space":
+            reply = downloads.space(opened, request.settings, job_id, number, moment)
         elif event == "progress":
             reply = downloads.progress(opened, job_id, number, validate.whole_number(body, "bytes", maximum=downloads.MAX_PART_BYTES), moment)
         elif event == "done":
@@ -207,8 +209,8 @@ def part(request: Annotated[Request, contract.PartBody]) -> Annotated[Response, 
         elif event in ("clicked", "prompted"):
             reply = telemetry(opened, body, event, job_id, number, moment)
         else:
-            raise validate.Invalid("event must be attempt, progress, done, failed, clicked or prompted")
-        if event not in ("progress", "clicked", "prompted"):
+            raise validate.Invalid("event must be space, attempt, progress, done, failed, clicked or prompted")
+        if event not in ("space", "progress", "clicked", "prompted"):
             monitoring.log("export part reported", outcome=event, allowed=reply["allowed"] is True, gave_up=reply["gave_up"] is True)
         return reply
 

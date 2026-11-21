@@ -91,6 +91,8 @@ class DomainReporter:
             if body["event"] == "attempt":
                 self.attempts.append((number, body.get("google_downloads", "unknown")))
                 return downloads.attempt(opened, self.settings, job_id, number, NOW, body.get("google_downloads"))
+            if body["event"] == "space":
+                return downloads.space(opened, self.settings, job_id, number, NOW)
             if body["event"] == "progress":
                 return downloads.progress(opened, job_id, number, body["bytes"], NOW)
             if body["event"] == "done":

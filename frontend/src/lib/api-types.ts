@@ -359,7 +359,7 @@ export interface OwnDevice {
 }
 
 export interface PartBody {
-  event: "attempt" | "progress" | "done" | "failed" | "clicked" | "prompted";
+  event: "space" | "attempt" | "progress" | "done" | "failed" | "clicked" | "prompted";
   bytes?: number;
   filename?: string;
   reason?: "corrupt" | "wrong_size" | "not_started" | "interrupted" | "bad_name" | "asked_to_verify";

@@ -7,7 +7,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import events, exports
+from darkroom.domain import downloads, events, exports
 from darkroom.storage.paths import Photos
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
@@ -238,7 +238,7 @@ class StaggeredDownloadTests(StaggerWorld):
 
         def part(job_id, number, body):
             reply = real(job_id, number, body)
-            if body["event"] == "attempt":
+            if body["event"] == "space":
                 asked.append((number, reply["paused_for_space"], reply["part"]["attempts"], reply["part"]["downloads_used"]))
             return reply
 
@@ -256,13 +256,36 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertEqual(sum(1 for message in self.messages() if message == stagger.PAUSED_WORDS), 1)
         self.assertEqual(sum(1 for message in self.messages() if message == stagger.RESUMED_WORDS), 1)
 
+    def test_a_paused_attempt_after_a_space_check_with_room_still_pauses_without_using_an_attempt(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        asked = []
+        real = self.reporter.part
+
+        def part(job_id, number, body):
+            reply = real(job_id, number, body)
+            if body["event"] == "space":
+                return dict(reply, allowed=True, paused_for_space=False)
+            if body["event"] == "attempt":
+                asked.append((number, reply["paused_for_space"], reply["part"]["attempts"], reply["part"]["downloads_used"]))
+            return reply
+
+        self.reporter.part = part
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        paused = [entry for entry in asked if entry[1]]
+        self.assertEqual(len(paused), 5, "the attempt's own answer still pauses when space ran out between the check and the attempt")
+        self.assertEqual({entry[2:] for entry in paused}, {(0, 0)})
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(sum(1 for message in self.messages() if message == stagger.PAUSED_WORDS), 1)
+
     def test_the_wait_between_asks_is_fixed(self):
         browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
         starts = []
         real = self.reporter.part
 
         def part(job_id, number, body):
-            if body["event"] == "attempt":
+            if body["event"] == "space":
                 starts.append(self.clock.now)
             return real(job_id, number, body)
 
@@ -317,6 +340,135 @@ class StaggeredDownloadTests(StaggerWorld):
         self.assertTrue(landed)
         self.assertEqual([message for message in landed if "paused for space" in message], [])
         self.assertEqual(self.messages()[self.messages().index(stagger.RESUMED_WORDS):].count(stagger.PAUSED_WORDS), 0)
+
+    def takeout_loads(self, browser):
+        loads = []
+        real_goto = browser.goto
+
+        def goto(url):
+            loads.append((self.clock.now, url))
+            real_goto(url)
+
+        browser.goto = goto
+        return loads
+
+    def space_answers(self):
+        answers = []
+        real = self.reporter.part
+
+        def part(job_id, number, body):
+            reply = real(job_id, number, body)
+            if body["event"] == "space":
+                answers.append((self.clock.now, reply["paused_for_space"]))
+            return reply
+
+        self.reporter.part = part
+        return answers
+
+    def test_a_pause_loads_no_takeout_page_until_the_server_says_there_is_room(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads, answers = self.takeout_loads(browser), self.space_answers()
+        start = self.clock.now
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        paused = [at for at, held in answers if held]
+        self.assertEqual(len(paused), 5)
+        self.assertGreaterEqual(loads[0][0], start + 22 * MINUTE, "no Takeout page, not even the sign-in check, was loaded while the server answered paused")
+        self.assertGreater(loads[0][0], paused[-1])
+        self.assertEqual([url for _, url in loads], [selectors.TAKEOUT_URL, ARCHIVE, ARCHIVE, ARCHIVE], "one sign-in check, then one page load per part, none for the pause")
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+
+    def test_with_room_the_page_is_loaded_at_once_after_one_space_check(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads, answers = self.takeout_loads(browser), self.space_answers()
+        start = self.clock.now
+        _, result = self.run_job(browser)
+        self.assertEqual([held for _, held in answers], [False, False, False])
+        self.assertLess(loads[0][0] - start, MINUTE)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertNotIn(stagger.PAUSED_WORDS, " ".join(self.messages()))
+
+    def test_an_unreadable_free_space_reading_pauses_nothing_and_loads_the_page_at_once(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads = self.takeout_loads(browser)
+        start = self.clock.now
+        with mock.patch.object(Photos, "free_bytes", side_effect=OSError("unreadable")):
+            _, result = self.run_job(browser)
+        self.assertLess(loads[0][0] - start, MINUTE)
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+        self.assertNotIn(stagger.PAUSED_WORDS, " ".join(self.messages()))
+
+    def test_an_exhausted_part_still_gives_up_while_space_is_low_without_opening_takeout(self):
+        with db.session(self.engine) as opened:
+            exports.parts_of(opened, self.export)[0].attempts = 3
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads = self.takeout_loads(browser)
+        with mock.patch.object(Photos, "free_bytes", lambda photos: 0), self.assertRaisesRegex(download.DownloadFailed, "part 1"):
+            self.run_job(browser)
+        self.assertEqual(loads, [], "a part out of attempts gives up at the space check, before any Takeout page load")
+        self.assertEqual(browser.started, [])
+        self.assertEqual(self.parts()[0], ("failed", 0, 3))
+
+    def test_a_signed_out_account_is_not_asked_to_sign_in_while_the_job_starts_paused(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads = self.takeout_loads(browser)
+        signed_in_at = []
+        real_goto, real_content = browser.goto, browser.content
+
+        def goto(url):
+            real_goto(url)
+            if not signed_in_at:
+                signed_in_at.append(self.clock.now + 3 * MINUTE)
+
+        def content():
+            if (not signed_in_at or self.clock.now < signed_in_at[0]) and browser.url in (ARCHIVE, selectors.TAKEOUT_URL):
+                return SIGN_IN_NEEDED
+            return real_content()
+
+        browser.goto, browser.content = goto, content
+        waits = []
+        real_waiting = self.reporter.waiting
+
+        def waiting(job_id, reason):
+            waits.append((self.clock.now, reason))
+            real_waiting(job_id, reason)
+
+        self.reporter.waiting = waiting
+        start = self.clock.now
+        with self.short_of_space_until(22):
+            _, result = self.run_job(browser)
+        self.assertGreaterEqual(loads[0][0], start + 22 * MINUTE, "the job opened no Takeout page to check the sign-in while it was paused")
+        self.assertTrue(waits)
+        self.assertGreaterEqual(waits[0][0], start + 22 * MINUTE, "nobody was asked to sign in while the job was paused for space")
+        signed_in = [message for message in self.messages() if message.startswith("signed in")]
+        self.assertTrue(signed_in)
+        self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+        self.assertEqual(result["downloaded"], 3)
+        self.assertEqual(self.parts(), [("done", 1, 1)] * 3)
+
+    def test_a_long_pause_makes_no_page_loads_and_the_expiry_alert_still_opens(self):
+        browser = StaggerBrowser(["ok", "ok", "ok"], self.clock)
+        loads, answers = self.takeout_loads(browser), self.space_answers()
+        real_sleep = self.clock.sleep
+        start = self.clock.now
+
+        def sleep(seconds):
+            if self.clock.now > start + 6 * 60 * MINUTE:
+                self.cancelling.set()
+            real_sleep(seconds)
+
+        self.clock.sleep = sleep
+        with self.short_of_space_until(10_000), self.assertRaises(Cancelled):
+            self.run_job(browser)
+        self.assertEqual(loads, [], "six hours paused, and Takeout was never opened")
+        self.assertGreaterEqual(len(answers), 70)
+        self.assertEqual(self.parts(), [("pending", 0, 0)] * 3)
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).expires_at = NOW + 2 * 86400
+            opened.flush()
+            self.assertEqual(downloads.watch_expiry(opened, self.settings, NOW), 1)
 
     def another_accounts_part_downloading(self, size):
         with db.session(self.engine) as opened:
@@ -601,7 +753,7 @@ class StaggeredDownloadTests(StaggerWorld):
             real_goto(url)
             if url == ARCHIVE:
                 opened.append(url)
-                if len(opened) == 2:
+                if len(opened) == 1:
                     until.append(self.clock.now + 3 * MINUTE)
 
         def content():
@@ -616,6 +768,9 @@ class StaggeredDownloadTests(StaggerWorld):
         signed_in = [message for message in self.messages() if message.startswith("signed in")]
         self.assertTrue(signed_in)
         self.assertTrue(all(stagger.PAUSED_WORDS in message for message in signed_in))
+        messages = self.messages()
+        self.assertLess(messages.index(stagger.PAUSED_WORDS), messages.index(signed_in[0]))
+        self.assertLess(messages.index(signed_in[-1]), messages.index(stagger.RESUMED_WORDS), "the pause words stay until the attempt finds room")
         self.assertEqual(browser.fronted, 1, "a paused download that waits for a sign-in still brings its window to the front, once")
 
     def test_a_pause_alone_never_takes_the_front_and_keeps_its_words_on_every_message(self):
