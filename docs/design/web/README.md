@@ -16,6 +16,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `04-exports-renew-desktop.dc.html`, `04-exports-renew-phone.dc.html` | Exports, Renew now states (signed off, #164, recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6720414904)) |
 | `04-exports-desktop.dc.html`, `04-exports-phone.dc.html` (last two blocks) | Exports, a failed download: the parts, why it stopped and Retry download, and in Earlier exports an older failed download that can still be retried (its sentence and a Retry download button in the row, shown when a newer export is current) and one that can't be retried with what to do instead (signed off by the owner, AnthonyPluth, on 2026-11-20, #427) |
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
+| `04-exports-ingest-desktop.dc.html`, `04-exports-ingest-phone.dc.html` | Exports, per-part import (PP-13): each part's import state, the export's totals, parts Darkroom kept, an export that never went per-part; below a dashed line, PP-10's freed state, which PP-13 does not build (signed off by the owner, AnthonyPluth, on 2026-11-20, #490, recorded on #424 and #16; see "Per-part import on Exports" below) |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `07-browser-several-waiting.md` | Remote browser: the copy when several accounts wait for a sign-in, naming the account whose window is on screen (text spec, signed off by the owner, AnthonyPluth, on 2026-11-20, #496) |
@@ -496,3 +497,71 @@ Status: **approved by the owner on 2026-11-18**, in the Claude Code session that
 - **Style.** The existing card, its `dl` row and the muted label (`text-ink-muted`), as in the person cards. No new token, colour or component.
 - **Failure.** The version loads on its own (`GET /api/version`, signed in only). While it loads the row reads "Loading...", and when it can't load, "Couldn't load the version" (muted). The rest of the page, its alerts included, is unchanged either way.
 - **Boards.** `02-status-desktop.dc.html` and `02-status-phone.dc.html` draw the card with a release version. `02-status-syncthing-desktop.dc.html` and `02-status-syncthing-phone.dc.html` end with a block, "About: the Version row", that draws each state. These four boards were edited by hand in their own HTML, in the boards' existing classes (`card`, `kv`, `sub`, `state`), because the canvas could not be re-exported from the building session. They should be re-exported from the canvas the next time the design session touches them.
+
+## Per-part import on Exports (#490, PP-13, signed off)
+
+Status: **signed off by the owner on 2026-11-20.** The owner gave it in chat, and it was posted at their request on #424 (https://github.com/AnthonyPluth/Darkroom/issues/424#issuecomment-7052514535) and #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-7052514957). The #424 comment reads:
+
+> - The per-part import boards in #506 (Exports desktop and phone, `docs/design/web/04-exports-ingest-*.dc.html`) stand as the PP-13 design, subject to the answers below.
+> - Freed state and "Disk freed" total: **not shown before PP-10 (#487)**; the freed state stays on the board only as PP-10's, below the dashed line.
+> - A refused part: **one fixed sentence is enough** ("Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own."). The real reason can come later with #504.
+> - Imports page: **Option A, no change**. Option B (a run still taking parts) is dropped.
+>
+> This replaces the earlier decision 9 comment's lack of named boards: decision 9 named none; these are the boards PP-13 builds to.
+
+The earlier decision 9 comment is https://github.com/AnthonyPluth/Darkroom/issues/424#issuecomment-7045031620. Boards: `04-exports-ingest-desktop.dc.html` (1280 wide) and `04-exports-ingest-phone.dc.html` (440 wide, the width `make verify` checks; the older phone boards are 390, and the content reflows the same way). They were hand-written in the existing boards' classes and the signed-off tokens only (no new colour, type or spacing value) and previewed in headless Chrome at 1280 and 440 wide; no images are committed, as above.
+
+The boards change only the "current export parts" card of an export imported per part. The account card, schedule, Earlier exports and Check exports now are as in `04-exports-*` and its approved departures; the phone parts use the shared table's phone card (label and value on each line), as built in #30. The data is PP-12's (#489, #497) fields on `GET /api/exports`; nothing new is asked of the API.
+
+**The Imports page is unchanged** (Option A): an export imported per part shows its progress on Exports, and its run appears on Imports once the export finishes, as runs do today. `05-imports-*.dc.html` stays the Imports design.
+
+### When the card shows per-part import
+
+An export is shown per-part when any of its parts has an `ingest_state` other than `not_queued`. An export whose parts are all `not_queued` (imported the old way, or already unpacking at deploy) keeps today's display exactly: no totals, today's state chips and today's sentence (board state 5).
+
+### Totals (above the parts table)
+
+| Label | Value | From |
+| --- | --- | --- |
+| Imported | "N of M parts" ("0 of 4 parts" before any) | `parts_ingested` of `part_count` (or the number of parts) |
+| Held | "N items", then "Until the whole export is in. K of them are waiting for a sidecar."; "None" when 0 (the second sentence is left out when K is 0) | `held_waiting_sidecar` + `held_waiting_export`; K is `held_waiting_sidecar` |
+
+PP-13 shows no "Disk freed" total (see below).
+
+### Each part's State cell
+
+One chip, then at most one detail line under it (13 px, muted). The download states come first; once a part is downloaded, its import state replaces "Downloaded".
+
+| Part | Chip (tone) | Detail line |
+| --- | --- | --- |
+| Not downloaded, downloading, download failed | Waiting, Downloading (neutral), Failed (bad): today's, unchanged | none |
+| Downloaded, `ingest_state` `queued` | Downloaded (neutral) | Waiting to import |
+| `ingesting`, `entries` 0 | Importing (neutral) | Reading the file |
+| `ingesting` | Importing (neutral) | "812 of 1,488 items" (`entries_done` of `entries`) |
+| `ingested`, nothing held or failed | Imported (ok) | "1,517 items" (`entries`) |
+| `ingested`, `held` > 0, no failed item | Holding N items (neutral) | "1,402 items. 21 wait for a sidecar, 2 for the whole export." (the part's `held_waiting_sidecar` and `held_waiting_export`; a zero half is left out) |
+| `ingested`, `kept_reason` `failed_item` | Kept (warn) | "1,402 items, 2 failed" (`failed_items`) |
+| `refused` (`kept_reason` is null) | Couldn't read (bad) | none |
+| `failed` | Import failed (bad) | none |
+
+Kept, Couldn't read and Import failed each add one sentence under the table, in part order, where the failed-download sentence sits today:
+
+- Kept: "Part 2: 2 items couldn't be imported, so Darkroom keeps the part's file."
+- Couldn't read: "Part 3: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own." The same words for every refused part, as signed off: the API stores no reason for a refusal yet (`kept_reason` is null), and the real reason can come later with #504.
+- Import failed: "Part 4: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own."
+
+No item name, path, file name inside a part or sidecar text is shown anywhere; only the counts and the fixed sentences above. The File column (the part's own Takeout file name) is today's, unchanged.
+
+### The sentence under the parts
+
+- Today, and for an export that never went per-part: "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and keeps the file until it is imported."
+- Per-part, built by PP-13 (phase 1, every file kept to the 14-day rule): "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and imports it as soon as it arrives. It keeps every part's file until 14 days after the whole export is imported."
+
+### Empty, loading and failure
+
+- No current export: the card is not shown, as today. A per-part export with nothing imported yet shows the totals with "0 of N parts" and "None" (state 4).
+- Loading and a failed load: the page's "Loading..." line and its "Couldn't load the exports" card with Try again, unchanged; the part fields come in the same reply, so they have no failure of their own (state 6).
+
+### PP-10's freed state: not built by PP-13
+
+As signed off, the freed state and the "Disk freed" total are **not shown before PP-10 (#487)**, and **PP-13 builds none of it**. Until PP-10 there is no freed part state and `bytes_freed` is always 0. The boards keep it below a dashed line marked "From PP-10 on: not built by PP-13" (state 7), as PP-10's: a Freed chip (ok) with "1,517 items imported, 50 GB freed" (the part's `bytes`), a third total "Disk freed" from `bytes_freed`, and the sentence "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and imports it as soon as it arrives. Once everything in a part is safely in the library, Darkroom deletes the part's file to free space. A part with an item that failed is kept." PP-10's pull request builds it.
