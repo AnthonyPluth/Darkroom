@@ -369,7 +369,7 @@ class JournalTests(unittest.TestCase):
         self.world.reopen()
         self.assertEqual((dict(self.world.states())[1], zipped.exists()), ("freeing", False))
         self.world.free(at=NOW + 2 * TICK)
-        part = self.world.part(self.export, 1)
+        part = self.world.opened.execute(select(ExportPart).where(ExportPart.number == 1)).scalar_one()
         self.assertEqual((part.free_state, part.bytes_freed, part.freed_at), ("freed", size, NOW + 2 * TICK))
 
     def test_a_part_left_freeing_is_never_recorded_freed_while_its_folder_cannot_be_read(self):
