@@ -410,6 +410,8 @@ def lock(opened: Session, export: Export, part: ExportPart) -> None:
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
     lock(opened, export, part)
     try:
+        if paths.put_back_claimed(photos, zip_path(photos, person, export, part)):
+            monitoring.log("zip claimed before was put back", export=export.id, part=part.number)
         gone = part.free_state == FREEING and zip_gone(photos, person, export, part)
     except Refused as refused:
         opened.rollback()

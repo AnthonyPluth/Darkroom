@@ -710,6 +710,29 @@ class SwappedFileTests(unittest.TestCase):
         self.assertIn("part 1: zip_changed", self.world.kind_of_events("export_part_kept"))
 
 
+class ClaimSwapTests(unittest.TestCase):
+    def test_a_zip_replaced_at_the_moment_it_is_claimed_survives_and_the_part_is_not_freed(self):
+        world = FreeWorld(self)
+        export = world.made()
+        zipped = world.zip_of(1)
+        real = paths.rename_no_replace
+        calls = []
+
+        def claiming(source, target, folder, into=None):
+            if source == zipped.name and not calls:
+                calls.append(source)
+                swap = zipped.with_name("swap.tmp")
+                swap.write_bytes(b"a replacement that never passed the proof")
+                os.replace(swap, zipped)
+            return real(source, target, folder, into)
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claiming):
+            world.free()
+        self.assertEqual((dict(world.states())[1], zipped.read_bytes()), (None, b"a replacement that never passed the proof"))
+        self.assertIn("part 1: zip_changed", world.kind_of_events("export_part_kept"))
+        self.assertEqual(world.part(export, 1).bytes_freed, None)
+
+
 class JournalTests(unittest.TestCase):
     def setUp(self):
         self.world = FreeWorld(self)
@@ -733,6 +756,22 @@ class JournalTests(unittest.TestCase):
         self.world.change(self.world.entry(PLACED), outcome="failed")
         self.world.free(at=NOW + 2 * TICK)
         self.assertEqual((dict(self.world.states())[1], zipped.read_bytes()), (None, before))
+
+    def test_a_crash_after_the_zip_is_claimed_counts_it_present_and_the_next_run_puts_it_back_and_frees_it(self):
+        zipped = self.world.zip_of(1)
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            self.world.free()
+        self.world.reopen()
+        self.assertEqual((dict(self.world.states())[1], zipped.exists(), paths.inbox_entry_absent(self.world.photos, zipped)), ("freeing", False, False))
+        self.world.free(at=NOW + 2 * TICK)
+        self.assertEqual((dict(self.world.states())[1], zipped.exists()), ("freed", False))
+        self.assertEqual([p.name for p in self.world.folder().iterdir() if p.name.endswith(".zip") or p.name.startswith(paths.FREEING_CLAIM)], [])
 
     def test_a_crash_after_the_delete_and_before_freed_is_recorded_on_the_next_run(self):
         zipped = self.world.zip_of(1)

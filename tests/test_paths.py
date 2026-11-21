@@ -1339,6 +1339,79 @@ class PartZipRemoverTests(unittest.TestCase):
         self.assertEqual(self.kept.read_bytes(), b"an original")
         self.assertEqual((self.originals / "takeout-001.zip").read_bytes(), b"not a part")
 
+    def swapping_at_the_claim(self, path, data):
+        real = paths.rename_no_replace
+        calls = []
+
+        def claiming(source, target, folder, into=None):
+            if not calls:
+                swap = path.with_name(f"{path.name}.swap")
+                swap.write_bytes(data)
+                os.replace(swap, path)
+            calls.append(source)
+            return real(source, target, folder, into)
+        return mock.patch.object(paths, "rename_no_replace", side_effect=claiming)
+
+    def claim_folders(self, folder):
+        return sorted(p.name for p in folder.iterdir() if p.name.startswith(paths.FREEING_CLAIM))
+
+    def test_a_zip_replaced_at_the_moment_it_is_claimed_survives_and_nothing_is_removed(self):
+        checked = self.identity(self.zip)
+        with self.swapping_at_the_claim(self.zip, b"a replacement!"), self.assertRaises(paths.NotAPartZip):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", checked)
+        self.assertEqual((self.zip.read_bytes(), self.claim_folders(self.export)), (b"a replacement!", []))
+
+    def test_a_held_copy_replaced_at_the_moment_it_is_claimed_survives_and_nothing_is_removed(self):
+        written = self.held()
+        checked = self.identity(written)
+        with self.swapping_at_the_claim(written, b"a replacement!"), self.assertRaises(paths.NotAHeldCopy):
+            paths.remove_held_copy(self.photos, "jo", "export-1", "12.jpg", checked)
+        self.assertEqual((written.read_bytes(), self.claim_folders(written.parent)), (b"a replacement!", []))
+
+    def test_a_crash_after_the_claim_leaves_the_file_counted_present_and_it_is_put_back(self):
+        class Crash(BaseException):
+            pass
+
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        checked = self.identity(self.zip)
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", checked)
+        self.assertFalse(self.zip.exists())
+        self.assertEqual(len(self.claim_folders(self.export)), 1)
+        self.assertFalse(paths.inbox_entry_absent(self.photos, self.zip))
+        with self.assertRaises(paths.NotAPartZip):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", checked)
+        self.assertEqual((self.zip.read_bytes(), self.claim_folders(self.export)), (b"a made-up part", []))
+        self.assertTrue(paths.inbox_entry_absent(self.photos, self.export / "absent.zip"))
+        self.assertEqual(paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.zip)), len(b"a made-up part"))
+        self.assertTrue(paths.inbox_entry_absent(self.photos, self.zip))
+
+    def test_a_claim_left_behind_is_put_back_only_where_nothing_took_its_name(self):
+        class Crash(BaseException):
+            pass
+
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.zip))
+        self.zip.write_bytes(b"took the name")
+        self.assertFalse(paths.put_back_claimed(self.photos, self.zip))
+        self.assertFalse(paths.inbox_entry_absent(self.photos, self.zip))
+        self.zip.unlink()
+        self.assertFalse(paths.inbox_entry_absent(self.photos, self.zip))
+        self.assertTrue(paths.put_back_claimed(self.photos, self.zip))
+        self.assertEqual((self.zip.read_bytes(), self.claim_folders(self.export)), (b"a made-up part", []))
+        self.assertFalse(paths.put_back_claimed(self.photos, self.zip))
+
     def test_a_missing_exports_folder_raises_rather_than_reporting_the_zip_gone(self):
         self.zip.unlink()
         self.export.rmdir()

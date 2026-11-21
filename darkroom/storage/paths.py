@@ -2061,9 +2061,40 @@ def plain_identity(folder: int, name: str) -> Identity | None:
     return None if found is None or not plain_file(found) else file_identity(found)
 
 
+FREEING_CLAIM = ".freeing-"
+
+
+def freeing_claim(name: str) -> str:
+    return f"{FREEING_CLAIM}{hashlib.sha256(name.encode()).hexdigest()[:16]}"
+
+
+def same_file(found: os.stat_result, expected: Identity) -> bool:
+    return plain_file(found) and file_identity(found)[:4] == expected[:4]
+
+
+def claim_left(folder: int, name: str) -> bool:
+    try:
+        with private_folder(folder, freeing_claim(name), create=False) as private:
+            return private is not None and entry_at(CLAIMED, private) is not None
+    except (NotALosingCopy, OSError):
+        return True
+
+
 def inbox_entry_absent(photos: Photos, path: Path) -> bool:
     with inbox_folder(photos, path.parent, create=False) as folder:
-        return entry_at(path.name, folder) is None
+        return entry_at(path.name, folder) is None and not claim_left(folder, path.name)
+
+
+def put_back_claimed(photos: Photos, path: Path) -> bool:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        try:
+            with private_folder(folder, freeing_claim(path.name), create=False) as private:
+                if private is None or entry_at(CLAIMED, private) is None:
+                    return False
+                put_claim_back(private, CLAIMED, folder, path.name)
+                return entry_at(CLAIMED, private) is None
+        except NotALosingCopy:
+            return False
 
 
 def inbox_identity(photos: Photos, path: Path) -> Identity | None:
@@ -2081,13 +2112,29 @@ def remove_checked(photos: Photos, path: Path, expected: Identity, refused: type
     if photos.removable(path) != path:
         raise refused("a link is on the way to the file")
     with inbox_folder(photos, path.parent, create=False) as folder:
-        found = entry_at(path.name, folder)
-        if found is None:
-            return None
-        if not plain_file(found) or file_identity(found) != expected:
-            raise refused("the file changed since it was checked")
-        os.unlink(path.name, dir_fd=folder)
-        return found.st_size
+        try:
+            with private_folder(folder, freeing_claim(path.name), create=True) as private:
+                assert private is not None
+                if entry_at(CLAIMED, private) is not None:
+                    put_claim_back(private, CLAIMED, folder, path.name)
+                    raise refused("a file claimed before was put back first")
+                found = entry_at(path.name, folder)
+                if found is None:
+                    return None
+                if not plain_file(found) or file_identity(found) != expected:
+                    raise refused("the file changed since it was checked")
+                try:
+                    rename_no_replace(path.name, CLAIMED, folder, private)
+                except (OSError, NotALosingCopy) as error:
+                    raise refused("the file could not be claimed") from error
+                claimed = entry_at(CLAIMED, private)
+                if claimed is None or not same_file(claimed, expected):
+                    put_claim_back(private, CLAIMED, folder, path.name)
+                    raise refused("another file was claimed in its place")
+                os.unlink(CLAIMED, dir_fd=private)
+                return claimed.st_size
+        except (NotALosingCopy, KeeperBusy) as error:
+            raise refused("the claim folder is not usable") from error
 
 
 def remove_part_zip(photos: Photos, person: str, export: str, filename: str, expected: Identity) -> int | None:
