@@ -1262,6 +1262,12 @@ class InboxLinkTests(unittest.TestCase):
         self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
 
 
+def swap(path):
+    twin = path.with_name(f"{path.name}.swap")
+    twin.write_bytes(b"a replacement")
+    os.replace(twin, path)
+
+
 class PartZipRemoverTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -1411,6 +1417,110 @@ class PartZipRemoverTests(unittest.TestCase):
         self.assertTrue(paths.put_back_claimed(self.photos, self.zip))
         self.assertEqual((self.zip.read_bytes(), self.claim_folders(self.export)), (b"a made-up part", []))
         self.assertFalse(paths.put_back_claimed(self.photos, self.zip))
+
+    def claimed_by_a_crash(self, target, remove):
+        class Crash(BaseException):
+            pass
+
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, into_name, folder, into=None):
+            real(source, into_name, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            remove(self.identity(target))
+
+    def every_cell(self):
+        def plain(target):
+            return None
+
+        def absent(target):
+            target.unlink()
+
+        def claimed(target):
+            self.claimed_by_a_crash(target, self.remover(target))
+
+        def claimed_and_taken(target):
+            claimed(target)
+            target.write_bytes(b"took the name")
+
+        def claimed_other(target):
+            target.write_bytes(b"something else")
+            claimed(target)
+
+        def linked(target):
+            target.rename(target.with_name("real.bin"))
+            target.symlink_to(target.with_name("real.bin"))
+
+        def folder(target):
+            target.unlink()
+            target.mkdir()
+
+        def hard_linked(target):
+            os.link(target, target.with_name("twin.bin"))
+
+        def replaced(target):
+            swap(target)
+
+        return [
+            ("the proven file, no claim", plain, "removed", None),
+            ("nothing at the name, no claim", absent, None, None),
+            ("nothing at the name, the proven file claimed by a crash", claimed, "refused", b"a made-up part"),
+            ("another file at the name, the proven file claimed", claimed_and_taken, "refused", b"took the name"),
+            ("nothing at the name, another file claimed", claimed_other, "refused", b"something else"),
+            ("a link at the name", linked, "refused", "link"),
+            ("a folder at the name", folder, "refused", "folder"),
+            ("a hard-linked file at the name", hard_linked, "refused", b"a made-up part"),
+            ("a replacement at the name", replaced, "refused", b"a replacement"),
+        ]
+
+    def remover(self, target):
+        if target == self.zip:
+            return lambda identity: paths.remove_part_zip(self.photos, "jo", "export-1", target.name, identity)
+        return lambda identity: paths.remove_held_copy(self.photos, "jo", "export-1", target.name, identity)
+
+    def test_every_cell_of_the_removers_state_table_for_a_zip_and_a_held_copy(self):
+        for kind in ("zip", "held copy"):
+            for name, arrange, outcome, left in self.every_cell():
+                with self.subTest(kind=kind, cell=name):
+                    self.setUp()
+                    target = self.zip if kind == "zip" else self.held(data=b"a made-up part")
+                    proven = self.identity(target)
+                    arrange(target)
+                    remove = self.remover(target)
+                    if outcome == "refused":
+                        with self.assertRaises((paths.NotAPartZip, paths.NotAHeldCopy, paths.NotInTheInbox)):
+                            remove(proven)
+                    else:
+                        self.assertEqual(remove(proven), len(b"a made-up part") if outcome == "removed" else None)
+                    if left is None:
+                        self.assertTrue(paths.inbox_entry_absent(self.photos, target))
+                    else:
+                        self.assertFalse(paths.inbox_entry_absent(self.photos, target))
+                    if isinstance(left, bytes):
+                        self.assertEqual(target.read_bytes(), left)
+                    elif left == "link":
+                        self.assertTrue(target.is_symlink())
+                    elif left == "folder":
+                        self.assertTrue(target.is_dir())
+
+    def test_a_file_that_takes_the_name_right_after_the_delete_is_kept_and_the_remover_refuses(self):
+        for kind in ("zip", "held copy"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                target = self.zip if kind == "zip" else self.held(data=b"a made-up part")
+                real = os.unlink
+
+                def unlinking(name, *rest, real=real, target=target, **named):
+                    real(name, *rest, **named)
+                    if name == paths.CLAIMED:
+                        target.write_bytes(b"came back")
+
+                with mock.patch.object(paths.os, "unlink", side_effect=unlinking), self.assertRaises((paths.NotAPartZip, paths.NotAHeldCopy)):
+                    self.remover(target)(self.identity(target))
+                self.assertEqual(target.read_bytes(), b"came back")
+                self.assertFalse(paths.inbox_entry_absent(self.photos, target))
 
     def test_a_missing_exports_folder_raises_rather_than_reporting_the_zip_gone(self):
         self.zip.unlink()

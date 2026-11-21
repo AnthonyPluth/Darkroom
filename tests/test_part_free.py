@@ -733,6 +733,58 @@ class ClaimSwapTests(unittest.TestCase):
         self.assertEqual(world.part(export, 1).bytes_freed, None)
 
 
+class ClaimRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.world = FreeWorld(self)
+        self.export = self.world.made()
+
+    def finished(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        return self.world.held_store()
+
+    def test_a_crash_right_after_a_held_copy_is_claimed_is_put_back_and_freed_on_the_next_run(self):
+        self.finished()
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            self.world.free(at=NOW + 3 * TICK)
+        self.world.reopen()
+        copy = self.world.held_copy()
+        self.assertEqual((self.world.entry(TIER_2).held_state, copy.exists(), paths.inbox_entry_absent(self.world.photos, copy)), ("freeing", False, False))
+        self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store(), paths.inbox_entry_absent(self.world.photos, copy)), ("freed", {}, True))
+
+    def came_back(self, path):
+        real = os.unlink
+
+        def unlinking(name, *rest, **named):
+            real(name, *rest, **named)
+            if name == paths.CLAIMED:
+                path.write_bytes(b"came back")
+        return mock.patch.object(paths.os, "unlink", side_effect=unlinking)
+
+    def test_a_file_that_takes_a_zips_name_right_after_the_delete_is_not_recorded_freed(self):
+        zipped = self.world.zip_of(1)
+        with self.came_back(zipped):
+            self.world.free()
+        part = self.world.part(self.export, 1)
+        self.assertEqual((part.free_state, part.bytes_freed, zipped.read_bytes()), (None, None, b"came back"))
+        self.assertIn("part 1: zip_changed", self.world.kind_of_events("export_part_kept"))
+
+    def test_a_file_that_takes_a_held_copys_name_right_after_the_delete_is_not_recorded_freed(self):
+        self.finished()
+        copy = self.world.held_copy()
+        with self.came_back(copy):
+            self.world.free(at=NOW + 3 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, copy.read_bytes()), (None, b"came back"))
+        self.assertIn("held copies: changed", self.world.kind_of_events("export_held_kept"))
+
+
 class JournalTests(unittest.TestCase):
     def setUp(self):
         self.world = FreeWorld(self)

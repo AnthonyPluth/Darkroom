@@ -410,8 +410,7 @@ def lock(opened: Session, export: Export, part: ExportPart) -> None:
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
     lock(opened, export, part)
     try:
-        if paths.put_back_claimed(photos, zip_path(photos, person, export, part)):
-            monitoring.log("zip claimed before was put back", export=export.id, part=part.number)
+        recover_claim(photos, zip_path(photos, person, export, part), export)
         gone = part.free_state == FREEING and zip_gone(photos, person, export, part)
     except Refused as refused:
         opened.rollback()
@@ -436,6 +435,8 @@ def free_part(opened: Session, photos: Photos, person: Person, export: Export, p
             removed = paths.remove_part_zip(photos, person.slug, export_name(export), part.filename or "", checked)
         except paths.NotAPartZip as error:
             raise Refused("zip_changed") from error
+        if not zip_gone(photos, person, export, part):
+            raise Refused("zip_changed")
     except Refused as refused:
         opened.rollback()
         lock(opened, export, part)
@@ -524,12 +525,27 @@ def keep_held(opened: Session, export: Export, kept_rows: dict[str, int], now: f
             monitoring.log("held copies kept", export=export.id, reason=reason, count=count)
 
 
+def recover_claim(photos: Photos, path: Path, export: Export) -> None:
+    if paths.put_back_claimed(photos, path):
+        monitoring.log("a file claimed before was put back", export=export.id)
+
+
+def recover_held_claims(photos: Photos, export: Export, rows: list[TakeoutEntry]) -> None:
+    for row in rows:
+        try:
+            path = paths.held_copy_at(photos, row.held_path or "", export_name(export))
+        except (paths.NotAHeldCopy, paths.OutsideRoot):
+            continue
+        recover_claim(photos, path, export)
+
+
 def free_held(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
     opened.commit()
     opened.expire_all()
     rows = held_rows(opened, export)
     if not rows:
         return
+    recover_held_claims(photos, export, rows)
     try:
         first = prove_held(opened, photos, export, rows, hashing=True)
         chosen = {row.id for row in first.ready}
@@ -548,6 +564,8 @@ def free_held(opened: Session, photos: Photos, export: Export, now: float, repor
             raise Refused("changed")
         for row in freeing:
             remove_held(photos, export, row, first.proof)
+            if not held_gone(photos, export, row):
+                raise Refused("changed")
             row.held_state, row.held_freed_at = FREED, now
             opened.flush()
     except Refused as refused:

@@ -166,6 +166,25 @@ A part's zip may be deleted only when all of these hold, rechecked under the dat
 
 Freeing is a cleanup step, not part of ingest, and runs at least one tick after the part became `ingested`, so a second, independent pass reads the disk again. The delete has a journal (`freeing`, then `freed`, as `duplicate_removals` does for the losing copy): a crash between the two finishes or refuses on the next run. The remover is one function in `darkroom/storage/paths.py` that refuses anything but a `.zip` directly in the export's inbox folder, through `Photos.removable`, with one caller module, held by a Semgrep rule like `darkroom-losing-copy-one-caller` and a negative test for each refusal.
 
+### One deletion, step by step (#487)
+
+A part's zip and a held copy are deleted by one routine, `paths.remove_checked` (through `remove_part_zip` and `remove_held_copy`), and recovered by another, `paths.put_back_claimed`, which `part_free` calls before it proves anything. The journal (`freeing`, then `freed`, on `export_parts` or `takeout_entries`) is written by `part_free`. The remover claims the file into a private, locked folder beside it, `.freeing-<hash>/copy`, renamed without replacing. It deletes only the claimed inode the proof checked, and then requires the name to be absent: no entry at the name and nothing claimed (`paths.inbox_entry_absent`, which raises when the folder can't be opened). The same table holds for a zip in `_inbox/<person>/export-<id>/` and for a held copy in `_inbox/<person>/held/export-<id>/`.
+
+| At the name | In the claim folder | Where a crash left it | Outcome |
+| --- | --- | --- | --- |
+| The proven file | Nothing | Before the claim (journal `freeing`) | Proved again, claimed, deleted, absence checked, recorded `freed` |
+| Nothing | Nothing | After the delete, before `freed` was written | Absence checked, recorded `freed` with the part's size |
+| Nothing | The proven file | After the claim, before the delete | Put back first, then proved again and freed as in row 1; until then it counts as present, never `freed` |
+| Another file | The proven file | After the claim, then something took the name | Can't be put back: both kept, counted as present, the attempt refuses (`zip_changed` / `changed`) |
+| Nothing | Another file | A claim of a file that was not the proven one | Put back, then proved as whatever it is: a different file fails the proof and is kept |
+| A link, a folder or a hard-linked file | Nothing | Any | Refused (`Photos.removable`, or not a plain single-linked file); kept; never absent |
+| A different file than the proof checked | Nothing | Swapped in before the claim | Refused at the identity check; kept |
+| A different file than the proof checked | — | Swapped in at the claim | The claimed inode isn't the proven one: put back and refused; kept |
+| A new file | Nothing | Created after the proven file was deleted | The absence check fails: not recorded `freed`; the new file is kept and proved like any file at that name |
+| Anything | Anything | The folder can't be opened (missing, a link above it) | The attempt fails with the error type logged; the journal stays as it was and nothing is recorded `freed` |
+
+Each row has a test: `tests/test_paths.py`'s `PartZipRemoverTests.test_every_cell_of_the_removers_state_table_for_a_zip_and_a_held_copy` and `test_a_file_that_takes_the_name_right_after_the_delete_is_kept_and_the_remover_refuses`, and through `part_free` `tests/test_part_free.py`'s `JournalTests`, `ClaimSwapTests` and `ClaimRecoveryTests`.
+
 ### Against today's retention and Takeout's limits
 
 Today a zip is kept 14 days after the whole export finishes. Takeout allows 5 downloads per part, and the export expires about 7 days after it is ready; Darkroom caps itself at 2 retries per part and normally uses 1 download.

@@ -2132,9 +2132,12 @@ def remove_checked(photos: Photos, path: Path, expected: Identity, refused: type
                     put_claim_back(private, CLAIMED, folder, path.name)
                     raise refused("another file was claimed in its place")
                 os.unlink(CLAIMED, dir_fd=private)
-                return claimed.st_size
+                removed = claimed.st_size
         except (NotALosingCopy, KeeperBusy) as error:
             raise refused("the claim folder is not usable") from error
+        if entry_at(path.name, folder) is not None or claim_left(folder, path.name):
+            raise refused("another file took its name after it was claimed")
+        return removed
 
 
 def remove_part_zip(photos: Photos, person: str, export: str, filename: str, expected: Identity) -> int | None:
