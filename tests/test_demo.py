@@ -244,7 +244,8 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual(parts, [("done", "ingested", 1517, 1517, 0, 0, None), ("done", "ingested", 1402, 1402, 21, 2, None), ("done", "ingesting", 1488, 812, 0, 0, None),
                                  ("done", "ingested", 1402, 1402, 0, 0, "failed_item"), ("done", "refused", 0, 0, 0, 0, None), ("done", "failed", 900, 300, 0, 0, None),
                                  ("done", "queued", 0, 0, 0, 0, None), ("downloading", "not_queued", 0, 0, 0, 0, None)])
-        self.assertEqual((shown["part_count"], shown["parts_ingested"], shown["held_waiting_sidecar"], shown["held_waiting_export"], shown["bytes_freed"]), (8, 3, 21, 2, 0))
+        self.assertEqual((shown["part_count"], shown["parts_ingested"], shown["held_waiting_sidecar"], shown["held_waiting_export"], shown["bytes_freed"]), (8, 3, 21, 2, 2_000_000))
+        self.assertEqual([part["freed"] for part in shown["parts"]], [True] + [False] * 7)
         self.assertEqual([part["progress"] for part in shown["parts"]][-1], 62)
 
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):

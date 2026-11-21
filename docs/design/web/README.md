@@ -42,7 +42,7 @@ Desktop boards are 1280 wide (a left rail) and phone boards 390 wide (a top bar 
 
 Any later change to layout, flow or visual style goes back to issue #16 for the owner's sign-off, and the boards here are re-exported from the canvas in the same pull request that changes the UI.
 
-Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), the account part of Exports and the Remote browser (#29), Imports and Review (#27), the schedule, current export parts, earlier exports and "Check exports now" on Exports (#30), and per-part import in the current export parts card on Exports (#490, PP-13: states 1 to 6 of `04-exports-ingest-*`; PP-10's freed state is not built, and Imports is unchanged).
+Built so far: Sign-in (signed out and not allowed), the app shell, Status and People (#17), the account part of Exports and the Remote browser (#29), Imports and Review (#27), the schedule, current export parts, earlier exports and "Check exports now" on Exports (#30), and per-part import in the current export parts card on Exports (#490, PP-13: states 1 to 6 of `04-exports-ingest-*`, and Imports is unchanged), and its freed state (#487, PP-10: state 7, the Freed chip, the Disk freed total and the sentence under the table).
 
 Approved departures (#29): the Exports and Remote browser pages are built with these departures from boards 04 and 07, all approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6636481608):
 

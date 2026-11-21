@@ -464,6 +464,11 @@ class FreeingWorld(OrderWorld):
     def held_left(self):
         return sorted(key for key in self.files() if key.startswith(f"_inbox/{self.people[0]}/held/"))
 
+    def held_without_a_decision(self):
+        self.opened.expire_all()
+        return sorted(row.held_path for row in self.opened.execute(select(TakeoutEntry).where(TakeoutEntry.held_path.is_not(None))).scalars()
+                      if row.held_state != "freed" and row.outcome == "skipped" and row.decision_id is None)
+
     def journal_problems(self):
         self.opened.expire_all()
         problems = [f"part {part.number} recorded freed while its zip is there" for part in self.opened.execute(select(ExportPart)).scalars()
@@ -488,6 +493,8 @@ class FreeingOrderTests(OrderCase):
                 if found:
                     differ[order] = found
                 freed[order] = (world.freed, world.held_left())
+                if world.held_left() != world.held_without_a_decision():
+                    differ.setdefault(order, {})["held left"] = (world.held_left(), world.held_without_a_decision())
         self.assertEqual(differ, {}, f"{len(differ)} of {len(orders)} part orders with freeing on differ from whole-export ingest")
         return freed
 

@@ -391,6 +391,9 @@ PART_IMPORT = (
 )
 
 
+FREED_PART: dict[str, object] = {"free_state": "freed", "bytes_freed": 2_000_000}
+
+
 def seed_part_import(opened: Session, now: float) -> None:
     owner = opened.execute(select(Person).where(Person.slug == "avery")).scalar_one()
     account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
@@ -401,7 +404,7 @@ def seed_part_import(opened: Session, now: float) -> None:
     for number, (state, entries, done, sidecar, whole, failed) in enumerate(PART_IMPORT, start=1):
         opened.add(ExportPart(export_id=export.id, number=number, filename=f"takeout-demo-5-00{number}.zip", bytes=2_000_000, bytes_done=2_000_000, downloads_used=1,
                               attempts=1, status="done", ingest_state=state, ingest_queued_at=now - 5 * HOUR, entries=entries, entries_done=done,
-                              held=sidecar + whole, failed_items=failed))
+                              held=sidecar + whole, failed_items=failed, **(FREED_PART if number == 1 else {})))
         opened.flush()
         for held in range(sidecar + whole):
             opened.add(TakeoutEntry(export_id=export.id, part_number=number, name=f"Takeout/Google Photos/Demo/held-{number}-{held}.jpg", kind="media", bytes=1000,

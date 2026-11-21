@@ -189,6 +189,18 @@ const NOT_QUEUED = "not_queued";
 const whole = new Intl.NumberFormat("en-GB");
 const items = (n: number) => `${whole.format(n)} ${n === 1 ? "item" : "items"}`;
 const wait = (n: number) => (n === 1 ? "waits" : "wait");
+const decimal = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 });
+const UNITS = ["bytes", "KB", "MB", "GB", "TB"];
+
+export function freedSize(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < UNITS.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${decimal.format(value)} ${UNITS[unit]}`;
+}
 
 export function importedPerPart(item: ExportView): boolean {
   return item.parts.some((part) => part.ingest_state !== NOT_QUEUED);
@@ -209,6 +221,7 @@ export function partImportState(part: ExportPartDetail, exportStatus: string): P
     case "queued": return { tone: "neutral", label: "Downloaded", detail: "Waiting to import" };
     case "ingesting": return { tone: "neutral", label: "Importing", detail: part.entries === 0 ? "Reading the file" : `${whole.format(part.entries_done)} of ${items(part.entries)}` };
     case "ingested":
+      if (part.freed) return { tone: "ok", label: "Freed", detail: `${items(part.entries)} imported, ${freedSize(part.bytes_freed)} freed` };
       if (part.kept_reason === "failed_item") return { tone: "warn", label: "Kept", detail: `${items(part.entries)}, ${whole.format(part.failed_items)} failed` };
       if (part.held > 0) return { tone: "neutral", label: `Holding ${items(part.held)}`, detail: heldDetail(part) };
       return { tone: "ok", label: "Imported", detail: items(part.entries) };
@@ -229,6 +242,10 @@ export function keptSentence(part: ExportPartDetail): string | null {
 export function importedTotal(item: ExportView): string {
   const total = item.part_count ?? item.parts.length;
   return `${item.parts_ingested} of ${total === 1 ? "1 part" : `${total} parts`}`;
+}
+
+export function freedTotal(item: ExportView): string | null {
+  return item.bytes_freed > 0 ? freedSize(item.bytes_freed) : null;
 }
 
 export function heldTotal(item: ExportView): { value: string; note: string | null } {

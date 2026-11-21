@@ -7,10 +7,10 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import exports
-from darkroom.domain.ingest import part_free, run
+from darkroom.domain.ingest import part_free, part_ingest, run
 from darkroom.storage import paths
 from darkroom.storage.models import (
-    DedupeDecision, Event, Export, ExportPart, ImportRun, ManagedImportIntent, MediaItem, ReviewItem, TakeoutEntry, TakeoutSidecar,
+    DedupeDecision, GoogleAccount, Event, Export, ExportPart, ImportRun, ManagedImportIntent, MediaItem, ReviewItem, TakeoutEntry, TakeoutSidecar,
 )
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -212,6 +212,28 @@ class RefusalTests(unittest.TestCase):
         self.world.change(stored, text=stored.text[:-1])
         self.assert_kept()
 
+    def test_a_zip_that_cannot_be_read_pins_it(self):
+        with mock.patch.object(part_free.paths, "open_inbox_file", side_effect=OSError("made-up read error")):
+            self.assert_kept()
+
+    def test_a_waiting_entry_without_its_held_copy_is_never_proven_for_the_delete(self):
+        export = self.world.opened.get(Export, self.export.id)
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.prove_part(self.world.opened, self.world.photos, run.owner_person(self.world.opened, export), export, self.world.part(self.export, 1),
+                                 NOW + TICK, hashing=False, require_held=True)
+        self.assertEqual(refused.exception.reason, "held_missing")
+        self.world.opened.rollback()
+        self.assertEqual(self.world.states(), [(1, None), (2, None)])
+
+    def test_a_zip_gone_before_its_proof_is_not_recorded_freed(self):
+        export = self.world.opened.get(Export, self.export.id)
+        self.world.zip_of(1).unlink()
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.listing(self.world.photos, run.owner_person(self.world.opened, export), export, self.world.part(self.export, 1))
+        self.assertEqual(refused.exception.reason, "zip_missing")
+        self.world.free()
+        self.assertEqual(dict(self.world.states())[1], None)
+
     def test_a_kind_darkroom_might_read_pins_the_zip(self):
         self.world.change(self.world.entry_named(ARCHIVE_PAGE), name="Takeout/notes-made-up.txt")
         self.assert_kept()
@@ -282,6 +304,130 @@ class RefusalTests(unittest.TestCase):
         marker.write_bytes(b"set aside")
         self.assert_kept()
         self.assertEqual(self.world.states(), [(1, None), (2, None)])
+
+
+class ProofDetailTests(unittest.TestCase):
+    def setUp(self):
+        self.world = FreeWorld(self)
+        self.export = self.world.made()
+
+    def kept_for(self, reason, number=1):
+        zipped = self.world.zip_of(number)
+        before = zipped.read_bytes()
+        self.world.opened.commit()
+        try:
+            part_free.prove_part(self.world.opened, self.world.photos, self.owner(), self.world.opened.get(Export, self.export.id),
+                                 self.world.part(self.export, number), NOW + TICK, hashing=True, require_held=False)
+        except part_free.Refused as refused:
+            self.assertEqual(refused.reason, reason)
+        else:
+            self.fail(f"the proof held, but {reason} was expected")
+        finally:
+            self.world.opened.rollback()
+        self.assertEqual((zipped.read_bytes(), dict(self.world.states())[number]), (before, None))
+
+    def owner(self):
+        return run.owner_person(self.world.opened, self.world.opened.get(Export, self.export.id))
+
+    def test_a_ledger_entry_the_zip_does_not_hold_differs_from_the_listing(self):
+        self.world.opened.add(TakeoutEntry(export_id=self.export.id, part_number=1, name="Takeout/empty-folder/", kind="other", bytes=0, crc32=0,
+                                           outcome="recorded", listed_at=NOW))
+        self.world.opened.commit()
+        self.kept_for("listing_differs")
+
+    def test_a_skipped_entry_without_a_matched_item_or_its_pending_sidecar_text_is_not_proven(self):
+        exact = self.world.entry(EXACT)
+        self.world.change(exact, metadata_pending=True, sidecar_entry_id=None)
+        self.kept_for("metadata_unrecorded")
+        self.world.change(exact, metadata_pending=False)
+        self.world.change(self.world.opened.get(DedupeDecision, exact.decision_id), matched_item_id=None)
+        self.kept_for("decision_unsafe")
+
+    def test_a_review_whose_recorded_hash_differs_or_whose_hold_is_gone_is_not_proven(self):
+        review = self.world.opened.execute(select(ReviewItem).where(ReviewItem.decision_id == self.world.entry(REVIEWED).decision_id)).scalar_one()
+        hold_sha1 = review.hold_sha1
+        self.world.change(review, hold_sha1="0" * 40)
+        self.kept_for("review_differs", number=2)
+        self.world.change(review, hold_sha1=hold_sha1)
+        self.world.hold_of().unlink()
+        self.kept_for("file_missing", number=2)
+
+    def test_a_placed_entry_whose_item_differs_is_not_proven(self):
+        item = self.world.opened.get(MediaItem, self.world.entry(PLACED).item_id)
+        self.world.change(item, sha1="0" * 40)
+        self.kept_for("placed_differs")
+        self.world.change(self.world.entry(PLACED), item_id=self.world.entry("Photos from 2019/IMG_5002.JPG").item_id)
+        self.kept_for("decision_unsafe")
+
+    def test_a_held_path_outside_the_held_store_or_an_undecided_entry_is_not_proven(self):
+        waiting = self.world.entry(TIER_2)
+        self.world.change(waiting, held_path=f"_inbox/jo/review/{EXPORT}/{waiting.id}.jpg")
+        self.kept_for("held_differs")
+        self.world.change(waiting, held_path=None, outcome="listed")
+        self.kept_for("undecided_entry")
+
+    def test_a_copy_is_proven_by_its_item_and_a_copy_of_nothing_is_not(self):
+        root, other = self.world.entry(PLACED), self.world.entry("Photos from 2019/IMG_5002.JPG")
+        self.world.change(other, outcome="copy", copy_of_id=None)
+        self.kept_for("undecided_entry", number=2)
+        self.world.change(other, copy_of_id=root.id)
+        self.kept_for("undecided_entry", number=2)
+        self.world.change(other, sha1=root.sha1)
+        self.world.free()
+        self.assertEqual(dict(self.world.states())[2], "freed")
+
+    def test_a_held_copy_already_there_with_other_bytes_is_never_replaced(self):
+        waiting = self.world.entry(TIER_2)
+        target = self.world.held_copy()
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"other held bytes")
+        self.world.free()
+        self.assertEqual((dict(self.world.states())[1], target.read_bytes(), self.world.entry(TIER_2).held_path), (None, b"other held bytes", None))
+        self.assertIn("part 1: held_differs", self.world.kind_of_events("export_part_kept"))
+        self.assertEqual(waiting.outcome, "waiting_export")
+
+    def test_an_export_whose_import_is_not_done_or_that_failed_is_busy(self):
+        export = self.world.opened.get(Export, self.export.id)
+        self.world.change(export, status="imported")
+        self.world.opened.add(ImportRun(export_id=export.id, started=NOW, status="failed"))
+        self.world.opened.commit()
+        self.kept_for("export_busy")
+        self.world.change(export, status="failed")
+        self.kept_for("export_busy")
+
+    def test_an_export_without_an_owner_fails_the_attempt_and_frees_nothing(self):
+        account = self.world.opened.get(GoogleAccount, self.world.account)
+        self.world.change(account, default_person_id=None)
+        self.world.change(self.world.opened.get(Export, self.export.id), owner_person_id=None)
+        zips = self.world.zips()
+        report = self.world.free()
+        self.assertEqual((report.failed, report.parts, self.world.zips()), (1, 0, zips))
+        self.assertEqual(self.world.kind_of_events("export_free_failed"), ["StageFailed"])
+
+    def test_a_missing_exports_folder_has_no_zip_to_free(self):
+        folder = self.world.folder()
+        folder.rename(folder.with_name("away"))
+        export = self.world.opened.get(Export, self.export.id)
+        self.assertFalse(part_free.zip_present(self.world.photos, self.owner(), export, self.world.part(self.export, 1)))
+        self.assertEqual(self.world.free().parts, 0)
+
+    def test_a_second_pass_that_differs_from_the_first_refuses(self):
+        path = self.world.placed_file()
+        identity = paths.file_identity(path.lstat())
+        found = part_free.Checked(path, "0" * 40, identity, in_the_inbox=False)
+        cases = [(part_free.Proof(None, {}), part_free.Proof(None, {})),
+                 (part_free.Proof(identity, {path: found}), part_free.Proof(identity, {})),
+                 (part_free.Proof(identity, {path: found}), part_free.Proof(identity, {path: part_free.Checked(path, "1" * 40, identity, False)}))]
+        for first, second in cases:
+            with self.subTest(first=first), self.assertRaises(part_free.Refused) as refused:
+                part_free.confirm(self.world.photos, first, second)
+            self.assertEqual(refused.exception.reason, "changed")
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.hashed(self.world.photos, part_free.Checked(path.with_name("absent.jpg"), "0" * 40, identity, False))
+        self.assertEqual(refused.exception.reason, "file_missing")
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.hashed(self.world.photos, found)
+        self.assertEqual(refused.exception.reason, "hash_differs")
 
 
 class SwappedFileTests(unittest.TestCase):
@@ -457,6 +603,27 @@ class JournalTests(unittest.TestCase):
         copy.mkdir()
         self.world.free(at=NOW + 4 * TICK)
         self.assertEqual((self.world.entry(TIER_2).held_state, copy.is_dir()), (None, True))
+
+    def test_a_part_left_freeing_behind_a_linked_folder_fails_only_its_own_export_and_other_accounts_still_ingest(self):
+        with mock.patch.object(part_free.paths, "remove_part_zip", side_effect=Crash), self.assertRaises(Crash):
+            self.world.free()
+        self.world.reopen()
+        other = GoogleAccount(email="other@x.test", default_person_id=self.world.ids["sam"], created=1.0)
+        self.world.opened.add(other)
+        self.world.opened.commit()
+        later = self.world.create(lambda builder: builder.photo("IMG_7001.JPG", part=0), parts=1, google_id="export-2")
+        self.world.change(self.world.opened.get(Export, later.id), account_id=other.id)
+        folder = self.world.folder()
+        away = folder.with_name("away")
+        folder.rename(away)
+        folder.symlink_to(away, target_is_directory=True)
+        with no_leaks(self, "IMG_7001", "IMG_5001"):
+            report = self.world.free(at=NOW + 2 * TICK)
+        self.assertEqual((report.failed, self.world.states()[0]), (1, (1, "freeing")))
+        self.assertTrue(all(path.exists() for path in away.glob("*.zip")))
+        ran = part_ingest.run_queued(self.world.opened, self.world.settings, NOW + 2 * TICK)
+        self.assertEqual(ran, [(later.id, 1)])
+        self.assertEqual(self.world.states()[0], (1, "freeing"))
 
     def test_a_crash_while_freeing_the_held_store_finishes_on_the_next_run(self):
         self.world.free()

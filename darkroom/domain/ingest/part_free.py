@@ -107,8 +107,6 @@ def shared_checks(opened: Session, export: Export) -> None:
 def part_checks(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float) -> None:
     if part.ingest_state != part_ingest.INGESTED or part.ingested_at is None or part.ingested_at >= now or part.status != "done":
         raise Refused("not_settled")
-    if part.free_state == FREED:
-        raise Refused("freed")
     if not in_export_folder(photos, person, export, part):
         raise Refused("not_export_folder")
     shared_checks(opened, export)
@@ -370,10 +368,11 @@ def hold_waiting(opened: Session, photos: Photos, person: Person, export: Export
     return copied
 
 
-def note_once(opened: Session, now: float, kind: str, subject: str, detail: str) -> None:
+def note_once(opened: Session, now: float, kind: str, subject: str, detail: str) -> bool:
     seen = opened.execute(select(Event.id).where(Event.type == kind, Event.subject == subject, Event.detail == detail).limit(1)).first()
     if seen is None:
         events.record(opened, now, kind, subject, detail)
+    return seen is None
 
 
 def kept(opened: Session, export: Export, subject: str, kind: str, reason: str, now: float) -> None:
@@ -411,7 +410,14 @@ def lock(opened: Session, export: Export, part: ExportPart) -> None:
 
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
     lock(opened, export, part)
-    if part.free_state == FREEING and zip_gone(photos, person, export, part):
+    try:
+        gone = part.free_state == FREEING and zip_gone(photos, person, export, part)
+    except Refused as refused:
+        opened.rollback()
+        report.failed += 1
+        monitoring.log("zip freeing failed", export=export.id, part=part.number, reason=refused.reason)
+        return
+    if gone:
         record_freed(opened, export, part, part.bytes or 0, now, report)
         return
     opened.commit()
@@ -452,22 +458,36 @@ def any_failed(opened: Session, export: Export) -> bool:
                           .limit(1)).first() is not None
 
 
-def prove_held(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], hashing: bool) -> Proof:
+@dataclass
+class HeldProof:
+    proof: Proof
+    ready: list[TakeoutEntry]
+    kept: dict[str, int]
+
+
+def prove_held(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], hashing: bool) -> HeldProof:
     if export.status != IMPORTED:
         raise Refused("export_busy")
     shared_checks(opened, export)
     if any_failed(opened, export):
         raise Refused("failed_entry")
-    prover = Prover(opened, photos, export, on_disk=True)
-    for row in rows:
-        if row.metadata_pending:
-            raise Refused("metadata_unrecorded")
-        prover.media(row, allow_held=False)
     if owner_action(photos):
         raise Refused("owner_action")
-    if hashing:
-        prover.hash_all()
+    found = HeldProof(Proof(), [], {})
     for row in rows:
+        prover = Prover(opened, photos, export, on_disk=True)
+        try:
+            if row.metadata_pending:
+                raise Refused("metadata_unrecorded")
+            prover.media(row, allow_held=False)
+            if hashing:
+                prover.hash_all()
+        except Refused as refused:
+            found.kept[refused.reason] = found.kept.get(refused.reason, 0) + 1
+            continue
+        found.proof.files.update(prover.proof.files)
+        found.ready.append(row)
+    for row in found.ready:
         try:
             path = paths.held_copy_at(photos, row.held_path or "", export_name(export))
             if paths.inbox_entry_absent(photos, path):
@@ -477,8 +497,12 @@ def prove_held(opened: Session, photos: Photos, export: Export, rows: list[Takeo
             raise Refused("held_differs") from error
         if identity is None:
             raise Refused("held_differs")
-        prover.proof.files[path] = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
-    return prover.proof
+        found.proof.files[path] = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
+    return found
+
+
+def same_files(first: Proof, second: Proof) -> bool:
+    return first.files.keys() == second.files.keys() and all(first.files[path].identity == found.identity for path, found in second.files.items())
 
 
 def remove_held(photos: Photos, export: Export, row: TakeoutEntry, proof: Proof) -> int | None:
@@ -493,6 +517,12 @@ def remove_held(photos: Photos, export: Export, row: TakeoutEntry, proof: Proof)
         raise Refused("changed") from error
 
 
+def keep_held(opened: Session, export: Export, kept_rows: dict[str, int], now: float) -> None:
+    for reason, count in sorted(kept_rows.items()):
+        if note_once(opened, now, HELD_KEPT, f"export {export.id}", f"{count} held copies: {reason}"):
+            monitoring.log("held copies kept", export=export.id, reason=reason, count=count)
+
+
 def free_held(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
     opened.commit()
     opened.expire_all()
@@ -501,17 +531,22 @@ def free_held(opened: Session, photos: Photos, export: Export, now: float, repor
         return
     try:
         first = prove_held(opened, photos, export, rows, hashing=True)
+        chosen = {row.id for row in first.ready}
         for row in rows:
-            row.held_state = FREEING
+            if row.id in chosen:
+                row.held_state = FREEING
+            elif row.held_state == FREEING:
+                row.held_state, row.held_freed_at = (FREED, now) if held_gone(photos, export, row) else (None, None)
+        keep_held(opened, export, first.kept, now)
         opened.commit()
         db.write_lock(opened)
         opened.expire_all()
-        rows = held_rows(opened, export)
-        second = prove_held(opened, photos, export, rows, hashing=False)
-        if first.files.keys() != second.files.keys() or any(first.files[path].identity != found.identity for path, found in second.files.items()):
+        freeing = [row for row in held_rows(opened, export) if row.held_state == FREEING]
+        second = prove_held(opened, photos, export, freeing, hashing=False)
+        if {row.id for row in second.ready} != {row.id for row in freeing} or not same_files(first.proof, second.proof):
             raise Refused("changed")
-        for row in rows:
-            remove_held(photos, export, row, first)
+        for row in freeing:
+            remove_held(photos, export, row, first.proof)
             row.held_state, row.held_freed_at = FREED, now
             opened.flush()
     except Refused as refused:
@@ -527,10 +562,12 @@ def free_held(opened: Session, photos: Photos, export: Export, now: float, repor
         report.kept += 1
         opened.commit()
         return
-    events.record(opened, now, "export_held_freed", f"export {export.id}", f"{len(rows)} held copies")
-    report.held += len(rows)
+    if freeing:
+        events.record(opened, now, "export_held_freed", f"export {export.id}", f"{len(freeing)} held copies")
+    report.held += len(freeing)
+    report.kept += sum(first.kept.values())
     opened.commit()
-    monitoring.log("held copies freed", export=export.id, count=len(rows))
+    monitoring.log("held copies freed", export=export.id, count=len(freeing))
 
 
 def held_gone(photos: Photos, export: Export, row: TakeoutEntry) -> bool:
@@ -572,7 +609,7 @@ def free_ready(opened: Session, settings: config.Settings, now: float) -> FreeRe
                 free_export(opened, photos, export, now, report)
         except run.Busy:
             continue
-        except (run.StageFailed, OSError) as error:
+        except Exception as error:
             opened.rollback()
             report.failed += 1
             monitoring.log("zip freeing failed", export=export_id, error=type(error).__name__)

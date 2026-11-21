@@ -304,7 +304,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         current = live()
         with db.session(engine) as opened:
             run.run_waiting(opened, current, at)
-            freed = part_free.free_ready(opened, current, at)
+            try:
+                freed = part_free.free_ready(opened, current, at)
+            except Exception as error:
+                opened.rollback()
+                monitoring.log("zip freeing skipped this tick", error=type(error).__name__)
+                freed = part_free.FreeReport()
             part_ingest.run_queued(opened, current, at)
             finish_export.finish_ready(opened, current, at)
         if freed.parts or freed.held or freed.failed:
