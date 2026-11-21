@@ -12,13 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import dedupe, index
-from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
+from darkroom.domain.ingest import finish_export, metadata, pairing, part_ingest, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, ReviewItem
+from darkroom.storage.models import DedupeDecision, Export, ExportPart, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, ReviewItem
 from tests.fixtures import media as fixtures
-from tests.shared import add_person, own_database
+from tests.import_world import Recorder
+from tests.shared import add_person, own_database, settings_from
 from tests.takeout_fixtures import TakeoutBuilder, standard_export
 
 TAKEN = 1562243415
@@ -51,6 +52,7 @@ class Household(unittest.TestCase):
         account = GoogleAccount(email="family@x.test", default_person_id=self.jo, created=1.0)
         self.opened.add(account)
         self.opened.flush()
+        self.account = account.id
         pixel = Pixel(name="Pixel", google_account_id=account.id, created=1.0)
         self.opened.add(pixel)
         self.opened.flush()
@@ -590,7 +592,7 @@ class FixtureExportRun(unittest.TestCase):
         self.opened.flush()
         for slug in ("jo", "sam"):
             self.photos.ensure_person_tree(slug)
-        manifest = standard_export(self.root / "_inbox/jo/parts")
+        manifest = self.manifest = standard_export(self.root / "_inbox/jo/parts")
         self.staging = self.photos.staging("jo", unpack.staging_name(self.export))
         for part in manifest.parts:
             with zipfile.ZipFile(part) as archive:
@@ -637,6 +639,38 @@ class FixtureExportRun(unittest.TestCase):
         self.assertGreater(report.placed, 5)
         for relative, data in self.originals.items():
             self.assertEqual(sha1_of(self.root / relative), hashlib.sha1(data, usedforsecurity=False).hexdigest())
+
+    def ingest_by_parts(self):
+        data = tempfile.TemporaryDirectory()
+        self.addCleanup(data.cleanup)
+        settings = settings_from(DARKROOM_PHOTOS_ROOT=str(self.root), DARKROOM_DATA_DIR=data.name)
+        export = Export(account_id=self.account, kind="initial", google_id="google-fixture", part_count=len(self.manifest.parts), status="downloading",
+                        inbox_dir=str(self.root / "_inbox/jo/parts"))
+        self.opened.add(export)
+        self.opened.flush()
+        parts = [ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.stat().st_size, status="done", ingest_state="queued",
+                            ingest_queued_at=10.0) for number, path in enumerate(self.manifest.parts, start=1)]
+        self.opened.add_all(parts)
+        self.opened.commit()
+        tools = run.Tools(notifier=Recorder())
+        for part in reversed(parts):
+            part_ingest.ingest_part(self.opened, settings, export, part, 20.0, tools)
+        finished = finish_export.finish(self.opened, settings, export, 20.0, tools)
+        return export, finished
+
+    def test_a_per_part_ingest_and_finish_keeps_every_original_and_adds_only_sidecars(self):
+        before = self.originals_tree()
+        self.assertEqual(len(before), 4)
+        export, finished = self.ingest_by_parts()
+        self.assertEqual((finished.status, export.status), ("done", "imported"))
+        after = self.originals_tree()
+        self.assertEqual({key: after[key] for key in before}, before)
+        self.assertEqual(set(after) - set(before), {"jo/originals/IMG_0001.JPG.xmp", "sam/originals/2019/IMG_0012.JPG.xmp"})
+        for relative, data in self.originals.items():
+            self.assertEqual(sha1_of(self.root / relative), hashlib.sha1(data, usedforsecurity=False).hexdigest())
+        scratch = self.photos.scratch("jo", f"export-{export.id}")
+        self.assertEqual([path for path in scratch.rglob("*") if path.is_file()] if scratch.exists() else [], [])
+        self.assertGreater(finished.added, 5)
 
     def test_raw_avif_and_new_video_kinds_are_placed_and_every_original_keeps_its_sha1(self):
         builder = TakeoutBuilder(self.root / "_inbox/jo/kinds", seed=11)
