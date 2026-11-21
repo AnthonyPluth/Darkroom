@@ -54,8 +54,8 @@ def staging_dir(photos: Photos, person: Person, export: Export) -> Path:
     return photos.staging(person.slug, staging_name(export))
 
 
-def part_path(export: Export, part: ExportPart) -> Path:
-    return Path(export.inbox_dir or "") / (part.filename or "")
+def part_path(export: Export, part: ExportPart, folder: Path | None = None) -> Path:
+    return (Path(export.inbox_dir) if export.inbox_dir else folder or Path("")) / (part.filename or "")
 
 
 def check_parts(photos: Photos, export: Export, parts: list[ExportPart]) -> list[tuple[ExportPart, Path]]:

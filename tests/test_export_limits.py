@@ -330,12 +330,11 @@ class FinishTests(DownloadCase):
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
 
-    def test_a_part_queued_mid_download_already_has_the_export_folder_recorded(self):
+    def test_a_part_queued_mid_download_leaves_the_export_folder_to_the_finish(self):
         job = self.claim()
         self.attempt(job, 1)
         self.part_done(job, 1, "takeout-001.zip")
-        status, _, _, inbox = self.export_row()
-        self.assertEqual((status, Path(inbox)), ("downloading", self.folder()))
+        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
         with db.session(self.engine) as opened:
             self.assertEqual([part.ingest_state for part in exports.parts_of(opened, self.export)], ["queued", "not_queued"])
 
@@ -348,7 +347,7 @@ class FinishTests(DownloadCase):
             opened.get(Export, self.export).status = "imported"
         with db.session(self.engine) as opened:
             export = downloads.finish(opened, self.settings, job, NOW)
-            self.assertEqual(export.status, "imported")
+            self.assertEqual((export.status, Path(export.inbox_dir)), ("imported", self.folder()))
             browser_jobs.done(opened, job, {}, NOW)
         self.assertEqual(self.export_row()[0], "imported")
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
@@ -871,7 +870,7 @@ class LinkedFolderTests(DownloadCase):
         self.folder().symlink_to(originals, target_is_directory=True)
         with self.assertRaises(downloads.Refused):
             self.call(lambda opened: downloads.finish(opened, self.settings, job, NOW))
-        self.assertEqual(self.export_row(), ("downloading", 0, None, str(self.folder())))
+        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
 
 
 class DefaultPersonTests(DownloadCase):

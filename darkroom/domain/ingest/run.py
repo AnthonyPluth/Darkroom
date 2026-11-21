@@ -582,25 +582,7 @@ def route_of(opened: Session, photos: Photos | None, export: Export) -> str:
     return route
 
 
-def ensure_inbox(opened: Session, photos: Photos, export: Export) -> bool:
-    if export.inbox_dir is not None:
-        return True
-    owner = exports.owner_of(opened, export)
-    if owner is None:
-        return False
-    try:
-        folder = photos.export_tree(owner.slug, f"export-{export.id}")
-    except paths.OutsideRoot:
-        return False
-    if folder.is_symlink() or not folder.is_dir():
-        return False
-    export.inbox_dir = str(folder)
-    return True
-
-
 def adopt(opened: Session, export: Export, now: float) -> int:
-    if export.inbox_dir is None:
-        return 0
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
                                                          ExportPart.ingest_state == PART_NOT_QUEUED)).scalars())
     for part in parts:
@@ -617,7 +599,7 @@ def route_pending(opened: Session, settings: config.Settings, now: float) -> lis
     adopted = []
     for export_id in opened.execute(candidates).scalars().all():
         export = opened.get(Export, export_id)
-        if export is not None and route_of(opened, photos, export) == PER_PART and ensure_inbox(opened, photos, export) and adopt(opened, export, now):
+        if export is not None and route_of(opened, photos, export) == PER_PART and adopt(opened, export, now):
             adopted.append(export_id)
             monitoring.log("export routed to per-part ingest", export=export_id)
     opened.commit()
@@ -643,7 +625,7 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
         raise LookupError("no such export")
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
-    if export.status not in IMPORTABLE or (export.status == "failed" and (export.inbox_dir is None or not exports.all_done(opened, export))):
+    if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
     last = latest_run(opened, export.id)
     if route_of(opened, photos, export) == PER_PART:

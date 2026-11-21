@@ -432,7 +432,7 @@ def retry_refusal(export: Export, parts: Sequence[ExportPart], now: float, job_o
     expires_at = dates.instant_or_none(export.expires_at)
     if export.status == "expired" or (expires_at is not None and now >= expires_at):
         return EXPIRED_WORDS
-    if export.inbox_dir is not None and parts and export.part_count == len(parts) and all(part.status == "done" for part in parts):
+    if export.inbox_dir is not None:
         return IMPORT_FAILED_WORDS
     if not parts or export.part_count != len(parts):
         return NO_PARTS_WORDS

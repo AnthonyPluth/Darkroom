@@ -58,7 +58,7 @@ class Target:
 
 
 def queue(opened: Session, photos: Photos | None, export: Export, part: ExportPart, now: float) -> None:
-    if export.inbox_dir is not None and run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
+    if run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
         part.ingest_state, part.ingest_queued_at = QUEUED, now
 
 
@@ -189,7 +189,7 @@ class Ingest:
         part = part_of(self.opened, self.export.id, number)
         if part is None:
             raise unpack.UnpackFailed("the part is not in the ledger")
-        path = unpack.part_path(self.export, part)
+        path = unpack.part_path(self.export, part, self.photos.export_tree(self.person.slug, unpack.staging_name(self.export)))
         with contextlib.ExitStack() as opening:
             handle = opening.enter_context(unpack.open_part(self.photos, path, number))
             archive = opening.enter_context(part_reader.zip_of(handle, path, number))
