@@ -54,8 +54,19 @@ def staging_dir(photos: Photos, person: Person, export: Export) -> Path:
     return photos.staging(person.slug, staging_name(export))
 
 
-def part_path(export: Export, part: ExportPart) -> Path:
-    return Path(export.inbox_dir or "") / (part.filename or "")
+def part_folder(export: Export, photos: Photos | None = None, person: Person | None = None) -> Path:
+    if export.inbox_dir:
+        return Path(export.inbox_dir)
+    if photos is None or person is None:
+        return Path("")
+    try:
+        return photos.root / paths.INBOX / photos.person_part(person.slug) / photos.name_part(staging_name(export))
+    except paths.OutsideRoot:
+        return Path("")
+
+
+def part_path(export: Export, part: ExportPart, photos: Photos | None = None, person: Person | None = None) -> Path:
+    return part_folder(export, photos, person) / (part.filename or "")
 
 
 def check_parts(photos: Photos, export: Export, parts: list[ExportPart]) -> list[tuple[ExportPart, Path]]:
@@ -253,7 +264,7 @@ def recorded_folder(photos: Photos | None, inbox: Path) -> str:
 
 
 def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None,
-                  photos: Photos | None = None) -> list[Export]:
+                  photos: Photos | None = None, route: str | None = None) -> list[Export]:
     from darkroom.domain.ingest import part_ingest
 
     account = chosen_account(opened, person, account_email)
@@ -268,24 +279,27 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
                                                      Export.inbox_dir.in_([canonical, str(inbox)]))).scalars().first()
         if export is None:
             export = Export(account_id=account.id, kind="manual", google_id=stamp, created_at=now, ready_at=now, status="downloaded",
-                            inbox_dir=canonical, part_count=max(numbered), owner_person_id=person.id)
+                            inbox_dir=canonical, part_count=max(numbered), owner_person_id=person.id, ingest_route=route)
             opened.add(export)
             opened.flush()
         export.inbox_dir = canonical
+        if export.ingest_route is None and route is not None:
+            export.ingest_route = route
         known = {part.number for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id)).scalars()}
         for number, path in sorted(numbered.items()):
             if number not in known:
                 part = ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.lstat().st_size, status="done")
-                part_ingest.queue(part, now)
+                part_ingest.queue(opened, photos, export, part, now)
                 opened.add(part)
         registered.append(export)
     opened.flush()
     return registered
 
 
-def inspect_manual_inbox(opened: Session, photos: Photos, person: Person, now: float, account_email: str | None = None) -> list[Export]:
+def inspect_manual_inbox(opened: Session, photos: Photos, person: Person, now: float, account_email: str | None = None,
+                         route: str | None = None) -> list[Export]:
     try:
         folder = photos.manual_inbox(person.slug)
     except paths.LinkRefused as error:
         raise UnpackFailed(f"{person.slug}'s manual inbox folder is a link, so nothing in it is imported") from error
-    return register_zips(opened, person, folder, now, account_email, photos)
+    return register_zips(opened, person, folder, now, account_email, photos, route)

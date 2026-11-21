@@ -448,6 +448,44 @@ class HostileZipTests(unittest.TestCase):
         self.assertNotIn(canary, str(refused))
 
 
+class UnrecordedFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        builder = TakeoutBuilder(self.world.inbox)
+        builder.photo("IMG_0001.JPG")
+        builder.build()
+        self.world.register()
+        with db.session(self.world.engine) as opened:
+            export = opened.query(Export).one()
+            self.name = unpack.staging_name(export)
+            self.folder = self.world.photos.root / "_inbox" / "jo" / self.name
+            self.folder.mkdir(parents=True)
+            shutil.copy(self.world.inbox / PART, self.folder / PART)
+            export.inbox_dir = None
+
+    def test_a_part_is_read_from_the_export_folder_when_no_folder_is_recorded(self):
+        self.world.read()
+        self.assertTrue(self.world.ledger()[0])
+
+    def assert_refused_and_nothing_recorded(self):
+        before = self.world.ledger()
+        self.world.refusal()
+        self.assertEqual(self.world.ledger(), before)
+
+    def test_a_linked_export_folder_is_refused_before_anything_is_read(self):
+        elsewhere = self.world.root / "elsewhere"
+        shutil.move(self.folder, elsewhere)
+        os.symlink(elsewhere, self.folder)
+        self.assert_refused_and_nothing_recorded()
+
+    def test_a_linked_person_inbox_is_refused_before_anything_is_read(self):
+        person = self.world.photos.root / "_inbox" / "jo"
+        elsewhere = self.world.root / "elsewhere-jo"
+        shutil.move(person, elsewhere)
+        os.symlink(elsewhere, person)
+        self.assert_refused_and_nothing_recorded()
+
+
 class ScratchBatchTests(unittest.TestCase):
     def setUp(self):
         self.world = World(self)

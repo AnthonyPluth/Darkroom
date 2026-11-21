@@ -140,12 +140,16 @@ class World:
             self.extra_items(builder)
         return builder.build().parts
 
-    def hand_dropped(self) -> Export:
+    def hand_dropped(self, route: str | None = run.WHOLE) -> Export:
         self.tiered_export(self.photos.manual_inbox(self.people[0]))
         self.index_all()
         person = self.opened.get(Person, self.ids[self.people[0]])
         assert person is not None
         exports = unpack.inspect_manual_inbox(self.opened, self.photos, person, NOW)
+        if route is not None:
+            for part in self.opened.execute(select(ExportPart).where(ExportPart.export_id == exports[0].id)).scalars():
+                part.ingest_state, part.ingest_queued_at = "not_queued", None
+            exports[0].ingest_route = route
         self.opened.commit()
         self.test.assertEqual(len(exports), 1)
         return exports[0]
@@ -156,7 +160,7 @@ class World:
         self.index_all()
         export = Export(account_id=self.account, kind="initial", google_id="google-123", created_at=NOW - DAY, ready_at=NOW,
                         expires_at=NOW + 7 * DAY, part_count=len(parts), status="downloaded", inbox_dir=str(inbox),
-                        owner_person_id=None if owner is None else self.ids[owner])
+                        owner_person_id=None if owner is None else self.ids[owner], ingest_route=run.WHOLE)
         self.opened.add(export)
         self.opened.flush()
         self.opened.add_all(ExportPart(export_id=export.id, number=number, filename=part.name, bytes=part.stat().st_size, status="done")

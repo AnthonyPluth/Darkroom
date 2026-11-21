@@ -313,7 +313,7 @@ class PartDoneTests(DownloadCase):
 
 
 class FinishTests(DownloadCase):
-    def test_the_last_part_marks_the_export_downloaded_and_queues_the_import(self):
+    def test_the_last_part_marks_the_export_downloaded_and_leaves_its_parts_to_the_per_part_ingest(self):
         job = self.claim()
         for number in (1, 2):
             self.attempt(job, number)
@@ -322,9 +322,34 @@ class FinishTests(DownloadCase):
             downloads.finish(opened, self.settings, job, NOW)
             browser_jobs.done(opened, job, {}, NOW)
         status, tries, stage, inbox = self.export_row()
-        self.assertEqual((status, tries, stage), ("downloaded", 0, "queued"))
+        self.assertEqual((status, tries, stage), ("downloaded", 0, None))
         self.assertEqual(Path(inbox), self.folder())
+        with db.session(self.engine) as opened:
+            self.assertEqual(run.waiting_exports(opened), [])
+            self.assertEqual([(part.ingest_state, part.ingest_queued_at) for part in exports.parts_of(opened, self.export)], [("queued", NOW)] * 2)
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
+        self.assertEqual(self.download_jobs(), [(self.export, "done")])
+
+    def test_a_part_queued_mid_download_leaves_the_export_folder_to_the_finish(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        self.part_done(job, 1, "takeout-001.zip")
+        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
+        with db.session(self.engine) as opened:
+            self.assertEqual([part.ingest_state for part in exports.parts_of(opened, self.export)], ["queued", "not_queued"])
+
+    def test_the_job_done_after_the_tick_already_imported_the_export_leaves_it_imported(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).status = "imported"
+        with db.session(self.engine) as opened:
+            export = downloads.finish(opened, self.settings, job, NOW)
+            self.assertEqual((export.status, Path(export.inbox_dir)), ("imported", self.folder()))
+            browser_jobs.done(opened, job, {}, NOW)
+        self.assertEqual(self.export_row()[0], "imported")
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
 
     def test_an_export_with_a_part_left_is_not_finished(self):
@@ -382,7 +407,7 @@ class RetryTests(DownloadCase):
         with db.session(self.engine) as opened:
             downloads.finish(opened, self.settings, last, NOW + 3 * DAY)
             browser_jobs.done(opened, last, {}, NOW + 3 * DAY)
-        self.assertEqual(self.export_row()[:3], ("downloaded", 2, "queued"))
+        self.assertEqual(self.export_row()[:3], ("downloaded", 2, None))
 
     def test_a_complete_export_whose_job_failed_is_finished_even_after_it_expires(self):
         late = {"past its expiry": listed(), "listed as expired": exports.Listed("g-1", NOW - 600, "expired", None, ())}
@@ -400,7 +425,7 @@ class RetryTests(DownloadCase):
                 last = self.claim(NOW + 8 * DAY)
                 with db.session(self.engine) as opened:
                     downloads.finish(opened, self.settings, last, NOW + 8 * DAY)
-                self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+                self.assertEqual(self.export_row()[:3], ("downloaded", 0, None))
 
     def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
         for day in range(4):
@@ -687,7 +712,7 @@ class RetryFailedTests(DownloadCase):
         again = self.claim(NOW + DAY)
         with db.session(self.engine) as opened:
             downloads.finish(opened, self.settings, again, NOW + DAY)
-        self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+        self.assertEqual(self.export_row()[:3], ("downloaded", 0, None))
 
     def test_a_second_press_changes_nothing_and_queues_no_second_job(self):
         self.fail_part_two()

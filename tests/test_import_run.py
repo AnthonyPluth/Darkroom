@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import alerts, dedupe, media
-from darkroom.domain.ingest import cleanup, metadata, pairing, part_ingest, place, run, sidecar, unpack
+from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, part_ingest, place, run, sidecar, unpack
 from darkroom.storage import locks, paths
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
 from tests.import_world import DAY, NOW, World, sha1_of, tree
@@ -606,23 +606,155 @@ class PartQueueingTests(unittest.TestCase):
     def setUp(self):
         self.world = World(self)
 
-    def registered(self):
-        export = self.world.hand_dropped()
+    def parts(self, export):
+        self.world.opened.expire_all()
         return [(part.number, part.ingest_state, part.ingest_queued_at) for part in
                 self.world.opened.execute(select(ExportPart).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars()]
 
-    def test_registered_zips_queue_each_part_when_the_switch_is_on(self):
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            self.assertEqual(self.registered(), [(1, "queued", NOW), (2, "queued", NOW)])
+    def test_registered_zips_of_a_new_export_queue_each_part_and_record_the_route(self):
+        export = self.world.hand_dropped(route=None)
+        self.assertEqual(self.parts(export), [(1, "queued", NOW), (2, "queued", NOW)])
+        self.assertEqual(export.ingest_route, run.PER_PART)
 
-    def test_registered_zips_queue_nothing_with_the_switch_off(self):
-        self.assertFalse(part_ingest.ENABLED)
-        self.assertEqual(self.registered(), [(1, "not_queued", None), (2, "not_queued", None)])
+    def test_the_command_line_registers_a_hand_dropped_export_on_the_whole_route(self):
+        self.world.tiered_export(self.world.photos.manual_inbox("jo"))
+        self.world.index_all()
+        person = self.world.opened.get(Person, self.world.ids["jo"])
+        (export,) = unpack.inspect_manual_inbox(self.world.opened, self.world.photos, person, NOW, None, run.WHOLE)
+        self.assertEqual((export.ingest_route, self.parts(export)), ("whole", [(1, "not_queued", None), (2, "not_queued", None)]))
+        self.assertEqual(self.world.run_import(export).status, "done")
+        self.assertEqual(self.world.opened.get(Export, export.id).ingest_route, "whole")
 
-    def test_the_switch_off_leaves_whole_export_imports_as_they_were(self):
+    def test_a_whole_export_import_still_works_on_an_export_whose_route_is_whole(self):
         export = self.world.hand_dropped()
+        self.assertEqual(self.parts(export), [(1, "not_queued", None), (2, "not_queued", None)])
         self.assertEqual(part_ingest.run_queued(self.world.opened, self.world.settings, NOW), [])
         self.assertEqual(self.world.run_import(export).status, "done")
+
+
+class InFlightRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World(self)
+        self.export = self.world.hand_dropped()
+        self.export_id = self.export.id
+
+    def undecided(self, status="downloaded", stage=None, last_run=None):
+        export = self.world.opened.get(Export, self.export_id)
+        export.ingest_route, export.status, export.stage = None, status, stage
+        if last_run is not None:
+            self.world.opened.add(ImportRun(export_id=export.id, started=NOW, status=last_run, error="boom" if last_run == "failed" else None))
+        self.world.opened.commit()
+
+    def states(self):
+        self.world.opened.expire_all()
+        parts = self.world.opened.execute(select(ExportPart).where(ExportPart.export_id == self.export_id).order_by(ExportPart.number)).scalars()
+        return [part.ingest_state for part in parts]
+
+    def export_row(self):
+        self.world.opened.expire_all()
+        export = self.world.opened.get(Export, self.export_id)
+        return export.status, export.stage, export.ingest_route
+
+    def staging(self):
+        folder = self.world.root / "_inbox/jo" / f"export-{self.export_id}" / "staging"
+        folder.mkdir(parents=True)
+
+    def tick(self, at=NOW):
+        done = run.run_waiting(self.world.opened, self.world.settings, at, self.world.tools)
+        part_ingest.run_queued(self.world.opened, self.world.settings, at, self.world.tools)
+        finish_export.finish_ready(self.world.opened, self.world.settings, at, self.world.tools)
+        return done
+
+    def test_a_downloaded_export_that_has_not_started_unpacking_switches_and_ends_imported_part_by_part(self):
+        self.undecided(stage="queued")
+        self.assertEqual(self.tick(), [])
+        self.assertEqual(self.export_row(), ("imported", "done", "per_part"))
+        self.assertEqual(self.states(), ["ingested", "ingested"])
+        self.assertEqual(self.world.sent(SUMMARY), 1)
+
+    def test_an_export_with_no_stage_at_all_switches_too(self):
+        self.undecided(stage=None)
+        run.run_waiting(self.world.opened, self.world.settings, NOW, self.world.tools)
+        self.assertEqual((self.export_row()[2], self.states()), ("per_part", ["queued", "queued"]))
+
+    def test_an_export_still_downloading_queues_only_the_parts_already_done(self):
+        self.undecided(status="downloading")
+        part = self.world.opened.execute(select(ExportPart).where(ExportPart.export_id == self.export_id, ExportPart.number == 2)).scalar_one()
+        part.status = "pending"
+        self.world.opened.commit()
+        run.run_waiting(self.world.opened, self.world.settings, NOW, self.world.tools)
+        self.assertEqual((self.export_row(), self.states()), (("downloading", None, "per_part"), ["queued", "not_queued"]))
+
+    def test_an_export_whose_stage_is_unpacked_or_later_finishes_the_old_way(self):
+        export = self.export
+        with mock.patch.object(run, "stage_rescan", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.world.run_import(export)
+        self.world.reopen()
+        status, stage, _ = self.export_row()
+        self.assertEqual(status, "importing")
+        self.assertIn(stage, run.STARTED_STAGES)
+        self.undecided(status=status, stage=stage)
+        self.assertEqual(self.tick(), [self.export_id])
+        self.assertEqual((self.export_row(), self.states()), (("imported", "done", "whole"), ["not_queued", "not_queued"]))
+        self.assertEqual(self.world.sent(SUMMARY), 1)
+
+    def test_a_stage_of_unpacked_alone_is_not_switched(self):
+        self.undecided(status="importing", stage="unpacked")
+        self.assertEqual(run.route_pending(self.world.opened, self.world.settings, NOW), [])
+        self.assertEqual((self.export_row(), self.states()), (("importing", "unpacked", "whole"), ["not_queued", "not_queued"]))
+
+    def test_an_export_with_a_staging_folder_finishes_the_old_way(self):
+        self.undecided(stage="queued")
+        self.staging()
+        self.assertEqual(run.route_pending(self.world.opened, self.world.settings, NOW), [])
+        self.assertEqual((self.export_row(), self.states()), (("downloaded", "queued", "whole"), ["not_queued", "not_queued"]))
+        self.assertEqual(run.waiting_exports(self.world.opened), [self.export_id])
+
+    def test_an_export_marked_failed_before_unpacking_is_retried_part_by_part(self):
+        self.undecided(status="failed", stage="unpack", last_run="failed")
+        self.assertEqual(run.route_pending(self.world.opened, self.world.settings, NOW), [])
+        self.assertEqual(self.states(), ["not_queued", "not_queued"])
+        run.request_import(self.world.opened, self.export_id, self.world.photos, NOW)
+        self.world.opened.commit()
+        self.assertEqual((self.export_row()[2], self.states()), ("per_part", ["queued", "queued"]))
+        self.assertEqual(run.latest_run(self.world.opened, self.export_id).status, "queued")
+        self.assertEqual(self.tick(), [])
+        self.assertEqual((self.export_row()[:2], self.states()), (("imported", "done"), ["ingested", "ingested"]))
+
+    def test_an_export_marked_failed_before_unpacking_with_no_run_is_retried_part_by_part(self):
+        self.undecided(status="failed", stage="unpack")
+        run.request_import(self.world.opened, self.export_id, self.world.photos, NOW)
+        self.world.opened.commit()
+        self.assertEqual((self.export_row(), self.states()), (("downloaded", "unpack", "per_part"), ["queued", "queued"]))
+        self.tick()
+        self.assertEqual(self.export_row()[:2], ("imported", "done"))
+
+    def test_an_export_marked_failed_after_unpacking_started_is_retried_the_old_way(self):
+        self.undecided(status="failed", stage="unpack")
+        self.staging()
+        run.request_import(self.world.opened, self.export_id, self.world.photos, NOW)
+        self.world.opened.commit()
+        self.assertEqual((self.export_row(), self.states()), (("downloaded", "queued", "whole"), ["not_queued", "not_queued"]))
+
+    def test_the_route_is_decided_once_and_never_flipped(self):
+        self.undecided(stage="queued")
+        self.assertEqual(run.route_of(self.world.opened, self.world.photos, self.world.opened.get(Export, self.export_id)), run.PER_PART)
+        export = self.world.opened.get(Export, self.export_id)
+        export.stage = "unpacked"
+        self.staging()
+        self.assertEqual(run.route_of(self.world.opened, self.world.photos, export), run.PER_PART)
+        export.ingest_route = run.WHOLE
+        export.stage = None
+        self.assertEqual(run.route_of(self.world.opened, self.world.photos, export), run.WHOLE)
+
+    def test_a_per_part_export_with_failed_items_is_not_retried_through_a_staging_folder(self):
+        self.undecided(stage="queued")
+        self.tick()
+        found = run.latest_run(self.world.opened, self.export_id)
+        found.failed = 1
+        self.world.opened.commit()
+        with self.assertRaises(run.NotReady):
+            run.request_import(self.world.opened, self.export_id, self.world.photos, NOW + DAY)
 
 
 TAKEN = 1_600_000_000

@@ -418,7 +418,3 @@ def finish_ready(opened: Session, settings: config.Settings, now: float, tools: 
         done.append(export_id)
     alert_unfinished(opened, settings, now, chosen)
     return done
-
-
-def run_ready(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[int]:
-    return finish_ready(opened, settings, now, tools) if part_ingest.ENABLED else []

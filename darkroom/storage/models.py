@@ -94,6 +94,7 @@ class Export(Base):
     download_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     download_interruptions: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     owner_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"))
+    ingest_route: Mapped[str | None] = mapped_column(String)
 
 
 class ManagedImportIntent(Base):

@@ -52,6 +52,9 @@ class CannotRetry(ValueError):
     pass
 
 
+FINISHED_BY_INGEST = ("downloaded", "importing", "imported")
+
+
 def folder_name(export: Export) -> str:
     return f"export-{export.id}"
 
@@ -265,7 +268,7 @@ def part_done(opened: Session, settings: Settings, job_id: int, number: int, fil
     part.status = "done"
     part.filename = filename
     part.bytes_done = size
-    part_ingest.queue(part, now)
+    part_ingest.queue(opened, Photos(settings.photos_root), export, part, now)
     events.record(opened, now, "export_part_downloaded", str(export.id), f"part {number}")
     return outcome(part, True, False)
 
@@ -290,6 +293,11 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
 
 
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
+    export = job_export(opened, job_id)
+    if export.status in FINISHED_BY_INGEST and exports.all_done(opened, export) and run.route_of(opened, Photos(settings.photos_root), export) == run.PER_PART:
+        export.inbox_dir = export.inbox_dir or str(export_folder(settings, person_of(opened, export), export))
+        alerts.close(opened, expiry_key(export.id), now)
+        return export
     export = waiting_export(opened, job_id)
     if not exports.all_done(opened, export):
         raise Refused(f"not every part of export {export.id} is downloaded")
@@ -297,7 +305,11 @@ def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Expo
     export.status = "downloaded"
     alerts.close(opened, expiry_key(export.id), now)
     events.record(opened, now, "export_downloaded", str(export.id), f"{export.part_count} parts")
-    run.request_import(opened, export.id)
+    photos = Photos(settings.photos_root)
+    if run.route_of(opened, photos, export) == run.PER_PART:
+        run.adopt(opened, export, now)
+    else:
+        run.request_import(opened, export.id, photos, now)
     return export
 
 

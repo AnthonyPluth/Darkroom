@@ -19,7 +19,6 @@ from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
-ENABLED: bool = False
 COMMIT_HOOK: Callable[[], None] | None = None
 
 NOT_QUEUED: Final = "not_queued"
@@ -58,8 +57,8 @@ class Target:
     sidecar_id: int | None
 
 
-def queue(part: ExportPart, now: float) -> None:
-    if ENABLED and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
+def queue(opened: Session, photos: Photos | None, export: Export, part: ExportPart, now: float) -> None:
+    if run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
         part.ingest_state, part.ingest_queued_at = QUEUED, now
 
 
@@ -89,8 +88,6 @@ def part_of(opened: Session, export_id: int, number: int) -> ExportPart | None:
 
 
 def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[tuple[int, int]]:
-    if not ENABLED:
-        return []
     ran = []
     for export_id, number in queued_parts(opened):
         export, part = opened.get(Export, export_id), part_of(opened, export_id, number)
@@ -192,7 +189,7 @@ class Ingest:
         part = part_of(self.opened, self.export.id, number)
         if part is None:
             raise unpack.UnpackFailed("the part is not in the ledger")
-        path = unpack.part_path(self.export, part)
+        path = unpack.part_path(self.export, part, self.photos, self.person)
         with contextlib.ExitStack() as opening:
             handle = opening.enter_context(unpack.open_part(self.photos, path, number))
             archive = opening.enter_context(part_reader.zip_of(handle, path, number))

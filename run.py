@@ -239,7 +239,7 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
         else:
             now = utc_now().timestamp()
             try:
-                found = unpack.register_zips(opened, person, Path(folder), now, account) if folder else unpack.inspect_manual_inbox(opened, photos, person, now, account)
+                found = unpack.register_zips(opened, person, Path(folder), now, account, route=ingest_run.WHOLE) if folder else unpack.inspect_manual_inbox(opened, photos, person, now, account, ingest_run.WHOLE)
             except unpack.UnpackFailed as error:
                 print(str(error), file=sys.stderr)
                 found = []

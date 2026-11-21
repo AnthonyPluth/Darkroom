@@ -1,6 +1,6 @@
 # Ingest each Takeout part as it downloads
 
-Design for [#424](https://github.com/AnthonyPluth/Darkroom/issues/424), prepared 2026-11-18. **Proposal, waiting for the owner's sign-off on the issue. Nothing here is built, and it grants no new deletion authority: section 6 lists the promise amendments it needs, and section 10 the decisions only the owner can make.**
+Design for [#424](https://github.com/AnthonyPluth/Darkroom/issues/424), prepared 2026-11-18. **Phase 1 (PP-1 to PP-9) is built and switched on for new and in-flight exports; phase 2 (PP-10, freeing zips) is not, and needs the owner to amend promise 2 first. It grants no new deletion authority: section 6 lists the promise amendments phase 2 needs, and section 10 the decisions only the owner can make.**
 
 A full Takeout of a large library is about 25 parts of about 53 GB each. Today Darkroom waits for every part of an export to download, then unpacks all of them into one staging copy, then pairs, fingerprints, dedupes and places, and keeps the zips and the staging copy for 14 days after the import finishes. For 25 parts that is a wait of a day or more before the first photo lands and a peak of about 2.7 TB on the share. This design ingests each part as soon as it has downloaded, without a full second copy, holds the few items that need something from a later part, finishes the rest when the export completes, and lets a part's zip go once nothing it holds exists only in the zip.
 

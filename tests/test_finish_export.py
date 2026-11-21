@@ -5,7 +5,7 @@ from unittest import mock
 from sqlalchemy import event, select
 
 from darkroom.domain import exports
-from darkroom.domain.ingest import finish_export, part_ingest, part_reader, run
+from darkroom.domain.ingest import finish_export, part_reader, run
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -466,7 +466,7 @@ class CrashTests(unittest.TestCase):
         before = (world.comparable(), world.run_row(), world.count(Event), world.count(Alert))
         with self.assertRaises(run.AlreadyImported):
             world.finish(export)
-        self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW + 5, world.tools), [])
+        self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW + 5, world.tools), [])
         self.assertEqual((world.comparable(), world.run_row(), world.count(Event), world.count(Alert)), before)
         self.assertEqual(world.count(ImportRun), 1)
 
@@ -570,15 +570,12 @@ class NeverCompletesTests(unittest.TestCase):
 
 
 class TickTests(unittest.TestCase):
-    def test_the_tick_finishes_an_export_whose_parts_are_all_ingested_only_while_the_switch_is_on(self):
+    def test_the_tick_finishes_an_export_whose_parts_are_all_ingested(self):
         world = FinishWorld(self)
         export = world.create(small_scenario(world), parts=2)
         world.ingest_all(export, (1, 2))
-        self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW, world.tools), [])
-        self.assertEqual(world.opened.get(Export, export.id).status, "downloading")
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW, world.tools), [export.id])
-            self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW, world.tools), [])
+        self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [export.id])
+        self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [])
         self.assertEqual(world.opened.get(Export, export.id).status, "imported")
 
     def test_the_whole_export_worker_leaves_an_export_with_per_part_rows_alone(self):
@@ -613,8 +610,8 @@ class TickTests(unittest.TestCase):
         world = FinishWorld(self)
         export = world.create(small_scenario(world), parts=2)
         world.ingest_all(export, (1, 2))
-        with mock.patch.object(part_ingest, "ENABLED", True), run.account_lock(world.settings, export.account_id):
-            self.assertEqual(finish_export.run_ready(world.opened, world.settings, NOW, world.tools), [])
+        with run.account_lock(world.settings, export.account_id):
+            self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [])
             with self.assertRaises(run.Busy):
                 world.finish(export)
         self.assertEqual(world.count(ImportRun), 0)
