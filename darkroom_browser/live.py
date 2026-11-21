@@ -125,7 +125,7 @@ class Live:
 
     def start_download(self, selector: str, part: PartClick) -> str:
         if self.downloads is None:
-            raise DownloadInterrupted("staggered downloads need Chromium's download folder")
+            raise DownloadInterrupted("downloading a part needs Chromium's download folder")
         before = self.stems()
         self.clicked, self.before_click, self.last_click = selector, before, part
         with self.page.expect_download(timeout=DEFAULT_TIMEOUT_MS) as started:

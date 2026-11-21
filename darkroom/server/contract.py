@@ -344,6 +344,7 @@ class PartBody(TypedDict):
     since_click: NotRequired[int]
     since_answer: NotRequired[int]
     clicks: NotRequired[int]
+    google_downloads: NotRequired[int | None]
 
 
 class PartReply(TypedDict):

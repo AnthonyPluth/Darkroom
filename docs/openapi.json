@@ -1948,6 +1948,16 @@
           "filename": {
             "type": "string"
           },
+          "google_downloads": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reason": {
             "enum": [
               "corrupt",
