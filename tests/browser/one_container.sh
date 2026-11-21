@@ -15,6 +15,13 @@ wait_for() {
   done
   fail "timed out: $2"
 }
+wait_until() {
+  while [ "$(date +%s)" -le "$1" ]; do
+    if eval "$2"; then return 0; fi
+    sleep 1
+  done
+  fail "timed out: $2"
+}
 job_done() { [ "$(probe status "$1")" = done ]; }
 field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"; }
 
@@ -32,7 +39,7 @@ first=$(probe enqueue noop)
 wait_for 90 "job_done $first"
 echo "noop job $first done in the one container"
 
-probe enqueue connect >/dev/null
+connect=$(probe enqueue connect)
 killed=$(probe kill-worker) || fail "no browser started under the worker"
 echo "killed the worker while its browser ran: $killed"
 for _ in $(seq 1 20); do healthy || fail "/healthz stopped answering after the worker was killed"; sleep 1; done
@@ -44,8 +51,14 @@ docker exec "$name" test -d /data/browser/1/profile || fail "the browser profile
 docker exec "$name" test ! -e /photos/_browser || fail "the worker wrote browser state onto the working share"
 echo "the browser profile is in appdata, not on the share"
 
+other=$(probe enqueue-other noop)
 probe enqueue noop >/dev/null
-wait_for 120 '[ "$(probe claimed-since "$(field "$killed" at)")" -gt 0 ]'
+wait_for 120 '[ "$(probe status "$other")" != queued ] && [ "$(probe claimed-since "$(field "$killed" at)")" -gt 0 ]'
 ! docker logs "$name" 2>&1 | grep -F '"method": "POST", "status": "401"' || fail "the app refused a worker request"
-echo "the restarted worker claimed a job on the internal API, so the app accepts its token: the same one"
+echo "the restarted worker claimed another account's job on the internal API at once, so the app accepts its token: the same one"
 probe scan || fail "a secret-shaped value is in a process's environment or command line after the restart"
+
+resume_by=$(python3 -c 'import sys; print(int(float(sys.argv[1]) + int(sys.argv[2])))' "$(field "$killed" at)" "$(probe resume-seconds)")
+wait_until "$resume_by" '[ "$(probe account-resumed "$connect")" -gt 0 ]'
+[ "$(probe lease-lost "$connect")" = 1 ] || fail "the killed worker's job $connect did not end with its lease running out"
+echo "the killed worker's job $connect ended when its lease ran out, and its account's next job started after the hold that follows (its Chrome may still be closing), within $(probe resume-seconds) s of the kill"
