@@ -21,6 +21,7 @@ from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
 Job = Callable[[float], None]
+SCHEDULER_POLL_SECONDS = 30.0
 
 
 @dataclass
@@ -87,11 +88,11 @@ class Scheduler:
     def run_one(self, name: str, now: float) -> None:
         self.jobs[name].run(now)
 
-    def loop(self, clock: Callable[[], float], poll: float = 30.0) -> None:
+    def loop(self, clock: Callable[[], float], poll: float = SCHEDULER_POLL_SECONDS) -> None:
         while not self.stopping.wait(poll):
             self.run_due(clock())
 
-    def start(self, clock: Callable[[], float], poll: float = 30.0) -> threading.Thread:
+    def start(self, clock: Callable[[], float], poll: float = SCHEDULER_POLL_SECONDS) -> threading.Thread:
         thread = threading.Thread(target=self.loop, args=(clock, poll), daemon=True)
         thread.start()
         return thread
