@@ -871,7 +871,7 @@ class LinkedFolderTests(DownloadCase):
         self.folder().symlink_to(originals, target_is_directory=True)
         with self.assertRaises(downloads.Refused):
             self.call(lambda opened: downloads.finish(opened, self.settings, job, NOW))
-        self.assertEqual(self.export_row(), ("downloading", 0, None, None))
+        self.assertEqual(self.export_row(), ("downloading", 0, None, str(self.folder())))
 
 
 class DefaultPersonTests(DownloadCase):
