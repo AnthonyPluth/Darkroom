@@ -1,4 +1,6 @@
+import hashlib
 import os
+import shutil
 import unittest
 from unittest import mock
 
@@ -7,8 +9,12 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain.ingest import cleanup
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ImportRun, MediaItem, ReviewItem
+from darkroom.storage.models import (
+    ENTRY_OUTCOMES, PART_INGEST_STATES, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, ReviewItem,
+)
 from tests.import_world import DAY, NOW, World, tree
+from tests.privacy import no_leaks
+from tests.test_finish_export import FinishWorld
 
 LATER = NOW + 14 * DAY
 TOO_SOON = NOW + 13 * DAY
@@ -547,6 +553,227 @@ class InterruptedRemovalTests(Imported):
         self.assertEqual(report.failed, 1)
         events = [(row.subject, row.detail) for row in self.world.opened.execute(select(Event).where(Event.type == "cleanup_failed")).scalars()]
         self.assertIn(("google-only", "PermissionError"), events)
+
+
+class PerPartImported(unittest.TestCase):
+    def setUp(self):
+        self.world = FinishWorld(self)
+        export = self.world.create(self.world.scenario, google_id="export-1")
+        self.world.ingest_all(export)
+        self.world.finish(export)
+        self.export_id = export.id
+        self.assertEqual(self.world.opened.get(Export, self.export_id).status, "imported")
+        self.root = self.world.root
+        self.folder = self.root / "_inbox/jo/export-1"
+        self.zips = sorted(self.folder.glob("*.zip"))
+        self.assertEqual(len(self.zips), 3)
+        self.assertFalse((self.folder / "staging").exists())
+        self.hold = self.root / self.review().hold_path
+        self.good = self.hold.read_bytes()
+        self.held = self.root / "_inbox/jo/held/export-1"
+        self.kept = self.kept_tree()
+
+    def kept_tree(self):
+        return {key: value for key, value in tree(self.root).items() if not key.startswith("_inbox/")}
+
+    def clean(self, at=LATER):
+        report = cleanup.clean(self.world.opened, self.world.photos, at)
+        self.world.opened.commit()
+        return report
+
+    def review(self):
+        self.world.opened.expire_all()
+        return self.world.opened.execute(select(ReviewItem).where(ReviewItem.status == "pending")).scalar_one()
+
+    def entry(self, name):
+        return self.world.entry(name)
+
+    def part(self, number):
+        self.world.opened.expire_all()
+        return self.world.opened.execute(select(ExportPart).where(ExportPart.export_id == self.export_id, ExportPart.number == number)).scalar_one()
+
+    def zips_kept(self):
+        return all(part.is_file() for part in self.zips)
+
+
+class PerPartExportTests(PerPartImported):
+    def test_zips_go_14_days_after_the_last_done_run_and_not_before_with_no_staging_tree(self):
+        report = self.clean(TOO_SOON)
+        self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 0))
+        self.assertTrue(self.zips_kept())
+        report = self.clean()
+        self.assertEqual((report.staging, report.parts, report.holds, report.kept, report.refused), (0, 3, 0, 0, 0))
+        self.assertFalse(any(part.exists() for part in self.zips))
+        self.assertEqual(self.hold.read_bytes(), self.good)
+        self.assertTrue(self.folder.is_dir())
+        self.assertEqual(self.kept_tree(), self.kept)
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "cleanup")).scalar_one().detail,
+                         "0 staging folders, 3 zip parts, 0 review holds removed; 0 refused")
+        self.assertEqual(list(self.world.opened.execute(select(Event).where(Event.type == cleanup.VERIFIED)).scalars()), [])
+        report = self.clean(LATER + DAY)
+        self.assertEqual((report.parts, report.kept, report.refused), (0, 0, 0))
+
+    def test_each_reason_to_keep_everything_keeps_every_zip(self):
+        def outcome(value):
+            def apply():
+                row = self.entry("Photos from 2019/IMG_2001.JPG")
+                before, row.outcome = row.outcome, value
+                self.world.opened.commit()
+
+                def undo():
+                    self.entry("Photos from 2019/IMG_2001.JPG").outcome = before
+                    self.world.opened.commit()
+                return undo
+            return apply
+
+        def part_state(value):
+            def apply():
+                self.part(2).ingest_state = value
+                self.world.opened.commit()
+
+                def undo():
+                    self.part(2).ingest_state = "ingested"
+                    self.world.opened.commit()
+                return undo
+            return apply
+
+        def restore_hold():
+            self.hold.unlink(missing_ok=True)
+            self.hold.write_bytes(self.good)
+
+        def hold_missing():
+            self.hold.unlink()
+            return restore_hold
+
+        def hold_different():
+            self.hold.write_bytes(b"not the held photo")
+            return restore_hold
+
+        def hold_a_link():
+            other = self.root / "_inbox/jo/other.jpg"
+            other.write_bytes(self.good)
+            self.hold.unlink()
+            os.symlink(other, self.hold)
+            return restore_hold
+
+        def sha1_different():
+            review = self.review()
+            before, review.hold_sha1 = review.hold_sha1, "0" * 40
+            self.world.opened.commit()
+
+            def undo():
+                self.review().hold_sha1 = before
+                self.world.opened.commit()
+            return undo
+
+        def not_in_the_ledger():
+            other = b"a held photo the ledger never saw"
+            self.hold.write_bytes(other)
+            review = self.review()
+            before, review.hold_sha1 = review.hold_sha1, hashlib.sha1(other, usedforsecurity=False).hexdigest()
+            self.world.opened.commit()
+
+            def undo():
+                self.review().hold_sha1 = before
+                self.world.opened.commit()
+                restore_hold()
+            return undo
+
+        def clear_held():
+            if self.held.is_symlink() or self.held.is_file():
+                self.held.unlink()
+            elif self.held.exists():
+                shutil.rmtree(self.held)
+
+        def held_file():
+            self.held.mkdir(parents=True)
+            (self.held / "7.jpg").write_bytes(b"a held copy nothing records")
+            return clear_held
+
+        def held_folder():
+            (self.held / "inner").mkdir(parents=True)
+            return clear_held
+
+        def held_link():
+            elsewhere = self.root / "_inbox/jo/elsewhere"
+            elsewhere.mkdir(exist_ok=True)
+            self.held.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(elsewhere, self.held)
+            return clear_held
+
+        def held_a_file():
+            self.held.parent.mkdir(parents=True, exist_ok=True)
+            self.held.write_bytes(b"a file where the held store goes")
+            return clear_held
+
+        reasons = {f"{value} entry": outcome(value) for value in ENTRY_OUTCOMES if value not in cleanup.SETTLED_ENTRIES}
+        reasons |= {f"{value} part": part_state(value) for value in PART_INGEST_STATES if value != cleanup.SETTLED_PART}
+        self.assertEqual(set(reasons), {"listed entry", "waiting_sidecar entry", "waiting_export entry", "failed entry", "not_queued part",
+                                        "queued part", "ingesting part", "refused part", "failed part"})
+        reasons |= {"hold missing": hold_missing, "hold different": hold_different, "hold a link": hold_a_link, "hold_sha1 different": sha1_different,
+                   "hold not in the ledger": not_in_the_ledger, "unaccounted held file": held_file, "folder in the held store": held_folder,
+                   "held store a link": held_link, "held store a file": held_a_file}
+        for reason, apply in reasons.items():
+            with self.subTest(reason=reason):
+                undo = apply()
+                for at in (LATER, LATER + 365 * DAY):
+                    report = self.clean(at)
+                    self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 1))
+                    self.assertTrue(self.zips_kept())
+                undo()
+        self.world.opened.expire_all()
+        self.assertEqual(self.world.opened.execute(select(ImportRun)).scalar_one().failed, 0)
+        self.assertEqual(self.clean().parts, 3)
+
+    def test_scratch_and_held_store_files_are_left_alone(self):
+        scratch = self.world.photos.scratch("jo", "export-1")
+        scratch.mkdir(parents=True)
+        (scratch / "5.jpg").write_bytes(b"a scratch copy")
+        row = self.entry("Photos from 2019/IMG_1003.JPG")
+        held = self.held / f"{row.id}.jpg"
+        self.held.mkdir(parents=True)
+        held.write_bytes(b"a held copy")
+        row.held_path = held.relative_to(self.root).as_posix()
+        self.world.opened.commit()
+        report = self.clean()
+        self.assertEqual((report.parts, report.kept), (3, 0))
+        self.assertEqual((scratch / "5.jpg").read_bytes(), b"a scratch copy")
+        self.assertEqual(held.read_bytes(), b"a held copy")
+        self.assertEqual(self.hold.read_bytes(), self.good)
+
+    def test_a_resolved_hold_goes_14_days_after_it_was_resolved(self):
+        review = self.review()
+        review.status, review.resolved_at = "skipped", NOW + DAY
+        self.world.opened.commit()
+        report = self.clean()
+        self.assertEqual((report.parts, report.holds), (3, 0))
+        self.assertTrue(self.hold.is_file())
+        report = self.clean(LATER + DAY)
+        self.assertEqual(report.holds, 1)
+        self.assertFalse(self.hold.exists())
+
+    def test_the_log_and_events_carry_counts_only(self):
+        self.held.mkdir(parents=True)
+        (self.held / "CANARY_HELD_NAME.jpg").write_bytes(b"a held copy nothing records")
+        with no_leaks(self, "CANARY_HELD_NAME", "_inbox/jo/held", database=self.world.engine):
+            report = self.clean()
+            self.assertEqual((report.parts, report.kept), (0, 1))
+            (self.held / "CANARY_HELD_NAME.jpg").unlink()
+            self.hold.unlink()
+            report = self.clean()
+            self.assertEqual((report.parts, report.kept), (0, 1))
+        self.assertTrue(self.zips_kept())
+
+
+class PerPartStateTests(unittest.TestCase):
+    def test_every_part_and_entry_state_is_classified_and_only_the_settled_ones_let_zips_go(self):
+        keeping_parts = {"not_queued", "queued", "ingesting", "refused", "failed"}
+        keeping_entries = {"listed", "waiting_sidecar", "waiting_export", "failed"}
+        self.assertEqual(cleanup.SETTLED_PART, "ingested")
+        self.assertEqual(set(cleanup.SETTLED_ENTRIES), {"placed", "review", "skipped", "copy", "recorded"})
+        self.assertEqual({cleanup.SETTLED_PART} | keeping_parts, set(PART_INGEST_STATES))
+        self.assertEqual(set(cleanup.SETTLED_ENTRIES) | keeping_entries, set(ENTRY_OUTCOMES))
+        self.assertFalse(keeping_parts & {cleanup.SETTLED_PART} or keeping_entries & set(cleanup.SETTLED_ENTRIES))
 
 
 class RemovableTests(unittest.TestCase):

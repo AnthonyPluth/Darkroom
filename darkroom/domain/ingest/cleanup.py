@@ -4,14 +4,15 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Final
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
 from darkroom.domain.ingest import unpack
-from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
+from darkroom.storage import db, paths
+from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -20,6 +21,9 @@ DROPPING_GRACE = 3600.0
 VERIFIED = "cleanup_holds_verified"
 REASSIGN_COPY = ", copy "
 MOVES = ("media_reassigned", "review_undone")
+NOT_QUEUED: Final = "not_queued"
+SETTLED_PART: Final = "ingested"
+SETTLED_ENTRIES: Final = ("placed", "review", "skipped", "copy", "recorded")
 
 
 @dataclass
@@ -92,8 +96,20 @@ def inbox_sha1(photos: Photos, path: Path) -> str | None:
         return None
 
 
-def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision) -> bool:
+def hold_matches_ledger(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path) -> bool:
+    if review.hold_sha1 is None:
+        return False
+    recorded = opened.execute(
+        select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.decision_id == review.decision_id,
+                                      TakeoutEntry.sha1 == review.hold_sha1).limit(1)
+    ).first()
+    return recorded is not None and inbox_sha1(photos, hold) == review.hold_sha1
+
+
+def hold_is_safe(opened: Session, photos: Photos, export: Export, review: ReviewItem, decision: DedupeDecision, per_part: bool = False) -> bool:
     hold = hold_file(photos, export, review)
+    if hold is not None and per_part:
+        return hold_matches_ledger(opened, photos, export, review, hold)
     if hold is None or decision.source_path is None:
         return False
     staged = staged_copy(opened, photos, export, decision.source_path)
@@ -143,13 +159,13 @@ def holds_still_match(opened: Session, photos: Photos, export: Export) -> bool:
     return True
 
 
-def unsafe_reviews(opened: Session, photos: Photos, export: Export) -> int:
+def unsafe_reviews(opened: Session, photos: Photos, export: Export, per_part: bool = False) -> int:
     return sum(
         1 for review, decision in opened.execute(
             select(ReviewItem, DedupeDecision).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id)
             .where(DedupeDecision.export_id == export.id, ReviewItem.status == "pending")
         ).all()
-        if not hold_is_safe(opened, photos, export, review, decision)
+        if not hold_is_safe(opened, photos, export, review, decision, per_part)
     )
 
 
@@ -175,11 +191,78 @@ def holds_verified(opened: Session, export: Export) -> bool:
     return opened.execute(select(Event.id).where(Event.type == VERIFIED, Event.subject == f"export {export.id}").limit(1)).first() is not None
 
 
+def ingested_by_part(opened: Session, export: Export) -> bool:
+    return opened.execute(
+        select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state != NOT_QUEUED).limit(1)
+    ).first() is not None
+
+
+def unsettled(opened: Session, export: Export) -> bool:
+    part = opened.execute(
+        select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state != SETTLED_PART).limit(1)
+    ).first()
+    entry = opened.execute(
+        select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.outcome.not_in(SETTLED_ENTRIES)).limit(1)
+    ).first()
+    return part is not None or entry is not None
+
+
+def held_unaccounted(opened: Session, photos: Photos, export: Export) -> bool:
+    accounted = set(opened.execute(
+        select(TakeoutEntry.held_path).where(TakeoutEntry.export_id == export.id, TakeoutEntry.held_path.is_not(None))
+    ).scalars())
+    for slug in opened.execute(select(Person.slug).order_by(Person.id)).scalars():
+        try:
+            folder = photos.held(slug, unpack.staging_name(export))
+        except paths.LinkRefused:
+            return True
+        except paths.OutsideRoot:
+            continue
+        if not folder.exists():
+            continue
+        if not folder.is_dir():
+            return True
+        for child in folder.iterdir():
+            if child.is_symlink() or not child.is_file() or child.relative_to(photos.root).as_posix() not in accounted:
+                return True
+    return False
+
+
+def remove_parts(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
+    inbox = photos.inbox_root()
+    for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars():
+        if not export.inbox_dir or not part.filename:
+            continue
+        path = unpack.part_path(export, part)
+        if not path.absolute().is_relative_to(inbox) and not path.resolve().is_relative_to(inbox):
+            continue
+        if remove(photos, path, False, report):
+            report.parts += 1
+
+
+def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
+    opened.flush()
+    db.write_lock(opened)
+    opened.expire_all()
+    try:
+        if export.status != "imported":
+            return
+        if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
+            report.kept += 1
+            return
+        remove_parts(opened, photos, export, report)
+    finally:
+        opened.commit()
+
+
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:
         report.kept += 1
         note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
+        return
+    if ingested_by_part(opened, export):
+        clean_per_part(opened, photos, export, report)
         return
     trees = staging_trees(opened, photos, export)
     verified = holds_verified(opened, export)
@@ -196,15 +279,7 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
     for tree in trees:
         if remove(photos, tree, True, report):
             report.staging += 1
-    inbox = photos.inbox_root()
-    for part in opened.execute(select(ExportPart).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars():
-        if not export.inbox_dir or not part.filename:
-            continue
-        path = unpack.part_path(export, part)
-        if not path.absolute().is_relative_to(inbox) and not path.resolve().is_relative_to(inbox):
-            continue
-        if remove(photos, path, False, report):
-            report.parts += 1
+    remove_parts(opened, photos, export, report)
 
 
 def shared_hold(opened: Session, review: ReviewItem, cutoff: float) -> bool:
