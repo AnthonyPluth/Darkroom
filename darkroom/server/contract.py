@@ -370,6 +370,8 @@ class ExportPartDetail(TypedDict):
     held_waiting_export: int
     failed_items: int
     kept_reason: Literal["failed_item"] | None
+    freed: bool
+    bytes_freed: int
 
 
 class ExportPartView(TypedDict):

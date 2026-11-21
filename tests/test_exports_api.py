@@ -330,7 +330,7 @@ if __name__ == "__main__":
 class ExportsApiIngestFieldTests(ApiCase):
     extra_env = {"browser_token": TOKEN}
     PART_DEFAULTS = {"ingest_state": "not_queued", "entries": 0, "entries_done": 0, "held": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0,
-                     "failed_items": 0, "kept_reason": None}
+                     "failed_items": 0, "kept_reason": None, "freed": False, "bytes_freed": 0}
     EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0}
 
     def setUp(self):
@@ -394,6 +394,18 @@ class ExportsApiIngestFieldTests(ApiCase):
             ("queued", 0, 0, 0, 0, 0, 0, None),
         ])
         self.assertEqual(self.listed(other)["held_waiting_sidecar"], 7)
+
+    def test_a_freed_part_and_its_export_report_the_bytes_freed_and_a_part_still_freeing_does_not(self):
+        export_id = self.add_export("g-freed", [
+            {"ingest_state": "ingested", "free_state": "freed", "bytes_freed": 1200, "freed_at": self.now},
+            {"ingest_state": "ingested", "free_state": "freeing", "bytes_freed": 900},
+            {"ingest_state": "ingested", "free_state": "freed", "bytes_freed": 34},
+            {"ingest_state": "ingested"},
+        ])
+        export = self.listed(export_id)
+        self.assertEqual([(part["ingest_state"], part["freed"], part["bytes_freed"]) for part in export["parts"]],
+                         [("ingested", True, 1200), ("ingested", False, 0), ("ingested", True, 34), ("ingested", False, 0)])
+        self.assertEqual((export["bytes_freed"], export["parts_ingested"]), (1234, 4))
 
     def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
         export_id = self.add_export("g-refused", [{"ingest_state": "refused", "entries": 3, "entries_done": 1, "failed_items": 1}, {"ingest_state": "failed"}])

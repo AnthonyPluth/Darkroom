@@ -1,6 +1,6 @@
 # Ingest each Takeout part as it downloads
 
-Design for [#424](https://github.com/AnthonyPluth/Darkroom/issues/424), prepared 2026-11-18. **Phase 1 (PP-1 to PP-9) is built and switched on for new and in-flight exports; phase 2 (PP-10, freeing zips) is not, and needs the owner to amend promise 2 first. It grants no new deletion authority: section 6 lists the promise amendments phase 2 needs, and section 10 the decisions only the owner can make.**
+Design for [#424](https://github.com/AnthonyPluth/Darkroom/issues/424), prepared 2026-11-18. **Phase 1 (PP-1 to PP-9) is built and switched on for new and in-flight exports. Phase 2 (PP-10, #487: freeing a part's zip on its proof and the held copies at completion) is built too, after the owner amended promise 2 (decisions 1 and 4 on #424, recorded in docs/DECISIONS.md); it stays off for Immich-managed imports. Section 6 lists the promise amendments, and section 10 the decisions only the owner can make.**
 
 A full Takeout of a large library is about 25 parts of about 53 GB each. Today Darkroom waits for every part of an export to download, then unpacks all of them into one staging copy, then pairs, fingerprints, dedupes and places, and keeps the zips and the staging copy for 14 days after the import finishes. For 25 parts that is a wait of a day or more before the first photo lands and a peak of about 2.7 TB on the share. This design ingests each part as soon as it has downloaded, without a full second copy, holds the few items that need something from a later part, finishes the rest when the export completes, and lets a part's zip go once nothing it holds exists only in the zip.
 
@@ -138,7 +138,7 @@ For 25 parts of 53 GB, Z = 1.33 TB. Media is already compressed, so an unpacked 
 | --- | --- | --- | --- |
 | Zips | 1.33 TB, until 14 days after completion | 1.33 TB, until 14 days after completion | About 2 parts (the one downloading and the one ingesting), 0.11 TB |
 | Unpacked copy | 1.33 TB staging, until 14 days after completion | One scratch batch, a few GB | One scratch batch, a few GB |
-| Held items | None (staging has everything) | None copied (read from the kept zips) | H, kept until 14 days after completion like staging today |
+| Held items | None (staging has everything) | None copied (read from the kept zips) | H, kept until the export is finished (owner decision 4; this table first assumed 14 days) |
 | **Peak, tier-2 share 0%** | **2.65 TB + placed** | **1.34 TB + placed** | **about 0.15 TB + placed** (edited copies only) |
 | **Peak, tier-2 share 30%** | **2.65 TB + placed** | **1.34 TB + placed** | **about 0.55 TB + placed** |
 | **Peak, tier-2 share 100%** | **2.65 TB** (little is placed) | **1.34 TB** | **about 1.45 TB** (everything held until completion) |
@@ -166,6 +166,25 @@ A part's zip may be deleted only when all of these hold, rechecked under the dat
 
 Freeing is a cleanup step, not part of ingest, and runs at least one tick after the part became `ingested`, so a second, independent pass reads the disk again. The delete has a journal (`freeing`, then `freed`, as `duplicate_removals` does for the losing copy): a crash between the two finishes or refuses on the next run. The remover is one function in `darkroom/storage/paths.py` that refuses anything but a `.zip` directly in the export's inbox folder, through `Photos.removable`, with one caller module, held by a Semgrep rule like `darkroom-losing-copy-one-caller` and a negative test for each refusal.
 
+### One deletion, step by step (#487)
+
+A part's zip and a held copy are deleted by one routine, `paths.remove_checked` (through `remove_part_zip` and `remove_held_copy`), and recovered by another, `paths.put_back_claimed`, which `part_free` calls before it proves anything. The journal (`freeing`, then `freed`, on `export_parts` or `takeout_entries`) is written by `part_free`. The remover claims the file into a private, locked folder beside it, `.freeing-<hash>/copy`, renamed without replacing. It deletes only the claimed inode the proof checked, and then requires the name to be absent: no entry at the name and nothing claimed (`paths.inbox_entry_absent`, which raises when the folder can't be opened). The same table holds for a zip in `_inbox/<person>/export-<id>/` and for a held copy in `_inbox/<person>/held/export-<id>/`.
+
+| At the name | In the claim folder | Where a crash left it | Outcome |
+| --- | --- | --- | --- |
+| The proven file | Nothing | Before the claim (journal `freeing`) | Proved again, claimed, deleted, absence checked, recorded `freed` |
+| Nothing | Nothing | After the delete, before `freed` was written | Absence checked, recorded `freed` with the part's size |
+| Nothing | The proven file | After the claim, before the delete | Put back first, then proved again and freed as in row 1; until then it counts as present, never `freed` |
+| Another file | The proven file | After the claim, then something took the name | Can't be put back: both kept, counted as present, the attempt refuses (`zip_changed` / `changed`) |
+| Nothing | Another file | A claim of a file that was not the proven one | Put back, then proved as whatever it is: a different file fails the proof and is kept |
+| A link, a folder or a hard-linked file | Nothing | Any | Refused (`Photos.removable`, or not a plain single-linked file); kept; never absent |
+| A different file than the proof checked | Nothing | Swapped in before the claim | Refused at the identity check; kept |
+| A different file than the proof checked | — | Swapped in at the claim | The claimed inode isn't the proven one: put back and refused; kept |
+| A new file | Nothing | Created after the proven file was deleted | The absence check fails: not recorded `freed`; the new file is kept and proved like any file at that name |
+| Anything | Anything | The folder can't be opened (missing, a link above it) | The attempt fails with the error type logged; the journal stays as it was and nothing is recorded `freed` |
+
+Each row has a test: `tests/test_paths.py`'s `PartZipRemoverTests.test_every_cell_of_the_removers_state_table_for_a_zip_and_a_held_copy` and `test_a_file_that_takes_the_name_right_after_the_delete_is_kept_and_the_remover_refuses`, and through `part_free` `tests/test_part_free.py`'s `JournalTests`, `ClaimSwapTests` and `ClaimRecoveryTests`.
+
 ### Against today's retention and Takeout's limits
 
 Today a zip is kept 14 days after the whole export finishes. Takeout allows 5 downloads per part, and the export expires about 7 days after it is ready; Darkroom caps itself at 2 retries per part and normally uses 1 download.
@@ -187,7 +206,7 @@ Today the same skipped Takeout copies are deleted 14 days after completion, so t
 ### The safe default
 
 - **Phase 1 (no promise changes):** ingest each part as it downloads; no staging copy; keep every zip to today's 14-day rule after the export completes. The scratch batch is the only new deletion, and it deletes a copy of bytes the zip still holds.
-- **Phase 2 (after the owner amends promise 2):** free a part's zip on its proof, as above, and keep the held store to 14 days after completion, as staging is kept today.
+- **Phase 2 (the owner amended promise 2, decisions 1 and 4 on #424; #487):** free a part's zip on its proof, as above, and free the held store when the export is finished, once every held item's outcome is verified again.
 - Never free a zip with a failed, unknown or pinned entry, or while its export has another export of the same account waiting ahead of it.
 - Under the #259 target, the proof's "placed" becomes "committed, verified receipt", and freeing also needs the backup recovery-point proof of that design's section 4, which does not exist yet; until it does, phase 2 stays off for Immich-managed imports.
 
@@ -196,7 +215,7 @@ Today the same skipped Takeout copies are deleted 14 days after completion, so t
 | Promise | Effect of this proposal |
 | --- | --- |
 | 1. An original is written once | Unchanged. Placement still goes through `place.copy_into` and `paths.write_once`; XMP fills still write only `.xmp` files; nothing under `originals/` is read differently. `tests/test_place.py`'s `FixtureExportRun` whole-tree SHA-1 check must also run on a per-part ingest of the same export (PP-7) |
-| 2. Dedupe deletes nothing on Unraid, except the losing copy | **Needs the owner to amend it for phase 2.** It says "Cleanup removes only staging, archives and resolved review holds, 14 days after the fact". Freeing a part's zip on proof deletes an archive before 14 days. The held store is staging in the promise's sense and keeps the 14-day rule. The scratch batch is deleted right after use; it is a copy of bytes the zip still holds, but the wording should say so (decision 2). The losing-copy rule is unchanged: copies of an item attach without a decision, so `takeout_copies`'s "every decision naming it is an unreversed automatic tier 5" sees the same decisions as today. A copy arriving in a later part after the reconcile has already removed its item attaches to the removed item and is never placed again (the existing "a retried import never places a removed Takeout copy again" rule, which PP-5 must test). Pixel pruning still rests only on unreversed automatic tier 1 or 2 decisions; tier 2 is decided only at completion, as today, and tier 1 earlier, which proves the same thing earlier |
+| 2. Dedupe deletes nothing on Unraid, except the losing copy | **Needs the owner to amend it for phase 2.** It says "Cleanup removes only staging, archives and resolved review holds, 14 days after the fact". Freeing a part's zip on proof deletes an archive before 14 days. The held store is staging in the promise's sense; the design proposed it keep the 14-day rule, and the owner chose to free it at completion instead (decision 4). The scratch batch is deleted right after use; it is a copy of bytes the zip still holds, but the wording should say so (decision 2). The losing-copy rule is unchanged: copies of an item attach without a decision, so `takeout_copies`'s "every decision naming it is an unreversed automatic tier 5" sees the same decisions as today. A copy arriving in a later part after the reconcile has already removed its item attaches to the removed item and is never placed again (the existing "a retried import never places a removed Takeout copy again" rule, which PP-5 must test). Pixel pruning still rests only on unreversed automatic tier 1 or 2 decisions; tier 2 is decided only at completion, as today, and tier 1 earlier, which proves the same thing earlier |
 | 3. Retired | Not affected |
 | 4. The worker never types a password or 2FA code | Not affected: the worker's download loop is unchanged |
 | 5. Metadata gaps go in XMP sidecars | Unchanged: a late sidecar fills through the same `xmp.fill` and `refresh_takeout` |
@@ -237,7 +256,7 @@ With the dedupe index fixed while the export ingests (no phone items arriving fr
 
 The Exports page shows each part's download state today (`exports.part_dict`, `frontend/src/pages/Exports.svelte`'s parts table, and the line "Darkroom downloads each part once and keeps the file until it is imported"). Per-part ingest needs it to show, per part, one of: downloaded, ingesting, ingested, holding N items, freed, kept (with why: a failed item, a listing mismatch); and per export: parts ingested of the total, items held until the export completes and how many are waiting for a sidecar, and how much disk was freed. The Imports page may show a run that is still taking parts. The API gains the part fields (`contract.py`, `api-types.ts`, the feature map).
 
-**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design. The API reports `kept_reason` as `failed_item` only (from `failed_items`); a refused part carries no reason code until a later issue stores the reader's refusal reason on `export_parts`. `bytes_freed` is 0 and there is no `freed` part state until PP-10.
+**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design. The API reports `kept_reason` as `failed_item` only (from `failed_items`); a refused part carries no reason code until a later issue stores the reader's refusal reason on `export_parts`. PP-10 (#487) adds each part's `freed` and `bytes_freed`, and the export's `bytes_freed` sums them; the screen shows neither until a signed-off design does.
 
 ## 9. Plan
 
@@ -259,7 +278,7 @@ The owner has one export running now. At deploy:
 - An export whose stage is `unpacked` or later, or that has a staging folder, finishes the old way, and cleanup treats it as today.
 - An export still downloading, or downloaded with stage `queued` or none and no staging folder, switches to per-part: its parts already `done` are queued at once and ingested in any order, and the rest as they arrive. Its zips stay to the 14-day rule (phase 1).
 - An export marked `failed` before unpacking can be retried as per-part.
-- No schema change touches the old path's rows; the migration only adds. Rolling back means stopping the import tick, then running the old code: a per-part export it finds `downloading` it leaves alone, and one `downloaded` it would unpack in full from the zips, which phase 1 keeps. The ledger rows stay and the old code ignores them. Phase 2 (freed zips) has no rollback to whole-export ingest for its exports, which is one reason it waits for the owner.
+- No schema change touches the old path's rows; the migration only adds. Rolling back means stopping the import tick, then running the old code: a per-part export it finds `downloading` it leaves alone, and one `downloaded` it would unpack in full from the zips, which phase 1 keeps. The ledger rows stay and the old code ignores them. Phase 2 (freed zips, #487) has no rollback to whole-export ingest for its exports, which is one reason it waited for the owner's amendment of promise 2.
 
 Which way the running export goes depends on its stage on the server, which this design can't see (section 11).
 
@@ -290,7 +309,7 @@ PP-1 and PP-2 can run at once; so can PP-8 and PP-12 once their dependencies lan
 1. **Amend promise 2** (and the #259 design's retention clock) so a part's zip may be deleted before the 14 days, once its proof in section 5 holds? Recommended: yes, as phase 2, after phase 1 has run one export. If no, phase 1 alone still removes the staging copy.
 2. **Scratch copies:** confirm that a scratch copy of bytes the zip still holds is deleted right after its batch, and is not "staging" under the 14-day rule.
 3. **Tier-2 candidates:** hold their bytes until the export completes (exact; up to the whole export held in the worst case), or decide them per part (less disk, but a burst rival in a later part then makes a review item whose Takeout copy may be gone)? Recommended: hold, and look again once spike #20 says how many there are.
-4. **Held store retention:** keep held copies 14 days after the export completes, as staging today (recommended), or free them at completion?
+4. **Held store retention:** keep held copies 14 days after the export completes, as staging today (recommended), or free them at completion? (Answered: free them at completion; docs/DECISIONS.md.)
 5. **An export that never completes:** keep held items and their zips, and alert (recommended), and later add a "finish without part N" action?
 6. **Re-fetching a freed part** while the export is still live, at the cost of one of its 5 downloads: add the action later?
 7. **Immich rescans** after each part that placed something (photos show sooner, recommended) or only at completion?

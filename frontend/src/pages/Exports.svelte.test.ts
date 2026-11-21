@@ -240,7 +240,7 @@ describe("the Exports page", () => {
 
   describe("an export imported part by part", () => {
     const OLD_WAY = "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and keeps the file until it is imported.";
-    const PER_PART = "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and imports it as soon as it arrives. It keeps every part's file until 14 days after the whole export is imported.";
+    const PER_PART = "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and imports it as soon as it arrives. Once everything in a part is safely in the library, Darkroom deletes the part's file to free space. A part with an item that failed is kept.";
 
     async function current(item: object) {
       show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] }, "GET /api/exports": { exports: [item], schedules: [] } });
@@ -273,6 +273,18 @@ describe("the Exports page", () => {
       expect(within(within(section).getByRole("table")).getByText("Imported").closest("[data-tone]")).toHaveAttribute("data-tone", "ok");
       expect(within(section).getByText(PER_PART)).toBeInTheDocument();
       expect(within(section).queryByText(OLD_WAY)).not.toBeInTheDocument();
+    });
+
+    it("shows a freed part and the disk freed once Darkroom has deleted a part's file", async () => {
+      const freedParts = perPartExport.parts.map((part, index) => (index < 2 ? { ...part, freed: true, bytes_freed: 50_000_000_000, held: 0, held_waiting_sidecar: 0, held_waiting_export: 0 } : part));
+      const section = await current({ ...perPartExport, bytes_freed: 100_000_000_000, parts: freedParts });
+      const totals = section.querySelector<HTMLElement>("dl[aria-label='Import so far']");
+      if (totals === null) throw new Error("no totals");
+      expect(within(totals).getAllByRole("term").map((term) => term.textContent)).toEqual(["Imported", "Held", "Disk freed"]);
+      expect(within(totals).getByText("100 GB")).toBeInTheDocument();
+      expect(states(section).slice(0, 2)).toEqual(["Freed 1,517 items imported, 50 GB freed", "Freed 1,402 items imported, 50 GB freed"]);
+      expect(within(section).getAllByText("Freed")[0].closest("[data-tone]")).toHaveAttribute("data-tone", "ok");
+      expect(within(section).getByText(PER_PART)).toBeInTheDocument();
     });
 
     it("says a part is being read before its listing is known", async () => {

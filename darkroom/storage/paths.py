@@ -2002,3 +2002,147 @@ def name_of(folder: MadeFolder) -> str | None:
             if stat.S_ISDIR(found.st_mode) and identity_of(found) == folder.identity:
                 return entry.name
     return None
+
+
+class NotAPartZip(ValueError):
+    pass
+
+
+class NotAHeldCopy(ValueError):
+    pass
+
+
+Identity = tuple[int, int, int, int, int]
+PART_ZIP_SUFFIX = ".zip"
+
+
+def file_identity(found: os.stat_result) -> Identity:
+    return found.st_dev, found.st_ino, found.st_size, found.st_mtime_ns, found.st_ctime_ns
+
+
+def part_zip_path(photos: Photos, person: str, export: str, filename: str) -> Path:
+    if not filename.endswith(PART_ZIP_SUFFIX) or "/" in filename or "\0" in filename:
+        raise NotAPartZip("not a part's zip")
+    return photos.in_the_inbox(photos.person_part(person), photos.name_part(export)) / photos.name_part(filename)
+
+
+def held_copy_path(photos: Photos, person: str, export: str, name: str) -> Path:
+    if not HELD_FILE.match(name):
+        raise NotAHeldCopy("not a held file name")
+    return photos.held(person, export) / name
+
+
+def held_copy_at(photos: Photos, relative: str, export: str) -> Path:
+    parts = relative.split("/")
+    if len(parts) != 5 or parts[0] != INBOX or parts[2] != HELD_STORE or parts[3] != export:
+        raise NotAHeldCopy("not a held copy of this export")
+    return held_copy_path(photos, parts[1], export, parts[4])
+
+
+def fingerprint(handle: BinaryIO) -> tuple[str, Identity]:
+    digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+    while chunk := handle.read(CHUNK):
+        digest.update(chunk)
+    return digest.hexdigest(), file_identity(os.fstat(handle.fileno()))
+
+
+def inbox_fingerprint(photos: Photos, path: Path) -> tuple[str, Identity]:
+    with open_inbox_file(photos, path) as handle:
+        return fingerprint(handle)
+
+
+def plain_fingerprint(path: Path) -> tuple[str, Identity]:
+    with open_plain_file(path) as handle:
+        return fingerprint(handle)
+
+
+def plain_identity(folder: int, name: str) -> Identity | None:
+    found = entry_at(name, folder)
+    return None if found is None or not plain_file(found) else file_identity(found)
+
+
+FREEING_CLAIM = ".freeing-"
+
+
+def freeing_claim(name: str) -> str:
+    return f"{FREEING_CLAIM}{hashlib.sha256(name.encode()).hexdigest()[:16]}"
+
+
+def same_file(found: os.stat_result, expected: Identity) -> bool:
+    return plain_file(found) and file_identity(found)[:4] == expected[:4]
+
+
+def claim_left(folder: int, name: str) -> bool:
+    try:
+        with private_folder(folder, freeing_claim(name), create=False) as private:
+            return private is not None and entry_at(CLAIMED, private) is not None
+    except (NotALosingCopy, OSError):
+        return True
+
+
+def inbox_entry_absent(photos: Photos, path: Path) -> bool:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        return entry_at(path.name, folder) is None and not claim_left(folder, path.name)
+
+
+def put_back_claimed(photos: Photos, path: Path) -> bool:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        try:
+            with private_folder(folder, freeing_claim(path.name), create=False) as private:
+                if private is None or entry_at(CLAIMED, private) is None:
+                    return False
+                put_claim_back(private, CLAIMED, folder, path.name)
+                return entry_at(CLAIMED, private) is None
+        except NotALosingCopy:
+            return False
+
+
+def inbox_identity(photos: Photos, path: Path) -> Identity | None:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        return plain_identity(folder, path.name)
+
+
+def library_identity(path: Path) -> Identity | None:
+    spelled = Path(os.path.abspath(path))
+    with pinned_path(spelled.parent) as folder:
+        return plain_identity(folder, spelled.name)
+
+
+def remove_checked(photos: Photos, path: Path, expected: Identity, refused: type[ValueError]) -> int | None:
+    if photos.removable(path) != path:
+        raise refused("a link is on the way to the file")
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        try:
+            with private_folder(folder, freeing_claim(path.name), create=True) as private:
+                assert private is not None
+                if entry_at(CLAIMED, private) is not None:
+                    put_claim_back(private, CLAIMED, folder, path.name)
+                    raise refused("a file claimed before was put back first")
+                found = entry_at(path.name, folder)
+                if found is None:
+                    return None
+                if not plain_file(found) or file_identity(found) != expected:
+                    raise refused("the file changed since it was checked")
+                try:
+                    rename_no_replace(path.name, CLAIMED, folder, private)
+                except (OSError, NotALosingCopy) as error:
+                    raise refused("the file could not be claimed") from error
+                claimed = entry_at(CLAIMED, private)
+                if claimed is None or not same_file(claimed, expected):
+                    put_claim_back(private, CLAIMED, folder, path.name)
+                    raise refused("another file was claimed in its place")
+                os.unlink(CLAIMED, dir_fd=private)
+                removed = claimed.st_size
+        except (NotALosingCopy, KeeperBusy) as error:
+            raise refused("the claim folder is not usable") from error
+        if entry_at(path.name, folder) is not None or claim_left(folder, path.name):
+            raise refused("another file took its name after it was claimed")
+        return removed
+
+
+def remove_part_zip(photos: Photos, person: str, export: str, filename: str, expected: Identity) -> int | None:
+    return remove_checked(photos, part_zip_path(photos, person, export, filename), expected, NotAPartZip)
+
+
+def remove_held_copy(photos: Photos, person: str, export: str, name: str, expected: Identity) -> int | None:
+    return remove_checked(photos, held_copy_path(photos, person, export, name), expected, NotAHeldCopy)

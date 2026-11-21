@@ -260,6 +260,10 @@ class ExportPart(Base):
     entries_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     held: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    free_state: Mapped[str | None] = mapped_column(String)
+    free_started_at: Mapped[float | None] = mapped_column(Float)
+    freed_at: Mapped[float | None] = mapped_column(Float)
+    bytes_freed: Mapped[int | None] = mapped_column(Bytes)
 
 
 class TakeoutEntry(Base):
@@ -300,6 +304,8 @@ class TakeoutEntry(Base):
     decision_id: Mapped[int | None] = mapped_column(ForeignKey("dedupe_decisions.id", ondelete="SET NULL"))
     item_id: Mapped[int | None] = mapped_column(ForeignKey("media_items.id", ondelete="SET NULL"))
     held_path: Mapped[str | None] = mapped_column(String)
+    held_state: Mapped[str | None] = mapped_column(String)
+    held_freed_at: Mapped[float | None] = mapped_column(Float)
     listed_at: Mapped[float] = mapped_column(Float, nullable=False)
     done_at: Mapped[float | None] = mapped_column(Float)
 

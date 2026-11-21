@@ -209,8 +209,11 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(part_reader.BATCH_FILES, run.PINNED_AT_ONCE)
 
     def test_only_part_ingest_calls_the_reader(self):
-        users = [str(p.relative_to(ROOT)) for p in (ROOT / "darkroom").rglob("*.py") if "part_reader" in p.read_text() and p.name != "part_reader.py"]
-        self.assertEqual(users, ["darkroom/domain/ingest/part_ingest.py"])
+        sources = {str(p.relative_to(ROOT)): p.read_text() for p in sorted((ROOT / "darkroom").rglob("*.py")) if p.name != "part_reader.py"}
+        users = [name for name, text in sources.items() if "part_reader" in text]
+        self.assertEqual(users, ["darkroom/domain/ingest/part_free.py", "darkroom/domain/ingest/part_ingest.py"])
+        readers = [name for name, text in sources.items() if any(call in text for call in ("read_part(", "part_reader.sweep(", "stream_one(", "stream_batch("))]
+        self.assertEqual(readers, ["darkroom/domain/ingest/part_ingest.py"])
 
 
 class SameRefusalsAsUnpackTests(unittest.TestCase):

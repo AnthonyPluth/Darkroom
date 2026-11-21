@@ -77,7 +77,7 @@ export const failedSchedule: BrowserJobView = { ...queuedConnect, id: 4, account
 
 export const noExports: Exports = { exports: [], schedules: [] };
 
-const part = (number: number, status: string, downloads: number): ExportPartDetail => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status, ingest_state: "not_queued", entries: 0, entries_done: 0, held: 0, held_waiting_sidecar: 0, held_waiting_export: 0, failed_items: 0, kept_reason: null });
+const part = (number: number, status: string, downloads: number): ExportPartDetail => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status, ingest_state: "not_queued", entries: 0, entries_done: 0, held: 0, held_waiting_sidecar: 0, held_waiting_export: 0, failed_items: 0, kept_reason: null, freed: false, bytes_freed: 0 });
 
 export const downloadingExport: ExportView = {
   id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null, parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null,

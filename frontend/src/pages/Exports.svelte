@@ -6,7 +6,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedTotal, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -218,6 +218,7 @@
         {@const stopped = failedDownloadSentence(current)}
         {@const perPart = importedPerPart(current)}
         {@const held = heldTotal(current)}
+        {@const freed = freedTotal(current)}
         {@const kept = perPart ? current.parts.map(keptSentence).filter((sentence) => sentence !== null) : []}
         <section class="card" aria-label="Current export parts for {account.email}">
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -242,6 +243,12 @@
                     {/if}
                   </dd>
                 </div>
+                {#if freed !== null}
+                  <div class="contents md:flex md:flex-col md:gap-0.5">
+                    <dt class="text-ink-muted md:text-xs md:font-semibold md:tracking-[0.06em] md:uppercase">Disk freed</dt>
+                    <dd class="font-bold md:text-lg">{freed}</dd>
+                  </div>
+                {/if}
               </dl>
             {/if}
             <Table label="Parts of the export started {onDay(current.created_at ?? 0)} for {account.email}" columns={["Part", "File", "Progress", "Downloads used", "State"]} rows={current.parts} empty="">
@@ -273,7 +280,7 @@
               {/snippet}
             </Table>
             {#if perPart}
-              <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and imports it as soon as it arrives. It keeps every part's file until 14 days after the whole export is imported.</p>
+              <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and imports it as soon as it arrives. Once everything in a part is safely in the library, Darkroom deletes the part's file to free space. A part with an item that failed is kept.</p>
               {#each kept as sentence (sentence)}
                 <p class="text-ink-muted">{sentence}</p>
               {/each}

@@ -14,10 +14,10 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import index
-from darkroom.domain.ingest import finish_export, part_ingest, run
+from darkroom.domain.ingest import finish_export, part_free, part_ingest, run
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
 from tests.fixtures import media as fixtures
 from tests.import_world import DAY, INDEXED, NOW
 from tests.privacy import no_leaks
@@ -295,6 +295,8 @@ def scoped(case):
 
 
 class OrderWorld(FinishWorld):
+    FOLDER = GOOGLE_ID
+
     def __init__(self, test):
         super().__init__(test, immich_configured=False)
         self.tools = run.Tools(read=MEMO.read, write=MEMO.write, notifier=self.recorder)
@@ -307,7 +309,7 @@ class OrderWorld(FinishWorld):
     def made(self, fixture, whole=False):
         for slug, relative, data in fixture.originals:
             self.original(slug, relative, data)
-        inbox = self.photos.inbox(self.people[0]) / GOOGLE_ID
+        inbox = self.photos.inbox(self.people[0]) / self.FOLDER
         inbox.mkdir(parents=True, exist_ok=True)
         for name, data in fixture.zips:
             (inbox / name).write_bytes(data)
@@ -430,6 +432,81 @@ class EveryOrderTests(OrderCase):
         chance = random.Random(484)
         orders = [tuple(chance.sample(range(1, 8), 7)) for _ in range(4)]
         self.check_orders(fixture_of(seven_parts, 7), orders, album_renames(ALBUM_COPIES))
+
+
+class FreeingWorld(OrderWorld):
+    FOLDER = "export-1"
+
+    def __init__(self, test):
+        super().__init__(test)
+        self.freed = 0
+
+    def free(self):
+        self.opened.expire_all()
+        self.freed += part_free.free_ready(self.opened, self.settings, NOW + 1).parts
+
+    def ingest_all(self, export, numbers=(1, 2, 3)):
+        reports = []
+        for number in numbers:
+            reports.append(self.ingest(export, number))
+            self.free()
+        return reports
+
+    def finish(self, export, at=NOW, tools=None):
+        row = super().finish(export, at, tools)
+        self.free()
+        return row
+
+    def placed_files(self):
+        kept = (f"_inbox/{self.people[0]}/{self.FOLDER}/", f"_inbox/{self.people[0]}/held/")
+        return {key: value for key, value in super().placed_files().items() if not key.startswith(kept)}
+
+    def held_left(self):
+        return sorted(key for key in self.files() if key.startswith(f"_inbox/{self.people[0]}/held/"))
+
+    def held_without_a_decision(self):
+        self.opened.expire_all()
+        return sorted(row.held_path for row in self.opened.execute(select(TakeoutEntry).where(TakeoutEntry.held_path.is_not(None))).scalars()
+                      if row.held_state != "freed" and row.outcome == "skipped" and row.decision_id is None)
+
+    def journal_problems(self):
+        self.opened.expire_all()
+        problems = [f"part {part.number} recorded freed while its zip is there" for part in self.opened.execute(select(ExportPart)).scalars()
+                    if part.free_state == "freed" and (self.photos.inbox(self.people[0]) / self.FOLDER / part.filename).exists()]
+        problems += [f"entry {row.id} recorded freed while its held copy is there" for row in self.opened.execute(select(TakeoutEntry)).scalars()
+                     if row.held_state == "freed" and row.held_path and (self.root / row.held_path).exists()]
+        return problems
+
+
+class FreeingOrderTests(OrderCase):
+    def check_freeing(self, fixture, orders, renamed):
+        expected = self.whole(fixture).snapshot()
+        differ, freed = {}, {}
+        for order in orders:
+            with scoped(self) as scope:
+                world = self.per_part(FreeingWorld(scope), fixture, order)
+                found = gate(world.snapshot(), expected)
+                if world.differences() != (renamed(order), 0):
+                    found["paths_renamed, sidecars_differ"] = (world.differences(), (renamed(order), 0))
+                if world.undecided() or world.journal_problems():
+                    found["undecided or journal"] = (sorted(world.undecided()), world.journal_problems())
+                if found:
+                    differ[order] = found
+                freed[order] = (world.freed, world.held_left())
+                if world.held_left() != world.held_without_a_decision():
+                    differ.setdefault(order, {})["held left"] = (world.held_left(), world.held_without_a_decision())
+        self.assertEqual(differ, {}, f"{len(differ)} of {len(orders)} part orders with freeing on differ from whole-export ingest")
+        return freed
+
+    def test_seeded_orders_of_a_five_part_export_with_freeing_on_give_whole_export_ingest_and_free_every_zip(self):
+        chance = random.Random(487)
+        orders = [tuple(chance.sample(range(1, 6), 5)) for _ in range(6)]
+        freed = self.check_freeing(fixture_of(five_parts, 5), orders, album_renames(ALBUM_COPIES))
+        self.assertEqual(freed, {order: (5, []) for order in orders})
+
+    def test_every_order_of_a_three_part_export_with_freeing_on_gives_whole_export_ingest(self):
+        freed = self.check_freeing(fixture_of(three_parts, 3), list(itertools.permutations(range(1, 4))), lambda order: 0)
+        self.assertEqual(len(freed), 6)
 
 
 def own_part_sidecars_only(self):

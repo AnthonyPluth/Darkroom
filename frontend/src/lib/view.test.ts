@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
 import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedSize, freedTotal, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -127,6 +127,15 @@ describe("a part imported on its own", () => {
     expect(heldTotal({ ...perPartExport, held_waiting_sidecar: 0 })).toEqual({ value: "2 items", note: "Until the whole export is in." });
     expect(heldTotal({ ...perPartExport, held_waiting_sidecar: 1, held_waiting_export: 0 })).toEqual({ value: "1 item", note: "Until the whole export is in. 1 of them is waiting for a sidecar." });
     expect(heldTotal(keptPartsExport)).toEqual({ value: "None", note: null });
+  });
+
+  it("says how much disk a freed part gave back, and nothing until a part is freed", () => {
+    expect([0, 999, 1000, 2_000_000, 1_250_000_000, 50_000_000_000, 3_400_000_000_000].map(freedSize)).toEqual(["0 bytes", "999 bytes", "1 KB", "2 MB", "1.3 GB", "50 GB", "3.4 TB"]);
+    expect(freedTotal(perPartExport)).toBeNull();
+    expect(freedTotal({ ...perPartExport, bytes_freed: 100_000_000_000 })).toBe("100 GB");
+    const part = { ...perPartExport.parts[0], ingest_state: "ingested", entries: 1517, freed: true, bytes_freed: 50_000_000_000 };
+    expect(partImportState(part, "downloading")).toEqual({ tone: "ok", label: "Freed", detail: "1,517 items imported, 50 GB freed" });
+    expect(partImportState({ ...part, freed: false }, "downloading").label).not.toBe("Freed");
   });
 });
 

@@ -44,7 +44,7 @@ REFUSED = "refused"
 WAITING_SIDECAR = "waiting_sidecar"
 WAITING_EXPORT = "waiting_export"
 FAILED_ITEM = "failed_item"
-BYTES_FREED = 0
+FREED = "freed"
 MAX_PART_NUMBER = 2**31 - 1
 MAX_PART_BYTES = 2**63 - 1
 MAX_GOOGLE_DOWNLOADS = 1000
@@ -412,6 +412,7 @@ def part_dict(part: ExportPart, held: tuple[int, int] = (0, 0)) -> dict[str, obj
         "downloads_used": part.downloads_used, "attempts": part.attempts, "status": part.status,
         "ingest_state": part.ingest_state, "entries": part.entries or 0, "entries_done": part.entries_done, "held": part.held,
         "held_waiting_sidecar": held[0], "held_waiting_export": held[1], "failed_items": part.failed_items, "kept_reason": kept_reason(part),
+        "freed": part.free_state == FREED, "bytes_freed": (part.bytes_freed or 0) if part.free_state == FREED else 0,
     }
 
 
@@ -453,7 +454,7 @@ def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
         "parts": [part_dict(part, held.get(part.number, (0, 0))) for part in parts],
         "parts_ingested": sum(1 for part in parts if part.ingest_state == INGESTED),
         "held_waiting_sidecar": sum(sidecar for sidecar, _ in held.values()), "held_waiting_export": sum(export for _, export in held.values()),
-        "bytes_freed": BYTES_FREED, "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
+        "bytes_freed": sum(part.bytes_freed or 0 for part in parts if part.free_state == FREED), "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
     }
 
 

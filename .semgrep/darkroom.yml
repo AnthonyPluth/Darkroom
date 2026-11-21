@@ -402,6 +402,91 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/takeout_copies.py"]
 
+  - id: darkroom-part-zip-one-remover
+    message: >-
+      A part's zip and the export's held copies are the only copy of a Takeout file Darkroom has, so only
+      darkroom/storage/paths.py removes, renames or replaces them: remove_part_zip, which refuses anything but a .zip
+      directly in _inbox/<person>/export-<id>/, and remove_held_copy, which refuses anything but a held file name in
+      _inbox/<person>/held/export-<id>/, both through Photos.removable, through folders opened without following links,
+      and only the file whose identity the proof checked (AGENTS.md, promise 2; #487). The 14-day cleanup goes through
+      paths.remove_inbox_file. Go through part_free.free_ready instead.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: unpack.part_path(...)
+      - pattern: part_path(...)
+      - pattern: unpack.part_folder(...)
+      - pattern: part_folder(...)
+      - pattern: $P.export_tree(...)
+      - pattern: $P.held(...)
+      - pattern: paths.part_zip_path(...)
+      - pattern: paths.held_copy_path(...)
+      - pattern: paths.held_copy_at(...)
+      - pattern: paths.HELD_STORE
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($D, ...)
+              - pattern: os.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(remove|unlink|rmdir|removedirs|rename|renames|replace|truncate)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: shutil.move($D, ...)
+              - pattern: shutil.move($A, $D, ...)
+              - pattern: shutil.rmtree($D, ...)
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: $D.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(unlink|rmdir|rename|replace|write_bytes|write_text|move|move_into)$
+          - focus-metavariable: $D
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-absence-through-entry-absent
+    message: >-
+      paths.inbox_identity and paths.library_identity return None for a link, a hard-linked file or a folder as well as
+      for a missing one, so None is not "gone". Before the freeing journal records a part's zip or a held copy freed, it
+      must know the entry is absent: use paths.inbox_entry_absent, which opens the containing folder without following
+      links (raising when it can't) and is true only when no entry has that name (AGENTS.md, promise 2; #487).
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $M.inbox_identity(...) is None
+      - pattern: $M.library_identity(...) is None
+      - pattern: inbox_identity(...) is None
+      - pattern: library_identity(...) is None
+      - pattern: $M.inbox_identity(...) is not None
+      - pattern: $M.library_identity(...) is not None
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-part-zip-one-caller
+    message: >-
+      A part's zip is freed before the 14 days, and the export's held copies at its completion, only by
+      darkroom/domain/ingest/part_free.py, which copies what still waits into the held store, proves every entry has a
+      verified outcome, journals the delete (freeing, then freed) and re-checks under the write lock before it calls
+      paths.remove_part_zip or paths.remove_held_copy (AGENTS.md, promise 2; #487). Call part_free.free_ready instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.$F(...)
+          - pattern: $F(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(remove_part_zip|remove_held_copy|remove_checked)$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_free.py"]
+
   - id: darkroom-scratch-sweep-one-caller
     message: >-
       A part's scratch folder holds copies of zip entries for one batch, and only darkroom/domain/ingest/part_reader.py
