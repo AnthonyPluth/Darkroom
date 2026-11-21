@@ -185,6 +185,60 @@ export function partChip(part: ExportPartDetail, exportStatus: string): { tone: 
   }
 }
 
+const NOT_QUEUED = "not_queued";
+const whole = new Intl.NumberFormat("en-GB");
+const items = (n: number) => `${whole.format(n)} ${n === 1 ? "item" : "items"}`;
+const wait = (n: number) => (n === 1 ? "waits" : "wait");
+
+export function importedPerPart(item: ExportView): boolean {
+  return item.parts.some((part) => part.ingest_state !== NOT_QUEUED);
+}
+
+export type PartState = { tone: Tone; label: string; detail: string | null };
+
+function heldDetail(part: ExportPartDetail): string {
+  const halves = [];
+  if (part.held_waiting_sidecar > 0) halves.push(`${whole.format(part.held_waiting_sidecar)} ${wait(part.held_waiting_sidecar)} for a sidecar`);
+  if (part.held_waiting_export > 0) halves.push(`${whole.format(part.held_waiting_export)}${halves.length === 0 ? ` ${wait(part.held_waiting_export)}` : ""} for the whole export`);
+  return halves.length === 0 ? items(part.entries) : `${items(part.entries)}. ${halves.join(", ")}.`;
+}
+
+export function partImportState(part: ExportPartDetail, exportStatus: string): PartState {
+  if (part.status !== "done" || part.ingest_state === NOT_QUEUED) return { ...partChip(part, exportStatus), detail: null };
+  switch (part.ingest_state) {
+    case "queued": return { tone: "neutral", label: "Downloaded", detail: "Waiting to import" };
+    case "ingesting": return { tone: "neutral", label: "Importing", detail: part.entries === 0 ? "Reading the file" : `${whole.format(part.entries_done)} of ${items(part.entries)}` };
+    case "ingested":
+      if (part.kept_reason === "failed_item") return { tone: "warn", label: "Kept", detail: `${items(part.entries)}, ${whole.format(part.failed_items)} failed` };
+      if (part.held > 0) return { tone: "neutral", label: `Holding ${items(part.held)}`, detail: heldDetail(part) };
+      return { tone: "ok", label: "Imported", detail: items(part.entries) };
+    case "refused": return { tone: "bad", label: "Couldn't read", detail: null };
+    case "failed": return { tone: "bad", label: "Import failed", detail: null };
+    default: return { ...partChip(part, exportStatus), detail: null };
+  }
+}
+
+export function keptSentence(part: ExportPartDetail): string | null {
+  if (part.status !== "done") return null;
+  if (part.ingest_state === "refused") return `Part ${part.number}: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own.`;
+  if (part.ingest_state === "failed") return `Part ${part.number}: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own.`;
+  if (part.ingest_state === "ingested" && part.kept_reason === "failed_item") return `Part ${part.number}: ${items(part.failed_items)} couldn't be imported, so Darkroom keeps the part's file.`;
+  return null;
+}
+
+export function importedTotal(item: ExportView): string {
+  const total = item.part_count ?? item.parts.length;
+  return `${item.parts_ingested} of ${total === 1 ? "1 part" : `${total} parts`}`;
+}
+
+export function heldTotal(item: ExportView): { value: string; note: string | null } {
+  const held = item.held_waiting_sidecar + item.held_waiting_export;
+  if (held === 0) return { value: "None", note: null };
+  const sidecar = item.held_waiting_sidecar;
+  const waiting = sidecar === 0 ? "" : ` ${whole.format(sidecar)} of them ${sidecar === 1 ? "is" : "are"} waiting for a sidecar.`;
+  return { value: items(held), note: `Until the whole export is in.${waiting}` };
+}
+
 export function accountExports(exports: readonly ExportView[], accountId: number): ExportView[] {
   return exports.filter((item) => item.account_id === accountId);
 }

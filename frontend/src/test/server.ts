@@ -98,6 +98,28 @@ export const SPENT = "Part 2 has used all 5 of Google's downloads, so Takeout wo
 export const spentDownload: ExportView = { ...failedDownload, id: 43, created_at: 250_000, retry_allowed: false, retry_refusal: SPENT };
 export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [], parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null };
 
+const ingested = (number: number, ingest: Partial<ExportPartDetail>): ExportPartDetail => ({ ...part(number, "done", 1), ...ingest });
+export const perPartExport: ExportView = {
+  ...downloadingExport, id: 45, part_count: 6, parts_ingested: 2, held_waiting_sidecar: 21, held_waiting_export: 2,
+  parts: [
+    ingested(1, { ingest_state: "ingested", entries: 1517, entries_done: 1517 }),
+    ingested(2, { ingest_state: "ingested", entries: 1402, entries_done: 1402, held: 23, held_waiting_sidecar: 21, held_waiting_export: 2 }),
+    ingested(3, { ingest_state: "ingesting", entries: 1488, entries_done: 812 }),
+    ingested(4, { ingest_state: "queued" }),
+    { ...part(5, "downloading", 1), progress: 62 },
+    part(6, "pending", 0),
+  ],
+};
+export const keptPartsExport: ExportView = {
+  ...downloadingExport, id: 46, part_count: 4, parts_ingested: 2,
+  parts: [
+    ingested(1, { ingest_state: "ingested", entries: 1517, entries_done: 1517 }),
+    ingested(2, { ingest_state: "ingested", entries: 1402, entries_done: 1402, failed_items: 2, kept_reason: "failed_item" }),
+    ingested(3, { ingest_state: "refused" }),
+    ingested(4, { ingest_state: "failed", entries: 900, entries_done: 300 }),
+  ],
+};
+
 export const transport = (pixel_id: number, name: string, state: PixelSyncthing["state"], extra: Partial<PixelSyncthing> = {}): PixelSyncthing => ({
   pixel_id, name, state, copies: 0, files: 0, days: 0, completion: null, last_seen: null, others: [], ...extra,
 });

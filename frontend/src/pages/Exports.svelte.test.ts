@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onDay, onDayAt } from "$lib/format";
 import { router } from "$lib/nav.svelte";
-import { downloadingExport, expiredExport, failedDownload, failedExport, olderFailedDownload, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
+import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
 import Exports from "./Exports.svelte";
 
 beforeEach(() => {
@@ -236,6 +236,91 @@ describe("the Exports page", () => {
       if (status !== "failed") expect(within(within(section).getByRole("table")).getAllByText(partChip)).toHaveLength(2);
       view.unmount();
     }
+  });
+
+  describe("an export imported part by part", () => {
+    const OLD_WAY = "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and keeps the file until it is imported.";
+    const PER_PART = "Google allows each part to be downloaded 5 times. Darkroom downloads each part once and imports it as soon as it arrives. It keeps every part's file until 14 days after the whole export is imported.";
+
+    async function current(item: object) {
+      show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] }, "GET /api/exports": { exports: [item], schedules: [] } });
+      return screen.findByRole("region", { name: "Current export parts for jo.photos@example.com" });
+    }
+
+    function states(section: HTMLElement) {
+      const cells = within(section).getByRole("table").querySelectorAll("td[data-label='State']");
+      return Array.from(cells, (cell) => Array.from(cell.querySelectorAll("[data-tone], [data-tone] + span"), (each) => (each.textContent ?? "").trim()).join(" "));
+    }
+
+    it("shows the totals and where each part is, with one detail line under its chip", async () => {
+      const section = await current(perPartExport);
+      const totals = section.querySelector<HTMLElement>("dl[aria-label='Import so far']");
+      if (totals === null) throw new Error("no totals");
+      expect(within(totals).getAllByRole("term").map((term) => term.textContent)).toEqual(["Imported", "Held"]);
+      expect(within(totals).getByText("2 of 6 parts")).toBeInTheDocument();
+      expect(within(totals).getByText("23 items")).toBeInTheDocument();
+      expect(within(totals).getByText("Until the whole export is in. 21 of them are waiting for a sidecar.")).toBeInTheDocument();
+      expect(within(section).queryByText(/Disk freed/)).not.toBeInTheDocument();
+      expect(states(section)).toEqual([
+        "Imported 1,517 items",
+        "Holding 23 items 1,402 items. 21 wait for a sidecar, 2 for the whole export.",
+        "Importing 812 of 1,488 items",
+        "Downloaded Waiting to import",
+        "Downloading",
+        "Waiting",
+      ]);
+      expect(within(section).getByText("Holding 23 items").closest("[data-tone]")).toHaveAttribute("data-tone", "neutral");
+      expect(within(within(section).getByRole("table")).getByText("Imported").closest("[data-tone]")).toHaveAttribute("data-tone", "ok");
+      expect(within(section).getByText(PER_PART)).toBeInTheDocument();
+      expect(within(section).queryByText(OLD_WAY)).not.toBeInTheDocument();
+    });
+
+    it("says a part is being read before its listing is known", async () => {
+      const section = await current({ ...perPartExport, part_count: 1, parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, parts: [{ ...perPartExport.parts[2], entries: 0, entries_done: 0 }] });
+      expect(states(section)).toEqual(["Importing Reading the file"]);
+    });
+
+    it("shows the parts Darkroom kept, with one fixed sentence each under the table in part order", async () => {
+      const section = await current(keptPartsExport);
+      expect(within(section).getByText("2 of 4 parts")).toBeInTheDocument();
+      expect(within(section).getByText("None")).toBeInTheDocument();
+      expect(within(section).queryByText(/Until the whole export is in/)).not.toBeInTheDocument();
+      expect(states(section)).toEqual(["Imported 1,517 items", "Kept 1,402 items, 2 failed", "Couldn't read", "Import failed"]);
+      expect(within(section).getByText("Kept").closest("[data-tone]")).toHaveAttribute("data-tone", "warn");
+      expect(within(section).getByText("Couldn't read").closest("[data-tone]")).toHaveAttribute("data-tone", "bad");
+      expect(within(section).getByText("Import failed").closest("[data-tone]")).toHaveAttribute("data-tone", "bad");
+      const sentences = Array.from(section.querySelectorAll("p")).map((p) => p.textContent);
+      expect(sentences.slice(sentences.indexOf(PER_PART))).toEqual([
+        PER_PART,
+        "Part 2: 2 items couldn't be imported, so Darkroom keeps the part's file.",
+        "Part 3: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own.",
+        "Part 4: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own.",
+      ]);
+    });
+
+    it("shows the totals at 0 and None before anything is imported", async () => {
+      const section = await current({ ...downloadingExport, parts: [{ ...downloadingExport.parts[0], ingest_state: "queued" }, ...downloadingExport.parts.slice(1)] });
+      expect(within(section).getByText("0 of 3 parts")).toBeInTheDocument();
+      expect(within(section).getByText("None")).toBeInTheDocument();
+      expect(states(section)).toEqual(["Downloaded Waiting to import", "Downloading", "Waiting"]);
+      expect(within(section).getByText(PER_PART)).toBeInTheDocument();
+    });
+
+    it("keeps today's display for an export that never went per-part", async () => {
+      const section = await current(downloadingExport);
+      expect(within(section).queryByRole("term")).not.toBeInTheDocument();
+      expect(within(section).queryByText(/of 3 parts/)).not.toBeInTheDocument();
+      expect(states(section)).toEqual(["Downloaded", "Downloading", "Waiting"]);
+      expect(within(section).getByText("Downloaded").closest("[data-tone]")).toHaveAttribute("data-tone", "ok");
+      expect(within(section).getByText(OLD_WAY)).toBeInTheDocument();
+      expect(within(section).queryByText(PER_PART)).not.toBeInTheDocument();
+    });
+
+    it("shows no item name, path or sidecar text, only counts and the fixed sentences", async () => {
+      const named = { ...keptPartsExport, parts: keptPartsExport.parts.map((each) => ({ ...each, name: "Takeout/Google Photos/IMG_SECRET.jpg", path: "/photos/secret", sidecar: "IMG_SECRET.jpg.json" })) };
+      const section = await current(named);
+      expect(section.textContent).not.toMatch(/SECRET|secret|Takeout\//);
+    });
   });
 
   it("lists earlier exports with their result, what went to review and what expired unread", async () => {

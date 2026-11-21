@@ -6,7 +6,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, retryDownloadSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -216,6 +216,9 @@
       {#if current}
         {@const chip = exportChip(current)}
         {@const stopped = failedDownloadSentence(current)}
+        {@const perPart = importedPerPart(current)}
+        {@const held = heldTotal(current)}
+        {@const kept = perPart ? current.parts.map(keptSentence).filter((sentence) => sentence !== null) : []}
         <section class="card" aria-label="Current export parts for {account.email}">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h2 class="text-md font-semibold">Export started {onDay(current.created_at ?? 0)}{current.part_count === null ? "" : `, ${partsLabel(current.part_count)}`}</h2>
@@ -224,9 +227,26 @@
           {#if current.parts.length === 0}
             <p class="text-ink-muted">Google is still preparing this export. Darkroom checks again daily and starts downloading when it is ready.</p>
           {:else}
+            {#if perPart}
+              <dl class="grid grid-cols-[7.25rem_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 md:grid-cols-3 md:gap-x-6 md:gap-y-6" aria-label="Import so far">
+                <div class="contents md:flex md:flex-col md:gap-0.5">
+                  <dt class="text-ink-muted md:text-xs md:font-semibold md:tracking-[0.06em] md:uppercase">Imported</dt>
+                  <dd class="font-bold md:text-lg">{importedTotal(current)}</dd>
+                </div>
+                <div class="contents md:flex md:flex-col md:gap-0.5">
+                  <dt class="text-ink-muted md:text-xs md:font-semibold md:tracking-[0.06em] md:uppercase">Held</dt>
+                  <dd class="flex flex-col">
+                    <b class="md:text-lg">{held.value}</b>
+                    {#if held.note}
+                      <span class="text-ink-muted">{held.note}</span>
+                    {/if}
+                  </dd>
+                </div>
+              </dl>
+            {/if}
             <Table label="Parts of the export started {onDay(current.created_at ?? 0)} for {account.email}" columns={["Part", "File", "Progress", "Downloads used", "State"]} rows={current.parts} empty="">
               {#snippet row(part)}
-                {@const state = partChip(part, current.status)}
+                {@const state = perPart ? partImportState(part, current.status) : { ...partChip(part, current.status), detail: null }}
                 <tr>
                   <td data-label="Part"><b>{part.number}</b></td>
                   <td data-label="File" class="font-mono text-sm break-all">{part.filename ?? "Not downloaded yet"}</td>
@@ -239,11 +259,27 @@
                     </div>
                   </td>
                   <td data-label="Downloads used">{part.downloads_used} of {DOWNLOAD_LIMIT}</td>
-                  <td data-label="State"><Chip tone={state.tone} label={state.label} /></td>
+                  <td data-label="State">
+                    {#if state.detail === null}
+                      <Chip tone={state.tone} label={state.label} />
+                    {:else}
+                      <span class="flex flex-col items-end gap-1 md:block">
+                        <Chip tone={state.tone} label={state.label} />
+                        <span class="block text-sm text-ink-muted md:mt-1">{state.detail}</span>
+                      </span>
+                    {/if}
+                  </td>
                 </tr>
               {/snippet}
             </Table>
-            <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and keeps the file until it is imported.</p>
+            {#if perPart}
+              <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and imports it as soon as it arrives. It keeps every part's file until 14 days after the whole export is imported.</p>
+              {#each kept as sentence (sentence)}
+                <p class="text-ink-muted">{sentence}</p>
+              {/each}
+            {:else}
+              <p class="text-sm text-ink-muted">Google allows each part to be downloaded {DOWNLOAD_LIMIT} times. Darkroom downloads each part once and keeps the file until it is imported.</p>
+            {/if}
           {/if}
           {#if stopped}
             <p id="retry-note-{current.id}" class="text-ink-muted">{stopped}</p>

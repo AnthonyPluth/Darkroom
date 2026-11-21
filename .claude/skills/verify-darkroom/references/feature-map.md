@@ -101,6 +101,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Expects to see:** `Exports`, `Downloading`, `40%`, `2 of 5`.
 - **Drive it:** `tools/control flow exports-download`; or `poetry run python tools/verify.py run --flow exports-download`.
 
+#### `exports-part-import`
+
+- **Starts at:** `exports`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `3 of 8 parts`, `Until the whole export is in. 21 of them are waiting for a sidecar.`, `Holding 23 items`, `812 of 1,488 items`, `Part 5: Darkroom couldn't safely read this part`, `imports it as soon as it arrives`, `keeps the file until it is imported`.
+- **Drive it:** `tools/control flow exports-part-import`; or `poetry run python tools/verify.py run --flow exports-part-import`.
+
 #### `exports-renewal`
 
 - **Starts at:** `exports`.

@@ -160,7 +160,8 @@ class SeededDemo(unittest.TestCase):
 
     def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
         exports = self.rows(Export)
-        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental"), ("failed", "incremental")])
+        self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental"), ("failed", "incremental"),
+                                                                ("downloading", "incremental")])
         runs = self.rows(ImportRun)
         self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
         reviews = self.rows(ReviewItem)
@@ -217,7 +218,7 @@ class SeededDemo(unittest.TestCase):
     def test_an_older_failed_download_sits_behind_the_export_still_downloading_on_the_same_account(self):
         with db.session(self.engine) as opened:
             older = opened.query(Export).filter(Export.google_id == "demo-export-4").one()
-            newer = opened.query(Export).filter(Export.status == "downloading").one()
+            newer = opened.query(Export).filter(Export.google_id == "demo-export-2").one()
             self.assertEqual(older.account_id, newer.account_id)
             self.assertLess(older.created_at, newer.created_at)
             self.assertTrue(exports.as_dict(opened, older, NOON)["retry_allowed"])
@@ -232,10 +233,24 @@ class SeededDemo(unittest.TestCase):
             self.assertEqual([(part.status, part.downloads_used, part.attempts) for part in exports.parts_of(opened, export.id)], [("done", 1, 1), ("pending", 3, 0)])
             opened.rollback()
 
+    def test_a_fifth_export_is_imported_part_by_part_with_a_part_in_each_import_state(self):
+        with db.session(self.engine) as opened:
+            export = opened.query(Export).filter(Export.google_id == "demo-export-5").one()
+            account = opened.get(GoogleAccount, export.account_id)
+            self.assertEqual((account.email, export.status), ("avery.photos@example.com", "downloading"))
+            shown = exports.as_dict(opened, export, NOON)
+        parts = [(part["status"], part["ingest_state"], part["entries"], part["entries_done"], part["held_waiting_sidecar"], part["held_waiting_export"], part["kept_reason"])
+                 for part in shown["parts"]]
+        self.assertEqual(parts, [("done", "ingested", 1517, 1517, 0, 0, None), ("done", "ingested", 1402, 1402, 21, 2, None), ("done", "ingesting", 1488, 812, 0, 0, None),
+                                 ("done", "ingested", 1402, 1402, 0, 0, "failed_item"), ("done", "refused", 0, 0, 0, 0, None), ("done", "failed", 900, 300, 0, 0, None),
+                                 ("done", "queued", 0, 0, 0, 0, None), ("downloading", "not_queued", 0, 0, 0, 0, None)])
+        self.assertEqual((shown["part_count"], shown["parts_ingested"], shown["held_waiting_sidecar"], shown["held_waiting_export"], shown["bytes_freed"]), (8, 3, 21, 2, 0))
+        self.assertEqual([part["progress"] for part in shown["parts"]][-1], 62)
+
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
         with db.session(self.engine) as opened:
             seeded = list(opened.query(Export).order_by(Export.id))
-            self.assertEqual(len(seeded), 4)
+            self.assertEqual(len(seeded), 5)
             for export in seeded:
                 account = opened.get(GoogleAccount, export.account_id)
                 self.assertIsNotNone(export.owner_person_id)
