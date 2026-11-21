@@ -385,6 +385,79 @@ class JournalTests(unittest.TestCase):
         self.world.free(at=NOW + 3 * TICK)
         self.assertEqual(self.world.states(), [(1, "freed"), (2, "freed")])
 
+    def test_a_part_left_freeing_whose_zip_became_a_link_a_hard_link_or_a_folder_is_not_recorded_freed(self):
+        zipped = self.world.zip_of(1)
+        data = zipped.read_bytes()
+        real = self.world.root / "_inbox/jo/real.zip"
+        changes = {
+            "link": lambda: (zipped.rename(real), zipped.symlink_to(real)),
+            "hard link": lambda: os.link(zipped, real),
+            "folder": lambda: (zipped.rename(real), zipped.mkdir()),
+        }
+        for kind, change in changes.items():
+            with self.subTest(kind=kind):
+                self.world.change(self.world.part(self.export, 1), free_state="freeing", free_started_at=NOW)
+                change()
+                self.world.free(at=NOW + 2 * TICK)
+                part = self.world.part(self.export, 1)
+                self.assertEqual((part.free_state, part.bytes_freed, os.path.lexists(zipped)), (None, None, True))
+                self.assertEqual(real.read_bytes(), data)
+                if zipped.is_symlink():
+                    zipped.unlink()
+                elif zipped.is_dir():
+                    zipped.rmdir()
+                if not zipped.exists():
+                    real.rename(zipped)
+                else:
+                    real.unlink()
+        self.assertEqual(zipped.read_bytes(), data)
+
+    def test_a_held_store_that_cannot_be_opened_is_never_recorded_freed(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        store = self.world.root / "_inbox/jo/held" / EXPORT
+        away = store.with_name("away")
+        store.rename(away)
+        report = self.world.free(at=NOW + 3 * TICK)
+        self.assertEqual((report.failed, report.held, self.world.entry(TIER_2).held_state), (1, 0, None))
+        away.rename(store)
+        self.assertEqual(self.world.held_store(), held)
+        self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store()), ("freed", {}))
+
+    def test_a_held_store_left_freeing_that_cannot_be_opened_stays_freeing_until_it_can(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with mock.patch.object(part_free.paths, "remove_held_copy", side_effect=Crash), self.assertRaises(Crash):
+            self.world.free(at=NOW + 3 * TICK)
+        self.world.reopen()
+        store = self.world.root / "_inbox/jo/held" / EXPORT
+        away = store.with_name("away")
+        store.rename(away)
+        self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual(self.world.entry(TIER_2).held_state, "freeing")
+        away.rename(store)
+        self.assertEqual(self.world.held_store(), held)
+        self.world.free(at=NOW + 5 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store()), ("freed", {}))
+
+    def test_a_held_copy_replaced_by_a_link_or_a_folder_is_not_recorded_freed(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        copy = self.world.held_copy()
+        data = copy.read_bytes()
+        real = self.world.root / "_inbox/jo/real.jpg"
+        copy.rename(real)
+        copy.symlink_to(real)
+        self.world.free(at=NOW + 3 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, real.read_bytes(), copy.is_symlink()), (None, data, True))
+        copy.unlink()
+        copy.mkdir()
+        self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, copy.is_dir()), (None, True))
+
     def test_a_crash_while_freeing_the_held_store_finishes_on_the_next_run(self):
         self.world.free()
         self.world.finish(self.export, at=NOW + 2 * TICK)

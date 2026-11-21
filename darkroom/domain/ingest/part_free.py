@@ -383,7 +383,7 @@ def kept(opened: Session, export: Export, subject: str, kind: str, reason: str, 
 
 
 def zip_gone(photos: Photos, person: Person, export: Export, part: ExportPart) -> bool:
-    return paths.inbox_identity(photos, zip_path(photos, person, export, part)) is None
+    return paths.inbox_entry_absent(photos, zip_path(photos, person, export, part))
 
 
 def zip_present(photos: Photos, person: Person, export: Export, part: ExportPart) -> bool:
@@ -470,13 +470,14 @@ def prove_held(opened: Session, photos: Photos, export: Export, rows: list[Takeo
     for row in rows:
         try:
             path = paths.held_copy_at(photos, row.held_path or "", export_name(export))
+            if paths.inbox_entry_absent(photos, path):
+                continue
             identity = paths.inbox_identity(photos, path)
-        except FileNotFoundError:
-            identity = None
         except (paths.NotAHeldCopy, paths.OutsideRoot) as error:
             raise Refused("held_differs") from error
-        if identity is not None:
-            prover.proof.files[path] = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
+        if identity is None:
+            raise Refused("held_differs")
+        prover.proof.files[path] = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
     return prover.proof
 
 
@@ -534,7 +535,7 @@ def free_held(opened: Session, photos: Photos, export: Export, now: float, repor
 
 def held_gone(photos: Photos, export: Export, row: TakeoutEntry) -> bool:
     try:
-        return paths.inbox_identity(photos, paths.held_copy_at(photos, row.held_path or "", export_name(export))) is None
+        return paths.inbox_entry_absent(photos, paths.held_copy_at(photos, row.held_path or "", export_name(export)))
     except (paths.NotAHeldCopy, paths.OutsideRoot):
         return False
 
@@ -574,6 +575,7 @@ def free_ready(opened: Session, settings: config.Settings, now: float) -> FreeRe
         except (run.StageFailed, OSError) as error:
             opened.rollback()
             report.failed += 1
+            monitoring.log("zip freeing failed", export=export_id, error=type(error).__name__)
             note_once(opened, now, "export_free_failed", f"export {export_id}", type(error).__name__)
             opened.commit()
     return report

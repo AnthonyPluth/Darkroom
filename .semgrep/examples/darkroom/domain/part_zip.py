@@ -53,3 +53,18 @@ def free_a_held_copy_without_the_proof(photos, person, export, name, identity):
 def name_a_held_copy(photos, person, export, name):
     # ok: darkroom-part-zip-one-caller
     return paths.held_copy_path(photos, person, export, name)
+
+
+def zip_gone_by_identity(photos, path):
+    # ruleid: darkroom-absence-through-entry-absent
+    return paths.inbox_identity(photos, path) is None
+
+
+def held_copy_still_there(photos, path):
+    # ruleid: darkroom-absence-through-entry-absent
+    return paths.inbox_identity(photos, path) is not None
+
+
+def zip_gone_by_entry(photos, path):
+    # ok: darkroom-absence-through-entry-absent
+    return paths.inbox_entry_absent(photos, path)

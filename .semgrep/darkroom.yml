@@ -449,6 +449,25 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py"]
 
+  - id: darkroom-absence-through-entry-absent
+    message: >-
+      paths.inbox_identity and paths.library_identity return None for a link, a hard-linked file or a folder as well as
+      for a missing one, so None is not "gone". Before the freeing journal records a part's zip or a held copy freed, it
+      must know the entry is absent: use paths.inbox_entry_absent, which opens the containing folder without following
+      links (raising when it can't) and is true only when no entry has that name (AGENTS.md, promise 2; #487).
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $M.inbox_identity(...) is None
+      - pattern: $M.library_identity(...) is None
+      - pattern: inbox_identity(...) is None
+      - pattern: library_identity(...) is None
+      - pattern: $M.inbox_identity(...) is not None
+      - pattern: $M.library_identity(...) is not None
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
   - id: darkroom-part-zip-one-caller
     message: >-
       A part's zip is freed before the 14 days, and the export's held copies at its completion, only by

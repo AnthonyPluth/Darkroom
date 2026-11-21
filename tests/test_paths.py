@@ -1383,6 +1383,24 @@ class PartZipRemoverTests(unittest.TestCase):
             with self.subTest(relative=relative), self.assertRaises((paths.NotAHeldCopy, paths.OutsideRoot)):
                 paths.held_copy_at(self.photos, relative, "export-1")
 
+    def test_an_entry_is_absent_only_when_its_folder_opens_and_no_entry_has_its_name(self):
+        self.assertFalse(paths.inbox_entry_absent(self.photos, self.zip))
+        self.assertTrue(paths.inbox_entry_absent(self.photos, self.export / "absent.zip"))
+        (self.export / "link.zip").symlink_to(self.zip)
+        os.link(self.zip, self.export / "twin.zip")
+        (self.export / "folder.zip").mkdir()
+        for name in ("link.zip", "twin.zip", "folder.zip"):
+            with self.subTest(name=name):
+                self.assertFalse(paths.inbox_entry_absent(self.photos, self.export / name))
+                self.assertIsNone(paths.inbox_identity(self.photos, self.export / name))
+        away = self.export.with_name("away")
+        self.export.rename(away)
+        with self.assertRaises(FileNotFoundError):
+            paths.inbox_entry_absent(self.photos, self.export / "absent.zip")
+        self.export.symlink_to(away, target_is_directory=True)
+        with self.assertRaises(paths.OutsideRoot):
+            paths.inbox_entry_absent(self.photos, self.export / "absent.zip")
+
     def test_fingerprints_and_identities_refuse_links(self):
         digest, identity = paths.inbox_fingerprint(self.photos, self.zip)
         self.assertEqual((digest, identity), (hashlib.sha1(b"a made-up part", usedforsecurity=False).hexdigest(), self.identity(self.zip)))

@@ -2061,6 +2061,11 @@ def plain_identity(folder: int, name: str) -> Identity | None:
     return None if found is None or not plain_file(found) else file_identity(found)
 
 
+def inbox_entry_absent(photos: Photos, path: Path) -> bool:
+    with inbox_folder(photos, path.parent, create=False) as folder:
+        return entry_at(path.name, folder) is None
+
+
 def inbox_identity(photos: Photos, path: Path) -> Identity | None:
     with inbox_folder(photos, path.parent, create=False) as folder:
         return plain_identity(folder, path.name)
