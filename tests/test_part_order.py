@@ -2,7 +2,9 @@ import contextlib
 import dataclasses
 import hashlib
 import itertools
+import os
 import random
+import re
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -36,6 +38,7 @@ NEAR = {"offset": "+02:00", "make": "Apple", "model": "iPhone 11"}
 ALBUM_COPIES = (("IMG_3001.JPG", 0, 3, None), ("IMG_3002.JPG", 2, 1, 4))
 LONG_NAME = "a_made_up_long_file_name_from_a_camera_roll_0042.JPG"
 VIDEO = "IMG_6101.MOV"
+SUFFIXED = re.compile(r"^(?P<head>[^/]+/google-only/(?:[^/]+/)*[^/]+)~(?P<tag>[0-9a-f]{8})(?P<suffix>\.[^./]+)$")
 
 
 def digest(path):
@@ -197,6 +200,38 @@ def columns(row, skipped, mapped=None):
                  for column in row.__table__.columns if column.name not in skipped)
 
 
+def name_collisions(files):
+    groups = {}
+    for key, sha1 in files.items():
+        found = SUFFIXED.match(key)
+        if found is not None:
+            groups.setdefault(f"{found['head']}{found['suffix']}", []).append((key, found["tag"], sha1))
+    return groups
+
+
+def settle_d7(files, records):
+    renames, collisions, problems = {}, [], []
+    for plain, suffixed in sorted(name_collisions(files).items()):
+        if plain not in files:
+            problems.append(f"{plain}: suffixed names without the plain one")
+            continue
+        members = [(plain, files[plain]), *((key, sha1) for key, _, sha1 in suffixed)]
+        problems += [f"{key}: the suffix is not its own SHA-1" for key, tag, sha1 in suffixed if not sha1.startswith(tag)]
+        if len({sha1 for _, sha1 in members}) != len(members):
+            problems.append(f"{plain}: one photo under two names")
+        head, suffix = os.path.splitext(plain)
+        for key, sha1 in members:
+            renames[key], renames[f"{key}.xmp"] = f"{head}~d7-{sha1}{suffix}", f"{head}~d7-{sha1}{suffix}.xmp"
+        collisions.append((plain, tuple(sorted(sha1 for _, sha1 in members))))
+
+    def renamed(value):
+        return renames.get(value, value) if isinstance(value, str) else value
+
+    settled = {renames.get(key, key): value for key, value in files.items()}
+    rows = {table: sorted((tuple((name, renamed(value)) for name, value in row) for row in found), key=repr) for table, found in records.items()}
+    return settled, rows, collisions, problems
+
+
 IDENTITY = {"media_items": "sha1", "dedupe_decisions": "source_path", "review_items": "decision_id"}
 
 
@@ -214,7 +249,7 @@ def compact(mine, expected):
              if mine["files"].get(key) != expected["files"].get(key)}
     if files:
         found["files"] = files
-    for part in ("counts", "summary", "export"):
+    for part in ("d7", "counts", "summary", "export"):
         if mine[part] != expected[part]:
             found[part] = (mine[part], expected[part])
     return found
@@ -294,7 +329,8 @@ class OrderWorld(FinishWorld):
     def snapshot(self):
         self.opened.expire_all()
         export = self.opened.execute(select(Export)).scalar_one()
-        return {"records": self.records(), "files": self.placed_files(), "counts": columns(self.the_run(), NOT_COMPARED_RUN),
+        files, records, collisions, problems = settle_d7(self.placed_files(), self.records())
+        return {"records": records, "files": files, "d7": (collisions, problems), "counts": columns(self.the_run(), NOT_COMPARED_RUN),
                 "summary": [sent for sent in self.recorder.sent if sent[0] == SUMMARY], "export": (export.status, export.stage)}
 
     def differences(self):
@@ -364,6 +400,9 @@ class EveryOrderTests(OrderCase):
                          {"IMG_1001.JPG": 1, "IMG_1003.JPG": 2, "IMG_1004-edited.JPG": 3, "IMG_1006.JPG": 4, "IMG_1007.JPG": 4, "IMG_2002.JPG": 5})
         self.assertEqual(sorted(row["source_path"].removeprefix("Takeout/Google Photos/") for row in decided if "IMG_300" in row["source_path"]),
                          [f"{YEAR}/IMG_3001.JPG", f"{YEAR}/IMG_3002.JPG"])
+        collisions, problems = expected["d7"]
+        self.assertEqual(([plain for plain, _ in collisions], problems), (["jo/google-only/2017/07/IMG_4000.JPG"], []))
+        self.assertEqual(len(collisions[0][1]), 2)
 
     def test_every_order_of_a_three_part_export_with_trash_orphans_and_cut_names_gives_whole_export_ingest(self):
         orders = list(itertools.permutations(range(1, 4)))
@@ -413,10 +452,49 @@ class BrokenVariantTests(OrderCase):
         self.assertNotEqual(broken.decision_named("IMG_1004-edited.JPG").tier, 3)
 
 
+PLAIN = "jo/google-only/2017/07/IMG_4000.JPG"
+FIRST, SECOND = "ef485f28" + "0" * 32, "2039023b" + "1" * 32
+
+
+def placed(first_plain, first=FIRST, second=SECOND, tier=5):
+    plain, other = (first, second) if first_plain else (second, first)
+    files = {PLAIN: plain, f"{PLAIN}.xmp": f"xmp-of-{plain}", f"jo/google-only/2017/07/IMG_4000~{other[:8]}.JPG": other,
+             f"jo/google-only/2017/07/IMG_4000~{other[:8]}.JPG.xmp": f"xmp-of-{other}", "jo/google-only/2017/07/IMG_2001.JPG": "c" * 40}
+    by_sha1 = {sha1: key for key, sha1 in files.items() if not key.endswith(".xmp")}
+    records = {"media_items": [(("path", by_sha1[sha1]), ("sha1", sha1)) for sha1 in (first, second)],
+               "dedupe_decisions": [(("source_path", f"{YEAR}/{name}"), ("takeout_item_id", by_sha1.get(sha1)), ("tier", tier))
+                                    for name, sha1 in (("IMG_4000(1).JPG", FIRST), ("IMG_4000.JPG", second))]}
+    return files, records
+
+
+class D7Tests(unittest.TestCase):
+    def test_only_which_of_two_colliding_photos_has_the_plain_name_is_accepted(self):
+        self.assertNotEqual(placed(True), placed(False))
+        self.assertEqual(settle_d7(*placed(True)), settle_d7(*placed(False)))
+        self.assertEqual(settle_d7(*placed(True))[2:], ([(PLAIN, tuple(sorted((FIRST, SECOND))))], []))
+
+    def test_a_changed_file_a_lost_photo_or_a_changed_tier_still_differs(self):
+        files, records = placed(False)
+        changed = {key: ("d" * 40 if key.endswith("~ef485f28.JPG.xmp") else value) for key, value in files.items()}
+        self.assertNotEqual(settle_d7(changed, records), settle_d7(*placed(True)))
+        lost = {key: value for key, value in files.items() if "~" not in key}
+        self.assertNotEqual(settle_d7(lost, records), settle_d7(*placed(True)))
+        self.assertNotEqual(settle_d7(*placed(False, tier=4)), settle_d7(*placed(True)))
+        other = "9" * 40
+        self.assertNotEqual(settle_d7(*placed(False, second=other)), settle_d7(*placed(True)))
+
+    def test_suffixed_names_without_the_plain_one_or_with_a_foreign_suffix_are_problems(self):
+        files, records = placed(True)
+        alone = {key: value for key, value in files.items() if not key.startswith(PLAIN)}
+        self.assertEqual(settle_d7(alone, records)[3], [f"{PLAIN}: suffixed names without the plain one"])
+        foreign = {key.replace("~2039023b", "~0badf00d"): value for key, value in files.items()}
+        self.assertEqual(settle_d7(foreign, records)[3], ["jo/google-only/2017/07/IMG_4000~0badf00d.JPG: the suffix is not its own SHA-1"])
+
+
 def apart_from(snapshot, name):
     return {"records": {table: [row for row in rows if name not in repr(row)] for table, rows in snapshot["records"].items()},
             "files": {key: value for key, value in snapshot["files"].items() if name not in key},
-            "counts": tuple(pair for pair in snapshot["counts"] if pair[0] != "missing_gps"), "export": snapshot["export"]}
+            "counts": tuple(pair for pair in snapshot["counts"] if pair[0] != "missing_gps"), "export": snapshot["export"], "d7": snapshot["d7"]}
 
 
 class LivePhotoDifferenceTests(OrderCase):
