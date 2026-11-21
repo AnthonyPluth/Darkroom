@@ -330,6 +330,15 @@ class FinishTests(DownloadCase):
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
 
+    def test_a_part_queued_mid_download_already_has_the_export_folder_recorded(self):
+        job = self.claim()
+        self.attempt(job, 1)
+        self.part_done(job, 1, "takeout-001.zip")
+        status, _, _, inbox = self.export_row()
+        self.assertEqual((status, Path(inbox)), ("downloading", self.folder()))
+        with db.session(self.engine) as opened:
+            self.assertEqual([part.ingest_state for part in exports.parts_of(opened, self.export)], ["queued", "not_queued"])
+
     def test_an_export_with_a_part_left_is_not_finished(self):
         job = self.claim()
         self.attempt(job, 1)
@@ -385,7 +394,7 @@ class RetryTests(DownloadCase):
         with db.session(self.engine) as opened:
             downloads.finish(opened, self.settings, last, NOW + 3 * DAY)
             browser_jobs.done(opened, last, {}, NOW + 3 * DAY)
-        self.assertEqual(self.export_row()[:3], ("downloaded", 2, "queued"))
+        self.assertEqual(self.export_row()[:3], ("downloaded", 2, None))
 
     def test_a_complete_export_whose_job_failed_is_finished_even_after_it_expires(self):
         late = {"past its expiry": listed(), "listed as expired": exports.Listed("g-1", NOW - 600, "expired", None, ())}
@@ -403,7 +412,7 @@ class RetryTests(DownloadCase):
                 last = self.claim(NOW + 8 * DAY)
                 with db.session(self.engine) as opened:
                     downloads.finish(opened, self.settings, last, NOW + 8 * DAY)
-                self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+                self.assertEqual(self.export_row()[:3], ("downloaded", 0, None))
 
     def test_jobs_that_fail_before_any_attempt_use_no_tries_and_are_retried(self):
         for day in range(4):
@@ -690,7 +699,7 @@ class RetryFailedTests(DownloadCase):
         again = self.claim(NOW + DAY)
         with db.session(self.engine) as opened:
             downloads.finish(opened, self.settings, again, NOW + DAY)
-        self.assertEqual(self.export_row()[:3], ("downloaded", 0, "queued"))
+        self.assertEqual(self.export_row()[:3], ("downloaded", 0, None))
 
     def test_a_second_press_changes_nothing_and_queues_no_second_job(self):
         self.fail_part_two()

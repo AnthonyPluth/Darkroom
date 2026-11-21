@@ -744,6 +744,19 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.kind == "failure")).scalars().all()), 3)
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["failed"] * 3)
 
+    def test_a_part_adopted_mid_download_is_read_from_the_export_folder_and_ingested(self):
+        export = self.world.create(self.world.scenario, status="downloading", queue=False)
+        folder = self.world.photos.export_tree("jo", f"export-{export.id}")
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        (self.world.photos.inbox("jo") / "google-123").rename(folder)
+        found = self.world.opened.get(Export, export.id)
+        found.inbox_dir = None
+        self.world.opened.commit()
+        self.assertEqual(run.route_pending(self.world.opened, self.world.settings, NOW), [export.id])
+        self.assertEqual(self.world.opened.get(Export, export.id).inbox_dir, str(folder))
+        self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
+
     def test_the_import_tick_runs_queued_parts(self):
         from darkroom.server import jobs
 

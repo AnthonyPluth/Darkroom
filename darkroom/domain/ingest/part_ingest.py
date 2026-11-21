@@ -58,7 +58,7 @@ class Target:
 
 
 def queue(opened: Session, photos: Photos | None, export: Export, part: ExportPart, now: float) -> None:
-    if run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
+    if export.inbox_dir is not None and run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
         part.ingest_state, part.ingest_queued_at = QUEUED, now
 
 

@@ -265,6 +265,7 @@ def part_done(opened: Session, settings: Settings, job_id: int, number: int, fil
     part.status = "done"
     part.filename = filename
     part.bytes_done = size
+    export.inbox_dir = str(path.parent)
     part_ingest.queue(opened, Photos(settings.photos_root), export, part, now)
     events.record(opened, now, "export_part_downloaded", str(export.id), f"part {number}")
     return outcome(part, True, False)
