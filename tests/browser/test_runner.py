@@ -890,7 +890,7 @@ class ClientTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         socket_path = Path(folder.name) / "worker-api.sock"
         server = socketserver.UnixStreamServer(str(socket_path), Odd)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -917,7 +917,7 @@ class EarlyAnswerTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         socket_path = Path(folder.name) / "worker-api.sock"
         server = socketserver.UnixStreamServer(str(socket_path), Early)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)

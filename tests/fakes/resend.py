@@ -57,7 +57,7 @@ class FakeResend:
 
         self.server = ThreadingHTTPServer((HOST, 0), Handler)
         self.server.daemon_threads = True
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         test.addCleanup(self.server.server_close)
         test.addCleanup(self.server.shutdown)
         self.url = f"http://{HOST}:{self.server.server_address[1]}{PATH}"

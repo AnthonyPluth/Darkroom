@@ -30,7 +30,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 libfaketime novnc
       - uses: ./.github/actions/setup-python-poetry   # zizmor: ignore[self-repository] -- GitHub's documented form for a local action
       - name: Tests (parallel) with coverage
-        run: poetry run unittest-parallel -t . -s tests -j 4 --coverage --coverage-rcfile pyproject.toml
+        run: poetry run unittest-parallel -t . -s tests --level class -j 4 --coverage --coverage-rcfile pyproject.toml
       - name: Coverage floor (fleet coverage-floor, [tool.fleet.coverage] in pyproject.toml)
         run: |
           poetry run coverage json -q -o coverage.json

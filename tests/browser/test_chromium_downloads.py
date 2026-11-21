@@ -122,7 +122,7 @@ class ChromiumWorld(unittest.TestCase):
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(folder / "cert.pem", folder / "key.pem")
         server.socket = context.wrap_socket(server.socket, server_side=True)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server.server_address[1]
@@ -268,7 +268,7 @@ class SlowGoogle(BaseHTTPRequestHandler):
 class SlowGoogleHeaderTests(unittest.TestCase):
     def setUp(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), SlowGoogle)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         self.port = server.server_address[1]

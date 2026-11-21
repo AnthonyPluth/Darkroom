@@ -233,7 +233,7 @@ class HostProbeTests(unittest.TestCase):
                 return None
 
         server = http.server.HTTPServer(("127.0.0.1", 0), Answer)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         self.assertEqual(host_network.worker_route_status("127.0.0.1", server.server_address[1]), 404)

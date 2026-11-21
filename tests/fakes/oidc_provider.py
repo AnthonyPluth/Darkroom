@@ -90,7 +90,7 @@ class FakeProvider:
                 self.reply(answer, status)
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
     @property
     def base(self) -> str:
