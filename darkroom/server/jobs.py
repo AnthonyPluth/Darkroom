@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
 from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
-from darkroom.domain.ingest import cleanup, part_ingest, run
+from darkroom.domain.ingest import cleanup, finish_export, part_ingest, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
 from darkroom.storage import db, stored_settings
@@ -305,6 +305,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         with db.session(engine) as opened:
             run.run_waiting(opened, current, at)
             part_ingest.run_queued(opened, current, at)
+            finish_export.run_ready(opened, current, at)
 
     def clean_inbox(at: float) -> None:
         with db.session(engine) as opened:

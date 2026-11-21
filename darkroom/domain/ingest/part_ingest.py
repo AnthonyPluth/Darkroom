@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
@@ -206,6 +206,23 @@ class Ingest:
         self.measured.clear()
         self.used.clear()
 
+    def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
+        return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
+
+    def sidecar_state(self, entry: TakeoutEntry) -> run.SidecarState:
+        archive, infos = self.archive_of(entry.part_number)
+        info = infos.get(entry.name)
+        if info is None:
+            return "unreadable"
+        try:
+            with archive.open(info) as handle:
+                decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+        except part_reader.READ_ERRORS:
+            return "unreadable"
+        if decoded is None or sidecar.parse(decoded.text) is None:
+            return "unreadable"
+        return "repaired" if decoded.repaired else "read"
+
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
         if found is None:
@@ -333,7 +350,7 @@ class Ingest:
             fields = self.light_fields(entry)
         return TakeoutItem(self.scratch.get(entry.id, Path(entry.name)), entry.sha1 or "", (), None), fields
 
-    def place_decided(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+    def place_decided(self, entry: TakeoutEntry, row: DedupeDecision, named: Path | None = None) -> None:
         self.lock()
         if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id)):
             self.finish_entry(entry, row)
@@ -344,8 +361,8 @@ class Ingest:
             self.commit()
             return
         try:
-            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name))], self.tools.read,
-                               self.tools.write)
+            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
+                               self.tools.read, self.tools.write)
         except Exception as error:
             self.opened.rollback()
             self.fail(entry, "place", error)

@@ -119,6 +119,11 @@ def failure(subject: str) -> Wording:
     return Wording("Darkroom needs a look", f"{subject} failed. Open Darkroom for details.")
 
 
+def export_unfinished(export: str, held: int) -> Wording:
+    return Wording("Darkroom needs a look", f"Export {export} did not download in full, so {counted(held, 'item')} from the parts that did arrive "
+                   "still wait for the rest. Darkroom keeps them and the downloaded files.")
+
+
 def syncthing_down() -> Wording:
     return Wording(TITLES["syncthing_down"],
                    "Darkroom's Syncthing has not answered for over an hour, so nothing is reaching the Pixels. Darkroom keeps restarting it, and placing and pruning carry on; "
