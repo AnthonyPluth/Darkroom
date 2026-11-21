@@ -616,6 +616,15 @@ class PartQueueingTests(unittest.TestCase):
         self.assertEqual(self.parts(export), [(1, "queued", NOW), (2, "queued", NOW)])
         self.assertEqual(export.ingest_route, run.PER_PART)
 
+    def test_the_command_line_registers_a_hand_dropped_export_on_the_whole_route(self):
+        self.world.tiered_export(self.world.photos.manual_inbox("jo"))
+        self.world.index_all()
+        person = self.world.opened.get(Person, self.world.ids["jo"])
+        (export,) = unpack.inspect_manual_inbox(self.world.opened, self.world.photos, person, NOW, None, run.WHOLE)
+        self.assertEqual((export.ingest_route, self.parts(export)), ("whole", [(1, "not_queued", None), (2, "not_queued", None)]))
+        self.assertEqual(self.world.run_import(export).status, "done")
+        self.assertEqual(self.world.opened.get(Export, export.id).ingest_route, "whole")
+
     def test_a_whole_export_import_still_works_on_an_export_whose_route_is_whole(self):
         export = self.world.hand_dropped()
         self.assertEqual(self.parts(export), [(1, "not_queued", None), (2, "not_queued", None)])

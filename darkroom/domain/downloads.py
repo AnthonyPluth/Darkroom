@@ -52,6 +52,9 @@ class CannotRetry(ValueError):
     pass
 
 
+FINISHED_BY_INGEST = ("downloaded", "importing", "imported")
+
+
 def folder_name(export: Export) -> str:
     return f"export-{export.id}"
 
@@ -291,6 +294,10 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
 
 
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
+    export = job_export(opened, job_id)
+    if export.status in FINISHED_BY_INGEST and exports.all_done(opened, export) and run.route_of(opened, Photos(settings.photos_root), export) == run.PER_PART:
+        alerts.close(opened, expiry_key(export.id), now)
+        return export
     export = waiting_export(opened, job_id)
     if not exports.all_done(opened, export):
         raise Refused(f"not every part of export {export.id} is downloaded")

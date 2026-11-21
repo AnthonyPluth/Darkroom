@@ -339,6 +339,20 @@ class FinishTests(DownloadCase):
         with db.session(self.engine) as opened:
             self.assertEqual([part.ingest_state for part in exports.parts_of(opened, self.export)], ["queued", "not_queued"])
 
+    def test_the_job_done_after_the_tick_already_imported_the_export_leaves_it_imported(self):
+        job = self.claim()
+        for number in (1, 2):
+            self.attempt(job, number)
+            self.part_done(job, number, f"takeout-00{number}.zip")
+        with db.session(self.engine) as opened:
+            opened.get(Export, self.export).status = "imported"
+        with db.session(self.engine) as opened:
+            export = downloads.finish(opened, self.settings, job, NOW)
+            self.assertEqual(export.status, "imported")
+            browser_jobs.done(opened, job, {}, NOW)
+        self.assertEqual(self.export_row()[0], "imported")
+        self.assertEqual(self.download_jobs(), [(self.export, "done")])
+
     def test_an_export_with_a_part_left_is_not_finished(self):
         job = self.claim()
         self.attempt(job, 1)
