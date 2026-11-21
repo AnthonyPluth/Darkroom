@@ -259,7 +259,7 @@ The owner has one export running now. At deploy:
 - An export whose stage is `unpacked` or later, or that has a staging folder, finishes the old way, and cleanup treats it as today.
 - An export still downloading, or downloaded with stage `queued` or none and no staging folder, switches to per-part: its parts already `done` are queued at once and ingested in any order, and the rest as they arrive. Its zips stay to the 14-day rule (phase 1).
 - An export marked `failed` before unpacking can be retried as per-part.
-- No schema change touches the old path's rows; the migration only adds. Rolling back means stopping the import tick, then running the old code: a per-part export it finds `downloading` it leaves alone, and one `downloaded` it would unpack in full from the zips, which phase 1 keeps. The ledger rows stay and the old code ignores them. Phase 2 (freed zips) has no rollback to whole-export ingest for its exports, which is one reason it waits for the owner.
+- No schema change touches the old path's rows; the migration only adds. Rolling back means stopping the import tick, then running the old code: a per-part export it finds `downloading` it leaves alone, and one `downloaded` it would unpack in full from the zips, which phase 1 keeps. The ledger rows stay and the old code ignores them. Phase 2 (freed zips, #487) has no rollback to whole-export ingest for its exports, which is one reason it waited for the owner's amendment of promise 2.
 
 Which way the running export goes depends on its stage on the server, which this design can't see (section 11).
 

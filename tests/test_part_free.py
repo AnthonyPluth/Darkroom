@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import os
 import unittest
@@ -10,7 +11,7 @@ from darkroom.domain import exports
 from darkroom.domain.ingest import part_free, part_ingest, run
 from darkroom.storage import paths
 from darkroom.storage.models import (
-    DedupeDecision, GoogleAccount, Event, Export, ExportPart, ImportRun, ManagedImportIntent, MediaItem, ReviewItem, TakeoutEntry, TakeoutSidecar,
+    DedupeDecision, GoogleAccount, Person, Event, Export, ExportPart, ImportRun, ManagedImportIntent, MediaItem, ReviewItem, TakeoutEntry, TakeoutSidecar,
 )
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -396,11 +397,9 @@ class ProofDetailTests(unittest.TestCase):
         self.kept_for("export_busy")
 
     def test_an_export_without_an_owner_fails_the_attempt_and_frees_nothing(self):
-        account = self.world.opened.get(GoogleAccount, self.world.account)
-        self.world.change(account, default_person_id=None)
-        self.world.change(self.world.opened.get(Export, self.export.id), owner_person_id=None)
         zips = self.world.zips()
-        report = self.world.free()
+        with mock.patch.object(part_free.run, "owner_person", side_effect=run.StageFailed("the export's account has no default person")):
+            report = self.world.free()
         self.assertEqual((report.failed, report.parts, self.world.zips()), (1, 0, zips))
         self.assertEqual(self.world.kind_of_events("export_free_failed"), ["StageFailed"])
 
@@ -428,6 +427,234 @@ class ProofDetailTests(unittest.TestCase):
         with self.assertRaises(part_free.Refused) as refused:
             part_free.hashed(self.world.photos, found)
         self.assertEqual(refused.exception.reason, "hash_differs")
+
+
+class ClauseTests(unittest.TestCase):
+    def setUp(self):
+        self.world = FreeWorld(self)
+        self.export = self.world.made()
+
+    def found(self):
+        export = self.world.opened.get(Export, self.export.id)
+        return export, run.owner_person(self.world.opened, export)
+
+    def refused(self, reason, number=1, require_held=False):
+        before = self.world.zips()
+        export, owner = self.found()
+        try:
+            part_free.prove_part(self.world.opened, self.world.photos, owner, export, self.world.part(self.export, number), NOW + TICK, hashing=True,
+                                 require_held=require_held)
+        except part_free.Refused as refused:
+            found = refused.reason
+        else:
+            found = None
+        finally:
+            self.world.opened.rollback()
+        self.assertEqual((found, self.world.zips(), dict(self.world.states())[number]), (reason, before, None))
+
+    @contextlib.contextmanager
+    def changed(self, row, **values):
+        old = {key: getattr(row, key) for key in values}
+        self.world.change(row, **values)
+        try:
+            yield
+        finally:
+            self.world.change(row, **old)
+
+    def decision(self, name):
+        return self.world.opened.get(DedupeDecision, self.world.entry(name).decision_id)
+
+    def test_each_clause_of_a_placed_entrys_proof_refuses_on_its_own(self):
+        placed, decision = self.world.entry(PLACED), self.decision(PLACED)
+        item = self.world.opened.get(MediaItem, placed.item_id)
+        cases = [
+            (placed, {"decision_id": None}, "decision_unsafe"),
+            (decision, {"reversed_at": NOW}, "decision_unsafe"),
+            (decision, {"decided_by": "owner"}, "decision_unsafe"),
+            (decision, {"tier": 4}, "decision_unsafe"),
+            (decision, {"takeout_item_id": None}, "decision_unsafe"),
+            (item, {"source": "phone"}, "placed_differs"),
+            (item, {"sha1": "0" * 40}, "placed_differs"),
+            (placed, {"sha1": None}, "placed_differs"),
+            (item, {"person_id": self.world.ids["sam"]}, "placed_differs"),
+            (item, {"path": item.path.replace("google-only", "originals", 1)}, "file_missing"),
+        ]
+        for row, values, reason in cases:
+            with self.subTest(values=values), self.changed(row, **values):
+                self.refused(reason)
+
+    def test_a_placed_file_in_another_persons_folder_refuses(self):
+        item = self.world.opened.get(MediaItem, self.world.entry(PLACED).item_id)
+        sam = self.world.opened.get(Person, self.world.ids["sam"])
+        moved = item.path.replace("jo/", f"{sam.slug}/", 1)
+        (self.world.root / moved).parent.mkdir(parents=True, exist_ok=True)
+        os.link(self.world.root / item.path, self.world.root / moved)
+        (self.world.root / item.path).unlink()
+        with self.changed(item, path=moved):
+            self.refused("placed_differs")
+
+    def test_a_placed_file_the_identity_check_cannot_reach_refuses(self):
+        with mock.patch.object(part_free.paths, "library_identity", side_effect=paths.LinkRefused("made-up link")):
+            self.refused("changed")
+        with mock.patch.object(part_free.paths, "plain_fingerprint", side_effect=paths.LinkRefused("made-up link")):
+            self.refused("changed")
+
+    def test_each_clause_of_a_review_entrys_proof_refuses_on_its_own(self):
+        reviewed = self.world.entry(REVIEWED)
+        review = self.world.opened.execute(select(ReviewItem).where(ReviewItem.decision_id == reviewed.decision_id)).scalar_one()
+        for row, values, reason in [(reviewed, {"decision_id": None}, "review_differs"), (review, {"hold_sha1": None}, "review_differs"),
+                                    (review, {"hold_sha1": "0" * 40}, "review_differs"), (review, {"hold_path": "_inbox/jo/held/x/1.jpg"}, "file_missing")]:
+            with self.subTest(values=values), self.changed(row, **values):
+                self.refused(reason, number=2)
+
+    def test_each_clause_of_a_skipped_entrys_proof_refuses_on_its_own(self):
+        exact, decision = self.world.entry(EXACT), self.decision(EXACT)
+        cases = [
+            (exact, {"decision_id": None}, "decision_unsafe"),
+            (decision, {"decided_by": "owner"}, "decision_unsafe"),
+            (decision, {"reversed_at": NOW}, "decision_unsafe"),
+            (decision, {"tier": 4}, "decision_unsafe"),
+            (decision, {"tier": 5}, "decision_unsafe"),
+            (decision, {"matched_item_id": None}, "decision_unsafe"),
+            (exact, {"metadata_pending": True, "sidecar_entry_id": None}, "metadata_unrecorded"),
+        ]
+        for row, values, reason in cases:
+            with self.subTest(values=values), self.changed(row, **values):
+                self.refused(reason)
+
+    def test_a_skipped_entry_whose_matched_item_was_deleted_refuses(self):
+        decision = self.decision(EXACT)
+        self.world.opened.delete(self.world.opened.get(MediaItem, decision.matched_item_id))
+        self.world.opened.commit()
+        self.refused("decision_unsafe")
+
+    def test_each_clause_of_a_held_entrys_proof_refuses_on_its_own(self):
+        waiting = self.world.entry(TIER_2)
+        self.refused("held_missing", require_held=True)
+        with self.changed(waiting, held_path=f"_inbox/jo/held/{EXPORT}/{waiting.id}.jpg", sha1=None):
+            self.refused("held_missing", require_held=True)
+        with self.changed(waiting, held_path=f"_inbox/jo/held/export-9/{waiting.id}.jpg"):
+            self.refused("held_differs")
+        with self.changed(waiting, held_path=f"_inbox/jo/held/{EXPORT}/{waiting.id}.jpg"):
+            self.refused("file_missing")
+
+    def test_each_clause_of_a_copys_proof_refuses_on_its_own(self):
+        root, copy = self.world.entry(PLACED), self.world.entry("Photos from 2019/IMG_5002.JPG")
+        sidecar = self.world.opened.get(TakeoutEntry, root.sidecar_entry_id)
+        failed = self.world.entry(EXACT)
+        other = Export(account_id=self.world.account, kind="incremental", google_id="google-other", created_at=NOW - 3 * DAY, status="imported")
+        self.world.opened.add(other)
+        self.world.opened.flush()
+        self.world.opened.add(ExportPart(export_id=other.id, number=1, filename="other.zip", status="done"))
+        self.world.opened.flush()
+        elsewhere = TakeoutEntry(export_id=other.id, part_number=1, name="Takeout/elsewhere.jpg", kind="media", bytes=1, crc32=1, outcome="placed", sha1=root.sha1,
+                                 listed_at=NOW)
+        self.world.opened.add(elsewhere)
+        self.world.opened.commit()
+        cases = [
+            ({"copy_of_id": None}, "undecided_entry"),
+            ({"copy_of_id": elsewhere.id, "sha1": root.sha1}, "undecided_entry"),
+            ({"copy_of_id": root.id, "sha1": "0" * 40}, "undecided_entry"),
+            ({"copy_of_id": copy.id, "sha1": copy.sha1}, "undecided_entry"),
+        ]
+        for values, reason in cases:
+            with self.subTest(values=values), self.changed(copy, outcome="copy", **values):
+                self.refused(reason, number=2)
+        with self.changed(sidecar, sha1=root.sha1), self.changed(copy, outcome="copy", copy_of_id=sidecar.id, sha1=root.sha1):
+            self.refused("undecided_entry", number=2)
+        with self.changed(failed, outcome="failed"), self.changed(copy, outcome="copy", copy_of_id=failed.id, sha1=failed.sha1):
+            self.refused("failed_entry", number=2)
+        with self.changed(root, sha1=None), self.changed(copy, outcome="copy", copy_of_id=root.id, sha1=None):
+            self.refused("undecided_entry", number=2)
+
+    def test_each_clause_about_the_parts_other_entries_refuses_on_its_own(self):
+        sidecar = self.world.opened.get(TakeoutEntry, self.world.entry(PLACED).sidecar_entry_id)
+        page = self.world.entry_named(ARCHIVE_PAGE)
+        for row, values, reason in [(sidecar, {"outcome": "listed"}, "undecided_entry"), (page, {"outcome": "listed"}, "undecided_entry"),
+                                    (page, {"name": "Takeout/notes/"}, "other_kept"), (self.world.entry(EXACT), {"captured_utc": None}, "measure_pending"),
+                                    (self.world.entry(TIER_2), {"outcome": "listed"}, "undecided_entry")]:
+            with self.subTest(values=values), self.changed(row, **values):
+                self.refused(reason)
+        stored = self.world.opened.execute(select(TakeoutSidecar).where(TakeoutSidecar.entry_id == sidecar.id)).scalar_one()
+        with self.changed(stored, text=stored.text.replace("photoTakenTime", "photoTakenTimE")):
+            self.refused("sidecar_unrecorded")
+        self.world.opened.delete(stored)
+        self.world.opened.commit()
+        self.refused("sidecar_unrecorded")
+
+    def test_each_clause_about_the_part_and_its_export_refuses_on_its_own(self):
+        part, export = self.world.part(self.export, 1), self.world.opened.get(Export, self.export.id)
+        for row, values, reason in [(part, {"ingested_at": None}, "not_settled"), (part, {"status": "failed"}, "not_settled"),
+                                    (part, {"ingest_state": "refused"}, "not_settled"), (part, {"filename": "notes.txt"}, "not_export_folder"),
+                                    (export, {"stage": "deduped"}, "export_busy"), (export, {"status": "imported"}, "export_busy"),
+                                    (export, {"status": "expired"}, "export_busy")]:
+            with self.subTest(values=values), self.changed(row, **values):
+                self.refused(reason)
+
+    def test_each_clause_about_the_zips_listing_refuses_on_its_own(self):
+        zipped = self.world.zip_of(1)
+        data = zipped.read_bytes()
+        zipped.write_bytes(b"\0" * len(data))
+        self.refused("listing_differs")
+        zipped.write_bytes(data)
+        with mock.patch.object(part_free.part_reader, "entry_listing", side_effect=part_free.part_reader.PartRefused("duplicate_name", "made-up")):
+            self.refused("listing_differs")
+        page = self.world.entry_named(ARCHIVE_PAGE)
+        with self.changed(page, crc32=(page.crc32 + 1) % 2**32):
+            self.refused("unknown_entry")
+
+    def test_the_held_stores_own_clauses_refuse_on_their_own(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        waiting = self.world.entry(TIER_2)
+        export = self.world.opened.get(Export, self.export.id)
+        with self.changed(export, status="downloading"), self.assertRaises(part_free.Refused) as refused:
+            part_free.prove_held(self.world.opened, self.world.photos, export, [waiting], hashing=True)
+        self.assertEqual(refused.exception.reason, "export_busy")
+        self.world.opened.rollback()
+        found = part_free.prove_held(self.world.opened, self.world.photos, export, [self.world.entry(TIER_2)], hashing=True)
+        self.world.opened.rollback()
+        self.assertEqual((len(found.ready), found.kept), (1, {}))
+        with self.changed(self.world.entry(TIER_2), metadata_pending=True):
+            found = part_free.prove_held(self.world.opened, self.world.photos, export, [self.world.entry(TIER_2)], hashing=True)
+            self.world.opened.rollback()
+            self.assertEqual((found.ready, found.kept), ([], {"metadata_unrecorded": 1}))
+        marker = self.world.placed_file().with_name(f"{paths.PLACING}0123456789abcdef.json")
+        marker.write_bytes(b"{}")
+        self.world.free(at=NOW + 3 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store()), (None, held))
+        marker.unlink()
+        with mock.patch.object(part_free.paths, "remove_held_copy", side_effect=paths.NotAHeldCopy("made-up change")):
+            self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store()), (None, held))
+        self.assertIn("held copies: changed", self.world.kind_of_events("export_held_kept"))
+        self.world.free(at=NOW + 5 * TICK)
+        self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store()), ("freed", {}))
+
+    def test_a_held_copy_with_no_decision_of_its_own_is_kept_and_counted_and_the_others_still_go(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(TIER_2), decision_id=None):
+            report = self.world.free(at=NOW + 3 * TICK)
+        self.assertEqual((report.held, report.kept, self.world.held_store()), (0, 1, held))
+        self.assertEqual(self.world.kind_of_events("export_held_kept"), ["1 held copies: decision_unsafe"])
+
+    def test_the_held_store_writers_own_refusals(self):
+        waiting = self.world.entry(TIER_2)
+        rows = part_free.part_rows(self.world.opened, self.world.opened.get(Export, self.export.id), self.world.part(self.export, 2))
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.source_of(waiting, rows, 2)
+        self.assertEqual(refused.exception.reason, "held_missing")
+        with self.assertRaises(part_free.Refused) as refused:
+            list(part_free.entry_chunks(None, {}, waiting, 1))
+        self.assertEqual(refused.exception.reason, "listing_differs")
+        self.world.zip_of(1).unlink()
+        export, owner = self.found()
+        with self.assertRaises(part_free.Refused) as refused:
+            part_free.hold_waiting(self.world.opened, self.world.photos, owner, export, self.world.part(self.export, 1))
+        self.assertEqual(refused.exception.reason, "zip_missing")
 
 
 class SwappedFileTests(unittest.TestCase):

@@ -376,9 +376,8 @@ def note_once(opened: Session, now: float, kind: str, subject: str, detail: str)
 
 
 def kept(opened: Session, export: Export, subject: str, kind: str, reason: str, now: float) -> None:
-    if reason in WORTH_AN_EVENT:
+    if note_once(opened, now, kind, f"export {export.id}", f"{subject}: {reason}") or reason in WORTH_AN_EVENT:
         monitoring.log("zip kept", export=export.id, what=subject, reason=reason)
-        note_once(opened, now, kind, f"export {export.id}", f"{subject}: {reason}")
 
 
 def zip_gone(photos: Photos, person: Person, export: Export, part: ExportPart) -> bool:
