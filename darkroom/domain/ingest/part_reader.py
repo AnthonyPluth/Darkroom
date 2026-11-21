@@ -385,7 +385,7 @@ def sweep(photos: Photos, person: Person, export: Export) -> None:
 def read_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, each_batch: EachBatch | None = None,
               batch_files: int = BATCH_FILES, batch_bytes: int = BATCH_BYTES) -> PartRead:
     read = PartRead()
-    path = unpack.part_path(export, part, photos.export_tree(person.slug, unpack.staging_name(export)))
+    path = unpack.part_path(export, part, photos, person)
     folder = unpack.staging_name(export)
     try:
         with unpack.open_part(photos, path, part.number) as handle, zip_of(handle, path, part.number) as archive:

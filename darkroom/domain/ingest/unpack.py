@@ -54,8 +54,19 @@ def staging_dir(photos: Photos, person: Person, export: Export) -> Path:
     return photos.staging(person.slug, staging_name(export))
 
 
-def part_path(export: Export, part: ExportPart, folder: Path | None = None) -> Path:
-    return (Path(export.inbox_dir) if export.inbox_dir else folder or Path("")) / (part.filename or "")
+def part_folder(export: Export, photos: Photos | None = None, person: Person | None = None) -> Path:
+    if export.inbox_dir:
+        return Path(export.inbox_dir)
+    if photos is None or person is None:
+        return Path("")
+    try:
+        return photos.export_tree(person.slug, staging_name(export))
+    except paths.OutsideRoot:
+        return Path("")
+
+
+def part_path(export: Export, part: ExportPart, photos: Photos | None = None, person: Person | None = None) -> Path:
+    return part_folder(export, photos, person) / (part.filename or "")
 
 
 def check_parts(photos: Photos, export: Export, parts: list[ExportPart]) -> list[tuple[ExportPart, Path]]:
