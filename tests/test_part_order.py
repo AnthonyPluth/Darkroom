@@ -197,6 +197,29 @@ def columns(row, skipped, mapped=None):
                  for column in row.__table__.columns if column.name not in skipped)
 
 
+IDENTITY = {"media_items": "sha1", "dedupe_decisions": "source_path", "review_items": "decision_id"}
+
+
+def compact(mine, expected):
+    found = {}
+    for table, column in IDENTITY.items():
+        ours = {dict(row)[column]: dict(row) for row in mine["records"][table]}
+        theirs = {dict(row)[column]: dict(row) for row in expected["records"][table]}
+        for key in sorted(set(ours) | set(theirs), key=repr):
+            left, right = ours.get(key, {}), theirs.get(key, {})
+            changed = {name: (left.get(name), right.get(name)) for name in sorted(set(left) | set(right)) if left.get(name) != right.get(name)}
+            if changed:
+                found[f"{table} {key}"] = changed
+    files = {key: (mine["files"].get(key), expected["files"].get(key)) for key in sorted(set(mine["files"]) | set(expected["files"]))
+             if mine["files"].get(key) != expected["files"].get(key)}
+    if files:
+        found["files"] = files
+    for part in ("counts", "summary", "export"):
+        if mine[part] != expected[part]:
+            found[part] = (mine[part], expected[part])
+    return found
+
+
 class Scope:
     def __init__(self, case):
         self.case, self.cleanups = case, []
@@ -285,6 +308,11 @@ class OrderWorld(FinishWorld):
         self.opened.expire_all()
         return self.opened.execute(select(MediaItem).where(MediaItem.source == "takeout", MediaItem.path.endswith(f"/{name}", autoescape=True))).scalar_one()
 
+    def item_decided_as(self, name):
+        found = self.opened.get(MediaItem, self.decision_named(name).takeout_item_id)
+        assert found is not None
+        return found
+
     def decision_named(self, name):
         self.opened.expire_all()
         return self.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path.endswith(f"/{name}", autoescape=True))).scalar_one()
@@ -310,13 +338,18 @@ class OrderCase(unittest.TestCase):
     def check_orders(self, fixture, orders, renamed):
         expected = self.whole(fixture).snapshot()
         self.assertEqual(expected["export"], ("imported", "done"))
+        differ = {}
         for order in orders:
             with scoped(self) as scope:
                 world = self.per_part(OrderWorld(scope), fixture, order)
-                said = f"parts ingested in the order {order}"
-                self.assertEqual(world.snapshot(), expected, said)
-                self.assertEqual(world.differences(), (renamed(order), 0), said)
-                self.assertEqual(world.undecided(), set(), said)
+                found = compact(world.snapshot(), expected)
+                if world.differences() != (renamed(order), 0):
+                    found["paths_renamed, sidecars_differ"] = (world.differences(), (renamed(order), 0))
+                if world.undecided():
+                    found["undecided"] = sorted(world.undecided())
+                if found:
+                    differ[order] = found
+        self.assertEqual(differ, {}, f"{len(differ)} of {len(orders)} part orders differ from whole-export ingest (per-part, whole-export)")
         return expected
 
 
@@ -369,8 +402,8 @@ class BrokenVariantTests(OrderCase):
         with mock.patch.object(part_ingest.Ingest, "sidecar_rows", own_part_sidecars_only):
             broken = self.per_part(OrderWorld(self), self.fixture, (1, 2, 3, 4, 5))
         self.assertNotEqual(broken.snapshot(), self.twin.snapshot())
-        self.assertEqual(round(self.twin.item_named("IMG_4000(1).JPG").lat, 5), 41.0)
-        self.assertIsNone(broken.item_named("IMG_4000(1).JPG").lat)
+        self.assertEqual(round(self.twin.item_decided_as("IMG_4000(1).JPG").lat, 5), 41.0)
+        self.assertIsNone(broken.item_decided_as("IMG_4000(1).JPG").lat)
 
     def test_the_gate_fails_when_an_edited_copy_is_decided_as_an_original(self):
         with mock.patch.object(finish_export.Finish, "candidate", edits_as_originals):
