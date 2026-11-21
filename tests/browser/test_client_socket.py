@@ -66,7 +66,7 @@ def unix_app(test: unittest.TestCase, recorded: Recorded) -> Path:
     test.addCleanup(folder.cleanup)
     socket_path = Path(folder.name) / "worker-api.sock"
     server = socketserver.UnixStreamServer(str(socket_path), Answer)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     test.addCleanup(server.server_close)
     test.addCleanup(server.shutdown)

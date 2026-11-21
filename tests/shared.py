@@ -199,7 +199,7 @@ def worker_fetch(base: str, method: str, path: str, headers: dict[str, str] | No
 
 
 def serve_in_thread(test: unittest.TestCase, server: handler.ThreadingHTTPServer | handler.WorkerSocketServer) -> None:
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
 
     def stop() -> None:

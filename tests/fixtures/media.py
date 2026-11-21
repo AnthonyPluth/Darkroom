@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import random
 import shutil
@@ -15,11 +16,20 @@ pillow_heif.register_heif_opener()
 TINY_VIDEO = Path(__file__).resolve().parent / "tiny.mp4"
 
 
+TAGGED: dict[tuple[str, str, tuple[tuple[str, str], ...]], bytes] = {}
+
+
 def set_tags(path: Path, tags: dict[str, str]) -> None:
     if not tags:
         return
+    key = (path.suffix, hashlib.sha256(path.read_bytes()).hexdigest(), tuple(tags.items()))
+    tagged = TAGGED.get(key)
+    if tagged is not None:
+        path.write_bytes(tagged)
+        return
     arguments = [f"-{name}={value}" for name, value in tags.items()]
     subprocess.run(["exiftool", "-overwrite_original", "-q", *arguments, str(path)], check=True, capture_output=True)
+    TAGGED[key] = path.read_bytes()
 
 
 def exif_tags(taken: str | None, offset: str | None, gps: tuple[float, float] | None, make: str | None, model: str | None) -> dict[str, str]:
