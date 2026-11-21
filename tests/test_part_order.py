@@ -219,6 +219,7 @@ def settle_d7(files, records):
         problems += [f"{key}: the suffix is not its own SHA-1" for key, tag, sha1 in suffixed if not sha1.startswith(tag)]
         if len({sha1 for _, sha1 in members}) != len(members):
             problems.append(f"{plain}: one photo under two names")
+            continue
         head, suffix = os.path.splitext(plain)
         for key, sha1 in members:
             renames[key], renames[f"{key}.xmp"] = f"{head}~d7-{sha1}{suffix}", f"{head}~d7-{sha1}{suffix}.xmp"
@@ -238,13 +239,20 @@ IDENTITY = {"media_items": "sha1", "dedupe_decisions": "source_path", "review_it
 def compact(mine, expected):
     found = {}
     for table, column in IDENTITY.items():
-        ours = {dict(row)[column]: dict(row) for row in mine["records"][table]}
-        theirs = {dict(row)[column]: dict(row) for row in expected["records"][table]}
+        ours, theirs = {}, {}
+        for row in mine["records"][table]:
+            ours.setdefault(dict(row)[column], []).append(dict(row))
+        for row in expected["records"][table]:
+            theirs.setdefault(dict(row)[column], []).append(dict(row))
         for key in sorted(set(ours) | set(theirs), key=repr):
-            left, right = ours.get(key, {}), theirs.get(key, {})
-            changed = {name: (left.get(name), right.get(name)) for name in sorted(set(left) | set(right)) if left.get(name) != right.get(name)}
-            if changed:
-                found[f"{table} {key}"] = changed
+            left, right = ours.get(key, []), theirs.get(key, [])
+            if left == right:
+                continue
+            if len(left) == len(right) == 1:
+                found[f"{table} {key}"] = {name: (left[0].get(name), right[0].get(name)) for name in sorted(set(left[0]) | set(right[0]))
+                                           if left[0].get(name) != right[0].get(name)}
+            else:
+                found[f"{table} {key}"] = (left, right)
     files = {key: (mine["files"].get(key), expected["files"].get(key)) for key in sorted(set(mine["files"]) | set(expected["files"]))
              if mine["files"].get(key) != expected["files"].get(key)}
     if files:
@@ -253,6 +261,12 @@ def compact(mine, expected):
         if mine[part] != expected[part]:
             found[part] = (mine[part], expected[part])
     return found
+
+
+def gate(mine, expected):
+    if mine == expected:
+        return {}
+    return compact(mine, expected) or {"snapshots": (mine, expected)}
 
 
 class Scope:
@@ -378,7 +392,7 @@ class OrderCase(unittest.TestCase):
         for order in orders:
             with scoped(self) as scope:
                 world = self.per_part(OrderWorld(scope), fixture, order)
-                found = compact(world.snapshot(), expected)
+                found = gate(world.snapshot(), expected)
                 if world.differences() != (renamed(order), 0):
                     found["paths_renamed, sidecars_differ"] = (world.differences(), (renamed(order), 0))
                 if world.undecided():
@@ -465,6 +479,32 @@ def placed(first_plain, first=FIRST, second=SECOND, tier=5):
                "dedupe_decisions": [(("source_path", f"{YEAR}/{name}"), ("takeout_item_id", by_sha1.get(sha1)), ("tier", tier))
                                     for name, sha1 in (("IMG_4000(1).JPG", FIRST), ("IMG_4000.JPG", second))]}
     return files, records
+
+
+def snapshot_of(media_items):
+    return {"records": {"media_items": media_items, "dedupe_decisions": [], "review_items": []}, "files": {}, "d7": ([], []), "counts": (),
+            "summary": [], "export": ("imported", "done")}
+
+
+class GateTests(unittest.TestCase):
+    def rows(self, *paths, lat=40.7):
+        return [(("path", path), ("sha1", FIRST), ("lat", lat if number == 0 else 40.7)) for number, path in enumerate(paths)]
+
+    def test_equal_snapshots_pass_the_gate(self):
+        self.assertEqual(gate(snapshot_of(self.rows("jo/a.JPG", "sam/a.JPG")), snapshot_of(self.rows("jo/a.JPG", "sam/a.JPG"))), {})
+
+    def test_an_extra_row_sharing_a_sha1_fails_the_gate(self):
+        found = gate(snapshot_of(self.rows("jo/a.JPG", "sam/a.JPG")), snapshot_of(self.rows("jo/a.JPG")))
+        self.assertEqual(list(found), [f"media_items {FIRST}"])
+
+    def test_a_changed_column_on_one_of_two_rows_sharing_a_sha1_fails_the_gate(self):
+        found = gate(snapshot_of(self.rows("jo/a.JPG", "sam/a.JPG", lat=None)), snapshot_of(self.rows("jo/a.JPG", "sam/a.JPG")))
+        self.assertEqual(list(found), [f"media_items {FIRST}"])
+
+    def test_a_difference_compact_cannot_name_still_fails_the_gate(self):
+        mine, theirs = snapshot_of([]), snapshot_of([])
+        mine["unnamed"], theirs["unnamed"] = 1, 2
+        self.assertEqual(list(gate(mine, theirs)), ["snapshots"])
 
 
 class D7Tests(unittest.TestCase):
