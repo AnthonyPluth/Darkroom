@@ -231,6 +231,7 @@ With the dedupe index fixed while the export ingests (no phone items arriving fr
 | D4 | An export with a part that never downloads | Whole-export ingest imports nothing; per-part ingest has ingested the other parts | Owner decision 5 |
 | D5 | Timing | Photos, confirmations and Pixel prunes from tier 1 arrive days sooner; tier-2 confirmations at completion, as today | None needed |
 | D6 | Two copies of the same bytes in one folder | Whole-export assigns copies to items by sorted path (`slots_of`); per-part by arrival. Both items get the same tier and adopt the same placed file | Only the `source_path` of the second item can differ; canonicalised at completion |
+| D7 | Two different photos in one folder that collide on their placed name (found by PP-7's gate, #484: `IMG_4000.JPG` and `IMG_4000(1).JPG`) | When two different photos in one folder collide on name, per-part gives the plain name to whichever part arrived first, and whole-export gives it to a fixed photo; the other gets the `~<sha1>` suffix either way. No photo is lost, and tiers, counts and file contents must match | Accepted by the owner (#484, 2026-11-21). PP-7's gate asserts exactly this difference, only which of the two photos gets the plain name, and nothing wider |
 
 ## 8. How the owner sees progress
 
