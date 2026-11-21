@@ -60,7 +60,7 @@ def part_folder(export: Export, photos: Photos | None = None, person: Person | N
     if photos is None or person is None:
         return Path("")
     try:
-        return photos.export_tree(person.slug, staging_name(export))
+        return photos.root / paths.INBOX / photos.person_part(person.slug) / photos.name_part(staging_name(export))
     except paths.OutsideRoot:
         return Path("")
 
