@@ -19,7 +19,7 @@ from darkroom.domain import alerts, browser_jobs, events, index, media, pixel_ch
 from darkroom.providers import syncthing
 from darkroom.storage import db
 from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, PixelTransport,
-                                     ReviewItem)
+                                     ReviewItem, TakeoutEntry)
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -380,6 +380,35 @@ def seed_failed_download(opened: Session, now: float, slug: str = "blair", numbe
     opened.add(ExportPart(export_id=export.id, number=2, bytes=1_500_000, downloads_used=3, attempts=3, status="failed"))
 
 
+PART_IMPORT = (
+    ("ingested", 1517, 1517, 0, 0, 0),
+    ("ingested", 1402, 1402, 21, 2, 0),
+    ("ingesting", 1488, 812, 0, 0, 0),
+    ("ingested", 1402, 1402, 0, 0, 2),
+    ("refused", None, 0, 0, 0, 0),
+    ("failed", 900, 300, 0, 0, 0),
+    ("queued", None, 0, 0, 0, 0),
+)
+
+
+def seed_part_import(opened: Session, now: float) -> None:
+    owner = opened.execute(select(Person).where(Person.slug == "avery")).scalar_one()
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
+    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-5", created_at=now - DAY, ready_at=now - 6 * HOUR,
+                    expires_at=now + 7 * DAY - 6 * HOUR, part_count=len(PART_IMPORT) + 1, status="downloading", download_tries=0, owner_person_id=owner.id)
+    opened.add(export)
+    opened.flush()
+    for number, (state, entries, done, sidecar, whole, failed) in enumerate(PART_IMPORT, start=1):
+        opened.add(ExportPart(export_id=export.id, number=number, filename=f"takeout-demo-5-00{number}.zip", bytes=2_000_000, bytes_done=2_000_000, downloads_used=1,
+                              attempts=1, status="done", ingest_state=state, ingest_queued_at=now - 5 * HOUR, entries=entries, entries_done=done,
+                              held=sidecar + whole, failed_items=failed))
+        opened.flush()
+        for held in range(sidecar + whole):
+            opened.add(TakeoutEntry(export_id=export.id, part_number=number, name=f"Takeout/Google Photos/Demo/held-{number}-{held}.jpg", kind="media", bytes=1000,
+                                    crc32=held, outcome="waiting_sidecar" if held < sidecar else "waiting_export", listed_at=now - 4 * HOUR))
+    opened.add(ExportPart(export_id=export.id, number=len(PART_IMPORT) + 1, bytes=2_000_000, bytes_done=1_240_000, downloads_used=1, attempts=1, status="downloading"))
+
+
 def seed_transport(opened: Session, now: float) -> None:
     for spec in TRANSPORT:
         pixel = opened.execute(select(Pixel).where(Pixel.name == spec.pixel)).scalar_one()
@@ -439,6 +468,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_download(opened, now)
     seed_failed_download(opened, now)
     seed_failed_download(opened, now, "casey", 4)
+    seed_part_import(opened, now)
     events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
     seed_transport(opened, now)
     transport_status.review_unlocked(opened, settings, now - 2 * HOUR, alerts.recorded)

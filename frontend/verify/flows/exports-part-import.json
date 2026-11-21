@@ -1,0 +1,15 @@
+{
+  "name": "exports-part-import",
+  "page": "exports",
+  "steps": [
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "3 of 8 parts" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "Until the whole export is in. 21 of them are waiting for a sidecar." } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "Holding 23 items" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "812 of 1,488 items" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "Part 5: Darkroom couldn't safely read this part" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for avery.photos@example.com']", "text": "imports it as soon as it arrives" } },
+    { "expect_text": { "selector": "section[aria-label='Current export parts for casey.photos@example.com']", "text": "keeps the file until it is imported" } },
+    { "scroll_to": "section[aria-label='Current export parts for avery.photos@example.com']" },
+    { "screenshot": "parts" }
+  ]
+}

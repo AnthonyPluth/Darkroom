@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
-import { downloadingExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
+import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -68,6 +68,65 @@ describe("partChip", () => {
     expect(partChip({ ...part, status: "done" }, "imported")).toEqual({ tone: "ok", label: "Imported" });
     expect(partChip({ ...part, status: "failed" }, "failed")).toEqual({ tone: "bad", label: "Failed" });
     expect(partChip({ ...part, status: "corrupt" }, "failed")).toEqual({ tone: "bad", label: "Failed" });
+  });
+});
+
+describe("a part imported on its own", () => {
+  const part = { ...downloadingExport.parts[0], entries: 1402, entries_done: 1402 };
+
+  it("tells a per-part export from one that never went per-part", () => {
+    expect(importedPerPart(downloadingExport)).toBe(false);
+    expect(importedPerPart(perPartExport)).toBe(true);
+    expect(importedPerPart(keptPartsExport)).toBe(true);
+  });
+
+  it("keeps the download states first and today's chip for a part not queued", () => {
+    expect(partImportState({ ...part, status: "downloading", ingest_state: "queued" }, "downloading")).toEqual({ tone: "neutral", label: "Downloading", detail: null });
+    expect(partImportState({ ...part, status: "failed" }, "failed")).toEqual({ tone: "bad", label: "Failed", detail: null });
+    expect(partImportState(part, "downloading")).toEqual({ tone: "ok", label: "Downloaded", detail: null });
+    expect(partImportState({ ...part, ingest_state: "mystery" }, "downloading")).toEqual({ tone: "ok", label: "Downloaded", detail: null });
+  });
+
+  it("names each import state with its one detail line", () => {
+    expect(partImportState({ ...part, ingest_state: "queued" }, "downloading")).toEqual({ tone: "neutral", label: "Downloaded", detail: "Waiting to import" });
+    expect(partImportState({ ...part, ingest_state: "ingesting", entries: 0, entries_done: 0 }, "downloading")).toEqual({ tone: "neutral", label: "Importing", detail: "Reading the file" });
+    expect(partImportState({ ...part, ingest_state: "ingesting", entries: 1488, entries_done: 812 }, "downloading")).toEqual({ tone: "neutral", label: "Importing", detail: "812 of 1,488 items" });
+    expect(partImportState({ ...part, ingest_state: "ingested", entries: 1517 }, "downloading")).toEqual({ tone: "ok", label: "Imported", detail: "1,517 items" });
+    expect(partImportState({ ...part, ingest_state: "ingested", failed_items: 2, kept_reason: "failed_item", held: 3 }, "downloading")).toEqual({ tone: "warn", label: "Kept", detail: "1,402 items, 2 failed" });
+    expect(partImportState({ ...part, ingest_state: "refused" }, "downloading")).toEqual({ tone: "bad", label: "Couldn't read", detail: null });
+    expect(partImportState({ ...part, ingest_state: "failed" }, "downloading")).toEqual({ tone: "bad", label: "Import failed", detail: null });
+  });
+
+  it("says what a part holds, leaving out a half that is zero", () => {
+    const holding = { ...part, ingest_state: "ingested", held: 23, held_waiting_sidecar: 21, held_waiting_export: 2 };
+    expect(partImportState(holding, "downloading")).toEqual({ tone: "neutral", label: "Holding 23 items", detail: "1,402 items. 21 wait for a sidecar, 2 for the whole export." });
+    expect(partImportState({ ...holding, held: 21, held_waiting_export: 0 }, "downloading").detail).toBe("1,402 items. 21 wait for a sidecar.");
+    expect(partImportState({ ...holding, held: 2, held_waiting_sidecar: 0 }, "downloading").detail).toBe("1,402 items. 2 wait for the whole export.");
+    expect(partImportState({ ...holding, held: 1, held_waiting_sidecar: 1, held_waiting_export: 0 }, "downloading")).toEqual({ tone: "neutral", label: "Holding 1 item", detail: "1,402 items. 1 waits for a sidecar." });
+    expect(partImportState({ ...holding, held_waiting_sidecar: 0, held_waiting_export: 0 }, "downloading").detail).toBe("1,402 items");
+  });
+
+  it("gives a kept, unreadable or failed part its fixed sentence and no other part one", () => {
+    expect(keptPartsExport.parts.map(keptSentence)).toEqual([
+      null,
+      "Part 2: 2 items couldn't be imported, so Darkroom keeps the part's file.",
+      "Part 3: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own.",
+      "Part 4: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own.",
+    ]);
+    expect(keptSentence({ ...part, ingest_state: "ingested", failed_items: 1, kept_reason: "failed_item" })).toBe("Part 1: 1 item couldn't be imported, so Darkroom keeps the part's file.");
+    expect(keptSentence({ ...part, status: "downloading", ingest_state: "failed" })).toBeNull();
+    expect(keptSentence({ ...part, ingest_state: "ingesting", failed_items: 1, kept_reason: "failed_item" })).toBeNull();
+    expect(perPartExport.parts.map(keptSentence).every((sentence) => sentence === null)).toBe(true);
+  });
+
+  it("totals the parts imported and the items held", () => {
+    expect(importedTotal(perPartExport)).toBe("2 of 6 parts");
+    expect(importedTotal({ ...perPartExport, part_count: null, parts_ingested: 0 })).toBe("0 of 6 parts");
+    expect(importedTotal({ ...perPartExport, part_count: 1, parts_ingested: 1 })).toBe("1 of 1 part");
+    expect(heldTotal(perPartExport)).toEqual({ value: "23 items", note: "Until the whole export is in. 21 of them are waiting for a sidecar." });
+    expect(heldTotal({ ...perPartExport, held_waiting_sidecar: 0 })).toEqual({ value: "2 items", note: "Until the whole export is in." });
+    expect(heldTotal({ ...perPartExport, held_waiting_sidecar: 1, held_waiting_export: 0 })).toEqual({ value: "1 item", note: "Until the whole export is in. 1 of them is waiting for a sidecar." });
+    expect(heldTotal(keptPartsExport)).toEqual({ value: "None", note: null });
   });
 });
 
