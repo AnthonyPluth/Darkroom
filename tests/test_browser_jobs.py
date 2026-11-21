@@ -11,6 +11,7 @@ from darkroom.domain import alerts, browser_jobs
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Event, GoogleAccount
+from tests.browser import one_container
 from tests.shared import VIEWER_SECRET, add_person, another_writer_holds_the_lock, impatient_engine, own_database, settings_from
 
 RELAYED = config.relay_address("https://darkroom.example")
@@ -508,6 +509,36 @@ class BrowserJobTests(unittest.TestCase):
         self.assertEqual(self.claimed(expired_at + 1), other)
         self.assertIsNone(self.claimed(expired_at + browser_jobs.LEASE_SECONDS - 1), "its Chrome may still be open until the worker's watchdog fires")
         self.assertEqual(self.claimed(expired_at + browser_jobs.LEASE_SECONDS + 1), behind)
+
+    def test_after_a_worker_is_killed_its_account_resumes_inside_the_one_container_checks_wait_and_others_at_once(self):
+        budget = one_container.resume_seconds()
+        poll = jobs.SCHEDULER_POLL_SECONDS
+        for started in (0.0, 1.0, poll / 2, poll - 1):
+            with self.subTest(scheduler_started=started):
+                account = self.another_account(f"held{int(started)}")
+                scheduler = jobs.Scheduler()
+
+                def expire(at):
+                    with db.session(self.engine) as opened:
+                        browser_jobs.expire_leases(opened, self.settings, at)
+
+                scheduler.every("browser.leases", jobs.BROWSER_LEASE_TICK_SECONDS, expire, now=started)
+                killed_at = 1000.0
+                killed = self.enqueue("connect", now=killed_at - 5, account=account)
+                self.assertEqual(self.claimed(killed_at), killed, "the worker claims the job and is killed under its browser right after")
+                held = self.enqueue(now=killed_at + 1, account=account)
+                other = self.enqueue(now=killed_at + 1, account=self.another_account(f"other{int(started)}"))
+                self.assertEqual(self.claimed(killed_at + 2), other, "another account's job is not held by the killed worker's")
+                resumed = None
+                for second in range(int(killed_at) + 2, int(killed_at + budget) + 1):
+                    if (second - started) % poll == 0:
+                        scheduler.run_due(float(second))
+                    if self.claimed(float(second)) == held:
+                        resumed = float(second)
+                        break
+                self.assertEqual((self.job(killed).status, self.job(killed).message), ("failed", browser_jobs.EXPIRED_MESSAGE))
+                self.assertIsNotNone(resumed, f"the account's next job did not start within {budget} s of the kill")
+                self.assertGreaterEqual(resumed, killed_at + 2 * browser_jobs.LEASE_SECONDS, "the lease and the hold after it both ran out first")
 
     def test_finished_jobs_and_other_failures_do_not_hold_the_account(self):
         for status, message in (("done", ""), ("failed", "TimeoutError")):

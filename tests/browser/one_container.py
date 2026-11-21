@@ -225,22 +225,50 @@ def database(work):
     return 0
 
 
-def enqueue(opened, kind):
+RESUME_MARGIN_SECONDS = 60
+
+
+def resume_seconds():
+    from darkroom.domain import browser_jobs
+    from darkroom.server import jobs
+    return int(2 * browser_jobs.LEASE_SECONDS + jobs.BROWSER_LEASE_TICK_SECONDS + jobs.SCHEDULER_POLL_SECONDS + RESUME_MARGIN_SECONDS)
+
+
+def enqueue(opened, kind, email="jo.takeout@example.test"):
     from darkroom.domain import browser_jobs
     from darkroom.storage.models import GoogleAccount, Person
-    account = opened.query(GoogleAccount).first()
+    account = opened.query(GoogleAccount).filter(GoogleAccount.email == email).first()
     if account is None:
-        person = Person(name="Jo", slug="jo", originals_path="jo/originals", google_only_path="jo/google-only", created=1.0)
-        opened.add(person); opened.flush()
-        account = GoogleAccount(email="jo.takeout@example.test", default_person_id=person.id, created=1.0)
+        person = opened.query(Person).first()
+        if person is None:
+            person = Person(name="Jo", slug="jo", originals_path="jo/originals", google_only_path="jo/google-only", created=1.0)
+            opened.add(person); opened.flush()
+        account = GoogleAccount(email=email, default_person_id=person.id, created=1.0)
         opened.add(account); opened.flush()
     return browser_jobs.queue(opened, account.id, kind, None, time.time()).id
+
+
+def account_resumed(opened, job_id):
+    from darkroom.storage.models import BrowserJob
+    lost = opened.get(BrowserJob, job_id)
+    return opened.query(BrowserJob).filter(BrowserJob.account_id == lost.account_id, BrowserJob.id != lost.id, BrowserJob.started >= lost.started).count()
+
+
+def lease_lost(opened, job_id):
+    from darkroom.domain import browser_jobs
+    from darkroom.storage.models import BrowserJob
+    job = opened.get(BrowserJob, job_id)
+    return int(job.status == "failed" and job.message == browser_jobs.EXPIRED_MESSAGE)
 
 
 def main(argv):
     from darkroom.storage.models import BrowserJob
     commands = {"scan": scan_with_control, "viewer": viewer, "relay": relay, "csp": csp, "kill-worker": kill_worker_under_browser,
                 "enqueue": lambda: database(lambda opened: enqueue(opened, argv[1])),
+                "enqueue-other": lambda: database(lambda opened: enqueue(opened, argv[1], "sam.takeout@example.test")),
+                "lease-lost": lambda: database(lambda opened: lease_lost(opened, int(argv[1]))),
+                "account-resumed": lambda: database(lambda opened: account_resumed(opened, int(argv[1]))),
+                "resume-seconds": lambda: print(resume_seconds()) or 0,
                 "status": lambda: database(lambda opened: opened.get(BrowserJob, int(argv[1])).status),
                 "claimed-since": lambda: database(lambda opened: opened.query(BrowserJob).filter(BrowserJob.started >= float(argv[1])).count())}
     if argv:

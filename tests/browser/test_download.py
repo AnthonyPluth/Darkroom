@@ -22,7 +22,9 @@ from darkroom_browser.context import Cancelled, DownloadInterrupted, JobContext,
 from darkroom_browser.jobs import REGISTRY, download, stagger
 from tests.browser.scripted import Clock
 from tests.browser.test_classify import EMAIL_CANARY, NAME_CANARY, ODD_PAGE, REAUTH_UNWORDED, REAUTH_URL, SECRET_FIELD_ONLY, SIGN_IN_NEEDED, SIGNED_IN, TOKEN_CANARY, VERIFY
-from tests.browser.takeout_pages import COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, items_linked, part_item, part_names
+from tests.browser.takeout_pages import (COMPLETED_ID, LIVE_BASE, MADE_UP_USER, archive, archive_url, detail_blocks, embedded_export, embedded_part, items_linked, part_item, part_names,
+                                         with_blocks)
+from tests.browser.test_takeout_data import CREATED_MS, EXPIRES_MS
 from tests.shared import VIEWER_SECRET, add_person, own_database, plenty_of_space, settings_from
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +32,14 @@ NOW = 1_793_750_400.0
 SIZES = (40 * 1024, 40 * 1024, 40 * 1024)
 ARCHIVE = archive_url(COMPLETED_ID)
 EXPORT_PAGE = archive(sizes=SIZES)
+
+
+def archive_counting(*counts):
+    names = part_names(len(SIZES))
+    items = [part_item(COMPLETED_ID, index, len(SIZES), size, names[index], downloaded=counts[index] > 0) for index, size in enumerate(SIZES)]
+    parts = [embedded_part(names[index], size, index, counts[index]) for index, size in enumerate(SIZES)]
+    export = embedded_export(COMPLETED_ID, CREATED_MS, EXPIRES_MS, parts, total=sum(SIZES))
+    return with_blocks(archive(sizes=SIZES, items=items), detail_blocks([export]))
 ODD_URL = f"https://www.google.com/sorry/index?continue={TOKEN_CANARY}"
 AFTER_THE_CLICK = {
     "reauth": [(REAUTH_URL, REAUTH_UNWORDED, 1)] * 3,
@@ -52,6 +62,7 @@ class DomainReporter:
         self.settings = settings
         self.events = []
         self.telemetry = []
+        self.attempts = []
 
     def session(self):
         return db.session(self.engine)
@@ -78,7 +89,8 @@ class DomainReporter:
         self.events.append((body["event"], number))
         with self.session() as opened:
             if body["event"] == "attempt":
-                return downloads.attempt(opened, self.settings, job_id, number, NOW)
+                self.attempts.append((number, body.get("google_downloads", "unknown")))
+                return downloads.attempt(opened, self.settings, job_id, number, NOW, body.get("google_downloads"))
             if body["event"] == "progress":
                 return downloads.progress(opened, job_id, number, body["bytes"], NOW)
             if body["event"] == "done":
@@ -119,6 +131,7 @@ class DownloadBrowser:
         self.strays = 0
         self.late = {}
         self.handles = 0
+        self.archive_page = EXPORT_PAGE
 
     def goto(self, url):
         self.url = url
@@ -132,7 +145,7 @@ class DownloadBrowser:
         if self.verifying:
             self.verifying -= 1
             return VERIFY
-        return EXPORT_PAGE if self.url == ARCHIVE else SIGNED_IN
+        return self.archive_page if self.url == ARCHIVE else SIGNED_IN
 
     def click(self, selector):
         raise AssertionError("the download job only clicks through start_download")
@@ -322,6 +335,89 @@ class DownloadJobTests(DownloadWorld):
         self.assertIn(("progress", 1), self.reporter.events)
         self.finish(job_id)
         self.assertEqual(self.status(), "downloaded")
+
+    def set_used(self, number, used):
+        with db.session(self.engine) as opened:
+            opened.execute(select(ExportPart).where(ExportPart.export_id == self.export, ExportPart.number == number)).scalar_one().downloads_used = used
+
+    def test_the_count_on_takeouts_page_reaches_the_server_before_each_first_attempt_and_is_the_budget(self):
+        self.set_used(1, 5)
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        browser.archive_page = archive_counting(4, 0, 2)
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts, [(1, 4), (2, 0), (3, 2)])
+        self.assertEqual(self.parts(), [("done", 5, 1), ("done", 1, 1), ("done", 3, 1)])
+
+    def test_a_page_without_counts_leaves_the_budget_to_our_own_counter(self):
+        self.set_used(1, 4)
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts, [(1, "unknown"), (2, "unknown"), (3, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 5, 1))
+
+    def test_googles_five_of_five_stops_the_job_before_any_click(self):
+        self.set_used(1, 2)
+        browser = DownloadBrowser(["ok", "ok", "ok"])
+        browser.archive_page = archive_counting(5, 0, 0)
+        with self.assertRaisesRegex(download.DownloadFailed, "^part 1 used all 5 of Google's downloads for it"):
+            self.run_job(browser)
+        self.assertEqual((browser.downloaded, self.reporter.attempts), ([], [(1, 5)]))
+
+    def test_a_part_started_again_in_the_same_job_sends_no_count_because_googles_may_not_include_its_last_start_yet(self):
+        browser = DownloadBrowser(["interrupted", "ok", "ok", "ok"])
+        browser.archive_page = archive_counting(1, 0, 0)
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 3, 2))
+
+    def retrying_part_1(self, first_page, then_page, script=("interrupted", "ok", "ok", "ok")):
+        browser = DownloadBrowser(list(script))
+        browser.archive_page = first_page
+        real_start = browser.start_download
+
+        def start_download(selector, part):
+            browser.archive_page = then_page
+            return real_start(selector, part)
+
+        browser.start_download = start_download
+        return browser
+
+    def test_a_higher_count_on_a_retried_parts_reopened_page_reaches_the_server_and_raises_ours(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, 4)])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_googles_five_of_five_on_a_retried_parts_reopened_page_stops_the_job_before_clicking_it_again(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), archive_counting(5, 0, 0))
+        with self.assertRaisesRegex(download.DownloadFailed, "^part 1 used all 5 of Google's downloads for it"):
+            self.run_job(browser)
+        self.assertEqual((browser.downloaded, self.reporter.attempts), ([1], [(1, 1), (1, 5)]))
+        self.assertEqual(self.parts()[0][:2], ("failed", 5))
+
+    def test_a_first_known_count_on_a_retried_parts_page_reaches_the_server_when_it_is_higher_than_ours(self):
+        browser = self.retrying_part_1(EXPORT_PAGE, archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, "unknown"), (1, 4)])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_a_lower_count_on_a_retried_parts_page_is_not_sent_and_ours_stands(self):
+        browser = self.retrying_part_1(archive_counting(3, 0, 0), archive_counting(2, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 3), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_a_count_on_a_retried_parts_page_equal_to_ours_is_not_sent(self):
+        browser = self.retrying_part_1(archive_counting(3, 0, 0), archive_counting(4, 0, 0))
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 3), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 5, 2))
+
+    def test_an_unknown_count_on_a_retried_parts_page_stays_unknown(self):
+        browser = self.retrying_part_1(archive_counting(1, 0, 0), EXPORT_PAGE)
+        self.run_job(browser)
+        self.assertEqual(self.reporter.attempts[:2], [(1, 1), (1, "unknown")])
+        self.assertEqual(self.parts()[0], ("done", 3, 2))
 
     def test_a_verification_during_part_2_pauses_alerts_once_and_resumes_part_2(self):
         browser = DownloadBrowser(["ok", "verify", "ok", "ok"])
@@ -1151,25 +1247,22 @@ class TelemetryTests(DownloadWorld):
     def messages(self):
         return [message for kind, message in self.reporter.events if kind == "progress" and isinstance(message, str)]
 
-    def test_every_click_and_prompt_is_recorded_with_the_minutes_since_the_last_click_and_answer(self):
+    def test_every_click_and_prompt_is_recorded_with_the_minutes_since_the_last_click_and_answer_one_part_at_a_time(self):
         browser = SlowDownloadBrowser(["ok", "reauth", "ok", "ok"], self.clock, 20 * 60)
         _, result = self.run_job(browser)
         self.assertEqual([(number, body["event"]) for number, body in self.reporter.telemetry], [(1, "clicked"), (2, "clicked"), (2, "prompted"), (2, "clicked"), (3, "clicked")])
-        self.assertEqual([{key: value for key, value in body.items() if key != "event"} for _, body in self.reporter.telemetry],
-                         [{"downloading": 0}, {"downloading": 1, "since_click": 600}, {"downloading": 1, "clicks": 2, "since_click": 600},
-                          {"downloading": 1, "since_click": 300, "since_answer": 290}, {"downloading": 1, "since_click": 305, "since_answer": 595}])
+        self.assertEqual([{key: value for key, value in body.items() if key != "event"} for _, body in self.reporter.telemetry], [{"downloading": 0}, {"downloading": 0, "since_click": 1205}, {"downloading": 0, "clicks": 2, "since_click": 1205},
+                          {"downloading": 0, "since_click": 10, "since_answer": 0}, {"downloading": 0, "since_click": 1205, "since_answer": 1205}])
         self.assertEqual(self.recorded("export_part_clicked"), [
             "part 1: clicked with 0 other parts downloading, the first click of this job, no prompt answered yet in this job",
-            "part 2: clicked with 1 other part downloading, 10 minutes after the previous click, no prompt answered yet in this job",
-            "part 2: clicked with 1 other part downloading, 5 minutes after the previous click, 4 minutes after the last answered prompt",
-            "part 3: clicked with 1 other part downloading, 5 minutes after the previous click, 9 minutes after the last answered prompt",
+            "part 2: clicked with 0 other parts downloading, 20 minutes after the previous click, no prompt answered yet in this job",
+            "part 2: clicked with 0 other parts downloading, 0 minutes after the previous click, 0 minutes after the last answered prompt",
+            "part 3: clicked with 0 other parts downloading, 20 minutes after the previous click, 20 minutes after the last answered prompt",
         ])
-        self.assertEqual(self.recorded("export_part_prompt"), ["part 2: Google asked to verify after 2 clicks since the last answered prompt, with 1 other part downloading, "
-                                                               "10 minutes after the previous click, no prompt answered yet in this job"])
-        self.assertIn("downloading part 3 of 3 with 1 other part downloading; 5 minutes after the previous click, 9 minutes after the last answered prompt", self.messages())
-        self.assertEqual(self.messages()[-1], "downloaded 3 of 3 parts; 4 part clicks and 1 verification prompt in 40 minutes; "
-                                              "at most 2 part clicks in a row without a prompt; at most 2 parts downloading at once; staggered every 5 minutes at the end")
-        self.assertEqual(result["telemetry"], {"clicks": 4, "prompts": 1, "most_clicks_in_a_row_without_a_prompt": 2, "most_downloading": 2})
+        self.assertEqual(self.recorded("export_part_prompt"), ["part 2: Google asked to verify after 2 clicks since the last answered prompt, with 0 other parts downloading, "
+                                                               "20 minutes after the previous click, no prompt answered yet in this job"])
+        self.assertEqual(self.messages()[-1], "downloaded 3 of 3 parts; 4 part clicks and 1 verification prompt in 1 hour; at most 2 part clicks in a row without a prompt; at most 1 part downloading at once")
+        self.assertEqual(result["telemetry"], {"clicks": 4, "prompts": 1, "most_clicks_in_a_row_without_a_prompt": 2, "most_downloading": 1})
 
     def test_a_sign_in_at_the_start_counts_as_an_answer(self):
         browser = DownloadBrowser(["ok", "ok", "ok"])
