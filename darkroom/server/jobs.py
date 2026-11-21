@@ -305,7 +305,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         with db.session(engine) as opened:
             run.run_waiting(opened, current, at)
             part_ingest.run_queued(opened, current, at)
-            finish_export.run_ready(opened, current, at)
+            finish_export.finish_ready(opened, current, at)
 
     def clean_inbox(at: float) -> None:
         with db.session(engine) as opened:

@@ -131,9 +131,6 @@ class ThreePartTests(unittest.TestCase):
         self.world = PartWorld(self)
         self.export = self.world.create(self.world.scenario)
 
-    def test_the_switch_is_off_by_default(self):
-        self.assertFalse(part_ingest.ENABLED)
-
     def test_parts_ingest_one_by_one_and_hold_what_waits_for_something_later(self):
         reports = self.world.ingest_all(self.export)
         self.assertEqual([report.ingested for report in reports], [True, True, True])
@@ -704,50 +701,42 @@ class QueueingTests(unittest.TestCase):
         self.world.opened.expire_all()
         return part_ingest.run_queued(self.world.opened, self.world.settings, at, self.world.tools)
 
-    def test_with_the_switch_off_run_queued_ingests_nothing(self):
+    def test_run_queued_ingests_queued_parts_in_order(self):
         export = self.world.create(self.world.scenario)
+        self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 2), (export.id, 3)])
         self.assertEqual(self.run_queued(), [])
-        self.assertEqual(self.world.part(export, 1).ingest_state, "queued")
-
-    def test_with_the_switch_on_run_queued_ingests_queued_parts_in_order(self):
-        export = self.world.create(self.world.scenario)
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 2), (export.id, 3)])
-            self.assertEqual(self.run_queued(), [])
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
 
     def test_a_part_of_a_later_export_waits_for_every_earlier_export_of_the_account(self):
         first = self.world.create(self.world.scenario, google_id="google-123", created=NOW - 2 * DAY, queue=False)
         second = self.world.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1, google_id="google-456", created=NOW - DAY)
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            for status in ("downloading", "downloaded", "unpacking", "importing", "announced"):
-                with self.subTest(status=status):
-                    self.world.opened.get(Export, first.id).status = status
-                    self.world.opened.commit()
-                    self.assertEqual(self.run_queued(), [])
-                    self.assertEqual(self.world.part(second, 1).ingest_state, "queued")
-            for status in ("imported", "failed", "expired"):
-                other = PartWorld(self)
-                one = other.create(other.scenario, google_id="google-123", created=NOW - 2 * DAY, queue=False, status=status)
-                two = other.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1, google_id="google-456", created=NOW - DAY)
-                with self.subTest(status=status):
-                    self.assertEqual(part_ingest.run_queued(other.opened, other.settings, NOW, other.tools), [(two.id, 1)])
-                    self.assertEqual(one.status, status)
+        for status in ("downloading", "downloaded", "unpacking", "importing", "announced"):
+            with self.subTest(status=status):
+                self.world.opened.get(Export, first.id).status = status
+                self.world.opened.commit()
+                self.assertEqual(self.run_queued(), [])
+                self.assertEqual(self.world.part(second, 1).ingest_state, "queued")
+        for status in ("imported", "failed", "expired"):
+            other = PartWorld(self)
+            one = other.create(other.scenario, google_id="google-123", created=NOW - 2 * DAY, queue=False, status=status)
+            two = other.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1, google_id="google-456", created=NOW - DAY)
+            with self.subTest(status=status):
+                self.assertEqual(part_ingest.run_queued(other.opened, other.settings, NOW, other.tools), [(two.id, 1)])
+                self.assertEqual(one.status, status)
 
     def test_an_earlier_export_of_another_account_does_not_hold_a_part_back(self):
         export = self.world.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1)
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            self.assertEqual(self.run_queued(), [(export.id, 1)])
+        self.assertEqual(self.run_queued(), [(export.id, 1)])
 
     def test_a_busy_account_leaves_its_parts_queued(self):
         export = self.world.create(self.world.scenario)
-        with mock.patch.object(part_ingest, "ENABLED", True), run.account_lock(self.world.settings, export.account_id):
+        with run.account_lock(self.world.settings, export.account_id):
             self.assertEqual(self.run_queued(), [])
         self.assertEqual(self.world.part(export, 1).ingest_state, "queued")
 
     def test_a_part_that_raises_is_failed_logged_and_alerted_once(self):
         export = self.world.create(self.world.scenario)
-        with mock.patch.object(part_ingest, "ENABLED", True), mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("IMG_secret_name")):
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("IMG_secret_name")):
             with no_leaks(self, "IMG_secret_name"):
                 self.assertEqual(self.run_queued(), [])
         failed = self.world.opened.execute(select(Event).where(Event.type == "export_part_ingest_failed")).scalars().all()
@@ -755,15 +744,12 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(len(self.world.opened.execute(select(Alert).where(Alert.kind == "failure")).scalars().all()), 3)
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["failed"] * 3)
 
-    def test_the_import_tick_runs_queued_parts_only_with_the_switch_on(self):
+    def test_the_import_tick_runs_queued_parts(self):
         from darkroom.server import jobs
 
         export = self.world.create(self.world.scenario)
         scheduler = jobs.build(self.world.settings, self.world.engine, NOW)
         scheduler.run_one("imports", NOW)
-        self.assertEqual(self.world.part(export, 1).ingest_state, "queued")
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            scheduler.run_one("imports", NOW + 60)
         self.assertEqual(self.world.part(export, 1).ingest_state, "ingested")
 
 

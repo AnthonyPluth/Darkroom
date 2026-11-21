@@ -593,6 +593,28 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT added, failed, repeated FROM import_runs").all(), [(3, 1, 2)])
         db.migrate(self.engine)
 
+    def test_0043_exports_start_without_a_recorded_ingest_route_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0042")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, stage) VALUES (1, 1, 'manual', 'downloaded', 'queued')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state) VALUES (1, 1, 1, 'done', 'not_queued')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage, ingest_route FROM exports").all(), [(1, "downloaded", "queued", None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_state FROM export_parts").all(), [("not_queued",)])
+            connection.exec_driver_sql("UPDATE exports SET ingest_route = 'per_part'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0042")
+        self.assertNotIn("ingest_route", {column["name"] for column in inspect(self.engine).get_columns("exports")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
+        db.migrate(self.engine)
+
     def test_0040_held_reviews_start_without_a_borrowed_sidecar_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

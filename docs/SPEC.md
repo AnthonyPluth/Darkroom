@@ -155,7 +155,7 @@ The worker drives Google Takeout in a real browser, reusing a session you sign i
 
 **Current implementation:** `originals/`, `google-only/` placement and external-library rescans below remain live until migration. The #259 target replaces them with API uploads, owner-scoped receipts and verified temporary retention; see [the import protocol](design/immich-managed-storage.md#3-import-and-verification-protocol).
 
-Every photo, from either source, ends up in one per-person index with a hash, a fingerprint, a capture time and a location. Nothing is deleted until a whole export has been processed.
+Every photo, from either source, ends up in one per-person index with a hash, a fingerprint, a capture time and a location. Nothing is deleted until a whole export has been processed: a part is read as it downloads, and the only thing removed before the export is finished is a part's scratch copies (short-lived copies of zip entries the part's zip still holds, deleted after each batch). Zip parts, held copies and review holds stay until 14 days after the export is finished (phase 1 of [per-part ingest](design/per-part-ingest.md), #424); freeing a zip sooner needs the owner to amend the promise first (PP-10).
 
 **Immich assets (continuous)**
 
@@ -165,14 +165,14 @@ Every photo, from either source, ends up in one per-person index with a hash, a 
 
 **Takeout side (per export)**
 
-1. **Unpack** all parts of one export together into staging. Takeout can put a photo in one part and its JSON sidecar in another.
+1. **Read each part as it downloads** (#424). A part is queued when it is downloaded and checked, and parts ingest one at a time per account, in any order, with a part of a later export waiting for the earlier exports of the account. Darkroom lists the part's entries into a ledger, keeps each sidecar's text there and streams the media into a scratch folder a batch at a time, so there is no full staging copy of the export. Takeout can put a photo in one part and its JSON sidecar in another: a photo pairs with a sidecar from any part read so far, and an item that needs something from a later part (its sidecar, an edited copy's original, tier 2's check against the export's other items) is held and decided when the export finishes, after its last part is ingested. An export that had started unpacking before this was built (stage `unpacked` or later, or a staging folder) finishes the old way, with all its parts unpacked together into staging; one that had not started, including one that failed before unpacking, is read part by part. The route is decided once per export and recorded.
 2. **Pair** each media file with its JSON sidecar. Takeout truncates long names and adds suffixes such as `-edited` and `(1)`, so follow the matching rules immich-go already implements rather than inventing new ones.
 3. **Read metadata** from the file's EXIF, with what the person corrected in Google Photos winning (#438): `photoTakenTime` (UTC), `geoData` (location; `geoDataExif` only when `geoData` is zero) and description. A place the sidecar has replaces the file's own EXIF place in the record. A date corrected in Google Photos (a `photoTakenTime` more than 14 hours from the file's own capture time) is carried into XMP only: the record's capture time stays the file's own, so matching against the phone copy and the `google-only/YYYY/MM/` folder use it (see Time zones). A sidecar value that agrees with the file's changes nothing. The EXIF value is the fallback where the sidecar has none. A sidecar is read as UTF-8, or as UTF-16 when it starts with a UTF-16 byte-order mark or its first bytes are UTF-16 text; a UTF-8 byte-order mark is dropped. Bytes that are not valid in that encoding are replaced (the time and place survive; a caption may show a replacement character, which then reaches the photo's XMP), and the run counts the sidecar as repaired. Replacing rather than guessing a legacy encoding such as Latin-1 or cp1252 is #443's choice, and repairing such captions is out of its scope. Read with a guessed encoding, a broken UTF-8 file would turn every accented character into the wrong one. A sidecar larger than 1 MiB, one that can't be opened as a plain file in staging, or one whose text still isn't a JSON object is treated as absent: the photo is imported with what its own file says, and the run counts the sidecar as unreadable. An error reading a sidecar that is there (an I/O error) fails its item instead, so a retry can import it later. The `import_done` event names both counts in fixed words, and neither names a file.
 4. **Fingerprint**: SHA-1 of the file bytes, a perceptual hash (pHash and dHash) for images, duration for videos. Near-duplicate groups are built from the two hashes and only ever suggest: they confirm nothing and never feed eligibility.
 5. **Dedupe** against the person's index (next section).
 6. **Place** Google-only items in the person's `google-only/YYYY/MM/` folder. Fill metadata gaps with XMP sidecars, never by rewriting files.
 7. **Rescan** that person's Immich library through the API, then report counts.
-8. **Clean up** staging and the archive after 14 days.
+8. **Clean up** after 14 days: for a per-part export, its zip parts, held copies and review holds, 14 days after the export is finished; for an export read the old way, its staging and zip parts, 14 days after its import finished.
 
 **Time zones**
 
@@ -406,7 +406,7 @@ The kept copy must be present, a regular file in the same person's library and h
 ## Open questions
 
 - [ ] Owner sign-off on #259's quality/deletion boundary, retention, Pixel routing and migration/rollback proposal, followed by its live upload/metadata gates. See [approval and remaining gates](design/immich-managed-storage.md#10-approval-and-remaining-gates).
-- [ ] Ingest each Takeout part as soon as it downloads, and free its zip once nothing in it exists only there? A proposal for owner sign-off on [#424](https://github.com/AnthonyPluth/Darkroom/issues/424): [per-part ingest](design/per-part-ingest.md). Until it is signed off and built, the pipeline above is unchanged.
+- [ ] Ingest each Takeout part as soon as it downloads, and free its zip once nothing in it exists only there? A proposal for owner sign-off on [#424](https://github.com/AnthonyPluth/Darkroom/issues/424): [per-part ingest](design/per-part-ingest.md). Phase 1 is built and on for every export (parts are read as they download; zips stay 14 days after the export is finished); freeing a zip early (phase 2, PP-10) waits for the owner to amend promise 2.
 - [x] #284's open questions, answered by the owner on 2026-11-10. See [the answers](design/single-container.md#11-the-owners-answers); two known gaps from review remain there.
 - [ ] Who is included: how many people, and which Google accounts, iPhones and Pixel belong to each?
 - [ ] Is iCloud Photos off on every iPhone? Immich's clearing depends on it.

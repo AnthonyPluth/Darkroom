@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
@@ -17,7 +17,7 @@ from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_fol
 from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
-from darkroom.storage import locks, paths
+from darkroom.storage import db, locks, paths
 from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
 from darkroom.storage.paths import Photos
 
@@ -28,6 +28,13 @@ IMPORTABLE = frozenset({"downloaded", "unpacking", "importing", "failed"})
 EARLY_STAGES = frozenset({None, "unpack", "queued", "unpacked"})
 WAITING = frozenset({"queued", "running"})
 PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
+PART_NOT_QUEUED = "not_queued"
+PART_QUEUED = "queued"
+PER_PART = "per_part"
+WHOLE = "whole"
+STARTED_STAGES = frozenset(STAGES[1:])
+STARTED_STATUSES = frozenset({"unpacking", "importing"})
+ROUTABLE_STATUSES = ("downloading", "downloaded", "unpacking", "importing")
 UNPLACED = "unplaced"
 PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
@@ -557,9 +564,53 @@ def staging_of(opened: Session, photos: Photos, export: Export) -> Path | None:
     return None
 
 
+def started_whole(opened: Session, photos: Photos | None, export: Export) -> bool:
+    if export.stage in STARTED_STAGES or export.status in STARTED_STATUSES:
+        return True
+    return photos is not None and staging_of(opened, photos, export) is not None
+
+
+def has_part_states(opened: Session, export: Export) -> bool:
+    return opened.execute(select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(PER_PART_STATES)).limit(1)).first() is not None
+
+
+def route_of(opened: Session, photos: Photos | None, export: Export) -> str:
+    if export.ingest_route in (PER_PART, WHOLE):
+        return export.ingest_route
+    route = PER_PART if has_part_states(opened, export) or not started_whole(opened, photos, export) else WHOLE
+    export.ingest_route = route
+    return route
+
+
+def adopt(opened: Session, export: Export, now: float) -> int:
+    parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
+                                                         ExportPart.ingest_state == PART_NOT_QUEUED)).scalars())
+    for part in parts:
+        part.ingest_state, part.ingest_queued_at = PART_QUEUED, now
+    return len(parts)
+
+
+def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:
+    db.write_lock(opened)
+    photos = Photos(settings.photos_root)
+    candidates = (select(Export.id).join(ExportPart, ExportPart.export_id == Export.id)
+                  .where(Export.status.in_(ROUTABLE_STATUSES), ExportPart.status == "done", ExportPart.ingest_state == PART_NOT_QUEUED,
+                         or_(Export.ingest_route.is_(None), Export.ingest_route == PER_PART)).distinct().order_by(Export.id))
+    adopted = []
+    for export_id in opened.execute(candidates).scalars().all():
+        export = opened.get(Export, export_id)
+        if export is not None and route_of(opened, photos, export) == PER_PART and adopt(opened, export, now):
+            adopted.append(export_id)
+            monitoring.log("export routed to per-part ingest", export=export_id)
+    opened.commit()
+    return adopted
+
+
 def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
     if failed_items_run(opened, export) is None:
         raise AlreadyImported("this export is already imported")
+    if route_of(opened, photos, export) == PER_PART:
+        raise NotReady("this export was imported part by part, which has no retry for failed items yet")
     if photos is None or staging_of(opened, photos, export) is None:
         raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
     export.status, export.stage = "importing", "unpacked"
@@ -577,6 +628,15 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
     last = latest_run(opened, export.id)
+    if route_of(opened, photos, export) == PER_PART:
+        adopt(opened, export, utc_now().timestamp() if now is None else now)
+        if export.status == "failed":
+            if last is not None and last.status == "failed":
+                last.status = "queued"
+            else:
+                export.status = "downloaded"
+        opened.flush()
+        return export
     waiting = last is not None and last.status in WAITING
     if export.stage in EARLY_STAGES and not waiting:
         export.stage = "queued"
@@ -593,10 +653,13 @@ def waiting_exports(opened: Session) -> list[int]:
     resumed = (select(Export.id).join(ImportRun, ImportRun.export_id == Export.id)
                .where(ImportRun.status.in_(WAITING), Export.status.in_(IMPORTABLE)))
     per_part = select(ExportPart.export_id).where(ExportPart.ingest_state.in_(PER_PART_STATES))
-    return sorted((set(opened.execute(queued).scalars()) | set(opened.execute(resumed).scalars())) - set(opened.execute(per_part).scalars()))
+    routed = select(Export.id).where(Export.ingest_route == PER_PART)
+    leave = set(opened.execute(per_part).scalars()) | set(opened.execute(routed).scalars())
+    return sorted((set(opened.execute(queued).scalars()) | set(opened.execute(resumed).scalars())) - leave)
 
 
 def run_waiting(opened: Session, settings: config.Settings, now: float, tools: Tools | None = None) -> list[int]:
+    route_pending(opened, settings, now)
     ran = []
     for export_id in waiting_exports(opened):
         export = opened.get(Export, export_id)

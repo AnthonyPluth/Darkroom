@@ -134,6 +134,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("imports", self.tick(NOW + DAY + 2 * HOUR))
         run_one = self.query(lambda opened: opened.execute(select(ImportRun).order_by(ImportRun.id)).scalars().all()[0])
         self.assertEqual((run_one.status, run_one.added, run_one.skipped_t1, run_one.failed), ("done", 1, 2, 0))
+        self.assertEqual(self.query(lambda opened: (opened.get(Export, first).status, opened.get(Export, first).ingest_route,
+                                                    [part.ingest_state for part in exports.parts_of(opened, first)])), ("imported", "per_part", ["ingested"]))
         self.assertEqual(self.titles().count(SUMMARY), 1)
         self.assertIn("Export 1: 1 added, 2 skipped as duplicates, 0 in review, 0 missing GPS", [message for _, message in self.world.recorder.sent])
         self.assertEqual(sorted(set(self.world.scanned())), ["lib-jo"])

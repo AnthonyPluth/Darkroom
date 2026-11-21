@@ -276,7 +276,7 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
         for number, path in sorted(numbered.items()):
             if number not in known:
                 part = ExportPart(export_id=export.id, number=number, filename=path.name, bytes=path.lstat().st_size, status="done")
-                part_ingest.queue(part, now)
+                part_ingest.queue(opened, photos, export, part, now)
                 opened.add(part)
         registered.append(export)
     opened.flush()

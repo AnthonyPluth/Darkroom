@@ -8,7 +8,6 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import downloads, events, exports
-from darkroom.domain.ingest import part_ingest
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
 from darkroom.storage.paths import Photos
@@ -243,7 +242,7 @@ class SpaceCheckTests(SpaceHelpers):
 
 
 class DownloadApiTests(DownloadApiServer):
-    def test_a_download_runs_through_the_worker_routes_and_queues_the_import(self):
+    def test_a_download_runs_through_the_worker_routes_and_leaves_its_parts_to_the_per_part_ingest(self):
         logged = io.StringIO()
         handler = logging.StreamHandler(logged)
         with no_leaks(self, TOKEN, database=self.engine, replies=self.replies):
@@ -267,7 +266,7 @@ class DownloadApiTests(DownloadApiServer):
         self.assertNotIn(FILE_CANARY, logged.getvalue())
         with db.session(self.engine) as opened:
             export = opened.get(Export, self.export)
-            self.assertEqual((export.status, export.stage), ("downloaded", "queued"))
+            self.assertEqual((export.status, export.stage), ("downloaded", None))
             self.assertEqual(opened.get(BrowserJob, self.job).status, "done")
 
     def ingest_state_after_done(self):
@@ -278,15 +277,18 @@ class DownloadApiTests(DownloadApiServer):
             found = opened.execute(select(ExportPart)).scalar_one()
             return found.ingest_state, found.ingest_queued_at
 
-    def test_a_finished_part_is_queued_for_ingest_only_with_the_switch_on(self):
-        self.assertFalse(part_ingest.ENABLED)
-        self.assertEqual(self.ingest_state_after_done(), ("not_queued", None))
-
-    def test_a_finished_part_is_queued_for_ingest_when_the_switch_is_on(self):
-        with mock.patch.object(part_ingest, "ENABLED", True):
-            state, queued_at = self.ingest_state_after_done()
+    def test_a_finished_part_is_queued_for_ingest(self):
+        state, queued_at = self.ingest_state_after_done()
         self.assertEqual(state, "queued")
         self.assertIsNotNone(queued_at)
+
+    def test_a_finished_part_of_an_export_that_started_unpacking_is_not_queued(self):
+        with db.session(self.engine, writing=True) as opened:
+            export = opened.get(Export, self.export)
+            export.stage = "unpacked"
+        self.assertEqual(self.ingest_state_after_done(), ("not_queued", None))
+        with db.session(self.engine) as opened:
+            self.assertEqual(opened.get(Export, self.export).ingest_route, "whole")
 
     def test_done_before_every_part_is_downloaded_is_refused_and_the_job_stays_open(self):
         status, reply = self.worker("POST", f"/internal/browser/jobs/{self.job}/done", {"result": {}})

@@ -313,7 +313,7 @@ class PartDoneTests(DownloadCase):
 
 
 class FinishTests(DownloadCase):
-    def test_the_last_part_marks_the_export_downloaded_and_queues_the_import(self):
+    def test_the_last_part_marks_the_export_downloaded_and_leaves_its_parts_to_the_per_part_ingest(self):
         job = self.claim()
         for number in (1, 2):
             self.attempt(job, number)
@@ -322,8 +322,11 @@ class FinishTests(DownloadCase):
             downloads.finish(opened, self.settings, job, NOW)
             browser_jobs.done(opened, job, {}, NOW)
         status, tries, stage, inbox = self.export_row()
-        self.assertEqual((status, tries, stage), ("downloaded", 0, "queued"))
+        self.assertEqual((status, tries, stage), ("downloaded", 0, None))
         self.assertEqual(Path(inbox), self.folder())
+        with db.session(self.engine) as opened:
+            self.assertEqual(run.waiting_exports(opened), [])
+            self.assertEqual([(part.ingest_state, part.ingest_queued_at) for part in exports.parts_of(opened, self.export)], [("queued", NOW)] * 2)
         self.assertEqual(self.reconcile(NOW + DAY).requeued, 0)
         self.assertEqual(self.download_jobs(), [(self.export, "done")])
 
