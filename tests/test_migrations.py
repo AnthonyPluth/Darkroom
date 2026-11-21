@@ -615,6 +615,36 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0044_parts_and_held_copies_start_unfreed_and_the_journal_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0043")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloading')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state, bytes) VALUES (1, 1, 1, 'done', 'ingested', 5000000000)")
+            connection.exec_driver_sql("INSERT INTO takeout_entries (id, export_id, part_number, name, kind, bytes, crc32, outcome, held_path, listed_at) "
+                                       "VALUES (1, 1, 1, 'a.jpg', 'media', 3, 4294967295, 'waiting_export', '_inbox/jo/held/export-1/1.jpg', 2.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_state, bytes, free_state, free_started_at, freed_at, bytes_freed FROM export_parts").all(),
+                             [("ingested", 5000000000, None, None, None, None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT outcome, held_path, held_state, held_freed_at FROM takeout_entries").all(),
+                             [("waiting_export", "_inbox/jo/held/export-1/1.jpg", None, None)])
+            connection.exec_driver_sql("UPDATE export_parts SET free_state = 'freed', freed_at = 3.0, bytes_freed = 5000000000")
+            self.assertEqual(connection.exec_driver_sql("SELECT bytes_freed FROM export_parts").scalar_one(), 5000000000)
+            connection.exec_driver_sql("UPDATE takeout_entries SET held_state = 'freeing'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0043")
+        self.assertFalse({"free_state", "free_started_at", "freed_at", "bytes_freed"} & {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
+        self.assertFalse({"held_state", "held_freed_at"} & {column["name"] for column in inspect(self.engine).get_columns("takeout_entries")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_state, bytes FROM export_parts").all(), [("ingested", 5000000000)])
+            self.assertEqual(connection.exec_driver_sql("SELECT outcome, held_path FROM takeout_entries").all(), [("waiting_export", "_inbox/jo/held/export-1/1.jpg")])
+        db.migrate(self.engine)
+
     def test_0040_held_reviews_start_without_a_borrowed_sidecar_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

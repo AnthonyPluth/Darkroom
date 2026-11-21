@@ -791,6 +791,9 @@
               }
             ]
           },
+          "bytes_freed": {
+            "type": "integer"
+          },
           "downloads_used": {
             "type": "integer"
           },
@@ -812,6 +815,9 @@
                 "type": "null"
               }
             ]
+          },
+          "freed": {
+            "type": "boolean"
           },
           "held": {
             "type": "integer"
@@ -848,11 +854,13 @@
         "required": [
           "attempts",
           "bytes",
+          "bytes_freed",
           "downloads_used",
           "entries",
           "entries_done",
           "failed_items",
           "filename",
+          "freed",
           "held",
           "held_waiting_export",
           "held_waiting_sidecar",

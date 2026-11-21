@@ -1262,6 +1262,140 @@ class InboxLinkTests(unittest.TestCase):
         self.assertEqual(self.originals_tree(), {"IMG_1.JPG": b"an original"})
 
 
+class PartZipRemoverTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.photos.ensure_person_tree("jo")
+        self.originals = self.root / "jo/originals"
+        self.kept = self.originals / "IMG_1.JPG"
+        self.kept.write_bytes(b"an original")
+        self.export = self.root / "_inbox/jo/export-1"
+        self.export.mkdir()
+        self.zip = self.export / "takeout-001.zip"
+        self.zip.write_bytes(b"a made-up part")
+
+    def identity(self, path):
+        return paths.file_identity(path.lstat())
+
+    def everything(self):
+        return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}
+
+    def held(self, name="12.jpg", data=b"held bytes"):
+        return paths.write_held(self.photos, "jo", "export-1", name, [data], hashlib.sha1(data, usedforsecurity=False).hexdigest())
+
+    def test_the_checked_zip_directly_in_the_exports_folder_is_removed_and_its_size_returned(self):
+        before = self.everything()
+        self.assertEqual(paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.zip)), len(b"a made-up part"))
+        self.assertEqual(self.everything(), {key: value for key, value in before.items() if key != "_inbox/jo/export-1/takeout-001.zip"})
+        self.assertIsNone(paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.kept)))
+
+    def test_anything_but_a_zip_name_directly_in_the_exports_folder_is_refused(self):
+        before = self.everything()
+        for name in ("takeout-001.jpg", "takeout-001.ZIP", "../takeout-001.zip", "a/takeout-001.zip", ".takeout-001.zip", "", ".zip/..", "a\0.zip"):
+            with self.subTest(name=name), self.assertRaises((paths.NotAPartZip, paths.OutsideRoot)):
+                paths.remove_part_zip(self.photos, "jo", "export-1", name, self.identity(self.zip))
+        for person, export in (("../jo", "export-1"), ("jo", "../export-1"), ("jo", "held"), ("jo", ".")):
+            with self.subTest(person=person, export=export), self.assertRaises((paths.NotAPartZip, paths.OutsideRoot, FileNotFoundError)):
+                paths.remove_part_zip(self.photos, person, export, "takeout-001.zip", self.identity(self.zip))
+        self.assertEqual(self.everything(), before)
+
+    def test_a_zip_swapped_or_changed_since_it_was_checked_is_left_alone(self):
+        checked = self.identity(self.zip)
+        swapped = self.export / "swap.zip"
+        swapped.write_bytes(b"another part!!")
+        swapped.replace(self.zip)
+        with self.assertRaises(paths.NotAPartZip):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", checked)
+        self.assertEqual(self.zip.read_bytes(), b"another part!!")
+        checked = self.identity(self.zip)
+        os.utime(self.zip, ns=(1, 1))
+        with self.assertRaises(paths.NotAPartZip):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", checked)
+        self.assertTrue(self.zip.exists())
+
+    def test_a_link_anywhere_on_the_way_or_at_the_zip_or_a_hard_link_is_refused(self):
+        self.zip.unlink()
+        (self.export / "takeout-001.zip").symlink_to(self.kept)
+        with self.assertRaises((paths.NotAPartZip, paths.NotInTheInbox)):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.kept))
+        (self.export / "takeout-001.zip").unlink()
+        os.link(self.kept, self.export / "takeout-001.zip")
+        with self.assertRaises(paths.NotAPartZip):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.kept))
+        (self.export / "takeout-001.zip").unlink()
+        self.export.rmdir()
+        self.export.symlink_to(self.originals, target_is_directory=True)
+        (self.originals / "takeout-001.zip").write_bytes(b"not a part")
+        with self.assertRaises(paths.OutsideRoot):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.originals / "takeout-001.zip"))
+        self.export.unlink()
+        (self.root / "_inbox/jo").rename(self.root / "_inbox/jo-real")
+        (self.root / "_inbox/jo").symlink_to(self.root / "_inbox/jo-real", target_is_directory=True)
+        with self.assertRaises(paths.OutsideRoot):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.originals / "takeout-001.zip"))
+        self.assertEqual(self.kept.read_bytes(), b"an original")
+        self.assertEqual((self.originals / "takeout-001.zip").read_bytes(), b"not a part")
+
+    def test_a_missing_exports_folder_raises_rather_than_reporting_the_zip_gone(self):
+        self.zip.unlink()
+        self.export.rmdir()
+        with self.assertRaises(FileNotFoundError):
+            paths.remove_part_zip(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.kept))
+
+    def test_only_the_checked_held_copy_is_removed(self):
+        written = self.held()
+        other = self.held("13.mov", b"other held")
+        before = self.everything()
+        with self.assertRaises(paths.NotAHeldCopy):
+            paths.remove_held_copy(self.photos, "jo", "export-1", "12.jpg", self.identity(other))
+        for name in ("../12.jpg", "a/12.jpg", "IMG_1.JPG", ".write-once-0123456789abcdef", ""):
+            with self.subTest(name=name), self.assertRaises(paths.NotAHeldCopy):
+                paths.remove_held_copy(self.photos, "jo", "export-1", name, self.identity(written))
+        self.assertEqual(self.everything(), before)
+        self.assertEqual(paths.remove_held_copy(self.photos, "jo", "export-1", "12.jpg", self.identity(written)), len(b"held bytes"))
+        self.assertFalse(written.exists())
+        self.assertEqual(other.read_bytes(), b"other held")
+
+    def test_a_link_at_the_held_store_or_the_held_copy_is_refused(self):
+        written = self.held()
+        identity = self.identity(written)
+        written.unlink()
+        written.symlink_to(self.kept)
+        with self.assertRaises((paths.NotAHeldCopy, paths.NotInTheInbox)):
+            paths.remove_held_copy(self.photos, "jo", "export-1", "12.jpg", identity)
+        written.unlink()
+        folder = written.parent
+        folder.rmdir()
+        folder.symlink_to(self.originals, target_is_directory=True)
+        (self.originals / "12.jpg").write_bytes(b"held bytes")
+        with self.assertRaises(paths.OutsideRoot):
+            paths.remove_held_copy(self.photos, "jo", "export-1", "12.jpg", self.identity(self.originals / "12.jpg"))
+        self.assertEqual((self.originals / "12.jpg").read_bytes(), b"held bytes")
+        self.assertEqual(self.kept.read_bytes(), b"an original")
+
+    def test_a_held_copy_is_found_only_at_its_recorded_place_in_this_exports_store(self):
+        self.assertEqual(paths.held_copy_at(self.photos, "_inbox/jo/held/export-1/12.jpg", "export-1"), self.root / "_inbox/jo/held/export-1/12.jpg")
+        for relative in ("_inbox/jo/held/export-2/12.jpg", "_inbox/jo/review/export-1/12.jpg", "_inbox/jo/held/export-1/a/12.jpg",
+                         "jo/held/export-1/12.jpg", "_inbox/jo/held/export-1/IMG_1.JPG", "_inbox/../held/export-1/12.jpg"):
+            with self.subTest(relative=relative), self.assertRaises((paths.NotAHeldCopy, paths.OutsideRoot)):
+                paths.held_copy_at(self.photos, relative, "export-1")
+
+    def test_fingerprints_and_identities_refuse_links(self):
+        digest, identity = paths.inbox_fingerprint(self.photos, self.zip)
+        self.assertEqual((digest, identity), (hashlib.sha1(b"a made-up part", usedforsecurity=False).hexdigest(), self.identity(self.zip)))
+        self.assertEqual(paths.inbox_identity(self.photos, self.zip), self.identity(self.zip))
+        self.assertEqual(paths.plain_fingerprint(self.kept)[1], paths.library_identity(self.kept))
+        self.assertIsNone(paths.inbox_identity(self.photos, self.export / "absent.zip"))
+        link = self.export / "link.zip"
+        link.symlink_to(self.zip)
+        self.assertIsNone(paths.inbox_identity(self.photos, link))
+        with self.assertRaises(paths.OutsideRoot):
+            paths.inbox_fingerprint(self.photos, link)
+
+
 class BrowserStateTests(unittest.TestCase):
     def setUp(self):
         appdata = tempfile.TemporaryDirectory()

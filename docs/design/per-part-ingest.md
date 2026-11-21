@@ -187,7 +187,7 @@ Today the same skipped Takeout copies are deleted 14 days after completion, so t
 ### The safe default
 
 - **Phase 1 (no promise changes):** ingest each part as it downloads; no staging copy; keep every zip to today's 14-day rule after the export completes. The scratch batch is the only new deletion, and it deletes a copy of bytes the zip still holds.
-- **Phase 2 (after the owner amends promise 2):** free a part's zip on its proof, as above, and keep the held store to 14 days after completion, as staging is kept today.
+- **Phase 2 (the owner amended promise 2, decisions 1 and 4 on #424; #487):** free a part's zip on its proof, as above, and free the held store when the export is finished, once every held item's outcome is verified again.
 - Never free a zip with a failed, unknown or pinned entry, or while its export has another export of the same account waiting ahead of it.
 - Under the #259 target, the proof's "placed" becomes "committed, verified receipt", and freeing also needs the backup recovery-point proof of that design's section 4, which does not exist yet; until it does, phase 2 stays off for Immich-managed imports.
 
@@ -237,7 +237,7 @@ With the dedupe index fixed while the export ingests (no phone items arriving fr
 
 The Exports page shows each part's download state today (`exports.part_dict`, `frontend/src/pages/Exports.svelte`'s parts table, and the line "Darkroom downloads each part once and keeps the file until it is imported"). Per-part ingest needs it to show, per part, one of: downloaded, ingesting, ingested, holding N items, freed, kept (with why: a failed item, a listing mismatch); and per export: parts ingested of the total, items held until the export completes and how many are waiting for a sidecar, and how much disk was freed. The Imports page may show a run that is still taking parts. The API gains the part fields (`contract.py`, `api-types.ts`, the feature map).
 
-**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design. The API reports `kept_reason` as `failed_item` only (from `failed_items`); a refused part carries no reason code until a later issue stores the reader's refusal reason on `export_parts`. `bytes_freed` is 0 and there is no `freed` part state until PP-10.
+**This changes screens, so it needs the owner's design sign-off first** (promise 6; the signed-off Exports designs are `docs/design/web/04-exports-desktop.dc.html` and `04-exports-phone.dc.html`). This document designs no visuals; PP-12 adds the API only, and the screen waits for a signed-off design. The API reports `kept_reason` as `failed_item` only (from `failed_items`); a refused part carries no reason code until a later issue stores the reader's refusal reason on `export_parts`. PP-10 (#487) adds each part's `freed` and `bytes_freed`, and the export's `bytes_freed` sums them; the screen shows neither until a signed-off design does.
 
 ## 9. Plan
 

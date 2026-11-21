@@ -178,6 +178,8 @@ export interface ExportPartDetail {
   held_waiting_export: number;
   failed_items: number;
   kept_reason: "failed_item" | null;
+  freed: boolean;
+  bytes_freed: number;
 }
 
 export interface ExportPartView {

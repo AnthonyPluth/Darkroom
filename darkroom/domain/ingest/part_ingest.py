@@ -206,22 +206,44 @@ class Ingest:
     def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
         return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
 
-    def sidecar_state(self, entry: TakeoutEntry) -> run.SidecarState:
+    def freed(self, number: int) -> bool:
+        part = part_of(self.opened, self.export.id, number)
+        return part is not None and part.free_state is not None
+
+    def stored_bytes(self, entry: TakeoutEntry) -> bytes | None:
+        text = self.opened.execute(select(TakeoutSidecar.text).where(TakeoutSidecar.entry_id == entry.id)).scalar_one_or_none()
+        return None if text is None else text.encode("utf-8")
+
+    def sidecar_bytes(self, entry: TakeoutEntry) -> bytes | None:
+        if self.freed(entry.part_number):
+            return self.stored_bytes(entry)
         archive, infos = self.archive_of(entry.part_number)
         info = infos.get(entry.name)
         if info is None:
-            return "unreadable"
+            return None
         try:
             with archive.open(info) as handle:
-                decoded = sidecar.decode(handle.read(sidecar.LIMIT + 1))
+                return handle.read(sidecar.LIMIT + 1)
         except part_reader.READ_ERRORS:
-            return "unreadable"
+            return None
+
+    def sidecar_state(self, entry: TakeoutEntry) -> run.SidecarState:
+        data = self.sidecar_bytes(entry)
+        decoded = None if data is None else sidecar.decode(data)
         if decoded is None or sidecar.parse(decoded.text) is None:
             return "unreadable"
         return "repaired" if decoded.repaired else "read"
 
+    def held_copy(self, entry: TakeoutEntry, held: str) -> Path:
+        path = paths.held_copy_at(self.photos, held, unpack.staging_name(self.export))
+        if entry.sha1 is None or paths.inbox_sha1(self.photos, path) != entry.sha1:
+            raise part_reader.PartRefused("bytes_differ", f"a held copy of part {entry.part_number} doesn't match the part read before")
+        return path
+
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
+        if found is None and entry.held_path is not None:
+            found = self.scratch[entry.id] = self.held_copy(entry, entry.held_path)
         if found is None:
             archive, infos = self.archive_of(entry.part_number)
             streamed = part_reader.stream_one(self.photos, self.person, self.export, archive, entry, infos[entry.name])
