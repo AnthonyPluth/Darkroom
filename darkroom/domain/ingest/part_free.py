@@ -558,8 +558,26 @@ def ledger_kept(opened: Session, photos: Photos, export: Export, rows: list[Take
     return kept_rows
 
 
+def claims_may_be_left(photos: Photos, export: Export, rows: list[TakeoutEntry]) -> bool:
+    folders = set()
+    for row in rows:
+        try:
+            folders.add(paths.held_copy_at(photos, row.held_path or "", export_name(export)).parent)
+        except (paths.NotAHeldCopy, paths.OutsideRoot):
+            return True
+    for folder in folders:
+        try:
+            if paths.claims_left_in(photos, folder):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, paths.OutsideRoot, paths.LinkRefused):
+            return True
+    return False
+
+
 def all_kept_on_the_ledger(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], now: float, report: FreeReport) -> bool:
-    if any(row.held_state == FREEING for row in rows):
+    if any(row.held_state == FREEING for row in rows) or claims_may_be_left(photos, export, rows):
         return False
     try:
         kept_rows = ledger_kept(opened, photos, export, rows)

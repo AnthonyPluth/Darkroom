@@ -796,6 +796,24 @@ class ClaimRecoveryTests(unittest.TestCase):
         self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store(), paths.inbox_entry_absent(self.world.photos, copy)), ("freed", {}, True))
         self.assertEqual([path.name for path in (self.world.root / "_inbox/jo/held").rglob("*") if path.name.startswith(paths.FREEING_CLAIM)], [])
 
+    def test_a_claim_left_after_a_failed_put_back_is_put_back_even_when_the_ledger_alone_keeps_every_row(self):
+        self.finished()
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            self.world.free(at=NOW + 3 * TICK)
+        self.world.reopen()
+        copy = self.world.held_copy()
+        self.world.change(self.world.entry(TIER_2), held_state=None, decision_id=None)
+        self.assertFalse(copy.exists())
+        self.world.free(at=NOW + 4 * TICK)
+        claims = [path.name for path in (self.world.root / "_inbox/jo/held").rglob("*") if path.name.startswith(paths.FREEING_CLAIM)]
+        self.assertEqual((copy.exists(), claims, self.world.entry(TIER_2).held_state), (True, [], None))
+
     def came_back(self, path):
         real = os.unlink
 
