@@ -1708,8 +1708,62 @@ class StagedPlacementTests(unittest.TestCase):
         self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
         self.assertFalse(self.stage.exists())
 
-    def test_other_rename_failures_are_raised_and_place_nothing(self):
-        with self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=PermissionError(13, "denied")):
+    def no_renameat2(self):
+        return mock.patch.object(paths, "LIBC", object())
+
+    def no_hard_links(self):
+        return mock.patch.object(paths.os, "link", side_effect=PermissionError(1, "Operation not permitted"))
+
+    def test_a_share_without_renameat2_places_by_linking_and_leaves_no_copy(self):
+        with self.no_renameat2(), self.staged() as ahead:
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual((self.month / "IMG_1.JPG").stat().st_nlink, 1)
+        self.assertFalse(self.stage.exists())
+
+    def test_a_share_without_renameat2_still_never_replaces(self):
+        self.month.mkdir(parents=True)
+        real = paths.entry_at
+
+        def appearing(name, folder):
+            found = real(name, folder)
+            if name == "IMG_1.JPG" and not (self.month / name).exists():
+                (self.month / name).write_bytes(b"arrived meanwhile")
+            return found
+
+        with self.no_renameat2(), self.staged() as ahead, mock.patch.object(paths, "entry_at", side_effect=appearing):
+            with self.assertRaises(paths.AlreadyExists):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
+
+    def test_a_share_without_renameat2_or_hard_links_places_by_copying_and_leaves_no_copy(self):
+        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead:
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_share_without_renameat2_or_hard_links_still_never_replaces(self):
+        self.month.mkdir(parents=True)
+        real = paths.entry_at
+
+        def appearing(name, folder):
+            found = real(name, folder)
+            if name == "IMG_1.JPG" and not (self.month / name).exists():
+                (self.month / name).write_bytes(b"arrived meanwhile")
+            return found
+
+        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead, mock.patch.object(paths, "entry_at", side_effect=appearing):
+            with self.assertRaises(paths.AlreadyExists):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
+        self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_rename_that_fails_and_a_copy_that_fails_too_place_nothing(self):
+        refused = PermissionError(13, "denied")
+        with (self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=refused),
+              mock.patch.object(paths, "write_once", side_effect=refused)):
             with self.assertRaises(PermissionError):
                 ahead.publish(self.month / "IMG_1.JPG")
         self.assertFalse((self.month / "IMG_1.JPG").exists())
@@ -1719,7 +1773,7 @@ class StagedPlacementTests(unittest.TestCase):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir(mode=0o700)
         os.symlink(elsewhere, self.stage)
-        with self.assertRaises(paths.PlacementRefused), self.staged():
+        with self.assertRaises(paths.LinkRefused), self.staged():
             self.fail("a copy was made through a link")
         self.assertEqual(list(elsewhere.iterdir()), [])
         self.assertTrue(self.stage.is_symlink())

@@ -2224,9 +2224,7 @@ class StagedPlacement:
                 raise AlreadyExists(destination.name) from error
             except NotALosingCopy as error:
                 raise ChangedWhileCopied("the copy made ahead changed while it was moved into place") from error
-            except OSError as error:
-                if error.errno != errno.EXDEV:
-                    raise
+            except OSError:
                 return write_once(destination, self.chunks())
             self.published = True
             if not own_copy_at(folder, destination.name, self.fd):

@@ -572,18 +572,25 @@ rules:
       copies before the write lock, re-reads the decision under it and only then renames the copy into google-only/,
       so a reversal that lands meanwhile places nothing and no placed file is ever taken back (#517). Place through
       part_ingest instead.
+      The names are matched anywhere, so an alias, a from-import, getattr or a name handed on is flagged too.
     severity: ERROR
     languages: [python]
-    patterns:
-      - pattern-either:
-          - pattern: $M.$F(...)
-          - pattern: $F(...)
-      - metavariable-regex:
-          metavariable: $F
-          regex: ^(staged_placement|sweep_placements|placement_folder|drop_own_copy|drop_stray_copy)$
+    pattern-regex: (?<![A-Za-z0-9_])(staged_placement|sweep_placements|placement_folder|drop_own_copy|drop_stray_copy|own_copy_at|write_all|StagedPlacement)(?![A-Za-z0-9_])
     paths:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_ingest.py"]
+
+  - id: darkroom-placement-folder-only-in-paths
+    message: >-
+      Only darkroom/storage/paths.py names the placement folder (_inbox/<person>/export-<id>/.placements/), its
+      constants or Photos.placements, so no other module can build a path into it, by a string, an alias or getattr,
+      and remove or rename what is there (AGENTS.md, promise 2; #517). Go through part_ingest's placement instead.
+    severity: ERROR
+    languages: [python]
+    pattern-regex: (\.placements(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(PLACEMENTS|PLACEMENT_FILE)(?![A-Za-z0-9_])|["']placements["'])
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
 
   - id: darkroom-share-sentinel-one-writer
     message: >-

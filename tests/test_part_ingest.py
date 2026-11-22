@@ -2,6 +2,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import sqlite3
 import unittest
 import zipfile
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import get_args
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
@@ -1000,6 +1002,30 @@ class CopyAheadTests(unittest.TestCase):
         self.assertEqual(self.world.outcomes()[self.NEW], "placed")
         self.assertEqual([name for name in self.basenames() if name.startswith("IMG_2001")], ["IMG_2001.JPG"])
         self.assertFalse(self.stage.exists())
+
+    def test_a_lock_timeout_after_the_copy_fails_the_part_to_be_retried_not_the_item(self):
+        copied, real_lock = [], part_ingest.Ingest.lock
+        busy = OperationalError("SELECT pg_advisory_xact_lock(1)", {}, sqlite3.OperationalError("database is locked"))
+
+        def lock(ingest):
+            if copied and len(copied) == 1:
+                copied.append("timed out")
+                raise busy
+            real_lock(ingest)
+
+        patched, _ = self.between_copy_and_lock(lambda sha1: copied.append(sha1))
+        with patched, mock.patch.object(part_ingest.Ingest, "lock", lock):
+            ran = part_ingest.run_queued(self.world.opened, self.world.settings, NOW, self.world.tools)
+        self.assertEqual(ran, [])
+        self.assertEqual(copied[1:], ["timed out"])
+        self.assertEqual(self.world.part(self.export, 1).ingest_state, "failed")
+        self.assertNotEqual(self.world.outcomes()[self.NEW], "failed")
+        self.assertNotIn("IMG_2001.JPG", self.basenames())
+        self.assertFalse(self.stage.exists())
+        self.world.part(self.export, 1).ingest_state = "queued"
+        self.world.opened.commit()
+        self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.state(), self.baseline().state())
 
     if on_postgres():
         def test_the_lock_check_sees_a_write_held_off_while_the_lock_is_held(self):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from typing import Protocol
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +23,12 @@ ANOTHER_FILE = "~"
 Read = Callable[[Path], Iterable[bytes]]
 Write = Callable[[Path, Iterable[bytes]], str]
 Holds = Callable[[Path, str], bool]
+
+
+class CopyAhead(Protocol):
+    sha1: str
+
+    def publish(self, destination: Path) -> str: ...
 
 
 class PlaceFailed(RuntimeError):
@@ -187,7 +194,7 @@ def copies_into_google_only(decision: DedupeDecision, export: Export) -> bool:
 
 
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
-                      copied: Callable[[Placed], None] = lambda placed: None, ahead: paths.StagedPlacement | None = None) -> MediaItem:
+                      copied: Callable[[Placed], None] = lambda placed: None, ahead: CopyAhead | None = None) -> MediaItem:
     person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
@@ -293,7 +300,7 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
 
 
 def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Entry],
-          read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, ahead: paths.StagedPlacement | None = None) -> PlaceReport:
+          read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, ahead: CopyAhead | None = None) -> PlaceReport:
     report = PlaceReport()
     for entry in entries:
         decision = entry.decision

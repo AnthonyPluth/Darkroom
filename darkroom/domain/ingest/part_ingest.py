@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Final
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
@@ -153,6 +154,8 @@ class Ingest:
         self.used: dict[int, int | None] = {}
         self.texts: dict[int, str] = {}
         self.slot: tuple[int, contextlib.ExitStack, zipfile.ZipFile, dict[str, zipfile.ZipInfo]] | None = None
+        self.sweep_placements()
+        stack.callback(self.sweep_placements)
         stack.callback(self.close_archive)
 
     def commit(self) -> None:
@@ -176,6 +179,9 @@ class Ingest:
     def fail(self, entry: TakeoutEntry, stage: str, error: BaseException) -> None:
         entry.outcome, entry.done_at, entry.metadata_pending = FAILED, self.now, False
         run.item_failed(self.opened, self.export, stage, error, self.now)
+
+    def sweep_placements(self) -> None:
+        paths.sweep_placements(self.photos, self.person.slug, unpack.staging_name(self.export))
 
     def close_archive(self) -> None:
         if self.slot is not None:
@@ -402,6 +408,8 @@ class Ingest:
                                    [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
                                    self.tools.read, self.tools.write, ahead=ahead)
         except Exception as error:
+            if isinstance(error, OperationalError) and db.is_busy(error):
+                raise
             self.opened.rollback()
             self.fail(entry, "place", error)
             self.commit()
@@ -518,7 +526,6 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()
         photos = Photos(settings.photos_root)
-        paths.sweep_placements(photos, person.slug, unpack.staging_name(export))
         with contextlib.ExitStack() as stack:
             ingest = Ingest(opened, settings, photos, export, part, person, now, tools, stack)
             try:
@@ -530,5 +537,4 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
                 ingest.settle_rest()
             finally:
                 part_reader.sweep_part_scratch(photos, person, export)
-                paths.sweep_placements(photos, person.slug, unpack.staging_name(export))
             return ingest.finish(resumed)
