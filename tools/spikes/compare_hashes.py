@@ -24,6 +24,7 @@ SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
 EDITED = "-edited"
+SHOW_NAMES_HELP = "print real file names and full errors instead of item-N labels; for local debugging only, never paste this output into an issue or pull request"
 
 
 @dataclass(frozen=True)
@@ -203,12 +204,16 @@ def live_videos(media: list[Entry]) -> set[str]:
     return {e.name for e in media if e.suffix in VIDEO and (e.folder, Path(e.basename).stem.lower()) in stills}
 
 
-def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
+def label(name: str, number: int, show_names: bool) -> str:
+    return name if show_names else f"item-{number}"
+
+
+def takeout_report(export: Path, originals_root: Path, out: IO[str], show_names: bool = False) -> int:
     with contextlib.ExitStack() as stack:
-        return write_takeout_report(export_entries(export, stack), originals_root, out)
+        return write_takeout_report(export_entries(export, stack), originals_root, out, show_names)
 
 
-def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str]) -> int:
+def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str], show_names: bool = False) -> int:
     media = sorted((e for e in entries if is_media(e)), key=lambda e: e.name)
     sidecars: dict[str, list[Entry]] = {}
     for e in entries:
@@ -262,27 +267,27 @@ def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str
     print(f"Items found only under album folders: {percent(len(album_only), total)}", file=out)
     print(f"Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): {len(paired_videos)}", file=out)
     print(f"Other items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): {percent(len(lacking), total)}", file=out)
-    for entry in lacking[:5]:
+    for number, entry in enumerate(lacking[:5], start=1):
         meta = sidecar_of(entry, sidecars)
-        print(f"  {entry.basename}: {json.dumps(scrubbed(read_json(meta)), sort_keys=True) if meta else 'no sidecar'}", file=out)
+        print(f"  {label(entry.basename, number, show_names)}: {json.dumps(scrubbed(read_json(meta)), sort_keys=True) if meta else 'no sidecar'}", file=out)
     return 0
 
 
-def phone_report(phone_files: Path, originals_root: Path, out: IO[str]) -> int:
+def phone_report(phone_files: Path, originals_root: Path, out: IO[str], show_names: bool = False) -> int:
     originals = index_originals(originals_root)
     files = sorted(p for p in phone_files.rglob("*") if p.is_file() and p.suffix.lower() in MEDIA)
     identical = different = missing = 0
-    for path in files:
+    for number, path in enumerate(files, start=1):
         with path.open("rb") as handle:
             digest = sha1_stream(handle)
         if digest in originals.by_sha1:
             identical += 1
         elif path.name.lower() in originals.by_name:
             different += 1
-            print(f"  different bytes: {path.name}", file=out)
+            print(f"  different bytes: {label(path.name, number, show_names)}", file=out)
         else:
             missing += 1
-            print(f"  not on Unraid: {path.name}", file=out)
+            print(f"  not on Unraid: {label(path.name, number, show_names)}", file=out)
     print(f"Files exported from the iPhone: {len(files)}", file=out)
     print(f"Byte-identical on Unraid: {percent(identical, len(files))}", file=out)
     print(f"Same name, different bytes: {percent(different, len(files))}", file=out)
@@ -299,11 +304,19 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     phone = commands.add_parser("phone")
     phone.add_argument("--phone-files", type=Path, required=True)
     phone.add_argument("--originals", type=Path, required=True)
+    for command in (takeout, phone):
+        command.add_argument("--show-names", action="store_true", help=SHOW_NAMES_HELP)
     args = parser.parse_args(argv)
     out = out or sys.stdout
-    if args.mode == "takeout":
-        return takeout_report(args.export, args.originals, out)
-    return phone_report(args.phone_files, args.originals, out)
+    try:
+        if args.mode == "takeout":
+            return takeout_report(args.export, args.originals, out, args.show_names)
+        return phone_report(args.phone_files, args.originals, out, args.show_names)
+    except (OSError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
+        if args.show_names:
+            raise
+        print(f"Stopped: {type(error).__name__} while reading a file (rerun with --show-names, locally only, to see which)", file=out)
+        return 1
 
 
 if __name__ == "__main__":

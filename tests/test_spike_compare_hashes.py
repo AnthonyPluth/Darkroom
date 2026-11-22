@@ -115,7 +115,7 @@ class CompareTests(unittest.TestCase):
         self.assertIn("No counterpart in the originals: 1 (20.0%)", from_directory)
         self.assertIn("tag that differs in these: IFD0:Make", from_directory)
         self.assertIn("Items found only under album folders: 1 (20.0%)", from_directory)
-        self.assertIn("shared.jpg:", from_directory)
+        self.assertIn("item-1:", from_directory)
         self.assertIn('"fromSharedAlbum"', from_directory)
         self.assertNotIn(str(self.folder), from_directory)
         self.assertEqual(from_directory.split("originals indexed")[1], from_zip.split("originals indexed")[1])
@@ -167,7 +167,7 @@ class CompareTests(unittest.TestCase):
         self.assertIn(f"{lacking}4 (80.0%)", before)
         self.assertIn(f"{lacking}4 (66.7%)", after)
 
-    def test_phone_mode(self):
+    def build_phone(self):
         fixtures.make_jpeg(self.originals / "a.jpg", colour=(1, 1, 1))
         fixtures.make_jpeg(self.originals / "b.jpg", colour=(2, 2, 2))
         phone = self.folder / "phone"
@@ -175,12 +175,50 @@ class CompareTests(unittest.TestCase):
         (phone / "a.jpg").write_bytes((self.originals / "a.jpg").read_bytes())
         (phone / "b.jpg").write_bytes(b"different")
         (phone / "c.jpg").write_bytes(b"new")
+        return phone
+
+    def test_phone_mode(self):
+        phone = self.build_phone()
         code, text = run("phone", "--phone-files", str(phone), "--originals", str(self.originals))
         self.assertEqual(code, 0)
         self.assertIn("Files exported from the iPhone: 3", text)
         self.assertIn("Byte-identical on Unraid: 1 (33.3%)", text)
-        self.assertIn("different bytes: b.jpg", text)
-        self.assertIn("not on Unraid: c.jpg", text)
+        self.assertIn("different bytes: item-2", text)
+        self.assertIn("not on Unraid: item-3", text)
+
+    def file_names(self, *roots):
+        names = set()
+        for root in roots:
+            for path in root.rglob("*"):
+                if path.is_file():
+                    names.add(path.name)
+        return names
+
+    def test_default_output_names_no_file_and_show_names_does(self):
+        export = self.build_export()
+        phone = self.build_phone()
+        cases = (
+            (("takeout", "--export", str(export), "--originals", str(self.originals)), "shared.jpg", (export, self.originals)),
+            (("takeout", "--export", str(self.zipped(export)), "--originals", str(self.originals)), "shared.jpg", (export, self.originals)),
+            (("phone", "--phone-files", str(phone), "--originals", str(self.originals)), "c.jpg", (phone, self.originals)),
+        )
+        for argv, expected, roots in cases:
+            with self.subTest(mode=argv[0]):
+                _code, text = run(*argv)
+                for name in self.file_names(*roots):
+                    self.assertNotIn(name, text)
+                _code, named = run(*argv, "--show-names")
+                self.assertIn(expected, named)
+
+    def test_a_read_error_names_no_file_unless_asked(self):
+        export = self.build_export()
+        (export / "broken.zip").write_bytes(b"not a zip")
+        code, text = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        self.assertEqual(code, 1)
+        self.assertIn("Stopped: BadZipFile", text)
+        self.assertNotIn("broken", text)
+        with self.assertRaises(zipfile.BadZipFile):
+            run("takeout", "--export", str(export), "--originals", str(self.originals), "--show-names")
 
     def test_helpers(self):
         self.assertEqual(compare_hashes.percent(1, 0), "1")
