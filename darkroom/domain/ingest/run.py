@@ -14,11 +14,13 @@ from sqlalchemy.orm import Session
 from darkroom import config, dates, monitoring
 from darkroom.dates import utc_now
 from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, takeout_copies, xmp
-from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
+from darkroom.domain.ingest import metadata, pairing, part_pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
+from darkroom.storage.models import (
+    Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, TakeoutEntry, known_contents,
+)
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -31,6 +33,8 @@ PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
 PART_NOT_QUEUED = "not_queued"
 PART_QUEUED = "queued"
 PART_FAILED = "failed"
+PART_REFUSED = "refused"
+STOPPED_PARTS = (PART_FAILED, PART_REFUSED)
 PER_PART = "per_part"
 WHOLE = "whole"
 STARTED_STAGES = frozenset(STAGES[1:])
@@ -591,9 +595,9 @@ def adopt(opened: Session, export: Export, now: float) -> int:
     return len(parts)
 
 
-def requeue_failed(opened: Session, export: Export, now: float) -> int:
+def requeue_stopped(opened: Session, export: Export, now: float) -> int:
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
-                                                         ExportPart.ingest_state == PART_FAILED)).scalars())
+                                                         ExportPart.ingest_state.in_(STOPPED_PARTS))).scalars())
     for part in parts:
         part.ingest_state, part.ingest_queued_at = PART_QUEUED, now
     return len(parts)
@@ -615,11 +619,76 @@ def route_pending(opened: Session, settings: config.Settings, now: float) -> lis
     return adopted
 
 
+def failed_entries(opened: Session, export: Export) -> list[TakeoutEntry]:
+    return list(opened.execute(select(TakeoutEntry).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.copy_of_id.is_(None), TakeoutEntry.sha1.is_not(None),
+        TakeoutEntry.outcome == part_pairing.FAILED).order_by(TakeoutEntry.id)).scalars())
+
+
+def part_file_present(photos: Photos, person: Person, export: Export, part: ExportPart) -> bool:
+    try:
+        with unpack.open_part(photos, unpack.part_path(export, part, photos, person), part.number):
+            return True
+    except (unpack.UnpackFailed, paths.OutsideRoot):
+        return False
+
+
+def bytes_gone(photos: Photos, person: Person, export: Export, parts: dict[int, ExportPart], entry: TakeoutEntry) -> str | None:
+    if entry.decision_id is not None or (entry.held_path is not None and entry.held_state is None):
+        return None
+    part = parts.get(entry.part_number)
+    if part is not None and part.free_state is not None:
+        return f"part {entry.part_number} of this export was deleted to free space, so its failed items cannot be retried from it"
+    if part is None or not part_file_present(photos, person, export, part):
+        return f"part {entry.part_number} of this export is not in the inbox, so its failed items cannot be retried"
+    return None
+
+
+def recount(opened: Session, export: Export, parts: dict[int, ExportPart], numbers: set[int]) -> None:
+    query = select(TakeoutEntry.part_number, TakeoutEntry.outcome, func.count()).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.part_number.in_(numbers)).group_by(TakeoutEntry.part_number, TakeoutEntry.outcome)
+    found: dict[int, dict[str, int]] = {}
+    for number, outcome, count in opened.execute(query).all():
+        found.setdefault(number, {})[outcome] = count
+    for number in numbers:
+        part, counts = parts.get(number), found.get(number, {})
+        if part is not None:
+            part.held = counts.get(part_pairing.WAITING_SIDECAR, 0) + counts.get(part_pairing.WAITING_EXPORT, 0)
+            part.failed_items = counts.get(part_pairing.FAILED, 0)
+
+
+def retry_part_items(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
+    entries = failed_entries(opened, export)
+    if not entries:
+        raise NotReady("none of this export's failed items can be retried")
+    if photos is None:
+        raise NotReady("the inbox can't be read, so this export's failed items cannot be retried")
+    person = owner_person(opened, export)
+    parts = {part.number: part for part in exports.parts_of(opened, export.id)}
+    for entry in entries:
+        gone = bytes_gone(photos, person, export, parts, entry)
+        if gone is not None:
+            raise NotReady(gone)
+    for entry in entries:
+        decision = None if entry.decision_id is None else opened.get(DedupeDecision, entry.decision_id)
+        if decision is None:
+            entry.outcome, entry.decision_id = part_pairing.WAITING_EXPORT, None
+        else:
+            entry.outcome, entry.metadata_pending = part_pairing.decided_outcome(decision.tier, decision.takeout_item_id), True
+    opened.flush()
+    recount(opened, export, parts, {entry.part_number for entry in entries})
+    export.status, export.stage = "importing", "unpacked"
+    opened.add(ImportRun(export_id=export.id, started=now, status="queued", stage="unpacked"))
+    opened.flush()
+    monitoring.log("failed items queued for retry", export=export.id, items=len(entries))
+    return export
+
+
 def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
     if failed_items_run(opened, export) is None:
         raise AlreadyImported("this export is already imported")
     if route_of(opened, photos, export) == PER_PART:
-        raise NotReady("this export was imported part by part, which has no retry for failed items yet")
+        return retry_part_items(opened, export, photos, now)
     if photos is None or staging_of(opened, photos, export) is None:
         raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
     export.status, export.stage = "importing", "unpacked"
@@ -634,13 +703,17 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
         raise LookupError("no such export")
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
+    if (export.status == "downloading" and has_part_states(opened, export) and route_of(opened, photos, export) == PER_PART
+            and requeue_stopped(opened, export, utc_now().timestamp() if now is None else now)):
+        opened.flush()
+        return export
     if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
         raise NotReady("this export has not been downloaded yet")
     last = latest_run(opened, export.id)
     if route_of(opened, photos, export) == PER_PART:
         asked_at = utc_now().timestamp() if now is None else now
         adopt(opened, export, asked_at)
-        requeue_failed(opened, export, asked_at)
+        requeue_stopped(opened, export, asked_at)
         if export.status == "failed":
             if last is not None and last.status == "failed":
                 last.status = "queued"

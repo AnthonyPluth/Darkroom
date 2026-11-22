@@ -130,6 +130,14 @@ The cases the task names:
 | A part re-downloaded | If its central directory matches the ledger (same names, sizes and CRC-32s), it is the same part and nothing happens. If not, the part is refused, kept and alerted, and nothing is written: Takeout does not change a part's content, so a difference means a wrong file or a different export |
 | A crash while freeing a zip | Freeing is journalled (section 5); a restart finishes or refuses it and never records a zip as freed while it still exists, or as present once it is gone |
 
+### Retrying failed items and stopped parts (#513)
+
+An explicit import request (`POST /api/exports/{id}/import`, `run.request_import`) is the only way anything here runs again; Darkroom never retries on its own.
+
+- **A failed item of an imported per-part export** has no staging copy to be read again from, so it is retried through completion rather than through its part. Each failed media entry with no decision goes back to `waiting_export`, and the export goes back to `importing` at stage `unpacked` with a queued run, as the whole-export retry does. The next import tick finishes the export again: the failed entries are decided with the whole export as peers and placed, reading their bytes from the held store or the part's zip, and the counts, rescan and report run again. An entry whose decision stood but whose late-sidecar XMP fill failed keeps its decision; it gets back the outcome that decision gave it, with its fill pending again. While the retry waits or runs, the export isn't `imported` with a finished run, so neither a zip nor a held copy is freed (`export_busy`). The request is refused, changing nothing, when an item's part was freed and it has no held copy ("part N of this export was deleted to free space, so its failed items cannot be retried from it"), when the part's zip is not in the inbox, or when no failed item has the bytes it was read with (`sha1`) recorded.
+- **A part whose ingest failed or was refused** (`ingest_state` `failed` or `refused`) is queued again with the next request, also while the export is still downloading, and is read from the start like any queued part. A part refused again stays refused and keeps its file. Requeueing clears nothing: the `export_part_refused` event and the alert stay as they were.
+- The whole-export route is unchanged: its retry still needs the staging folder.
+
 ## 4. Disk budget
 
 For 25 parts of 53 GB, Z = 1.33 TB. Media is already compressed, so an unpacked part is about the size of its zip. Placed `google-only/` copies (G, the tier-5 share) and review holds (R) are the same in every column, so they are left out of the totals and written as "+ placed". H is the held items' bytes: items waiting for a sidecar (only those whose sidecar straddles a part boundary, expected to be few), edited copies (expected to be a few percent) and tier-2 candidates, whose share is unknown until spike #20's results table is filled in: it is the share of Takeout items whose bytes differ from the phone original.
@@ -199,7 +207,7 @@ What a freed zip could still have been needed for, and what the proposal does in
 | A bug in fingerprinting or a tier rule that should have placed or held an item Darkroom skipped (tier 1, 2 or 3) | Yes: the Takeout copy of a skipped item is gone. Google and the phone original still have the photo. While the export is still live, the part can be downloaded again (one of its remaining downloads); after it expires, only a new Takeout export brings it back |
 | Undo of a skip from the review queue | No: `dedupe.reverse` places nothing today |
 | A review "keep both" | No: it reads the review hold, which is checked against `ReviewItem.hold_sha1` rather than a staged copy (`review.kept_fields` already falls back to it) |
-| Retrying a failed item | Yes, and a part with a failed item is never freed |
+| Retrying a failed item | Yes, and a part with a failed item is never freed: retry reads the item from its part's zip, or from its held copy (which isn't freed while an entry of the export failed). If both are gone, the retry is refused and says so (#513) |
 
 Today the same skipped Takeout copies are deleted 14 days after completion, so the loss in the last-but-one row is not new; per-part freeing makes it happen within the export's own download window instead of two weeks later, and keeps everything else re-derivable from the database.
 
