@@ -119,6 +119,20 @@ class CompareTests(unittest.TestCase):
         self.assertNotIn(str(self.folder), from_directory)
         self.assertEqual(from_directory.split("originals indexed")[1], from_zip.split("originals indexed")[1])
 
+    def test_a_multi_part_export_with_sidecars_in_another_part_gives_the_same_counts(self):
+        stage = self.build_export()
+        _, from_directory = run("takeout", "--export", str(stage), "--originals", str(self.originals))
+        target = self.folder / "parts"
+        target.mkdir()
+        files = sorted(p for p in stage.rglob("*") if p.is_file())
+        with zipfile.ZipFile(target / "takeout-001.zip", "w") as media, zipfile.ZipFile(target / "takeout-002.zip", "w") as sidecars:
+            for path in files:
+                (sidecars if path.suffix == ".json" else media).write(path, path.relative_to(stage).as_posix())
+        _, from_parts = run("takeout", "--export", str(target), "--originals", str(self.originals))
+        self.assertIn("Media files in the export: 5", from_parts)
+        self.assertIn("lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): 4 (80.0%)", from_parts)
+        self.assertEqual(from_directory.split("originals indexed")[1], from_parts.split("originals indexed")[1])
+
     def test_live_photo_video_missing_from_the_export_is_counted(self):
         export = self.build_export()
         _code, text = run("takeout", "--export", str(export), "--originals", str(self.originals))
