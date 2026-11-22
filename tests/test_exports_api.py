@@ -2,13 +2,15 @@ import json
 import sqlite3
 import threading
 import unittest
+from typing import get_args
 from unittest import mock
 
-from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from darkroom.dates import utc_now
 from darkroom.domain import browser_jobs, downloads, exports
+from darkroom.domain.ingest import part_reader
 from darkroom.storage import db
 from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount, TakeoutEntry
 from tests.api_world import ApiCase
@@ -413,6 +415,32 @@ class ExportsApiIngestFieldTests(ApiCase):
         export = self.listed(export_id)
         self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", None), ("failed", None)])
         self.assertEqual(export["parts_ingested"], 0)
+
+    def test_a_refused_part_reports_each_refusal_reason_and_nothing_else_about_its_entries(self):
+        reasons = get_args(part_reader.Refusal)
+        export_id = self.add_export("g-reasons", [{"ingest_state": "refused", "ingest_refusal": reason, "entries": 3, "entries_done": 1, "failed_items": 1}
+                                                  for reason in reasons])
+        for number in range(1, len(reasons) + 1):
+            self.entries(export_id, number, waiting_sidecar=1, failed=1)
+        replies = []
+        with no_leaks(self, "canary-1-waiting_sidecar", "canary-2-failed", replies=replies):
+            export = self.listed(export_id)
+            replies.append(json.dumps(export).encode())
+            replies.append(json.dumps(self.call("GET", "/api/exports")[1]).encode())
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", reason) for reason in reasons])
+        self.assertEqual(export["parts_ingested"], 0)
+
+    def test_a_part_never_refused_and_a_part_read_again_after_a_refusal_report_no_refusal(self):
+        export_id = self.add_export("g-again", [{"ingest_state": "ingested", "entries": 2, "entries_done": 2}, {"ingest_state": "ingested", "failed_items": 1},
+                                                {"ingest_state": "ingesting", "ingest_refusal": "zip_bomb"}, {"ingest_state": "queued"}])
+        export = self.listed(export_id)
+        self.assertEqual([part["kept_reason"] for part in export["parts"]], [None, "failed_item", None, None])
+
+    def test_a_refusal_outside_the_readers_reasons_is_not_stored(self):
+        export_id = self.add_export("g-bad", [{"ingest_state": "refused"}])
+        with self.assertRaises(IntegrityError), db.session(self.engine) as opened:
+            opened.execute(update(ExportPart).where(ExportPart.export_id == export_id).values(ingest_refusal="canary-/photos/IMG_1.JPG"))
+        self.assertEqual(self.listed(export_id)["parts"][0]["kept_reason"], None)
 
     def test_every_export_is_counted_in_one_ledger_query_not_one_per_part(self):
         export_id = self.add_export("g-queries", [{"ingest_state": "ingested", "entries": 1, "held": 1} for _ in range(6)])
