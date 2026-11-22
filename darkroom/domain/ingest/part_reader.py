@@ -342,6 +342,8 @@ def entry_chunks(archive: zipfile.ZipFile, info: zipfile.ZipInfo, number: int, s
 
 
 def stream_one(photos: Photos, person: Person, export: Export, archive: zipfile.ZipFile, row: TakeoutEntry, info: zipfile.ZipInfo) -> Streamed:
+    if info.file_size != row.bytes or row.crc32 != info.CRC:
+        raise PartRefused("bytes_differ", f"part {row.part_number}'s files don't match the part read before")
     target = paths.scratch_file(photos, person.slug, unpack.staging_name(export), scratch_name(row))
     seen = [0]
     sha1 = paths.write_inbox_once(photos, target, entry_chunks(archive, info, row.part_number, seen))
@@ -378,7 +380,7 @@ def stream_media(opened: Session, photos: Photos, person: Person, export: Export
         read.batches += 1
 
 
-def sweep(photos: Photos, person: Person, export: Export) -> None:
+def sweep_part_scratch(photos: Photos, person: Person, export: Export) -> None:
     paths.sweep_scratch(photos, person.slug, unpack.staging_name(export))
 
 

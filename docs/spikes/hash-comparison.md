@@ -1,6 +1,6 @@
 # Spike: hash comparison
 
-Settles four open questions in `docs/SPEC.md#open-questions` by hashing real files. The tool is `tools/spikes/compare_hashes.py` (Python 3.14 and `exiftool` only; it reads files and writes nothing, and prints file names only, never folders). The owner runs it on Unraid against the hand-downloaded export and the sample iPhone files from issue #11, and fills in the Results table.
+Settles four open questions in `docs/SPEC.md#open-questions` by hashing real files. The tool is `tools/spikes/compare_hashes.py` (the standard library of the Python the repository targets, 3.15, and `exiftool`; nothing from the app; it reads files and writes nothing, and by default prints no file or folder names: the few items it lists are labelled `item-1`, `item-2`, …, and an error that stops it names only the kind of error). The owner runs it on Unraid against the hand-downloaded export and the sample iPhone files from issue #11, and fills in the Results table.
 
 ## Method
 
@@ -9,11 +9,22 @@ python tools/spikes/compare_hashes.py takeout --export <folder of zips, one zip,
 python tools/spikes/compare_hashes.py phone --phone-files <folder of files exported straight from an iPhone> --originals <the same originals/ folder>
 ```
 
-`takeout` reads every photo and video in the export (zip members are streamed, never extracted) and compares SHA-1 with the originals, then by name and size, then by name alone. For files with the same name it compares the tags exiftool reads on each side and lists the ten tags that differ most often. It also reports Live Photos (a still in the originals with a video of the same name: is the video in the export, by hash or by name), items that sit only under album folders (no copy under a `Photos from YYYY` folder), and items whose sidecar lacks `googlePhotosOrigin.mobileUpload`, with up to five sidecars shown as key names and value types only.
+`takeout` reads every photo and video in the export (zip members are streamed in 1 MiB chunks, never extracted, and each part is opened once, so a multi-part export of any size is never held in memory) and compares SHA-1 with the originals, then by name and size, then by name alone. For files with the same name it compares the tags exiftool reads on each side and lists the ten tags that differ most often. It also reports Live Photos (a still in the originals with a video of the same name: is the video in the export, by hash or by name), items that sit only under album folders (no copy under a `Photos from YYYY` folder), and items whose sidecar lacks `googlePhotosOrigin.mobileUpload`, with up to five sidecars shown under `item-N` labels as key names and value types only. A video beside a still of the same name in the export is counted as a Live Photo video and left out of that count, since Takeout usually gives the video no sidecar of its own (docs/spikes/takeout-metadata-vs-gpth.md, row 16). The video half may come out as `.MP4` where the original is `.MOV`; the Live Photo check matches by hash first and then by stem, ignoring the extension, but only for stems that one original Live Photo uses. Stems are compared case-sensitively everywhere, since camera names repeat and only a same-case pair is a Live Photo (`IMG_0001.jpg` and `img_0001.MOV` are not one; docs/spikes/takeout-metadata-vs-gpth.md, section 1).
 
 The `googlePhotosOrigin.mobileUpload` key as the marker of an item uploaded from a phone is assumed from the sidecar format; check it against your export's own sidecars and say so in the table if it is different.
 
 `phone` compares files exported unmodified from an iPhone (AirDrop or Files with "All Photos Data") with the copies on Unraid: the ones Möbius Sync delivered, or originals downloaded from Immich once its app backs the phone up.
+
+## What the owner runs
+
+On Unraid, from a checkout of the repository, with `exiftool` on the path (without it the tag list is empty and everything else still works):
+
+```text
+python3 tools/spikes/compare_hashes.py takeout --export /mnt/user/<the #11 Takeout download> --originals /mnt/user/<person>/originals
+python3 tools/spikes/compare_hashes.py phone --phone-files /mnt/user/<the #11 iPhone samples> --originals /mnt/user/<person>/originals
+```
+
+Both modes only read. Paste the default output of each into #20: it holds counts, percentages, exiftool tag names, sidecar key names and `item-N` labels, and no file name, folder or sidecar value. `--show-names` swaps the labels for real file names and lets errors through in full, to find a listed item on your own machine; never paste its output into an issue or a pull request (AGENTS.md, "Personal data in the repo"). Fill in the table below from the default output and close the issue.
 
 ## Results
 

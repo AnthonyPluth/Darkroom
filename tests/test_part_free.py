@@ -641,6 +641,42 @@ class ClauseTests(unittest.TestCase):
         self.assertEqual((report.held, report.kept, self.world.held_store()), (0, 1, held))
         self.assertEqual(self.world.kind_of_events("export_held_kept"), ["1 held copies: decision_unsafe"])
 
+    def test_a_second_pass_over_held_copies_kept_on_the_ledger_walks_no_folder_and_takes_no_write_lock(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(TIER_2), decision_id=None):
+            self.world.free(at=NOW + 3 * TICK)
+            with (mock.patch.object(part_free.db, "write_lock", wraps=part_free.db.write_lock) as locked,
+                  mock.patch.object(part_free.paths, "leftovers", wraps=part_free.paths.leftovers) as walked,
+                  mock.patch.object(part_free.paths, "put_back_claimed", wraps=part_free.paths.put_back_claimed) as recovered,
+                  mock.patch.object(part_free.paths, "inbox_fingerprint", wraps=part_free.paths.inbox_fingerprint) as hashed):
+                report = self.world.free(at=NOW + 4 * TICK)
+            self.assertEqual((locked.call_count, walked.call_count, recovered.call_count, hashed.call_count), (0, 0, 0, 0))
+            self.assertEqual((report.held, report.kept, self.world.entry(TIER_2).held_state, self.world.held_store()), (0, 1, None, held))
+            self.assertEqual(self.world.kind_of_events("export_held_kept"), ["1 held copies: decision_unsafe"])
+        report = self.world.free(at=NOW + 5 * TICK)
+        self.assertEqual((report.held, self.world.entry(TIER_2).held_state, self.world.held_store()), (1, "freed", {}))
+
+    def test_held_copies_kept_because_the_export_is_not_settled_are_kept_without_the_write_lock(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(PLACED), outcome="failed"):
+            with mock.patch.object(part_free.db, "write_lock", wraps=part_free.db.write_lock) as locked:
+                report = self.world.free(at=NOW + 3 * TICK)
+            self.assertEqual((locked.call_count, report.held, report.kept, self.world.held_store()), (0, 0, 1, held))
+            self.assertIn("held copies: failed_entry", self.world.kind_of_events("export_held_kept"))
+
+    def test_a_held_copy_left_freeing_by_a_crash_is_never_skipped_on_the_ledger(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(TIER_2), held_state="freeing", decision_id=None):
+            with mock.patch.object(part_free, "recover_held_claims", wraps=part_free.recover_held_claims) as recovered:
+                self.world.free(at=NOW + 3 * TICK)
+            self.assertEqual((recovered.call_count, self.world.entry(TIER_2).held_state, self.world.held_store()), (1, None, held))
+
     def test_the_held_store_writers_own_refusals(self):
         waiting = self.world.entry(TIER_2)
         rows = part_free.part_rows(self.world.opened, self.world.opened.get(Export, self.export.id), self.world.part(self.export, 2))
@@ -655,6 +691,137 @@ class ClauseTests(unittest.TestCase):
         with self.assertRaises(part_free.Refused) as refused:
             part_free.hold_waiting(self.world.opened, self.world.photos, owner, export, self.world.part(self.export, 1))
         self.assertEqual(refused.exception.reason, "zip_missing")
+
+
+class KeptPartTests(unittest.TestCase):
+    def setUp(self):
+        self.world = FreeWorld(self)
+        self.export = self.world.made()
+        self.placed = self.world.placed_file()
+        self.photo = self.placed.read_bytes()
+
+    def kept_on_a_hash(self, at=NOW + TICK):
+        swap(self.placed, b"not the photo that was placed")
+        report = self.world.free(at=at)
+        self.assertEqual((report.parts, report.kept, self.world.states()), (1, 1, [(1, None), (2, "freed")]))
+        self.assertEqual(self.world.kind_of_events("export_part_kept"), ["part 1: hash_differs"])
+        return self.world.part(self.export, 1)
+
+    @contextlib.contextmanager
+    def counted(self):
+        with (mock.patch.object(part_free.db, "write_lock", wraps=part_free.db.write_lock) as locked,
+              mock.patch.object(part_free.paths, "inbox_fingerprint", wraps=part_free.paths.inbox_fingerprint) as inbox,
+              mock.patch.object(part_free.paths, "plain_fingerprint", wraps=part_free.paths.plain_fingerprint) as plain):
+            calls = {}
+            yield calls
+        calls.update(locked=locked.call_count, hashed=inbox.call_count + plain.call_count)
+
+    def again(self, at=NOW + 2 * TICK):
+        zipped = self.world.zip_of(1)
+        before = zipped.read_bytes()
+        with self.counted() as calls:
+            report = self.world.free(at=at)
+        self.assertEqual((report.parts, report.kept, dict(self.world.states())[1], zipped.read_bytes()), (0, 1, None, before))
+        self.assertEqual(self.world.kind_of_events("export_part_kept"), ["part 1: hash_differs"])
+        return calls
+
+    def test_a_second_pass_over_a_part_kept_on_a_hash_hashes_no_file_and_takes_no_write_lock(self):
+        part = self.kept_on_a_hash()
+        self.assertEqual((part.free_kept_at, len(part.free_kept_key or "")), (NOW + TICK, 64))
+        for tick in (2, 3):
+            with self.subTest(tick=tick):
+                self.assertEqual(self.again(at=NOW + tick * TICK), {"locked": 0, "hashed": 0})
+
+    def test_a_part_kept_on_a_hash_is_freed_on_a_later_tick_once_its_file_is_put_right(self):
+        self.kept_on_a_hash()
+        self.again()
+        swap(self.placed, self.photo)
+        report = self.world.free(at=NOW + 3 * TICK)
+        part = self.world.part(self.export, 1)
+        self.assertEqual((report.parts, part.free_state, part.free_kept_at, part.free_kept_key), (1, "freed", None, None))
+        self.assertEqual(self.world.zips(), {})
+
+    def test_a_remembered_identity_that_changed_is_proved_again_in_full(self):
+        self.kept_on_a_hash()
+        zipped = self.world.zip_of(1)
+        changes = {
+            "the placed file was rewritten in place": lambda: self.placed.write_bytes(b"still not the photo that was placed"),
+            "the placed file was touched": lambda: os.utime(self.placed, ns=(self.placed.stat().st_atime_ns, self.placed.stat().st_mtime_ns + 10**9)),
+            "the zip was touched": lambda: os.utime(zipped, ns=(zipped.stat().st_atime_ns, zipped.stat().st_mtime_ns + 10**9)),
+            "the part's ingest time differs": lambda: self.world.change(self.world.part(self.export, 1), ingested_at=self.world.part(self.export, 1).ingested_at - 1.0),
+        }
+        for tick, (what, change) in enumerate(changes.items(), start=2):
+            with self.subTest(what=what):
+                change()
+                calls = self.again(at=NOW + tick * TICK)
+                self.assertGreater(calls["hashed"], 0)
+                self.assertGreater(calls["locked"], 0)
+                self.assertEqual(self.again(at=NOW + tick * TICK + 1.0), {"locked": 0, "hashed": 0})
+
+    def test_a_missing_corrupted_stale_or_future_memo_falls_back_to_the_full_proof(self):
+        self.kept_on_a_hash()
+        cases = {
+            "corrupted key": {"free_kept_key": "not a key"},
+            "another part's key": {"free_kept_key": "0" * 64},
+            "no key": {"free_kept_key": None},
+            "no time": {"free_kept_at": None},
+            "a time in the future": {"free_kept_at": NOW + 10**6},
+            "older than the back-off": {"free_kept_at": NOW + TICK - part_free.REPROVE_AFTER},
+        }
+        for tick, (what, values) in enumerate(cases.items(), start=2):
+            with self.subTest(what=what):
+                self.world.change(self.world.part(self.export, 1), **values)
+                calls = self.again(at=NOW + tick * TICK)
+                self.assertGreater(calls["hashed"], 0)
+                self.assertGreater(calls["locked"], 0)
+                part = self.world.part(self.export, 1)
+                self.assertEqual((part.free_kept_at, len(part.free_kept_key or "")), (NOW + tick * TICK, 64))
+
+    def test_the_back_off_proves_a_kept_part_again_after_its_time(self):
+        self.kept_on_a_hash()
+        self.assertEqual(self.again(at=NOW + TICK + part_free.REPROVE_AFTER - 1.0), {"locked": 0, "hashed": 0})
+        calls = self.again(at=NOW + TICK + part_free.REPROVE_AFTER)
+        self.assertGreater(calls["hashed"], 0)
+
+    def test_a_part_left_freeing_or_with_a_claim_beside_its_zip_is_never_kept_on_its_memo(self):
+        self.kept_on_a_hash()
+        self.world.change(self.world.part(self.export, 1), free_state="freeing", free_started_at=NOW)
+        calls = self.again()
+        self.assertGreater(calls["hashed"], 0)
+        stray = self.world.folder() / f"{paths.FREEING_CLAIM}0000000000000000"
+        stray.mkdir()
+        calls = self.again(at=NOW + 3 * TICK)
+        self.assertGreater(calls["hashed"], 0)
+        stray.rmdir()
+        self.assertEqual(self.again(at=NOW + 4 * TICK), {"locked": 0, "hashed": 0})
+
+    def test_a_hash_that_differs_while_the_file_changed_is_not_remembered(self):
+        real = paths.plain_fingerprint
+
+        def changing(path):
+            digest, identity = real(path)
+            return (digest, (*identity[:3], identity[3] + 1, identity[4])) if path.name == self.placed.name else (digest, identity)
+
+        swap(self.placed, b"not the photo that was placed")
+        with mock.patch.object(part_free.paths, "plain_fingerprint", side_effect=changing):
+            self.world.free()
+        part = self.world.part(self.export, 1)
+        self.assertEqual((part.free_state, part.free_kept_at, part.free_kept_key), (None, NOW + TICK, None))
+        self.assertGreater(self.again()["hashed"], 0)
+
+    def test_a_part_kept_for_a_ledger_reason_is_kept_again_without_the_write_lock_and_freed_once_it_clears(self):
+        item = self.world.opened.get(MediaItem, self.world.entry(PLACED).item_id)
+        sha1 = item.sha1
+        self.world.change(item, sha1="0" * 40)
+        self.world.free()
+        self.assertEqual(self.world.kind_of_events("export_part_kept"), ["part 1: placed_differs"])
+        with self.counted() as calls:
+            report = self.world.free(at=NOW + 2 * TICK)
+        self.assertEqual((calls, report.kept, dict(self.world.states())[1]), ({"locked": 0, "hashed": 0}, 1, None))
+        self.assertEqual(self.world.kind_of_events("export_part_kept"), ["part 1: placed_differs"])
+        self.world.change(self.world.opened.get(MediaItem, item.id), sha1=sha1)
+        self.assertEqual(self.world.free(at=NOW + 3 * TICK).parts, 1)
+        self.assertEqual(self.world.states(), [(1, "freed"), (2, "freed")])
 
 
 class SwappedFileTests(unittest.TestCase):
@@ -758,6 +925,25 @@ class ClaimRecoveryTests(unittest.TestCase):
         self.assertEqual((self.world.entry(TIER_2).held_state, copy.exists(), paths.inbox_entry_absent(self.world.photos, copy)), ("freeing", False, False))
         self.world.free(at=NOW + 4 * TICK)
         self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store(), paths.inbox_entry_absent(self.world.photos, copy)), ("freed", {}, True))
+        self.assertEqual([path.name for path in (self.world.root / "_inbox/jo/held").rglob("*") if path.name.startswith(paths.FREEING_CLAIM)], [])
+
+    def test_a_claim_left_after_a_failed_put_back_is_put_back_even_when_the_ledger_alone_keeps_every_row(self):
+        self.finished()
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            self.world.free(at=NOW + 3 * TICK)
+        self.world.reopen()
+        copy = self.world.held_copy()
+        self.world.change(self.world.entry(TIER_2), held_state=None, decision_id=None)
+        self.assertFalse(copy.exists())
+        self.world.free(at=NOW + 4 * TICK)
+        claims = [path.name for path in (self.world.root / "_inbox/jo/held").rglob("*") if path.name.startswith(paths.FREEING_CLAIM)]
+        self.assertEqual((copy.exists(), claims, self.world.entry(TIER_2).held_state), (True, [], None))
 
     def came_back(self, path):
         real = os.unlink

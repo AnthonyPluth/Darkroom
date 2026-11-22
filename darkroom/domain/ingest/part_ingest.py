@@ -30,10 +30,10 @@ FAILED_PART: Final = "failed"
 LISTED: Final = part_pairing.LISTED
 WAITING_SIDECAR: Final = part_pairing.WAITING_SIDECAR
 WAITING_EXPORT: Final = part_pairing.WAITING_EXPORT
-PLACED: Final = "placed"
-REVIEW: Final = "review"
-SKIPPED: Final = "skipped"
-FAILED: Final = "failed"
+PLACED: Final = part_pairing.PLACED
+REVIEW: Final = part_pairing.REVIEW
+SKIPPED: Final = part_pairing.SKIPPED
+FAILED: Final = part_pairing.FAILED
 RECORDED: Final = "recorded"
 HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
@@ -124,7 +124,7 @@ def failed(opened: Session, settings: config.Settings, export_id: int, number: i
 def refuse(opened: Session, settings: config.Settings, export: Export, part: ExportPart, refused: part_reader.PartRefused, now: float,
            tools: run.Tools) -> PartIngest:
     opened.rollback()
-    part.ingest_state = REFUSED
+    part.ingest_state, part.ingest_refusal = REFUSED, refused.reason
     events.record(opened, now, "export_part_refused", f"export {export.id}", f"part {part.number}: {refused.public}")
     alerts.open_alert(opened, settings, f"part:refused:{export.id}:{part.number}", "failure", f"export {export.id}",
                       alerts.failure(f"Reading part {part.number} of export {export.id}"), None, now, notifier=tools.notifier,
@@ -198,7 +198,7 @@ class Ingest:
         return archive, infos
 
     def release_scratch(self) -> None:
-        part_reader.sweep(self.photos, self.person, self.export)
+        part_reader.sweep_part_scratch(self.photos, self.person, self.export)
         self.scratch.clear()
         self.measured.clear()
         self.used.clear()
@@ -312,8 +312,13 @@ class Ingest:
             self.decide(entry)
         for chunk in part_reader.batches_of([entry for entry in ready if entry.id not in sources], part_reader.BATCH_FILES, part_reader.BATCH_BYTES):
             self.release_scratch()
+            wanted = [Target(entry, entry.sidecar_entry_id) for entry in chunk if self.needs_fields(entry)]
+            if wanted:
+                self.measure(wanted)
+                self.commit()
             for entry in chunk:
-                self.decide(entry)
+                if entry.outcome != FAILED:
+                    self.decide(entry)
         self.close_archive()
         for entry in result.metadata_due:
             if states.get(entry.part_number) in (INGESTING, INGESTED):
@@ -325,6 +330,15 @@ class Ingest:
         if entry.id in self.measured and self.used.get(entry.id) == entry.sidecar_entry_id:
             return True
         return entry.id in self.measure([Target(entry, entry.sidecar_entry_id)])
+
+    def needs_fields(self, entry: TakeoutEntry) -> bool:
+        row = dedupe.stored_decision(self.opened, self.export.id, entry.name)
+        if row is None:
+            return not part_pairing.is_tier_1(self.index, part_pairing.candidate_of(entry))
+        return row.tier in (4, 5) and not self.settled_elsewhere(row)
+
+    def settled_elsewhere(self, row: DedupeDecision) -> bool:
+        return row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id))
 
     def decide(self, entry: TakeoutEntry) -> None:
         self.lock()
@@ -371,7 +385,7 @@ class Ingest:
 
     def place_decided(self, entry: TakeoutEntry, row: DedupeDecision, named: Path | None = None) -> None:
         self.lock()
-        if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id)):
+        if self.settled_elsewhere(row):
             self.finish_entry(entry, row)
             return
         new_row = row.tier == 5 and row.takeout_item_id is None
@@ -401,11 +415,9 @@ class Ingest:
             self.changed.add(owner)
 
     def finish_entry(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+        entry.outcome = part_pairing.decided_outcome(row.tier, row.takeout_item_id)
         if row.tier == 5:
-            entry.outcome = PLACED if row.takeout_item_id is not None else SKIPPED
             entry.item_id = row.takeout_item_id
-        else:
-            entry.outcome = REVIEW if row.tier == 4 else SKIPPED
         entry.decision_id, entry.done_at = row.id, self.now
         self.commit()
 
@@ -484,7 +496,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
         resumed = part.ingest_state == INGESTING
-        part.ingest_state = INGESTING
+        part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()
         photos = Photos(settings.photos_root)
         with contextlib.ExitStack() as stack:
@@ -497,5 +509,5 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             try:
                 ingest.settle_rest()
             finally:
-                part_reader.sweep(photos, person, export)
+                part_reader.sweep_part_scratch(photos, person, export)
             return ingest.finish(resumed)

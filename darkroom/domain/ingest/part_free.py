@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import zlib
 import zipfile
@@ -30,12 +32,17 @@ KEPT: Final = "export_part_kept"
 HELD_KEPT: Final = "export_held_kept"
 WORTH_AN_EVENT: Final = frozenset({"unknown_entry", "listing_differs", "unreadable", "placed_differs", "review_differs", "held_differs",
                                    "hash_differs", "changed", "zip_changed"})
+HASH_DIFFERS: Final = "hash_differs"
+KEY_VERSION: Final = 1
+REPROVE_AFTER: Final = 6 * 3600.0
 
 
 class Refused(Exception):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, settled: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.settled = settled
+        self.key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -283,7 +290,7 @@ def hashed(photos: Photos, found: Checked) -> None:
     except paths.OutsideRoot as error:
         raise Refused("changed") from error
     if digest != found.sha1:
-        raise Refused("hash_differs")
+        raise Refused(HASH_DIFFERS, settled=identity == found.identity)
     if identity != found.identity:
         raise Refused("changed")
 
@@ -304,6 +311,23 @@ def confirm(photos: Photos, first: Proof, second: Proof) -> Identity:
 
 def part_rows(opened: Session, export: Export, part: ExportPart) -> list[TakeoutEntry]:
     return part_reader.recorded(opened, export, part)
+
+
+def proof_key(part: ExportPart, proof: Proof) -> str:
+    files = sorted([str(found.path), found.sha1, list(found.identity), found.in_the_inbox] for found in proof.files.values())
+    said = json.dumps([KEY_VERSION, part.id, part.number, part.ingested_at, part.bytes, None if proof.zip is None else list(proof.zip), files],
+                      separators=(",", ":"))
+    return hashlib.sha256(said.encode("utf-8")).hexdigest()
+
+
+def hash_first(photos: Photos, part: ExportPart, proof: Proof) -> None:
+    try:
+        for found in proof.files.values():
+            hashed(photos, found)
+    except Refused as refused:
+        if refused.reason == HASH_DIFFERS and refused.settled and proof.zip is not None:
+            refused.key = proof_key(part, proof)
+        raise
 
 
 def prove_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, hashing: bool,
@@ -393,6 +417,7 @@ def zip_present(photos: Photos, person: Person, export: Export, part: ExportPart
 
 def record_freed(opened: Session, export: Export, part: ExportPart, removed: int, now: float, report: FreeReport) -> None:
     part.free_state, part.freed_at, part.bytes_freed = FREED, now, removed
+    part.free_kept_at, part.free_kept_key = None, None
     events.record(opened, now, "export_part_freed", f"export {export.id}", f"part {part.number}: {removed} bytes")
     report.parts += 1
     report.bytes += removed
@@ -407,7 +432,41 @@ def lock(opened: Session, export: Export, part: ExportPart) -> None:
     opened.refresh(part)
 
 
+def remembered(part: ExportPart, now: float) -> bool:
+    return part.free_state is None and part.free_kept_at is not None and 0.0 <= now - part.free_kept_at < REPROVE_AFTER
+
+
+def no_claims_left(photos: Photos, person: Person, export: Export, part: ExportPart) -> bool:
+    try:
+        return not paths.claims_left_in(photos, zip_path(photos, person, export, part).parent)
+    except (OSError, paths.OutsideRoot, paths.LinkRefused, Refused):
+        return False
+
+
+def kept_unchanged(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> bool:
+    if not remembered(part, now):
+        return False
+    opened.commit()
+    opened.expire_all()
+    if not remembered(part, now) or not no_claims_left(photos, person, export, part):
+        return False
+    try:
+        proof = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=False)
+    except Refused as refused:
+        reason = refused.reason
+    else:
+        if part.free_kept_key is None or part.free_kept_key != proof_key(part, proof):
+            return False
+        reason = HASH_DIFFERS
+    kept(opened, export, f"part {part.number}", KEPT, reason, now)
+    report.kept += 1
+    opened.commit()
+    return True
+
+
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
+    if kept_unchanged(opened, photos, person, export, part, now, report):
+        return
     lock(opened, export, part)
     try:
         recover_claim(photos, zip_path(photos, person, export, part), export)
@@ -422,7 +481,8 @@ def free_part(opened: Session, photos: Photos, person: Person, export: Export, p
         return
     opened.commit()
     try:
-        first = prove_part(opened, photos, person, export, part, now, hashing=True, require_held=False)
+        first = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=False)
+        hash_first(photos, part, first)
         hold_waiting(opened, photos, person, export, part)
         opened.commit()
         if part.free_state is None:
@@ -442,6 +502,7 @@ def free_part(opened: Session, photos: Photos, person: Person, export: Export, p
         lock(opened, export, part)
         if part.free_state == FREEING:
             part.free_state, part.free_started_at = None, None
+        part.free_kept_at, part.free_kept_key = now, refused.key
         kept(opened, export, f"part {part.number}", KEPT, refused.reason, now)
         report.kept += 1
         opened.commit()
@@ -539,11 +600,66 @@ def recover_held_claims(photos: Photos, export: Export, rows: list[TakeoutEntry]
         recover_claim(photos, path, export)
 
 
+def ledger_kept(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry]) -> dict[str, int] | None:
+    if export.status != IMPORTED:
+        raise Refused("export_busy")
+    shared_checks(opened, export)
+    if any_failed(opened, export):
+        raise Refused("failed_entry")
+    kept_rows: dict[str, int] = {}
+    for row in rows:
+        try:
+            if row.metadata_pending:
+                raise Refused("metadata_unrecorded")
+            Prover(opened, photos, export, on_disk=False).media(row, allow_held=False)
+        except Refused as refused:
+            kept_rows[refused.reason] = kept_rows.get(refused.reason, 0) + 1
+            continue
+        return None
+    return kept_rows
+
+
+def claims_may_be_left(photos: Photos, export: Export, rows: list[TakeoutEntry]) -> bool:
+    folders = set()
+    for row in rows:
+        try:
+            folders.add(paths.held_copy_at(photos, row.held_path or "", export_name(export)).parent)
+        except (paths.NotAHeldCopy, paths.OutsideRoot):
+            return True
+    for folder in folders:
+        try:
+            if paths.claims_left_in(photos, folder):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, paths.OutsideRoot, paths.LinkRefused):
+            return True
+    return False
+
+
+def all_kept_on_the_ledger(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], now: float, report: FreeReport) -> bool:
+    if any(row.held_state == FREEING for row in rows) or claims_may_be_left(photos, export, rows):
+        return False
+    try:
+        kept_rows = ledger_kept(opened, photos, export, rows)
+    except Refused as refused:
+        kept(opened, export, "held copies", HELD_KEPT, refused.reason, now)
+        report.kept += 1
+        opened.commit()
+        return True
+    if kept_rows is None:
+        return False
+    keep_held(opened, export, kept_rows, now)
+    report.kept += sum(kept_rows.values())
+    opened.commit()
+    return True
+
+
 def free_held(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
     opened.commit()
     opened.expire_all()
     rows = held_rows(opened, export)
-    if not rows:
+    if not rows or all_kept_on_the_ledger(opened, photos, export, rows, now, report):
         return
     recover_held_claims(photos, export, rows)
     try:

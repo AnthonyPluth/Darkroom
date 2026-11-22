@@ -1,11 +1,14 @@
 import json
 import unittest
+import zipfile
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import event, select
 
 from darkroom.domain import exports
-from darkroom.domain.ingest import finish_export, part_reader, run
+from darkroom.domain.ingest import finish_export, metadata, part_free, part_reader, place, run
+from darkroom.storage import paths
 from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -469,6 +472,160 @@ class CrashTests(unittest.TestCase):
         self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW + 5, world.tools), [])
         self.assertEqual((world.comparable(), world.run_row(), world.count(Event), world.count(Alert)), before)
         self.assertEqual(world.count(ImportRun), 1)
+
+
+def failing_place(name):
+    real = place.place
+
+    def broken(opened, photos, export, entries, *args, **kwargs):
+        if any(entry.named is not None and entry.named.name == name for entry in entries):
+            raise place.PlaceFailed("both names are taken by other files")
+        return real(opened, photos, export, entries, *args, **kwargs)
+
+    return mock.patch.object(place, "place", side_effect=broken)
+
+
+class PerPartRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.world = FinishWorld(self)
+        self.export = self.world.create(self.world.scenario)
+
+    def imported_with_a_failed_item(self, name="IMG_2001.JPG"):
+        with failing_place(name):
+            self.world.ingest_all(self.export)
+            self.world.finish(self.export)
+        self.world.opened.expire_all()
+        self.assertEqual((self.world.opened.get(Export, self.export.id).status, self.world.run_row()[8]), ("imported", 1))
+        self.assertEqual(self.world.outcomes()[f"Photos from 2019/{name}"], "failed")
+
+    def request(self, at=NOW + DAY):
+        found = run.request_import(self.world.opened, self.export.id, self.world.photos, at)
+        self.world.opened.commit()
+        return found
+
+    def finish_ready(self, at=NOW + DAY + 5):
+        return finish_export.finish_ready(self.world.opened, self.world.settings, at, self.world.tools)
+
+    def twin(self):
+        return self.world.whole_export(lambda twin: twin.scenario)
+
+    def test_a_failed_item_is_held_for_the_export_and_finishing_again_imports_it_as_whole_export_ingest_does(self):
+        self.imported_with_a_failed_item()
+        found = self.request()
+        self.assertEqual((found.status, found.stage), ("importing", "unpacked"))
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_2001.JPG"], "waiting_export")
+        self.assertEqual((self.world.part(self.export, 1).failed_items, self.world.part(self.export, 1).held), (0, 1))
+        self.assertEqual(self.world.count(ImportRun), 2)
+        self.assertEqual(run.latest_run(self.world.opened, self.export.id).status, "queued")
+        self.assertEqual(run.waiting_exports(self.world.opened), [])
+        self.assertEqual(self.finish_ready(), [self.export.id])
+        self.world.opened.expire_all()
+        self.assertEqual((self.world.opened.get(Export, self.export.id).status, self.world.opened.get(Export, self.export.id).stage), ("imported", "done"))
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_2001.JPG"], "placed")
+        self.assertEqual((self.world.run_row()[0], self.world.run_row()[8]), ("done", 0))
+        self.assertEqual([self.world.part(self.export, n).failed_items for n in (1, 2, 3)], [0, 0, 0])
+        self.assertEqual(self.world.comparable(), self.twin().comparable())
+        with self.assertRaises(run.AlreadyImported):
+            self.request(NOW + 2 * DAY)
+
+    def test_an_item_that_could_not_be_measured_is_retried(self):
+        real = metadata.candidate
+
+        def candidate(item, *args, **kwargs):
+            if item.path.name == "IMG_2003.JPG":
+                raise ValueError("unreadable")
+            return real(item, *args, **kwargs)
+
+        with mock.patch.object(metadata, "candidate", side_effect=candidate):
+            self.world.ingest_all(self.export)
+            self.world.finish(self.export)
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_2003.JPG"], "failed")
+        self.request()
+        self.assertEqual(self.finish_ready(), [self.export.id])
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_2003.JPG"], "placed")
+        self.assertEqual(self.world.comparable(), self.twin().comparable())
+
+    def test_a_late_sidecar_fill_that_failed_is_filled_again_without_deciding_again(self):
+        self.world.ingest_all(self.export, (1, 2))
+        decided = self.world.entry("Photos from 2019/IMG_1002.JPG")
+        self.assertTrue(decided.metadata_pending)
+        with failing_place("IMG_1002.JPG"):
+            self.world.ingest(self.export, 3)
+        self.world.finish(self.export)
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_1002.JPG"], "failed")
+        before = self.world.decisions()
+        self.request()
+        self.assertEqual((self.world.entry("Photos from 2019/IMG_1002.JPG").outcome, self.world.entry("Photos from 2019/IMG_1002.JPG").metadata_pending),
+                         ("skipped", True))
+        self.assertEqual(self.finish_ready(), [self.export.id])
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_1002.JPG"], "skipped")
+        self.assertFalse(self.world.entry("Photos from 2019/IMG_1002.JPG").metadata_pending)
+        self.assertEqual(self.world.decisions(), before)
+        self.assertEqual(self.world.comparable(), self.twin().comparable())
+
+    def test_nothing_is_freed_while_the_retry_waits(self):
+        self.imported_with_a_failed_item()
+        self.request()
+        report = part_free.free_ready(self.world.opened, self.world.settings, NOW + DAY + 1)
+        self.assertEqual((report.parts, report.held), (0, 0))
+        self.assertEqual([self.world.part(self.export, n).free_state for n in (1, 2, 3)], [None, None, None])
+
+    def assert_refused_and_unchanged(self, words):
+        before = (self.world.outcomes(), self.world.count(ImportRun), self.world.opened.get(Export, self.export.id).status)
+        with self.assertRaises(run.NotReady) as raised:
+            self.request()
+        self.world.opened.rollback()
+        self.assertIn(words, str(raised.exception))
+        self.world.opened.expire_all()
+        self.assertEqual((self.world.outcomes(), self.world.count(ImportRun), self.world.opened.get(Export, self.export.id).status), before)
+
+    def test_a_failed_item_whose_part_was_freed_cannot_be_retried_from_it(self):
+        self.imported_with_a_failed_item()
+        self.world.part(self.export, 1).free_state = "freed"
+        self.world.opened.commit()
+        self.assert_refused_and_unchanged("part 1 of this export was deleted to free space, so its failed items cannot be retried from it")
+
+    def test_a_failed_item_whose_part_file_is_gone_cannot_be_retried(self):
+        self.imported_with_a_failed_item()
+        (Path(self.export.inbox_dir) / self.world.part(self.export, 1).filename).unlink()
+        self.assert_refused_and_unchanged("part 1 of this export is not in the inbox, so its failed items cannot be retried")
+
+    def test_a_failed_item_with_no_inbox_to_read_cannot_be_retried(self):
+        self.imported_with_a_failed_item()
+        with self.assertRaises(run.NotReady):
+            run.request_import(self.world.opened, self.export.id, None, NOW + DAY)
+
+    def test_a_failed_item_kept_in_the_held_store_is_read_from_there_once_its_part_is_freed(self):
+        self.imported_with_a_failed_item()
+        entry = self.world.entry("Photos from 2019/IMG_2001.JPG")
+        person = run.owner_person(self.world.opened, self.world.opened.get(Export, self.export.id))
+        zipped = Path(self.export.inbox_dir) / self.world.part(self.export, 1).filename
+        with zipfile.ZipFile(zipped) as archive:
+            data = archive.read(entry.name)
+        written = paths.write_held(self.world.photos, person.slug, f"export-{self.export.id}", part_reader.scratch_name(entry), [data], entry.sha1)
+        entry.held_path = written.relative_to(self.world.photos.root).as_posix()
+        self.world.part(self.export, 1).free_state = "freed"
+        zipped.rename(zipped.with_suffix(".gone"))
+        self.world.opened.commit()
+        self.request()
+        self.assertEqual(self.finish_ready(), [self.export.id])
+        self.assertEqual(self.world.outcomes()["Photos from 2019/IMG_2001.JPG"], "placed")
+
+    def test_an_export_whose_failed_items_have_no_bytes_recorded_has_nothing_to_retry(self):
+        self.imported_with_a_failed_item()
+        entry = self.world.entry("Photos from 2019/IMG_2001.JPG")
+        entry.sha1 = None
+        self.world.opened.commit()
+        self.assert_refused_and_unchanged("none of this export's failed items can be retried")
+
+    def test_no_entry_name_reaches_the_log_or_the_database_events(self):
+        self.imported_with_a_failed_item()
+        with no_leaks(self, "IMG_2001.JPG"):
+            self.request()
+            self.finish_ready()
+        events = self.world.opened.execute(select(Event)).scalars().all()
+        self.assertTrue(events)
+        self.assertEqual([row.id for row in events if "IMG_2001" in f"{row.subject} {row.detail}"], [])
 
 
 class NeverCompletesTests(unittest.TestCase):

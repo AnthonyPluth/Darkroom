@@ -615,6 +615,59 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0046_parts_start_with_nothing_remembered_about_a_kept_proof_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0045")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloading')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state, bytes) VALUES (1, 1, 1, 'done', 'ingested', 5000000000)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_state, bytes, free_state, free_kept_at, free_kept_key FROM export_parts").all(),
+                             [("ingested", 5000000000, None, None, None)])
+            connection.exec_driver_sql(f"UPDATE export_parts SET free_kept_at = 3.0, free_kept_key = '{'a' * 64}'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0045")
+        self.assertFalse({"free_kept_at", "free_kept_key"} & {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_state, bytes, free_state FROM export_parts").all(), [("ingested", 5000000000, None)])
+        db.migrate(self.engine)
+
+    def test_0045_parts_start_without_a_refusal_only_the_readers_reasons_are_stored_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0044")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloading')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state, bytes) VALUES (1, 1, 1, 'done', 'refused', 5000000000)")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state) VALUES (2, 1, 2, 'done', 'ingested')")
+            connection.exec_driver_sql("INSERT INTO takeout_entries (id, export_id, part_number, name, kind, bytes, crc32, outcome, listed_at) "
+                                       "VALUES (1, 1, 2, 'a.jpg', 'media', 3, 7, 'placed', 2.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, ingest_state, bytes, ingest_refusal FROM export_parts ORDER BY id").all(),
+                             [(1, "refused", 5000000000, None), (2, "ingested", None, None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT name, outcome FROM takeout_entries").all(), [("a.jpg", "placed")])
+            for reason in ("missing", "zip_bomb", "listing_differs", "bytes_differ"):
+                connection.exec_driver_sql(f"UPDATE export_parts SET ingest_refusal = '{reason}' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE export_parts SET ingest_refusal = 'Photos from 2019/IMG_1.JPG' WHERE id = 1")
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_refusal FROM export_parts WHERE id = 1").scalar_one(), "bytes_differ")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0044")
+        self.assertNotIn("ingest_refusal", {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, ingest_state, bytes FROM export_parts ORDER BY id").all(), [(1, "refused", 5000000000), (2, "ingested", None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT name, outcome FROM takeout_entries").all(), [("a.jpg", "placed")])
+        db.migrate(self.engine)
+
     def test_0044_parts_and_held_copies_start_unfreed_and_the_journal_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -49,7 +50,22 @@ class SidecarMatchingTests(unittest.TestCase):
 
     def test_a_stem_shared_by_several_originals_is_not_proof(self):
         stills = [Path("/a/IMG_1.heic"), Path("/b/IMG_1.heic"), Path("/a/IMG_2.heic")]
-        self.assertEqual(compare_hashes.unambiguous_stems(stills), {"img_2"})
+        self.assertEqual(compare_hashes.unambiguous_stems(stills), {"IMG_2"})
+
+    def test_only_a_same_case_stem_pairs_a_live_photo(self):
+        folder = "Takeout/Google Photos/Photos from 2019"
+
+        def entry(name):
+            return compare_hashes.Entry(f"{folder}/{name}", 1, lambda: io.BytesIO(b""))
+
+        media = [entry("IMG_0001.HEIC"), entry("IMG_0001.MP4"), entry("IMG_0002.jpg"), entry("img_0002.MOV")]
+        self.assertEqual(compare_hashes.live_videos(media), {f"{folder}/IMG_0001.MP4"})
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            for file_name in ("IMG_0001.HEIC", "IMG_0001.MOV", "IMG_0002.jpg", "img_0002.MOV"):
+                (root / file_name).write_bytes(file_name.encode())
+            stills = [still.name for still, _ in compare_hashes.index_originals(root).stills_with_video]
+        self.assertEqual(stills, ["IMG_0001.HEIC"])
 
     def test_a_large_member_is_streamed_to_exiftool_without_being_read_whole(self):
         class Source(io.BytesIO):
@@ -114,7 +130,7 @@ class CompareTests(unittest.TestCase):
         self.assertIn("No counterpart in the originals: 1 (20.0%)", from_directory)
         self.assertIn("tag that differs in these: IFD0:Make", from_directory)
         self.assertIn("Items found only under album folders: 1 (20.0%)", from_directory)
-        self.assertIn("shared.jpg:", from_directory)
+        self.assertIn("item-1:", from_directory)
         self.assertIn('"fromSharedAlbum"', from_directory)
         self.assertNotIn(str(self.folder), from_directory)
         self.assertEqual(from_directory.split("originals indexed")[1], from_zip.split("originals indexed")[1])
@@ -147,7 +163,40 @@ class CompareTests(unittest.TestCase):
         run("takeout", "--export", str(export), "--originals", str(self.originals))
         self.assertEqual(sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in self.folder.rglob("*")), before)
 
-    def test_phone_mode(self):
+    def test_a_multi_part_export_opens_each_part_once(self):
+        stage = self.build_export()
+        target = self.folder / "parts"
+        target.mkdir()
+        files = sorted(p for p in stage.rglob("*") if p.is_file())
+        for number, part in enumerate((files[::2], files[1::2]), start=1):
+            with zipfile.ZipFile(target / f"takeout-00{number}.zip", "w") as archive:
+                for path in part:
+                    archive.write(path, path.relative_to(stage).as_posix())
+        opened = []
+        real = zipfile.ZipFile
+
+        def counting(*args, **kwargs):
+            opened.append(args[0])
+            return real(*args, **kwargs)
+
+        with unittest.mock.patch.object(compare_hashes.zipfile, "ZipFile", counting):
+            _, from_parts = run("takeout", "--export", str(target), "--originals", str(self.originals))
+        _, from_directory = run("takeout", "--export", str(stage), "--originals", str(self.originals))
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(from_parts.split("originals indexed")[1], from_directory.split("originals indexed")[1])
+
+    def test_a_live_photo_video_without_a_sidecar_is_not_counted_as_shared(self):
+        export = self.build_export()
+        _code, before = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        fixtures.make_video(export / "Takeout" / "Google Photos" / "Photos from 2019" / "live.heic.mov")
+        _code, after = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        self.assertIn("Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): 0", before)
+        self.assertIn("Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): 1", after)
+        lacking = "Other items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): "
+        self.assertIn(f"{lacking}4 (80.0%)", before)
+        self.assertIn(f"{lacking}4 (66.7%)", after)
+
+    def build_phone(self):
         fixtures.make_jpeg(self.originals / "a.jpg", colour=(1, 1, 1))
         fixtures.make_jpeg(self.originals / "b.jpg", colour=(2, 2, 2))
         phone = self.folder / "phone"
@@ -155,12 +204,50 @@ class CompareTests(unittest.TestCase):
         (phone / "a.jpg").write_bytes((self.originals / "a.jpg").read_bytes())
         (phone / "b.jpg").write_bytes(b"different")
         (phone / "c.jpg").write_bytes(b"new")
+        return phone
+
+    def test_phone_mode(self):
+        phone = self.build_phone()
         code, text = run("phone", "--phone-files", str(phone), "--originals", str(self.originals))
         self.assertEqual(code, 0)
         self.assertIn("Files exported from the iPhone: 3", text)
         self.assertIn("Byte-identical on Unraid: 1 (33.3%)", text)
-        self.assertIn("different bytes: b.jpg", text)
-        self.assertIn("not on Unraid: c.jpg", text)
+        self.assertIn("different bytes: item-2", text)
+        self.assertIn("not on Unraid: item-3", text)
+
+    def file_names(self, *roots):
+        names = set()
+        for root in roots:
+            for path in root.rglob("*"):
+                if path.is_file():
+                    names.add(path.name)
+        return names
+
+    def test_default_output_names_no_file_and_show_names_does(self):
+        export = self.build_export()
+        phone = self.build_phone()
+        cases = (
+            (("takeout", "--export", str(export), "--originals", str(self.originals)), "shared.jpg", (export, self.originals)),
+            (("takeout", "--export", str(self.zipped(export)), "--originals", str(self.originals)), "shared.jpg", (export, self.originals)),
+            (("phone", "--phone-files", str(phone), "--originals", str(self.originals)), "c.jpg", (phone, self.originals)),
+        )
+        for argv, expected, roots in cases:
+            with self.subTest(mode=argv[0]):
+                _code, text = run(*argv)
+                for name in self.file_names(*roots):
+                    self.assertNotIn(name, text)
+                _code, named = run(*argv, "--show-names")
+                self.assertIn(expected, named)
+
+    def test_a_read_error_names_no_file_unless_asked(self):
+        export = self.build_export()
+        (export / "broken.zip").write_bytes(b"not a zip")
+        code, text = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        self.assertEqual(code, 1)
+        self.assertIn("Stopped: BadZipFile", text)
+        self.assertNotIn("broken", text)
+        with self.assertRaises(zipfile.BadZipFile):
+            run("takeout", "--export", str(export), "--originals", str(self.originals), "--show-names")
 
     def test_helpers(self):
         self.assertEqual(compare_hashes.percent(1, 0), "1")

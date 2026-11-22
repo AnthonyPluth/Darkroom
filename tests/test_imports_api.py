@@ -2,9 +2,11 @@ import dataclasses
 import json
 import unittest
 
+from sqlalchemy import select, update
+
 from darkroom.domain.ingest import run
-from darkroom.storage.models import Export, ImportRun
-from tests.import_world import ADMIN_KEY, NOW, World
+from darkroom.storage.models import Export, ExportPart, ImportRun
+from tests.import_world import ADMIN_KEY, DAY, NOW, World
 from tests.privacy import no_leaks
 from tests.shared import fetch, settings_from, start_server
 
@@ -161,6 +163,61 @@ class ImportsApiTests(unittest.TestCase):
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
         self.assertEqual(status, 409)
         self.assertIn("staging folder", body["error"])
+
+
+class PerPartImportsApiTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_finish_export import FinishWorld
+
+        self.world = FinishWorld(self)
+        settings = dataclasses.replace(settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_PUBLIC_URL="http://127.0.0.1"),
+                                       photos_root=self.world.settings.photos_root, data_dir=self.world.settings.data_dir,
+                                       immich_url=self.world.settings.immich_url, immich_admin_key=self.world.settings.immich_admin_key)
+        self.base, self.settings = start_server(self, settings, self.world.engine)
+        self.replies = []
+
+    call = ImportsApiTests.call
+
+    def imported_with_a_failed_item(self):
+        from tests.test_finish_export import failing_place
+
+        export = self.world.create(self.world.scenario)
+        with failing_place(PRIVATE_NAME):
+            self.world.ingest_all(export)
+            self.world.finish(export)
+        return export
+
+    def runs(self):
+        return [(row["status"], row["failed"]) for row in sorted(self.call("GET", "/api/imports")[1]["imports"], key=lambda row: row["id"])]
+
+    def test_a_per_part_export_with_a_failed_item_is_retried_and_then_finishes(self):
+        from darkroom.domain.ingest import finish_export
+
+        export = self.imported_with_a_failed_item()
+        with no_leaks(self, PRIVATE_NAME, replies=self.replies):
+            self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "importing", "stage": "unpacked"}))
+            self.assertEqual(finish_export.finish_ready(self.world.reopen(), self.world.settings, NOW + DAY, self.world.tools), [export.id])
+            self.assertEqual(self.runs(), [("done", 1), ("done", 0)])
+        self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (409, {"error": "this export is already imported"}))
+
+    def test_a_per_part_retry_whose_part_was_freed_is_refused_plainly(self):
+        export = self.imported_with_a_failed_item()
+        opened = self.world.reopen()
+        opened.execute(update(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == 1).values(free_state="freed"))
+        opened.commit()
+        self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"),
+                         (409, {"error": "part 1 of this export was deleted to free space, so its failed items cannot be retried from it"}))
+        self.assertEqual(self.runs(), [("done", 1)])
+
+    def test_a_refused_part_is_requeued(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        opened = self.world.reopen()
+        opened.execute(update(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == 2).values(ingest_state="refused"))
+        opened.commit()
+        self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "downloaded", "stage": None}))
+        opened = self.world.reopen()
+        states = opened.execute(select(ExportPart.ingest_state).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars().all()
+        self.assertEqual(states, ["queued", "queued", "queued"])
 
 
 if __name__ == "__main__":

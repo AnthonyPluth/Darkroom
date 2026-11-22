@@ -103,7 +103,7 @@ def remove_download(folder: Path, handle: str) -> int:
     for name in (handle, handle + IN_PROGRESS_SUFFIX):
         own = folder / name
         if own.is_file() and not own.is_symlink():
-            own.unlink()
+            own.unlink(missing_ok=True)
             removed += 1
     return removed
 
