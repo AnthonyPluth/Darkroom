@@ -378,7 +378,7 @@ def stream_media(opened: Session, photos: Photos, person: Person, export: Export
         read.batches += 1
 
 
-def sweep(photos: Photos, person: Person, export: Export) -> None:
+def sweep_part_scratch(photos: Photos, person: Person, export: Export) -> None:
     paths.sweep_scratch(photos, person.slug, unpack.staging_name(export))
 
 

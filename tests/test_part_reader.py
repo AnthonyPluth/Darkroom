@@ -212,7 +212,7 @@ class ListingTests(unittest.TestCase):
         sources = {str(p.relative_to(ROOT)): p.read_text() for p in sorted((ROOT / "darkroom").rglob("*.py")) if p.name != "part_reader.py"}
         users = [name for name, text in sources.items() if "part_reader" in text]
         self.assertEqual(users, ["darkroom/domain/ingest/part_free.py", "darkroom/domain/ingest/part_ingest.py"])
-        readers = [name for name, text in sources.items() if any(call in text for call in ("read_part(", "part_reader.sweep(", "stream_one(", "stream_batch("))]
+        readers = [name for name, text in sources.items() if any(call in text for call in ("read_part(", "sweep_part_scratch(", "stream_one(", "stream_batch("))]
         self.assertEqual(readers, ["darkroom/domain/ingest/part_ingest.py"])
 
 

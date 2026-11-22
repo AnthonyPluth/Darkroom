@@ -571,7 +571,7 @@ class BoundedScratchTests(unittest.TestCase):
         self.assertEqual(len(held), 6)
         scratch = world.photos.scratch("jo", f"export-{export.id}")
         high, sweeps = [0], []
-        real_stream, real_sweep = part_reader.stream_one, part_reader.sweep
+        real_stream, real_sweep = part_reader.stream_one, part_reader.sweep_part_scratch
 
         def stream(*args, **kwargs):
             streamed = real_stream(*args, **kwargs)
@@ -583,7 +583,7 @@ class BoundedScratchTests(unittest.TestCase):
             return real_sweep(*args, **kwargs)
 
         with (mock.patch.object(part_reader, "BATCH_FILES", 2), mock.patch.object(part_reader, "stream_one", side_effect=stream),
-              mock.patch.object(part_reader, "sweep", side_effect=sweep)):
+              mock.patch.object(part_reader, "sweep_part_scratch", side_effect=sweep)):
             world.ingest(export, 3)
         self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "placed"), 5)
         self.assertLessEqual(high[0], 2)
@@ -849,6 +849,259 @@ class PrivacyTests(unittest.TestCase):
             self.assertFalse(any(canary in f"{row.subject} {row.message}" for canary in (*names, text)))
         done = world.opened.execute(select(Event).where(Event.type == "export_part_ingested")).scalars().all()
         self.assertEqual([row.detail.startswith("part ") for row in done], [True, True])
+
+
+def busy_error():
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("UPDATE export_parts", {}, sqlite3.OperationalError("database is locked"))
+
+
+class FailedPartRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.world = PartWorld(self)
+
+    def run_queued(self, at=NOW):
+        self.world.opened.expire_all()
+        return part_ingest.run_queued(self.world.opened, self.world.settings, at, self.world.tools)
+
+    def test_a_busy_database_leaves_the_part_queued_without_an_alert(self):
+        export = self.world.create(self.world.scenario)
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=busy_error()):
+            self.assertEqual(self.run_queued(), [])
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["queued"] * 3)
+        self.assertEqual(self.world.count(Alert), 0)
+        self.assertEqual(self.world.opened.execute(select(Event).where(Event.type == "export_part_ingest_failed")).scalars().all(), [])
+        self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 2), (export.id, 3)])
+
+    def test_another_database_error_still_fails_the_part(self):
+        import sqlite3
+
+        from sqlalchemy.exc import OperationalError
+
+        export = self.world.create(self.world.scenario)
+        broken = OperationalError("SELECT 1", {}, sqlite3.OperationalError("disk I/O error"))
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=broken):
+            self.assertEqual(self.run_queued(), [])
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["failed"] * 3)
+        self.assertEqual(len(self.failure_alerts()), 3)
+
+    def failure_alerts(self):
+        self.world.opened.expire_all()
+        return [(alert.key, alert.closed is not None) for alert in self.world.opened.execute(select(Alert).where(Alert.kind == "failure")
+                                                                                            .order_by(Alert.id)).scalars()]
+
+    def test_a_failed_parts_alert_closes_as_it_is_sent_so_a_failure_after_a_retry_alerts_again(self):
+        export = self.world.create(lambda builder: builder.photo("IMG_9001.JPG", part=0), parts=1, status="downloaded")
+        key = f"part:failed:{export.id}:1"
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("boom")):
+            self.run_queued()
+        self.assertEqual(self.failure_alerts(), [(key, True)])
+        run.request_import(self.world.opened, export.id, self.world.photos, NOW + 5)
+        self.world.opened.commit()
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=RuntimeError("boom")):
+            self.run_queued(NOW + 6)
+        self.assertEqual(self.failure_alerts(), [(key, True), (key, True)])
+        self.assertEqual(self.world.sent("Darkroom needs a look"), 2)
+        run.request_import(self.world.opened, export.id, self.world.photos, NOW + 7)
+        self.world.opened.commit()
+        self.assertEqual(self.run_queued(NOW + 8), [(export.id, 1)])
+        self.assertEqual(self.world.sent("Darkroom needs a look"), 2)
+
+
+def late_build(builder):
+    for number in range(3):
+        builder.photo(f"IMG_83{number}.JPG", part=0, sidecar_part=1, gps=(45.0 + number, 12.0))
+
+
+class SwappedEarlierPartTests(unittest.TestCase):
+    def swap(self, world, export, number, change):
+        part = world.part(export, number)
+        path = Path(world.opened.get(Export, export.id).inbox_dir) / part.filename
+        with zipfile.ZipFile(path) as old:
+            entries = [(info, old.read(info)) for info in old.infolist()]
+        path.unlink()
+        with zipfile.ZipFile(path, "w") as new:
+            for info, data in entries:
+                new.writestr(info, change(info.filename, data))
+
+    def assert_failed_without_streaming(self, change):
+        world = PartWorld(self)
+        export = world.create(late_build, parts=2)
+        world.ingest(export, 1)
+        self.assertEqual(set(world.outcomes().values()), {"waiting_sidecar"})
+        self.swap(world, export, 1, change)
+        with mock.patch.object(part_reader, "stream_one", wraps=part_reader.stream_one) as stream:
+            report = world.ingest(export, 2)
+        self.assertEqual([call.args[4].name for call in stream.call_args_list if call.args[4].name.endswith("IMG_830.JPG")], [])
+        self.assertTrue(report.ingested)
+        self.assertEqual(world.outcomes()["Photos from 2019/IMG_830.JPG"], "failed")
+        self.assertEqual(world.google_only() & {key for key in world.google_only() if key.endswith("IMG_830.JPG")}, set())
+        self.assertEqual(list(world.photos.scratch("jo", f"export-{export.id}").glob("*")), [])
+        return world
+
+    def test_an_entry_grown_in_a_swapped_earlier_part_fails_its_item_before_anything_is_written(self):
+        world = self.assert_failed_without_streaming(lambda name, data: data + b"\0" * 4096 if name.endswith("IMG_830.JPG") else data)
+        self.assertEqual(sorted(outcome for name, outcome in world.outcomes().items() if not name.endswith("IMG_830.JPG")), ["placed", "placed"])
+
+    def test_an_entry_with_the_same_size_and_other_bytes_fails_its_item_before_anything_is_written(self):
+        self.assert_failed_without_streaming(lambda name, data: data[:-1] + bytes([data[-1] ^ 0xFF]) if name.endswith("IMG_830.JPG") else data)
+
+    def test_an_entry_missing_from_a_swapped_earlier_part_fails_its_item(self):
+        world = PartWorld(self)
+        export = world.create(late_build, parts=2)
+        world.ingest(export, 1)
+        part = world.part(export, 1)
+        path = Path(world.opened.get(Export, export.id).inbox_dir) / part.filename
+        with zipfile.ZipFile(path) as old:
+            entries = [(info, old.read(info)) for info in old.infolist() if not info.filename.endswith("IMG_831.JPG")]
+        path.unlink()
+        with zipfile.ZipFile(path, "w") as new:
+            for info, data in entries:
+                new.writestr(info, data)
+        world.ingest(export, 2)
+        self.assertEqual(world.outcomes()["Photos from 2019/IMG_831.JPG"], "failed")
+
+
+class LockAcrossMeasuringTests(unittest.TestCase):
+    def watch(self, world):
+        from sqlalchemy import event
+
+        held = [False]
+        seen = []
+        real_lock = db.write_lock
+
+        def lock(opened):
+            held[0] = True
+            return real_lock(opened)
+
+        def statement(conn, cursor, text, params, context, many):
+            if db.writes(text):
+                held[0] = True
+
+        def ended(conn):
+            held[0] = False
+
+        event.listen(world.engine, "before_cursor_execute", statement)
+        event.listen(world.engine, "commit", ended)
+        event.listen(world.engine, "rollback", ended)
+        self.addCleanup(event.remove, world.engine, "before_cursor_execute", statement)
+        self.addCleanup(event.remove, world.engine, "commit", ended)
+        self.addCleanup(event.remove, world.engine, "rollback", ended)
+        real_stream, real_read = part_reader.stream_one, world.tools.read
+
+        def stream(*args, **kwargs):
+            seen.append(("stream", held[0]))
+            return real_stream(*args, **kwargs)
+
+        def read(files, *args, **kwargs):
+            seen.append(("read", held[0]))
+            return real_read(files, *args, **kwargs)
+
+        return seen, mock.patch.object(db, "write_lock", lock), mock.patch.object(part_reader, "stream_one", side_effect=stream), read
+
+    def test_restreaming_and_measuring_an_earlier_part_runs_outside_the_write_lock(self):
+        world = PartWorld(self)
+        export = world.create(late_build, parts=2)
+        world.ingest(export, 1)
+        seen, locking, streaming, read = self.watch(world)
+        measured = []
+        real_measure = part_ingest.Ingest.measure
+
+        def measure(ingest, targets):
+            measured.append(len(targets))
+            return real_measure(ingest, targets)
+
+        with locking, streaming, mock.patch.object(part_ingest.Ingest, "measure", measure):
+            world.ingest(export, 2, tools=run.Tools(read=read, write=world.tools.write, notifier=world.recorder))
+        self.assertEqual(sorted(outcome for outcome in world.outcomes().values()), ["placed"] * 3)
+        streams = [locked for kind, locked in seen if kind == "stream"]
+        self.assertEqual(len(streams), 3)
+        self.assertEqual(streams, [False] * 3)
+        self.assertGreaterEqual(sum(measured), 3)
+
+
+class ReaderCrashTests(unittest.TestCase):
+    BATCH = 2
+
+    def ingest_parts(self, world, export, numbers):
+        with mock.patch.object(part_reader, "BATCH_FILES", self.BATCH):
+            for number in numbers:
+                world.ingest(export, number)
+
+    def uninterrupted(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        batches = []
+        real = part_reader.stream_batch
+
+        def counting_batches(*args, **kwargs):
+            batches[-1] += 1
+            return real(*args, **kwargs)
+
+        for number in (1, 2, 3):
+            batches.append(0)
+            with mock.patch.object(part_reader, "stream_batch", side_effect=counting_batches):
+                self.ingest_parts(world, export, (number,))
+        return world.state(), batches
+
+    def crashing(self, point, target):
+        if point == "ingesting":
+            return mock.patch.object(part_reader, "read_part", side_effect=Crash)
+        name = "record_listing" if point == "listing" else "stream_batch"
+        real = getattr(part_reader, name)
+        calls = [0]
+
+        def after_commit(*args, **kwargs):
+            done = real(*args, **kwargs)
+            calls[0] += 1
+            if calls[0] == target:
+                raise Crash
+            return done
+
+        return mock.patch.object(part_reader, name, side_effect=after_commit)
+
+    def test_a_crash_after_each_reader_commit_resumes_to_the_same_result_and_writes_no_file_twice(self):
+        expected, batches = self.uninterrupted()
+        self.assertGreater(max(batches), 1)
+        for number, count in enumerate(batches, start=1):
+            points = [("ingesting", 1), ("listing", 1), *(("batch", target) for target in range(1, count + 1))]
+            for point, target in points:
+                with self.subTest(part=number, point=point, target=target):
+                    world = PartWorld(self)
+                    export = world.create(world.scenario)
+                    self.ingest_parts(world, export, range(1, number))
+                    writes = []
+                    with self.crashing(point, target), recording_writes(writes):
+                        with self.assertRaises(Crash):
+                            self.ingest_parts(world, export, (number,))
+                    world.opened.rollback()
+                    self.assertNotEqual(world.part(export, number).ingest_state, "ingested")
+                    if point != "ingesting":
+                        self.assertEqual(world.part(export, number).ingest_state, "ingesting")
+                    resumed = []
+                    with recording_writes(resumed):
+                        self.ingest_parts(world, export, range(number, 4))
+                    self.assertEqual(set(writes) & set(resumed), set())
+                    self.assertEqual(len(writes + resumed), len(set(writes + resumed)))
+                    self.assertEqual(world.state(), expected)
+
+    def test_a_crash_after_a_batch_commit_leaves_the_batch_hashed_and_nothing_decided_for_it(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        with self.crashing("batch", 1), self.assertRaises(Crash):
+            self.ingest_parts(world, export, (1,))
+        world.opened.rollback()
+        world.opened.expire_all()
+        rows = world.opened.execute(select(TakeoutEntry).where(TakeoutEntry.kind == "media", TakeoutEntry.part_number == 1)
+                                    .order_by(TakeoutEntry.id)).scalars().all()
+        hashed = [row for row in rows if row.sha1 is not None]
+        self.assertEqual(len(hashed), min(self.BATCH, len(rows)))
+        self.assertEqual({row.outcome for row in hashed}, {"listed"})
+        self.assertEqual(world.count(DedupeDecision), 0)
+        self.assertEqual(list(world.photos.scratch("jo", f"export-{export.id}").glob("*")), [])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Final
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
@@ -100,6 +101,13 @@ def run_queued(opened: Session, settings: config.Settings, now: float, tools: ru
             ingest_part(opened, settings, export, part, now, tools)
         except (run.Busy, run.NotReady) as error:
             monitoring.log("part ingest skipped", export=export_id, part=number, reason=type(error).__name__)
+            continue
+        except OperationalError as error:
+            if not db.is_busy(error):
+                failed(opened, settings, export_id, number, error, now, tools or run.Tools())
+                continue
+            opened.rollback()
+            monitoring.log("part ingest skipped", export=export_id, part=number, reason="DatabaseBusy")
             continue
         except Exception as error:
             failed(opened, settings, export_id, number, error, now, tools or run.Tools())
@@ -198,7 +206,7 @@ class Ingest:
         return archive, infos
 
     def release_scratch(self) -> None:
-        part_reader.sweep(self.photos, self.person, self.export)
+        part_reader.sweep_part_scratch(self.photos, self.person, self.export)
         self.scratch.clear()
         self.measured.clear()
         self.used.clear()
@@ -240,13 +248,19 @@ class Ingest:
             raise part_reader.PartRefused("bytes_differ", f"a held copy of part {entry.part_number} doesn't match the part read before")
         return path
 
+    def listed_info(self, entry: TakeoutEntry, infos: dict[str, zipfile.ZipInfo]) -> zipfile.ZipInfo:
+        info = infos.get(entry.name)
+        if info is None or entry.bytes != info.file_size or entry.crc32 != info.CRC:
+            raise part_reader.PartRefused("listing_differs", f"part {entry.part_number} doesn't match the part listed before")
+        return info
+
     def scratch_of(self, entry: TakeoutEntry) -> Path:
         found = self.scratch.get(entry.id)
         if found is None and entry.held_path is not None:
             found = self.scratch[entry.id] = self.held_copy(entry, entry.held_path)
         if found is None:
             archive, infos = self.archive_of(entry.part_number)
-            streamed = part_reader.stream_one(self.photos, self.person, self.export, archive, entry, infos[entry.name])
+            streamed = part_reader.stream_one(self.photos, self.person, self.export, archive, entry, self.listed_info(entry, infos))
             if entry.sha1 is not None and streamed.sha1 != entry.sha1:
                 raise part_reader.PartRefused("bytes_differ", f"part {entry.part_number}'s files don't match the part read before")
             found = self.scratch[entry.id] = streamed.path
@@ -326,7 +340,16 @@ class Ingest:
             return True
         return entry.id in self.measure([Target(entry, entry.sidecar_entry_id)])
 
+    def measured_unlocked(self, entry: TakeoutEntry) -> bool:
+        if dedupe.stored_decision(self.opened, self.export.id, entry.name) is not None or part_pairing.is_tier_1(self.index, part_pairing.candidate_of(entry)):
+            return True
+        measured = self.fresh(entry)
+        self.commit()
+        return measured
+
     def decide(self, entry: TakeoutEntry) -> None:
+        if not self.measured_unlocked(entry):
+            return
         self.lock()
         row = dedupe.stored_decision(self.opened, self.export.id, entry.name)
         if row is None:
@@ -369,9 +392,17 @@ class Ingest:
             fields = self.light_fields(entry)
         return TakeoutItem(self.scratch.get(entry.id, Path(entry.name)), entry.sha1 or "", (), None), fields
 
+    def finished_already(self, row: DedupeDecision) -> bool:
+        return row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id))
+
     def place_decided(self, entry: TakeoutEntry, row: DedupeDecision, named: Path | None = None) -> None:
+        if row.tier in (4, 5) and not self.finished_already(row):
+            measured = self.fresh(entry)
+            self.commit()
+            if not measured:
+                return
         self.lock()
-        if row.tier == 5 and (row.takeout_item_id is not None or takeout_copies.resolved_away(self.opened, row.id)):
+        if self.finished_already(row):
             self.finish_entry(entry, row)
             return
         new_row = row.tier == 5 and row.takeout_item_id is None
@@ -497,5 +528,5 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             try:
                 ingest.settle_rest()
             finally:
-                part_reader.sweep(photos, person, export)
+                part_reader.sweep_part_scratch(photos, person, export)
             return ingest.finish(resumed)
