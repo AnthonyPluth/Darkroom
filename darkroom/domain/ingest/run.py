@@ -18,7 +18,8 @@ from darkroom.domain.ingest import metadata, pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
+from darkroom.storage.models import (Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, TakeoutEntry,
+                                     known_contents)
 from darkroom.storage.paths import Photos
 
 DAY = 24 * 3600.0
@@ -31,6 +32,10 @@ PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
 PART_NOT_QUEUED = "not_queued"
 PART_QUEUED = "queued"
 PART_FAILED = "failed"
+PART_REFUSED = "refused"
+STOPPED_PARTS = (PART_FAILED, PART_REFUSED)
+ENTRY_FAILED = "failed"
+ENTRY_LISTED = "listed"
 PER_PART = "per_part"
 WHOLE = "whole"
 STARTED_STAGES = frozenset(STAGES[1:])
@@ -591,9 +596,9 @@ def adopt(opened: Session, export: Export, now: float) -> int:
     return len(parts)
 
 
-def requeue_failed(opened: Session, export: Export, now: float) -> int:
+def requeue_stopped(opened: Session, export: Export, now: float) -> int:
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
-                                                         ExportPart.ingest_state == PART_FAILED)).scalars())
+                                                         ExportPart.ingest_state.in_(STOPPED_PARTS))).scalars())
     for part in parts:
         part.ingest_state, part.ingest_queued_at = PART_QUEUED, now
     return len(parts)
@@ -615,12 +620,81 @@ def route_pending(opened: Session, settings: config.Settings, now: float) -> lis
     return adopted
 
 
+def decided_outcome(row: DedupeDecision) -> str:
+    if row.tier == 5:
+        return "placed" if row.takeout_item_id is not None else "skipped"
+    return "review" if row.tier == 4 else "skipped"
+
+
+def failed_entries(opened: Session, export: Export) -> list[TakeoutEntry]:
+    return list(opened.execute(select(TakeoutEntry).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.copy_of_id.is_(None), TakeoutEntry.sha1.is_not(None),
+        TakeoutEntry.outcome == ENTRY_FAILED).order_by(TakeoutEntry.id)).scalars())
+
+
+def part_readable(photos: Photos, export: Export, part: ExportPart | None, person: Person) -> bool:
+    if part is None or part.free_state is not None:
+        return False
+    try:
+        with unpack.open_part(photos, unpack.part_path(export, part, photos, person), part.number):
+            return True
+    except unpack.UnpackFailed:
+        return False
+
+
+def held_copy_present(photos: Photos, export: Export, held: str) -> bool:
+    try:
+        found = paths.held_copy_at(photos, held, unpack.staging_name(export))
+    except (paths.NotAHeldCopy, paths.OutsideRoot):
+        return False
+    return found.is_file() and not found.is_symlink()
+
+
+def sources_present(opened: Session, photos: Photos | None, export: Export, entries: list[TakeoutEntry]) -> bool:
+    undecided = [entry for entry in entries if entry.decision_id is None]
+    if not undecided:
+        return True
+    person = exports.owner_of(opened, export)
+    if photos is None or person is None:
+        return False
+    parts = {part.number: part for part in exports.parts_of(opened, export.id)}
+    readable: dict[int, bool] = {}
+    for entry in undecided:
+        if entry.held_path is not None:
+            if not held_copy_present(photos, export, entry.held_path):
+                return False
+            continue
+        if entry.part_number not in readable:
+            readable[entry.part_number] = part_readable(photos, export, parts.get(entry.part_number), person)
+        if not readable[entry.part_number]:
+            return False
+    return True
+
+
+def reopen_failed(opened: Session, entries: list[TakeoutEntry]) -> None:
+    for entry in entries:
+        row = None if entry.decision_id is None else opened.get(DedupeDecision, entry.decision_id)
+        if row is None:
+            entry.outcome, entry.decision_id, entry.done_at = ENTRY_LISTED, None, None
+        else:
+            entry.outcome, entry.metadata_pending = decided_outcome(row), True
+
+
+def retry_per_part(opened: Session, export: Export, photos: Photos | None) -> None:
+    entries = failed_entries(opened, export)
+    if not entries:
+        raise NotReady("no failed item of this export can be retried")
+    if not sources_present(opened, photos, export, entries):
+        raise NotReady("a part or held copy of this export is gone, so its failed items cannot be retried")
+    reopen_failed(opened, entries)
+
+
 def request_retry(opened: Session, export: Export, photos: Photos | None, now: float) -> Export:
     if failed_items_run(opened, export) is None:
         raise AlreadyImported("this export is already imported")
     if route_of(opened, photos, export) == PER_PART:
-        raise NotReady("this export was imported part by part, which has no retry for failed items yet")
-    if photos is None or staging_of(opened, photos, export) is None:
+        retry_per_part(opened, export, photos)
+    elif photos is None or staging_of(opened, photos, export) is None:
         raise NotReady("the staging folder of this export is gone, so its failed items cannot be retried")
     export.status, export.stage = "importing", "unpacked"
     opened.add(ImportRun(export_id=export.id, started=now, status="queued", stage="unpacked"))
@@ -640,7 +714,7 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     if route_of(opened, photos, export) == PER_PART:
         asked_at = utc_now().timestamp() if now is None else now
         adopt(opened, export, asked_at)
-        requeue_failed(opened, export, asked_at)
+        requeue_stopped(opened, export, asked_at)
         if export.status == "failed":
             if last is not None and last.status == "failed":
                 last.status = "queued"

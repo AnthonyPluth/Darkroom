@@ -41,6 +41,7 @@ STILL_OPEN_WORDS = "The download job that stopped is still finishing; try again 
 PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 INGESTED = "ingested"
 REFUSED = "refused"
+QUEUED = "queued"
 WAITING_SIDECAR = "waiting_sidecar"
 WAITING_EXPORT = "waiting_export"
 FAILED_ITEM = "failed_item"
@@ -403,7 +404,7 @@ def held_by_part(opened: Session, export_id: int) -> dict[int, tuple[int, int]]:
 
 
 def kept_reason(part: ExportPart) -> str | None:
-    if part.ingest_state == REFUSED:
+    if part.ingest_state == REFUSED or (part.ingest_state == QUEUED and part.ingest_refusal is not None):
         return part.ingest_refusal
     return FAILED_ITEM if part.failed_items > 0 else None
 

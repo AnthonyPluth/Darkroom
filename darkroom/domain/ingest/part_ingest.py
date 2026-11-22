@@ -401,11 +401,9 @@ class Ingest:
             self.changed.add(owner)
 
     def finish_entry(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+        entry.outcome = run.decided_outcome(row)
         if row.tier == 5:
-            entry.outcome = PLACED if row.takeout_item_id is not None else SKIPPED
             entry.item_id = row.takeout_item_id
-        else:
-            entry.outcome = REVIEW if row.tier == 4 else SKIPPED
         entry.decision_id, entry.done_at = row.id, self.now
         self.commit()
 

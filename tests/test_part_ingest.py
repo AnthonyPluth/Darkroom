@@ -824,14 +824,38 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
 
-    def test_an_explicit_import_request_leaves_a_refused_part_refused(self):
+    def test_an_explicit_import_request_requeues_a_refused_part_and_keeps_its_reason_until_it_reads_again(self):
         export = self.world.create(self.world.scenario, status="downloaded")
         self.fail_every_part()
         found = self.world.part(export, 2)
-        found.ingest_state = "refused"
+        found.ingest_state, found.ingest_refusal = "refused", "listing_differs"
+        self.world.opened.commit()
+        self.request(export, NOW + 5)
+        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_queued_at) for n in (1, 2, 3)], [("queued", NOW + 5)] * 3)
+        self.assertEqual(self.world.part(export, 2).ingest_refusal, "listing_differs")
+        view = exports.as_dict(self.world.opened, self.world.opened.get(Export, export.id), NOW)
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in view["parts"]], [("queued", None), ("queued", "listing_differs"), ("queued", None)])
+        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_refusal) for n in (1, 2, 3)], [("ingested", None)] * 3)
+
+    def test_a_requeued_part_refused_again_reports_the_new_reason(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        found = self.world.part(export, 1)
+        (Path(export.inbox_dir) / found.filename).write_bytes(b"not a zip at all, only made-up bytes")
+        self.world.ingest(export, 1)
+        self.assertEqual((self.world.part(export, 1).ingest_state, self.world.part(export, 1).ingest_refusal), ("refused", "not_a_zip"))
+        self.request(export, NOW + 5)
+        self.assertEqual(self.world.part(export, 1).ingest_state, "queued")
+        self.assertTrue(self.world.ingest(export, 1, NOW + 6).refused)
+        self.assertEqual((self.world.part(export, 1).ingest_state, self.world.part(export, 1).ingest_refusal), ("refused", "not_a_zip"))
+
+    def test_an_explicit_import_request_leaves_a_part_that_is_not_downloaded_alone(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        found = self.world.part(export, 2)
+        found.status, found.ingest_state, found.ingest_refusal = "failed", "refused", "missing"
         self.world.opened.commit()
         self.request(export)
-        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["queued", "refused", "queued"])
+        self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_refusal), ("refused", "missing"))
 
     def test_a_later_export_is_not_held_back_once_the_failed_part_is_retried(self):
         from darkroom.domain.ingest import finish_export
