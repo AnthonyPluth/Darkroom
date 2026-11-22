@@ -24,6 +24,7 @@ SIDECAR_NAME_LIMIT = 46
 SUPPLEMENTAL = ".supplemental-metadata"
 NUMBERED = re.compile(r"^(?P<stem>.*)\((?P<number>\d+)\)$")
 EDITED = "-edited"
+SHOW_NAMES_HELP = "print real file names and full errors instead of item-N labels; for local debugging only, never paste this output into an issue or pull request"
 
 
 @dataclass(frozen=True)
@@ -57,33 +58,20 @@ def directory_entries(root: Path) -> Iterator[Entry]:
         yield Entry(path.relative_to(root).as_posix(), path.stat().st_size, lambda path=path: path.open("rb"))
 
 
-def zip_entries(path: Path) -> Iterator[Entry]:
-    with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
-            yield Entry(info.filename, info.file_size, lambda info=info, path=path: open_member(path, info.filename))
+def zip_entries(path: Path, stack: contextlib.ExitStack) -> Iterator[Entry]:
+    archive = stack.enter_context(zipfile.ZipFile(path))
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        yield Entry(info.filename, info.file_size, lambda info=info, archive=archive: archive.open(info))
 
 
-def open_member(zip_path: Path, member: str) -> IO[bytes]:
-    archive = zipfile.ZipFile(zip_path)
-    handle = archive.open(member)
-    original_close = handle.close
-
-    def close() -> None:
-        original_close()
-        archive.close()
-
-    handle.close = close
-    return handle
-
-
-def export_entries(export: Path) -> list[Entry]:
+def export_entries(export: Path, stack: contextlib.ExitStack) -> list[Entry]:
     if export.is_file() and export.suffix.lower() == ".zip":
-        return list(zip_entries(export))
+        return list(zip_entries(export, stack))
     entries: list[Entry] = []
     for zip_path in sorted(export.rglob("*.zip")):
-        entries += zip_entries(zip_path)
+        entries += zip_entries(zip_path, stack)
     extracted = directory_entries(export)
     return entries + [e for e in extracted if not e.name.lower().endswith(".zip")]
 
@@ -172,7 +160,7 @@ class Originals:
     by_sha1: dict[str, list[Path]]
     by_name_size: dict[tuple[str, int], list[Path]]
     by_name: dict[str, list[Path]]
-    stills_with_video: list[Path]
+    stills_with_video: list[tuple[Path, str]]
     count: int
 
 
@@ -181,18 +169,20 @@ def index_originals(root: Path) -> Originals:
     by_name_size: dict[tuple[str, int], list[Path]] = {}
     by_name: dict[str, list[Path]] = {}
     files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in MEDIA and not any(part.startswith(".") for part in p.relative_to(root).parts))
+    sha1_of: dict[Path, str] = {}
     for path in files:
         with path.open("rb") as handle:
-            by_sha1.setdefault(sha1_stream(handle), []).append(path)
+            sha1_of[path] = sha1_stream(handle)
+        by_sha1.setdefault(sha1_of[path], []).append(path)
         by_name_size.setdefault((path.name.lower(), path.stat().st_size), []).append(path)
         by_name.setdefault(path.name.lower(), []).append(path)
-    stems = {(p.parent, p.stem.lower()): p for p in files if p.suffix.lower() in VIDEO}
-    stills = [p for p in files if p.suffix.lower() in STILL and (p.parent, p.stem.lower()) in stems]
+    videos = {(p.parent, p.stem): p for p in files if p.suffix.lower() in VIDEO}
+    stills = [(p, sha1_of[videos[p.parent, p.stem]]) for p in files if p.suffix.lower() in STILL and (p.parent, p.stem) in videos]
     return Originals(by_sha1, by_name_size, by_name, stills, len(files))
 
 
 def unambiguous_stems(stills: list[Path]) -> set[str]:
-    counts = Counter(p.stem.lower() for p in stills)
+    counts = Counter(p.stem for p in stills)
     return {stem for stem, number in counts.items() if number == 1}
 
 
@@ -209,9 +199,22 @@ def in_year_folder(entry: Entry) -> bool:
     return bool(YEAR_FOLDER.match(entry.folder.rsplit("/", 1)[-1]))
 
 
-def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
-    entries = export_entries(export)
-    media = [e for e in entries if is_media(e)]
+def live_videos(media: list[Entry]) -> set[str]:
+    stills = {(e.folder, Path(e.basename).stem) for e in media if e.suffix in STILL}
+    return {e.name for e in media if e.suffix in VIDEO and (e.folder, Path(e.basename).stem) in stills}
+
+
+def label(name: str, number: int, show_names: bool) -> str:
+    return name if show_names else f"item-{number}"
+
+
+def takeout_report(export: Path, originals_root: Path, out: IO[str], show_names: bool = False) -> int:
+    with contextlib.ExitStack() as stack:
+        return write_takeout_report(export_entries(export, stack), originals_root, out, show_names)
+
+
+def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str], show_names: bool = False) -> int:
+    media = sorted((e for e in entries if is_media(e)), key=lambda e: e.name)
     sidecars: dict[str, list[Entry]] = {}
     for e in entries:
         if e.suffix == ".json":
@@ -236,20 +239,21 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
             tag_counts.update(differing_tags(exiftool_tags(handle), exiftool_tags(same_name[0])))
     year_digests = {digests[e.name] for e in media if in_year_folder(e)}
     album_only = [e for e in media if digests[e.name] not in year_digests]
+    paired_videos = live_videos(media)
     lacking = []
     for entry in media:
+        if entry.name in paired_videos:
+            continue
         meta = sidecar_of(entry, sidecars)
         origin = read_json(meta).get("googlePhotosOrigin") if meta else None
         if not (isinstance(origin, dict) and "mobileUpload" in origin):
             lacking.append(entry)
     export_hashes = set(digests.values())
-    export_video_stems = {Path(e.basename).stem.lower() for e in media if e.suffix in VIDEO}
-    safe_stems = unambiguous_stems(originals.stills_with_video)
+    export_video_stems = {Path(e.basename).stem for e in media if e.suffix in VIDEO}
+    safe_stems = unambiguous_stems([still for still, _ in originals.stills_with_video])
     present = absent = 0
-    for still in originals.stills_with_video:
-        video = next(p for p in still.parent.iterdir() if p.stem.lower() == still.stem.lower() and p.suffix.lower() in VIDEO)
-        with video.open("rb") as handle:
-            found = sha1_stream(handle) in export_hashes or (still.stem.lower() in safe_stems and still.stem.lower() in export_video_stems)
+    for still, video_sha1 in originals.stills_with_video:
+        found = video_sha1 in export_hashes or (still.stem in safe_stems and still.stem in export_video_stems)
         present, absent = present + found, absent + (not found)
     total = len(media)
     print(f"Media files in the export: {total}; originals indexed: {originals.count}", file=out)
@@ -261,28 +265,29 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
     print(f"No counterpart in the originals: {percent(missing, total)}", file=out)
     print(f"Live Photos in the originals (a still with a video of the same name): {len(originals.stills_with_video)}; video in the export: {present}, missing: {absent}", file=out)
     print(f"Items found only under album folders: {percent(len(album_only), total)}", file=out)
-    print(f"Items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): {percent(len(lacking), total)}", file=out)
-    for entry in lacking[:5]:
+    print(f"Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): {len(paired_videos)}", file=out)
+    print(f"Other items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): {percent(len(lacking), total)}", file=out)
+    for number, entry in enumerate(lacking[:5], start=1):
         meta = sidecar_of(entry, sidecars)
-        print(f"  {entry.basename}: {json.dumps(scrubbed(read_json(meta)), sort_keys=True) if meta else 'no sidecar'}", file=out)
+        print(f"  {label(entry.basename, number, show_names)}: {json.dumps(scrubbed(read_json(meta)), sort_keys=True) if meta else 'no sidecar'}", file=out)
     return 0
 
 
-def phone_report(phone_files: Path, originals_root: Path, out: IO[str]) -> int:
+def phone_report(phone_files: Path, originals_root: Path, out: IO[str], show_names: bool = False) -> int:
     originals = index_originals(originals_root)
     files = sorted(p for p in phone_files.rglob("*") if p.is_file() and p.suffix.lower() in MEDIA)
     identical = different = missing = 0
-    for path in files:
+    for number, path in enumerate(files, start=1):
         with path.open("rb") as handle:
             digest = sha1_stream(handle)
         if digest in originals.by_sha1:
             identical += 1
-        elif any(p.name.lower() == path.name.lower() for found in originals.by_name_size.values() for p in found):
+        elif path.name.lower() in originals.by_name:
             different += 1
-            print(f"  different bytes: {path.name}", file=out)
+            print(f"  different bytes: {label(path.name, number, show_names)}", file=out)
         else:
             missing += 1
-            print(f"  not on Unraid: {path.name}", file=out)
+            print(f"  not on Unraid: {label(path.name, number, show_names)}", file=out)
     print(f"Files exported from the iPhone: {len(files)}", file=out)
     print(f"Byte-identical on Unraid: {percent(identical, len(files))}", file=out)
     print(f"Same name, different bytes: {percent(different, len(files))}", file=out)
@@ -299,11 +304,19 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     phone = commands.add_parser("phone")
     phone.add_argument("--phone-files", type=Path, required=True)
     phone.add_argument("--originals", type=Path, required=True)
+    for command in (takeout, phone):
+        command.add_argument("--show-names", action="store_true", help=SHOW_NAMES_HELP)
     args = parser.parse_args(argv)
     out = out or sys.stdout
-    if args.mode == "takeout":
-        return takeout_report(args.export, args.originals, out)
-    return phone_report(args.phone_files, args.originals, out)
+    try:
+        if args.mode == "takeout":
+            return takeout_report(args.export, args.originals, out, args.show_names)
+        return phone_report(args.phone_files, args.originals, out, args.show_names)
+    except (OSError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
+        if args.show_names:
+            raise
+        print(f"Stopped: {type(error).__name__} while reading a file (rerun with --show-names, locally only, to see which)", file=out)
+        return 1
 
 
 if __name__ == "__main__":

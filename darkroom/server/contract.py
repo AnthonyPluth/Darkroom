@@ -354,6 +354,11 @@ class PartReply(TypedDict):
     part: DownloadPartPlan
 
 
+KeptReason = Literal["failed_item", "missing", "not_plain", "empty", "not_a_zip", "damaged", "symlink_entry", "outside", "file_and_folder", "device_entry",
+                     "unreadable_entry", "name_too_long", "duplicate_name", "too_many_entries", "too_large", "zip_bomb", "sidecars_too_big", "size_lies",
+                     "listing_differs", "bytes_differ"]
+
+
 class ExportPartDetail(TypedDict):
     number: int
     filename: str | None
@@ -369,7 +374,7 @@ class ExportPartDetail(TypedDict):
     held_waiting_sidecar: int
     held_waiting_export: int
     failed_items: int
-    kept_reason: Literal["failed_item"] | None
+    kept_reason: KeptReason | None
     freed: bool
     bytes_freed: int
 

@@ -2,15 +2,17 @@ import json
 import unittest
 import zipfile
 from pathlib import Path
+from typing import get_args
 from unittest import mock
 
 from sqlalchemy import select
 
 from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
+from darkroom.server import contract
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
+    INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
 )
 from tests.import_world import DAY, NOW, World, tree
 from tests.privacy import no_leaks
@@ -365,7 +367,7 @@ class ExportsApiFieldTests(unittest.TestCase):
         first = self.view()["parts"][0]
         self.assertEqual((first["ingest_state"], first["failed_items"], first["kept_reason"]), ("ingested", 1, "failed_item"))
 
-    def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
+    def test_a_refused_part_reports_the_readers_reason_and_no_entry_name(self):
         self.world.ingest(self.export, 1)
         row = self.world.part(self.export, 1)
         with zipfile.ZipFile(Path(self.export.inbox_dir) / row.filename, "w") as archive:
@@ -373,8 +375,45 @@ class ExportsApiFieldTests(unittest.TestCase):
         row.ingest_state = "queued"
         self.world.opened.commit()
         self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.part(self.export, 1).ingest_refusal, "listing_differs")
         first = self.view()["parts"][0]
-        self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", None))
+        self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", "listing_differs"))
+        self.assertNotIn("CANARY", json.dumps(self.view()))
+
+    def test_each_refusal_reason_is_stored_on_the_part_and_reported_as_its_kept_reason(self):
+        for number, reason in enumerate(get_args(part_reader.Refusal)):
+            with self.subTest(reason=reason):
+                row = self.world.part(self.export, 1)
+                row.ingest_state, row.ingest_refusal = "queued", None
+                self.world.opened.commit()
+                refused = part_reader.PartRefused(reason, f"part 1 was refused CANARY_PUBLIC_{number}")
+                with mock.patch.object(part_reader, "read_part", side_effect=refused):
+                    report = self.world.ingest(self.export, 1)
+                self.assertTrue(report.refused)
+                row = self.world.part(self.export, 1)
+                self.assertEqual((row.ingest_state, row.ingest_refusal), ("refused", reason))
+                first = self.view()["parts"][0]
+                self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", reason))
+                self.assertNotIn("CANARY", json.dumps(self.view()))
+
+    def test_a_part_read_again_after_a_refusal_no_longer_reports_it(self):
+        row = self.world.part(self.export, 1)
+        row.ingest_state, row.ingest_refusal = "queued", "damaged"
+        self.world.opened.commit()
+        self.world.ingest(self.export, 1)
+        row = self.world.part(self.export, 1)
+        self.assertEqual((row.ingest_state, row.ingest_refusal), ("ingested", None))
+        self.assertEqual(self.view()["parts"][0]["kept_reason"], None)
+
+    def test_parts_never_refused_have_no_refusal(self):
+        self.world.ingest_all(self.export)
+        self.assertEqual([self.world.part(self.export, number).ingest_refusal for number in (1, 2, 3)], [None, None, None])
+        self.assertEqual([part["kept_reason"] for part in self.view()["parts"]],
+                         ["failed_item" if self.world.part(self.export, number).failed_items else None for number in (1, 2, 3)])
+
+    def test_the_stored_refusals_and_the_contract_name_every_reason_the_reader_gives(self):
+        self.assertEqual(INGEST_REFUSALS, get_args(part_reader.Refusal))
+        self.assertEqual(get_args(contract.KeptReason), (exports.FAILED_ITEM, *get_args(part_reader.Refusal)))
 
     def test_no_entry_name_or_sidecar_text_reaches_the_view(self):
         self.world.ingest_all(self.export)
@@ -442,6 +481,34 @@ class FailureTests(unittest.TestCase):
         self.assertNotIn("CANARY", alert.message)
         self.assertEqual(self.world.sent("Darkroom needs a look"), 1)
 
+
+    def test_an_earlier_part_swapped_since_it_was_read_fails_its_waiting_item_before_writing_it(self):
+        self.world.ingest_all(self.export, (1, 2))
+        name = "Photos from 2019/IMG_2002.JPG"
+        self.assertEqual(self.world.outcomes()[name], "waiting_sidecar")
+        entry = self.world.entry(name)
+        zipped = Path(self.export.inbox_dir) / self.world.part(self.export, 2).filename
+        swapped = zipped.with_name("swapped.zip")
+        with zipfile.ZipFile(zipped) as source, zipfile.ZipFile(swapped, "w") as target:
+            for info in source.infolist():
+                data = source.read(info)
+                target.writestr(info, data + b"a longer made-up replacement" if info.filename == entry.name else data)
+        swapped.replace(zipped)
+        written = []
+        real = paths.write_inbox_once
+
+        def recording(photos, target, *args, **kwargs):
+            written.append(target.name)
+            return real(photos, target, *args, **kwargs)
+
+        with mock.patch.object(paths, "write_inbox_once", side_effect=recording):
+            self.world.ingest(self.export, 3)
+        self.assertEqual(self.world.outcomes()[name], "failed")
+        self.assertNotIn(part_reader.scratch_name(entry), written)
+        self.assertEqual(self.world.part(self.export, 3).ingest_state, "ingested")
+        self.assertIn((f"export {self.export.id}", "metadata: PartRefused"),
+                      [(row.subject, row.detail) for row in self.world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars()])
+        self.assertEqual(list(self.world.photos.scratch("jo", f"export-{self.export.id}").glob("*")), [])
 
 class RerunTests(unittest.TestCase):
     def setUp(self):
@@ -556,6 +623,35 @@ class CrashTests(unittest.TestCase):
                     self.assertEqual(world.state(), expected)
 
 
+    def crashing_after(self, point):
+        if point == "ingesting":
+            return mock.patch.object(part_ingest, "Ingest", side_effect=Crash)
+        real = getattr(part_reader, point)
+
+        def then_crash(*args, **kwargs):
+            real(*args, **kwargs)
+            raise Crash
+
+        return mock.patch.object(part_reader, point, side_effect=then_crash)
+
+    def test_a_crash_after_the_readers_commits_or_the_ingesting_state_resumes_to_the_same_result(self):
+        expected, _ = self.uninterrupted()
+        for number in (1, 2, 3):
+            for point in ("ingesting", "record_listing", "stream_batch"):
+                with self.subTest(part=number, after=point):
+                    world = PartWorld(self)
+                    export = world.create(world.scenario)
+                    for earlier in range(1, number):
+                        world.ingest(export, earlier)
+                    writes = []
+                    with self.crashing_after(point), recording_writes(writes), self.assertRaises(Crash):
+                        world.ingest(export, number)
+                    world.opened.rollback()
+                    self.assertEqual(world.part(export, number).ingest_state, "ingesting")
+                    resumed = self.resume(world, export, number)
+                    self.assertEqual(set(writes) & set(resumed), set())
+                    self.assertEqual(world.state(), expected)
+
 class BoundedScratchTests(unittest.TestCase):
     def test_a_late_part_that_unblocks_many_entries_restreams_them_in_bounded_batches(self):
         world = PartWorld(self)
@@ -571,7 +667,7 @@ class BoundedScratchTests(unittest.TestCase):
         self.assertEqual(len(held), 6)
         scratch = world.photos.scratch("jo", f"export-{export.id}")
         high, sweeps = [0], []
-        real_stream, real_sweep = part_reader.stream_one, part_reader.sweep
+        real_stream, real_sweep = part_reader.stream_one, part_reader.sweep_part_scratch
 
         def stream(*args, **kwargs):
             streamed = real_stream(*args, **kwargs)
@@ -583,7 +679,7 @@ class BoundedScratchTests(unittest.TestCase):
             return real_sweep(*args, **kwargs)
 
         with (mock.patch.object(part_reader, "BATCH_FILES", 2), mock.patch.object(part_reader, "stream_one", side_effect=stream),
-              mock.patch.object(part_reader, "sweep", side_effect=sweep)):
+              mock.patch.object(part_reader, "sweep_part_scratch", side_effect=sweep)):
             world.ingest(export, 3)
         self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "placed"), 5)
         self.assertLessEqual(high[0], 2)
@@ -692,6 +788,33 @@ class ReversalTests(unittest.TestCase):
         self.assertEqual(len(done), 1)
         self.assertEqual([path for path in world.files() if "/review/" in f"/{path}"], [])
 
+
+class WriteLockTests(unittest.TestCase):
+    def test_entries_restreamed_from_earlier_parts_are_measured_before_the_write_lock_is_taken(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        world.ingest_all(export, (1, 2))
+        held, measured = [False], []
+        real_lock, real_commit, real_measure = part_ingest.Ingest.lock, part_ingest.Ingest.commit, part_ingest.Ingest.measure
+
+        def lock(ingest):
+            real_lock(ingest)
+            held[0] = True
+
+        def commit(ingest):
+            real_commit(ingest)
+            held[0] = False
+
+        def measure(ingest, targets):
+            measured.append((held[0], sorted(short(target.entry.name) for target in targets)))
+            return real_measure(ingest, targets)
+
+        with (mock.patch.object(part_ingest.Ingest, "lock", lock), mock.patch.object(part_ingest.Ingest, "commit", commit),
+              mock.patch.object(part_ingest.Ingest, "measure", measure)):
+            world.ingest(export, 3)
+        self.assertIn("Photos from 2019/IMG_2002.JPG", [name for _, names in measured for name in names])
+        self.assertEqual([names for locked, names in measured if locked], [])
+        self.assertEqual(world.outcomes()["Photos from 2019/IMG_2002.JPG"], "placed")
 
 class QueueingTests(unittest.TestCase):
     def setUp(self):
@@ -849,6 +972,19 @@ class QueueingTests(unittest.TestCase):
         scheduler = jobs.build(self.world.settings, self.world.engine, NOW)
         scheduler.run_one("imports", NOW)
         self.assertEqual(self.world.part(export, 1).ingest_state, "ingested")
+
+    def test_an_import_tick_whose_zip_freeing_raises_still_ingests_queued_parts(self):
+        from darkroom.domain.ingest import part_free
+        from darkroom.server import jobs
+
+        export = self.world.create(self.world.scenario)
+        scheduler = jobs.build(self.world.settings, self.world.engine, NOW)
+        with (mock.patch.object(part_free, "free_ready", side_effect=RuntimeError("IMG_secret_freeing")),
+              mock.patch.object(jobs.monitoring, "log", wraps=jobs.monitoring.log) as logged,
+              no_leaks(self, "IMG_secret_freeing", database=self.world.engine)):
+            scheduler.run_one("imports", NOW)
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
+        self.assertIn(mock.call("zip freeing skipped this tick", error="RuntimeError"), logged.call_args_list)
 
 
 class RescanTests(unittest.TestCase):
