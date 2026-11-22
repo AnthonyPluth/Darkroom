@@ -177,7 +177,7 @@ export interface ExportPartDetail {
   held_waiting_sidecar: number;
   held_waiting_export: number;
   failed_items: number;
-  kept_reason: "failed_item" | null;
+  kept_reason: "failed_item" | "missing" | "not_plain" | "empty" | "not_a_zip" | "damaged" | "symlink_entry" | "outside" | "file_and_folder" | "device_entry" | "unreadable_entry" | "name_too_long" | "duplicate_name" | "too_many_entries" | "too_large" | "zip_bomb" | "sidecars_too_big" | "size_lies" | "listing_differs" | "bytes_differ" | null;
   freed: boolean;
   bytes_freed: number;
 }

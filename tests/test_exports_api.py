@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from darkroom.dates import utc_now
 from darkroom.domain import browser_jobs, downloads, exports
 from darkroom.storage import db
-from darkroom.storage.models import BrowserJob, Event, Export, ExportPart, GoogleAccount, TakeoutEntry
+from darkroom.storage.models import PART_REFUSALS, BrowserJob, Event, Export, ExportPart, GoogleAccount, TakeoutEntry, TakeoutSidecar
 from tests.api_world import ApiCase
 from tests.privacy import no_leaks
 from tests.shared import worker_fetch
@@ -407,12 +407,47 @@ class ExportsApiIngestFieldTests(ApiCase):
                          [("ingested", True, 1200), ("ingested", False, 0), ("ingested", True, 34), ("ingested", False, 0)])
         self.assertEqual((export["bytes_freed"], export["parts_ingested"]), (1234, 4))
 
-    def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
-        export_id = self.add_export("g-refused", [{"ingest_state": "refused", "entries": 3, "entries_done": 1, "failed_items": 1}, {"ingest_state": "failed"}])
+    def test_a_refused_part_reports_its_reason_code_and_no_entry_name(self):
+        export_id = self.add_export("g-refused", [{"ingest_state": "refused", "ingest_refusal": "zip_bomb", "entries": 3, "entries_done": 1, "failed_items": 1},
+                                                  {"ingest_state": "failed"}])
         self.entries(export_id, 1, waiting_sidecar=1)
         export = self.listed(export_id)
-        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", None), ("failed", None)])
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", "zip_bomb"), ("failed", None)])
         self.assertEqual(export["parts_ingested"], 0)
+
+    def test_each_refusal_reason_is_reported_as_the_part_s_kept_reason(self):
+        export_id = self.add_export("g-every-refusal", [{"ingest_state": "refused", "ingest_refusal": reason} for reason in PART_REFUSALS])
+        export = self.listed(export_id)
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("refused", reason) for reason in PART_REFUSALS])
+
+    def test_a_part_that_was_never_refused_reports_no_refusal(self):
+        export_id = self.add_export("g-never-refused", [{"ingest_state": "ingested", "entries": 2, "entries_done": 2},
+                                                        {"ingest_state": "ingested", "entries": 2, "entries_done": 2, "failed_items": 1}, {"ingest_state": "queued"}])
+        export = self.listed(export_id)
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in export["parts"]], [("ingested", None), ("ingested", "failed_item"), ("queued", None)])
+
+    def test_a_refused_part_from_before_reasons_were_stored_reports_none(self):
+        export_id = self.add_export("g-old-refusal", [{"ingest_state": "refused", "failed_items": 2}])
+        self.assertEqual([part["kept_reason"] for part in self.listed(export_id)["parts"]], [None])
+
+    def test_the_refusal_reply_carries_no_entry_name_path_or_sidecar_text(self):
+        export_id = self.add_export("g-refusal-canary", [{"ingest_state": "refused", "ingest_refusal": "listing_differs", "entries": 2}])
+        self.entries(export_id, 1, waiting_sidecar=1, failed=1)
+        with db.session(self.engine) as opened:
+            entry = TakeoutEntry(export_id=export_id, part_number=1, name="canary-folder-of-refused-part/canary-sidecar-name.json", kind="sidecar", bytes=40,
+                                 crc32=1, outcome="recorded", listed_at=self.now)
+            opened.add(entry)
+            opened.flush()
+            opened.add(TakeoutSidecar(export_id=export_id, part_number=1, entry_id=entry.id, folder="canary-folder-of-refused-part", name="canary-sidecar-name.json",
+                                      text="canary sidecar text for the refused part"))
+        status, one = self.call("GET", f"/api/exports/{export_id}")
+        self.assertEqual(status, 200, one)
+        status, every = self.call("GET", "/api/exports")
+        self.assertEqual(status, 200, every)
+        self.assertEqual(one["export"]["parts"][0]["kept_reason"], "listing_differs")
+        with no_leaks(self, "canary-1-", "canary-folder-of-refused-part", "canary-sidecar-name", "canary sidecar text",
+                      replies=[json.dumps(one).encode(), json.dumps(every).encode()]):
+            pass
 
     def test_every_export_is_counted_in_one_ledger_query_not_one_per_part(self):
         export_id = self.add_export("g-queries", [{"ingest_state": "ingested", "entries": 1, "held": 1} for _ in range(6)])

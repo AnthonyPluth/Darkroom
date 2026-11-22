@@ -1,4 +1,5 @@
 import json
+import typing
 import unittest
 import zipfile
 from pathlib import Path
@@ -8,9 +9,10 @@ from sqlalchemy import select
 
 from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
+from darkroom.server import contract
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
+    PART_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
 )
 from tests.import_world import DAY, NOW, World, tree
 from tests.privacy import no_leaks
@@ -365,16 +367,63 @@ class ExportsApiFieldTests(unittest.TestCase):
         first = self.view()["parts"][0]
         self.assertEqual((first["ingest_state"], first["failed_items"], first["kept_reason"]), ("ingested", 1, "failed_item"))
 
-    def test_a_refused_part_has_no_reason_code_and_no_entry_name(self):
+    def test_a_refused_part_reports_the_reader_s_reason_and_no_entry_name(self):
         self.world.ingest(self.export, 1)
         row = self.world.part(self.export, 1)
         with zipfile.ZipFile(Path(self.export.inbox_dir) / row.filename, "w") as archive:
             archive.writestr(f"{PREFIX}Photos from 2019/OTHER_CANARY_NAME.JPG", b"other bytes")
         row.ingest_state = "queued"
         self.world.opened.commit()
+        with no_leaks(self, "OTHER_CANARY_NAME", "Photos from 2019") as watched:
+            self.world.ingest(self.export, 1)
+            text = json.dumps(self.view())
+        first = json.loads(text)["parts"][0]
+        self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", "listing_differs"))
+        self.assertEqual(self.world.part(self.export, 1).ingest_refusal, "listing_differs")
+        for canary in watched:
+            self.assertNotIn(canary, text)
+
+    def test_a_part_that_is_not_a_zip_is_refused_as_not_a_zip(self):
+        row = self.world.part(self.export, 1)
+        (Path(self.export.inbox_dir) / row.filename).write_bytes(b"not a zip at all, only made-up bytes")
         self.world.ingest(self.export, 1)
-        first = self.view()["parts"][0]
-        self.assertEqual((first["ingest_state"], first["kept_reason"]), ("refused", None))
+        self.assertEqual([(part["ingest_state"], part["kept_reason"]) for part in self.view()["parts"]],
+                         [("refused", "not_a_zip"), ("queued", None), ("queued", None)])
+
+    def test_each_refusal_reason_is_stored_on_the_part_and_reported_without_the_reader_s_words(self):
+        for reason in typing.get_args(part_reader.Refusal):
+            with self.subTest(reason=reason):
+                row = self.world.part(self.export, 1)
+                row.ingest_state, row.ingest_refusal = "queued", None
+                self.world.opened.commit()
+                public = f"Photos from 2019/IMG_CANARY_{reason}.JPG refused"
+                with mock.patch.object(part_reader, "read_part", side_effect=part_reader.PartRefused(reason, public)), \
+                        no_leaks(self, f"IMG_CANARY_{reason}") as watched:
+                    self.assertTrue(self.world.ingest(self.export, 1).refused)
+                    text = json.dumps(self.view())
+                self.assertEqual(self.world.part(self.export, 1).ingest_refusal, reason)
+                self.assertEqual(json.loads(text)["parts"][0]["kept_reason"], reason)
+                for canary in watched:
+                    self.assertNotIn(canary, text)
+
+    def test_a_part_ingested_again_after_a_refusal_drops_the_old_reason(self):
+        row = self.world.part(self.export, 1)
+        row.ingest_refusal = "zip_bomb"
+        self.world.opened.commit()
+        self.world.ingest(self.export, 1)
+        part = self.world.part(self.export, 1)
+        self.assertEqual((part.ingest_state, part.ingest_refusal), ("ingested", None))
+        self.assertIsNone(self.view()["parts"][0]["kept_reason"])
+
+    def test_parts_never_refused_have_no_refusal(self):
+        self.world.ingest_all(self.export)
+        self.assertEqual([part.ingest_refusal for part in self.world.opened.execute(select(ExportPart).order_by(ExportPart.number)).scalars()], [None, None, None])
+        self.assertEqual([part["kept_reason"] for part in self.view()["parts"]], [None, None, None])
+
+    def test_the_stored_refusals_match_the_reader_s_and_the_contract_s(self):
+        self.assertEqual(PART_REFUSALS, typing.get_args(part_reader.Refusal))
+        kept = typing.get_type_hints(contract.ExportPartDetail)["kept_reason"]
+        self.assertEqual({value for member in typing.get_args(kept) for value in typing.get_args(member)}, {exports.FAILED_ITEM, *PART_REFUSALS})
 
     def test_no_entry_name_or_sidecar_text_reaches_the_view(self):
         self.world.ingest_all(self.export)
