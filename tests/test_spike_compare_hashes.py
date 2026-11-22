@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -132,6 +133,39 @@ class CompareTests(unittest.TestCase):
         before = sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in self.folder.rglob("*"))
         run("takeout", "--export", str(export), "--originals", str(self.originals))
         self.assertEqual(sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in self.folder.rglob("*")), before)
+
+    def test_a_multi_part_export_opens_each_part_once(self):
+        stage = self.build_export()
+        target = self.folder / "parts"
+        target.mkdir()
+        files = sorted(p for p in stage.rglob("*") if p.is_file())
+        for number, part in enumerate((files[::2], files[1::2]), start=1):
+            with zipfile.ZipFile(target / f"takeout-00{number}.zip", "w") as archive:
+                for path in part:
+                    archive.write(path, path.relative_to(stage).as_posix())
+        opened = []
+        real = zipfile.ZipFile
+
+        def counting(*args, **kwargs):
+            opened.append(args[0])
+            return real(*args, **kwargs)
+
+        with unittest.mock.patch.object(compare_hashes.zipfile, "ZipFile", counting):
+            _, from_parts = run("takeout", "--export", str(target), "--originals", str(self.originals))
+        _, from_directory = run("takeout", "--export", str(stage), "--originals", str(self.originals))
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(from_parts.split("originals indexed")[1], from_directory.split("originals indexed")[1])
+
+    def test_a_live_photo_video_without_a_sidecar_is_not_counted_as_shared(self):
+        export = self.build_export()
+        _code, before = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        fixtures.make_video(export / "Takeout" / "Google Photos" / "Photos from 2019" / "live.heic.mov")
+        _code, after = run("takeout", "--export", str(export), "--originals", str(self.originals))
+        self.assertIn("Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): 0", before)
+        self.assertIn("Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): 1", after)
+        lacking = "Other items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): "
+        self.assertIn(f"{lacking}4 (80.0%)", before)
+        self.assertIn(f"{lacking}4 (66.7%)", after)
 
     def test_phone_mode(self):
         fixtures.make_jpeg(self.originals / "a.jpg", colour=(1, 1, 1))

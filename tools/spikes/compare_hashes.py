@@ -57,33 +57,20 @@ def directory_entries(root: Path) -> Iterator[Entry]:
         yield Entry(path.relative_to(root).as_posix(), path.stat().st_size, lambda path=path: path.open("rb"))
 
 
-def zip_entries(path: Path) -> Iterator[Entry]:
-    with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
-            yield Entry(info.filename, info.file_size, lambda info=info, path=path: open_member(path, info.filename))
+def zip_entries(path: Path, stack: contextlib.ExitStack) -> Iterator[Entry]:
+    archive = stack.enter_context(zipfile.ZipFile(path))
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        yield Entry(info.filename, info.file_size, lambda info=info, archive=archive: archive.open(info))
 
 
-def open_member(zip_path: Path, member: str) -> IO[bytes]:
-    archive = zipfile.ZipFile(zip_path)
-    handle = archive.open(member)
-    original_close = handle.close
-
-    def close() -> None:
-        original_close()
-        archive.close()
-
-    handle.close = close
-    return handle
-
-
-def export_entries(export: Path) -> list[Entry]:
+def export_entries(export: Path, stack: contextlib.ExitStack) -> list[Entry]:
     if export.is_file() and export.suffix.lower() == ".zip":
-        return list(zip_entries(export))
+        return list(zip_entries(export, stack))
     entries: list[Entry] = []
     for zip_path in sorted(export.rglob("*.zip")):
-        entries += zip_entries(zip_path)
+        entries += zip_entries(zip_path, stack)
     extracted = directory_entries(export)
     return entries + [e for e in extracted if not e.name.lower().endswith(".zip")]
 
@@ -172,7 +159,7 @@ class Originals:
     by_sha1: dict[str, list[Path]]
     by_name_size: dict[tuple[str, int], list[Path]]
     by_name: dict[str, list[Path]]
-    stills_with_video: list[Path]
+    stills_with_video: list[tuple[Path, str]]
     count: int
 
 
@@ -181,13 +168,15 @@ def index_originals(root: Path) -> Originals:
     by_name_size: dict[tuple[str, int], list[Path]] = {}
     by_name: dict[str, list[Path]] = {}
     files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in MEDIA and not any(part.startswith(".") for part in p.relative_to(root).parts))
+    sha1_of: dict[Path, str] = {}
     for path in files:
         with path.open("rb") as handle:
-            by_sha1.setdefault(sha1_stream(handle), []).append(path)
+            sha1_of[path] = sha1_stream(handle)
+        by_sha1.setdefault(sha1_of[path], []).append(path)
         by_name_size.setdefault((path.name.lower(), path.stat().st_size), []).append(path)
         by_name.setdefault(path.name.lower(), []).append(path)
-    stems = {(p.parent, p.stem.lower()): p for p in files if p.suffix.lower() in VIDEO}
-    stills = [p for p in files if p.suffix.lower() in STILL and (p.parent, p.stem.lower()) in stems]
+    videos = {(p.parent, p.stem.lower()): p for p in files if p.suffix.lower() in VIDEO}
+    stills = [(p, sha1_of[videos[p.parent, p.stem.lower()]]) for p in files if p.suffix.lower() in STILL and (p.parent, p.stem.lower()) in videos]
     return Originals(by_sha1, by_name_size, by_name, stills, len(files))
 
 
@@ -209,8 +198,17 @@ def in_year_folder(entry: Entry) -> bool:
     return bool(YEAR_FOLDER.match(entry.folder.rsplit("/", 1)[-1]))
 
 
+def live_videos(media: list[Entry]) -> set[str]:
+    stills = {(e.folder, Path(e.basename).stem.lower()) for e in media if e.suffix in STILL}
+    return {e.name for e in media if e.suffix in VIDEO and (e.folder, Path(e.basename).stem.lower()) in stills}
+
+
 def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
-    entries = export_entries(export)
+    with contextlib.ExitStack() as stack:
+        return write_takeout_report(export_entries(export, stack), originals_root, out)
+
+
+def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str]) -> int:
     media = [e for e in entries if is_media(e)]
     sidecars: dict[str, list[Entry]] = {}
     for e in entries:
@@ -236,20 +234,21 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
             tag_counts.update(differing_tags(exiftool_tags(handle), exiftool_tags(same_name[0])))
     year_digests = {digests[e.name] for e in media if in_year_folder(e)}
     album_only = [e for e in media if digests[e.name] not in year_digests]
+    paired_videos = live_videos(media)
     lacking = []
     for entry in media:
+        if entry.name in paired_videos:
+            continue
         meta = sidecar_of(entry, sidecars)
         origin = read_json(meta).get("googlePhotosOrigin") if meta else None
         if not (isinstance(origin, dict) and "mobileUpload" in origin):
             lacking.append(entry)
     export_hashes = set(digests.values())
     export_video_stems = {Path(e.basename).stem.lower() for e in media if e.suffix in VIDEO}
-    safe_stems = unambiguous_stems(originals.stills_with_video)
+    safe_stems = unambiguous_stems([still for still, _ in originals.stills_with_video])
     present = absent = 0
-    for still in originals.stills_with_video:
-        video = next(p for p in still.parent.iterdir() if p.stem.lower() == still.stem.lower() and p.suffix.lower() in VIDEO)
-        with video.open("rb") as handle:
-            found = sha1_stream(handle) in export_hashes or (still.stem.lower() in safe_stems and still.stem.lower() in export_video_stems)
+    for still, video_sha1 in originals.stills_with_video:
+        found = video_sha1 in export_hashes or (still.stem.lower() in safe_stems and still.stem.lower() in export_video_stems)
         present, absent = present + found, absent + (not found)
     total = len(media)
     print(f"Media files in the export: {total}; originals indexed: {originals.count}", file=out)
@@ -261,7 +260,8 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
     print(f"No counterpart in the originals: {percent(missing, total)}", file=out)
     print(f"Live Photos in the originals (a still with a video of the same name): {len(originals.stills_with_video)}; video in the export: {present}, missing: {absent}", file=out)
     print(f"Items found only under album folders: {percent(len(album_only), total)}", file=out)
-    print(f"Items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): {percent(len(lacking), total)}", file=out)
+    print(f"Live Photo videos in the export (a video beside a still of the same name; not expected to have a sidecar): {len(paired_videos)}", file=out)
+    print(f"Other items whose sidecar lacks googlePhotosOrigin.mobileUpload (shared into an album, or no sidecar): {percent(len(lacking), total)}", file=out)
     for entry in lacking[:5]:
         meta = sidecar_of(entry, sidecars)
         print(f"  {entry.basename}: {json.dumps(scrubbed(read_json(meta)), sort_keys=True) if meta else 'no sidecar'}", file=out)
@@ -277,7 +277,7 @@ def phone_report(phone_files: Path, originals_root: Path, out: IO[str]) -> int:
             digest = sha1_stream(handle)
         if digest in originals.by_sha1:
             identical += 1
-        elif any(p.name.lower() == path.name.lower() for found in originals.by_name_size.values() for p in found):
+        elif path.name.lower() in originals.by_name:
             different += 1
             print(f"  different bytes: {path.name}", file=out)
         else:
