@@ -209,7 +209,7 @@ def takeout_report(export: Path, originals_root: Path, out: IO[str]) -> int:
 
 
 def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str]) -> int:
-    media = [e for e in entries if is_media(e)]
+    media = sorted((e for e in entries if is_media(e)), key=lambda e: e.name)
     sidecars: dict[str, list[Entry]] = {}
     for e in entries:
         if e.suffix == ".json":
