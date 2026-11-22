@@ -268,6 +268,8 @@ class ExportPart(Base):
     free_started_at: Mapped[float | None] = mapped_column(Float)
     freed_at: Mapped[float | None] = mapped_column(Float)
     bytes_freed: Mapped[int | None] = mapped_column(Bytes)
+    free_kept_at: Mapped[float | None] = mapped_column(Float)
+    free_kept_key: Mapped[str | None] = mapped_column(String)
 
 
 class TakeoutEntry(Base):

@@ -17,6 +17,10 @@ WAITING_SIDECAR: Final = "waiting_sidecar"
 WAITING_EXPORT: Final = "waiting_export"
 COPY: Final = "copy"
 LISTED: Final = "listed"
+PLACED: Final = "placed"
+REVIEW: Final = "review"
+SKIPPED: Final = "skipped"
+FAILED: Final = "failed"
 UNDECIDED: Final = frozenset({LISTED, WAITING_SIDECAR, WAITING_EXPORT})
 NAME_ONLY_RULES: Final = (pairing.exact, pairing.supplemental, pairing.counter)
 
@@ -160,6 +164,12 @@ def attach_copies(rows: Sequence[TakeoutEntry], part_number: int) -> tuple[dict[
         del members[row.id]
         attached.append(row)
     return members, attached
+
+
+def decided_outcome(tier: int, takeout_item_id: int | None) -> str:
+    if tier == 5:
+        return PLACED if takeout_item_id is not None else SKIPPED
+    return REVIEW if tier == 4 else SKIPPED
 
 
 def listed_media(entries: Iterable[TakeoutEntry]) -> list[TakeoutEntry]:
