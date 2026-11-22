@@ -176,13 +176,13 @@ def index_originals(root: Path) -> Originals:
         by_sha1.setdefault(sha1_of[path], []).append(path)
         by_name_size.setdefault((path.name.lower(), path.stat().st_size), []).append(path)
         by_name.setdefault(path.name.lower(), []).append(path)
-    videos = {(p.parent, p.stem.lower()): p for p in files if p.suffix.lower() in VIDEO}
-    stills = [(p, sha1_of[videos[p.parent, p.stem.lower()]]) for p in files if p.suffix.lower() in STILL and (p.parent, p.stem.lower()) in videos]
+    videos = {(p.parent, p.stem): p for p in files if p.suffix.lower() in VIDEO}
+    stills = [(p, sha1_of[videos[p.parent, p.stem]]) for p in files if p.suffix.lower() in STILL and (p.parent, p.stem) in videos]
     return Originals(by_sha1, by_name_size, by_name, stills, len(files))
 
 
 def unambiguous_stems(stills: list[Path]) -> set[str]:
-    counts = Counter(p.stem.lower() for p in stills)
+    counts = Counter(p.stem for p in stills)
     return {stem for stem, number in counts.items() if number == 1}
 
 
@@ -200,8 +200,8 @@ def in_year_folder(entry: Entry) -> bool:
 
 
 def live_videos(media: list[Entry]) -> set[str]:
-    stills = {(e.folder, Path(e.basename).stem.lower()) for e in media if e.suffix in STILL}
-    return {e.name for e in media if e.suffix in VIDEO and (e.folder, Path(e.basename).stem.lower()) in stills}
+    stills = {(e.folder, Path(e.basename).stem) for e in media if e.suffix in STILL}
+    return {e.name for e in media if e.suffix in VIDEO and (e.folder, Path(e.basename).stem) in stills}
 
 
 def label(name: str, number: int, show_names: bool) -> str:
@@ -249,11 +249,11 @@ def write_takeout_report(entries: list[Entry], originals_root: Path, out: IO[str
         if not (isinstance(origin, dict) and "mobileUpload" in origin):
             lacking.append(entry)
     export_hashes = set(digests.values())
-    export_video_stems = {Path(e.basename).stem.lower() for e in media if e.suffix in VIDEO}
+    export_video_stems = {Path(e.basename).stem for e in media if e.suffix in VIDEO}
     safe_stems = unambiguous_stems([still for still, _ in originals.stills_with_video])
     present = absent = 0
     for still, video_sha1 in originals.stills_with_video:
-        found = video_sha1 in export_hashes or (still.stem.lower() in safe_stems and still.stem.lower() in export_video_stems)
+        found = video_sha1 in export_hashes or (still.stem in safe_stems and still.stem in export_video_stems)
         present, absent = present + found, absent + (not found)
     total = len(media)
     print(f"Media files in the export: {total}; originals indexed: {originals.count}", file=out)

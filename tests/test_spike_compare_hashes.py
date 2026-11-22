@@ -50,7 +50,22 @@ class SidecarMatchingTests(unittest.TestCase):
 
     def test_a_stem_shared_by_several_originals_is_not_proof(self):
         stills = [Path("/a/IMG_1.heic"), Path("/b/IMG_1.heic"), Path("/a/IMG_2.heic")]
-        self.assertEqual(compare_hashes.unambiguous_stems(stills), {"img_2"})
+        self.assertEqual(compare_hashes.unambiguous_stems(stills), {"IMG_2"})
+
+    def test_only_a_same_case_stem_pairs_a_live_photo(self):
+        folder = "Takeout/Google Photos/Photos from 2019"
+
+        def entry(name):
+            return compare_hashes.Entry(f"{folder}/{name}", 1, lambda: io.BytesIO(b""))
+
+        media = [entry("IMG_0001.HEIC"), entry("IMG_0001.MP4"), entry("IMG_0002.jpg"), entry("img_0002.MOV")]
+        self.assertEqual(compare_hashes.live_videos(media), {f"{folder}/IMG_0001.MP4"})
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            for file_name in ("IMG_0001.HEIC", "IMG_0001.MOV", "IMG_0002.jpg", "img_0002.MOV"):
+                (root / file_name).write_bytes(file_name.encode())
+            stills = [still.name for still, _ in compare_hashes.index_originals(root).stills_with_video]
+        self.assertEqual(stills, ["IMG_0001.HEIC"])
 
     def test_a_large_member_is_streamed_to_exiftool_without_being_read_whole(self):
         class Source(io.BytesIO):
