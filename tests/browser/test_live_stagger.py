@@ -192,6 +192,53 @@ class LiveStaggerTests(unittest.TestCase):
         self.assertEqual(self.names(), ["guid-2.crdownload"])
         self.browser.cancel_download(first)
 
+    def gone_after_the_check(self, name):
+        is_file = Path.is_file
+
+        def checked(path):
+            found = is_file(path)
+            if path.name == name and found:
+                path.unlink()
+            return found
+
+        return mock.patch.object(Path, "is_file", autospec=True, side_effect=checked)
+
+    def test_cancelling_after_chromium_already_removed_the_crdownload_succeeds_and_the_other_download_runs_to_the_end(self):
+        first = self.browser.start_download(CLICK_1.selector, CLICK_1)
+        second = self.browser.start_download(CLICK_2.selector, CLICK_2)
+        (self.downloads / "foreign").write_bytes(b"f")
+        cancelled = self.tab.started[0]
+        cancelled.cancel = lambda: setattr(cancelled, "cancelled", True)
+        with self.gone_after_the_check(f"{first}.crdownload"):
+            self.browser.cancel_download(first)
+        self.assertTrue(self.tab.started[0].cancelled)
+        self.assertFalse(self.tab.started[1].cancelled)
+        self.assertEqual(self.names(), ["foreign", f"{second}.crdownload"])
+        self.finish(second, 70)
+        self.assertEqual(self.browser.download_state(second), FolderState(70, 1, False))
+        path = self.browser.keep_download(second, self.target)
+        self.assertEqual((path.name, path.read_bytes()), ("takeout-20261102T031000Z-002.zip", b"z" * 70))
+        self.assertEqual(self.names(), ["foreign"])
+
+    def test_a_crdownload_already_gone_counts_as_removed_and_other_files_are_left_alone(self):
+        outside = self.root / "held.jpg"
+        outside.write_bytes(b"held")
+        (self.downloads / "guid-5.crdownload").write_bytes(b"x")
+        (self.downloads / "guid-6.crdownload").write_bytes(b"x")
+        (self.downloads / "guid-5-link").symlink_to(outside)
+        (self.downloads / "foreign").write_bytes(b"f")
+        with self.gone_after_the_check("guid-5.crdownload"):
+            self.assertEqual(download.remove_download(self.downloads, "guid-5"), 1)
+        self.assertEqual(self.names(), ["foreign", "guid-5-link", "guid-6.crdownload"])
+        self.assertEqual(outside.read_bytes(), b"held")
+
+    def test_an_error_other_than_the_file_being_gone_still_fails_the_removal(self):
+        (self.downloads / "guid-5.crdownload").write_bytes(b"x")
+        with mock.patch.object(Path, "unlink", autospec=True, side_effect=PermissionError("made-up")):
+            with self.assertRaises(PermissionError):
+                download.remove_download(self.downloads, "guid-5")
+        self.assertEqual(self.names(), ["guid-5.crdownload"])
+
     def test_strays_are_cancelled_and_no_file_is_removed(self):
         own = self.browser.start_download(CLICK_1.selector, CLICK_1)
         stray = Download(self.downloads, "guid-x", REDIRECTED_2, "takeout-20261102T031000Z-002.zip", self.tab)
