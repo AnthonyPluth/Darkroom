@@ -971,6 +971,7 @@ class LockAcrossMeasuringTests(unittest.TestCase):
 
         held = [False]
         seen = []
+        measuring = self.measuring = [False]
         real_lock = db.write_lock
 
         def lock(opened):
@@ -997,7 +998,7 @@ class LockAcrossMeasuringTests(unittest.TestCase):
             return real_stream(*args, **kwargs)
 
         def read(files, *args, **kwargs):
-            seen.append(("read", held[0]))
+            seen.append(("read", held[0], measuring[0]))
             return real_read(files, *args, **kwargs)
 
         return seen, mock.patch.object(db, "write_lock", lock), mock.patch.object(part_reader, "stream_one", side_effect=stream), read
@@ -1012,15 +1013,93 @@ class LockAcrossMeasuringTests(unittest.TestCase):
 
         def measure(ingest, targets):
             measured.append(len(targets))
-            return real_measure(ingest, targets)
+            self.measuring[0] = True
+            try:
+                return real_measure(ingest, targets)
+            finally:
+                self.measuring[0] = False
 
         with locking, streaming, mock.patch.object(part_ingest.Ingest, "measure", measure):
             world.ingest(export, 2, tools=run.Tools(read=read, write=world.tools.write, notifier=world.recorder))
         self.assertEqual(sorted(outcome for outcome in world.outcomes().values()), ["placed"] * 3)
-        streams = [locked for kind, locked in seen if kind == "stream"]
+        streams = [event[1] for event in seen if event[0] == "stream"]
         self.assertEqual(len(streams), 3)
         self.assertEqual(streams, [False] * 3)
         self.assertGreaterEqual(sum(measured), 3)
+        measuring = [event[1] for event in seen if event[0] == "read" and event[2]]
+        self.assertGreaterEqual(len(measuring), 1)
+        self.assertEqual(measuring, [False] * len(measuring))
+
+
+class RereadUnderLockTests(unittest.TestCase):
+    def rival_at_lock(self, world, method, wanted, write):
+        real_method, real_lock = getattr(part_ingest.Ingest, method), db.write_lock
+        armed, done = [], []
+
+        def lock(opened):
+            if armed and not done:
+                done.append(armed[0])
+                with db.session(world.engine, writing=True) as other:
+                    write(other, armed[0])
+            return real_lock(opened)
+
+        def watched(ingest, entry, *args, **kwargs):
+            if wanted(entry) and not done:
+                armed[:] = [entry.name]
+            try:
+                return real_method(ingest, entry, *args, **kwargs)
+            finally:
+                armed.clear()
+
+        return mock.patch.object(db, "write_lock", lock), mock.patch.object(part_ingest.Ingest, method, watched), done
+
+    def rows_for(self, world, name):
+        world.opened.expire_all()
+        return world.opened.execute(select(DedupeDecision).where(DedupeDecision.source_path == name)).scalars().all()
+
+    def test_a_decision_recorded_before_decide_takes_the_lock_is_the_one_used(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        name = f"{PREFIX}Photos from 2019/IMG_2001.JPG"
+
+        def record_rival(other, source_path):
+            found = other.get(Export, export.id)
+            person = exports.owner_of(other, found)
+            dedupe.apply(other, dedupe.Decision(source_path, found.account_id, person.id, 5, "google_only", "rival", decided_by="owner"), found, NOW)
+
+        locking, watching, done = self.rival_at_lock(world, "decide", lambda entry: entry.name == name, record_rival)
+        with locking, watching:
+            world.ingest(export, 1)
+        self.assertEqual(done, [name])
+        (row,) = self.rows_for(world, name)
+        self.assertEqual((row.decided_by, row.reason), ("owner", "rival"))
+        self.assertEqual(world.entry("Photos from 2019/IMG_2001.JPG").decision_id, row.id)
+        self.assertEqual(world.outcomes()["Photos from 2019/IMG_2001.JPG"], "skipped")
+        self.assertEqual({key for key in world.google_only() if key.endswith("IMG_2001.JPG")}, set())
+
+    def test_a_copy_placed_before_place_decided_takes_the_lock_is_finished_and_not_placed_again(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        name = f"{PREFIX}Photos from 2019/IMG_2001.JPG"
+        placed = []
+
+        def place_rival(other, source_path):
+            row = dedupe.stored_decision(other, export.id, source_path)
+            item = MediaItem(person_id=row.person_id, source="takeout", path="jo/google-only/2019/07/rival-copy.JPG", sha1="0" * 40, bytes=1, mtime=NOW, indexed_at=NOW, export_id=export.id)
+            other.add(item)
+            other.flush()
+            row.takeout_item_id = item.id
+            placed.append(item.id)
+
+        locking, watching, done = self.rival_at_lock(world, "place_decided", lambda entry: entry.name == name, place_rival)
+        with locking, watching:
+            world.ingest(export, 1)
+        self.assertEqual(done, [name])
+        (row,) = self.rows_for(world, name)
+        self.assertEqual(row.takeout_item_id, placed[0])
+        entry = world.entry("Photos from 2019/IMG_2001.JPG")
+        self.assertEqual((entry.outcome, entry.item_id), ("placed", placed[0]))
+        self.assertEqual({key for key in world.google_only() if key.endswith("IMG_2001.JPG")}, set())
 
 
 class ReaderCrashTests(unittest.TestCase):
