@@ -2085,6 +2085,11 @@ def inbox_entry_absent(photos: Photos, path: Path) -> bool:
         return entry_at(path.name, folder) is None and not claim_left(folder, path.name)
 
 
+def claims_left_in(photos: Photos, folder: Path) -> bool:
+    with inbox_folder(photos, folder, create=False) as opened:
+        return any(name.startswith(FREEING_CLAIM) for name in os.listdir(opened))
+
+
 def put_back_claimed(photos: Photos, path: Path) -> bool:
     with inbox_folder(photos, path.parent, create=False) as folder:
         try:
