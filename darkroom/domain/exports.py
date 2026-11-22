@@ -403,7 +403,9 @@ def held_by_part(opened: Session, export_id: int) -> dict[int, tuple[int, int]]:
 
 
 def kept_reason(part: ExportPart) -> str | None:
-    return FAILED_ITEM if part.failed_items > 0 and part.ingest_state != REFUSED else None
+    if part.ingest_state == REFUSED:
+        return part.ingest_refusal
+    return FAILED_ITEM if part.failed_items > 0 else None
 
 
 def part_dict(part: ExportPart, held: tuple[int, int] = (0, 0)) -> dict[str, object]:

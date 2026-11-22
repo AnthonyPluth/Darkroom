@@ -229,6 +229,8 @@ class ManagedAssetOrigin(Base):
 
 
 PART_INGEST_STATES = ("not_queued", "queued", "ingesting", "ingested", "refused", "failed")
+INGEST_REFUSALS = ("missing", "not_plain", "empty", "not_a_zip", "damaged", "symlink_entry", "outside", "file_and_folder", "device_entry", "unreadable_entry",
+                   "name_too_long", "duplicate_name", "too_many_entries", "too_large", "zip_bomb", "sidecars_too_big", "size_lies", "listing_differs", "bytes_differ")
 ENTRY_KINDS = ("media", "sidecar", "other")
 ENTRY_OUTCOMES = ("listed", "placed", "review", "skipped", "copy", "waiting_sidecar", "waiting_export", "failed", "recorded")
 Crc32 = Integer().with_variant(BigInteger(), "postgresql")
@@ -240,6 +242,7 @@ class ExportPart(Base):
         UniqueConstraint("export_id", "number", name="uq_export_parts_number"),
         one_of("status", ("pending", "downloading", "done", "failed", "corrupt"), "ck_export_parts_status"),
         one_of("ingest_state", PART_INGEST_STATES, "ck_export_parts_ingest_state"),
+        CheckConstraint(f"ingest_refusal IS NULL OR ingest_refusal IN ({', '.join(repr(v) for v in INGEST_REFUSALS)})", name="ck_export_parts_ingest_refusal"),
         CheckConstraint("entries IS NULL OR entries >= 0", name="ck_export_parts_entries"),
         CheckConstraint("entries_done >= 0 AND held >= 0 AND failed_items >= 0", name="ck_export_parts_ingest_counts"),
     )
@@ -255,6 +258,7 @@ class ExportPart(Base):
     bytes_done: Mapped[int | None] = mapped_column(Bytes)
     ingest_state: Mapped[str] = mapped_column(String, nullable=False, default="not_queued", server_default="not_queued")
     ingest_queued_at: Mapped[float | None] = mapped_column(Float)
+    ingest_refusal: Mapped[str | None] = mapped_column(String)
     ingested_at: Mapped[float | None] = mapped_column(Float)
     entries: Mapped[int | None] = mapped_column(Integer)
     entries_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

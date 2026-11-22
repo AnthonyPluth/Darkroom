@@ -124,7 +124,7 @@ def failed(opened: Session, settings: config.Settings, export_id: int, number: i
 def refuse(opened: Session, settings: config.Settings, export: Export, part: ExportPart, refused: part_reader.PartRefused, now: float,
            tools: run.Tools) -> PartIngest:
     opened.rollback()
-    part.ingest_state = REFUSED
+    part.ingest_state, part.ingest_refusal = REFUSED, refused.reason
     events.record(opened, now, "export_part_refused", f"export {export.id}", f"part {part.number}: {refused.public}")
     alerts.open_alert(opened, settings, f"part:refused:{export.id}:{part.number}", "failure", f"export {export.id}",
                       alerts.failure(f"Reading part {part.number} of export {export.id}"), None, now, notifier=tools.notifier,
@@ -484,7 +484,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
         resumed = part.ingest_state == INGESTING
-        part.ingest_state = INGESTING
+        part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()
         photos = Photos(settings.photos_root)
         with contextlib.ExitStack() as stack:
