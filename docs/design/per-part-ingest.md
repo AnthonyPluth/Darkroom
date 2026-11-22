@@ -185,6 +185,8 @@ A part's zip and a held copy are deleted by one routine, `paths.remove_checked` 
 
 Each row has a test: `tests/test_paths.py`'s `PartZipRemoverTests.test_every_cell_of_the_removers_state_table_for_a_zip_and_a_held_copy` and `test_a_file_that_takes_the_name_right_after_the_delete_is_kept_and_the_remover_refuses`, and through `part_free` `tests/test_part_free.py`'s `JournalTests`, `ClaimSwapTests` and `ClaimRecoveryTests`.
 
+A part that was kept is not hashed again every tick (#518). On a later tick, while its journal is clear and no claim is left in its folder, the proof runs without its hashing and without the write lock: a clause that refuses keeps the part as before, and a part kept because a file's hash differed is kept again only when the zip's identity, every proven file's path, expected SHA-1 and identity (device, inode, size, mtime, ctime) and the part's ingest time give the key `export_parts.free_kept_key` recorded with that refusal, a hash that refused while its file's identity held still. A key that doesn't match, none, a keep time in the future or six hours old runs the full proof; a part that becomes provable is freed by that full proof, second pass under the write lock included, and nothing is freed on a remembered result. Tests: `tests/test_part_free.py`'s `KeptPartTests`.
+
 ### Against today's retention and Takeout's limits
 
 Today a zip is kept 14 days after the whole export finishes. Takeout allows 5 downloads per part, and the export expires about 7 days after it is ready; Darkroom caps itself at 2 retries per part and normally uses 1 download.
