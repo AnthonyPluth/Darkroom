@@ -30,10 +30,10 @@ FAILED_PART: Final = "failed"
 LISTED: Final = part_pairing.LISTED
 WAITING_SIDECAR: Final = part_pairing.WAITING_SIDECAR
 WAITING_EXPORT: Final = part_pairing.WAITING_EXPORT
-PLACED: Final = "placed"
-REVIEW: Final = "review"
-SKIPPED: Final = "skipped"
-FAILED: Final = "failed"
+PLACED: Final = part_pairing.PLACED
+REVIEW: Final = part_pairing.REVIEW
+SKIPPED: Final = part_pairing.SKIPPED
+FAILED: Final = part_pairing.FAILED
 RECORDED: Final = "recorded"
 HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
@@ -415,11 +415,9 @@ class Ingest:
             self.changed.add(owner)
 
     def finish_entry(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
+        entry.outcome = part_pairing.decided_outcome(row.tier, row.takeout_item_id)
         if row.tier == 5:
-            entry.outcome = PLACED if row.takeout_item_id is not None else SKIPPED
             entry.item_id = row.takeout_item_id
-        else:
-            entry.outcome = REVIEW if row.tier == 4 else SKIPPED
         entry.decision_id, entry.done_at = row.id, self.now
         self.commit()
 
