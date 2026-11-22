@@ -620,9 +620,12 @@ class PerPartRetryTests(unittest.TestCase):
 
     def test_no_entry_name_reaches_the_log_or_the_database_events(self):
         self.imported_with_a_failed_item()
-        with no_leaks(self, "IMG_2001.JPG", database=self.world.engine):
+        with no_leaks(self, "IMG_2001.JPG"):
             self.request()
             self.finish_ready()
+        events = self.world.opened.execute(select(Event)).scalars().all()
+        self.assertTrue(events)
+        self.assertEqual([row.id for row in events if "IMG_2001" in f"{row.subject} {row.detail}"], [])
 
 
 class NeverCompletesTests(unittest.TestCase):
