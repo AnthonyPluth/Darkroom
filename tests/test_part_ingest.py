@@ -913,17 +913,25 @@ class QueueingTests(unittest.TestCase):
         kept = zipped.read_bytes()
         zipped.write_bytes(b"not a zip")
         self.assertTrue(self.world.ingest(export, 2).refused)
-        self.assertEqual(self.world.part(export, 2).ingest_state, "refused")
+        self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_refusal), ("refused", "not_a_zip"))
         return export, zipped, kept
+
+    def kept_reasons(self, export):
+        self.world.opened.expire_all()
+        return [exports.kept_reason(self.world.part(export, n)) for n in (1, 2, 3)]
 
     def test_a_refused_part_is_requeued_by_an_explicit_request_and_its_refusal_stays_recorded(self):
         export, zipped, kept = self.refused_part("downloaded")
         zipped.write_bytes(kept)
         self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 3)])
         self.assertEqual(self.world.part(export, 2).ingest_state, "refused")
+        self.assertEqual(self.kept_reasons(export)[1], "not_a_zip")
         self.request(export, NOW + 5)
-        self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_queued_at), ("queued", NOW + 5))
+        self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_queued_at, self.world.part(export, 2).ingest_refusal),
+                         ("queued", NOW + 5, None))
+        self.assertEqual(self.kept_reasons(export), [None, None, None])
         self.assertEqual(self.run_queued(NOW + 6), [(export.id, 2)])
+        self.assertEqual(self.kept_reasons(export), [None, None, None])
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
         refused = self.world.opened.execute(select(Event).where(Event.type == "export_part_refused")).scalars().all()
         self.assertEqual([row.subject for row in refused], [f"export {export.id}"])
@@ -941,8 +949,10 @@ class QueueingTests(unittest.TestCase):
     def test_a_refused_part_that_is_still_unreadable_is_refused_again_and_keeps_the_file(self):
         export, zipped, _ = self.refused_part("downloaded")
         self.request(export, NOW + 5)
+        self.assertEqual((self.world.part(export, 2).ingest_refusal, self.kept_reasons(export)[1]), (None, None))
         self.run_queued(NOW + 6)
-        self.assertEqual(self.world.part(export, 2).ingest_state, "refused")
+        self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_refusal), ("refused", "not_a_zip"))
+        self.assertEqual(self.kept_reasons(export)[1], "not_a_zip")
         self.assertEqual(zipped.read_bytes(), b"not a zip")
 
     def test_an_export_still_downloading_with_nothing_stopped_is_not_ready_as_before(self):

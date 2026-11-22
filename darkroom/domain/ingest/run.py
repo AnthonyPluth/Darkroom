@@ -599,7 +599,7 @@ def requeue_stopped(opened: Session, export: Export, now: float) -> int:
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
                                                          ExportPart.ingest_state.in_(STOPPED_PARTS))).scalars())
     for part in parts:
-        part.ingest_state, part.ingest_queued_at = PART_QUEUED, now
+        part.ingest_state, part.ingest_queued_at, part.ingest_refusal = PART_QUEUED, now, None
     return len(parts)
 
 
