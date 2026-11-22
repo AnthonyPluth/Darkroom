@@ -1,3 +1,4 @@
+import ast
 import gc
 import hashlib
 import io
@@ -27,6 +28,21 @@ COMPRESSIONS = (("deflate", zipfile.ZIP_DEFLATED, 0), ("bzip2", zipfile.ZIP_BZIP
 MEDIA = "Takeout/Google Photos/Photos from 2019/IMG_0001.JPG"
 SIDECAR = f"{MEDIA}.json"
 DAMAGED = "part 1 has a damaged file inside"
+
+
+def reached_through_the_reader(text):
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any("part_reader" in alias.name for alias in node.names):
+            raise AssertionError("part_reader is imported by its full name")
+        if isinstance(node, ast.ImportFrom) and "part_reader" in (node.module or ""):
+            raise AssertionError("names are imported from part_reader")
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "part_reader" and alias.asname for alias in node.names):
+            raise AssertionError("part_reader is imported under another name")
+    attributes = [node for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "part_reader"]
+    if sum(1 for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "part_reader") != len(attributes):
+        raise AssertionError("part_reader is used other than through one of its names")
+    return {node.attr for node in attributes}
 
 
 class Crash(Exception):
@@ -212,8 +228,19 @@ class ListingTests(unittest.TestCase):
         sources = {str(p.relative_to(ROOT)): p.read_text() for p in sorted((ROOT / "darkroom").rglob("*.py")) if p.name != "part_reader.py"}
         users = [name for name, text in sources.items() if "part_reader" in text]
         self.assertEqual(users, ["darkroom/domain/ingest/part_free.py", "darkroom/domain/ingest/part_ingest.py"])
-        readers = [name for name, text in sources.items() if any(call in text for call in ("read_part(", "part_reader.sweep(", "stream_one(", "stream_batch("))]
-        self.assertEqual(readers, ["darkroom/domain/ingest/part_ingest.py"])
+        reached = {name: reached_through_the_reader(sources[name]) for name in users}
+        self.assertEqual(reached, {
+            "darkroom/domain/ingest/part_free.py": {"PartRefused", "entry_chunks", "entry_listing", "recorded", "scratch_name", "zip_of"},
+            "darkroom/domain/ingest/part_ingest.py": {"BATCH_BYTES", "BATCH_FILES", "PartRefused", "READ_ERRORS", "Streamed", "batches_of",
+                                                      "entry_listing", "read_part", "stream_one", "sweep_part_scratch", "zip_of"},
+        })
+
+    def test_the_boundary_check_sees_every_way_a_module_can_reach_the_reader(self):
+        self.assertEqual(reached_through_the_reader("from darkroom.domain.ingest import part_reader\npart_reader.stream_media(1)\n"), {"stream_media"})
+        for text in ("from darkroom.domain.ingest.part_reader import stream_media\n", "from darkroom.domain.ingest import part_reader as reader\n",
+                     "import darkroom.domain.ingest.part_reader\n", "from darkroom.domain.ingest import part_reader\nuse(part_reader)\n"):
+            with self.subTest(text=text), self.assertRaises(AssertionError):
+                reached_through_the_reader(text)
 
 
 class SameRefusalsAsUnpackTests(unittest.TestCase):

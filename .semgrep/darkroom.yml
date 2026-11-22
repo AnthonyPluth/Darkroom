@@ -506,6 +506,26 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_reader.py"]
 
+  - id: darkroom-part-scratch-sweep-callers
+    message: >-
+      part_reader.sweep_part_scratch empties a part's scratch folder through paths.sweep_scratch. Only
+      darkroom/domain/ingest/part_reader.py and darkroom/domain/ingest/part_ingest.py may call it: part_ingest sweeps
+      before each re-streamed chunk and after a part's final pass (#448, #503). Read a part through
+      part_reader.read_part or part_ingest.ingest_part instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.$F(...)
+          - pattern: $F(...)
+          - pattern: $M.$F
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^sweep_part_scratch$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/ingest/part_reader.py", "/darkroom/domain/ingest/part_ingest.py"]
+
   - id: darkroom-share-sentinel-one-writer
     message: >-
       Only `python run.py bind-share` writes the share's sentinel and records its identity (#316): placing and pruning

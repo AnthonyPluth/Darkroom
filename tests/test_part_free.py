@@ -641,6 +641,42 @@ class ClauseTests(unittest.TestCase):
         self.assertEqual((report.held, report.kept, self.world.held_store()), (0, 1, held))
         self.assertEqual(self.world.kind_of_events("export_held_kept"), ["1 held copies: decision_unsafe"])
 
+    def test_a_second_pass_over_held_copies_kept_on_the_ledger_walks_no_folder_and_takes_no_write_lock(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(TIER_2), decision_id=None):
+            self.world.free(at=NOW + 3 * TICK)
+            with (mock.patch.object(part_free.db, "write_lock", wraps=part_free.db.write_lock) as locked,
+                  mock.patch.object(part_free.paths, "leftovers", wraps=part_free.paths.leftovers) as walked,
+                  mock.patch.object(part_free.paths, "put_back_claimed", wraps=part_free.paths.put_back_claimed) as recovered,
+                  mock.patch.object(part_free.paths, "inbox_fingerprint", wraps=part_free.paths.inbox_fingerprint) as hashed):
+                report = self.world.free(at=NOW + 4 * TICK)
+            self.assertEqual((locked.call_count, walked.call_count, recovered.call_count, hashed.call_count), (0, 0, 0, 0))
+            self.assertEqual((report.held, report.kept, self.world.entry(TIER_2).held_state, self.world.held_store()), (0, 1, None, held))
+            self.assertEqual(self.world.kind_of_events("export_held_kept"), ["1 held copies: decision_unsafe"])
+        report = self.world.free(at=NOW + 5 * TICK)
+        self.assertEqual((report.held, self.world.entry(TIER_2).held_state, self.world.held_store()), (1, "freed", {}))
+
+    def test_held_copies_kept_because_the_export_is_not_settled_are_kept_without_the_write_lock(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(PLACED), outcome="failed"):
+            with mock.patch.object(part_free.db, "write_lock", wraps=part_free.db.write_lock) as locked:
+                report = self.world.free(at=NOW + 3 * TICK)
+            self.assertEqual((locked.call_count, report.held, report.kept, self.world.held_store()), (0, 0, 1, held))
+            self.assertIn("held copies: failed_entry", self.world.kind_of_events("export_held_kept"))
+
+    def test_a_held_copy_left_freeing_by_a_crash_is_never_skipped_on_the_ledger(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        held = self.world.held_store()
+        with self.changed(self.world.entry(TIER_2), held_state="freeing", decision_id=None):
+            with mock.patch.object(part_free, "recover_held_claims", wraps=part_free.recover_held_claims) as recovered:
+                self.world.free(at=NOW + 3 * TICK)
+            self.assertEqual((recovered.call_count, self.world.entry(TIER_2).held_state, self.world.held_store()), (1, None, held))
+
     def test_the_held_store_writers_own_refusals(self):
         waiting = self.world.entry(TIER_2)
         rows = part_free.part_rows(self.world.opened, self.world.opened.get(Export, self.export.id), self.world.part(self.export, 2))
@@ -758,6 +794,7 @@ class ClaimRecoveryTests(unittest.TestCase):
         self.assertEqual((self.world.entry(TIER_2).held_state, copy.exists(), paths.inbox_entry_absent(self.world.photos, copy)), ("freeing", False, False))
         self.world.free(at=NOW + 4 * TICK)
         self.assertEqual((self.world.entry(TIER_2).held_state, self.world.held_store(), paths.inbox_entry_absent(self.world.photos, copy)), ("freed", {}, True))
+        self.assertEqual([path.name for path in (self.world.root / "_inbox/jo/held").rglob("*") if path.name.startswith(paths.FREEING_CLAIM)], [])
 
     def came_back(self, path):
         real = os.unlink

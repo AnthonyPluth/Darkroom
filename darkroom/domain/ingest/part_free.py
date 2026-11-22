@@ -539,11 +539,48 @@ def recover_held_claims(photos: Photos, export: Export, rows: list[TakeoutEntry]
         recover_claim(photos, path, export)
 
 
+def ledger_kept(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry]) -> dict[str, int] | None:
+    if export.status != IMPORTED:
+        raise Refused("export_busy")
+    shared_checks(opened, export)
+    if any_failed(opened, export):
+        raise Refused("failed_entry")
+    kept_rows: dict[str, int] = {}
+    for row in rows:
+        try:
+            if row.metadata_pending:
+                raise Refused("metadata_unrecorded")
+            Prover(opened, photos, export, on_disk=False).media(row, allow_held=False)
+        except Refused as refused:
+            kept_rows[refused.reason] = kept_rows.get(refused.reason, 0) + 1
+            continue
+        return None
+    return kept_rows
+
+
+def all_kept_on_the_ledger(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], now: float, report: FreeReport) -> bool:
+    if any(row.held_state == FREEING for row in rows):
+        return False
+    try:
+        kept_rows = ledger_kept(opened, photos, export, rows)
+    except Refused as refused:
+        kept(opened, export, "held copies", HELD_KEPT, refused.reason, now)
+        report.kept += 1
+        opened.commit()
+        return True
+    if kept_rows is None:
+        return False
+    keep_held(opened, export, kept_rows, now)
+    report.kept += sum(kept_rows.values())
+    opened.commit()
+    return True
+
+
 def free_held(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
     opened.commit()
     opened.expire_all()
     rows = held_rows(opened, export)
-    if not rows:
+    if not rows or all_kept_on_the_ledger(opened, photos, export, rows, now, report):
         return
     recover_held_claims(photos, export, rows)
     try:
