@@ -394,8 +394,13 @@ class Ingest:
             self.commit()
             return
         try:
-            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
-                               self.tools.read, self.tools.write)
+            with self.copied_ahead(row, given) as ahead:
+                if ahead is not None and self.settled_elsewhere(row):
+                    self.finish_entry(entry, row)
+                    return
+                done = place.place(self.opened, self.photos, self.export,
+                                   [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
+                                   self.tools.read, self.tools.write, ahead=ahead)
         except Exception as error:
             self.opened.rollback()
             self.fail(entry, "place", error)
@@ -404,6 +409,18 @@ class Ingest:
         self.refreshed(done)
         self.mark_changed(row, done, new_row)
         self.finish_entry(entry, row)
+
+    @contextlib.contextmanager
+    def copied_ahead(self, row: DedupeDecision, given: tuple[TakeoutItem, MediaItem]) -> Iterator[paths.StagedPlacement | None]:
+        if not place.copies_into_google_only(row, self.export):
+            yield None
+            return
+        source, sha1 = given[0].path, given[1].sha1
+        self.commit()
+        with paths.staged_placement(self.photos, self.person.slug, unpack.staging_name(self.export), place.staged_chunks(self.photos, source),
+                                    sha1) as ahead:
+            self.lock()
+            yield ahead
 
     def refreshed(self, done: place.PlaceReport) -> None:
         for item_id in done.refreshed:
@@ -501,6 +518,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()
         photos = Photos(settings.photos_root)
+        paths.sweep_placements(photos, person.slug, unpack.staging_name(export))
         with contextlib.ExitStack() as stack:
             ingest = Ingest(opened, settings, photos, export, part, person, now, tools, stack)
             try:
@@ -512,4 +530,5 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
                 ingest.settle_rest()
             finally:
                 part_reader.sweep_part_scratch(photos, person, export)
+                paths.sweep_placements(photos, person.slug, unpack.staging_name(export))
             return ingest.finish(resumed)

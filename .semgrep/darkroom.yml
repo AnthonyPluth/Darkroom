@@ -526,6 +526,65 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/domain/ingest/part_reader.py", "/darkroom/domain/ingest/part_ingest.py"]
 
+  - id: darkroom-placement-copy-one-remover
+    message: >-
+      A placement copy is Darkroom's private copy of a Takeout file, made in _inbox/<person>/export-<id>/.placements/
+      before the write lock and renamed into google-only/ without replacing anything under it (#517). Only
+      darkroom/storage/paths.py removes, renames or replaces what is in that folder: staged_placement removes only its
+      own copy (by inode) when it was not placed, and sweep_placements only plain, single-linked copy-named files
+      Darkroom owns that no running placement holds locked, both through folders opened without following links
+      (AGENTS.md, promise 2). Go through part_ingest's placement instead.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: $P.placements(...)
+      - pattern: paths.PLACEMENTS
+      - pattern: PLACEMENTS
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($D, ...)
+              - pattern: os.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(remove|unlink|rmdir|removedirs|rename|renames|replace|truncate|link|symlink)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: shutil.move($D, ...)
+              - pattern: shutil.move($A, $D, ...)
+              - pattern: shutil.rmtree($D, ...)
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: $D.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(unlink|rmdir|rename|replace|write_bytes|write_text|symlink_to|hardlink_to|move|move_into)$
+          - focus-metavariable: $D
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-placement-copy-one-caller
+    message: >-
+      A placement copy is made, and a crash's stray copy swept, only by darkroom/domain/ingest/part_ingest.py, which
+      copies before the write lock, re-reads the decision under it and only then renames the copy into google-only/,
+      so a reversal that lands meanwhile places nothing and no placed file is ever taken back (#517). Place through
+      part_ingest instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.$F(...)
+          - pattern: $F(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(staged_placement|sweep_placements|placement_folder|drop_own_copy|drop_stray_copy)$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_ingest.py"]
+
   - id: darkroom-share-sentinel-one-writer
     message: >-
       Only `python run.py bind-share` writes the share's sentinel and records its identity (#316): placing and pruning

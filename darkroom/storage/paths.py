@@ -49,6 +49,8 @@ SCRATCH = "scratch"
 HELD_STORE = "held"
 HELD_FILE = re.compile(r"^[0-9]{1,18}(?:\.[a-z0-9]{1,10})?$")
 SCRATCH_FILE = re.compile(r"^(?:[0-9]{1,18}(?:\.[a-z0-9]{1,10})?|\.write-once-[0-9a-f]{16})$")
+PLACEMENTS = ".placements"
+PLACEMENT_FILE = re.compile(r"^[0-9a-f]{16}\.copy$")
 BROWSER = "_browser"
 OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
 
@@ -202,6 +204,9 @@ class Photos:
 
     def held(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), HELD_STORE, self.name_part(export))
+
+    def placements(self, person: str, export: str) -> Path:
+        return self.in_the_inbox(self.person_part(person), self.name_part(export), PLACEMENTS)
 
     def review_hold(self, person: str, export: str) -> Path:
         return self.in_the_inbox(self.person_part(person), "review", self.name_part(export))
@@ -2151,3 +2156,146 @@ def remove_part_zip(photos: Photos, person: str, export: str, filename: str, exp
 
 def remove_held_copy(photos: Photos, person: str, export: str, name: str, expected: Identity) -> int | None:
     return remove_checked(photos, held_copy_path(photos, person, export, name), expected, NotAHeldCopy)
+
+
+class PlacementRefused(LinkRefused):
+    pass
+
+
+@contextlib.contextmanager
+def placement_folder(photos: Photos, person: str, export: str, create: bool) -> Iterator[int | None]:
+    with inbox_folder(photos, photos.placements(person, export).parent, create=create) as parent:
+        if create:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(PLACEMENTS, PRIVATE_MODE, dir_fd=parent)
+        try:
+            private = os.open(PLACEMENTS, NO_FOLLOW_FOLDER, dir_fd=parent)
+        except FileNotFoundError:
+            yield None
+            return
+        except OSError as error:
+            raise PlacementRefused("the placement folder is a link or not a folder") from error
+        found = os.fstat(private)
+        if found.st_uid != os.getuid() or found.st_mode & 0o077:
+            os.close(private)
+            raise PlacementRefused("the placement folder is not Darkroom's")
+        try:
+            yield private
+        finally:
+            os.close(private)
+            with contextlib.suppress(OSError):
+                os.rmdir(PLACEMENTS, dir_fd=parent)
+
+
+def write_all(fd: int, chunk: bytes) -> None:
+    view = memoryview(chunk)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def own_copy_at(folder: int, name: str, fd: int) -> bool:
+    found = entry_at(name, folder)
+    return found is not None and plain_file(found) and os.path.samestat(found, os.fstat(fd))
+
+
+class StagedPlacement:
+    def __init__(self, folder: int, name: str, fd: int, sha1: str) -> None:
+        self.folder, self.name, self.fd, self.sha1 = folder, name, fd, sha1
+        self.published = False
+
+    def chunks(self) -> Iterator[bytes]:
+        offset = 0
+        while chunk := os.pread(self.fd, CHUNK, offset):
+            offset += len(chunk)
+            yield chunk
+
+    def publish(self, destination: Path) -> str:
+        if self.published:
+            raise AlreadyExists(destination.name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with pinned_path(destination.parent) as folder:
+            if entry_at(destination.name, folder) is not None:
+                raise AlreadyExists(destination.name)
+            if not own_copy_at(self.folder, self.name, self.fd):
+                raise ChangedWhileCopied("the copy made ahead is not the one Darkroom wrote")
+            try:
+                rename_no_replace(self.name, destination.name, self.folder, folder)
+            except FileExistsError as error:
+                raise AlreadyExists(destination.name) from error
+            except NotALosingCopy as error:
+                raise ChangedWhileCopied("the copy made ahead changed while it was moved into place") from error
+            except OSError as error:
+                if error.errno != errno.EXDEV:
+                    raise
+                return write_once(destination, self.chunks())
+            self.published = True
+            if not own_copy_at(folder, destination.name, self.fd):
+                raise ChangedWhileCopied("another file took the copy's place while it was moved")
+        return self.sha1
+
+
+def drop_own_copy(folder: int, name: str, fd: int) -> None:
+    if own_copy_at(folder, name, fd):
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(name, dir_fd=folder)
+
+
+@contextlib.contextmanager
+def staged_placement(photos: Photos, person: str, export: str, chunks: Iterable[bytes], sha1: str) -> Iterator[StagedPlacement]:
+    with placement_folder(photos, person, export, create=True) as private:
+        if private is None:
+            raise PlacementRefused("the placement folder could not be made")
+        name = f"{secrets.token_hex(8)}.copy"
+        fd = open_entry(name, private, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        staged = StagedPlacement(private, name, fd, sha1)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
+            for chunk in chunks:
+                digest.update(chunk)
+                write_all(fd, chunk)
+            os.fsync(fd)
+            if digest.hexdigest() != sha1:
+                raise ChangedWhileCopied("the file changed while it was copied")
+            yield staged
+        finally:
+            try:
+                if not staged.published:
+                    drop_own_copy(private, name, fd)
+            finally:
+                os.close(fd)
+
+
+def drop_stray_copy(folder: int, name: str, found: os.stat_result) -> bool:
+    try:
+        fd = open_entry(name, folder, os.O_RDONLY)
+    except (FileNotFoundError, LinkRefused):
+        return False
+    try:
+        if not os.path.samestat(os.fstat(fd), found) or not plain_file(os.fstat(fd)):
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        if not own_copy_at(folder, name, fd):
+            return False
+        os.unlink(name, dir_fd=folder)
+        return True
+    finally:
+        os.close(fd)
+
+
+def sweep_placements(photos: Photos, person: str, export: str) -> int:
+    try:
+        with placement_folder(photos, person, export, create=False) as private:
+            if private is None:
+                return 0
+            swept = 0
+            for name in sorted(os.listdir(private)):
+                found = entry_at(name, private)
+                if PLACEMENT_FILE.match(name) and found is not None and plain_file(found) and found.st_uid == os.getuid():
+                    swept += drop_stray_copy(private, name, found)
+            return swept
+    except (FileNotFoundError, OutsideRoot):
+        return 0

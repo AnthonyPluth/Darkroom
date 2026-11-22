@@ -177,13 +177,28 @@ def counted(report: PlaceReport, placed: Placed) -> None:
         report.already_there += 1
 
 
+def nothing_to_read(source: Path) -> Iterator[bytes]:
+    return iter(())
+
+
+def copies_into_google_only(decision: DedupeDecision, export: Export) -> bool:
+    return (decision.export_id == export.id and decision.account_id == export.account_id and decision.reversed_at is None
+            and decision.decided_by == "auto" and decision.tier == 5 and decision.takeout_item_id is None)
+
+
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
-                      copied: Callable[[Placed], None] = lambda placed: None) -> MediaItem:
+                      copied: Callable[[Placed], None] = lambda placed: None, ahead: paths.StagedPlacement | None = None) -> MediaItem:
     person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
     folder = google_only_folder(photos, person.slug, entry.fields)
-    placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=lambda source: staged_chunks(photos, source), named=entry.named)
+    if ahead is not None and ahead.sha1 != entry.fields.sha1:
+        raise PlaceFailed("the copy made ahead is of another file")
+    if ahead is None:
+        placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=lambda source: staged_chunks(photos, source), named=entry.named)
+    else:
+        placed = copy_into(folder, entry.item.path, entry.fields.sha1, read=nothing_to_read, write=lambda destination, data: ahead.publish(destination),
+                           named=entry.named)
     copied(placed)
     counted(report, placed)
     path = relative(photos, placed.path)
@@ -278,7 +293,7 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
 
 
 def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Entry],
-          read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp) -> PlaceReport:
+          read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, ahead: paths.StagedPlacement | None = None) -> PlaceReport:
     report = PlaceReport()
     for entry in entries:
         decision = entry.decision
@@ -287,7 +302,7 @@ def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Ent
         if decision.reversed_at is not None or decision.decided_by != "auto":
             report.skipped += 1
         elif decision.tier == 5:
-            place_google_only(opened, photos, export, entry, report, read, write)
+            place_google_only(opened, photos, export, entry, report, read, write, ahead=ahead)
         elif decision.tier == 4:
             hold_for_review(opened, photos, export, entry, report)
         elif (matched := matched_takeout(opened, decision)) is not None:
