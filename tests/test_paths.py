@@ -1703,8 +1703,9 @@ class StagedPlacementTests(unittest.TestCase):
 
     def test_another_filesystem_falls_back_to_writing_the_copy_once(self):
         cross = OSError(18, "Invalid cross-device link")
-        with self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=cross):
+        with self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=cross), mock.patch.object(paths.monitoring, "log") as logged:
             self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        logged.assert_called_once_with("placement copied under the lock", reason="EXDEV")
         self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
         self.assertFalse(self.stage.exists())
 
@@ -1737,8 +1738,9 @@ class StagedPlacementTests(unittest.TestCase):
         self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
 
     def test_a_share_without_renameat2_or_hard_links_places_by_copying_and_leaves_no_copy(self):
-        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead:
+        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead, mock.patch.object(paths.monitoring, "log") as logged:
             self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        logged.assert_called_once_with("placement copied under the lock", reason="EPERM")
         self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
         self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
         self.assertFalse(self.stage.exists())

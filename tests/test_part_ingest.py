@@ -1013,6 +1013,9 @@ class CopyAheadTests(unittest.TestCase):
                 raise busy
             real_lock(ingest)
 
+        for number in (2, 3):
+            self.world.part(self.export, number).ingest_state = "not_queued"
+        self.world.opened.commit()
         patched, _ = self.between_copy_and_lock(lambda sha1: copied.append(sha1))
         with patched, mock.patch.object(part_ingest.Ingest, "lock", lock):
             ran = part_ingest.run_queued(self.world.opened, self.world.settings, NOW, self.world.tools)

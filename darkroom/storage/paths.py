@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from darkroom import monitoring
+
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 NAME = re.compile(r"^[A-Za-z0-9._~ -]{1,200}$")
 CHUNK = 1024 * 1024
@@ -50,6 +52,7 @@ HELD_STORE = "held"
 HELD_FILE = re.compile(r"^[0-9]{1,18}(?:\.[a-z0-9]{1,10})?$")
 SCRATCH_FILE = re.compile(r"^(?:[0-9]{1,18}(?:\.[a-z0-9]{1,10})?|\.write-once-[0-9a-f]{16})$")
 PLACEMENTS = ".placements"
+COPIED_UNDER_THE_LOCK = "placement copied under the lock"
 PLACEMENT_FILE = re.compile(r"^[0-9a-f]{16}\.copy$")
 BROWSER = "_browser"
 OPEN_FILES = Path("/proc/self/fd") if os.path.isdir("/proc/self/fd") else Path("/dev/fd")
@@ -2224,7 +2227,8 @@ class StagedPlacement:
                 raise AlreadyExists(destination.name) from error
             except NotALosingCopy as error:
                 raise ChangedWhileCopied("the copy made ahead changed while it was moved into place") from error
-            except OSError:
+            except OSError as error:
+                monitoring.log(COPIED_UNDER_THE_LOCK, reason=errno.errorcode.get(error.errno or 0, "unknown"))
                 return write_once(destination, self.chunks())
             self.published = True
             if not own_copy_at(folder, destination.name, self.fd):
