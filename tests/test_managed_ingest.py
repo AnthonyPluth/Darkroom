@@ -1,5 +1,6 @@
 import dataclasses
 import hashlib
+import json
 import os
 import re
 import unittest
@@ -15,6 +16,7 @@ from darkroom.domain.ingest import cleanup, finish_export, part_free, place
 from darkroom.storage import secretbox
 from darkroom.storage.models import Alert, DedupeDecision, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, FakePerson, extract
+from tests.fixtures import media as media_fixtures
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
 from tests.takeout_fixtures import GOOGLE_PHOTOS
@@ -227,7 +229,7 @@ class UploadTests(unittest.TestCase):
     def test_keep_both_refuses_a_live_photo_half_an_unreadable_hold_or_a_name_immich_refuses_and_records_no_receipt(self):
         world = ManagedWorld(self)
         export = world.opened.get(Export, world.run_managed(single("IMG_5014.JPG"), parts=1).id)
-        for hold_path, from_still, live, name, reason in (("IMG_5015.MOV", False, False, "IMG_5015.MOV", "Live Photo"), ("IMG_5016.JPG", True, False, "IMG_5016.JPG", "Live Photo"),
+        for hold_path, from_still, live, name, reason in (("IMG_5015.MOV", False, True, "IMG_5015.MOV", "Live Photo"), ("IMG_5016.JPG", True, False, "IMG_5016.JPG", "Live Photo"),
                                                           ("IMG_5017.JPG", False, True, "IMG_5017.JPG", "Live Photo"), ("IMG_5018.JPG", False, False, "IMG\n5018.JPG", "name"),
                                                           ("IMG_5019.JPG", False, False, "IMG_5019.JPG", "could not be read")):
             hold = world.root / "_inbox/jo/review/export-1" / hold_path
@@ -235,6 +237,26 @@ class UploadTests(unittest.TestCase):
                 managed_ingest.keep_for_immich(world.opened, world.photos, export, ReviewItem(id=90, decision_id=1, hold_path=str(hold.relative_to(world.root)),
                                                sidecar_from_still=from_still), hold, "a" * 40, name, live, NOW, mock.Mock(return_value={}))
         self.assertEqual(world.count(ManagedImportReceipt), 1)
+
+    def test_keep_both_on_a_standalone_video_uploads_it_as_a_video(self):
+        world = ManagedWorld(self)
+        export = world.run_managed(single("IMG_5020.JPG"), parts=1)
+        data, hold = media_fixtures.TINY_VIDEO.read_bytes(), world.root / "_inbox/jo/review/export-1/VID_7001.MP4"
+        hold.parent.mkdir(parents=True, exist_ok=True)
+        hold.write_bytes(data)
+        decision = DedupeDecision(export_id=export.id, account_id=world.account, source_path=f"{GOOGLE_PHOTOS}/{PHOTOS}VID_7001.MP4", person_id=world.ids["jo"], tier=4,
+                                  reason="made-up near duplicate", decided_by="auto", decided_at=NOW)
+        world.opened.add(decision)
+        world.opened.flush()
+        held = ReviewItem(decision_id=decision.id, hold_path=str(hold.relative_to(world.root)), hold_sha1=hashlib.sha1(data, usedforsecurity=False).hexdigest(),
+                          sidecar_json=json.dumps({"photoTakenTime": {"timestamp": "1500000000"}, "geoData": {"latitude": 45.4, "longitude": 12.3}}))
+        world.opened.add(held)
+        world.opened.commit()
+        review.resolve(world.opened, world.photos, held.id, "keep_both", NOW + 5, review.FileEffects())
+        world.opened.commit()
+        finish_export.finish_ready(world.opened, world.settings, NOW + 10, world.tools)
+        self.assertEqual(world.receipts()[f"review:{held.id}"], ("committed", "created", None))
+        self.assertEqual([asset.kind for asset in world.fake.state.assets if asset.name == "VID_7001.MP4"], ["VIDEO"])
 
     def test_keep_both_on_a_live_photo_half_leaves_the_pair_pending_in_review(self):
         world = ManagedWorld(self)
