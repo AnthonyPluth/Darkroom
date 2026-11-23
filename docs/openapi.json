@@ -828,6 +828,16 @@
           "held_waiting_sidecar": {
             "type": "integer"
           },
+          "import_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "ingest_state": {
             "type": "string"
           },
@@ -885,6 +895,7 @@
           "held",
           "held_waiting_export",
           "held_waiting_sidecar",
+          "import_failure",
           "ingest_state",
           "kept_reason",
           "number",
@@ -1130,6 +1141,9 @@
           "id": {
             "type": "integer"
           },
+          "import_retry_allowed": {
+            "type": "boolean"
+          },
           "kind": {
             "type": "string"
           },
@@ -1197,6 +1211,7 @@
           "held_waiting_export",
           "held_waiting_sidecar",
           "id",
+          "import_retry_allowed",
           "kind",
           "part_count",
           "parts",
@@ -1274,11 +1289,43 @@
         "required": [],
         "type": "object"
       },
+      "ImportFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "files",
+              "database",
+              "metadata",
+              "placing",
+              "memory",
+              "unexpected"
+            ]
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error"
+        ],
+        "type": "object"
+      },
       "ImportQueued": {
         "additionalProperties": false,
         "properties": {
           "export_id": {
             "type": "integer"
+          },
+          "parts_requeued": {
+            "type": "integer"
+          },
+          "per_part": {
+            "type": "boolean"
+          },
+          "run_requeued": {
+            "type": "boolean"
           },
           "stage": {
             "anyOf": [
@@ -1296,6 +1343,9 @@
         },
         "required": [
           "export_id",
+          "parts_requeued",
+          "per_part",
+          "run_requeued",
           "stage",
           "status"
         ],

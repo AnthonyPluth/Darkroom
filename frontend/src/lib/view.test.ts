@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
 import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedSize, freedTotal, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedSize, freedTotal, heldTotal, importedPerPart, importedTotal, importFailureWords, keptSentence, partImportState, retryDownloadSentence, retryImportNote, retryImportSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -96,6 +96,7 @@ describe("a part imported on its own", () => {
     expect(partImportState({ ...part, ingest_state: "ingested", failed_items: 2, kept_reason: "failed_item", held: 3 }, "downloading")).toEqual({ tone: "warn", label: "Kept", detail: "1,402 items, 2 failed" });
     expect(partImportState({ ...part, ingest_state: "refused" }, "downloading")).toEqual({ tone: "bad", label: "Couldn't read", detail: null });
     expect(partImportState({ ...part, ingest_state: "failed" }, "downloading")).toEqual({ tone: "bad", label: "Import failed", detail: null });
+    expect(partImportState({ ...part, ingest_state: "failed", import_failure: { code: "database", error: "OperationalError" } }, "downloading")).toEqual({ tone: "bad", label: "Import failed", detail: "Database error (OperationalError)" });
   });
 
   it("says what a part holds, leaving out a half that is zero", () => {
@@ -369,6 +370,30 @@ describe("a failed download", () => {
     expect(failedDownloadSentence(spentDownload)).toBeNull();
     expect(failedDownloadSentence(failedExport)).toBeNull();
     expect(failedDownloadSentence(downloadingExport)).toBeNull();
+  });
+
+  it("names each import failure code with its error class", () => {
+    expect(importFailureWords(null)).toBeNull();
+    const words = (["files", "database", "metadata", "placing", "memory", "unexpected"] as const).map((code) => importFailureWords({ code, error: "OSError" }));
+    expect(words).toEqual(["File error (OSError)", "Database error (OSError)", "Metadata error (OSError)", "Couldn't place a file (OSError)", "Out of memory (OSError)", "Unexpected error (OSError)"]);
+  });
+
+  it("says what Retry import does only when it is offered", () => {
+    expect(retryImportNote(keptPartsExport)).toBe("Retry import imports the parts whose import failed again and keeps the parts already imported.");
+    expect(retryImportNote({ ...keptPartsExport, status: "failed" })).toBe("Retry import imports the parts whose import failed again and keeps the parts already imported.");
+    expect(retryImportNote(failedExport)).toBe("This export was downloaded and its import failed; Retry import on this page tries the import again.");
+    expect(retryImportNote({ ...failedExport, retry_refusal: null })).toBe("This export's import failed. Retry import tries it again.");
+    expect(retryImportNote(perPartExport)).toBeNull();
+    expect(retryImportNote({ ...failedExport, import_retry_allowed: false })).toBeNull();
+  });
+
+  it("says what pressing Retry import did", () => {
+    const queued = { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 2, run_requeued: false };
+    expect(retryImportSentence(queued, "jo.photos@example.com")).toBe("2 parts of jo.photos@example.com's export queued to import again.");
+    expect(retryImportSentence({ ...queued, parts_requeued: 1 }, "jo.photos@example.com")).toBe("1 part of jo.photos@example.com's export queued to import again.");
+    expect(retryImportSentence({ ...queued, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Nothing in this export was waiting for a retry.");
+    expect(retryImportSentence({ ...queued, status: "failed", parts_requeued: 0, run_requeued: true }, "jo.photos@example.com")).toBe("Finishing the import of jo.photos@example.com's export queued again.");
+    expect(retryImportSentence({ ...queued, per_part: false, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Import queued again for jo.photos@example.com.");
   });
 
   it("says what pressing Retry download did", () => {

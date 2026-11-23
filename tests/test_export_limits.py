@@ -736,7 +736,7 @@ class RetryFailedTests(DownloadCase):
             ("imported", None): "This export is already downloaded, so there is nothing to retry.",
             ("downloaded", None): "This export is already downloaded, so there is nothing to retry.",
             ("importing", None): "This export is already downloaded, so there is nothing to retry.",
-            ("failed", "/photos/_inbox/jo/export-1"): "This export was downloaded and its import failed; retry it on the Imports page.",
+            ("failed", "/photos/_inbox/jo/export-1"): "This export was downloaded and its import failed; Retry import on this page tries the import again.",
         }
         for (status, inbox), message in cases.items():
             with self.subTest(status=status):
@@ -788,7 +788,7 @@ class RetryFailedTests(DownloadCase):
         self.set_part(2, downloads_used=downloads.MAX_DOWNLOADS)
         self.assertEqual(self.shown(), (False, self.refused()))
         self.set_export(inbox_dir="/photos/_inbox/jo/export-1")
-        self.assertEqual(self.shown(), (False, "This export was downloaded and its import failed; retry it on the Imports page."))
+        self.assertEqual(self.shown(), (False, "This export was downloaded and its import failed; Retry import on this page tries the import again."))
         self.set_export(status="imported")
         self.assertEqual(self.shown(), (False, None))
 

@@ -1,4 +1,4 @@
-import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportView, PersonStatus, PixelSyncthing, SyncthingCard } from "./api-types";
+import type { AccountState, AccountView, BrowserJobView, ExportPartDetail, ExportView, ImportFailure, ImportQueued, ImportView, PersonStatus, PixelSyncthing, SyncthingCard } from "./api-types";
 import type { Tone } from "../components/Chip.svelte";
 import { ago, count, joined, lasted, onDay } from "./format";
 
@@ -215,6 +215,19 @@ function heldDetail(part: ExportPartDetail): string {
   return halves.length === 0 ? items(part.entries) : `${items(part.entries)}. ${halves.join(", ")}.`;
 }
 
+const FAILURE_WORDS: Record<ImportFailure["code"], string> = {
+  files: "File error",
+  database: "Database error",
+  metadata: "Metadata error",
+  placing: "Couldn't place a file",
+  memory: "Out of memory",
+  unexpected: "Unexpected error",
+};
+
+export function importFailureWords(failure: ImportFailure | null): string | null {
+  return failure === null ? null : `${FAILURE_WORDS[failure.code]} (${failure.error})`;
+}
+
 export function partImportState(part: ExportPartDetail, exportStatus: string): PartState {
   if (part.status !== "done" || part.ingest_state === NOT_QUEUED) return { ...partChip(part, exportStatus), detail: null };
   switch (part.ingest_state) {
@@ -226,7 +239,7 @@ export function partImportState(part: ExportPartDetail, exportStatus: string): P
       if (part.held > 0) return { tone: "neutral", label: `Holding ${items(part.held)}`, detail: heldDetail(part) };
       return { tone: "ok", label: "Imported", detail: items(part.entries) };
     case "refused": return { tone: "bad", label: "Couldn't read", detail: null };
-    case "failed": return { tone: "bad", label: "Import failed", detail: null };
+    case "failed": return { tone: "bad", label: "Import failed", detail: importFailureWords(part.import_failure) };
     default: return { ...partChip(part, exportStatus), detail: null };
   }
 }
@@ -276,6 +289,18 @@ export function failedDownloadSentence(item: ExportView): string | null {
 
 export function retryDownloadSentence(retried: boolean, email: string): string {
   return retried ? `Download queued again for ${email}.` : "This export is already downloading.";
+}
+
+export function retryImportNote(item: ExportView): string | null {
+  if (!item.import_retry_allowed) return null;
+  if (item.status === "failed" && !importedPerPart(item)) return item.retry_refusal ?? "This export's import failed. Retry import tries it again.";
+  return "Retry import imports the parts whose import failed again and keeps the parts already imported.";
+}
+
+export function retryImportSentence(reply: ImportQueued, email: string): string {
+  if (!reply.per_part) return `Import queued again for ${email}.`;
+  if (reply.parts_requeued === 0) return reply.run_requeued ? `Finishing the import of ${email}'s export queued again.` : "Nothing in this export was waiting for a retry.";
+  return `${reply.parts_requeued === 1 ? "1 part" : `${whole.format(reply.parts_requeued)} parts`} of ${email}'s export queued to import again.`;
 }
 
 export function earlierExports(exports: readonly ExportView[], current: ExportView | undefined): ExportView[] {

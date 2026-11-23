@@ -75,8 +75,12 @@ def request(request: Request) -> Annotated[Response, contract.ImportQueued]:
         return error_response("no such export", 404)
     try:
         with db.session(engine_of(request), writing=True) as opened:
+            failed, before = run.failed_parts(opened, wanted), run.run_mark(opened, wanted)
             export = run.request_import(opened, wanted, Photos(request.settings.photos_root))
-            reply = {"export_id": export.id, "status": export.status, "stage": export.stage}
+            per_part = export.ingest_route == run.PER_PART
+            reply = {"export_id": export.id, "status": export.status, "stage": export.stage, "per_part": per_part,
+                     "parts_requeued": failed - run.failed_parts(opened, wanted) if per_part else 0,
+                     "run_requeued": run.run_requeued(before, run.run_mark(opened, wanted))}
     except LookupError:
         return error_response("no such export", 404)
     except (run.AlreadyImported, run.NotReady) as error:

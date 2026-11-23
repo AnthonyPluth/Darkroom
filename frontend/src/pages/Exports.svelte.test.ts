@@ -297,7 +297,7 @@ describe("the Exports page", () => {
       expect(within(section).getByText("2 of 4 parts")).toBeInTheDocument();
       expect(within(section).getByText("None")).toBeInTheDocument();
       expect(within(section).queryByText(/Until the whole export is in/)).not.toBeInTheDocument();
-      expect(states(section)).toEqual(["Imported 1,517 items", "Kept 1,402 items, 2 failed", "Couldn't read", "Import failed"]);
+      expect(states(section)).toEqual(["Imported 1,517 items", "Kept 1,402 items, 2 failed", "Couldn't read", "Import failed File error (OSError)"]);
       expect(within(section).getByText("Kept").closest("[data-tone]")).toHaveAttribute("data-tone", "warn");
       expect(within(section).getByText("Couldn't read").closest("[data-tone]")).toHaveAttribute("data-tone", "bad");
       expect(within(section).getByText("Import failed").closest("[data-tone]")).toHaveAttribute("data-tone", "bad");
@@ -307,6 +307,7 @@ describe("the Exports page", () => {
         "Part 2: 2 items couldn't be imported, so Darkroom keeps the part's file.",
         "Part 3: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own.",
         "Part 4: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own.",
+        "Retry import imports the parts whose import failed again and keeps the parts already imported.",
       ]);
     });
 
@@ -351,6 +352,8 @@ describe("the Exports page", () => {
     expect(within(imported).getByText("2 sent to review")).toBeInTheDocument();
     expect(within(failed).getByText("Failed")).toBeInTheDocument();
     expect(within(failed).queryByText(/sent to review/)).not.toBeInTheDocument();
+    expect(within(failed).getByRole("button", { name: "Retry import" })).toHaveAccessibleDescription("This export was downloaded and its import failed; Retry import on this page tries the import again.");
+    expect(within(imported).queryByRole("button", { name: "Retry import" })).not.toBeInTheDocument();
     expect(within(expired).getByText("Expired")).toBeInTheDocument();
     expect(within(expired).getByText("Never downloaded")).toBeInTheDocument();
     expect(within(expired).getByText("4")).toBeInTheDocument();
@@ -685,6 +688,91 @@ describe("the Exports page", () => {
       expect(await within(region).findByRole("alert")).toHaveTextContent("Couldn't renew jo.photos@example.com: database is locked.");
       expect(server.sent("GET /api/accounts")).toHaveLength(1);
       expect(within(region).getByRole("button", { name: "Renew now" })).toBeEnabled();
+    });
+  });
+  describe("Retry import", () => {
+    const PER_PART_NOTE = "Retry import imports the parts whose import failed again and keeps the parts already imported.";
+    const requeued = { ...keptPartsExport, import_retry_allowed: false, parts: keptPartsExport.parts.map((part) => (part.ingest_state === "failed" ? { ...part, ingest_state: "queued", import_failure: null } : part)) };
+
+    it("shows why a part failed and queues its import again on request", async () => {
+      let current = keptPartsExport;
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": () => ({ exports: [current], schedules: [] }),
+        "POST /api/exports/46/import": () => {
+          current = requeued;
+          return reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 1, run_requeued: false });
+        },
+      });
+      const section = await screen.findByRole("region", { name: /Current export parts/ });
+      expect(within(section).getByText("File error (OSError)")).toBeInTheDocument();
+      const button = within(section).getByRole("button", { name: "Retry import" });
+      expect(button).toHaveAccessibleDescription(PER_PART_NOTE);
+      expect(within(section).queryByRole("button", { name: "Retry download" })).not.toBeInTheDocument();
+      await userEvent.click(button);
+      expect(server.sent("POST /api/exports/46/import")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("1 part of jo.photos@example.com's export queued to import again.");
+      const after = await screen.findByRole("region", { name: /Current export parts/ });
+      expect(within(after).queryByRole("button", { name: "Retry import" })).not.toBeInTheDocument();
+      expect(within(after).queryByText("File error (OSError)")).not.toBeInTheDocument();
+    });
+
+    it("shows the server's refusal and reloads", async () => {
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [keptPartsExport], schedules: [] },
+        "POST /api/exports/46/import": () => reply(409, { error: "this export has not been downloaded yet" }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Retry import" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("this export has not been downloaded yet");
+      expect(server.sent("GET /api/exports").length).toBeGreaterThan(1);
+    });
+
+    it("queues the import of an earlier export whose whole import failed", async () => {
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [failedExport], schedules: [] },
+        "POST /api/exports/37/import": () => reply(202, { export_id: 37, status: "downloaded", stage: "queued", per_part: false, parts_requeued: 0, run_requeued: false }),
+      });
+      const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
+      await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
+      expect(server.sent("POST /api/exports/37/import")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("Import queued again for jo.photos@example.com.");
+    });
+
+    it("says when the retry queued the export's finishing again rather than a part", async () => {
+      const finishing = { ...keptPartsExport, status: "failed", parts: keptPartsExport.parts.map((part) => ({ ...part, ingest_state: "ingested", import_failure: null, kept_reason: null, failed_items: 0 })) };
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [finishing], schedules: [] },
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "failed", stage: null, per_part: true, parts_requeued: 0, run_requeued: true }),
+      });
+      const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
+      await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
+      expect(server.sent("POST /api/exports/46/import")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("Finishing the import of jo.photos@example.com's export queued again.");
+    });
+
+    it("says so when there was nothing to retry", async () => {
+      show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [keptPartsExport], schedules: [] },
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 0, run_requeued: false }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Retry import" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("Nothing in this export was waiting for a retry.");
+    });
+
+    it("is not offered when no import can be retried", async () => {
+      show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] }, "GET /api/exports": { exports: [perPartExport, spentDownload, importedExport], schedules: [] } });
+      await screen.findByRole("region", { name: /Current export parts/ });
+      expect(screen.queryByRole("button", { name: "Retry import" })).not.toBeInTheDocument();
+      expect(screen.queryByText(PER_PART_NOTE)).not.toBeInTheDocument();
     });
   });
   describe("Retry download", () => {
