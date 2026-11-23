@@ -127,7 +127,7 @@ def pixel_readers(settings: Settings) -> pixel_folder.Readers | None:
             key = immich_reconcile.person_key(settings, person)
         except immich_reconcile.NotReady:
             raise immich.ImmichFailed("this person has no Immich user and key") from None
-        return immich.ManagedReader(immich.Client.at(settings), key, person.immich_user_id or "")
+        return immich.ManagedReader(immich.Client.at(settings), key, person.immich_user_id or "", access="read_or_import")
     return reader
 
 

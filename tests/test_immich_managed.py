@@ -234,6 +234,27 @@ class ManagedAccessTests(unittest.TestCase):
         refused += [tuple(IMPORT_GRANTS - {"asset.upload"} | {"asset.update"}), tuple(IMPORT_GRANTS - {"asset.download"} | {"asset.delete"})]
         self.check_grants(reader, accepted, refused, "approved import permissions")
 
+    def test_the_pixel_path_takes_exactly_the_read_or_exactly_the_import_grants_and_only_reads(self):
+        self.fake.state.version = "v3.4.1"
+        reader = immich.ManagedReader(self.client, PERSON_KEY, OWNER, access="read_or_import")
+        accepted = [tuple(READ_GRANTS), tuple(IMPORT_GRANTS)]
+        refused = [(), ("asset.upload",), ("all",), (*IMPORT_GRANTS, "all")]
+        refused += [tuple(READ_GRANTS - {missing}) for missing in READ_GRANTS]
+        refused += [(*IMPORT_GRANTS, extra) for extra in EXTRA_GRANTS] + [(*READ_GRANTS, extra) for extra in EXTRA_GRANTS if extra != "asset.upload"]
+        self.fake.state.requests.clear()
+        self.check_grants(reader, accepted, refused, "approved read or import permissions")
+        self.assertEqual({method for method, _ in self.fake.requests()}, {"GET"})
+        for permissions in accepted:
+            self.fake.state.permissions = permissions
+            with self.subTest(permissions=permissions), self.assertRaisesRegex(immich.ImmichFailed, "only a managed import"):
+                reader.upload(upload_body(), lambda: None)
+            with self.subTest(permissions=permissions), self.assertRaisesRegex(immich.ImmichFailed, "only a managed import"):
+                reader.bulk_check(SHA1)
+        self.fake.state.permissions, self.fake.state.admins = tuple(IMPORT_GRANTS), ("jo",)
+        with self.assertRaisesRegex(immich.ImmichFailed, "administrator"):
+            reader.get_asset(ASSET)
+        self.assertEqual({method for method, _ in self.fake.requests()}, {"GET"})
+
     def check_grants(self, reader, accepted, refused, message):
         for permissions in accepted:
             self.fake.state.permissions = permissions

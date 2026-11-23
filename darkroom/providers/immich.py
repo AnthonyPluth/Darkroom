@@ -32,10 +32,12 @@ AddressCheck = Literal["answered", "no_answer", "not_immich", "tls_failed"]
 MANAGED_VERSIONS = frozenset({"v3.3.6", "v3.4.1"})
 MANAGED_READ_PERMISSIONS = frozenset({"user.read", "server.about", "asset.read", "asset.download"})
 MANAGED_IMPORT_PERMISSIONS = MANAGED_READ_PERMISSIONS | {"asset.upload"}
-ManagedAccess = Literal["read", "import"]
-MANAGED_GRANTS: dict[str, tuple[frozenset[str], str]] = {
-    "read": (MANAGED_READ_PERMISSIONS, "managed Immich reads require only the approved read permissions"),
-    "import": (MANAGED_IMPORT_PERMISSIONS, "managed Immich imports require only the approved import permissions"),
+ManagedAccess = Literal["read", "import", "read_or_import"]
+MANAGED_GRANTS: dict[str, tuple[tuple[frozenset[str], ...], str]] = {
+    "read": ((MANAGED_READ_PERMISSIONS,), "managed Immich reads require only the approved read permissions"),
+    "import": ((MANAGED_IMPORT_PERMISSIONS,), "managed Immich imports require only the approved import permissions"),
+    "read_or_import": ((MANAGED_READ_PERMISSIONS, MANAGED_IMPORT_PERMISSIONS),
+                       "managed Immich reads require exactly the approved read or import permissions"),
 }
 READ_ROUTES = frozenset({("GET", "/api/server/ping"), ("GET", "/api/server/about"), ("GET", "/api/users/me"),
                          ("GET", "/api/api-keys/me"), ("GET", "/api/libraries"), ("POST", "/api/search/metadata")})
@@ -540,7 +542,7 @@ class ManagedReader:
 
     def __post_init__(self) -> None:
         if not isinstance(self.access, str) or self.access not in MANAGED_GRANTS:
-            raise ImmichFailed("managed Immich access must be read or import")
+            raise ImmichFailed("managed Immich access must be read, import or read_or_import")
         if (not isinstance(self.key, str) or not self.key or any(not 33 <= ord(c) <= 126 for c in self.key)
                 or self.key == self.client.admin_key or not is_canonical_id(self.owner_id)):
             raise ImmichFailed("managed Immich access requires a person key and owner")
@@ -565,9 +567,9 @@ class ManagedReader:
             raise ImmichFailed("this Immich version is not supported for managed access")
         found = self.client.call("GET", "/api/api-keys/me", key=self.key)
         permissions = found.get("permissions") if isinstance(found, dict) else None
-        required, refusal = MANAGED_GRANTS[self.access]
+        accepted, refusal = MANAGED_GRANTS[self.access]
         if (not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions)
-                or frozenset(permissions) != required):
+                or frozenset(permissions) not in accepted):
             raise ImmichFailed(refusal)
 
     def custody(self, asset_id: str) -> dict[str, Any]:
