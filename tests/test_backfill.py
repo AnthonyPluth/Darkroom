@@ -11,8 +11,8 @@ from darkroom.domain import backfill, managed_metadata, pixel_folder, xmp
 from darkroom.domain.ingest import place
 from darkroom.providers import exiftool
 from darkroom.server import jobs
-from darkroom.storage.models import (Alert, DuplicateRemoval, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
-                                     ManagedImportReceipt, ManagedPixelSource, MediaItem, PixelCopy)
+from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
+                                     ManagedImportReceipt, ManagedPixelSource, MediaItem, PixelCopy, TakeoutEntry)
 from tests.fakes.immich import FakeAsset, extract
 from tests.import_world import NOW, tree
 from tests.privacy import no_leaks
@@ -381,6 +381,21 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(world.backfill().mapped, 1)
         world.opened.expire_all()
         self.assertEqual(world.opened.execute(select(ManagedBackfillItem.person_id, ManagedBackfillItem.outcome)).one(), (world.ids["jo"], "mapped"))
+
+    def test_an_edited_copy_is_listed_as_a_same_shot_and_not_uploaded_whatever_became_of_its_original(self):
+        for name, evidence in (("decision", "decision"), ("ledger", "ledger")):
+            with self.subTest(name):
+                world = BackfillWorld(self)
+                world.run_managed(single_photo, parts=1)
+                item = world.google_only_item("IMG_5001.JPG")
+                if evidence == "decision":
+                    world.opened.execute(update(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)
+                                         .values(source_path="Takeout/Google Photos/Photos from 2019/IMG_5001-edited.JPG"))
+                else:
+                    world.opened.execute(update(TakeoutEntry).where(TakeoutEntry.item_id == item.id).values(is_edited=True, edited_of="IMG_5000.JPG"))
+                world.opened.commit()
+                world.backfill()
+                self.assertEqual((world.report(), world.uploads()), ({"same_shot": ["IMG_5001.JPG"]}, []))
 
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)

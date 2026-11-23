@@ -475,18 +475,27 @@ def candidate(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
                                    is_video=shot.is_video, is_raw=shot.is_raw, is_edited=edited)
 
 
+def edited_copies(opened: Session, items: list[MediaItem], candidates: list[dedupe.TakeoutCandidate]) -> set[int]:
+    ids = {item.id for item in items}
+    by_ledger: set[int] = {item_id for item_id in opened.execute(select(TakeoutEntry.item_id).where(TakeoutEntry.item_id.in_(ids), or_(TakeoutEntry.is_edited.is_(True),
+                                                                                                       TakeoutEntry.edited_of.is_not(None)))).scalars() if item_id is not None}
+    return {item.id for item, found in zip(items, candidates, strict=True) if found.is_edited or pairing.original_name(Path(item.path)) is not None} | by_ledger
+
+
 def same_shots(opened: Session, person: Person, items: list[MediaItem]) -> set[int]:
     if not items:
         return set()
+    candidates = [candidate(opened, item) for item in items]
+    edited = edited_copies(opened, items, candidates)
     phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents())
                            .order_by(MediaItem.id)).scalars().all()
-    if not phone or not items:
-        return set()
+    if not phone:
+        return edited
     index = dedupe.PersonIndex(0, person.id, frozenset({person.id}), tuple(dedupe.shot_of(found) for found in phone))
     by_path = {item.path: item.id for item in items}
-    decided = dedupe.decide_all(index, [candidate(opened, item) for item in items], dedupe.DedupeSettings())
-    return {by_path[found.source_path] for found in decided
-            if found.tier in NEAR_TIERS and found.matched_source != "takeout" and found.source_path in by_path}
+    decided = dedupe.decide_all(index, candidates, dedupe.DedupeSettings())
+    return edited | {by_path[found.source_path] for found in decided
+                     if found.tier in NEAR_TIERS and found.matched_source != "takeout" and found.source_path in by_path}
 
 
 def alert_stuck(opened: Session, settings: config.Settings, person: Person, now: float, notifier: alerts.Notifier | None) -> None:
