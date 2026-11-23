@@ -1597,6 +1597,252 @@ class PartZipRemoverTests(unittest.TestCase):
             paths.inbox_fingerprint(self.photos, link)
 
 
+class StagedPlacementTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.photos.ensure_person_tree("jo")
+        self.export = self.root / "_inbox/jo/export-1"
+        self.export.mkdir()
+        self.stage = self.export / paths.PLACEMENTS
+        self.month = self.root / "jo/google-only/2019/07"
+        self.data = b"a made-up photo"
+        self.sha1 = hashlib.sha1(self.data, usedforsecurity=False).hexdigest()
+
+    def everything(self):
+        return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}
+
+    def staged(self, data=None, sha1=None):
+        return paths.staged_placement(self.photos, "jo", "export-1", [self.data if data is None else data], sha1 or self.sha1)
+
+    def stray(self, name="0123456789abcdef.copy", data=b"left by a crash"):
+        self.stage.mkdir(mode=0o700, exist_ok=True)
+        path = self.stage / name
+        path.write_bytes(data)
+        return path
+
+    def test_a_published_copy_is_at_its_name_and_nothing_is_left_in_the_placement_folder(self):
+        with self.staged() as ahead:
+            self.assertEqual([p.suffix for p in self.stage.iterdir()], [".copy"])
+            self.assertEqual(oct(self.stage.stat().st_mode & 0o777), oct(0o700))
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertFalse(self.stage.exists())
+
+    def test_a_copy_never_published_is_removed_and_nothing_else_is(self):
+        before = self.everything()
+        with self.staged():
+            pass
+        self.assertFalse(self.stage.exists())
+        self.assertEqual(self.everything(), before)
+
+    def test_a_copy_is_removed_when_what_follows_it_crashes(self):
+        class Crash(BaseException):
+            pass
+
+        with self.assertRaises(Crash), self.staged():
+            raise Crash
+        self.assertFalse(self.stage.exists())
+
+    def test_bytes_that_differ_from_the_sha1_are_refused_and_leave_nothing(self):
+        with self.assertRaises(paths.ChangedWhileCopied), self.staged(data=b"other bytes"):
+            self.fail("a copy of other bytes was handed on")
+        self.assertFalse(self.stage.exists())
+
+    def test_publishing_never_replaces_a_file_at_the_name(self):
+        self.month.mkdir(parents=True)
+        (self.month / "IMG_1.JPG").write_bytes(b"someone else's file")
+        with self.staged() as ahead, self.assertRaises(paths.AlreadyExists):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"someone else's file")
+        self.assertFalse(self.stage.exists())
+
+    def test_publishing_never_replaces_a_file_that_appears_while_it_is_moved(self):
+        self.month.mkdir(parents=True)
+        real = paths.entry_at
+
+        def appearing(name, folder):
+            found = real(name, folder)
+            if name == "IMG_1.JPG" and not (self.month / name).exists():
+                (self.month / name).write_bytes(b"arrived meanwhile")
+            return found
+
+        with self.staged() as ahead, mock.patch.object(paths, "entry_at", side_effect=appearing), self.assertRaises(paths.AlreadyExists):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
+        self.assertFalse(self.stage.exists())
+
+    def test_publishing_through_a_link_is_refused_and_the_copy_is_removed(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (self.root / "jo/google-only/2019").mkdir(parents=True)
+        os.symlink(elsewhere, self.month)
+        with self.staged() as ahead, self.assertRaises(paths.LinkRefused):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertFalse(self.stage.exists())
+
+    def test_publishing_twice_is_refused(self):
+        with self.staged() as ahead:
+            ahead.publish(self.month / "IMG_1.JPG")
+            with self.assertRaises(paths.AlreadyExists):
+                ahead.publish(self.month / "IMG_2.JPG")
+        self.assertFalse((self.month / "IMG_2.JPG").exists())
+
+    def test_a_copy_swapped_for_another_file_is_neither_published_nor_removed(self):
+        with self.staged() as ahead:
+            swapped = self.stage / ahead.name
+            swapped.unlink()
+            swapped.write_bytes(b"not Darkroom's copy")
+            with self.assertRaises(paths.ChangedWhileCopied):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertFalse((self.month / "IMG_1.JPG").exists())
+        self.assertEqual(swapped.read_bytes(), b"not Darkroom's copy")
+
+    def test_another_filesystem_falls_back_to_writing_the_copy_once(self):
+        cross = OSError(18, "Invalid cross-device link")
+        with self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=cross), mock.patch.object(paths.monitoring, "log") as logged:
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        logged.assert_called_once_with("placement copied under the lock", reason="EXDEV")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertFalse(self.stage.exists())
+
+    def no_renameat2(self):
+        return mock.patch.object(paths, "LIBC", object())
+
+    def no_hard_links(self):
+        return mock.patch.object(paths.os, "link", side_effect=PermissionError(1, "Operation not permitted"))
+
+    def test_a_share_without_renameat2_places_by_linking_and_leaves_no_copy(self):
+        with self.no_renameat2(), self.staged() as ahead:
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual((self.month / "IMG_1.JPG").stat().st_nlink, 1)
+        self.assertFalse(self.stage.exists())
+
+    def test_a_share_without_renameat2_still_never_replaces(self):
+        self.month.mkdir(parents=True)
+        real = paths.entry_at
+
+        def appearing(name, folder):
+            found = real(name, folder)
+            if name == "IMG_1.JPG" and not (self.month / name).exists():
+                (self.month / name).write_bytes(b"arrived meanwhile")
+            return found
+
+        with self.no_renameat2(), self.staged() as ahead, mock.patch.object(paths, "entry_at", side_effect=appearing):
+            with self.assertRaises(paths.AlreadyExists):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
+
+    def test_a_share_without_renameat2_or_hard_links_places_by_copying_and_leaves_no_copy(self):
+        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead, mock.patch.object(paths.monitoring, "log") as logged:
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        logged.assert_called_once_with("placement copied under the lock", reason="EPERM")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_share_without_renameat2_or_hard_links_still_never_replaces(self):
+        self.month.mkdir(parents=True)
+        real = paths.entry_at
+
+        def appearing(name, folder):
+            found = real(name, folder)
+            if name == "IMG_1.JPG" and not (self.month / name).exists():
+                (self.month / name).write_bytes(b"arrived meanwhile")
+            return found
+
+        with self.no_renameat2(), self.no_hard_links(), self.staged() as ahead, mock.patch.object(paths, "entry_at", side_effect=appearing):
+            with self.assertRaises(paths.AlreadyExists):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"arrived meanwhile")
+        self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_rename_that_fails_and_a_copy_that_fails_too_place_nothing(self):
+        refused = PermissionError(13, "denied")
+        with (self.staged() as ahead, mock.patch.object(paths, "rename_no_replace", side_effect=refused),
+              mock.patch.object(paths, "write_once", side_effect=refused)):
+            with self.assertRaises(PermissionError):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertFalse((self.month / "IMG_1.JPG").exists())
+        self.assertFalse(self.stage.exists())
+
+    def test_a_placement_folder_that_is_a_link_is_refused_and_its_target_untouched(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        os.symlink(elsewhere, self.stage)
+        with self.assertRaises(paths.LinkRefused), self.staged():
+            self.fail("a copy was made through a link")
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertTrue(self.stage.is_symlink())
+
+    def test_a_placement_folder_others_can_read_is_refused(self):
+        self.stage.mkdir(mode=0o700)
+        os.chmod(self.stage, 0o755)
+        with self.assertRaises(paths.PlacementRefused), self.staged():
+            self.fail("a copy was made in a folder others can read")
+        self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_a_stray_copy_left_by_a_crash_is_swept(self):
+        stray = self.stray()
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 1)
+        self.assertFalse(stray.exists())
+        self.assertFalse(self.stage.exists())
+
+    def test_the_sweep_leaves_everything_darkroom_did_not_make_as_a_copy(self):
+        self.stray()
+        (self.stage / "IMG_1.JPG").write_bytes(b"not a copy's name")
+        (self.stage / "0123456789abcdef.jpg").write_bytes(b"not a copy's suffix")
+        target = self.root / "jo/google-only/kept.JPG"
+        target.write_bytes(b"a placed photo")
+        os.symlink(target, self.stage / "1111111111111111.copy")
+        linked = self.root / "jo/google-only/linked.JPG"
+        linked.write_bytes(b"a placed photo with a second name")
+        os.link(linked, self.stage / "2222222222222222.copy")
+        (self.stage / "3333333333333333.copy").mkdir()
+        before = self.everything()
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 1)
+        after = self.everything()
+        self.assertEqual(set(before) - set(after), {"_inbox/jo/export-1/.placements/0123456789abcdef.copy"})
+        self.assertEqual(target.read_bytes(), b"a placed photo")
+        self.assertEqual(linked.read_bytes(), b"a placed photo with a second name")
+        self.assertTrue((self.stage / "3333333333333333.copy").is_dir())
+
+    def test_the_sweep_leaves_a_copy_that_is_still_being_made(self):
+        with self.staged() as ahead:
+            self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 0)
+            self.assertTrue((self.stage / ahead.name).exists())
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+
+    def test_the_sweep_does_nothing_through_a_link_or_in_a_folder_that_is_not_darkroom_s(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        (elsewhere / "0123456789abcdef.copy").write_bytes(b"behind a link")
+        os.symlink(elsewhere, self.stage)
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 0)
+        self.assertTrue((elsewhere / "0123456789abcdef.copy").exists())
+        self.stage.unlink()
+        self.stray()
+        os.chmod(self.stage, 0o755)
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 0)
+        self.assertTrue((self.stage / "0123456789abcdef.copy").exists())
+
+    def test_the_sweep_of_an_export_with_no_placement_folder_does_nothing(self):
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-1"), 0)
+        self.assertEqual(paths.sweep_placements(self.photos, "jo", "export-2"), 0)
+
+    def test_the_placement_folder_is_not_in_a_folder_immich_imports(self):
+        stage = self.photos.placements("jo", "export-1")
+        self.assertTrue(stage.is_relative_to(self.root / "_inbox"))
+        for kept in self.photos.kept_folders():
+            self.assertFalse(stage.is_relative_to(kept))
+
+
 class BrowserStateTests(unittest.TestCase):
     def setUp(self):
         appdata = tempfile.TemporaryDirectory()

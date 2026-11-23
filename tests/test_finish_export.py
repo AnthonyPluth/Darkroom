@@ -66,6 +66,39 @@ def burst_scenario(world):
     return build
 
 
+class StrayPlacementCopyTests(unittest.TestCase):
+    def stray(self, world, export, name):
+        stage = world.root / "_inbox/jo" / f"export-{export.id}" / paths.PLACEMENTS
+        stage.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (stage / name).write_bytes(b"left by a crash")
+        return stage
+
+    def test_stray_placement_copies_before_and_during_a_finish_are_swept_and_nothing_else_is(self):
+        world = FinishWorld(self)
+        build = burst_scenario(world)
+        export = world.create(build)
+        world.ingest_all(export)
+        stage = self.stray(world, export, "abcdef0123456789.copy")
+        (stage / "notes.txt").write_bytes(b"not a placement copy")
+        real = finish_export.Finish.leave_out
+
+        def crash_left_one(finishing, canon):
+            self.stray(world, export, "0123456789abcdef.copy")
+            return real(finishing, canon)
+
+        with mock.patch.object(finish_export.Finish, "leave_out", crash_left_one):
+            world.finish(export)
+        self.assertEqual(sorted(path.name for path in stage.iterdir()), ["notes.txt"])
+        self.assertEqual((stage / "notes.txt").read_bytes(), b"not a placement copy")
+        twin = FinishWorld(self)
+        twin_export = twin.create(burst_scenario(twin))
+        twin.ingest_all(twin_export)
+        twin.finish(twin_export)
+        mine = world.comparable()
+        mine["files"] = {key: value for key, value in mine["files"].items() if "/.placements/" not in f"/{key}"}
+        self.assertEqual(mine, twin.comparable())
+
+
 class EquivalenceTests(unittest.TestCase):
     def setUp(self):
         self.world = FinishWorld(self)

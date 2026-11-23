@@ -1,4 +1,8 @@
+import contextlib
+import dataclasses
 import json
+import os
+import sqlite3
 import unittest
 import zipfile
 from pathlib import Path
@@ -6,15 +10,17 @@ from typing import get_args
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
 from darkroom.server import contract
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, ReviewItem, TakeoutEntry,
+    INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, Person, ReviewItem, TakeoutEntry,
 )
 from tests.import_world import DAY, NOW, World, tree
+from tests.shared import on_postgres, write_elsewhere
 from tests.privacy import no_leaks
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder
 
@@ -545,14 +551,20 @@ class RerunTests(unittest.TestCase):
             self.world.ingest(self.export, 1)
 
 
+@contextlib.contextmanager
 def recording_writes(writes):
-    real = paths.write_once
+    real, real_publish = paths.write_once, paths.StagedPlacement.publish
 
     def recording(destination, chunks, *args, **kwargs):
         writes.append(str(destination))
         return real(destination, chunks, *args, **kwargs)
 
-    return mock.patch.object(paths, "write_once", side_effect=recording)
+    def publishing(staged, destination):
+        writes.append(str(destination))
+        return real_publish(staged, destination)
+
+    with mock.patch.object(paths, "write_once", side_effect=recording), mock.patch.object(paths.StagedPlacement, "publish", publishing):
+        yield
 
 
 def counting(counted):
@@ -815,6 +827,222 @@ class WriteLockTests(unittest.TestCase):
         self.assertIn("Photos from 2019/IMG_2002.JPG", [name for _, names in measured for name in names])
         self.assertEqual([names for locked, names in measured if locked], [])
         self.assertEqual(world.outcomes()["Photos from 2019/IMG_2002.JPG"], "placed")
+
+class CopyAheadTests(unittest.TestCase):
+    NEW = "Photos from 2019/IMG_2001.JPG"
+
+    def setUp(self):
+        self.world = PartWorld(self)
+        self.export = self.world.create(self.world.scenario)
+        self.stage = self.world.root / "_inbox/jo" / f"export-{self.export.id}" / paths.PLACEMENTS
+
+    def baseline(self):
+        twin = PartWorld(self)
+        export = twin.create(twin.scenario)
+        twin.ingest(export, 1)
+        return twin
+
+    def between_copy_and_lock(self, then):
+        real, seen = paths.staged_placement, []
+
+        @contextlib.contextmanager
+        def staged(photos, person, export, chunks, sha1):
+            with real(photos, person, export, chunks, sha1) as ahead:
+                if not seen:
+                    seen.append(then(sha1))
+                yield ahead
+
+        return mock.patch.object(paths, "staged_placement", staged), seen
+
+    def name_of(self, sha1):
+        with db.session(self.world.engine) as other:
+            entry = other.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.sha1 == sha1)).scalars().first()
+            return short(entry.name)
+
+    def reverse(self, sha1):
+        name = self.name_of(sha1)
+        with db.session(self.world.engine, writing=True) as other:
+            row = dedupe.stored_decision(other, self.export.id, f"{PREFIX}{name}")
+            dedupe.reverse(other, row.id, NOW, "owner")
+        return name
+
+    def basenames(self):
+        return {key.rsplit("/", 1)[-1] for key in self.world.google_only()}
+
+    def test_the_copy_is_made_without_the_write_lock_and_moved_into_place_under_it(self):
+        held, seen = [False], []
+        real_lock, real_commit = part_ingest.Ingest.lock, part_ingest.Ingest.commit
+        real_write, real_publish = paths.write_all, paths.StagedPlacement.publish
+
+        def lock(ingest):
+            real_lock(ingest)
+            held[0] = True
+
+        def commit(ingest):
+            real_commit(ingest)
+            held[0] = False
+
+        def write(fd, chunk):
+            seen.append(("copy", held[0]))
+            return real_write(fd, chunk)
+
+        def publish(staged, destination):
+            seen.append(("rename", held[0]))
+            return real_publish(staged, destination)
+
+        with (mock.patch.object(part_ingest.Ingest, "lock", lock), mock.patch.object(part_ingest.Ingest, "commit", commit),
+              mock.patch.object(paths, "write_all", side_effect=write), mock.patch.object(paths.StagedPlacement, "publish", publish)):
+            self.world.ingest(self.export, 1)
+        self.assertIn(("rename", True), seen)
+        self.assertEqual({held for step, held in seen if step == "copy"}, {False})
+        self.assertEqual({held for step, held in seen if step == "rename"}, {True})
+        self.assertEqual(self.world.outcomes()[self.NEW], "placed")
+        self.assertEqual(self.world.state(), self.baseline().state())
+        self.assertFalse(self.stage.exists())
+
+    def test_another_connection_writes_while_a_placement_is_copied(self):
+        statement = f"UPDATE {Person.__tablename__} SET name = name"
+        patched, seen = self.between_copy_and_lock(lambda sha1: write_elsewhere(self, self.world.engine, statement))
+        with patched:
+            self.world.ingest(self.export, 1)
+        self.assertEqual(seen, ["committed"])
+        self.assertEqual(self.world.outcomes()[self.NEW], "placed")
+
+    def test_a_reversal_between_the_copy_and_the_lock_places_nothing_and_leaves_no_copy(self):
+        patched, seen = self.between_copy_and_lock(self.reverse)
+        with patched:
+            self.world.ingest(self.export, 1)
+        self.assertEqual(len(seen), 1)
+        stem = Path(seen[0]).stem
+        self.assertEqual([key for key in self.world.google_only() if stem in key], [])
+        self.assertEqual(self.world.outcomes()[seen[0]], "skipped")
+        self.assertIsNotNone(self.world.opened.execute(select(DedupeDecision.reversed_at).where(
+            DedupeDecision.source_path == f"{PREFIX}{seen[0]}")).scalar_one())
+        self.assertFalse(self.stage.exists())
+        self.assertEqual([key for key in tree(self.world.root) if "/.placements/" in f"/{key}"], [])
+
+    def test_a_copy_of_bytes_that_changed_is_refused_fails_the_item_and_leaves_no_copy(self):
+        with mock.patch.object(place, "staged_chunks", side_effect=lambda photos, source: iter([b"other bytes"])):
+            self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.outcomes()[self.NEW], "failed")
+        self.assertNotIn("IMG_2001.JPG", self.basenames())
+        self.assertFalse(self.stage.exists())
+
+    def test_a_crash_during_the_copy_leaves_no_copy_and_resumes_to_the_uninterrupted_result(self):
+        real = paths.write_all
+
+        def crashing(fd, chunk):
+            real(fd, chunk)
+            raise Crash
+
+        with mock.patch.object(paths, "write_all", side_effect=crashing), self.assertRaises(Crash):
+            self.world.ingest(self.export, 1)
+        self.world.opened.rollback()
+        self.assertFalse(self.stage.exists())
+        self.assertNotIn("IMG_2001.JPG", self.basenames())
+        self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.state(), self.baseline().state())
+
+    def test_a_crash_after_the_rename_resumes_to_the_uninterrupted_result_without_a_second_copy(self):
+        real, published = paths.StagedPlacement.publish, []
+
+        def publish_then_crash(staged, destination):
+            published.append(real(staged, destination))
+            raise Crash
+
+        with mock.patch.object(paths.StagedPlacement, "publish", publish_then_crash), self.assertRaises(Crash):
+            self.world.ingest(self.export, 1)
+        self.world.opened.rollback()
+        self.assertEqual(len(published), 1)
+        self.assertFalse(self.stage.exists())
+        resumed = []
+        with recording_writes(resumed):
+            self.world.ingest(self.export, 1)
+        self.assertEqual([path for path in resumed if "IMG_2001" in path], [])
+        self.assertEqual(self.world.state(), self.baseline().state())
+
+    def test_a_stray_copy_left_by_a_crash_is_swept_and_nothing_else_in_the_folder_is_touched(self):
+        self.stage.mkdir(mode=0o700, parents=True)
+        (self.stage / "abcdef0123456789.copy").write_bytes(b"left by a crash")
+        (self.stage / "notes.txt").write_bytes(b"not a placement copy")
+        self.world.ingest(self.export, 1)
+        self.assertEqual(sorted(os.listdir(self.stage)), ["notes.txt"])
+        self.assertEqual((self.stage / "notes.txt").read_bytes(), b"not a placement copy")
+        self.assertEqual(self.world.outcomes()[self.NEW], "placed")
+
+    def test_a_placement_folder_that_is_a_link_fails_the_item_and_writes_nothing_through_it(self):
+        elsewhere = self.world.base / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        self.stage.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(elsewhere, self.stage)
+        self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.outcomes()[self.NEW], "failed")
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertNotIn("IMG_2001.JPG", self.basenames())
+
+    def test_a_name_taken_by_another_file_is_never_replaced(self):
+        placed = [key for key in self.baseline().google_only() if key.endswith("IMG_2001.JPG")]
+        self.assertEqual(len(placed), 1)
+        taken = self.world.root / placed[0]
+        taken.parent.mkdir(parents=True, exist_ok=True)
+        taken.write_bytes(b"someone else's file")
+        self.world.ingest(self.export, 1)
+        self.assertEqual(taken.read_bytes(), b"someone else's file")
+        self.assertEqual(self.world.outcomes()[self.NEW], "placed")
+        self.assertEqual(len([name for name in self.basenames() if name.startswith("IMG_2001~")]), 1)
+        self.assertFalse(self.stage.exists())
+
+    def test_an_identical_file_already_at_the_name_is_adopted_and_the_copy_removed(self):
+        twin = self.baseline()
+        placed = [key for key in twin.google_only() if key.endswith("IMG_2001.JPG")]
+        there = self.world.root / placed[0]
+        there.parent.mkdir(parents=True, exist_ok=True)
+        there.write_bytes((twin.root / placed[0]).read_bytes())
+        self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.outcomes()[self.NEW], "placed")
+        self.assertEqual([name for name in self.basenames() if name.startswith("IMG_2001")], ["IMG_2001.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_lock_timeout_after_the_copy_fails_the_part_to_be_retried_not_the_item(self):
+        copied, real_lock = [], part_ingest.Ingest.lock
+        busy = OperationalError("SELECT pg_advisory_xact_lock(1)", {}, sqlite3.OperationalError("database is locked"))
+
+        def lock(ingest):
+            if copied and len(copied) == 1:
+                copied.append("timed out")
+                raise busy
+            real_lock(ingest)
+
+        for number in (2, 3):
+            self.world.part(self.export, number).ingest_state = "not_queued"
+        self.world.opened.commit()
+        patched, _ = self.between_copy_and_lock(lambda sha1: copied.append(sha1))
+        with patched, mock.patch.object(part_ingest.Ingest, "lock", lock):
+            ran = part_ingest.run_queued(self.world.opened, self.world.settings, NOW, self.world.tools)
+        self.assertEqual(ran, [])
+        self.assertEqual(copied[1:], ["timed out"])
+        self.assertEqual(self.world.part(self.export, 1).ingest_state, "failed")
+        self.assertNotEqual(self.world.outcomes()[self.NEW], "failed")
+        self.assertNotIn("IMG_2001.JPG", self.basenames())
+        self.assertFalse(self.stage.exists())
+        self.world.part(self.export, 1).ingest_state = "queued"
+        self.world.opened.commit()
+        self.world.ingest(self.export, 1)
+        self.assertEqual(self.world.state(), self.baseline().state())
+
+    if on_postgres():
+        def test_the_lock_check_sees_a_write_held_off_while_the_lock_is_held(self):
+            statement, seen = f"UPDATE {Person.__tablename__} SET name = name", []
+            real = self.world.tools.write
+
+            def write(path, tags):
+                if not seen:
+                    seen.append(write_elsewhere(self, self.world.engine, statement))
+                return real(path, tags)
+
+            self.world.ingest(self.export, 1, tools=dataclasses.replace(self.world.tools, write=write))
+            self.assertEqual(seen, ["locked"])
+
 
 class QueueingTests(unittest.TestCase):
     def setUp(self):

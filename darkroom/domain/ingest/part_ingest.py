@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Final
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
@@ -153,6 +154,8 @@ class Ingest:
         self.used: dict[int, int | None] = {}
         self.texts: dict[int, str] = {}
         self.slot: tuple[int, contextlib.ExitStack, zipfile.ZipFile, dict[str, zipfile.ZipInfo]] | None = None
+        self.sweep_placements()
+        stack.callback(self.sweep_placements)
         stack.callback(self.close_archive)
 
     def commit(self) -> None:
@@ -176,6 +179,9 @@ class Ingest:
     def fail(self, entry: TakeoutEntry, stage: str, error: BaseException) -> None:
         entry.outcome, entry.done_at, entry.metadata_pending = FAILED, self.now, False
         run.item_failed(self.opened, self.export, stage, error, self.now)
+
+    def sweep_placements(self) -> None:
+        paths.sweep_placements(self.photos, self.person.slug, unpack.staging_name(self.export))
 
     def close_archive(self) -> None:
         if self.slot is not None:
@@ -394,9 +400,16 @@ class Ingest:
             self.commit()
             return
         try:
-            done = place.place(self.opened, self.photos, self.export, [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
-                               self.tools.read, self.tools.write)
+            with self.copied_ahead(row, given) as ahead:
+                if ahead is not None and self.settled_elsewhere(row):
+                    self.finish_entry(entry, row)
+                    return
+                done = place.place(self.opened, self.photos, self.export,
+                                   [place.Entry(given[0], given[1], row, Path(entry.name) if named is None else named)],
+                                   self.tools.read, self.tools.write, ahead=ahead)
         except Exception as error:
+            if isinstance(error, OperationalError) and db.is_busy(error):
+                raise
             self.opened.rollback()
             self.fail(entry, "place", error)
             self.commit()
@@ -404,6 +417,18 @@ class Ingest:
         self.refreshed(done)
         self.mark_changed(row, done, new_row)
         self.finish_entry(entry, row)
+
+    @contextlib.contextmanager
+    def copied_ahead(self, row: DedupeDecision, given: tuple[TakeoutItem, MediaItem]) -> Iterator[paths.StagedPlacement | None]:
+        if not place.copies_into_google_only(row, self.export):
+            yield None
+            return
+        source, sha1 = given[0].path, given[1].sha1
+        self.commit()
+        with paths.staged_placement(self.photos, self.person.slug, unpack.staging_name(self.export), place.staged_chunks(self.photos, source),
+                                    sha1) as ahead:
+            self.lock()
+            yield ahead
 
     def refreshed(self, done: place.PlaceReport) -> None:
         for item_id in done.refreshed:
