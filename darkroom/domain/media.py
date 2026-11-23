@@ -24,6 +24,7 @@ WESTMOST_OFFSET_MINUTES = -12 * 60
 EASTMOST_OFFSET_MINUTES = 14 * 60
 PHASH_SIZE = 8
 DHASH_SIZE = 8
+DRAFT_SIZE = (256, 256)
 MAX_PIXELS = 120_000_000
 MAX_STORED_INT = 2**31 - 1
 UNDECODABLE: tuple[type[Exception], ...] = (ValueError, ArithmeticError, LookupError, TypeError, RuntimeError, SyntaxError, struct.error,
@@ -38,6 +39,22 @@ CAMERA_RAW_SUFFIXES = {".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", "
 class PerceptualHashes:
     phash: str | None
     dhash: str | None
+
+
+@dataclass(frozen=True)
+class Decoded:
+    digest: tuple[str, int] | Exception
+    hashes: PerceptualHashes | Exception
+
+    def sha1(self) -> tuple[str, int]:
+        if isinstance(self.digest, Exception):
+            raise self.digest
+        return self.digest
+
+    def perceptual(self) -> PerceptualHashes:
+        if isinstance(self.hashes, Exception):
+            raise self.hashes
+        return self.hashes
 
 
 @dataclass(frozen=True)
@@ -250,7 +267,7 @@ def location(tags: dict[str, object]) -> tuple[float | None, float | None, str]:
     return lat, lon, "exif"
 
 
-def perceptual_hashes(path: Path, named: Path | None = None) -> PerceptualHashes:
+def perceptual_hashes(path: Path, named: Path | None = None, draft: tuple[int, int] | None = DRAFT_SIZE) -> PerceptualHashes:
     if (named or path).suffix.lower() in VIDEO_SUFFIXES | CAMERA_RAW_SUFFIXES:
         return PerceptualHashes(None, None)
     try:
@@ -258,6 +275,8 @@ def perceptual_hashes(path: Path, named: Path | None = None) -> PerceptualHashes
             width, height = image.size
             if width * height > MAX_PIXELS:
                 return PerceptualHashes(None, None)
+            if draft is not None and image.format == "JPEG":
+                image.draft(image.mode, draft)
             return PerceptualHashes(str(imagehash.phash(image, hash_size=PHASH_SIZE)), str(imagehash.dhash(image, hash_size=DHASH_SIZE)))
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         return PerceptualHashes(None, None)
@@ -273,11 +292,22 @@ def dimension(tags: dict[str, object], *names: str) -> int | None:
     return stored_int(number(tag(tags, *names)))
 
 
-def fingerprint(path: Path, tags: dict[str, object], named: Path | None = None) -> Fingerprint:
-    digest, size = sha1_of(path)
+def decode(path: Path, named: Path | None = None) -> Decoded:
+    try:
+        digest = sha1_of(path)
+    except Exception as error:
+        return Decoded(error, error)
+    try:
+        return Decoded(digest, perceptual_hashes(path, named))
+    except Exception as error:
+        return Decoded(digest, error)
+
+
+def fingerprint(path: Path, tags: dict[str, object], named: Path | None = None, decoded: Decoded | None = None) -> Fingerprint:
+    digest, size = sha1_of(path) if decoded is None else decoded.sha1()
     lat, lon, gps_source = location(tags)
     utc, local, offset, time_source = capture(tags, lat, lon)
-    hashes = perceptual_hashes(path, named)
+    hashes = perceptual_hashes(path, named) if decoded is None else decoded.perceptual()
     duration = number(tag(tags, "Duration", "MediaDuration"))
     return Fingerprint(
         sha1=digest, bytes=size, phash=hashes.phash, dhash=hashes.dhash,
