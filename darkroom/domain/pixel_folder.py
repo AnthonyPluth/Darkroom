@@ -253,9 +253,10 @@ def held_since(opened: Session, row: PixelCopy) -> tuple[float, str] | None:
     if last is None or last.type != "pixel_copy_source_held":
         return None
     other = opened.execute(select(func.max(Event.id)).where(about_copy(row), Event.type != "pixel_copy_source_held")).scalar_one_or_none()
+    after = [Event.time > row.placed_at] if row.placed_at is not None else []
     started = opened.execute(select(func.min(Event.time)).where(about_copy(row), Event.type == "pixel_copy_source_held",
-                                                                Event.id > (other if other is not None else 0))).scalar_one()
-    if row.placed_at is not None and row.placed_at >= started:
+                                                                Event.id > (other if other is not None else 0), *after)).scalar_one_or_none()
+    if started is None:
         return None
     return float(started), str(last.detail).rpartition(": ")[2]
 

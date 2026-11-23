@@ -346,6 +346,21 @@ class PixelImmichSourceTests(unittest.TestCase):
         sends = lambda settings, title, message, link: "sent"
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 25 * 3600, sends), 1)
 
+    def test_a_hold_after_the_first_placement_alerts_even_when_an_older_hold_came_before_it(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.assets[asset_id].trashed = False
+        self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+        self.match(item, self.jo_account, NOW + 15)
+        self.opened.execute(update(ManagedAssetVersion).where(ManagedAssetVersion.id == version_id).values(state="trashed"))
+        self.opened.commit()
+        self.assertEqual(self.tend(at=NOW + 20).blocked, 1)
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 3600, sends), 0)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 25 * 3600, sends), 1)
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)
