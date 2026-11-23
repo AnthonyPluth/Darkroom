@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import time
 from collections import Counter, defaultdict
@@ -338,7 +339,9 @@ class Backfill:
                                                                MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
                                        .order_by(MediaItem.id)).scalars().all()
         waiting = sorted((item for item in [*phones, *takeouts] if item.id not in done), key=lambda item: (item.id in retried, item.id))[:limit]
-        halves, near = live_halves(self.opened, self.person, takeouts), same_shots(self.opened, self.person, [item for item in waiting if item.source == "takeout"])
+        pending = [item for item in waiting if item.source == "takeout"]
+        halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
+        near = same_shots(self.opened, self.person, pending)
         for item in waiting:
             if item.source == "phone":
                 self.phone(item)
@@ -372,56 +375,85 @@ def is_still(path: PurePosixPath) -> bool:
     return path.suffix.lower() in pairing.STILL_SUFFIXES
 
 
-def companions(first: PurePosixPath, second: PurePosixPath) -> bool:
-    still, video = (first, second) if is_still(first) and is_video(second) else (second, first) if is_still(second) and is_video(first) else (None, None)
-    if still is None or video is None or still.parent != video.parent:
-        return False
-    stems = {video.stem.lower()} | ({video.name.lower()} if video.suffix.lower() == pairing.MOTION_CLIP_SUFFIX else set())
-    return still.stem.lower() in stems
+def keys(path: PurePosixPath) -> tuple[str, set[str]] | None:
+    if is_still(path):
+        return "still", {path.stem.lower()}
+    if is_video(path):
+        return "video", {path.stem.lower()} | ({path.name.lower()} if path.suffix.lower() == pairing.MOTION_CLIP_SUFFIX else set())
+    return None
 
 
-def near(first: float | None, second: float | None) -> bool:
-    return first is not None and second is not None and abs(first - second) <= LIVE_SECONDS
+OTHER: Final = {"still": "video", "video": "still"}
 
 
-def live_halves(opened: Session, person: Person, items: Sequence[MediaItem]) -> set[int]:
-    ids = {item.id for item in items}
+class Companions:
+    def __init__(self) -> None:
+        self.named: set[tuple[str, object, str, str]] = set()
+        self.timed: dict[tuple[str, object, int], list[float]] = defaultdict(list)
+        self.lookups = 0
+
+    def add(self, scope: object, path: PurePosixPath, captured: float | None) -> None:
+        found = keys(path)
+        if found is None:
+            return
+        kind, names = found
+        self.named.update((kind, scope, str(path.parent), name) for name in names)
+        if captured is not None and math.isfinite(captured):
+            self.timed[(kind, scope, math.floor(captured))].append(captured)
+
+    def named_companion(self, scope: object, path: PurePosixPath) -> bool:
+        found = keys(path)
+        if found is None:
+            return False
+        kind, names = found
+        self.lookups += len(names)
+        return any((OTHER[kind], scope, str(path.parent), name) in self.named for name in names)
+
+    def timed_companion(self, scope: object, path: PurePosixPath, captured: float | None) -> bool:
+        found = keys(path)
+        if found is None or captured is None or not math.isfinite(captured):
+            return False
+        self.lookups += 3
+        second = math.floor(captured)
+        return any(abs(other - captured) <= LIVE_SECONDS for nearby in (second - 1, second, second + 1)
+                   for other in self.timed.get((OTHER[found[0]], scope, nearby), ()))
+
+
+def live_halves(opened: Session, person: Person, items: Sequence[MediaItem], candidates: Sequence[MediaItem], index: Companions | None = None) -> set[int]:
+    wanted = {item.id for item in candidates}
+    found = index or Companions()
+    for item in items:
+        path = PurePosixPath(item.path)
+        found.add(("library", str(path.parent)), path, item.captured_utc)
     own = opened.execute(select(DedupeDecision.takeout_item_id, DedupeDecision.export_id, DedupeDecision.source_path)
                          .join(MediaItem, MediaItem.id == DedupeDecision.takeout_item_id)
                          .where(MediaItem.person_id == person.id, MediaItem.source == "takeout", DedupeDecision.source_path.is_not(None))).all()
     sources: dict[int, list[tuple[int, PurePosixPath]]] = defaultdict(list)
     for item_id, export_id, source in own:
-        if item_id in ids:
+        if item_id in wanted:
             sources[item_id].append((export_id, PurePosixPath(str(source))))
-    exports = {export_id for found in sources.values() for export_id, _ in found} | {item.export_id for item in items if item.export_id is not None}
-    recorded: dict[int, list[PurePosixPath]] = defaultdict(list)
-    timed: dict[int, list[tuple[PurePosixPath, float | None]]] = defaultdict(list)
+    exports = {export_id for listed in sources.values() for export_id, _ in listed} | {item.export_id for item in candidates if item.export_id is not None}
     if exports:
         for export_id, source in opened.execute(select(DedupeDecision.export_id, DedupeDecision.source_path)
                                                 .where(DedupeDecision.export_id.in_(exports), DedupeDecision.source_path.is_not(None))).all():
-            recorded[export_id].append(PurePosixPath(str(source)))
+            found.add(export_id, PurePosixPath(str(source)), None)
         for export_id, name, captured in opened.execute(select(TakeoutEntry.export_id, TakeoutEntry.name, TakeoutEntry.captured_utc)
                                                         .where(TakeoutEntry.export_id.in_(exports), TakeoutEntry.kind == "media")).all():
-            recorded[export_id].append(PurePosixPath(name))
-            timed[export_id].append((PurePosixPath(name), captured))
+            found.add(export_id, PurePosixPath(name), None)
+            found.add(("ledger", export_id), PurePosixPath(name), captured)
     halves: set[int] = set()
-    for item in items:
+    for item in candidates:
         path = PurePosixPath(item.path)
-        if not (is_still(path) or is_video(path)):
+        if keys(path) is None:
             continue
-        library = any(companions(path, PurePosixPath(other.path)) or (near(item.captured_utc, other.captured_utc) and companions_by_kind(path, PurePosixPath(other.path)))
-                      for other in items if other.id != item.id and PurePosixPath(other.path).parent == path.parent)
-        named = any(companions(source, other) for export_id, source in sources[item.id] for other in recorded[export_id] if other != source)
-        instant = any(near(item.captured_utc, captured) and companions_by_kind(path, name)
-                      for export_id in {export_id for export_id, _ in sources[item.id]} | ({item.export_id} if item.export_id is not None else set())
-                      for name, captured in timed[export_id])
-        if library or named or instant or (is_video(path) and item.sidecar_from_still):
+        scopes = {export_id for export_id, _ in sources[item.id]} | ({item.export_id} if item.export_id is not None else set())
+        library = ("library", str(path.parent))
+        if (found.named_companion(library, path) or found.timed_companion(library, path, item.captured_utc)
+                or any(found.named_companion(export_id, source) for export_id, source in sources[item.id])
+                or any(found.timed_companion(("ledger", export_id), path, item.captured_utc) for export_id in scopes)
+                or (is_video(path) and item.sidecar_from_still)):
             halves.add(item.id)
     return halves
-
-
-def companions_by_kind(first: PurePosixPath, second: PurePosixPath) -> bool:
-    return (is_still(first) and is_video(second)) or (is_video(first) and is_still(second))
 
 
 def candidate(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:

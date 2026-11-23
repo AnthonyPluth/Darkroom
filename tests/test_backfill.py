@@ -207,6 +207,27 @@ class BackfillTests(unittest.TestCase):
         world.backfill()
         self.assertEqual((world.report(), world.uploads()), ({"live_photo": ["IMG_3002.MOV", "IMG_3003.HEIC"]}, []))
 
+    def test_settled_items_do_not_rescan_for_live_photo_companions(self):
+        world = BackfillWorld(self)
+        world.run_managed(single_photo, parts=1)
+        with mock.patch.object(backfill, "live_halves", wraps=backfill.live_halves) as scanned:
+            world.backfill()
+            world.backfill()
+        self.assertEqual(scanned.call_count, 1)
+
+    def test_companions_are_found_by_index_lookups_not_by_comparing_every_pair(self):
+        world = BackfillWorld(self)
+        items = [MediaItem(id=number, person_id=world.ids["jo"], source="takeout", path=f"jo/google-only/2019/07/IMG_{number:05d}.JPG", sha1="a" * 40,
+                           bytes=1, captured_utc=1_500_000_000.0 + number * 10, sidecar_from_still=False, indexed_at=NOW) for number in range(1, 4001)]
+        items.append(MediaItem(id=5000, person_id=world.ids["jo"], source="takeout", path="jo/google-only/2019/07/IMG_00007.MOV", sha1="b" * 40, bytes=1,
+                               captured_utc=None, sidecar_from_still=False, indexed_at=NOW))
+        items.append(MediaItem(id=5001, person_id=world.ids["jo"], source="takeout", path="jo/google-only/2019/07/CLIP_9.MOV", sha1="c" * 40, bytes=1,
+                               captured_utc=1_500_000_000.0 + 90.4, sidecar_from_still=False, indexed_at=NOW))
+        index = backfill.Companions()
+        halves = backfill.live_halves(world.opened, world.jo(), items, items, index)
+        self.assertEqual(halves, {7, 5000, 9, 5001})
+        self.assertLessEqual(index.lookups, 5 * len(items))
+
     def test_running_again_uploads_nothing_more(self):
         world = BackfillWorld(self)
         world.seeded()
