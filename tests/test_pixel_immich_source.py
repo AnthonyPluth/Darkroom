@@ -385,6 +385,7 @@ class PixelImmichSourceTests(unittest.TestCase):
                     self.opened.execute(verified.values(state="trashed"))
                     self.opened.commit()
                     self.assertEqual(self.tend(at=NOW + 20).blocked, 1)
+                self.assertEqual(self.tend(readers=reason != "source_off", at=NOW + 30).blocked, 1)
                 row = self.copy(self.jo_pixel, item)
                 holds = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held", Event.detail.startswith(f"copy {row.id}: "))).scalars().all()
                 self.assertEqual(holds, [f"copy {row.id}: {reason}"] * 2)

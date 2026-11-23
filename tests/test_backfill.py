@@ -466,7 +466,11 @@ class BackfillTests(unittest.TestCase):
             return real(*args)
         with mock.patch.object(backfill, "live_halves", retried):
             world.backfill()
-        self.assertEqual((world.uploads(), world.count(ManagedImportReceipt), world.count(ManagedBackfillItem)), ([], 0, 0))
+        self.assertEqual((world.uploads(), world.count(ManagedImportReceipt)), ([], 0))
+        rows = world.opened.execute(select(ManagedBackfillItem.outcome, ManagedBackfillItem.reason, ManagedBackfillItem.version_id,
+                                           ManagedBackfillItem.receipt_id)).tuples().all()
+        self.assertEqual(rows, [("exception", "export_unfinished", None, None)])
+        self.assertEqual(world.report(), {"export_unfinished": ["IMG_5001.JPG"]})
 
     def test_an_export_imported_after_the_run_read_its_ledger_waits_for_the_next_run(self):
         world = BackfillWorld(self)
