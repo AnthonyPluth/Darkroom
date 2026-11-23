@@ -46,7 +46,8 @@ REASONS: Final[dict[str, str]] = {
     "name_refused": "Immich does not take a file with this name",
     "live_photo": "a Live Photo half, left for the Live Photo step (#553)",
     "same_shot": "the same shot as a phone original with other bytes, or an edited copy, left for the same-shot step (#554)",
-    "export_unfinished": "its Takeout export failed or expired before it was imported, so its companions may be unknown; it waits until the export is imported",
+    "export_unfinished": ("its Takeout export failed or expired before it was imported, so its companions may be unknown; retry a failed export's import "
+                          "from the Exports page and it is backfilled once that import finishes; an expired export cannot finish, so its photos stay listed"),
     "unusable": "Immich's asset is trashed, offline, in an external library or another person's",
     "pending": "Immich could not be reached or has not finished yet; Darkroom tries again",
     "not_in_immich": "the phone original is not recorded as stored in Immich",
@@ -243,7 +244,9 @@ class Backfill:
         db.write_lock(self.opened)
         found = self.opened.execute(query).scalar_one_or_none()
         current = self.opened.get(MediaItem, item.id, populate_existing=True)
-        if found is None and (current is None or (current.person_id, current.path, current.sha1, current.bytes) != (self.person.id, item.path, item.sha1, item.bytes)):
+        export = None if current is None or current.export_id is None else self.opened.get(Export, current.export_id, populate_existing=True)
+        if found is None and (current is None or (current.person_id, current.path, current.sha1, current.bytes) != (self.person.id, item.path, item.sha1, item.bytes)
+                              or (export is not None and export.status != IMPORTED)):
             self.opened.commit()
             raise Moved("the photo changed while the backfill ran")
         if found is None:

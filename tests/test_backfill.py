@@ -453,6 +453,21 @@ class BackfillTests(unittest.TestCase):
                 self.assertEqual(world.backfill(at=NOW + 200).mapped, 1)
                 self.assertEqual(world.report(), {})
 
+    def test_an_export_retried_while_the_run_decides_is_not_uploaded_from(self):
+        world = BackfillWorld(self)
+        export = world.run_managed(single_photo, parts=1)
+        world.opened.execute(update(Export).where(Export.id == export.id).values(status="failed"))
+        world.opened.commit()
+        real = backfill.live_halves
+
+        def retried(*args):
+            with world.engine.begin() as connection:
+                connection.execute(update(Export).where(Export.id == export.id).values(status="downloading"))
+            return real(*args)
+        with mock.patch.object(backfill, "live_halves", retried):
+            world.backfill()
+        self.assertEqual((world.uploads(), world.count(ManagedImportReceipt), world.count(ManagedBackfillItem)), ([], 0, 0))
+
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)
         world.run_managed(single_photo, parts=1)
