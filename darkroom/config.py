@@ -522,7 +522,6 @@ IMPORT_STALL_MOST = 24 * 60
 
 
 def import_stall_minutes(settings: Settings) -> int:
-    """The stall time, held between 5 minutes and a day whatever is set, so the stall alert always runs (#556)."""
     return min(max(settings.import_stall_minutes, IMPORT_STALL_LEAST), IMPORT_STALL_MOST)
 
 

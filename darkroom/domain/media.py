@@ -36,7 +36,7 @@ CAMERA_RAW_SUFFIXES = {".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", "
 
 
 class DecodeTimedOut(RuntimeError):
-    """A fingerprint worker did not finish a file in time; its result is dropped and the item fails (#556)."""
+    pass
 
 
 @dataclass(frozen=True)

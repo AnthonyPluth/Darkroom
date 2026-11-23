@@ -95,7 +95,6 @@ class Scheduler:
         return ran
 
     def still_running(self, job: Registered, now: float) -> None:
-        """A job with its own thread that is still busy is skipped; say so every ten minutes, so a stuck job is never silent (#556)."""
         if job.started is None or now - job.started < STILL_RUNNING_SECONDS:
             return
         if job.noted is not None and now - job.noted < STILL_RUNNING_SECONDS:

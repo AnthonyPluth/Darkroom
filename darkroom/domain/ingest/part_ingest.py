@@ -211,9 +211,6 @@ class Ingest:
         self.pool.shutdown(wait=True, cancel_futures=True)
 
     def abandon_pool(self, stuck: int) -> None:
-        """A worker that never returns can't be stopped, so its pool is left behind (its results dropped) and a fresh one takes over.
-
-        Waiting for it (``wait``, ``result`` or the pool's own shutdown) would hold the import tick forever (#556)."""
         self.pool.shutdown(wait=False, cancel_futures=True)
         self.abandoned += stuck
         self.pool = self.new_pool()

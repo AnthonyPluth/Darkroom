@@ -34,7 +34,6 @@ def logged_lines(log: mock.MagicMock) -> list[tuple[str, dict]]:
     return [(call.args[0], call.kwargs) for call in log.call_args_list]
 
 
-# The rules as they were before #556: a scan of every sorted sidecar for each media file. The indexed rules must give the same answers.
 def old_supplemental(media_path, sidecars):
     name = media_path.name
     for sidecar_name, path in sorted(sidecars.items()):
@@ -157,8 +156,6 @@ class IndexedRuleTests(unittest.TestCase):
 
 class PairingScaleTests(unittest.TestCase):
     def test_a_folder_of_twenty_thousand_files_pairs_in_linear_time(self):
-        # Before #556 each media file scanned every sidecar of its folder and each video every copy of the export: 8,800 files in one
-        # folder took 44 seconds, 20,000 minutes, which held a resumed part's import at full CPU with its count frozen (#556).
         folder = Path("Takeout/Google Photos/Photos from 2019")
         names = [f"PXL_{n:06d}.jpg" for n in range(18_000)] + [f"VID_{n:06d}.mp4" for n in range(1_500)] + [f"IMG_{n:06d}.HEIC" for n in range(500)]
         sidecars = [f"{name}.supplemental-metadata.json" for name in names[:19_500]]

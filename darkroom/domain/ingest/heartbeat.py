@@ -43,9 +43,6 @@ class Snapshot:
 
 
 class Heartbeat:
-    """What the import tick is doing, for its log lines, the scheduler's "still running" line and the stall watch.
-
-    Only counts, ids, durations and fixed step names are kept or logged, never a name or a path."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.clock = clock
@@ -142,7 +139,6 @@ def stack_of(thread_id: int) -> str:
 
 
 def log_stacks(beat: Heartbeat, export_id: int, number: int) -> None:
-    """Where the import thread and its fingerprint workers are waiting: module file names, lines and functions only."""
     seen = beat.snapshot()
     if seen.thread is not None:
         monitoring.log("stalled import stack", export=export_id, part=number, thread="import", frames=stack_of(seen.thread))
@@ -160,7 +156,6 @@ def stalled_key(export_id: int, number: int) -> str:
 
 
 class StallWatch:
-    """Opens one alert for a part whose stored count has not moved for the stall time while the import tick is working on it."""
 
     def __init__(self) -> None:
         self.seen: dict[tuple[int, int], tuple[int, float]] = {}

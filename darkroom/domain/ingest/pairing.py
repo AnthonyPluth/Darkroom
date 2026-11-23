@@ -77,9 +77,6 @@ def is_family_tail(tail: str) -> bool:
 
 
 class IndexedSidecars(dict[str, Path]):
-    """A folder's sidecars with their names looked up by stem, so a rule finds its candidates without scanning every sidecar (#556).
-
-    The rules give the same answer as scanning the sorted names: of the names that fit, the first in sorted order."""
 
     def __init__(self, found: Mapping[str, Path]) -> None:
         super().__init__(found)
@@ -188,7 +185,6 @@ def stems_fitting(named: str) -> set[str]:
 
 
 def without_extension(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
-    """exclusive(fits_without_extension), looking up the candidates and the media that also fit them instead of scanning both (#556)."""
     stem = Path(media_path.name).stem
     by_stem = media_by_stem(media)
     for sidecar_name in named_by(sidecars, [stem, *(f"{stem}{tail}" for tail in FAMILY_TAILS)]):
@@ -218,7 +214,6 @@ def may_fit_cut_counter(media_name: str) -> bool:
 
 
 def cut_counter(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
-    """exclusive(fits_cut_counter), skipping the scan for a name that can fit no sidecar (most names, #556)."""
     return exclusive(fits_cut_counter)(media_path, sidecars, media) if may_fit_cut_counter(media_path.name) else None
 
 
@@ -464,7 +459,6 @@ def stills_by_stem(by_copy: dict[Path, TakeoutItem]) -> Stills:
 
 
 def live_match(video: TakeoutItem, by_copy: dict[Path, TakeoutItem], stills_of: Stills | None = None) -> tuple[Path, Path] | None:
-    """The one still beside a video, looked up by folder and stem instead of scanning every copy for every video (#556)."""
     stems = {video.path.stem.lower()} | ({video.path.name.lower()} if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else set())
     index = stills_by_stem(by_copy) if stills_of is None else stills_of
     siblings = sorted(found for stem in stems for found in index.get((video.path.parent, stem), ()))
