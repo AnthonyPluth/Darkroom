@@ -160,7 +160,7 @@ class UploadTests(unittest.TestCase):
 
     def test_keep_both_on_a_managed_review_goes_to_immich_and_is_not_taken_back(self):
         world = ManagedWorld(self)
-        export = world.run_managed()
+        export_id = world.run_managed().id
         held = world.opened.execute(select(ReviewItem.id)).scalar_one()
         real = managed_metadata.intend
         with mock.patch.object(managed_metadata, "intend", lambda *args, **kwargs: dataclasses.replace(real(*args, **kwargs), hold="unknown_offset")), \
@@ -184,7 +184,7 @@ class UploadTests(unittest.TestCase):
         with self.assertRaisesRegex(review.WrongState, "kept in Immich"):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
         self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
-        self.assertEqual((len(world.zips(export)), (world.root / world.opened.get(ReviewItem, held).hold_path).is_file()), (3, True))
+        self.assertEqual((len(world.zips(world.opened.get(Export, export_id))), (world.root / world.opened.get(ReviewItem, held).hold_path).is_file()), (3, True))
 
     def test_a_kept_photo_that_never_shows_its_metadata_alerts_once_and_is_not_polled_again(self):
         world = ManagedWorld(self)
@@ -309,14 +309,15 @@ class UploadTests(unittest.TestCase):
                 crashed.append(True)
                 raise Crash()
             return real(*args, **kwargs)
+        export_id = export.id
         with mock.patch.object(managed_upload, "returned", crash_once), self.assertRaises(Crash):
             world.finish(export)
         world.reopen()
-        world.finish(export, at=NOW + 60)
-        self.assertEqual(world.status(export), ("downloading", "placed"))
-        world.finish(export, at=NOW + 2 * managed_upload.LEASE_SECONDS)
+        world.finish(world.opened.get(Export, export_id), at=NOW + 60)
+        self.assertEqual(world.status(world.opened.get(Export, export_id)), ("downloading", "placed"))
+        world.finish(world.opened.get(Export, export_id), at=NOW + 2 * managed_upload.LEASE_SECONDS)
         twin = ManagedWorld(self)
-        self.assertEqual(world.result(export), twin.result(twin.run_managed()))
+        self.assertEqual(world.result(world.opened.get(Export, export_id)), twin.result(twin.run_managed()))
         self.assertEqual(sorted(str(outcome) for _, outcome, _ in world.receipts().values()), ["None", "created", "duplicate"])
 
     def test_an_immich_managed_export_never_places_into_google_only(self):
