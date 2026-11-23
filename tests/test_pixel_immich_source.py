@@ -66,12 +66,15 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.opened.flush()
         return account.id, pixel.id
 
-    def managed(self, origins: tuple[tuple[str, int | None], ...] = (), state: str = "bytes_verified") -> tuple[MediaItem, int, str]:
+    def managed(self, origins: tuple[tuple[str, int | None], ...] = (), state: str = "bytes_verified", on_disk: bool = False) -> tuple[MediaItem, int, str]:
         number = next(self.counter)
         data = f"generated managed original {number}".encode()
         asset_id = f"aaaaaaaa-aaaa-4aaa-8aaa-{number:012d}"
         self.assets[asset_id] = self.fake.add_asset(FakeAsset(asset_id, OWNER, data, name=f"{CANARY}_{number}.HEIC"))
         item = MediaItem(person_id=self.jo, source="phone", path=f"jo/originals/2024/{CANARY}_{number}.HEIC", sha1=sha1(data), bytes=len(data), indexed_at=1.0)
+        if on_disk:
+            (self.root / item.path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / item.path).write_bytes(data)
         version = ManagedAssetVersion(person_id=self.jo, owner_id=OWNER, asset_id=asset_id, sha1=sha1(data), bytes=len(data), kind="IMAGE", state=state,
                                       metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0 if state == "bytes_verified" else None)
         self.opened.add_all([item, version])
@@ -156,7 +159,7 @@ class PixelImmichSourceTests(unittest.TestCase):
                  "external": lambda a: setattr(a, "library_id", "lib-jo"), "another owner": lambda a: setattr(a, "owner_id", "22222222-2222-4222-8222-222222222222")}
         for name, change in cases.items():
             with self.subTest(name):
-                item, version_id, asset_id = self.managed()
+                item, version_id, asset_id = self.managed(on_disk=True)
                 self.queue(item, version_id)
                 change(self.assets[asset_id])
                 with no_leaks(self, KEY, CANARY, self.fake.url):
@@ -169,10 +172,11 @@ class PixelImmichSourceTests(unittest.TestCase):
                 self.assertEqual(self.held_events(row), 1)
 
     def test_with_the_source_off_a_managed_copy_is_neither_placed_nor_pruned(self):
-        item, version_id, _ = self.managed()
+        item, version_id, _ = self.managed(on_disk=True)
         self.queue(item, version_id)
         self.assertEqual((self.tend(readers=False).blocked, self.fake.requests()), (1, []))
         self.assertEqual(self.copy(self.jo_pixel, item).state, "queued")
+        self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
         self.assertEqual(self.tend().placed, 1)
         self.match(item, self.jo_account, NOW + 10)
         self.assertEqual((self.tend(readers=False, at=NOW + 20).pruned, self.copy(self.jo_pixel, item).state), (0, "placed"))
