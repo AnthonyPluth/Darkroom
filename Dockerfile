@@ -48,9 +48,13 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright DISPLAY=:99
 
 # zlib1g is named so the image gets Debian's patched build (1:1.3.dfsg+really1.3.1-1+deb13u1) before python:3.15-slim
-# is rebuilt with it; the scan fails on CVE-2026-76844 and CVE-2026-85091 until then.
+# is rebuilt with it; the scan fails on CVE-2026-76844 and CVE-2026-85091 until then. The krb5 libraries are named
+# for the same reason: python:3.15-slim still has 1.21.3-5+deb13u1, and the scan fails on the HIGH CVEs Debian's
+# 1.21.3-5+deb13u2 fixes (CVE-2026-71199, CVE-2026-71200, CVE-2026-107364, CVE-2026-112315 to CVE-2026-112323,
+# CVE-2026-118380 and CVE-2026-119079) until it is rebuilt with it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 zlib1g \
+       libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
        xvfb x11-utils x11vnc novnc websockify tini libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall -y pip
