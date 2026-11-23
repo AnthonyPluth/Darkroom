@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder, pixel_source, pixels
+from darkroom.domain import accounts, dedupe, pixel_folder, pixel_source, pixels
 from darkroom.providers import immich
 from darkroom.server import jobs
 from darkroom.storage import paths, secretbox
@@ -17,6 +17,7 @@ from darkroom.storage.models import (DedupeDecision, Event, Export, GoogleAccoun
 from darkroom.storage.paths import Photos
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
 from tests.privacy import no_leaks
+from tests.review_world import PAIR_NAME, ReviewCase
 from tests.shared import add_person, own_database, settings_from
 from tests.test_pixel_folder import transport_references
 
@@ -326,8 +327,54 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual((self.references(self.jo_pixel), self.references(work_pixel)), (0, 1))
         self.assertEqual(self.copy(work_pixel, item).state, "placed")
 
+    def test_an_account_a_pixel_left_is_deleted_only_once_its_copies_have_another_reference(self):
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        moved_to = GoogleAccount(email="jo-new@x.test", default_person_id=self.jo, created=1.0)
+        self.opened.add(moved_to)
+        self.opened.commit()
+        pixels.update(self.opened, self.jo_pixel, {"google_account_id": moved_to.id}, NOW + 1)
+        self.opened.commit()
+        with self.assertRaises(accounts.InUse):
+            accounts.delete(self.opened, self.photos, self.jo_account, NOW + 2)
+        self.opened.rollback()
+        self.assertEqual(self.tend(at=NOW + 3).placed, 1)
+        accounts.delete(self.opened, self.photos, self.jo_account, NOW + 4)
+        self.opened.commit()
+        self.assertIsNone(self.opened.get(GoogleAccount, self.jo_account, populate_existing=True))
+        self.assertEqual(self.opened.execute(select(ManagedPixelSource.google_account_id)).scalars().all(), [moved_to.id])
+        self.match(item, moved_to.id, NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+
     def test_the_source_module_stays_apart_from_the_transport(self):
         self.assertEqual(transport_references((ROOT / "darkroom/domain/pixel_source.py").read_text()), set())
+
+
+class ReviewUndoTests(ReviewCase):
+    def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
+        review_id = self.pending().id
+        status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual(status, 200, body)
+        item = self.item_named(PAIR_NAME)
+        opened = self.world.opened
+        owner = opened.get(Person, item.person_id).immich_user_id
+        version = ManagedAssetVersion(person_id=item.person_id, owner_id=owner, asset_id="generated-review-asset", sha1=item.sha1, bytes=item.bytes,
+                                      kind="IMAGE", state="bytes_verified", metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0)
+        opened.add(version)
+        opened.flush()
+        self.assertEqual(pixel_folder.queue_managed(opened, item, version.id, NOW), 1)
+        opened.commit()
+        status, body = self.call("POST", f"/api/review/{review_id}/undo")
+        self.assertEqual(status, 409, body)
+        opened = self.opened
+        self.assertIsNotNone(opened.get(MediaItem, item.id))
+        opened.execute(update(PixelCopy).where(PixelCopy.item_id == item.id).values(state="pruned", pruned_at=NOW))
+        opened.commit()
+        status, body = self.call("POST", f"/api/review/{review_id}/undo")
+        self.assertEqual(status, 200, body)
+        opened = self.opened
+        self.assertIsNone(opened.get(MediaItem, item.id))
+        self.assertEqual(opened.execute(select(ManagedPixelSource.id)).all(), [])
 
 
 class StagedCopyTests(unittest.TestCase):

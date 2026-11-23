@@ -24,6 +24,21 @@ def retire(opened: Session, copies: Select[int]) -> None:
     opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id.in_(copies)))
 
 
+def stranded(opened: Session, account_id: int) -> bool:
+    elsewhere = select(ManagedPixelSource.copy_id).where(ManagedPixelSource.google_account_id != account_id)
+    return opened.execute(select(ManagedPixelSource.id).where(ManagedPixelSource.google_account_id == account_id, ManagedPixelSource.copy_id.not_in(elsewhere))
+                          .limit(1)).first() is not None
+
+
+def retire_account(opened: Session, account_id: int) -> None:
+    opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.google_account_id == account_id))
+
+
+def still_sending(opened: Session, item_id: int) -> bool:
+    return opened.execute(select(PixelCopy.id).join(ManagedPixelSource, ManagedPixelSource.copy_id == PixelCopy.id)
+                          .where(PixelCopy.item_id == item_id, PixelCopy.state.in_(("queued", "placed"))).limit(1)).first() is not None
+
+
 def converted(opened: Session, copy_id: int) -> bool:
     return opened.execute(select(ManagedPixelSource.id).where(ManagedPixelSource.copy_id == copy_id).limit(1)).first() is not None
 

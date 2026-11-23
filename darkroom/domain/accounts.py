@@ -5,7 +5,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import alerts, browser_jobs, events, exports, renewal
+from darkroom.domain import alerts, browser_jobs, events, exports, pixel_source, renewal
 from darkroom.storage import db
 from darkroom.storage.paths import STALE_PROFILE, BrowserState, Photos
 from darkroom.storage.models import Alert, DedupeDecision, Export, GoogleAccount, MediaItem, Person, Pixel, PixelPerson, known_contents
@@ -200,6 +200,8 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float, browser
         found.append("Pixels")
     if opened.execute(select(func.count(Export.id)).where(Export.account_id == account_id)).scalar_one():
         found.append("exports")
+    if pixel_source.stranded(opened, account_id):
+        found.append("Pixel copies whose only Immich source was recorded for it")
     if found:
         raise InUse(f"{account.email} still has {' and '.join(found)}; remove those first")
     hold = browser_jobs.holds_profile(opened, account_id, now)
@@ -209,6 +211,7 @@ def delete(opened: Session, photos: Photos, account_id: int, now: float, browser
         raise InUse(f"{account.email} had a browser job that failed when its worker stopped reporting less than {int(browser_jobs.LEASE_SECONDS // 60)} minutes ago, "
                     "and that worker may still be closing its browser; try again in a few minutes")
     email = account.email
+    pixel_source.retire_account(opened, account_id)
     opened.delete(account)
     opened.flush()
     alerts.close(opened, browser_jobs.sign_in_key(account_id), now)

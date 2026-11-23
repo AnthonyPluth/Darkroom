@@ -11,12 +11,12 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, events, exports, media, people, thumbs, xmp
+from darkroom.domain import accounts, dedupe, events, exports, media, people, pixel_source, thumbs, xmp
 from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User, known_contents
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, PixelCopy, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -524,6 +524,8 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
         hit.decision.takeout_item_id = None
         return set(), None
     adopted = adopted_by(opened, hit.review, item)
+    if "row" not in adopted and pixel_source.still_sending(opened, item.id):
+        raise WrongState("a Pixel still has the kept copy in its folder or waiting for it; undo this once Google Photos has it and Darkroom prunes it")
     moved = None
     try:
         if "photo" not in adopted:
@@ -539,6 +541,7 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     hit.decision.takeout_item_id = None
     owner = item.person_id
     if "row" not in adopted:
+        pixel_source.retire(opened, select(PixelCopy.id).where(PixelCopy.item_id == item.id))
         opened.delete(item)
     if moved is not None:
         return {owner, moved[0]}, moved[1]
