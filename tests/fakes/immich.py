@@ -61,13 +61,14 @@ class FakeAsset:
     checksum: str | None = None
     exif: dict[str, object] | None = None
     ready_at: float = 0.0
+    offline: bool = False
 
     def json(self) -> dict[str, object]:
         checksum = self.checksum or base64.b64encode(hashlib.sha1(self.data, usedforsecurity=False).digest()).decode()
         found: dict[str, object] = {
             "id": self.id, "ownerId": self.owner_id, "libraryId": self.library_id, "checksum": checksum, "type": self.kind,
             "originalFileName": self.name, "visibility": self.visibility, "livePhotoVideoId": self.live_video_id,
-            "isTrashed": self.trashed, "isOffline": False, "updatedAt": self.updated_at,
+            "isTrashed": self.trashed, "isOffline": self.offline, "updatedAt": self.updated_at,
         }
         if self.exif is not None and time.monotonic() >= self.ready_at:
             found["exifInfo"] = self.exif
@@ -125,6 +126,9 @@ class State:
     refused_agents: tuple[str, ...] = ()
     missing_status: int = 400
     shared: set[str] = field(default_factory=set)
+    search_shared: bool = False
+    lose_uploads: int = 0
+    upload_answer: dict[str, object] | None = None
 
 
 def library_json(person: FakePerson) -> dict[str, object]:
@@ -198,7 +202,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if state.on_search is not None:
                 state.on_search(state.searches)
             window = asked.get("filter", {}).get("updatedAt", {})
-            found = [a for a in state.assets if a.owner_id == person.user_id and not a.trashed
+            found = [a for a in state.assets if (a.owner_id == person.user_id or (state.search_shared and a.id in state.shared)) and not a.trashed
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
                      and asked.get("checksum") in (None, a.json()["checksum"])]
             start = int(asked.get("cursor") or 0)
@@ -264,6 +268,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if "asset.upload" not in state.permissions:
                 self.reply(403, {"message": "Missing required permission: asset.upload"})
                 return
+            if state.upload_answer is not None:
+                self.reply(200, state.upload_answer)
+                return
             message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
                 b"Content-Type: " + self.headers.get("Content-Type", "").encode() + b"\r\n\r\n" + self.body)
             fields = {part.get_param("name", header="content-disposition"): part.get_payload(decode=True) for part in message.iter_parts()}
@@ -293,6 +300,10 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 if video is not None:
                     asset.live_video_id, video.visibility = video.id, "hidden"
                 state.assets.append(asset)
+                lost, state.lose_uploads = state.lose_uploads > 0, max(state.lose_uploads - 1, 0)
+            if lost:
+                self.drop()
+                return
             self.reply(201, {"id": asset.id, "status": "created"})
 
         def bulk_check(self, person: FakePerson) -> None:

@@ -648,3 +648,51 @@ rules:
               - pattern-not: $C.add_folder($ID, str($PH.pixel_root($N)), ...)
     paths:
       include: ["/darkroom/domain/transport.py", "/darkroom/providers/syncthing.py"]
+
+  - id: darkroom-immich-upload-one-caller
+    message: >-
+      Immich's import routes (the upload and its bulk check) are sent only for a managed import receipt, by
+      darkroom/domain/managed_upload.py through ManagedReader.upload and ManagedReader.bulk_check, which check the
+      person's key, grants and version first (docs/design/immich-managed-storage.md, sections 3 and 8; #531). Call
+      managed_upload.upload_receipt instead; nothing else passes importing= to the Immich client.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $X.upload(...)
+      - pattern: $X.bulk_check(...)
+      - pattern: $F(..., importing=$I, ...)
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/providers/immich.py", "/darkroom/domain/managed_upload.py"]
+
+  - id: darkroom-immich-import-routes-behind-check-access
+    message: >-
+      In the Immich provider the import routes are reached only after self.check_access() has re-read the key's owner,
+      admin flag, exact grants and version (ManagedReader.upload and ManagedReader.bulk_check), and from Client's own
+      upload and bulk_check, which send them; importing is keyword-only, and only Client.open and Client.call forward it
+      (docs/design/immich-managed-storage.md, section 8; #531). Go through ManagedReader.upload or ManagedReader.bulk_check.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $X.upload(...)
+          - pattern: $X.bulk_check(...)
+          - pattern: $F(..., importing=$I, ...)
+      - pattern-not-inside: |
+          self.check_access()
+          ...
+      - pattern-not-inside: |
+          def upload(self, key: str, body: MultipartUpload) -> UploadResult:
+            ...
+      - pattern-not-inside: |
+          def bulk_check(self, key: str, sha1: str) -> BulkMatch | None:
+            ...
+      - pattern-not-inside: |
+          def open(self, method: str, path: str, key: str, body: object | None = None, *, importing: bool = False,
+                   upload: MultipartUpload | None = None) -> contextlib.AbstractContextManager[Any]:
+            ...
+      - pattern-not-inside: |
+          def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, *, importing: bool = False) -> object:
+            ...
+    paths:
+      include: ["/darkroom/providers/immich.py"]

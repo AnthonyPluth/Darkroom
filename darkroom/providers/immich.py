@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import urllib.error
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, BinaryIO, Literal
@@ -38,10 +38,16 @@ MANAGED_GRANTS: dict[str, tuple[frozenset[str], str]] = {
 }
 READ_ROUTES = frozenset({("GET", "/api/server/ping"), ("GET", "/api/server/about"), ("GET", "/api/users/me"),
                          ("GET", "/api/api-keys/me"), ("GET", "/api/libraries"), ("POST", "/api/search/metadata")})
+UPLOAD_PATH = "/api/assets"
+BULK_CHECK_PATH = "/api/assets/bulk-upload-check"
+IMPORT_ROUTES = frozenset({("POST", UPLOAD_PATH), ("POST", BULK_CHECK_PATH)})
+UPLOAD_TIMEOUT = 300.0
+BULK_CHECK_ID = "darkroom-source"
+CHECKSUM_PAGE = 100
 
 
-def require_allowed_request(method: str, path: str) -> None:
-    if (method, path) in READ_ROUTES:
+def require_allowed_request(method: str, path: str, *, importing: bool = False) -> None:
+    if (method, path) in READ_ROUTES or (importing is True and (method, path) in IMPORT_ROUTES):
         return
     if method == "GET" and re.fullmatch(r"/api/assets/[A-Za-z0-9_-]+(?:/metadata|/original(?:\?edited=false)?)?", path):
         return
@@ -75,6 +81,26 @@ class ChecksumMismatch(ImmichFailed):
 
 class NotVisible(ImmichFailed):
     pass
+
+
+class NotCustody(ImmichFailed):
+    pass
+
+
+class UploadUncertain(ImmichFailed):
+    pass
+
+
+def checksum_of(sha1: str) -> str:
+    if not isinstance(sha1, str) or not re.fullmatch(r"[a-f0-9]{40}", sha1):
+        raise ImmichFailed("not a source checksum")
+    return base64.b64encode(bytes.fromhex(sha1)).decode("ascii")
+
+
+@dataclass(frozen=True)
+class BulkMatch:
+    asset_id: str = field(repr=False)
+    trashed: bool
 
 
 def not_readable(raw: bytes) -> bool:
@@ -169,6 +195,7 @@ class MultipartUpload:
             raise ImmichFailed("not a Live Photo video id")
         if sidecar is not None and sidecar.reader is original.reader:
             raise ImmichFailed("the original and sidecar need independent upload sources")
+        self.original = original
         boundary = f"darkroom-{uuid4().hex}"
         self._content_type = f"multipart/form-data; boundary={boundary}"
         marker = boundary.encode("ascii")
@@ -312,21 +339,26 @@ class Client:
             raise NotConfigured("IMMICH_URL is not set")
         return cls(settings.immich_url, settings.immich_admin_key)
 
-    def open(self, method: str, path: str, key: str, body: object | None = None) -> contextlib.AbstractContextManager[Any]:
-        require_allowed_request(method, path)
+    def open(self, method: str, path: str, key: str, body: object | None = None, *, importing: bool = False,
+             upload: MultipartUpload | None = None) -> contextlib.AbstractContextManager[Any]:
+        require_allowed_request(method, path, importing=importing)
         host = urlsplit(self.url).hostname or ""
         headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if key:
             headers["x-api-key"] = key
-        data = b"" if method == "POST" else None
+        data: bytes | MultipartUpload | None = b"" if method == "POST" else None
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode()
-        return tls.urlopen(f"{self.url}{path}", method=method, headers=headers, data=data, timeout=self.timeout, allow_http=config.local_host(host))
+        if upload is not None:
+            headers |= upload.headers
+            data = upload
+        timeout = self.timeout if upload is None else max(self.timeout, UPLOAD_TIMEOUT)
+        return tls.urlopen(f"{self.url}{path}", method=method, headers=headers, data=data, timeout=timeout, allow_http=config.local_host(host))
 
-    def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None) -> object:
+    def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, *, importing: bool = False) -> object:
         try:
-            with self.open(method, path, (key or self.admin_key) if keyed else "", body) as response:
+            with self.open(method, path, (key or self.admin_key) if keyed else "", body, importing=importing) as response:
                 raw = response.read(MAX_REPLY + 1)
         except urllib.error.HTTPError as error:
             denial = denial_of(error)
@@ -414,6 +446,46 @@ class Client:
             raise ImmichFailed("Immich's metadata answer was not a list")
         return {entry["key"] for entry in found if isinstance(entry, dict) and isinstance(entry.get("key"), str)}
 
+    def person_key(self, key: str) -> str:
+        if not isinstance(key, str) or not key or key == self.admin_key:
+            raise ImmichFailed("an upload needs the person's own key")
+        return key
+
+    def upload(self, key: str, body: MultipartUpload) -> UploadResult:
+        try:
+            with self.open("POST", UPLOAD_PATH, self.person_key(key), importing=True, upload=body) as response:
+                status, raw = response.status, response.read(CHECK_LIMIT + 1)
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code >= 500:
+                raise UploadUncertain(f"Immich answered {error.code}", error.code) from None
+            raise ImmichFailed(f"Immich refused the upload ({error.code})", error.code) from None
+        except tls.Refused as error:
+            raise UploadUncertain(str(error)) from None
+        except tls.CONNECTION_PROBLEMS as error:
+            raise UploadUncertain(f"the upload's answer was lost ({type(error).__name__})") from None
+        try:
+            return upload_result(status, json.loads(raw) if len(raw) <= CHECK_LIMIT else None)
+        except (ValueError, ImmichFailed):
+            raise UploadUncertain("the upload's answer was not understood") from None
+
+    def bulk_check(self, key: str, sha1: str) -> BulkMatch | None:
+        found = self.call("POST", BULK_CHECK_PATH, key=self.person_key(key), importing=True, body={"assets": [{"id": BULK_CHECK_ID, "checksum": checksum_of(sha1)}]})
+        results = found.get("results") if isinstance(found, dict) else None
+        entry = results[0] if isinstance(results, list) and len(results) == 1 and isinstance(results[0], dict) else {}
+        if entry.get("id") == BULK_CHECK_ID and entry.get("action") == "accept":
+            return None
+        if entry.get("id") == BULK_CHECK_ID and entry.get("action") == "reject" and entry.get("reason") == "duplicate" and is_canonical_id(entry.get("assetId")):
+            return BulkMatch(entry["assetId"], entry.get("isTrashed") is not False)
+        raise ImmichFailed("Immich's upload check answer was not understood")
+
+    def search_checksum(self, key: str, sha1: str) -> list[Asset]:
+        found = self.call("POST", "/api/search/metadata", key=key, body={"checksum": checksum_of(sha1), "size": CHECKSUM_PAGE})
+        page = found.get("assets") if isinstance(found, dict) else None
+        if not isinstance(page, dict) or not isinstance(page.get("items"), list) or page.get("nextCursor"):
+            raise ImmichFailed("Immich's checksum search answer was not understood")
+        return [asset_of(entry) for entry in page["items"]]
+
     def original_chunks(self, key: str, asset: Asset) -> Iterator[bytes]:
         digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         total = 0
@@ -484,8 +556,35 @@ class ManagedReader:
                 or found.get("isTrashed") is not False or found.get("isOffline") is not False
                 or found.get("type") not in ("IMAGE", "VIDEO")
                 or (found.get("livePhotoVideoId") is not None and not is_canonical_id(found["livePhotoVideoId"]))):
-            raise ImmichFailed("the asset is not an available managed original of this person")
+            raise NotCustody("the asset is not an available managed original of this person")
         return asset_of(found)
+
+    def upload(self, body: MultipartUpload, sending: Callable[[], None]) -> UploadResult:
+        if self.access != "import":
+            raise ImmichFailed("only a managed import may upload")
+        self.check_access()
+        sending()
+        return self.client.upload(self.key, body)
+
+    def bulk_check(self, sha1: str) -> BulkMatch | None:
+        if self.access != "import":
+            raise ImmichFailed("only a managed import may check an upload")
+        self.check_access()
+        return self.client.bulk_check(self.key, sha1)
+
+    def managed_with_checksum(self, sha1: str) -> list[str]:
+        self.check_access()
+        return sorted(asset.id for asset in self.client.search_checksum(self.key, sha1) if asset.owner_id == self.owner_id
+                      and asset.library_id is None and not asset.trashed and not asset.offline and asset.sha1 == sha1)
+
+    def verify_original(self, asset_id: str, sha1: str, size: int) -> None:
+        if not isinstance(sha1, str) or not re.fullmatch(r"[a-f0-9]{40}", sha1) or type(size) is not int or size <= 0:
+            raise ImmichFailed("not a recorded source")
+        asset = self.get_asset(asset_id)
+        if asset.sha1 != sha1:
+            raise NotCustody("the asset holds other bytes than the source")
+        if sum(len(chunk) for chunk in self.client.original_chunks(self.key, asset)) != size:
+            raise ChecksumMismatch("the downloaded original's size differs from the source")
 
     def original_chunks(self, asset_id: str, expected_sha1: str) -> Iterator[bytes]:
         if not re.fullmatch(r"[a-f0-9]{40}", expected_sha1):

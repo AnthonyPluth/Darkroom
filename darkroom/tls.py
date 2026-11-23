@@ -6,7 +6,7 @@ import socket
 import ssl
 import stat
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -39,7 +39,7 @@ def client_context(cafile: str | None = None) -> ssl.SSLContext:
     return context
 
 
-def urlopen(url: str, *, data: bytes | None = None, headers: Mapping[str, str] | None = None,
+def urlopen(url: str, *, data: bytes | Iterable[bytes] | None = None, headers: Mapping[str, str] | None = None,
             method: str | None = None, timeout: float = DEFAULT_TIMEOUT, allow_http: bool = False) -> HTTPResponse:
     scheme = urlsplit(url).scheme
     if scheme != "https" and not (scheme == "http" and allow_http):

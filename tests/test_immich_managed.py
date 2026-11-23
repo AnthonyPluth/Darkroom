@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import json
 import unittest
 import urllib.error
 from unittest import mock
@@ -23,6 +24,20 @@ EXTRA_GRANTS = ("asset.delete", "asset.update", "asset.replace", "asset.copy", "
                 "library.read", "library.update", "user.update", "userProfileImage.update", "adminUser.read", "adminUser.update",
                 "adminAuth.unlinkAll", "apiKey.create", "partner.read", "sharedLink.create", "trash.delete", "trash.restore",
                 "passkey.read", "clusterGroup.admin", "unknown")
+TAKEN = "2024-01-02T03:04:05+00:00"
+EXTERNAL = "44444444-4444-4444-8444-444444444444"
+OFFLINE = "55555555-5555-4555-8555-555555555555"
+
+
+def upload_body():
+    return immich.MultipartUpload(immich.UploadSource(io.BytesIO(DATA), len(DATA), SHA1), "generated.jpg", TAKEN, TAKEN)
+
+
+def answering(status, raw):
+    response = mock.MagicMock(status=status)
+    response.read.return_value = raw
+    response.__enter__.return_value = response
+    return response
 
 
 class ManagedAccessTests(unittest.TestCase):
@@ -274,6 +289,126 @@ class ManagedAccessTests(unittest.TestCase):
                 with self.subTest(method=method, path=path), self.assertRaisesRegex(immich.ImmichFailed, "not allowed"):
                     self.client.call(method, path, key=PERSON_KEY, body={})
         opened.assert_not_called()
+
+    def test_only_the_import_path_adds_the_upload_and_its_check_and_never_trash_update_or_delete(self):
+        for method, path in sorted(immich.IMPORT_ROUTES):
+            with self.assertRaisesRegex(immich.ImmichFailed, "not allowed"):
+                immich.require_allowed_request(method, path)
+            with self.assertRaisesRegex(immich.ImmichFailed, "not allowed"):
+                immich.require_allowed_request(method, path, importing=1)
+            immich.require_allowed_request(method, path, importing=True)
+        refused = [(method, path) for method in ("DELETE", "PUT", "PATCH") for path in ("/api/assets", immich.BULK_CHECK_PATH, f"/api/assets/{ASSET}")]
+        refused += [("POST", path) for path in ("/api/trash/empty", "/api/trash/restore", "/api/trash/restore/assets", f"/api/assets/{ASSET}", "/api/assets/",
+                                                "/api/assets?x=1", f"{immich.BULK_CHECK_PATH}/", "/api/assets/copy", "/api/assets/jobs", f"/api/assets/{ASSET}/original")]
+        refused += [("GET", "/api/assets"), ("POST", "/api/libraries"), ("PUT", f"/api/assets/{ASSET}/metadata")]
+        with mock.patch.object(tls, "urlopen") as opened:
+            for method, path in refused:
+                with self.subTest(method=method, path=path), self.assertRaisesRegex(immich.ImmichFailed, "not allowed"):
+                    self.client.call(method, path, key=PERSON_KEY, body={}, importing=True)
+        opened.assert_not_called()
+
+    def test_a_read_reader_cannot_upload_or_check_an_upload_and_sends_nothing(self):
+        sent = []
+        with self.assertRaisesRegex(immich.ImmichFailed, "only a managed import"):
+            self.reader.upload(upload_body(), lambda: sent.append(1))
+        with self.assertRaisesRegex(immich.ImmichFailed, "only a managed import"):
+            self.reader.bulk_check(SHA1)
+        for key in (ADMIN_KEY, "", None):
+            with self.subTest(key=key), self.assertRaisesRegex(immich.ImmichFailed, "person's own key"):
+                self.client.upload(key, upload_body())
+            with self.subTest(key=key), self.assertRaisesRegex(immich.ImmichFailed, "person's own key"):
+                self.client.bulk_check(key, SHA1)
+        self.assertEqual((sent, self.fake.requests()), ([], []))
+
+    def test_an_upload_streams_the_body_with_the_person_key_and_reads_its_answer(self):
+        body = upload_body()
+        answer = answering(201, json.dumps({"id": ASSET, "status": "created"}).encode())
+        with mock.patch.object(tls, "urlopen", return_value=answer) as opened:
+            self.assertEqual(self.client.upload(PERSON_KEY, body), immich.UploadResult(ASSET, "created"))
+        sent = opened.call_args.kwargs
+        self.assertIs(sent["data"], body)
+        self.assertEqual((opened.call_args.args[0], sent["method"], sent["headers"]["x-api-key"], sent["headers"]["Content-Length"]),
+                         (f"{self.fake.url}/api/assets", "POST", PERSON_KEY, body.headers["Content-Length"]))
+        self.assertTrue(sent["headers"]["Content-Type"].startswith("multipart/form-data; boundary="))
+        self.assertGreaterEqual(sent["timeout"], immich.UPLOAD_TIMEOUT)
+
+    def test_upload_answers_below_500_are_refusals_and_the_rest_are_uncertain_without_echoing_them(self):
+        canary = "private-upload-answer-canary"
+        replies = []
+        with no_leaks(self, PERSON_KEY, ADMIN_KEY, canary, replies=replies):
+            for status in (400, 401, 403, 413, 500, 502, 503):
+                error = urllib.error.HTTPError(self.fake.url, status, canary, {}, io.BytesIO(canary.encode()))
+                with self.subTest(status=status), mock.patch.object(tls, "urlopen", side_effect=error), self.assertRaises(immich.ImmichFailed) as caught:
+                    self.client.upload(PERSON_KEY, upload_body())
+                self.assertEqual((isinstance(caught.exception, immich.UploadUncertain), caught.exception.status), (status >= 500, status))
+                replies.append(str(caught.exception).encode())
+            for problem in (ConnectionResetError(canary), TimeoutError(canary), tls.Refused("redirects are not followed")):
+                with self.subTest(problem=type(problem)), mock.patch.object(tls, "urlopen", side_effect=problem), self.assertRaises(immich.UploadUncertain) as caught:
+                    self.client.upload(PERSON_KEY, upload_body())
+                replies.append(str(caught.exception).encode())
+            for status, raw in ((201, canary.encode()), (201, b"{}"), (200, json.dumps({"id": ASSET, "status": "created"}).encode()),
+                                (202, json.dumps({"id": ASSET, "status": "created"}).encode()), (201, b" " * (immich.CHECK_LIMIT + 1))):
+                with self.subTest(status=status), mock.patch.object(tls, "urlopen", return_value=answering(status, raw)), self.assertRaises(immich.UploadUncertain) as caught:
+                    self.client.upload(PERSON_KEY, upload_body())
+                replies.append(str(caught.exception).encode())
+
+    def test_upload_checks_and_checksum_searches_fail_closed_on_answers_they_do_not_understand(self):
+        reader, real, check = self.importer(), self.client.call, immich.BULK_CHECK_ID
+        duplicate = {"id": check, "action": "reject", "reason": "duplicate", "assetId": ASSET}
+        bulk = (None, {}, {"results": []}, {"results": [{"id": "other", "action": "accept"}]}, {"results": [duplicate, duplicate]},
+                {"results": [duplicate | {"reason": "unsupported-format"}]}, {"results": [duplicate | {"assetId": "not-a-uuid"}]})
+        search = (None, {}, {"assets": {"items": {}}}, {"assets": {"items": [], "nextCursor": "100"}}, {"assets": {"items": [{"id": ASSET}]}})
+        for path, answers, ask in ((immich.BULK_CHECK_PATH, bulk, reader.bulk_check), ("/api/search/metadata", search, reader.managed_with_checksum)):
+            for answer in answers:
+                def replied(method, called, answer=answer, path=path, **kwargs):
+                    return answer if called == path else real(method, called, **kwargs)
+                with self.subTest(path=path, answer=answer), mock.patch.object(immich.Client, "call", side_effect=replied), self.assertRaises(immich.ImmichFailed):
+                    ask(SHA1)
+        def unflagged(method, called, **kwargs):
+            return {"results": [duplicate]} if called == immich.BULK_CHECK_PATH else real(method, called, **kwargs)
+        with mock.patch.object(immich.Client, "call", side_effect=unflagged):
+            self.assertEqual(reader.bulk_check(SHA1), immich.BulkMatch(ASSET, True))
+        self.assertEqual(reader.bulk_check(SHA1), immich.BulkMatch(ASSET, False))
+        self.assertIsNone(reader.bulk_check("a" * 40))
+        self.fake.state.requests.clear()
+        for sha1 in ("", "F" * 40, SHA1 + "\n", None):
+            for ask in (self.client.bulk_check, self.client.search_checksum):
+                with self.subTest(sha1=sha1, ask=ask.__name__), self.assertRaisesRegex(immich.ImmichFailed, "not a source checksum"):
+                    ask(PERSON_KEY, sha1)
+        self.assertEqual(self.fake.requests(), [])
+
+    def test_a_checksum_search_keeps_only_this_owners_available_managed_asset(self):
+        for asset_id, owner, changes in ((OTHER, OTHER, {}), (EXTERNAL, OWNER, {"library_id": "lib-jo"}),
+                                         (OFFLINE, OWNER, {"library_id": "lib-jo", "offline": True})):
+            self.fake.add_asset(FakeAsset(asset_id, owner, DATA, **changes))
+        self.fake.state.shared.add(OTHER)
+        self.fake.state.search_shared = True
+        self.assertEqual(len(self.client.search_checksum(PERSON_KEY, SHA1)), 4)
+        self.assertEqual(self.importer().managed_with_checksum(SHA1), [ASSET])
+        self.source.trashed = True
+        self.assertEqual(self.importer().managed_with_checksum(SHA1), [])
+
+    def test_read_back_needs_the_sources_checksum_and_size_in_an_available_unedited_original(self):
+        reader = self.importer()
+        reader.verify_original(ASSET, SHA1, len(DATA))
+        self.assertIn(("GET", f"/api/assets/{ASSET}/original"), self.fake.requests())
+        with self.assertRaisesRegex(immich.NotCustody, "other bytes"):
+            reader.verify_original(ASSET, "a" * 40, len(DATA))
+        with self.assertRaisesRegex(immich.ChecksumMismatch, "size"):
+            reader.verify_original(ASSET, SHA1, len(DATA) + 1)
+        self.fake.state.requests.clear()
+        for sha1, size in (("F" * 40, 1), (SHA1, 0), (SHA1, True), (SHA1, "1"), (None, 1)):
+            with self.subTest(sha1=sha1, size=size), self.assertRaisesRegex(immich.ImmichFailed, "not a recorded source"):
+                reader.verify_original(ASSET, sha1, size)
+        self.assertEqual(self.fake.requests(), [])
+        for change, value, before in (("trashed", True, False), ("offline", True, False), ("library_id", "lib-jo", None), ("owner_id", OTHER, OWNER)):
+            setattr(self.source, change, value)
+            if change == "owner_id":
+                self.fake.state.shared.add(ASSET)
+            with self.subTest(change=change), self.assertRaises(immich.NotCustody):
+                reader.verify_original(ASSET, SHA1, len(DATA))
+            setattr(self.source, change, before)
+        self.assertNotIn(("GET", f"/api/assets/{ASSET}/original"), self.fake.requests())
 
     def test_a_grant_added_after_a_successful_import_check_ends_access(self):
         reader = self.importer()
