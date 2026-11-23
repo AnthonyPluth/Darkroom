@@ -16,8 +16,9 @@ from darkroom.domain import dedupe, exports
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
 from darkroom.server import contract
 from darkroom.storage import db, paths
+from darkroom.providers import exiftool
 from darkroom.storage.models import (
-    INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, Person, ReviewItem, TakeoutEntry,
+    INGEST_FAILURES, INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, Person, ReviewItem, TakeoutEntry,
 )
 from tests.import_world import DAY, NOW, World, tree
 from tests.shared import on_postgres, write_elsewhere
@@ -1268,6 +1269,110 @@ class PrivacyTests(unittest.TestCase):
             self.assertFalse(any(canary in f"{row.subject} {row.message}" for canary in (*names, text)))
         done = world.opened.execute(select(Event).where(Event.type == "export_part_ingested")).scalars().all()
         self.assertEqual([row.detail.startswith("part ") for row in done], [True, True])
+
+
+class FailureReasonTests(unittest.TestCase):
+    CANARY_PATH = "/photos/jo/Takeout/Google Photos/Canary Trip 4417/IMG_canary_4417.JPG"
+
+    def setUp(self):
+        self.world = PartWorld(self)
+
+    def run_queued(self, at=NOW):
+        self.world.opened.expire_all()
+        return part_ingest.run_queued(self.world.opened, self.world.settings, at, self.world.tools)
+
+    def fail_with(self, error):
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=error):
+            self.run_queued()
+
+    def view(self, export):
+        self.world.opened.expire_all()
+        return exports.as_dict(self.world.opened, self.world.opened.get(Export, export.id), NOW)
+
+    def reasons(self, export):
+        self.world.opened.expire_all()
+        return [(part.ingest_state, part.ingest_failure, part.ingest_failure_type) for part in exports.parts_of(self.world.opened, export.id)]
+
+    def test_each_error_gets_a_fixed_code_from_its_class(self):
+        cases = [(FileNotFoundError(self.CANARY_PATH), "files"), (paths.ChangedWhileCopied(self.CANARY_PATH), "files"),
+                 (OperationalError(self.CANARY_PATH, {}, Exception()), "database"), (exiftool.Unreadable(self.CANARY_PATH), "metadata"),
+                 (exiftool.Missing(), "metadata"), (exiftool.WriteFailed(self.CANARY_PATH), "metadata"), (place.PlaceFailed(self.CANARY_PATH), "placing"),
+                 (MemoryError(), "memory"), (ValueError(self.CANARY_PATH), "unexpected"), (RuntimeError(), "unexpected")]
+        for error, code in cases:
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(part_ingest.failure_code(error), code)
+                self.assertIn(code, INGEST_FAILURES)
+                self.assertEqual(part_ingest.failure_type(error), type(error).__name__)
+
+    def test_an_error_class_whose_name_is_not_a_plain_identifier_is_recorded_as_exception(self):
+        for name in ("IMG_canary 4417.JPG", "/photos/jo/canary", "Ünïcode", "E" * 65, ""):
+            with self.subTest(name=name):
+                self.assertEqual(part_ingest.failure_type(type(name, (Exception,), {})()), "Exception")
+        self.assertEqual(part_ingest.failure_type(type("E" * 64, (Exception,), {})()), "E" * 64)
+
+    def test_a_failed_part_stores_and_shows_only_the_code_and_class_name(self):
+        export = self.world.create(self.world.scenario)
+        with no_leaks(self, self.CANARY_PATH, "IMG_canary_4417", "Canary Trip 4417", database=self.world.engine):
+            self.fail_with(FileNotFoundError(2, "No such file", self.CANARY_PATH))
+        self.assertEqual(self.reasons(export), [("failed", "files", "FileNotFoundError")] * 3)
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [{"code": "files", "error": "FileNotFoundError"}] * 3)
+        self.assertTrue(shown["import_retry_allowed"])
+        self.assertNotIn("canary", json.dumps(shown).lower())
+
+    def test_a_requeued_part_loses_its_reason_and_an_ingested_one_has_none(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        self.fail_with(OSError("disk"))
+        run.request_import(self.world.opened, export.id, self.world.photos, NOW + 5)
+        self.world.opened.commit()
+        self.assertEqual(self.reasons(export), [("queued", None, None)] * 3)
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [None] * 3)
+        self.assertFalse(shown["import_retry_allowed"])
+        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual(self.reasons(export), [("ingested", None, None)] * 3)
+
+    def test_a_reason_left_on_a_part_that_is_not_failed_is_cleared_when_it_ingests_and_never_shown(self):
+        export = self.world.create(self.world.scenario)
+        part = self.world.part(export, 1)
+        part.ingest_failure, part.ingest_failure_type = "files", "OSError"
+        self.world.opened.commit()
+        self.assertIsNone(self.view(export)["parts"][0]["import_failure"])
+        self.world.ingest(export, 1)
+        self.assertEqual(self.reasons(export)[0], ("ingested", None, None))
+
+    def test_a_part_failed_before_reasons_were_stored_shows_none(self):
+        export = self.world.create(self.world.scenario)
+        self.fail_with(OSError("disk"))
+        for number in (1, 2, 3):
+            self.world.part(export, number).ingest_failure, self.world.part(export, number).ingest_failure_type = None, None
+        self.world.opened.commit()
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [None] * 3)
+        self.assertTrue(shown["import_retry_allowed"])
+
+    def test_retry_import_is_offered_only_when_a_part_failed_or_a_downloaded_export_failed_to_import(self):
+        export = self.world.create(self.world.scenario)
+        self.assertFalse(self.view(export)["import_retry_allowed"])
+        part = self.world.part(export, 2)
+        part.ingest_state = "refused"
+        self.world.opened.commit()
+        self.assertFalse(self.view(export)["import_retry_allowed"])
+        part.ingest_state = "failed"
+        self.world.opened.commit()
+        for status, allowed in (("downloading", True), ("downloaded", True), ("unpacking", True), ("importing", True), ("imported", False), ("expired", False),
+                                ("announced", False)):
+            with self.subTest(status=status):
+                self.world.opened.get(Export, export.id).status = status
+                self.world.opened.commit()
+                self.assertEqual(self.view(export)["import_retry_allowed"], allowed)
+        found = self.world.opened.get(Export, export.id)
+        found.status = "failed"
+        self.world.opened.commit()
+        self.assertTrue(self.view(export)["import_retry_allowed"])
+        found.inbox_dir = None
+        self.world.opened.commit()
+        self.assertFalse(self.view(export)["import_retry_allowed"])
 
 
 if __name__ == "__main__":

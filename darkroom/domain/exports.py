@@ -35,12 +35,14 @@ PART_DOWNLOADS = 5
 DOWNLOADED = ("downloaded", "unpacking", "importing", "imported")
 EXPIRED_WORDS = "This export has expired in Takeout, so it can't be downloaded again."
 DOWNLOADED_WORDS = "This export is already downloaded, so there is nothing to retry."
-IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; retry it on the Imports page."
+IMPORT_FAILED_WORDS = "This export was downloaded and its import failed; Retry import on this page tries the import again."
 NO_PARTS_WORDS = "Takeout listed no parts for this export, so there is nothing to download."
 STILL_OPEN_WORDS = "The download job that stopped is still finishing; try again in a few minutes."
 PREPARING_WORDS = "Google is still preparing this export, so there is nothing to retry yet."
 INGESTED = "ingested"
 REFUSED = "refused"
+FAILED_PART = "failed"
+IMPORT_RETRY_STATUSES = ("downloading", "downloaded", "unpacking", "importing")
 WAITING_SIDECAR = "waiting_sidecar"
 WAITING_EXPORT = "waiting_export"
 FAILED_ITEM = "failed_item"
@@ -408,12 +410,25 @@ def kept_reason(part: ExportPart) -> str | None:
     return FAILED_ITEM if part.failed_items > 0 else None
 
 
+def import_failure(part: ExportPart) -> dict[str, str] | None:
+    if part.ingest_state != FAILED_PART or part.ingest_failure is None or part.ingest_failure_type is None:
+        return None
+    return {"code": part.ingest_failure, "error": part.ingest_failure_type}
+
+
+def import_retry_allowed(export: Export, parts: Sequence[ExportPart]) -> bool:
+    if export.status == "failed":
+        return export.inbox_dir is not None
+    return export.status in IMPORT_RETRY_STATUSES and any(part.status == "done" and part.ingest_state == FAILED_PART for part in parts)
+
+
 def part_dict(part: ExportPart, held: tuple[int, int] = (0, 0)) -> dict[str, object]:
     return {
         "number": part.number, "filename": part.filename, "bytes": part.bytes, "progress": part_progress(part),
         "downloads_used": part.downloads_used, "attempts": part.attempts, "status": part.status,
         "ingest_state": part.ingest_state, "entries": part.entries or 0, "entries_done": part.entries_done, "held": part.held,
         "held_waiting_sidecar": held[0], "held_waiting_export": held[1], "failed_items": part.failed_items, "kept_reason": kept_reason(part),
+        "import_failure": import_failure(part),
         "freed": part.free_state == FREED, "bytes_freed": (part.bytes_freed or 0) if part.free_state == FREED else 0,
     }
 
@@ -457,6 +472,7 @@ def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
         "parts_ingested": sum(1 for part in parts if part.ingest_state == INGESTED),
         "held_waiting_sidecar": sum(sidecar for sidecar, _ in held.values()), "held_waiting_export": sum(export for _, export in held.values()),
         "bytes_freed": sum(part.bytes_freed or 0 for part in parts if part.free_state == FREED), "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
+        "import_retry_allowed": import_retry_allowed(export, parts),
     }
 
 

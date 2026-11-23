@@ -9,15 +9,16 @@ from pathlib import Path
 from typing import Final
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
 from darkroom.domain import alerts, dedupe, events, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
+from darkroom.providers import exiftool
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
+from darkroom.storage.models import INGEST_FAILURE_TYPE_LIMIT, DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
 COMMIT_HOOK: Callable[[], None] | None = None
@@ -38,6 +39,7 @@ FAILED: Final = part_pairing.FAILED
 RECORDED: Final = "recorded"
 HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
+UNNAMED_FAILURE: Final = "Exception"
 
 
 @dataclass
@@ -109,12 +111,31 @@ def run_queued(opened: Session, settings: config.Settings, now: float, tools: ru
     return ran
 
 
+def failure_code(error: BaseException) -> str:
+    if isinstance(error, OSError):
+        return "files"
+    if isinstance(error, SQLAlchemyError):
+        return "database"
+    if isinstance(error, (exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)):
+        return "metadata"
+    if isinstance(error, place.PlaceFailed):
+        return "placing"
+    if isinstance(error, MemoryError):
+        return "memory"
+    return "unexpected"
+
+
+def failure_type(error: BaseException) -> str:
+    name = type(error).__name__
+    return name if name.isascii() and name.isidentifier() and len(name) <= INGEST_FAILURE_TYPE_LIMIT else UNNAMED_FAILURE
+
+
 def failed(opened: Session, settings: config.Settings, export_id: int, number: int, error: Exception, now: float, tools: run.Tools) -> None:
     opened.rollback()
     export, part = opened.get(Export, export_id), part_of(opened, export_id, number)
     if part is not None:
-        part.ingest_state = FAILED_PART
-    events.record(opened, now, "export_part_ingest_failed", f"export {export_id}", f"part {number}: {type(error).__name__}")
+        part.ingest_state, part.ingest_failure, part.ingest_failure_type = FAILED_PART, failure_code(error), failure_type(error)
+    events.record(opened, now, "export_part_ingest_failed", f"export {export_id}", f"part {number}: {failure_type(error)}")
     alerts.open_alert(opened, settings, f"part:failed:{export_id}:{number}", "failure", f"export {export_id}",
                       alerts.failure(f"Ingesting part {number} of export {export_id}"), None, now, notifier=tools.notifier,
                       about=alerts.NOBODY if export is None else alerts.account(export.account_id))
@@ -500,7 +521,7 @@ class Ingest:
         if resumed:
             self.changed |= self.changed_since_queued()
         rescanned = run.rescan_people(self.opened, self.settings, sorted(self.changed), self.export, self.now, self.tools)
-        self.part.ingest_state, self.part.ingested_at = INGESTED, self.now
+        self.part.ingest_state, self.part.ingested_at, self.part.ingest_failure, self.part.ingest_failure_type = INGESTED, self.now, None, None
         events.record(self.opened, self.now, "export_part_ingested", f"export {self.export.id}",
                       f"part {self.part.number}: {self.part.entries_done} entries, {self.part.held} held, {self.part.failed_items} failed")
         self.commit()
@@ -521,7 +542,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
         resumed = part.ingest_state == INGESTING
-        part.ingest_state, part.ingest_refusal = INGESTING, None
+        part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()
         photos = Photos(settings.photos_root)
         with contextlib.ExitStack() as stack:

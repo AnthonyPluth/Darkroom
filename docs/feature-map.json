@@ -530,7 +530,9 @@
       "route": "POST /api/exports/{id}/import",
       "auth": "session",
       "handler": "darkroom.server.api.imports.request",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/pages/Exports.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_imports_api.py"

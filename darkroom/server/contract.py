@@ -359,6 +359,14 @@ KeptReason = Literal["failed_item", "missing", "not_plain", "empty", "not_a_zip"
                      "listing_differs", "bytes_differ"]
 
 
+ImportFailureCode = Literal["files", "database", "metadata", "placing", "memory", "unexpected"]
+
+
+class ImportFailure(TypedDict):
+    code: ImportFailureCode
+    error: str
+
+
 class ExportPartDetail(TypedDict):
     number: int
     filename: str | None
@@ -375,6 +383,7 @@ class ExportPartDetail(TypedDict):
     held_waiting_export: int
     failed_items: int
     kept_reason: KeptReason | None
+    import_failure: ImportFailure | None
     freed: bool
     bytes_freed: int
 
@@ -401,6 +410,7 @@ class ExportView(TypedDict):
     bytes_freed: int
     retry_allowed: bool
     retry_refusal: str | None
+    import_retry_allowed: bool
 
 
 class ExportSchedule(TypedDict):
@@ -468,6 +478,8 @@ class ImportQueued(TypedDict):
     export_id: int
     status: str
     stage: str | None
+    per_part: bool
+    parts_requeued: int
 
 
 class ReviewSummary(TypedDict):

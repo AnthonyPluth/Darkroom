@@ -599,8 +599,13 @@ def requeue_stopped(opened: Session, export: Export, now: float) -> int:
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
                                                          ExportPart.ingest_state.in_(STOPPED_PARTS))).scalars())
     for part in parts:
-        part.ingest_state, part.ingest_queued_at, part.ingest_refusal = PART_QUEUED, now, None
+        part.ingest_state, part.ingest_queued_at, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = PART_QUEUED, now, None, None, None
     return len(parts)
+
+
+def stopped_parts(opened: Session, export_id: int) -> int:
+    return int(opened.execute(select(func.count()).select_from(ExportPart).where(ExportPart.export_id == export_id, ExportPart.status == "done",
+                                                                                 ExportPart.ingest_state.in_(STOPPED_PARTS))).scalar_one())
 
 
 def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:

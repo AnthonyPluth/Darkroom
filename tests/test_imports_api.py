@@ -43,7 +43,7 @@ class ImportsApiTests(unittest.TestCase):
 
     def test_requesting_an_import_queues_it_for_the_scheduler(self):
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
-        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "downloaded", "stage": "queued"}))
+        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "downloaded", "stage": "queued", "per_part": False, "parts_requeued": 0}))
         self.assertEqual(self.call("GET", "/api/imports"), (200, {"imports": []}))
         self.import_now()
         status, body = self.call("GET", "/api/imports")
@@ -125,7 +125,7 @@ class ImportsApiTests(unittest.TestCase):
     def test_an_export_with_failed_items_can_be_requested_again_and_then_finishes(self):
         self.failing_import()
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
-        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "importing", "stage": "unpacked"}))
+        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "importing", "stage": "unpacked", "per_part": False, "parts_requeued": 0}))
         self.import_now()
         runs = sorted(self.call("GET", "/api/imports")[1]["imports"], key=lambda r: r["id"])
         self.assertEqual([(r["status"], r["failed"], r["added"]) for r in runs], [("done", 1, 1), ("done", 0, 2)])
@@ -222,3 +222,44 @@ class PerPartImportsApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerPartRetryApiTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_part_ingest import PartWorld
+
+        self.world = PartWorld(self)
+        settings = dataclasses.replace(settings_from(DARKROOM_ALLOW_NO_AUTH="1", DARKROOM_PUBLIC_URL="http://127.0.0.1"),
+                                       photos_root=self.world.settings.photos_root, data_dir=self.world.settings.data_dir,
+                                       immich_url=self.world.settings.immich_url, immich_admin_key=self.world.settings.immich_admin_key)
+        self.base, self.settings = start_server(self, settings, self.world.engine)
+        self.export = self.world.create(self.world.scenario, status="downloading")
+
+    def call(self, method, path):
+        headers = {"Content-Type": "application/json", "Origin": self.base} if method != "GET" else {}
+        status, _, body = fetch(self.base, method, path, headers, b"{}" if method != "GET" else None)
+        return status, json.loads(body)
+
+    def states(self):
+        self.world.opened.expire_all()
+        return [(part.ingest_state, part.ingest_failure) for part in self.world.opened.execute(
+            select(ExportPart).where(ExportPart.export_id == self.export.id).order_by(ExportPart.number)).scalars()]
+
+    def test_a_retry_requeues_only_the_stopped_parts_and_says_how_many(self):
+        self.world.ingest(self.export, 1)
+        self.world.opened.execute(update(ExportPart).where(ExportPart.export_id == self.export.id, ExportPart.number.in_((2, 3)))
+                                  .values(ingest_state="failed", ingest_failure="files", ingest_failure_type="OSError"))
+        self.world.opened.commit()
+        exported = self.call("GET", f"/api/exports/{self.export.id}")[1]["export"]
+        self.assertTrue(exported["import_retry_allowed"])
+        self.assertEqual([part["import_failure"] for part in exported["parts"]], [None, {"code": "files", "error": "OSError"}, {"code": "files", "error": "OSError"}])
+        status, body = self.call("POST", f"/api/exports/{self.export.id}/import")
+        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "downloading", "stage": None, "per_part": True, "parts_requeued": 2}))
+        self.assertEqual(self.states(), [("ingested", None), ("queued", None), ("queued", None)])
+        self.assertFalse(self.call("GET", f"/api/exports/{self.export.id}")[1]["export"]["import_retry_allowed"])
+
+    def test_a_retry_with_nothing_stopped_is_refused_and_changes_nothing(self):
+        self.world.ingest(self.export, 1)
+        before = self.states()
+        self.assertEqual(self.call("POST", f"/api/exports/{self.export.id}/import"), (409, {"error": "this export has not been downloaded yet"}))
+        self.assertEqual(self.states(), before)
