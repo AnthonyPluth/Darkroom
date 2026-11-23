@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,7 +21,7 @@ DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate", "CreateDate")
 STILL_DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate")
 DESCRIPTION_TAGS = ("ImageDescription", "Description", "Caption-Abstract")
 XML_ENTITIES = {"\r": "&#13;"}
-NOT_XML = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+XML_CONTROLS = frozenset({0x9, 0xA, 0xD})
 
 Reader = Callable[[list[Path]], dict[Path, dict[str, object]]]
 Writer = Callable[[Path, Mapping[str, str]], bool]
@@ -106,6 +105,11 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     return fields
 
 
+def xml_char(char: str) -> bool:
+    code = ord(char)
+    return code in XML_CONTROLS or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF
+
+
 def coordinate(value: str, refs: str) -> str:
     degrees = float(value)
     if not math.isfinite(degrees) or abs(degrees) > 180:
@@ -132,7 +136,7 @@ def upload_sidecar(fields: Mapping[str, str]) -> bytes | None:
         attributes += f' exif:DateTimeOriginal="{stamp}" photoshop:DateCreated="{stamp}"'
     described = ""
     if DESCRIPTION in fields:
-        if NOT_XML.search(fields[DESCRIPTION]):
+        if not all(xml_char(char) for char in fields[DESCRIPTION]):
             raise ValueError("the description has characters XML cannot carry")
         described = f'<dc:description><rdf:Alt><rdf:li xml:lang="x-default">{escape(fields[DESCRIPTION], XML_ENTITIES)}</rdf:li></rdf:Alt></dc:description>'
     return ('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'

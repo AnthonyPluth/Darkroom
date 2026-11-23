@@ -486,6 +486,13 @@ class UploadSidecarTests(Folder):
             with self.subTest(fields=fields), self.assertRaises(ValueError):
                 xmp.upload_sidecar(fields)
 
+    def test_a_description_keeps_every_character_xml_allows_including_the_replacement_character_and_refuses_the_rest(self):
+        kept = "tab\tline\ncr\r space ퟿  caf� \U00010000 \U0001f600 \U0010ffff"
+        self.assertEqual(self.written({xmp.DESCRIPTION: kept})["XMP-dc:Description"], kept)
+        for char in ("\x00", "\x01", "\x08", "\x0b", "\x1f", "\ud800", "\udbff", "\udc00", "\udfff", "￾", "￿"):
+            with self.subTest(code=hex(ord(char))), self.assertRaises(ValueError):
+                xmp.upload_sidecar({xmp.DESCRIPTION: f"made-up {char} text"})
+
     def test_coordinates_are_degrees_and_exact_decimal_minutes(self):
         self.assertEqual([xmp.coordinate(value, "NS") for value in ("12.25", "-0.0000001", "45.9999999", "-90.0000000")],
                          ["12,15.00000000N", "0,0.00000600S", "45,59.99999400N", "90,0.00000000S"])
