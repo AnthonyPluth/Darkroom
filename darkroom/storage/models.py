@@ -29,6 +29,7 @@ class Person(Base):
     legacy_path: Mapped[str | None] = mapped_column(String)
     immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
+    managed_imports: Mapped[str | None] = mapped_column(String)
 
 
 class GoogleAccount(Base):
@@ -158,6 +159,7 @@ class ManagedImportReceipt(Base):
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)
     send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     send_lease_until: Mapped[float | None] = mapped_column(Float)
+    metadata_hold: Mapped[str | None] = mapped_column(String)
 
 
 class ManagedAssetVersion(Base):

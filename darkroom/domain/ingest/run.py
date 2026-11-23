@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, dedupe, events, exports, pixel_folder, takeout_copies, xmp
+from darkroom.domain import accounts, alerts, dedupe, events, exports, managed_ingest, pixel_folder, takeout_copies, xmp
 from darkroom.domain.ingest import metadata, pairing, part_pairing, place, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
@@ -362,7 +362,7 @@ def check_unmatched(opened: Session, settings: config.Settings, export: Export, 
 def stage_count(opened: Session, settings: config.Settings, export: Export, run: ImportRun, now: float, tools: Tools) -> None:
     tiers = tier_counts(opened, export)
     added = added_items(opened, export)
-    run.added = len(added)
+    run.added = len(added) + managed_ingest.uploaded(opened, export)
     run.skipped_t1, run.skipped_t2, run.skipped_t3 = tiers.get(1, 0), tiers.get(2, 0), tiers.get(3, 0)
     run.review = tiers.get(4, 0)
     run.missing_gps = sum(1 for item in added if item.lat is None or item.lon is None)

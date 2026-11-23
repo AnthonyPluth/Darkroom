@@ -14,7 +14,7 @@ from darkroom.storage.models import ManagedImportIntent, ManagedImportReceipt
 MAX_SENDS = 3
 LEASE_SECONDS = 3600.0
 VERIFIED = ("bytes_verified", "metadata_verified", "committed")
-Outcome = Literal["verified", "unusable", "pending"]
+Outcome = Literal["verified", "unusable", "pending", "held"]
 Body = Callable[[], immich.MultipartUpload]
 
 
