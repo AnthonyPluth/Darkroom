@@ -18,7 +18,7 @@ from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    LEGACY_BLOCKED, MANAGED_IMPORTS, DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem,
+    LEGACY_BLOCKED, MANAGED_IMPORTS, Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem,
     TakeoutEntry,
 )
 from darkroom.storage.paths import Photos
@@ -316,11 +316,15 @@ def send_kept(opened: Session, settings: config.Settings, photos: Photos, now: f
     return sent
 
 
-def stopped_alert(opened: Session, settings: config.Settings, person: Person, reason: str, now: float, notifier: alerts.Notifier | None) -> None:
+def once(opened: Session, settings: config.Settings, key: str, subject: str, message: str, now: float, notifier: alerts.Notifier | None, about: alerts.About) -> None:
+    if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
+        alerts.open_alert(opened, settings, key, "failure", subject, alerts.Wording("Darkroom needs a look", message), None, now, notifier=notifier, about=about)
+
+
+def stopped_alert(opened: Session, settings: config.Settings, person: Person, export: Export, reason: str, now: float, notifier: alerts.Notifier | None) -> None:
     db.write_lock(opened)
-    alerts.open_alert(opened, settings, f"managed:stopped:{person.id}", "failure", person.slug, alerts.Wording(
-        "Darkroom needs a look", f"{person.name}'s new Takeout exports are not imported: {reason}. Darkroom keeps the downloaded files."), None, now,
-        notifier=notifier, about=alerts.person(person.id))
+    once(opened, settings, f"managed:stopped:{export.id}", person.slug, f"{person.name}'s new Takeout export {export.id} is not imported: {reason}. "
+         "Darkroom keeps the downloaded files.", now, notifier, alerts.person(person.id))
     opened.commit()
 
 
@@ -329,15 +333,11 @@ def alert(opened: Session, settings: config.Settings, export: Export, held: int,
     subject, about = f"export {export.id}", alerts.account(export.account_id)
     db.write_lock(opened)
     if held:
-        alerts.open_alert(opened, settings, f"managed:held:{export.id}", "failure", subject, alerts.Wording(
-            "Darkroom needs a look", f"{alerts.counted(held, 'item')} of export {export.id} were not uploaded to Immich and are kept in the inbox. "
-            "Open Darkroom for details."), None, now, notifier=notifier, about=about)
+        once(opened, settings, f"managed:held:{export.id}", subject, f"{alerts.counted(held, 'item')} of export {export.id} were not uploaded to Immich "
+             "and are kept in the inbox. Open Darkroom for details.", now, notifier, about)
     if pending:
-        alerts.open_alert(opened, settings, f"managed:pending:{export.id}", "failure", subject, alerts.Wording(
-            "Darkroom needs a look", f"{alerts.counted(pending, 'upload')} of export {export.id} to Immich could not be completed yet. "
-            f"{waiting}."), None, now, notifier=notifier, about=about)
-    else:
-        alerts.close(opened, f"managed:pending:{export.id}", now)
+        once(opened, settings, f"managed:pending:{export.id}", subject, f"{alerts.counted(pending, 'upload')} of export {export.id} to Immich could not be "
+             f"completed yet. {waiting}.", now, notifier, about)
     opened.commit()
 
 

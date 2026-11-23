@@ -530,9 +530,8 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         except managed_ingest.Waiting as waiting:
             opened.rollback()
             if isinstance(waiting, managed_ingest.Stopped):
-                managed_ingest.stopped_alert(opened, settings, person, str(waiting), now, tools.notifier)
+                managed_ingest.stopped_alert(opened, settings, person, export, str(waiting), now, tools.notifier)
             raise run.NotReady(str(waiting)) from None
-        alerts.close(opened, f"managed:stopped:{person.id}", now)
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()

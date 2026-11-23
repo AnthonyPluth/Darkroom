@@ -16,6 +16,7 @@ import run as cli
 from darkroom.domain import immich_reconcile, legacy, managed_ingest, managed_upload, review
 from darkroom.domain.ingest import cleanup, finish_export, part_free, place, run
 from darkroom.storage import db, secretbox
+from darkroom.storage.paths import Photos
 from darkroom.storage.models import Alert, Event, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, FakePerson, extract
 from tests.import_world import DAY, NOW
@@ -75,7 +76,7 @@ class ManagedWorld(FinishWorld):
 
     def alert(self, key):
         self.opened.expire_all()
-        return self.opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None))).scalar_one_or_none()
+        return self.opened.execute(select(Alert).where(Alert.key == key).order_by(Alert.id.desc())).scalars().first()
 
     def status(self, export):
         self.opened.expire_all()
@@ -197,7 +198,7 @@ class UploadTests(unittest.TestCase):
         world.finish(export, at=NOW + 10)
         self.assertEqual(world.status(export), ("imported", "done"))
         self.assertEqual(len(world.assets()), 2)
-        self.assertIsNone(world.alert("managed:pending:1"))
+        self.assertEqual(world.opened.execute(select(Alert).where(Alert.key == "managed:pending:1")).scalars().all(), [world.alert("managed:pending:1")])
 
     def test_a_crash_after_an_upload_resumes_to_the_uninterrupted_result(self):
         world = ManagedWorld(self)
@@ -233,7 +234,7 @@ class UploadTests(unittest.TestCase):
         later = world.create(single("IMG_5005.JPG"), parts=1, google_id="google-456")
         with self.assertRaises(run.NotReady):
             world.ingest(later, 1)
-        self.assertIn(managed_ingest.STOPPED_TEXT, world.alert(f"managed:stopped:{world.ids['jo']}").message)
+        self.assertIn(managed_ingest.STOPPED_TEXT, world.alert(f"managed:stopped:{later.id}").message)
         self.assertEqual((world.part(later, 1).ingest_state, world.google_only()), ("queued", set()))
 
     def test_an_immich_managed_export_never_places_into_google_only(self):
@@ -258,10 +259,10 @@ class OldFolderWriterTests(unittest.TestCase):
         before = world.files()
         for refused in (lambda: world.ingest(started, 3), lambda: world.finish(done), lambda: world.run_import(whole.id),
                         lambda: legacy.import_person(world.opened, world.settings, world.jo(), NOW)):
-            with self.subTest(), self.assertRaises((run.NotReady, legacy.NotReady)):
+            with self.subTest(), self.assertRaisesRegex((run.NotReady, legacy.NotReady), "go to Immich"):
                 refused()
             world.reopen()
-        with self.assertRaises(review.WrongState):
+        with self.assertRaisesRegex(review.WrongState, "go to Immich"):
             review.reassign(world.opened, world.photos, item.id, world.ids["sam"], NOW, review.FileEffects())
         self.assertEqual(world.files(), before)
         self.assertEqual(world.status(done), ("downloading", None))
@@ -269,7 +270,7 @@ class OldFolderWriterTests(unittest.TestCase):
     def test_only_guarded_functions_write_to_a_persons_google_only_or_originals_folders(self):
         writers = {"place_google_only", "fill_original", "refresh_takeout", "copy_into", "copy_exactly", "resolve_person", "bring_in"}
         found = set()
-        for path in sorted(Path("darkroom").rglob("*.py")):
+        for path in sorted((Path(__file__).resolve().parent.parent / "darkroom").rglob("*.py")):
             for function in [node for node in ast.walk(ast.parse(path.read_text())) if isinstance(node, ast.FunctionDef)]:
                 for call in [node.func for node in ast.walk(function) if isinstance(node, ast.Call)]:
                     named = getattr(call, "attr", getattr(call, "id", None))
@@ -287,7 +288,7 @@ class SwitchTests(unittest.TestCase):
         jo = world.jo()
         self.assertEqual(managed_ingest.request(world.opened, jo, True, NOW), managed_ingest.PAUSING)
         world.opened.commit()
-        export = world.create(single("IMG_5102.JPG"), parts=1, google_id="google-456", created=NOW - DAY / 2)
+        export = world.create(single("IMG_5102.JPG"), parts=1, seed=8, google_id="google-456", created=NOW - DAY / 2)
         with self.assertRaises(run.NotReady):
             world.ingest(export, 1)
         world.finish(legacy)
@@ -389,7 +390,7 @@ class ManagedImportsCommandTests(CliCase):
         self.assertEqual(self.call("off", "--person", "jo")[0], 0)
         self.assertEqual(self.state(), managed_ingest.STOPPED)
         self.assertEqual(self.call("on", "--person", "jo"), (0, "jo: Immich-managed imports on\n"))
-        standard_export(Path(self.photos) / "jo/manual")
+        standard_export(Photos(self.photos).manual_inbox("jo"))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["import-takeout", "--person", "jo"]), 1)
         self.assertFalse(any((Path(self.photos) / "jo/google-only").rglob("*.JPG")))
