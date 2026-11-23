@@ -384,8 +384,12 @@ def sweep_part_scratch(photos: Photos, person: Person, export: Export) -> None:
     paths.sweep_scratch(photos, person.slug, unpack.staging_name(export))
 
 
+def no_step(name: str) -> None:
+    return None
+
+
 def read_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, each_batch: EachBatch | None = None,
-              batch_files: int = BATCH_FILES, batch_bytes: int = BATCH_BYTES) -> PartRead:
+              batch_files: int = BATCH_FILES, batch_bytes: int = BATCH_BYTES, on_step: Callable[[str], None] = no_step) -> PartRead:
     read = PartRead()
     path = unpack.part_path(export, part, photos, person)
     folder = unpack.staging_name(export)
@@ -393,13 +397,16 @@ def read_part(opened: Session, photos: Photos, person: Person, export: Export, p
         with unpack.open_part(photos, path, part.number) as handle, zip_of(handle, path, part.number) as archive:
             infos = archive.infolist()
             central_checks(infos, part.number, os.fstat(handle.fileno()).st_size)
+            on_step("testing the zip")
             unpack.test_archive(archive, path, part.number)
             listed = entry_listing(infos)
+            on_step("reading sidecars")
             with tempfile.TemporaryFile() as spooled:
                 spool = Spool(spooled)
                 spool_sidecars(archive, listed, part.number, spool)
                 record_listing(opened, export, part, listed, spool, now, read)
             paths.sweep_scratch(photos, person.slug, folder)
+            on_step("streaming")
             try:
                 stream_media(opened, photos, person, export, part, archive, listed, each_batch, batch_files, batch_bytes, read)
             finally:

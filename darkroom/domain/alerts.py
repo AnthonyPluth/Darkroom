@@ -37,6 +37,7 @@ TITLES = {
     "syncthing_version": "Syncthing version not tested",
     "share_check_failed": "Photo share check failed",
     "pixel_held": "Pixel folder held",
+    "part_stalled": "Takeout import stalled",
 }
 
 Notifier = Callable[[Settings, str, str, str | None], str]
@@ -117,6 +118,11 @@ def export_expiring(export: str, expires: str) -> Wording:
 
 def failure(subject: str) -> Wording:
     return Wording("Darkroom needs a look", f"{subject} failed. Open Darkroom for details.")
+
+
+def part_stalled(part: int, export: int, minutes: int) -> Wording:
+    return Wording(TITLES["part_stalled"], f"Part {part} of export {export} has imported nothing for {minutes} minutes although Darkroom is still "
+                   "working on it. Nothing was lost; the logs say which step it is in. The alert closes once the count moves again.")
 
 
 def export_unfinished(export: str, held: int) -> Wording:

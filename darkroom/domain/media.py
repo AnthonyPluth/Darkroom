@@ -35,6 +35,10 @@ VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm", ".mts
 CAMERA_RAW_SUFFIXES = {".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".raf", ".orf", ".rw2", ".pef", ".srw", ".raw"}
 
 
+class DecodeTimedOut(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class PerceptualHashes:
     phash: str | None
