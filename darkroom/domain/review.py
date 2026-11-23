@@ -165,11 +165,16 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     return {
         "id": review.id, "status": review.status, "decision_id": decision.id, "export_id": decision.export_id, "account_id": decision.account_id,
         "tier": decision.tier, "reason": decision.reason, "decided_at": decision.decided_at, "reversed": decision.reversed_at is not None,
-        "resolved_at": review.resolved_at, "undo_until": undo_until(review), "name": name_of(decision.source_path),
+        "resolved_at": review.resolved_at, "undo_until": None if kept_in_immich(opened, decision) else undo_until(review), "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
         "decided_by_person_id": decided_by(opened, review, kept),
     }
+
+
+def kept_in_immich(opened: Session, decision: DedupeDecision) -> bool:
+    export = opened.get(Export, decision.export_id)
+    return export is not None and place.managed_import(opened, export)
 
 
 def undoable_count(opened: Session, status: str | None, now: float) -> int:
@@ -570,7 +575,7 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
-    if place.managed_import(opened, hit.export):
+    if kept_in_immich(opened, hit.decision):
         raise WrongState("this pair was kept in Immich, and Darkroom never takes a photo back out of Immich")
     people, token = take_back(opened, photos, hit, hold, effects)
     changed = Changed(hit.export, people)

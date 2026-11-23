@@ -177,7 +177,8 @@ class UploadTests(unittest.TestCase):
         finish_export.finish_ready(world.opened, world.settings, NOW + 10, world.tools)
         self.assertEqual(world.receipts()[f"review:{held}"], ("committed", "created", None))
         self.assertIn("IMG_1005.JPG", [name for name, _ in world.assets()])
-        self.assertEqual((world.google_only(), world.opened.get(ReviewItem, held).status), (set(), "kept_both"))
+        kept = world.opened.get(ReviewItem, held)
+        self.assertEqual((world.google_only(), kept.status, review.summary(world.opened, kept, world.opened.get(DedupeDecision, kept.decision_id))["undo_until"]), (set(), "kept_both", None))
         with self.assertRaisesRegex(review.WrongState, "kept in Immich"):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
         self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
@@ -197,6 +198,19 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(len(world.fake.requests()), seen)
         self.assertEqual(world.receipts()[f"review:{held}"], ("bytes_verified", "created", managed_ingest.NOT_SETTLED))
         self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
+
+    def test_a_kept_photo_immich_has_not_extracted_alerts_once_a_day_after_keep_both_and_not_before(self):
+        world = ManagedWorld(self)
+        world.run_managed()
+        held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        review.resolve(world.opened, world.photos, held, "keep_both", NOW + 5, review.FileEffects())
+        world.opened.commit()
+        world.fake.state.extraction_delay = 10 ** 9
+        kept = select(Alert).where(Alert.key == f"managed:kept:{held}")
+        with mock.patch.object(managed_ingest.time, "sleep"):
+            for at, alerted in ((NOW + 10, 0), (NOW + 5 + managed_ingest.SETTLE_SECONDS - 1, 0), (NOW + 5 + managed_ingest.SETTLE_SECONDS, 1), (NOW + 3 * DAY, 1)):
+                finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+                self.assertEqual((len(world.opened.execute(kept).scalars().all()), world.receipts()[f"review:{held}"]), (alerted, ("bytes_verified", "created", None)))
 
     def test_a_kept_photo_whose_person_lost_their_key_waits_and_alerts_once_after_a_day(self):
         world = ManagedWorld(self)

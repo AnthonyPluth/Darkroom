@@ -244,8 +244,9 @@ def send_kept(opened: Session, settings: config.Settings, photos: Photos, now: f
     for receipt_id in opened.execute(query.order_by(ManagedImportReceipt.id)).scalars().all():
         try:
             sent += send_one(opened, settings, photos, receipt_id, now, client)
-        except (immich.ImmichFailed, paths.OutsideRoot, OSError):
+        except (immich.ImmichFailed, paths.OutsideRoot, OSError) as error:
             opened.rollback()
+            monitoring.log("kept photo not sent to Immich", receipt=receipt_id, error=type(error).__name__)
             overdue(opened, settings, receipt_id, "its copy or the person's Immich key could not be used", now)
     if sent:
         monitoring.log("kept photos sent to Immich", committed=sent)
