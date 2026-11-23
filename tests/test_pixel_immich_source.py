@@ -405,16 +405,17 @@ class ReviewUndoTests(ReviewCase):
 
     def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
         review_id, item = self.kept_with_a_managed_copy()
+        item_id = item.id
         status, body = self.call("POST", f"/api/review/{review_id}/undo")
         self.assertEqual(status, 409, body)
         opened = self.opened
-        self.assertIsNotNone(opened.get(MediaItem, item.id))
-        opened.execute(update(PixelCopy).where(PixelCopy.item_id == item.id).values(state="pruned", pruned_at=NOW))
+        self.assertIsNotNone(opened.get(MediaItem, item_id))
+        opened.execute(update(PixelCopy).where(PixelCopy.item_id == item_id).values(state="pruned", pruned_at=NOW))
         opened.commit()
         status, body = self.call("POST", f"/api/review/{review_id}/undo")
         self.assertEqual(status, 200, body)
         opened = self.opened
-        self.assertIsNone(opened.get(MediaItem, item.id))
+        self.assertIsNone(opened.get(MediaItem, item_id))
         self.assertEqual(opened.execute(select(ManagedPixelSource.id)).all(), [])
 
 
