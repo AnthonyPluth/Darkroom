@@ -1967,3 +1967,37 @@ class UnsafeBrowserRootTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LibraryFileTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.kept = self.root / "jo/google-only/2024/01/IMG_0001.JPG"
+        self.kept.parent.mkdir(parents=True)
+        self.kept.write_bytes(b"generated google-only bytes")
+
+    def test_a_plain_file_in_the_persons_google_only_folder_is_read(self):
+        with paths.open_library_file(self.photos, "jo", "jo/google-only/2024/01/IMG_0001.JPG") as handle:
+            self.assertEqual(handle.read(), b"generated google-only bytes")
+
+    def test_anything_else_is_refused_and_left_as_it_is(self):
+        (self.root / "jo/originals").mkdir(parents=True)
+        (self.root / "jo/originals/IMG_0002.JPG").write_bytes(b"original")
+        (self.root / "jo/google-only/2024/01/linked.JPG").symlink_to(self.kept)
+        os.link(self.kept, self.root / "jo/google-only/2024/01/hard.JPG")
+        (self.root / "elsewhere").mkdir()
+        (self.root / "jo/google-only/2023").symlink_to(self.root / "elsewhere", target_is_directory=True)
+        (self.root / "elsewhere/IMG_0003.JPG").write_bytes(b"outside")
+        (self.root / "jo/google-only/2024/02").mkdir()
+        before = {str(p): p.lstat().st_mtime_ns for p in self.root.rglob("*")}
+        refused = {"another person": ("sam", "jo/google-only/2024/01/IMG_0001.JPG"), "originals": ("jo", "jo/originals/IMG_0002.JPG"),
+                   "a link": ("jo", "jo/google-only/2024/01/linked.JPG"), "a hard link": ("jo", "jo/google-only/2024/01/hard.JPG"),
+                   "a linked folder": ("jo", "jo/google-only/2023/IMG_0003.JPG"), "a folder": ("jo", "jo/google-only/2024/02"),
+                   "a dot part": ("jo", "jo/google-only/../originals/IMG_0002.JPG")}
+        for name, (person, relative) in refused.items():
+            with self.subTest(name), self.assertRaises((ValueError, OSError)):
+                paths.open_library_file(self.photos, person, relative).close()
+        self.assertEqual({str(p): p.lstat().st_mtime_ns for p in self.root.rglob("*")}, before)

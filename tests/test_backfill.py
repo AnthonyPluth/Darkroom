@@ -81,11 +81,11 @@ class BackfillWorld(ManagedWorld):
         packet = managed_metadata.sidecar_source(intended)
         return extract(self.data(item), None if packet is None else packet.reader.read())
 
-    def backfill(self, opt_in=backfill.ON):
+    def backfill(self, opt_in=backfill.ON, at=NOW + 100, tools=NO_PAUSE):
         jo = self.jo()
         jo.managed_backfill = opt_in
         self.opened.commit()
-        return backfill.run_all(self.opened, self.settings, self.photos, NOW + 100, tools=NO_PAUSE)
+        return backfill.run_all(self.opened, self.settings, self.photos, at, tools=tools)
 
     def library(self):
         return tree(self.root / "jo") | {f"sam/{key}": value for key, value in tree(self.root / "sam").items()}
@@ -236,6 +236,38 @@ class BackfillTests(unittest.TestCase):
         world.fake.mode("ok")
         self.assertEqual(world.backfill().mapped, 1)
         self.assertEqual(world.report(), {})
+
+    def test_a_file_that_is_gone_a_link_or_unreadable_is_listed_and_not_uploaded(self):
+        cases = {"gone": ("missing", lambda path: path.unlink()), "a link": ("missing", lambda path: (path.unlink(), path.symlink_to(path.with_name("x.JPG")))),
+                 "unreadable": ("unreadable", None)}
+        for name, (reason, change) in cases.items():
+            with self.subTest(name):
+                world = BackfillWorld(self)
+                world.run_managed(single_photo, parts=1)
+                path = world.root / world.google_only_item("IMG_5001.JPG").path
+                if change is not None:
+                    change(path)
+                tools = backfill.Tools(read=lambda found: {key: {"Error": "File format error"} for key in found}, pause=lambda seconds: None)
+                world.backfill(tools=tools if change is None else NO_PAUSE)
+                self.assertEqual((world.report(), world.uploads()), ({reason: ["IMG_5001.JPG"]}, []))
+
+    def test_a_transient_read_or_exiftool_error_stays_pending_is_retried_and_alerts_after_a_day(self):
+        def timed_out(found):
+            raise exiftool.TimedOut("exiftool took too long to read the files")
+        failures = {"read error": (mock.patch.object(backfill.paths, "open_library_file", side_effect=PermissionError(13, "Permission denied")), NO_PAUSE),
+                    "exiftool timeout": (mock.patch.object(backfill, "sha1_of", backfill.sha1_of), backfill.Tools(read=timed_out, pause=lambda seconds: None))}
+        for name, (patched, tools) in failures.items():
+            with self.subTest(name):
+                world = BackfillWorld(self)
+                world.run_managed(single_photo, parts=1)
+                with patched:
+                    world.backfill(tools=tools)
+                    world.backfill(tools=tools, at=NOW + 2 * 86400)
+                self.assertEqual((world.report(), world.uploads()), ({"pending": ["IMG_5001.JPG"]}, []))
+                stuck = world.opened.execute(select(Alert).where(Alert.key.contains(":stuck:"))).scalar_one()
+                self.assertIn("1 photo of jo could not be backfilled", stuck.message)
+                self.assertEqual(world.backfill(at=NOW + 3 * 86400).mapped, 1)
+                self.assertEqual(world.report(), {})
 
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)

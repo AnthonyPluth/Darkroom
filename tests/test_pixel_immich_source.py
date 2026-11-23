@@ -445,7 +445,7 @@ class ReviewUndoTests(ReviewCase):
                                       kind="IMAGE", state="bytes_verified", metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0)
         opened.add(version)
         opened.flush()
-        opened.add(ManagedBackfillItem(person_id=item.person_id, item_id=item.id, outcome="mapped", version_id=version.id, checked_at=NOW))
+        opened.add(ManagedBackfillItem(person_id=item.person_id, item_id=item.id, outcome="mapped", version_id=version.id, checked_at=NOW, since=NOW))
         opened.commit()
         before = self.tree()
         status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
@@ -477,6 +477,32 @@ class ReviewUndoTests(ReviewCase):
                 opened.commit()
                 status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
                 self.assertEqual(status, expected, body)
+
+    def test_undoing_a_kept_photo_the_backfill_may_have_sent_to_immich_is_refused(self):
+        for state, hold, expected in (("committed", None, 409), ("prepared", None, 409), ("prepared", "unknown_offset", 200)):
+            with self.subTest(state=state, hold=hold):
+                self.setUp()
+                review_id = self.pending().id
+                status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+                self.assertEqual(status, 200, body)
+                item = self.item_named(PAIR_NAME)
+                opened = self.world.opened
+                owner = opened.get(Person, item.person_id).immich_user_id
+                intent = ManagedImportIntent(person_id=item.person_id, export_id=None, owner_id=owner, kind="backfill", resource_manifest="{}", created_at=1.0)
+                opened.add(intent)
+                opened.flush()
+                done = {"asset_id": "generated-backfill-asset", "upload_outcome": "created", "verified_sha1": item.sha1, "verified_bytes": item.bytes,
+                        "bytes_verified_at": 1.0, "metadata_evidence": "{}", "metadata_verified_at": 1.0, "committed_at": 1.0} if state == "committed" else {}
+                opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=f"backfill:media-item:{item.id}", compound_key=f"backfill:media-item:{item.id}",
+                                                source_sha1=item.sha1, expected_bytes=item.bytes, expected_metadata="{}", updated_at=1.0, state=state,
+                                                metadata_hold=hold, **done))
+                opened.commit()
+                before = self.tree()
+                status, body = self.call("POST", f"/api/review/{review_id}/undo")
+                self.assertEqual(status, expected, body)
+                if expected == 409:
+                    self.assertIn("never takes a photo back out of Immich", str(body))
+                    self.assertEqual(self.tree(), before)
 
     def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
         review_id, item = self.kept_with_a_managed_copy()

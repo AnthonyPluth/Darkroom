@@ -246,22 +246,24 @@ def held_since(opened: Session, row: PixelCopy) -> tuple[float, str] | None:
 
 
 def alert_held(opened: Session, settings: config.Settings, now: float, notifier: alerts.Notifier | None = None) -> int:
-    opened.commit()
-    db.write_lock(opened)
-    opened_alerts = 0
+    waiting: dict[int, list[tuple[float, str]]] = {}
     for row in opened.execute(select(PixelCopy).where(PixelCopy.state.in_(("queued", "placed"))).order_by(PixelCopy.id)).scalars().all():
-        if not pixel_source.converted(opened, row.id) or (found := held_since(opened, row)) is None or now - found[0] < HELD_ALERT_SECONDS:
-            continue
-        since, reason = found
-        key = f"pixel:source-held:{row.id}:{int(since)}"
-        if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is not None:
-            continue
-        message = (f"A copy for Pixel {row.pixel_id} has waited more than a day for its Immich original "
-                   f"({HOLD_REASONS.get(reason, HOLD_REASONS['source_unrecorded'])}). Darkroom keeps it as it is and tries again.")
-        alerts.open_alert(opened, settings, key, "failure", f"pixel {row.pixel_id}", alerts.Wording("Darkroom needs a look", message), None, now,
-                          notifier=notifier, about=alerts.person(row.person_id))
-        opened_alerts += 1
+        if pixel_source.converted(opened, row.id) and (found := held_since(opened, row)) is not None and now - found[0] >= HELD_ALERT_SECONDS:
+            waiting.setdefault(row.person_id, []).append(found)
     opened.commit()
+    opened_alerts = 0
+    for person_id, held_copies in sorted(waiting.items()):
+        key = f"pixel:source-held:{person_id}:{int(min(since for since, _ in held_copies))}"
+        db.write_lock(opened)
+        if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
+            reasons = "; ".join(HOLD_REASONS.get(reason, HOLD_REASONS["source_unrecorded"]) for reason in sorted({reason for _, reason in held_copies}))
+            counted = "1 Pixel copy has" if len(held_copies) == 1 else f"{len(held_copies)} Pixel copies have"
+            message = (f"{counted} waited more than a day for the person's Immich original "
+                       f"({reasons}). Darkroom keeps them as they are and tries again.")
+            alerts.open_alert(opened, settings, key, "failure", f"person {person_id}", alerts.Wording("Darkroom needs a look", message), None, now,
+                              notifier=notifier, about=alerts.person(person_id))
+            opened_alerts += 1
+        opened.commit()
     return opened_alerts
 
 

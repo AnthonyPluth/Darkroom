@@ -34,6 +34,7 @@ NEAR_TIERS: Final = (2, 3, 4)
 RETRIED: Final = ("pending", "mismatch")
 CHUNK: Final = 1024 * 1024
 LIVE_SECONDS: Final = 1.0
+STUCK_SECONDS: Final = 24 * 3600.0
 REASONS: Final[dict[str, str]] = {
     "missing": "the file is not a plain file in the person's folder any more",
     "changed": "the file's bytes are not the ones Darkroom recorded",
@@ -92,19 +93,22 @@ def exceptions(opened: Session, person_id: int) -> dict[str, list[int]]:
     return dict(found)
 
 
-def settled(opened: Session, person: Person) -> set[int]:
+def settled(opened: Session, person: Person) -> tuple[set[int], set[int]]:
     rows = opened.execute(select(ManagedBackfillItem.item_id, ManagedBackfillItem.reason).where(ManagedBackfillItem.person_id == person.id)).all()
-    return {item_id for item_id, reason in rows if reason not in RETRIED}
+    return {item_id for item_id, reason in rows if reason not in RETRIED}, {item_id for item_id, reason in rows if reason in RETRIED}
 
 
 def note(opened: Session, person: Person, item_id: int, reason: str | None, now: float, version_id: int | None = None, receipt_id: int | None = None) -> None:
     opened.commit()
     db.write_lock(opened)
     row = opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.item_id == item_id)).scalar_one_or_none()
+    outcome = "mapped" if version_id is not None else "exception"
     if row is None:
-        row = ManagedBackfillItem(person_id=person.id, item_id=item_id, outcome="exception", checked_at=now)
+        row = ManagedBackfillItem(person_id=person.id, item_id=item_id, outcome=outcome, checked_at=now, since=now)
         opened.add(row)
-    row.outcome, row.reason, row.version_id, row.receipt_id, row.checked_at = "mapped" if version_id is not None else "exception", reason, version_id, receipt_id, now
+    elif (row.outcome, row.reason) != (outcome, reason):
+        row.since = now
+    row.person_id, row.outcome, row.reason, row.version_id, row.receipt_id, row.checked_at = person.id, outcome, reason, version_id, receipt_id, now
     opened.commit()
 
 
@@ -256,14 +260,16 @@ class Backfill:
             try:
                 handle = handles.enter_context(paths.open_library_file(self.photos, self.person.slug, item.path))
                 same = item.bytes > 0 and os.fstat(handle.fileno()).st_size == item.bytes and sha1_of(handle) == item.sha1
-            except (ValueError, OSError):
+            except (ValueError, FileNotFoundError, NotADirectoryError, IsADirectoryError):
                 return "missing", None
+            except OSError:
+                return "pending", None
             if not same:
                 return "changed", None
             try:
                 receipt_id = self.receipt(intent, item, handle)
             except (exiftool.Missing, exiftool.Unreadable, OSError):
-                receipt_id = None
+                return "pending", None
             if receipt_id is None:
                 return "unreadable", None
 
@@ -324,14 +330,14 @@ class Backfill:
 
     def run(self, limit: int) -> Summary:
         self.convert_deferred()
-        done = settled(self.opened, self.person)
+        done, retried = settled(self.opened, self.person)
         phones = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", known_contents(),
                                                              MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
                                      .order_by(MediaItem.id)).scalars().all()
         takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "takeout", known_contents(),
                                                                MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
                                        .order_by(MediaItem.id)).scalars().all()
-        waiting = [item for item in [*phones, *takeouts] if item.id not in done][:limit]
+        waiting = sorted((item for item in [*phones, *takeouts] if item.id not in done), key=lambda item: (item.id in retried, item.id))[:limit]
         halves, near = live_halves(self.opened, self.person, takeouts), same_shots(self.opened, self.person, [item for item in waiting if item.source == "takeout"])
         for item in waiting:
             if item.source == "phone":
@@ -415,11 +421,24 @@ def same_shots(opened: Session, person: Person, items: list[MediaItem]) -> set[i
             if found.tier in NEAR_TIERS and found.matched_source != "takeout" and found.source_path in by_path}
 
 
+def alert_stuck(opened: Session, settings: config.Settings, person: Person, now: float, notifier: alerts.Notifier | None) -> None:
+    stuck = opened.execute(select(ManagedBackfillItem.since).where(ManagedBackfillItem.person_id == person.id, ManagedBackfillItem.reason.in_(RETRIED),
+                                                                   ManagedBackfillItem.since <= now - STUCK_SECONDS)).scalars().all()
+    if not stuck:
+        return
+    db.write_lock(opened)
+    managed_ingest.once(opened, settings, f"managed:backfill:{person.id}:stuck:{int(min(stuck))}", person.slug,
+                        f"{alerts.counted(len(stuck), 'photo')} of {person.slug} could not be backfilled to Immich for more than a day. "
+                        "Darkroom keeps every file as it is and tries again. Open Darkroom for details.", now, notifier, alerts.person(person.id))
+    opened.commit()
+
+
 def alert(opened: Session, settings: config.Settings, person: Person, report: Summary, now: float, notifier: alerts.Notifier | None) -> None:
-    lasting = sorted(reason for reason in report.exceptions if reason != "pending")
+    alert_stuck(opened, settings, person, now, notifier)
+    lasting = sorted(reason for reason in report.exceptions if reason not in RETRIED)
     if not lasting:
         return
-    total = sum(count for reason, count in report.exceptions.items() if reason != "pending")
+    total = sum(count for reason, count in report.exceptions.items() if reason not in RETRIED)
     listed = "; ".join(f"{report.exceptions[reason]}: {REASONS.get(reason, reason)}" for reason in lasting)
     db.write_lock(opened)
     managed_ingest.once(opened, settings, f"managed:backfill:{person.id}:{'+'.join(lasting)}", person.slug,

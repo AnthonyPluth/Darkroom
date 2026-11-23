@@ -545,6 +545,9 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
     adopted = adopted_by(opened, hit.review, item)
     if "row" not in adopted and pixel_source.still_sending(opened, item.id):
         raise WrongState("a Pixel still has the kept copy in its folder or waiting for it; undo this once Google Photos has it and Darkroom prunes it")
+    if "row" not in adopted and backfill.copied(opened, item.id):
+        raise WrongState("the kept copy was copied into Immich and Darkroom never takes a photo back out of Immich, so the pair stays kept; "
+                         "delete the photo in Immich yourself if you don't want it there")
     moved = None
     try:
         if "photo" not in adopted:

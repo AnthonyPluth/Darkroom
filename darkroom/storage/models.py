@@ -256,6 +256,7 @@ class ManagedBackfillItem(Base):
     version_id: Mapped[int | None] = mapped_column(ForeignKey("managed_asset_versions.id", ondelete="RESTRICT"))
     receipt_id: Mapped[int | None] = mapped_column(ForeignKey("managed_import_receipts.id", ondelete="RESTRICT"))
     checked_at: Mapped[float] = mapped_column(Float, nullable=False)
+    since: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 PART_INGEST_STATES = ("not_queued", "queued", "ingesting", "ingested", "refused", "failed")

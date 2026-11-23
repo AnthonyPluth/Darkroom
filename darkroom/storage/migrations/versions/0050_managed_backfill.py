@@ -34,6 +34,7 @@ def dependents() -> list[str]:
 def recreate(change) -> None:
     children = dependents()
     for child in children:
+        op.execute(f"DROP TABLE IF EXISTS _kept_{child}")
         op.execute(f"CREATE TABLE _kept_{child} AS SELECT * FROM {child}")
     for child in reversed(children):
         op.execute(f"DELETE FROM {child}")
@@ -77,6 +78,7 @@ def upgrade() -> None:
         sa.Column("version_id", sa.Integer(), nullable=True),
         sa.Column("receipt_id", sa.Integer(), nullable=True),
         sa.Column("checked_at", sa.Float(), nullable=False),
+        sa.Column("since", sa.Float(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["person_id"], ["people.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["item_id"], ["media_items.id"], ondelete="CASCADE"),
@@ -92,17 +94,19 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    found = sa.inspect(connection)
+    kinded = "kind" in {column["name"] for column in found.get_columns(TABLE)}
     intents = sa.table(TABLE, sa.column("id"), sa.column("kind"))
-    if connection.execute(sa.select(intents.c.id).where(intents.c.kind == "backfill").limit(1)).first() is not None:
+    if kinded and connection.execute(sa.select(intents.c.id).where(intents.c.kind == "backfill").limit(1)).first() is not None:
         raise RuntimeError("Immich backfill receipts are kept; roll the schema forward instead of downgrading past 0050")
-    op.drop_index("ix_managed_backfill_items_person_outcome", table_name="managed_backfill_items")
-    op.drop_table("managed_backfill_items")
-    if connection.dialect.name == "postgresql":
+    if "managed_backfill_items" in found.get_table_names():
+        op.drop_table("managed_backfill_items")
+    if kinded and connection.dialect.name == "postgresql":
         op.drop_constraint(EXPORT, TABLE, type_="check")
         op.drop_constraint(KIND, TABLE, type_="check")
         op.alter_column(TABLE, "export_id", existing_type=sa.Integer(), nullable=False)
         op.drop_column(TABLE, "kind")
-    else:
+    elif kinded:
         recreate(narrow)
     if "managed_backfill" in {column["name"] for column in sa.inspect(connection).get_columns("people")}:
         op.execute("ALTER TABLE people DROP COLUMN managed_backfill")
