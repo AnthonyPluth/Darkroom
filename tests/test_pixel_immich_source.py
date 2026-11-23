@@ -4,6 +4,7 @@ import itertools
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -12,7 +13,7 @@ from darkroom.domain import accounts, dedupe, pixel_folder, pixel_source, pixels
 from darkroom.providers import immich
 from darkroom.server import jobs
 from darkroom.storage import paths, secretbox
-from darkroom.storage.models import (DedupeDecision, Event, Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent,
+from darkroom.storage.models import (Alert, DedupeDecision, Event, Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
                                      ManagedImportReceipt, ManagedPixelSource, MediaItem, Person, Pixel, PixelCopy, PixelPerson)
 from darkroom.storage.paths import Photos
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
@@ -124,7 +125,7 @@ class PixelImmichSourceTests(unittest.TestCase):
         return sorted(entry.name for entry in incoming.iterdir()) if incoming.exists() else []
 
     def held_events(self, row: PixelCopy) -> int:
-        return len(self.opened.execute(select(Event.id).where(Event.type == "pixel_copy_source_held", Event.detail == f"copy {row.id}")).all())
+        return len(self.opened.execute(select(Event.id).where(Event.type == "pixel_copy_source_held", Event.detail.startswith(f"copy {row.id}: "))).all())
 
     def match(self, item: MediaItem, account_id: int, at: float) -> int:
         export = Export(account_id=account_id, kind="manual")
@@ -255,6 +256,34 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual((tended.placed, tended.blocked), (0, 1))
         self.assertEqual(self.fake.requests(), [])
         self.assertEqual(self.held_events(self.copy(self.jo_pixel, item)), 1)
+
+    def test_a_held_copy_records_a_fixed_reason_and_one_held_for_a_day_opens_one_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        sends = lambda settings, title, message, link: "sent"
+        settings = settings_from()
+        with no_leaks(self, KEY, CANARY, asset_id, self.fake.url):
+            self.assertEqual(self.tend().blocked, 1)
+            row = self.copy(self.jo_pixel, item)
+            details = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held")).scalars().all()
+            self.assertEqual(details, [f"copy {row.id}: source_not_custody"])
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 3600, sends), 0)
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 2 * 86400, sends), 1)
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 3 * 86400, sends), 0)
+        alert = self.opened.execute(select(Alert).where(Alert.key.startswith("pixel:source-held:"))).scalar_one()
+        self.assertIn("missing, trashed, offline", alert.message)
+        self.assertNotIn(asset_id, alert.message)
+
+    def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        with mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device")):
+            tended = self.tend()
+        self.assertEqual((tended.placed, tended.blocked, tended.failed), (0, 0, 1))
+        row = self.copy(self.jo_pixel, item)
+        self.assertEqual((row.state, self.held_events(row), self.staged()), ("queued", 0, []))
+        self.assertEqual(self.tend(at=NOW + 1).placed, 1)
 
     def test_a_photo_outside_originals_gets_a_name_from_its_asset(self):
         self.assertEqual(pixel_source.copy_name(self.photos, "jo", "jo/google-only/2024/01/x.JPG", "a-1"), "immich/a-1.jpg")
@@ -398,6 +427,7 @@ class ReviewUndoTests(ReviewCase):
         owner, sam, before = item.person_id, self.world.ids["sam"], self.tree()
         status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
         self.assertEqual(status, 409, body)
+        self.assertIn("deleting the Pixel clears any other", str(body))
         self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (owner, before))
         opened = self.opened
         pixels.update(opened, self.world.pixel, {"people_ids": [sam]}, NOW + 1)
@@ -406,6 +436,22 @@ class ReviewUndoTests(ReviewCase):
         status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
         self.assertEqual(status, 200, body)
         self.assertEqual(self.opened.get(MediaItem, item.id).person_id, sam)
+
+    def test_a_photo_the_backfill_copied_into_immich_is_not_reassigned(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        opened = self.world.opened
+        owner = opened.get(Person, item.person_id).immich_user_id
+        version = ManagedAssetVersion(person_id=item.person_id, owner_id=owner, asset_id="generated-backfill-asset", sha1=item.sha1, bytes=item.bytes,
+                                      kind="IMAGE", state="bytes_verified", metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0)
+        opened.add(version)
+        opened.flush()
+        opened.add(ManagedBackfillItem(person_id=item.person_id, item_id=item.id, outcome="mapped", version_id=version.id, checked_at=NOW))
+        opened.commit()
+        before = self.tree()
+        status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 409, body)
+        self.assertIn("never takes a photo back out of Immich", str(body))
+        self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (item.person_id, before))
 
     def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
         review_id, item = self.kept_with_a_managed_copy()

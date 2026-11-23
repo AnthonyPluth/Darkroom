@@ -44,7 +44,7 @@ class Item:
 
 
 def intent_of(opened: Session, export: Export) -> ManagedImportIntent | None:
-    return opened.execute(select(ManagedImportIntent).where(ManagedImportIntent.export_id == export.id).order_by(ManagedImportIntent.id).limit(1)).scalar_one_or_none()
+    return opened.execute(select(ManagedImportIntent).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").order_by(ManagedImportIntent.id).limit(1)).scalar_one_or_none()
 
 
 def started(opened: Session, export: Export) -> bool:
@@ -100,7 +100,7 @@ def nameable(name: str) -> bool:
 
 def uploaded(opened: Session, export: Export) -> int:
     query = (select(func.count(ManagedImportReceipt.id)).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id)
-             .where(ManagedImportIntent.export_id == export.id, ManagedImportReceipt.state == "committed"))
+             .where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import", ManagedImportReceipt.state == "committed"))
     return int(opened.execute(query).scalar_one())
 
 

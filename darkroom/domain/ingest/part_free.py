@@ -87,7 +87,7 @@ def in_export_folder(photos: Photos, person: Person, export: Export, part: Expor
 
 
 def managed(opened: Session, export: Export) -> bool:
-    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id).limit(1)).first() is not None
+    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").limit(1)).first() is not None
 
 
 def owner_action(photos: Photos) -> bool:

@@ -11,7 +11,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, events, exports, managed_ingest, media, people, pixel_source, thumbs, xmp
+from darkroom.domain import accounts, backfill, dedupe, events, exports, managed_ingest, media, people, pixel_source, thumbs, xmp
 from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -655,7 +655,10 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.sha1 == item.sha1).limit(1)).first():
         raise WrongState(f"{target.name} already has this photo")
     if pixel_source.referenced(opened, item.id):
-        raise WrongState(f"this photo was queued for a Pixel from {current.name}'s Immich library, so it stays with {current.name} while that Pixel copy is recorded")
+        raise WrongState(f"this photo was queued for a Pixel from {current.name}'s Immich library, so it stays with {current.name} while that Pixel copy is recorded. "
+                         f"Removing {current.name} from that Pixel on the Pixels page clears a copy that is still queued; deleting the Pixel clears any other")
+    if backfill.copied(opened, item.id):
+        raise WrongState(f"this photo was copied into {current.name}'s Immich library, so it stays with {current.name}; Darkroom never takes a photo back out of Immich")
     lineage, token = adopted_lineage(opened, item), paths.placing_token()
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1,

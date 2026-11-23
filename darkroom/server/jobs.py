@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
+from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
 from darkroom.domain.ingest import cleanup, finish_export, part_free, part_ingest, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
@@ -364,6 +364,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 return
             reconcile_transport(scheduler, settings, opened, photos, at, force=True)
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at, readers)
+            if readers is not None:
+                pixel_folder.alert_held(opened, live(), at)
             held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused, held=held)
@@ -378,7 +380,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             return
         with db.session(engine) as opened:
             done = immich_reconcile.reconcile_all(opened, current, at, client, immich_reconcile.PixelFolderQueue())
-        monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()))
+            backfilled = backfill.run_all(opened, current, Photos(current.photos_root), at, client)
+        monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()), backfilled=backfilled.mapped)
 
     def send_pushes(at: float) -> None:
         current = live()
