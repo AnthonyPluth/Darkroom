@@ -343,6 +343,8 @@ def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, Le
 
 def import_person(opened: Session, settings: config.Settings, person: Person, now: float, read: index.Reader = exiftool.read,
                   queue: PixelQueue | None = None) -> LegacyReport:
+    if person.managed_imports is not None:
+        raise NotReady(place.LEGACY_REFUSED)
     photos = Photos(settings.photos_root)
     root = source_root(opened, photos, person)
     require_takeout(opened, person)

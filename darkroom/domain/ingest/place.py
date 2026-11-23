@@ -14,11 +14,12 @@ from darkroom.domain.ingest import pairing, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, ManagedImportIntent, MediaItem, Person, ReviewItem
+from darkroom.storage.models import LEGACY_BLOCKED, DedupeDecision, Export, ManagedImportIntent, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 CHUNK = 1024 * 1024
 ANOTHER_FILE = "~"
+LEGACY_REFUSED = "this person's Takeout photos go to Immich (managed-imports), so nothing is written to their google-only or originals folders"
 
 Read = Callable[[Path], Iterable[bytes]]
 Write = Callable[[Path, Iterable[bytes]], str]
@@ -197,10 +198,15 @@ def managed_import(opened: Session, export: Export) -> bool:
     return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id).limit(1)).first() is not None
 
 
+def legacy_blocked(opened: Session, export: Export) -> bool:
+    person = exports.owner_of(opened, export)
+    return managed_import(opened, export) or (person is not None and person.managed_imports in LEGACY_BLOCKED)
+
+
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
                       copied: Callable[[Placed], None] = lambda placed: None, ahead: CopyAhead | None = None) -> MediaItem:
-    if managed_import(opened, export):
-        raise PlaceFailed("an Immich-managed import uploads its Takeout-only items to Immich instead of placing them")
+    if legacy_blocked(opened, export):
+        raise PlaceFailed(LEGACY_REFUSED)
     person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
@@ -308,13 +314,15 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
 def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Entry],
           read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, ahead: CopyAhead | None = None) -> PlaceReport:
     report = PlaceReport()
-    managed = managed_import(opened, export)
+    blocked = legacy_blocked(opened, export)
     for entry in entries:
         decision = entry.decision
         if decision.export_id != export.id or decision.account_id != export.account_id:
             raise PlaceFailed("the decision belongs to another export")
-        if decision.reversed_at is not None or decision.decided_by != "auto" or (managed and decision.tier != 4):
+        if decision.reversed_at is not None or decision.decided_by != "auto":
             report.skipped += 1
+        elif blocked and decision.tier != 4:
+            raise PlaceFailed(LEGACY_REFUSED)
         elif decision.tier == 5:
             place_google_only(opened, photos, export, entry, report, read, write, ahead=ahead)
         elif decision.tier == 4:

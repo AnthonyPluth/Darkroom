@@ -10,7 +10,7 @@ import re
 import urllib.error
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, BinaryIO, Literal
 from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
@@ -607,18 +607,6 @@ class ManagedReader:
         self.check_access()
         return sorted(asset.id for asset in self.client.search_checksum(self.key, sha1) if asset.owner_id == self.owner_id
                       and asset.library_id is None and not asset.trashed and not asset.offline and asset.sha1 == sha1)
-
-    def taken_near(self, instant: float, seconds: float) -> list[Asset]:
-        try:
-            after, before = (datetime.fromtimestamp(instant + delta, UTC).isoformat().replace("+00:00", "Z") for delta in (-seconds, seconds))
-        except (OverflowError, OSError, ValueError):
-            raise ImmichFailed("not a capture time") from None
-        self.check_access()
-        found = self.client.call("POST", "/api/search/metadata", key=self.key, body={"takenAfter": after, "takenBefore": before, "size": CHECKSUM_PAGE})
-        page = found.get("assets") if isinstance(found, dict) else None
-        if not isinstance(page, dict) or not isinstance(page.get("items"), list) or page.get("nextCursor"):
-            raise ImmichFailed("Immich's capture time search answer was not understood")
-        return [asset for asset in map(asset_of, page["items"]) if asset.owner_id == self.owner_id and asset.library_id is None and not asset.trashed and not asset.offline]
 
     def verify_original(self, asset_id: str, sha1: str, size: int) -> None:
         if not isinstance(sha1, str) or not re.fullmatch(r"[a-f0-9]{40}", sha1) or type(size) is not int or size <= 0:

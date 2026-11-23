@@ -13,28 +13,33 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, events, exports, immich_reconcile, managed_metadata, managed_upload, media, xmp
+from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry,
+    LEGACY_BLOCKED, MANAGED_IMPORTS, DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem,
+    TakeoutEntry,
 )
 from darkroom.storage.paths import Photos
 
-PAUSING: Final = "pausing"
-ON: Final = "on"
-STOPPED: Final = "stopped"
+PAUSING, ON, STOPPED = MANAGED_IMPORTS
 FINISHED: Final = ("imported", "failed", "expired")
 STARTED_PARTS: Final = ("ingesting", "ingested", "failed")
 MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
 KEEP_FOR: Final = 14 * 24 * 3600.0
-SAME_SHOT: Final = "same_shot"
-SAME_SHOT_SECONDS: Final = 1.0
+TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched")
+KEPT: Final = "review:"
+STOPPED_TEXT: Final = "this person's Immich-managed imports are stopped, so their new Takeout exports wait; run managed-imports on to continue"
 PAUSED_CLEANUP: Final = "cleanup is paused while this person's Immich-managed imports are on"
 GATE_OFF: Final = "cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"
 
 
 class Waiting(RuntimeError):
+    pass
+
+
+class Stopped(Waiting):
     pass
 
 
@@ -78,6 +83,12 @@ def held_back(opened: Session, export: Export) -> bool:
     return intent_of(opened, export) is not None or paused(exports.owner_of(opened, export))
 
 
+def refuse_legacy(person: Person | None, started: bool = True) -> None:
+    state = None if person is None else person.managed_imports
+    if state in LEGACY_BLOCKED or (state == PAUSING and not started):
+        raise Stopped(place.LEGACY_REFUSED)
+
+
 def request(opened: Session, person: Person, on: bool, now: float) -> str | None:
     db.write_lock(opened)
     opened.refresh(person)
@@ -109,7 +120,7 @@ def switch(opened: Session, settings: config.Settings, person: Person, export: E
     if person.managed_imports == ON:
         return
     if person.managed_imports != PAUSING:
-        raise Waiting("this person's Immich-managed imports are stopped")
+        raise Stopped(STOPPED_TEXT)
     try:
         with immich_reconcile.person_lock(settings, person):
             db.write_lock(opened)
@@ -124,12 +135,13 @@ def switch(opened: Session, settings: config.Settings, person: Person, export: E
     except immich_reconcile.Busy:
         raise Waiting("waiting for this person's Immich reconcile to finish") from None
     if person.managed_imports != ON:
-        raise Waiting("this person's Immich-managed imports are stopped")
+        raise Stopped(STOPPED_TEXT)
 
 
 def begin(opened: Session, settings: config.Settings, export: Export, person: Person, now: float) -> ManagedImportIntent | None:
     intent = intent_of(opened, export)
     if intent is None and (person.managed_imports is None or started(opened, export)):
+        refuse_legacy(person)
         return None
     switch(opened, settings, person, export, now)
     if intent is None:
@@ -225,29 +237,10 @@ class Uploads:
         self.opened.commit()
         return receipt_id
 
-    def same_shot(self, receipt_id: int) -> bool:
-        row = managed_upload.fresh(self.opened, receipt_id)
-        if row.metadata_hold == SAME_SHOT:
-            return True
-        intended = managed_metadata.intended_of(row.expected_metadata)
-        if row.state != "prepared" or row.send_attempts or intended is None or intended.hold is not None or intended.taken_utc is None:
-            return False
-        if not any(asset.sha1 != row.source_sha1 for asset in self.reader.taken_near(intended.taken_utc, SAME_SHOT_SECONDS)):
-            return False
-        managed_upload.move(self.opened, row, ("prepared",), self.now, ManagedImportReceipt.send_attempts == 0, metadata_hold=SAME_SHOT)
-        return True
-
     def send(self, item: Item, source: Path, tags: dict[str, object] | None) -> None:
         receipt_id = self.receipt(item, tags)
         if receipt_id is None:
             self.held += 1
-            return
-        try:
-            if self.same_shot(receipt_id):
-                self.held += 1
-                return
-        except immich.ImmichFailed:
-            self.pending += 1
             return
         sha1, size = str(item.root.sha1), item.root.bytes
         with contextlib.ExitStack() as handles:
@@ -263,13 +256,76 @@ class Uploads:
         row = managed_upload.fresh(self.opened, receipt_id)
         if row.state == "committed":
             self.committed += 1
-        elif report.outcome in ("held", "unusable") or row.metadata_hold is not None:
+        elif report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL:
             self.held += 1
         else:
             self.pending += 1
 
 
-def alert(opened: Session, settings: config.Settings, export: Export, held: int, pending: int, now: float, notifier: alerts.Notifier | None) -> None:
+def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, now: float, read: xmp.Reader) -> None:
+    person = exports.owner_of(opened, export)
+    if person is None or not immich.is_canonical_id(person.immich_user_id):
+        raise Refused("this person has no Immich user, so the photo cannot be kept in Immich")
+    intent = intent_of(opened, export)
+    if intent is None:
+        intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
+        opened.add(intent)
+        opened.flush()
+    if f"{KEPT}{review.id}" in receipts_of(opened, intent):
+        return
+    with paths.pinned_inbox_files(photos, [hold]) as pinned:
+        tags = read([pinned[hold]]).get(pinned[hold]) if hold in pinned else None
+        size = pinned[hold].stat().st_size if hold in pinned else 0
+    if tags is None or "Error" in tags or size <= 0:
+        raise Refused("the held copy could not be read, so it was not kept")
+    kind: managed_metadata.Kind = "VIDEO" if hold.suffix.lower() in media.VIDEO_SUFFIXES else "IMAGE"
+    intended = managed_metadata.intend(tags, xmp.GoogleMetadata.of(review.sidecar_json), kind, corrects=not review.sidecar_from_still)
+    opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=f"{KEPT}{review.id}", compound_key=f"{KEPT}{review.id}", source_sha1=sha1,
+                                    expected_bytes=size, expected_metadata=managed_metadata.snapshot(intended), updated_at=now))
+    opened.flush()
+
+
+def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt_id: int, now: float, client: immich.Client | None) -> bool:
+    row = managed_upload.fresh(opened, receipt_id)
+    intent = opened.get(ManagedImportIntent, row.intent_id)
+    person = None if intent is None else opened.get(Person, intent.person_id)
+    review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
+    decision = None if review is None else opened.get(DedupeDecision, review.decision_id)
+    if intent is None or person is None or person.managed_imports != ON or review is None or review.hold_path is None or decision is None:
+        return False
+    hold, name = photos.root / review.hold_path, Path(decision.source_path or review.hold_path).name
+    reader = reader_of(settings, person, intent, client)
+    with contextlib.ExitStack() as handles:
+        def original() -> immich.UploadSource:
+            return immich.UploadSource(handles.enter_context(paths.open_inbox_file(photos, hold)), row.expected_bytes, row.source_sha1)
+        report = managed_metadata.complete_receipt(opened, reader, managed_metadata.Resource(row.id, original, name), now)
+    return report.outcome == "verified" and managed_metadata.commit_compound(opened, reader, intent.id, row.compound_key, now).outcome == "verified"
+
+
+def send_kept(opened: Session, settings: config.Settings, photos: Photos, now: float, client: immich.Client | None) -> int:
+    query = (select(ManagedImportReceipt.id).where(ManagedImportReceipt.resource_key.startswith(KEPT), ManagedImportReceipt.state != "committed",
+                                                     or_(ManagedImportReceipt.metadata_hold.is_(None), ManagedImportReceipt.metadata_hold.not_in(TERMINAL))))
+    sent = 0
+    for receipt_id in opened.execute(query.order_by(ManagedImportReceipt.id)).scalars().all():
+        try:
+            sent += send_one(opened, settings, photos, receipt_id, now, client)
+        except immich.ImmichFailed:
+            continue
+    if sent:
+        monitoring.log("kept photos sent to Immich", committed=sent)
+    return sent
+
+
+def stopped_alert(opened: Session, settings: config.Settings, person: Person, reason: str, now: float, notifier: alerts.Notifier | None) -> None:
+    db.write_lock(opened)
+    alerts.open_alert(opened, settings, f"managed:stopped:{person.id}", "failure", person.slug, alerts.Wording(
+        "Darkroom needs a look", f"{person.name}'s new Takeout exports are not imported: {reason}. Darkroom keeps the downloaded files."), None, now,
+        notifier=notifier, about=alerts.person(person.id))
+    opened.commit()
+
+
+def alert(opened: Session, settings: config.Settings, export: Export, held: int, pending: int, now: float, notifier: alerts.Notifier | None,
+          waiting: str = "Darkroom keeps the files and tries again") -> None:
     subject, about = f"export {export.id}", alerts.account(export.account_id)
     db.write_lock(opened)
     if held:
@@ -279,7 +335,7 @@ def alert(opened: Session, settings: config.Settings, export: Export, held: int,
     if pending:
         alerts.open_alert(opened, settings, f"managed:pending:{export.id}", "failure", subject, alerts.Wording(
             "Darkroom needs a look", f"{alerts.counted(pending, 'upload')} of export {export.id} to Immich could not be completed yet. "
-            "Darkroom keeps the files and tries again."), None, now, notifier=notifier, about=about)
+            f"{waiting}."), None, now, notifier=notifier, about=about)
     else:
         alerts.close(opened, f"managed:pending:{export.id}", now)
     opened.commit()

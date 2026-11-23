@@ -303,9 +303,11 @@ class Finish(part_ingest.Ingest):
         if intent is None:
             return
         self.sidecar_rows()
+        due: dict[int, managed_ingest.Item] = {}
+        if self.person.managed_imports != managed_ingest.ON:
+            managed_ingest.alert(self.opened, self.settings, self.export, 0, 1, self.now, self.tools.notifier, managed_ingest.STOPPED_TEXT)
+            raise UploadsPending(managed_ingest.STOPPED_TEXT)
         try:
-            if self.person.managed_imports != managed_ingest.ON:
-                raise immich.ImmichFailed("this person's Immich-managed imports are stopped")
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)
             uploads = managed_ingest.Uploads(self.opened, self.photos, self.export, intent, reader, self.now)
             due = {item.root.id: item for item in uploads.due(self.items(canonical(self.opened, self.export)))}
@@ -313,7 +315,7 @@ class Finish(part_ingest.Ingest):
                 reader.check_access()
         except immich.ImmichFailed as error:
             self.opened.rollback()
-            managed_ingest.alert(self.opened, self.settings, self.export, 0, 1, self.now, self.tools.notifier)
+            managed_ingest.alert(self.opened, self.settings, self.export, 0, max(len(due), 1), self.now, self.tools.notifier)
             raise UploadsPending(str(error)) from None
         for chunk in self.in_batches([item.root for item in due.values()]):
             try:
@@ -417,6 +419,12 @@ def finish(opened: Session, settings: config.Settings, export: Export, now: floa
         if export.status == "expired" or not complete(opened, export):
             opened.rollback()
             raise run.NotReady("not every part of this export has been downloaded and ingested")
+        try:
+            if managed_ingest.intent_of(opened, export) is None:
+                managed_ingest.refuse_legacy(exports.owner_of(opened, export))
+        except managed_ingest.Waiting as waiting:
+            opened.rollback()
+            raise run.NotReady(str(waiting)) from None
         return stages(opened, settings, export, now, tools or run.Tools())
 
 
@@ -469,4 +477,5 @@ def finish_ready(opened: Session, settings: config.Settings, now: float, tools: 
             continue
         done.append(export_id)
     alert_unfinished(opened, settings, now, chosen)
+    managed_ingest.send_kept(opened, settings, Photos(settings.photos_root), now, chosen.immich)
     return done

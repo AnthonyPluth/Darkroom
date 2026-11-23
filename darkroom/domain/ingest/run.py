@@ -548,6 +548,10 @@ def import_export(opened: Session, settings: config.Settings, export: Export, no
         opened.refresh(export)
         if export.status == "imported":
             raise AlreadyImported("this export is already imported")
+        try:
+            managed_ingest.refuse_legacy(exports.owner_of(opened, export), not before(export, "unpacked"))
+        except managed_ingest.Waiting as waiting:
+            raise NotReady(str(waiting)) from None
         return run_stages(opened, settings, export, now, tools or Tools())
 
 

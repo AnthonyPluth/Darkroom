@@ -240,12 +240,15 @@ def remove_parts(opened: Session, photos: Photos, export: Export, report: Cleanu
             report.parts += 1
 
 
-def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
+def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport, now: float, retention: managed_ingest.Retention | None) -> None:
     opened.flush()
     db.write_lock(opened)
     opened.expire_all()
     try:
         if export.status != "imported":
+            return
+        if managed_ingest.release_refusal(opened, export, now, retention) is not None:
+            report.kept += 1
             return
         if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
             report.kept += 1
@@ -268,7 +271,7 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
         note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
         return
     if ingested_by_part(opened, export):
-        clean_per_part(opened, photos, export, report)
+        clean_per_part(opened, photos, export, report, now, retention)
         return
     trees = staging_trees(opened, photos, export)
     verified = holds_verified(opened, export)

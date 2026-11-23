@@ -232,6 +232,8 @@ class ManagedAssetOrigin(Base):
     recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+MANAGED_IMPORTS = ("pausing", "on", "stopped")
+LEGACY_BLOCKED = ("on", "stopped")
 PART_INGEST_STATES = ("not_queued", "queued", "ingesting", "ingested", "refused", "failed")
 INGEST_REFUSALS = ("missing", "not_plain", "empty", "not_a_zip", "damaged", "symlink_entry", "outside", "file_and_folder", "device_entry", "unreadable_entry",
                    "name_too_long", "duplicate_name", "too_many_entries", "too_large", "zip_bomb", "sidecars_too_big", "size_lies", "listing_differs", "bytes_differ")

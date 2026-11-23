@@ -106,13 +106,6 @@ def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
     return found
 
 
-def taken_between(asset: FakeAsset, after: str | None, before: str | None) -> bool:
-    if after is None or before is None:
-        return True
-    taken = (asset.exif or {}).get("dateTimeOriginal")
-    return isinstance(taken, str) and datetime.fromisoformat(after) <= datetime.fromisoformat(taken) <= datetime.fromisoformat(before)
-
-
 @dataclass
 class State:
     admin_key: str
@@ -215,7 +208,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             window = asked.get("filter", {}).get("updatedAt", {})
             found = [a for a in state.assets if (a.owner_id == person.user_id or (state.search_shared and a.id in state.shared)) and not a.trashed
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
-                     and asked.get("checksum") in (None, a.json()["checksum"]) and taken_between(a, asked.get("takenAfter"), asked.get("takenBefore"))]
+                     and asked.get("checksum") in (None, a.json()["checksum"])]
             start = int(asked.get("cursor") or 0)
             size = min(int(asked.get("size", 250)), state.page_size)
             end = start + size
