@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy import ColumnElement, and_, case, func, literal, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom import dates
-from darkroom.domain import accounts, events
+from darkroom.domain import accounts, events, pixel_source
+from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Event, Export, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1, known_contents
+from darkroom.storage.models import (DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetVersion, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1,
+                                     known_contents)
 from darkroom.storage.paths import Photos
 
 GIGABYTE = 1024**3
 DEFAULT_CAP_BYTES = 50 * GIGABYTE
+Readers = Callable[[Person], immich.ManagedReader]
+Placed = Literal["placed", "held", "moved"]
 
 
 class NotInOriginals(ValueError):
@@ -28,9 +34,10 @@ class Tended:
     deferred: int = 0
     failed: int = 0
     refused: int = 0
+    blocked: int = 0
 
     def add(self, other: Tended) -> None:
-        for name in ("placed", "pruned", "skipped", "deferred", "failed", "refused"):
+        for name in ("placed", "pruned", "skipped", "deferred", "failed", "refused", "blocked"):
             setattr(self, name, getattr(self, name) + getattr(other, name))
 
 
@@ -80,6 +87,10 @@ def confirms_copy(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
     return seen_after_placing or confirmed_for(opened, pixel.google_account_id, row.item_id, row.person_id, since=row.placed_at)
 
 
+def withheld(opened: Session, pixel: Pixel, row: PixelCopy) -> bool:
+    return confirms_copy(opened, pixel, row) or pixel_source.sent_home(opened, row, pixel.google_account_id)
+
+
 def seen_again(opened: Session, account_id: int, item_id: int, person_id: int, at: float) -> None:
     rows = opened.execute(
         select(PixelCopy).join(Pixel, Pixel.id == PixelCopy.pixel_id).where(
@@ -109,25 +120,55 @@ def in_originals(opened: Session, item: MediaItem) -> Person:
     return person
 
 
+def copy_of(opened: Session, pixel: Pixel, item: MediaItem) -> PixelCopy | None:
+    return opened.execute(select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.item_id == item.id)).scalar_one_or_none()
+
+
+def enqueue(opened: Session, pixel: Pixel, item: MediaItem, now: float, always_send: bool) -> tuple[PixelCopy, int]:
+    existing = copy_of(opened, pixel, item)
+    if existing is None:
+        held_back = not always_send and confirmed_for(opened, pixel.google_account_id, item.id, item.person_id)
+        row = PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=item.person_id, state="pruned" if held_back else "queued",
+                        bytes=item.bytes, sha1=item.sha1, queued_at=now, pruned_at=now if held_back else None, always_send=always_send)
+        opened.add(row)
+        opened.flush()
+        return row, 0 if held_back else 1
+    queued = 0
+    if always_send and not existing.always_send and existing.state == "pruned":
+        existing.state, existing.queued_at, existing.placed_at, existing.pruned_at = "queued", now, None, None
+        queued = 1
+    elif existing.state == "pruned" and not withheld(opened, pixel, existing):
+        revive(opened, existing, now)
+        queued = 1
+    existing.always_send = existing.always_send or always_send
+    return existing, queued
+
+
 def queue(opened: Session, item: MediaItem, now: float, always_send: bool = False) -> int:
     db.write_lock(opened)
     in_originals(opened, item)
+    queued = sum(enqueue(opened, pixel, item, now, always_send)[1] for pixel in pixels_serving(opened, item.person_id))
+    opened.flush()
+    return queued
+
+
+def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float) -> int:
+    db.write_lock(opened)
+    version = opened.get(ManagedAssetVersion, version_id, populate_existing=True)
+    if version is None or item.sha1 == UNKNOWN_SHA1 or not pixel_source.usable(opened, version, item.person_id, item.sha1, item.bytes):
+        raise pixel_source.NotManaged("only a verified Immich-managed original of the person goes to a Pixel")
+    if opened.execute(select(DuplicateRemoval.id).where(DuplicateRemoval.removed_item_id == item.id, DuplicateRemoval.state == "pending").limit(1)).first():
+        raise pixel_source.NotManaged("a photo whose duplicate removal is pending does not go to a Pixel")
+    always_send = pixel_source.phone_origin(opened, version.id)
     queued = 0
     for pixel in pixels_serving(opened, item.person_id):
-        existing = opened.execute(select(PixelCopy).where(PixelCopy.pixel_id == pixel.id, PixelCopy.item_id == item.id)).scalar_one_or_none()
-        if existing is not None:
-            if always_send and not existing.always_send and existing.state == "pruned":
-                existing.state, existing.queued_at, existing.placed_at, existing.pruned_at = "queued", now, None, None
-                queued += 1
-            elif existing.state == "pruned" and not confirms_copy(opened, pixel, existing):
-                revive(opened, existing, now)
-                queued += 1
-            existing.always_send = existing.always_send or always_send
+        existing = copy_of(opened, pixel, item)
+        changed = existing is not None and (existing.sha1, existing.bytes) != (item.sha1, item.bytes)
+        if changed or pixel_source.returns_home(opened, version.id, pixel.google_account_id):
             continue
-        withheld = not always_send and confirmed_for(opened, pixel.google_account_id, item.id, item.person_id)
-        opened.add(PixelCopy(pixel_id=pixel.id, item_id=item.id, person_id=item.person_id, state="pruned" if withheld else "queued",
-                             bytes=item.bytes, sha1=item.sha1, queued_at=now, pruned_at=now if withheld else None, always_send=always_send))
-        queued += 0 if withheld else 1
+        row, added = enqueue(opened, pixel, item, now, always_send)
+        pixel_source.bind(opened, row, pixel, version, now)
+        queued += added
     opened.flush()
     return queued
 
@@ -157,7 +198,58 @@ def still_pending(opened: Session, row: PixelCopy, now: float) -> None:
         events.record(opened, now, "pixel_copy_replacement_pending", subject, detail)
 
 
-def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float) -> Tended:
+def held(opened: Session, row: PixelCopy, now: float) -> None:
+    subject, detail = f"pixel {row.pixel_id}", f"copy {row.id}"
+    last = opened.execute(select(Event.type).where(Event.subject == subject, Event.detail == detail).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
+    if last != "pixel_copy_source_held":
+        events.record(opened, now, "pixel_copy_source_held", subject, detail)
+
+
+def hold(opened: Session, copy_id: int, now: float) -> Placed:
+    lock_copy(opened, copy_id)
+    row = opened.get(PixelCopy, copy_id, populate_existing=True)
+    if row is not None:
+        held(opened, row, now)
+    opened.commit()
+    return "held"
+
+
+def placing(row: PixelCopy) -> tuple[object, ...]:
+    return row.state, row.sha1, row.bytes, row.requeued, row.placed_at, row.name, row.person_id
+
+
+def place_managed(opened: Session, photos: Photos, readers: Readers, row: PixelCopy, pixel: Pixel, person: Person, item_path: str, now: float) -> Placed:
+    source = pixel_source.carried(opened, row, pixel, now)
+    if source is None:
+        held(opened, row, now)
+        opened.commit()
+        return "held"
+    copy_id, pixel_id, slug, expected = row.id, pixel.id, person.slug, placing(row)
+    name = row.name or pixel_source.copy_name(photos, slug, item_path, source.asset_id)
+    asset_id, sha1, size = source.asset_id, source.sha1, source.bytes
+    opened.commit()
+    try:
+        chunks = readers(person).original_chunks(asset_id, sha1)
+        with paths.staged_pixel_copy(photos, chunks, sha1, size, now) as staged:
+            lock_copy(opened, copy_id)
+            current = opened.get(Pixel, pixel_id, populate_existing=True)
+            found = opened.get(PixelCopy, copy_id, populate_existing=True)
+            serving = found is not None and opened.get(PixelPerson, (pixel_id, found.person_id), populate_existing=True) is not None
+            if found is None or current is None or not serving or placing(found) != expected or pixel_source.current(opened, found, current) is None:
+                opened.commit()
+                return "moved"
+            found.name = paths.publish_pixel_copy(photos, pixel_id, slug, name, staged, sha1, size)
+    except (immich.ImmichFailed, paths.OutsideRoot, paths.NotAPixelCopy, OSError):
+        return hold(opened, copy_id, now)
+    again = found.placed_at is not None
+    if again:
+        events.record(opened, now, "pixel_copy_replaced", f"pixel {pixel_id}", f"copy {copy_id}")
+    found.state, found.placed_at, found.pruned_at = "placed", found.placed_at if again else now, None
+    opened.commit()
+    return "placed"
+
+
+def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: float, readers: Readers | None = None) -> Tended:
     tended = Tended()
     pixel_id = pixel.id
     used = used_bytes(opened, pixel_id)
@@ -176,8 +268,14 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         if row is None or current is None or row.state != "queued":
             opened.commit()
             continue
+        managed = pixel_source.converted(opened, row.id)
+        if managed and readers is None:
+            tended.blocked += 1
+            held(opened, row, now)
+            opened.commit()
+            continue
         again = row.placed_at is not None
-        if not again and not row.always_send and confirms_copy(opened, current, row):
+        if not again and not row.always_send and withheld(opened, current, row):
             row.state, row.pruned_at = "pruned", now
             tended.skipped += 1
             opened.commit()
@@ -192,6 +290,12 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
             tended.failed += 1
             still_pending(opened, row, now)
             opened.commit()
+            continue
+        if readers is not None and managed:
+            outcome = place_managed(opened, photos, readers, row, current, person, item.path, now)
+            tended.placed += outcome == "placed"
+            tended.blocked += outcome == "held"
+            used += row.bytes if outcome == "placed" and not again else 0
             continue
         try:
             row.name = paths.place_pixel_copy(photos, pixel_id, person.slug, item.path, row.sha1, now)
@@ -223,7 +327,7 @@ def lock_copy(opened: Session, copy_id: int) -> None:
     opened.execute(sql_update(PixelCopy).where(PixelCopy.id == copy_id).values(id=PixelCopy.id))
 
 
-def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
+def prune(opened: Session, photos: Photos, pixel: Pixel, now: float, readers: Readers | None = None) -> Tended:
     tended = Tended()
     pixel_id = pixel.id
     placed = opened.execute(select(PixelCopy.id).where(PixelCopy.pixel_id == pixel_id, PixelCopy.state == "placed").order_by(PixelCopy.id)).scalars().all()
@@ -233,6 +337,11 @@ def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
         current = opened.get(Pixel, pixel_id, populate_existing=True)
         person = None if row is None else opened.get(Person, row.person_id)
         if row is None or current is None or person is None or row.state != "placed" or not confirms_copy(opened, current, row):
+            opened.commit()
+            continue
+        if pixel_source.converted(opened, row.id) and (readers is None or pixel_source.current(opened, row, current) is None):
+            tended.blocked += 1
+            held(opened, row, now)
             opened.commit()
             continue
         try:
@@ -248,11 +357,11 @@ def prune(opened: Session, photos: Photos, pixel: Pixel, now: float) -> Tended:
     return tended
 
 
-def tend(opened: Session, photos: Photos, cap_bytes: int, now: float) -> Tended:
+def tend(opened: Session, photos: Photos, cap_bytes: int, now: float, readers: Readers | None = None) -> Tended:
     tended = Tended()
     for pixel in opened.execute(select(Pixel).order_by(Pixel.id)).scalars().all():
-        tended.add(prune(opened, photos, pixel, now))
-        tended.add(fill(opened, photos, pixel, cap_bytes, now))
+        tended.add(prune(opened, photos, pixel, now, readers))
+        tended.add(fill(opened, photos, pixel, cap_bytes, now, readers))
     return tended
 
 
@@ -268,7 +377,7 @@ def requeue(opened: Session, item_id: int, now: float) -> int:
     requeued = 0
     for row in rows:
         pixel = opened.get(Pixel, row.pixel_id)
-        if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+        if pixel is None or not serves(opened, pixel.id, row.person_id) or withheld(opened, pixel, row):
             continue
         revive(opened, row, now)
         requeued += 1
@@ -285,7 +394,7 @@ def requeue_new_contents(opened: Session, item: MediaItem, now: float) -> int:
     for row in rows:
         if row.state == "pruned":
             pixel = opened.get(Pixel, row.pixel_id)
-            if pixel is None or not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+            if pixel is None or not serves(opened, pixel.id, row.person_id) or withheld(opened, pixel, row):
                 continue
             revive(opened, row, now)
             requeued += 1
@@ -301,7 +410,7 @@ def requeue_unconfirmed(opened: Session, pixel: Pixel, people: set[int] | None, 
         query = query.where(PixelCopy.person_id.in_(people))
     requeued = 0
     for row in opened.execute(query).scalars().all():
-        if not serves(opened, pixel.id, row.person_id) or confirms_copy(opened, pixel, row):
+        if not serves(opened, pixel.id, row.person_id) or withheld(opened, pixel, row):
             continue
         revive(opened, row, now)
         requeued += 1

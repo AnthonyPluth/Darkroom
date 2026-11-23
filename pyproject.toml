@@ -163,7 +163,7 @@ modules = ["darkroom.providers.exiftool", "darkroom.providers.immich", "darkroom
 id = "pruning-apart-from-the-transport"
 name = "The pruning modules import neither the Syncthing provider nor the reconciler"
 type = "forbidden"
-source_modules = ["darkroom.domain.pixel_folder", "darkroom.storage.paths", "darkroom.domain.takeout_copies", "darkroom.domain.ingest.cleanup", "darkroom.domain.dedupe"]
+source_modules = ["darkroom.domain.pixel_folder", "darkroom.domain.pixel_source", "darkroom.storage.paths", "darkroom.domain.takeout_copies", "darkroom.domain.ingest.cleanup", "darkroom.domain.dedupe"]
 forbidden_modules = ["darkroom.providers.syncthing", "darkroom.domain.transport"]
 broken_contract_guidance = "Pruning decides on the Takeout match alone (AGENTS.md, promise 2); Syncthing's reports are display only."
 

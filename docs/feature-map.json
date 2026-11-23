@@ -82,6 +82,7 @@
         "tests/test_demo.py",
         "tests/test_demo_session.py",
         "tests/test_every_route.py",
+        "tests/test_pixel_immich_source.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py",
         "tests/test_secretbox.py",
@@ -583,6 +584,7 @@
         "tests/test_demo.py",
         "tests/test_demo_import.py",
         "tests/test_every_route.py",
+        "tests/test_pixel_immich_source.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py",
         "tests/test_thumbs.py"
@@ -663,6 +665,7 @@
       ],
       "tests": [
         "tests/test_every_route.py",
+        "tests/test_pixel_immich_source.py",
         "tests/test_reassign.py",
         "tests/test_review_api.py"
       ]
