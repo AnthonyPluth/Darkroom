@@ -615,6 +615,26 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0049_person_managed_imports_starts_off_keeps_every_person_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0048")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, immich_user_id, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 'owner', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT slug, immich_user_id, managed_imports FROM people").all(), [("jo", "owner", None)])
+            connection.exec_driver_sql("UPDATE people SET managed_imports = 'on'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0048")
+        self.assertNotIn("managed_imports", {column["name"] for column in inspect(self.engine).get_columns("people")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT slug, immich_user_id FROM people").all(), [("jo", "owner")])
+            self.assertEqual(connection.exec_driver_sql("SELECT default_person_id FROM google_accounts").all(), [(1,)])
+        db.migrate(self.engine)
+
     def test_0048_managed_metadata_hold_starts_empty_keeps_every_receipt_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

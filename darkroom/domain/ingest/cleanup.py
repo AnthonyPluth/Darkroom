@@ -9,8 +9,8 @@ from typing import Final
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events
-from darkroom.domain.ingest import unpack
+from darkroom.domain import events, managed_ingest
+from darkroom.domain.ingest import place, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
@@ -256,6 +256,10 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
 
 
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+    if place.managed_import(opened, export):
+        report.kept += 1
+        note_once(opened, now, "cleanup_kept", f"export {export.id}", managed_ingest.KEPT_ONLY)
+        return
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:
         report.kept += 1
@@ -294,7 +298,7 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
                                  ReviewItem.hold_path.is_not(None)).order_by(ReviewItem.id)
     ).scalars().all()
     for review in resolved:
-        if review.hold_path is None or shared_hold(opened, review, cutoff):
+        if review.hold_path is None or shared_hold(opened, review, cutoff) or managed_ingest.hold_pinned(opened, review):
             report.kept += 1
             continue
         relative = PurePosixPath(review.hold_path)
