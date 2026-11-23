@@ -356,17 +356,20 @@ class Backfill:
         waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled,
                                                               finished).order_by(retried, checked, MediaItem.id).limit(limit)).scalars().all()
         pending = [item for item in waiting if item.source == "takeout"]
+        exports = {item.export_id for item in pending if item.export_id is not None}
+        status = dict(self.opened.execute(select(Export.id, Export.status).where(Export.id.in_(exports))).tuples().all()) if exports else {}
         takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), google_only)
                                        .order_by(MediaItem.id)).scalars().all() if pending else []
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
         near = same_shots(self.opened, self.person, pending)
-        exports = {item.export_id for item in pending if item.export_id is not None}
-        ended = set(self.opened.execute(select(Export.id).where(Export.id.in_(exports), Export.status.in_(ENDED))).scalars()) if exports else set()
         for item in waiting:
+            seen = None if item.export_id is None else status.get(item.export_id)
             if item.source == "phone":
                 self.phone(item)
-            elif item.export_id in ended:
+            elif seen in ENDED:
                 self.exception(item, "export_unfinished")
+            elif item.export_id is not None and seen != IMPORTED:
+                continue
             elif item.id in halves:
                 self.exception(item, "live_photo")
             elif item.id in near:
