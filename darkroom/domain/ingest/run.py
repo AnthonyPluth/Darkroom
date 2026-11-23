@@ -99,7 +99,7 @@ def before(export: Export, stage: str) -> bool:
 
 
 def lock_file(settings: config.Settings, account_id: int) -> Path:
-    return settings.data_dir / "locks" / f"import-account-{account_id}.lock"
+    return locks.import_account(settings.data_dir, account_id)
 
 
 @contextmanager
@@ -549,9 +549,12 @@ def import_export(opened: Session, settings: config.Settings, export: Export, no
         if export.status == "imported":
             raise AlreadyImported("this export is already imported")
         try:
-            managed_ingest.refuse_legacy(exports.owner_of(opened, export), not before(export, "unpacked"))
+            managed_ingest.refuse_legacy(exports.owner_of(opened, export), managed_ingest.started(opened, export))
         except managed_ingest.Waiting as waiting:
-            raise NotReady(str(waiting)) from None
+            refused = current_run(opened, export, now)
+            opened.commit()
+            failed(opened, settings, export.id, refused.id, StageFailed(str(waiting)), now, tools or Tools())
+            return refused
         return run_stages(opened, settings, export, now, tools or Tools())
 
 

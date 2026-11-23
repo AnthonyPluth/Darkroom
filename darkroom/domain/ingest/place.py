@@ -19,7 +19,7 @@ from darkroom.storage.paths import Photos
 
 CHUNK = 1024 * 1024
 ANOTHER_FILE = "~"
-LEGACY_REFUSED = "this person's Takeout photos go to Immich (managed-imports), so nothing is written to their google-only or originals folders"
+LEGACY_REFUSED = "this person's Takeout photos go to Immich (Immich-managed imports), so nothing is written to their google-only or originals folders"
 
 Read = Callable[[Path], Iterable[bytes]]
 Write = Callable[[Path, Iterable[bytes]], str]

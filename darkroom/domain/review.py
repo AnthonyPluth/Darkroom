@@ -165,11 +165,18 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     return {
         "id": review.id, "status": review.status, "decision_id": decision.id, "export_id": decision.export_id, "account_id": decision.account_id,
         "tier": decision.tier, "reason": decision.reason, "decided_at": decision.decided_at, "reversed": decision.reversed_at is not None,
-        "resolved_at": review.resolved_at, "undo_until": undo_until(review), "name": name_of(decision.source_path),
+        "resolved_at": review.resolved_at, "undo_until": None if undo_refusal(opened, decision) else undo_until(review), "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
         "decided_by_person_id": decided_by(opened, review, kept),
     }
+
+
+def undo_refusal(opened: Session, decision: DedupeDecision) -> str | None:
+    export = opened.get(Export, decision.export_id)
+    if export is None or not place.legacy_blocked(opened, export):
+        return None
+    return "this pair was kept in Immich, and Darkroom never takes a photo back out of Immich" if place.managed_import(opened, export) else place.LEGACY_REFUSED
 
 
 def undoable_count(opened: Session, status: str | None, now: float) -> int:
@@ -569,8 +576,8 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
-    if place.legacy_blocked(opened, hit.export):
-        raise WrongState("this person's photos go to Immich, and Darkroom never takes a photo back out of Immich")
+    if (refusal := undo_refusal(opened, hit.decision)) is not None:
+        raise WrongState(refusal)
     people, token = take_back(opened, photos, hit, hold, effects)
     changed = Changed(hit.export, people)
     hit.review.status, hit.review.resolved_at = "pending", None

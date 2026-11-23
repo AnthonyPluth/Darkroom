@@ -305,7 +305,7 @@ class Finish(part_ingest.Ingest):
         self.sidecar_rows()
         due: dict[int, managed_ingest.Item] = {}
         if self.person.managed_imports != managed_ingest.ON:
-            managed_ingest.alert(self.opened, self.settings, self.export, 0, 1, self.now, self.tools.notifier, managed_ingest.STOPPED_TEXT)
+            managed_ingest.stopped_alert(self.opened, self.settings, self.person, self.export, managed_ingest.STOPPED_TEXT, self.now, self.tools.notifier)
             raise UploadsPending(managed_ingest.STOPPED_TEXT)
         try:
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)

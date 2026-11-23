@@ -240,14 +240,14 @@ def remove_parts(opened: Session, photos: Photos, export: Export, report: Cleanu
             report.parts += 1
 
 
-def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport, now: float, retention: managed_ingest.Retention | None) -> None:
+def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
     opened.flush()
     db.write_lock(opened)
     opened.expire_all()
     try:
         if export.status != "imported":
             return
-        if managed_ingest.release_refusal(opened, export, now, retention) is not None:
+        if managed_ingest.release_refusal(opened, export) is not None:
             report.kept += 1
             return
         if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
@@ -258,9 +258,8 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
         opened.commit()
 
 
-def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport,
-                 retention: managed_ingest.Retention | None = None) -> None:
-    refusal = managed_ingest.release_refusal(opened, export, now, retention)
+def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+    refusal = managed_ingest.release_refusal(opened, export)
     if refusal is not None:
         report.kept += 1
         note_once(opened, now, "cleanup_kept", f"export {export.id}", refusal)
@@ -271,7 +270,7 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
         note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
         return
     if ingested_by_part(opened, export):
-        clean_per_part(opened, photos, export, report, now, retention)
+        clean_per_part(opened, photos, export, report)
         return
     trees = staging_trees(opened, photos, export)
     verified = holds_verified(opened, export)
@@ -372,7 +371,7 @@ def undo_committed(opened: Session) -> Callable[[int, int], bool | None]:
     return committed
 
 
-def clean(opened: Session, photos: Photos, now: float, retention: managed_ingest.Retention | None = None) -> CleanupReport:
+def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
     for export in opened.execute(select(Export).where(Export.status == "imported").order_by(Export.id)).scalars().all():
@@ -380,7 +379,7 @@ def clean(opened: Session, photos: Photos, now: float, retention: managed_ingest
         if finished is None or finished > cutoff:
             continue
         try:
-            clean_export(opened, photos, export, now, report, retention)
+            clean_export(opened, photos, export, now, report)
         except OSError as error:
             report.failed += 1
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)

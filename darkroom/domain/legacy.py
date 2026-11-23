@@ -341,16 +341,21 @@ def retry_queue(opened: Session, person: Person, root: Path, known: dict[str, Le
             mark_failed(opened, person, root, root / key, known, now, type(error).__name__, report)
 
 
+def refuse_managed(opened: Session, person: Person) -> None:
+    if opened.execute(select(Person.managed_imports).where(Person.id == person.id)).scalar_one() is not None:
+        raise NotReady(place.LEGACY_REFUSED)
+
+
 def import_person(opened: Session, settings: config.Settings, person: Person, now: float, read: index.Reader = exiftool.read,
                   queue: PixelQueue | None = None) -> LegacyReport:
-    if person.managed_imports is not None:
-        raise NotReady(place.LEGACY_REFUSED)
+    refuse_managed(opened, person)
     photos = Photos(settings.photos_root)
     root = source_root(opened, photos, person)
     require_takeout(opened, person)
     queue = queue or NoQueue()
     report = LegacyReport()
     with person_lock(settings, person):
+        refuse_managed(opened, person)
         known = {row.path: row for row in opened.execute(select(LegacyFile).where(LegacyFile.person_id == person.id)).scalars()}
         pending: list[Path] = []
         listed, unreadable = files_of(root)
