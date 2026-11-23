@@ -169,8 +169,10 @@ class UploadTests(unittest.TestCase):
         world.opened.commit()
         hold = world.root / world.opened.get(ReviewItem, held).hold_path
         os.link(hold, hold.with_name("linked.JPG"))
-        finish_export.finish_ready(world.opened, world.settings, NOW + 10, world.tools)
+        for at in (NOW + 10, NOW + 2 * DAY, NOW + 3 * DAY):
+            finish_export.finish_ready(world.opened, world.settings, at, world.tools)
         self.assertEqual(world.receipts()[f"review:{held}"][0], "prepared")
+        self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
         hold.with_name("linked.JPG").unlink()
         finish_export.finish_ready(world.opened, world.settings, NOW + 10, world.tools)
         self.assertEqual(world.receipts()[f"review:{held}"], ("committed", "created", None))
@@ -195,6 +197,18 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(len(world.fake.requests()), seen)
         self.assertEqual(world.receipts()[f"review:{held}"], ("bytes_verified", "created", managed_ingest.NOT_SETTLED))
         self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
+
+    def test_a_kept_photo_whose_person_lost_their_key_waits_and_alerts_once_after_a_day(self):
+        world = ManagedWorld(self)
+        world.run_managed()
+        held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        review.resolve(world.opened, world.photos, held, "keep_both", NOW + 5, review.FileEffects())
+        world.jo().immich_api_key_sealed = None
+        world.opened.commit()
+        for at in (NOW + 10, NOW + 2 * DAY, NOW + 3 * DAY):
+            finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+        self.assertEqual(world.receipts()[f"review:{held}"][0], "prepared")
+        self.assertEqual([alert.key for alert in world.opened.execute(select(Alert).where(Alert.key.startswith("managed:kept:"))).scalars()], [f"managed:kept:{held}"])
 
     def test_keep_both_refuses_a_live_photo_half_an_unreadable_hold_or_a_name_immich_refuses_and_records_no_receipt(self):
         world = ManagedWorld(self)

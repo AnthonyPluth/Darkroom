@@ -214,10 +214,20 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
     if report.outcome == "verified":
         report = managed_metadata.commit_compound(opened, reader, intent.id, row.compound_key, now)
     row = managed_upload.fresh(opened, row.id)
-    stuck = row.state != "committed" and review.resolved_at is not None and now - review.resolved_at >= SETTLE_SECONDS
-    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(opened, row, now) or stuck:
+    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(opened, row, now):
         kept_alert(opened, settings, person, review.id, report.reason, now)
+    elif row.state != "committed":
+        overdue(opened, settings, row.id, report.reason, now)
     return row.state == "committed"
+
+
+def overdue(opened: Session, settings: config.Settings, receipt_id: int, reason: str, now: float) -> None:
+    row = managed_upload.fresh(opened, receipt_id)
+    intent = opened.get(ManagedImportIntent, row.intent_id)
+    person = None if intent is None else opened.get(Person, intent.person_id)
+    review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
+    if person is not None and review is not None and review.resolved_at is not None and now - review.resolved_at >= SETTLE_SECONDS:
+        kept_alert(opened, settings, person, review.id, reason, now)
 
 
 def kept_alert(opened: Session, settings: config.Settings, person: Person, review_id: int, reason: str, now: float) -> None:
@@ -236,6 +246,7 @@ def send_kept(opened: Session, settings: config.Settings, photos: Photos, now: f
             sent += send_one(opened, settings, photos, receipt_id, now, client)
         except (immich.ImmichFailed, paths.OutsideRoot, OSError):
             opened.rollback()
+            overdue(opened, settings, receipt_id, "its copy or the person's Immich key could not be used", now)
     if sent:
         monitoring.log("kept photos sent to Immich", committed=sent)
     return sent
