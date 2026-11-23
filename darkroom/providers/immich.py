@@ -5,6 +5,7 @@ import binascii
 import contextlib
 import hashlib
 import json
+import math
 import re
 import urllib.error
 from collections.abc import Callable, Iterator
@@ -264,6 +265,29 @@ class Asset:
     live_video_id: str | None
     trashed: bool
     offline: bool
+
+
+@dataclass(frozen=True)
+class Extracted:
+    taken: str | None = field(repr=False)
+    zone: str | None = field(repr=False)
+    latitude: float | None = field(repr=False)
+    longitude: float | None = field(repr=False)
+    description: str | None = field(repr=False)
+
+
+def extracted_of(info: object) -> Extracted | None:
+    if not isinstance(info, dict):
+        return None
+
+    def text(name: str) -> str | None:
+        value = info.get(name)
+        return value if isinstance(value, str) else None
+
+    def degrees(name: str) -> float | None:
+        value = info.get(name)
+        return float(value) if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value) else None
+    return Extracted(text("dateTimeOriginal"), text("timeZone"), degrees("latitude"), degrees("longitude"), text("description"))
 
 
 def sha1_of_checksum(checksum: object) -> str:
@@ -546,7 +570,7 @@ class ManagedReader:
                 or frozenset(permissions) != required):
             raise ImmichFailed(refusal)
 
-    def get_asset(self, asset_id: str) -> Asset:
+    def custody(self, asset_id: str) -> dict[str, Any]:
         if not is_canonical_id(asset_id):
             raise ImmichFailed("not a managed asset id")
         self.check_access()
@@ -557,7 +581,14 @@ class ManagedReader:
                 or found.get("type") not in ("IMAGE", "VIDEO")
                 or (found.get("livePhotoVideoId") is not None and not is_canonical_id(found["livePhotoVideoId"]))):
             raise NotCustody("the asset is not an available managed original of this person")
-        return asset_of(found)
+        return found
+
+    def get_asset(self, asset_id: str) -> Asset:
+        return asset_of(self.custody(asset_id))
+
+    def extracted(self, asset_id: str) -> tuple[Asset, Extracted | None]:
+        found = self.custody(asset_id)
+        return asset_of(found), extracted_of(found.get("exifInfo"))
 
     def upload(self, body: MultipartUpload, sending: Callable[[], None]) -> UploadResult:
         if self.access != "import":
