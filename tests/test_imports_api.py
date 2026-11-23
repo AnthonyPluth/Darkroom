@@ -195,7 +195,8 @@ class PerPartImportsApiTests(unittest.TestCase):
 
         export = self.imported_with_a_failed_item()
         with no_leaks(self, PRIVATE_NAME, replies=self.replies):
-            self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "importing", "stage": "unpacked"}))
+            self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "importing", "stage": "unpacked",
+                                                                                              "per_part": True, "parts_requeued": 0}))
             self.assertEqual(finish_export.finish_ready(self.world.reopen(), self.world.settings, NOW + DAY, self.world.tools), [export.id])
             self.assertEqual(self.runs(), [("done", 1), ("done", 0)])
         self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (409, {"error": "this export is already imported"}))
@@ -209,19 +210,17 @@ class PerPartImportsApiTests(unittest.TestCase):
                          (409, {"error": "part 1 of this export was deleted to free space, so its failed items cannot be retried from it"}))
         self.assertEqual(self.runs(), [("done", 1)])
 
-    def test_a_refused_part_is_requeued(self):
+    def test_a_refused_part_is_not_requeued_and_keeps_its_refusal(self):
         export = self.world.create(self.world.scenario, status="downloaded")
         opened = self.world.reopen()
-        opened.execute(update(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == 2).values(ingest_state="refused"))
+        opened.execute(update(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == 2).values(ingest_state="refused", ingest_refusal="not_a_zip"))
         opened.commit()
-        self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "downloaded", "stage": None}))
+        self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"),
+                         (202, {"export_id": export.id, "status": "downloaded", "stage": None, "per_part": True, "parts_requeued": 0}))
         opened = self.world.reopen()
-        states = opened.execute(select(ExportPart.ingest_state).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars().all()
-        self.assertEqual(states, ["queued", "queued", "queued"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        states = opened.execute(select(ExportPart.ingest_state, ExportPart.ingest_refusal).where(ExportPart.export_id == export.id)
+                                .order_by(ExportPart.number)).all()
+        self.assertEqual([tuple(row) for row in states], [("queued", None), ("refused", "not_a_zip"), ("queued", None)])
 
 
 class PerPartRetryApiTests(unittest.TestCase):
@@ -276,3 +275,7 @@ class PerPartRetryApiTests(unittest.TestCase):
         before = self.states()
         self.assertEqual(self.call("POST", f"/api/exports/{self.export.id}/import"), (409, {"error": "this export has not been downloaded yet"}))
         self.assertEqual(self.states(), before)
+
+
+if __name__ == "__main__":
+    unittest.main()
