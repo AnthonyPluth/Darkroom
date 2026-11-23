@@ -285,6 +285,23 @@ class PixelImmichSourceTests(unittest.TestCase):
             self.assertEqual(self.tend(at=NOW + 60).failed, 1)
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
 
+    def test_held_copies_deferred_by_the_size_cap_open_no_held_alert(self):
+        first, first_version, _ = self.managed()
+        self.queue(first, first_version)
+        self.assertEqual(self.tend().placed, 1)
+        later = [self.managed() for _ in range(2)]
+        for item, version_id, asset_id in later:
+            self.queue(item, version_id)
+            self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend(at=NOW + 60).blocked, 2)
+        for _, _, asset_id in later:
+            self.assets[asset_id].trashed = False
+        tended = pixel_folder.tend(self.opened, self.photos, first.bytes + 1, NOW + 120, self.readers)
+        self.assertEqual((tended.placed, tended.deferred), (0, 2))
+        deferrals = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_deferred")).scalars().all()
+        self.assertEqual(sorted(deferrals), sorted(f"copy {self.copy(self.jo_pixel, item).id}" for item, _, _ in later))
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)

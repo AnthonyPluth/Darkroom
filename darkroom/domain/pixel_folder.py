@@ -242,6 +242,11 @@ def fail(opened: Session, copy_id: int, now: float) -> Placed:
     return "failed"
 
 
+def deferred(opened: Session, row: PixelCopy | None, now: float) -> None:
+    if row is not None and held_since(opened, row) is not None:
+        events.record(opened, now, "pixel_copy_deferred", f"pixel {row.pixel_id}", f"copy {row.id}")
+
+
 def held_since(opened: Session, row: PixelCopy) -> tuple[float, str] | None:
     last = opened.execute(select(Event.type, Event.time, Event.detail).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
     if last is None or last.type != "pixel_copy_source_held" or (row.placed_at is not None and row.placed_at >= last.time):
@@ -327,6 +332,10 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
     for copy_id, was_placed in waiting:
         if deferring and not was_placed:
             tended.deferred += 1
+            if pixel_source.converted(opened, copy_id):
+                lock_copy(opened, copy_id)
+                deferred(opened, opened.get(PixelCopy, copy_id, populate_existing=True), now)
+                opened.commit()
             continue
         lock_copy(opened, copy_id)
         row = opened.get(PixelCopy, copy_id, populate_existing=True)
@@ -349,8 +358,8 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         if not again and (deferring or (used > 0 and used + row.bytes > cap_bytes)):
             deferring = True
             tended.deferred += 1
-            if managed and held_since(opened, row) is not None:
-                events.record(opened, now, "pixel_copy_deferred", f"pixel {row.pixel_id}", f"copy {row.id}")
+            if managed:
+                deferred(opened, row, now)
             opened.commit()
             continue
         item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)
