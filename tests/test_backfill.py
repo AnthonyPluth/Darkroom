@@ -186,6 +186,27 @@ class BackfillTests(unittest.TestCase):
                 if setting:
                     self.assertEqual(len(world.uploads()), uploads)
 
+    def test_a_live_photo_half_whose_companion_matched_a_phone_original_is_listed_and_not_uploaded(self):
+        world = BackfillWorld(self)
+
+        def one_half_each(builder):
+            still = builder.image_bytes(".HEIC")
+            world.original("jo", "IMG_3002.HEIC", still)
+            builder.photo("IMG_3002.HEIC", data=still, part=0)
+            builder.add("IMG_3002.MOV", builder.video_bytes(), "Photos from 2019", 0, "json", None, None, "")
+            builder.manifest.live_pairs["IMG_3002.MOV"] = "IMG_3002.HEIC"
+            video = builder.video_bytes()
+            world.original("jo", "IMG_3003.MOV", video)
+            builder.photo("IMG_3003.HEIC", part=0)
+            builder.add("IMG_3003.MOV", video, "Photos from 2019", 0, "json", None, None, "")
+            builder.manifest.live_pairs["IMG_3003.MOV"] = "IMG_3003.HEIC"
+        world.run_managed(one_half_each, parts=1)
+        placed = sorted(PurePosixPath(path).name for path in world.opened.execute(select(MediaItem.path).where(MediaItem.path.startswith("jo/google-only/"),
+                                                                                                                 MediaItem.source == "takeout")).scalars())
+        self.assertEqual(placed, ["IMG_3002.MOV", "IMG_3003.HEIC"])
+        world.backfill()
+        self.assertEqual((world.report(), world.uploads()), ({"live_photo": ["IMG_3002.MOV", "IMG_3003.HEIC"]}, []))
+
     def test_running_again_uploads_nothing_more(self):
         world = BackfillWorld(self)
         world.seeded()

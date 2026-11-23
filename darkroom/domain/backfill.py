@@ -21,7 +21,7 @@ from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import (DedupeDecision, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
-                                     ManagedImportReceipt, MediaItem, Person, PixelCopy, known_contents)
+                                     ManagedImportReceipt, MediaItem, Person, PixelCopy, TakeoutEntry, known_contents)
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
@@ -364,40 +364,64 @@ def sha1_of(handle: BinaryIO) -> str:
     return digest.hexdigest()
 
 
+def is_video(path: PurePosixPath) -> bool:
+    return path.suffix.lower() in media.VIDEO_SUFFIXES
+
+
+def is_still(path: PurePosixPath) -> bool:
+    return path.suffix.lower() in pairing.STILL_SUFFIXES
+
+
+def companions(first: PurePosixPath, second: PurePosixPath) -> bool:
+    still, video = (first, second) if is_still(first) and is_video(second) else (second, first) if is_still(second) and is_video(first) else (None, None)
+    if still is None or video is None or still.parent != video.parent:
+        return False
+    stems = {video.stem.lower()} | ({video.name.lower()} if video.suffix.lower() == pairing.MOTION_CLIP_SUFFIX else set())
+    return still.stem.lower() in stems
+
+
+def near(first: float | None, second: float | None) -> bool:
+    return first is not None and second is not None and abs(first - second) <= LIVE_SECONDS
+
+
 def live_halves(opened: Session, person: Person, items: Sequence[MediaItem]) -> set[int]:
-    by_id = {item.id: item for item in items}
-    named: dict[tuple[object, PurePosixPath], list[tuple[MediaItem, PurePosixPath]]] = defaultdict(list)
+    ids = {item.id for item in items}
+    own = opened.execute(select(DedupeDecision.takeout_item_id, DedupeDecision.export_id, DedupeDecision.source_path)
+                         .join(MediaItem, MediaItem.id == DedupeDecision.takeout_item_id)
+                         .where(MediaItem.person_id == person.id, MediaItem.source == "takeout", DedupeDecision.source_path.is_not(None))).all()
+    sources: dict[int, list[tuple[int, PurePosixPath]]] = defaultdict(list)
+    for item_id, export_id, source in own:
+        if item_id in ids:
+            sources[item_id].append((export_id, PurePosixPath(str(source))))
+    exports = {export_id for found in sources.values() for export_id, _ in found} | {item.export_id for item in items if item.export_id is not None}
+    recorded: dict[int, list[PurePosixPath]] = defaultdict(list)
+    timed: dict[int, list[tuple[PurePosixPath, float | None]]] = defaultdict(list)
+    if exports:
+        for export_id, source in opened.execute(select(DedupeDecision.export_id, DedupeDecision.source_path)
+                                                .where(DedupeDecision.export_id.in_(exports), DedupeDecision.source_path.is_not(None))).all():
+            recorded[export_id].append(PurePosixPath(str(source)))
+        for export_id, name, captured in opened.execute(select(TakeoutEntry.export_id, TakeoutEntry.name, TakeoutEntry.captured_utc)
+                                                        .where(TakeoutEntry.export_id.in_(exports), TakeoutEntry.kind == "media")).all():
+            recorded[export_id].append(PurePosixPath(name))
+            timed[export_id].append((PurePosixPath(name), captured))
+    halves: set[int] = set()
     for item in items:
         path = PurePosixPath(item.path)
-        named[("library", path.parent)].append((item, path))
-    recorded = opened.execute(select(DedupeDecision.takeout_item_id, DedupeDecision.export_id, DedupeDecision.source_path)
-                              .join(MediaItem, MediaItem.id == DedupeDecision.takeout_item_id)
-                              .where(MediaItem.person_id == person.id, MediaItem.source == "takeout", DedupeDecision.source_path.is_not(None))).all()
-    for item_id, export_id, source in recorded:
-        if item_id in by_id:
-            path = PurePosixPath(str(source))
-            named[(export_id, path.parent)].append((by_id[item_id], path))
-    halves: set[int] = set()
-    for siblings in named.values():
-        for video, path in siblings:
-            if path.suffix.lower() not in media.VIDEO_SUFFIXES:
-                continue
-            stems = {path.stem.lower()} | ({path.name.lower()} if path.suffix.lower() == pairing.MOTION_CLIP_SUFFIX else set())
-            stills = {item.id for item, name in siblings if name.suffix.lower() in pairing.STILL_SUFFIXES and name.stem.lower() in stems}
-            if stills:
-                halves |= {video.id, *stills}
-    for video in items:
-        if PurePosixPath(video.path).suffix.lower() in media.VIDEO_SUFFIXES and (video.sidecar_from_still or video.id in halves):
-            halves |= {video.id, *same_instant(video, items)}
+        if not (is_still(path) or is_video(path)):
+            continue
+        library = any(companions(path, PurePosixPath(other.path)) or (near(item.captured_utc, other.captured_utc) and companions_by_kind(path, PurePosixPath(other.path)))
+                      for other in items if other.id != item.id and PurePosixPath(other.path).parent == path.parent)
+        named = any(companions(source, other) for export_id, source in sources[item.id] for other in recorded[export_id] if other != source)
+        instant = any(near(item.captured_utc, captured) and companions_by_kind(path, name)
+                      for export_id in {export_id for export_id, _ in sources[item.id]} | ({item.export_id} if item.export_id is not None else set())
+                      for name, captured in timed[export_id])
+        if library or named or instant or (is_video(path) and item.sidecar_from_still):
+            halves.add(item.id)
     return halves
 
 
-def same_instant(video: MediaItem, items: Sequence[MediaItem]) -> set[int]:
-    if video.captured_utc is None:
-        return set()
-    folder = PurePosixPath(video.path).parent
-    return {item.id for item in items if PurePosixPath(item.path).parent == folder and PurePosixPath(item.path).suffix.lower() in pairing.STILL_SUFFIXES
-            and item.captured_utc is not None and abs(item.captured_utc - video.captured_utc) <= LIVE_SECONDS}
+def companions_by_kind(first: PurePosixPath, second: PurePosixPath) -> bool:
+    return (is_still(first) and is_video(second)) or (is_video(first) and is_still(second))
 
 
 def candidate(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
