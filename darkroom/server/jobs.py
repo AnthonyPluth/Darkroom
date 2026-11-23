@@ -118,6 +118,19 @@ SYNCTHING_RECHECK_SECONDS = 60.0
 SYNCTHING_RECONCILE_SECONDS = 60.0
 
 
+def pixel_readers(settings: Settings) -> pixel_folder.Readers | None:
+    if not settings.pixel_immich_source:
+        return None
+
+    def reader(person: Person) -> immich.ManagedReader:
+        try:
+            key = immich_reconcile.person_key(settings, person)
+        except immich_reconcile.NotReady:
+            raise immich.ImmichFailed("this person has no Immich user and key") from None
+        return immich.ManagedReader(immich.Client.at(settings), key, person.immich_user_id or "")
+    return reader
+
+
 def tend_checks_placed_copies(scheduler: Scheduler) -> bool:
     return "pixels.tend" in scheduler.jobs and isinstance(scheduler.placed_copies, pixel_check.PlacedCopyCheck)
 
@@ -336,7 +349,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         review_transport(settings, engine, at)
 
     def tend(at: float) -> None:
-        photos = share_photos
+        photos, readers = share_photos, pixel_readers(live()) if settings.pixel_immich_source else None
         with db.session(engine) as opened:
             if share_stopped(opened, at):
                 return
@@ -350,10 +363,12 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 monitoring.log("pixel folders not tended: the share was bound again during the check; tending at the next cycle")
                 return
             reconcile_transport(scheduler, settings, opened, photos, at, force=True)
-            tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at)
+            tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at, readers)
             held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused, held=held)
+        if tended.blocked:
+            monitoring.log("pixel copies held for their Immich source", held=tended.blocked)
 
     def reconcile_immich(at: float) -> None:
         current = live()

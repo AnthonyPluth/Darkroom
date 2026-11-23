@@ -1082,6 +1082,67 @@ def place_pixel_copy(photos: Photos, pixel_id: int, person: str, relative: str, 
     return name
 
 
+def write_chunks(target: int, chunks: Iterable[bytes], size: int) -> int:
+    written = 0
+    for chunk in chunks:
+        written += len(chunk)
+        if written > size:
+            raise NotAPixelCopy("the managed original is larger than Darkroom recorded")
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(target, view):]
+    return written
+
+
+@contextlib.contextmanager
+def staged_pixel_copy(photos: Photos, chunks: Iterable[bytes], sha1: str, size: int, now: float) -> Iterator[str]:
+    photos.pixel_incoming()
+    with PinnedFolders(photos, [PIXELS, INCOMING], create=True) as incoming:
+        sweep_staging(incoming.fd, now - STALE_STAGING_SECONDS)
+        temp = f".copy-{secrets.token_hex(8)}"
+        staged = open_no_follow(temp, incoming.fd, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+        try:
+            try:
+                written = write_chunks(staged, chunks, size)
+                os.fchmod(staged, PIXEL_COPY_MODE)
+                os.fsync(staged)
+                if written != size or fd_sha1(staged) != sha1:
+                    raise NotAPixelCopy("the managed original is not the one Darkroom recorded")
+            finally:
+                os.close(staged)
+            yield temp
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=incoming.fd)
+
+
+def publish_pixel_copy(photos: Photos, pixel_id: int, person: str, name: str, staged: str, sha1: str, size: int) -> str:
+    if not STAGED_COPY.match(staged):
+        raise NotAPixelCopy("not a staged Pixel copy")
+    photos.pixel_copy(pixel_id, person, name)
+    photos.pixel_incoming()
+    *folders, leaf = name.split("/")
+    with PinnedFolders(photos, [PIXELS, str(pixel_id), photos.person_part(person), *folders], create=True) as destination, \
+            PinnedFolders(photos, [PIXELS, INCOMING], create=False) as incoming:
+        source = open_no_follow(staged, incoming.fd, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            found = os.fstat(source)
+            if (not stat.S_ISREG(found.st_mode) or found.st_nlink != 1 or found.st_size != size or fd_sha1(source) != sha1
+                    or not still_at(staged, incoming.fd, found)):
+                raise NotAPixelCopy("the staged copy is not the managed original Darkroom verified")
+            existing = existing_copy(leaf, destination.fd, sha1, found, incoming.fd)
+            if existing is True:
+                return name
+            if existing is False:
+                publish_staged(staged, incoming.fd, leaf, destination.fd)
+            else:
+                replace_claim(staged, incoming.fd, leaf, destination.fd, existing)
+            os.fsync(destination.fd)
+        finally:
+            os.close(source)
+    return name
+
+
 def publish_staged(temp: str, incoming: int, leaf: str, folder: int) -> None:
     try:
         os.link(temp, leaf, src_dir_fd=incoming, dst_dir_fd=folder, follow_symlinks=False)

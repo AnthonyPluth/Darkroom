@@ -151,6 +151,7 @@ class Settings:
     browser_token: str
     timezone: str
     pixel_folder_cap_gb: int = 50
+    pixel_immich_source: bool = False
     resend_api_key: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""
@@ -214,6 +215,7 @@ def load() -> Settings:
         browser_token=browser_token(),
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
+        pixel_immich_source=env_flag("DARKROOM_PIXEL_IMMICH_SOURCE"),
         resend_api_key=env("RESEND_API_KEY"),
         alert_email_from=env("ALERT_EMAIL_FROM"),
         alert_email_to=env("ALERT_EMAIL_TO"),
