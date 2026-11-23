@@ -91,8 +91,11 @@ def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float 
         return (None, None, None, "no_instant") if utc is None else (utc, parsed[1], "sidecar", None)
     own_lat, own_lon, _ = media.location(own)
     utc, local, offset, source = media.capture(own, own_lat, own_lon)
-    if source == "quicktime_utc" and utc is not None and offset is None:
-        offset = media.wall_clock_at(utc, *place)[1]
+    if source in ("gps_lookup", "quicktime_utc") and utc is not None:
+        seen = media.wall_clock_at(utc, *place)[1]
+        if offset is not None and seen != offset:
+            return None, None, None, "unknown_offset"
+        offset = seen
     if utc is None and (derived := agreed_offset(local, google, corrects)) is not None and local is not None:
         agreed = media.utc_or_none(datetime.fromisoformat(local), derived)
         if agreed is not None and media.wall_clock_at(agreed, *place)[1] == derived:
@@ -127,7 +130,7 @@ def snapshot(intended: Intended) -> str:
     return json.dumps({"schema": SCHEMA, "role": intended.role, "kind": intended.kind, "taken_utc": intended.taken_utc, "offset": intended.offset,
                        "taken_from": intended.taken_from, "latitude": intended.latitude, "longitude": intended.longitude, "place_from": intended.place_from,
                        "description": intended.description, "description_from": intended.description_from, "sidecar": dict(intended.sidecar),
-                       "hold": intended.hold}, sort_keys=True, ensure_ascii=False)
+                       "hold": intended.hold}, sort_keys=True)
 
 
 def number(value: object) -> bool:
@@ -233,7 +236,7 @@ def problem(intended: Intended, asset: immich.Asset, seen: immich.Extracted | No
 
 def evidence(asset: immich.Asset, seen: immich.Extracted | None) -> str:
     shown: dict[str, object] = {} if seen is None else {"taken": seen.taken, "zone": seen.zone, "latitude": seen.latitude, "longitude": seen.longitude, "description": seen.description}
-    return json.dumps(shown | {"kind": asset.kind, "live_video_id": asset.live_video_id}, sort_keys=True, ensure_ascii=False)
+    return json.dumps(shown | {"kind": asset.kind, "live_video_id": asset.live_video_id}, sort_keys=True)
 
 
 def verify_metadata(opened: Session, reader: immich.ManagedReader, receipt_id: int, intended: Intended, now: float,

@@ -5,6 +5,7 @@ import json
 import re
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
 from PIL import ExifTags, Image
 from sqlalchemy import insert, select, update
@@ -207,6 +208,29 @@ class ManagedMetadataTests(unittest.TestCase):
         uploaded.exif |= {"dateTimeOriginal": "2019-07-04T12:30:15.000Z", "timeZone": "Europe/Rome"}
         self.assertEqual((self.complete(item).outcome, self.row(item)[:2]), ("verified", ("metadata_verified", None)))
 
+    def test_a_description_xml_cannot_carry_is_stored_escaped_and_held_unwritable_before_anything_is_sent(self):
+        data, tags = photo("unwritable", "2019:07:04 14:30:15", "+02:00", ROME)
+        for number, text in enumerate(("made-up \x01 caption", "made-up \ud800 caption", "made-up \ufffe caption")):
+            with self.subTest(code=hex(ord(text[8]))):
+                intended = intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, text), "IMAGE")
+                stored = snapshot(intended)
+                self.assertEqual((intended.hold, intended.description, stored.isascii(), managed_metadata.intended_of(stored)), ("unwritable", text, True, intended))
+                item = self.resource(f"part/unwritable-{number}", data, intended)
+                self.assertEqual((self.complete(item).outcome, self.row(item)[:2]), ("held", ("prepared", "unwritable")))
+        self.assertEqual(self.fake.requests(), [])
+
+    def test_a_time_resolved_at_a_position_is_held_when_the_place_immich_sees_is_in_another_zone(self):
+        near = (45.4400, 12.3300)
+        data, clock = photo("moved", "2019:07:04 14:30:15", None, ROME)
+        quicktime = {"QuickTime:CreateDate": "2019:07:04 12:30:15", "Composite:GPSLatitude": ROME[0], "Composite:GPSLongitude": ROME[1]}
+        for name, own, kind in (("wall clock at its own position", clock, "IMAGE"), ("quicktime instant", quicktime, "VIDEO")):
+            with self.subTest(name):
+                found = [intend(own, xmp.GoogleMetadata(*place, SUMMER, None), kind) for place in (ROME, near, ACCRA)]
+                self.assertEqual([(intended.hold, intended.offset, intended.place_from) for intended in found],
+                                 [(None, 120, "media"), (None, 120, "sidecar"), ("unknown_offset", None, "sidecar")])
+        moved = self.resource("part/moved", data, intend(clock, xmp.GoogleMetadata(*ACCRA, SUMMER, None), "IMAGE"))
+        self.assertEqual((self.complete(moved).outcome, self.fake.requests()), ("held", []))
+
     def test_a_missing_description_stays_missing_and_an_intended_one_must_be_extracted(self):
         data, tags = photo("plain", "2019:07:04 14:30:15", "+02:00", ROME)
         intended = intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
@@ -305,6 +329,33 @@ class ManagedMetadataTests(unittest.TestCase):
                     connection.execute(update(ManagedImportReceipt).values(expected_metadata=snapshot(dataclasses.replace(intended, role="live_still"))))
             with self.subTest(change=change):
                 self.assertEqual((self.commit("part/later").outcome, self.row(item)[0]), (outcome, "metadata_verified"))
+
+    def commit_while(self, name, change):
+        data, tags = photo(name, "2019:07:04 14:30:15", "+02:00", ROME)
+        intended = intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
+        item = self.resource(f"{name}/one", data, intended, compound=name)
+        self.assertEqual(self.complete(item).outcome, "verified")
+        real = immich.ManagedReader.get_asset
+
+        def meanwhile(reader, asset_id):
+            change(item, data, intended)
+            return real(reader, asset_id)
+        with mock.patch.object(immich.ManagedReader, "get_asset", autospec=True, side_effect=meanwhile):
+            return item, self.commit(name)
+
+    def test_a_commit_that_finds_the_item_changed_under_it_commits_nothing(self):
+        def appears(item, data, intended):
+            self.resource("appears/late", data + b"late", intended, compound="appears")
+
+        def committed_elsewhere(item, data, intended):
+            with self.engine.begin() as connection:
+                connection.execute(update(ManagedImportReceipt).where(ManagedImportReceipt.id == item.receipt_id).values(state="committed", committed_at=2.0))
+        item, report = self.commit_while("appears", appears)
+        self.assertEqual((report.reason, self.row(item)[0]), ("the item changed while it was checked", "metadata_verified"))
+        item, report = self.commit_while("elsewhere", committed_elsewhere)
+        with self.engine.connect() as connection:
+            stamped = connection.execute(select(ManagedImportReceipt.committed_at).where(ManagedImportReceipt.id == item.receipt_id)).scalar_one()
+        self.assertEqual((report.reason, stamped), ("the item changed while it was checked", 2.0))
 
     def test_no_receipt_is_complete_on_a_201_alone_and_extraction_is_polled_a_bounded_number_of_times(self):
         data, tags = photo("slow", "2019:07:04 14:30:15", "+02:00", ROME)
