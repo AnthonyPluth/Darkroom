@@ -415,19 +415,43 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(world.opened.execute(select(ManagedBackfillItem.person_id, ManagedBackfillItem.outcome)).one(), (world.ids["jo"], "mapped"))
 
     def test_an_edited_copy_is_listed_as_a_same_shot_and_not_uploaded_whatever_became_of_its_original(self):
-        for name, evidence in (("decision", "decision"), ("ledger", "ledger")):
-            with self.subTest(name):
+        for evidence in ("decision", "ledger", "library name"):
+            for phone in (False, True):
+                with self.subTest(evidence=evidence, phone=phone):
+                    world = BackfillWorld(self)
+                    world.run_managed(single_photo, parts=1)
+                    item = world.google_only_item("IMG_5001.JPG")
+                    name = "IMG_5001.JPG"
+                    if evidence == "decision":
+                        world.opened.execute(update(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)
+                                             .values(source_path="Takeout/Google Photos/Photos from 2019/IMG_5001-edited.JPG"))
+                    elif evidence == "ledger":
+                        world.opened.execute(update(TakeoutEntry).where(TakeoutEntry.item_id == item.id).values(is_edited=True, edited_of="IMG_5000.JPG"))
+                    else:
+                        name = "IMG_5001-edited.JPG"
+                        moved = str(PurePosixPath(item.path).with_name(name))
+                        (world.root / item.path).rename(world.root / moved)
+                        world.opened.execute(update(MediaItem).where(MediaItem.id == item.id).values(path=moved))
+                    world.opened.commit()
+                    if phone:
+                        world.original("jo", "IMG_8001.JPG", world.scratch_jpeg("unrelated.jpg", colour=(1, 2, 3)))
+                        world.index_all()
+                    world.backfill()
+                    self.assertEqual((world.report(), world.uploads()), ({"same_shot": [name]}, []))
+
+    def test_a_photo_of_a_failed_or_expired_export_is_listed_and_backfilled_once_the_export_is_imported(self):
+        for status in ("failed", "expired"):
+            with self.subTest(status=status):
                 world = BackfillWorld(self)
-                world.run_managed(single_photo, parts=1)
-                item = world.google_only_item("IMG_5001.JPG")
-                if evidence == "decision":
-                    world.opened.execute(update(DedupeDecision).where(DedupeDecision.takeout_item_id == item.id)
-                                         .values(source_path="Takeout/Google Photos/Photos from 2019/IMG_5001-edited.JPG"))
-                else:
-                    world.opened.execute(update(TakeoutEntry).where(TakeoutEntry.item_id == item.id).values(is_edited=True, edited_of="IMG_5000.JPG"))
+                export = world.run_managed(single_photo, parts=1)
+                world.opened.execute(update(Export).where(Export.id == export.id).values(status=status))
                 world.opened.commit()
                 world.backfill()
-                self.assertEqual((world.report(), world.uploads()), ({"same_shot": ["IMG_5001.JPG"]}, []))
+                self.assertEqual((world.report(), world.uploads()), ({"export_unfinished": ["IMG_5001.JPG"]}, []))
+                world.opened.execute(update(Export).where(Export.id == export.id).values(status="imported"))
+                world.opened.commit()
+                self.assertEqual(world.backfill(at=NOW + 200).mapped, 1)
+                self.assertEqual(world.report(), {})
 
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)

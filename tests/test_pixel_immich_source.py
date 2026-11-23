@@ -315,6 +315,24 @@ class PixelImmichSourceTests(unittest.TestCase):
         alert = self.opened.execute(select(Alert).where(Alert.key.startswith("pixel:source-held:"))).scalar_one()
         self.assertIn("turned off", alert.message)
 
+    def test_a_replacement_that_fails_locally_after_a_hold_opens_no_held_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.tend()
+        decision = self.match(item, self.jo_account, NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        dedupe.reverse(self.opened, decision, NOW + 30, "owner")
+        self.opened.commit()
+        full = mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device"))
+        with full:
+            self.assertEqual(self.tend(at=NOW + 40).failed, 1)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend(at=NOW + 50).blocked, 1)
+        self.assets[asset_id].trashed = False
+        with full:
+            self.assertEqual(self.tend(at=NOW + 60).failed, 1)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)

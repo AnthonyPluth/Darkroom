@@ -232,12 +232,13 @@ def hold(opened: Session, copy_id: int, now: float, reason: HoldReason) -> Place
 def fail(opened: Session, copy_id: int, now: float) -> Placed:
     lock_copy(opened, copy_id)
     row = opened.get(PixelCopy, copy_id, populate_existing=True)
-    if row is not None and row.placed_at is not None:
+    last = None if row is None else opened.execute(select(Event.type).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
+    if row is not None and row.placed_at is not None and last == "pixel_copy_source_held":
+        events.record(opened, now, "pixel_copy_replacement_pending", f"pixel {row.pixel_id}", f"copy {row.id}")
+    elif row is not None and row.placed_at is not None:
         still_pending(opened, row, now)
-    elif row is not None:
-        last = opened.execute(select(Event.type).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
-        if last != "pixel_copy_place_failed":
-            events.record(opened, now, "pixel_copy_place_failed", f"pixel {row.pixel_id}", f"copy {row.id}")
+    elif row is not None and last != "pixel_copy_place_failed":
+        events.record(opened, now, "pixel_copy_place_failed", f"pixel {row.pixel_id}", f"copy {row.id}")
     opened.commit()
     return "failed"
 

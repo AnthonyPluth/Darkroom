@@ -32,11 +32,12 @@ KEY: Final = "backfill:media-item:"
 SOURCE: Final = "media-item:"
 IMMICH_FOLDER: Final = "immich"
 NEAR_TIERS: Final = (2, 3, 4)
-RETRIED: Final = ("pending", "mismatch")
+RETRIED: Final = ("pending", "mismatch", "export_unfinished")
 CHUNK: Final = 1024 * 1024
 LIVE_SECONDS: Final = 1.0
 MOVED: Final = "moved"
 IMPORTED: Final = "imported"
+ENDED: Final = ("failed", "expired")
 STUCK_SECONDS: Final = 24 * 3600.0
 REASONS: Final[dict[str, str]] = {
     "missing": "the file is not a plain file in the person's folder any more",
@@ -44,7 +45,8 @@ REASONS: Final[dict[str, str]] = {
     "unreadable": "the file's metadata could not be read",
     "name_refused": "Immich does not take a file with this name",
     "live_photo": "a Live Photo half, left for the Live Photo step (#553)",
-    "same_shot": "the same shot as a phone original with other bytes, left for the same-shot step (#554)",
+    "same_shot": "the same shot as a phone original with other bytes, or an edited copy, left for the same-shot step (#554)",
+    "export_unfinished": "its Takeout export failed or expired before it was imported, so its companions may be unknown; it waits until the export is imported",
     "unusable": "Immich's asset is trashed, offline, in an external library or another person's",
     "pending": "Immich could not be reached or has not finished yet; Darkroom tries again",
     "not_in_immich": "the phone original is not recorded as stored in Immich",
@@ -345,7 +347,7 @@ class Backfill:
         unsettled = ~exists(select(row.id).where(mine, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
         retried = exists(select(row.id).where(mine, row.reason.in_(RETRIED)))
         checked = func.coalesce(select(row.checked_at).where(mine).scalar_subquery(), 0.0)
-        finished = or_(MediaItem.export_id.is_(None), exists(select(Export.id).where(Export.id == MediaItem.export_id, Export.status == IMPORTED)))
+        finished = ~exists(select(Export.id).where(Export.id == MediaItem.export_id, Export.status.not_in((IMPORTED, *ENDED))))
         google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
         phones = and_(MediaItem.source == "phone", MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
         waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled,
@@ -355,9 +357,13 @@ class Backfill:
                                        .order_by(MediaItem.id)).scalars().all() if pending else []
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
         near = same_shots(self.opened, self.person, pending)
+        exports = {item.export_id for item in pending if item.export_id is not None}
+        ended = set(self.opened.execute(select(Export.id).where(Export.id.in_(exports), Export.status.in_(ENDED))).scalars()) if exports else set()
         for item in waiting:
             if item.source == "phone":
                 self.phone(item)
+            elif item.export_id in ended:
+                self.exception(item, "export_unfinished")
             elif item.id in halves:
                 self.exception(item, "live_photo")
             elif item.id in near:
