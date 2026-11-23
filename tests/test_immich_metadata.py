@@ -238,15 +238,17 @@ class ManagedMetadataTests(unittest.TestCase):
     def test_a_time_resolved_at_a_position_is_held_when_the_place_immich_sees_is_in_another_zone(self):
         near = (45.4400, 12.3300)
         data, clock = photo("moved", "2019:07:04 14:30:15", None, ROME)
-        quicktime = {"QuickTime:CreateDate": "2019:07:04 12:30:15", "Composite:GPSLatitude": ROME[0], "Composite:GPSLongitude": ROME[1]}
-        for name, own, kind, moved in (("wall clock at its own position", clock, "IMAGE", ("unknown_offset", None, None, "sidecar")),
-                                       ("quicktime instant", quicktime, "VIDEO", (None, SUMMER, 0, "sidecar"))):
-            with self.subTest(name):
-                found = [intend(own, xmp.GoogleMetadata(*place, SUMMER, None), kind) for place in (ROME, near, ACCRA)]
-                self.assertEqual([(intended.hold, intended.taken_utc, intended.offset, intended.place_from) for intended in found],
-                                 [(None, SUMMER, 120, "media"), (None, SUMMER, 120, "sidecar"), moved])
-        moved = self.resource("part/moved", data, intend(clock, xmp.GoogleMetadata(*ACCRA, SUMMER, None), "IMAGE"))
+        found = [intend(clock, xmp.GoogleMetadata(*place, SUMMER, None), "IMAGE") for place in (ROME, near, ACCRA)]
+        self.assertEqual([(intended.hold, intended.taken_utc, intended.offset, intended.place_from) for intended in found],
+                         [(None, SUMMER, 120, "media"), (None, SUMMER, 120, "sidecar"), ("unknown_offset", None, None, "sidecar")])
+        moved = self.resource("part/moved", data, found[2])
         self.assertEqual((self.complete(moved).outcome, self.fake.requests()), ("held", []))
+
+    def test_a_quicktime_instant_takes_the_offset_of_the_place_immich_sees(self):
+        quicktime = {"QuickTime:CreateDate": "2019:07:04 12:30:15", "Composite:GPSLatitude": ROME[0], "Composite:GPSLongitude": ROME[1]}
+        found = [intend(quicktime, xmp.GoogleMetadata(*place, SUMMER, None), "VIDEO") for place in (ROME, (45.4400, 12.3300), ACCRA)]
+        self.assertEqual([(intended.hold, intended.taken_utc, intended.offset, intended.place_from) for intended in found],
+                         [(None, SUMMER, 120, "media"), (None, SUMMER, 120, "sidecar"), (None, SUMMER, 0, "sidecar")])
 
     def test_a_missing_description_stays_missing_and_an_intended_one_must_be_extracted(self):
         data, tags = photo("plain", "2019:07:04 14:30:15", "+02:00", ROME)
