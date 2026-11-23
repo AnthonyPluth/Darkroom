@@ -14,7 +14,7 @@ from darkroom.domain.ingest import pairing, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Export, MediaItem, Person, ReviewItem
+from darkroom.storage.models import DedupeDecision, Export, ManagedImportIntent, MediaItem, Person, ReviewItem
 from darkroom.storage.paths import Photos
 
 CHUNK = 1024 * 1024
@@ -193,8 +193,14 @@ def copies_into_google_only(decision: DedupeDecision, export: Export) -> bool:
             and decision.decided_by == "auto" and decision.tier == 5 and decision.takeout_item_id is None)
 
 
+def managed_import(opened: Session, export: Export) -> bool:
+    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id).limit(1)).first() is not None
+
+
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
                       copied: Callable[[Placed], None] = lambda placed: None, ahead: CopyAhead | None = None) -> MediaItem:
+    if managed_import(opened, export):
+        raise PlaceFailed("an Immich-managed import uploads its Takeout-only items to Immich instead of placing them")
     person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
@@ -302,11 +308,12 @@ def refresh_takeout(photos: Photos, matched: MediaItem, entry: Entry, report: Pl
 def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Entry],
           read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, ahead: CopyAhead | None = None) -> PlaceReport:
     report = PlaceReport()
+    managed = managed_import(opened, export)
     for entry in entries:
         decision = entry.decision
         if decision.export_id != export.id or decision.account_id != export.account_id:
             raise PlaceFailed("the decision belongs to another export")
-        if decision.reversed_at is not None or decision.decided_by != "auto":
+        if decision.reversed_at is not None or decision.decided_by != "auto" or (managed and decision.tier != 4):
             report.skipped += 1
         elif decision.tier == 5:
             place_google_only(opened, photos, export, entry, report, read, write, ahead=ahead)

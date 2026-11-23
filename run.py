@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, share_check, video_times
+from darkroom.domain import demo, immich_reconcile, index, legacy, managed_ingest, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
@@ -185,6 +185,30 @@ def run_index(slug: str | None) -> int:
         for person in found:
             report = index.index_person(opened, photos, person, utc_now().timestamp())
             monitoring.log("indexed", person=person.slug, new=report.new, unchanged=report.unchanged, changed=report.changed, failed=report.failed)
+    engine.dispose()
+    return code
+
+
+def set_managed_imports(slug: str | None, wanted: str | None) -> int:
+    if not slug or wanted not in ("on", "off"):
+        print("managed-imports needs on or off and --person", file=sys.stderr)
+        return 1
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    code = 0
+    with db.session(engine) as opened:
+        person = opened.query(Person).filter(Person.slug == slug).one_or_none()
+        if person is None:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        else:
+            try:
+                state = managed_ingest.request(opened, person, wanted == "on", utc_now().timestamp())
+            except managed_ingest.Refused as refused:
+                print(f"managed-imports: {slug}: {refused}", file=sys.stderr)
+                code = 1
+            else:
+                print(f"{slug}: Immich-managed imports {state or 'off'}")
     engine.dispose()
     return code
 
@@ -603,7 +627,7 @@ def serve() -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
     parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup",
-                                            "copy-browser-state"])
+                                            "copy-browser-state", "managed-imports"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -648,6 +672,8 @@ def main(argv: list[str]) -> int:
         return run_job(args.name)
     if args.command == "migrate":
         return migrate()
+    if args.command == "managed-imports":
+        return set_managed_imports(args.person, args.name)
     return serve() if args.command == "serve" else check_config()
 
 

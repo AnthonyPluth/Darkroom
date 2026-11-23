@@ -9,7 +9,7 @@ from typing import Final
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events
+from darkroom.domain import events, managed_ingest
 from darkroom.domain.ingest import unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
@@ -255,7 +255,13 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
         opened.commit()
 
 
-def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport,
+                 retention: managed_ingest.Retention | None = None) -> None:
+    refusal = managed_ingest.release_refusal(opened, export, now, retention)
+    if refusal is not None:
+        report.kept += 1
+        note_once(opened, now, "cleanup_kept", f"export {export.id}", refusal)
+        return
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:
         report.kept += 1
@@ -294,7 +300,7 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
                                  ReviewItem.hold_path.is_not(None)).order_by(ReviewItem.id)
     ).scalars().all()
     for review in resolved:
-        if review.hold_path is None or shared_hold(opened, review, cutoff):
+        if review.hold_path is None or shared_hold(opened, review, cutoff) or managed_ingest.hold_pinned(opened, review):
             report.kept += 1
             continue
         relative = PurePosixPath(review.hold_path)
@@ -363,7 +369,7 @@ def undo_committed(opened: Session) -> Callable[[int, int], bool | None]:
     return committed
 
 
-def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
+def clean(opened: Session, photos: Photos, now: float, retention: managed_ingest.Retention | None = None) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
     for export in opened.execute(select(Export).where(Export.status == "imported").order_by(Export.id)).scalars().all():
@@ -371,7 +377,7 @@ def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
         if finished is None or finished > cutoff:
             continue
         try:
-            clean_export(opened, photos, export, now, report)
+            clean_export(opened, photos, export, now, report, retention)
         except OSError as error:
             report.failed += 1
             events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)

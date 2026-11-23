@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
-from darkroom.domain import alerts, dedupe, events, media, pixel_folder, takeout_copies
+from darkroom.domain import alerts, dedupe, events, managed_ingest, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage import db, paths
@@ -154,6 +154,7 @@ class Ingest:
         self.used: dict[int, int | None] = {}
         self.texts: dict[int, str] = {}
         self.slot: tuple[int, contextlib.ExitStack, zipfile.ZipFile, dict[str, zipfile.ZipInfo]] | None = None
+        self.managed = place.managed_import(opened, export)
         self.sweep_placements()
         stack.callback(self.sweep_placements)
         stack.callback(self.close_archive)
@@ -391,7 +392,7 @@ class Ingest:
 
     def place_decided(self, entry: TakeoutEntry, row: DedupeDecision, named: Path | None = None) -> None:
         self.lock()
-        if self.settled_elsewhere(row):
+        if self.settled_elsewhere(row) or (self.managed and row.tier != 4):
             self.finish_entry(entry, row)
             return
         new_row = row.tier == 5 and row.takeout_item_id is None
@@ -440,7 +441,7 @@ class Ingest:
             self.changed.add(owner)
 
     def finish_entry(self, entry: TakeoutEntry, row: DedupeDecision) -> None:
-        entry.outcome = part_pairing.decided_outcome(row.tier, row.takeout_item_id)
+        entry.outcome = PLACED if self.managed and place.copies_into_google_only(row, self.export) else part_pairing.decided_outcome(row.tier, row.takeout_item_id)
         if row.tier == 5:
             entry.item_id = row.takeout_item_id
         entry.decision_id, entry.done_at = row.id, self.now
@@ -450,6 +451,10 @@ class Ingest:
         self.lock()
         row = self.opened.get(DedupeDecision, entry.decision_id) if entry.decision_id is not None else None
         if row is None:
+            return
+        if self.managed:
+            entry.metadata_pending, entry.done_at = False, self.now
+            self.commit()
             return
         item = TakeoutItem(Path(entry.name), entry.sha1 or "", (), None)
         try:
@@ -520,6 +525,11 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         if part.ingest_state not in (QUEUED, INGESTING) or part.status != "done":
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
+        try:
+            managed_ingest.begin(opened, settings, export, person, now)
+        except managed_ingest.Waiting as waiting:
+            opened.rollback()
+            raise run.NotReady(str(waiting)) from None
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()
