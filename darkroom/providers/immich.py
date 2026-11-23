@@ -46,7 +46,7 @@ BULK_CHECK_ID = "darkroom-source"
 CHECKSUM_PAGE = 100
 
 
-def require_allowed_request(method: str, path: str, importing: bool = False) -> None:
+def require_allowed_request(method: str, path: str, *, importing: bool = False) -> None:
     if (method, path) in READ_ROUTES or (importing is True and (method, path) in IMPORT_ROUTES):
         return
     if method == "GET" and re.fullmatch(r"/api/assets/[A-Za-z0-9_-]+(?:/metadata|/original(?:\?edited=false)?)?", path):
@@ -339,9 +339,9 @@ class Client:
             raise NotConfigured("IMMICH_URL is not set")
         return cls(settings.immich_url, settings.immich_admin_key)
 
-    def open(self, method: str, path: str, key: str, body: object | None = None, importing: bool = False,
+    def open(self, method: str, path: str, key: str, body: object | None = None, *, importing: bool = False,
              upload: MultipartUpload | None = None) -> contextlib.AbstractContextManager[Any]:
-        require_allowed_request(method, path, importing)
+        require_allowed_request(method, path, importing=importing)
         host = urlsplit(self.url).hostname or ""
         headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if key:
@@ -356,9 +356,9 @@ class Client:
         timeout = self.timeout if upload is None else max(self.timeout, UPLOAD_TIMEOUT)
         return tls.urlopen(f"{self.url}{path}", method=method, headers=headers, data=data, timeout=timeout, allow_http=config.local_host(host))
 
-    def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, importing: bool = False) -> object:
+    def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, *, importing: bool = False) -> object:
         try:
-            with self.open(method, path, (key or self.admin_key) if keyed else "", body, importing) as response:
+            with self.open(method, path, (key or self.admin_key) if keyed else "", body, importing=importing) as response:
                 raw = response.read(MAX_REPLY + 1)
         except urllib.error.HTTPError as error:
             denial = denial_of(error)

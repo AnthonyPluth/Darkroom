@@ -667,8 +667,9 @@ rules:
 
   - id: darkroom-immich-import-routes-behind-check-access
     message: >-
-      In the Immich provider the import routes are reached only from ManagedReader, after check_access re-reads the
-      key's owner, admin flag, exact grants and version, and from Client's own upload and bulk_check, which send them
+      In the Immich provider the import routes are reached only after self.check_access() has re-read the key's owner,
+      admin flag, exact grants and version (ManagedReader.upload and ManagedReader.bulk_check), and from Client's own
+      upload and bulk_check, which send them; importing is keyword-only, and only Client.open and Client.call forward it
       (docs/design/immich-managed-storage.md, section 8; #531). Go through ManagedReader.upload or ManagedReader.bulk_check.
     severity: ERROR
     languages: [python]
@@ -678,13 +679,20 @@ rules:
           - pattern: $X.bulk_check(...)
           - pattern: $F(..., importing=$I, ...)
       - pattern-not-inside: |
-          class ManagedReader:
-            ...
+          self.check_access()
+          ...
       - pattern-not-inside: |
           def upload(self, key: str, body: MultipartUpload) -> UploadResult:
             ...
       - pattern-not-inside: |
           def bulk_check(self, key: str, sha1: str) -> BulkMatch | None:
+            ...
+      - pattern-not-inside: |
+          def open(self, method: str, path: str, key: str, body: object | None = None, *, importing: bool = False,
+                   upload: MultipartUpload | None = None) -> contextlib.AbstractContextManager[Any]:
+            ...
+      - pattern-not-inside: |
+          def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, *, importing: bool = False) -> object:
             ...
     paths:
       include: ["/darkroom/providers/immich.py"]
