@@ -244,6 +244,38 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(world.opened.execute(select(PixelCopy.state).where(PixelCopy.item_id == phone.id)).scalar_one(), "placed")
         self.assertEqual({method for method, _ in world.fake.requests()}, {"GET"})
 
+    def test_a_photo_of_an_export_still_being_imported_waits_for_its_last_part(self):
+        world = BackfillWorld(self)
+
+        def split_pair(builder):
+            builder.photo("IMG_3005.JPG", part=0)
+            builder.add("IMG_3005.MOV", builder.video_bytes(), "Photos from 2019", 1, "json", None, None, "")
+            builder.manifest.live_pairs["IMG_3005.MOV"] = "IMG_3005.JPG"
+        export = world.create(split_pair, parts=2)
+        world.ingest(export, 1)
+        world.backfill()
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedBackfillItem)), ({}, [], 0))
+        world.ingest(export, 2)
+        world.finish(export)
+        world.backfill(at=NOW + 200)
+        self.assertEqual((world.report(), world.uploads()), ({"live_photo": ["IMG_3005.JPG", "IMG_3005.MOV"]}, []))
+
+    def test_retries_rotate_so_every_waiting_photo_is_tried_again(self):
+        world = BackfillWorld(self)
+        jo = world.jo()
+        jo.managed_backfill = backfill.ON
+        rows = [MediaItem(person_id=jo.id, source="takeout", path=f"jo/google-only/2030/01/IMG_{number:04d}.JPG", sha1=f"{number:040x}", bytes=1,
+                          sidecar_from_still=False, indexed_at=NOW) for number in range(1, 61)]
+        world.opened.add_all(rows)
+        world.opened.flush()
+        world.opened.add_all(ManagedBackfillItem(person_id=jo.id, item_id=row.id, outcome="exception", reason="pending", checked_at=NOW, since=NOW) for row in rows)
+        world.opened.commit()
+        for at in (NOW + 10, NOW + 20):
+            backfill.run_person(world.opened, world.settings, world.photos, world.jo(), at, tools=NO_PAUSE, limit=50)
+        world.opened.expire_all()
+        checked = world.opened.execute(select(ManagedBackfillItem.checked_at, ManagedBackfillItem.reason)).all()
+        self.assertEqual((len(checked), min(at for at, _ in checked), {reason for _, reason in checked}), (60, NOW + 10, {"pending"}))
+
     def test_running_again_uploads_nothing_more(self):
         world = BackfillWorld(self)
         world.seeded()

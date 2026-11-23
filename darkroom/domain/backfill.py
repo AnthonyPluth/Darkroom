@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from sqlalchemy import Select, and_, exists, or_, select
+from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -36,6 +36,7 @@ RETRIED: Final = ("pending", "mismatch")
 CHUNK: Final = 1024 * 1024
 LIVE_SECONDS: Final = 1.0
 MOVED: Final = "moved"
+IMPORTED: Final = "imported"
 STUCK_SECONDS: Final = 24 * 3600.0
 REASONS: Final[dict[str, str]] = {
     "missing": "the file is not a plain file in the person's folder any more",
@@ -343,10 +344,12 @@ class Backfill:
         mine = and_(row.item_id == MediaItem.id, row.person_id == self.person.id)
         unsettled = ~exists(select(row.id).where(mine, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
         retried = exists(select(row.id).where(mine, row.reason.in_(RETRIED)))
+        checked = func.coalesce(select(row.checked_at).where(mine).scalar_subquery(), 0.0)
+        finished = or_(MediaItem.export_id.is_(None), exists(select(Export.id).where(Export.id == MediaItem.export_id, Export.status == IMPORTED)))
         google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
         phones = and_(MediaItem.source == "phone", MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
-        waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled)
-                                      .order_by(retried, MediaItem.id).limit(limit)).scalars().all()
+        waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled,
+                                                              finished).order_by(retried, checked, MediaItem.id).limit(limit)).scalars().all()
         pending = [item for item in waiting if item.source == "takeout"]
         takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), google_only)
                                        .order_by(MediaItem.id)).scalars().all() if pending else []
