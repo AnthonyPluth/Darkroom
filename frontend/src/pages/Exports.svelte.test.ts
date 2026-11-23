@@ -307,6 +307,7 @@ describe("the Exports page", () => {
         "Part 2: 2 items couldn't be imported, so Darkroom keeps the part's file.",
         "Part 3: Darkroom couldn't safely read this part, so it imported nothing from it and keeps the file. It doesn't try again on its own.",
         "Part 4: importing this part stopped with an error, so Darkroom keeps the file. It doesn't try again on its own.",
+        "Retry import imports the parts whose import failed again and keeps the parts already imported.",
       ]);
     });
 
