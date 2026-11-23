@@ -332,8 +332,8 @@ if __name__ == "__main__":
 class ExportsApiIngestFieldTests(ApiCase):
     extra_env = {"browser_token": TOKEN}
     PART_DEFAULTS = {"ingest_state": "not_queued", "entries": 0, "entries_done": 0, "held": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0,
-                     "failed_items": 0, "kept_reason": None, "freed": False, "bytes_freed": 0}
-    EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0}
+                     "failed_items": 0, "kept_reason": None, "import_failure": None, "freed": False, "bytes_freed": 0}
+    EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0, "import_retry_allowed": False}
 
     def setUp(self):
         super().setUp()
