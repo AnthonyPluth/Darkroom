@@ -332,8 +332,8 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
     for copy_id, was_placed in waiting:
         if deferring and not was_placed:
             tended.deferred += 1
-            waiting_row = opened.get(PixelCopy, copy_id, populate_existing=True)
-            if waiting_row is not None and pixel_source.converted(opened, copy_id) and held_since(opened, waiting_row) is not None:
+            waiting_row = opened.get(PixelCopy, copy_id, populate_existing=True) if pixel_source.converted(opened, copy_id) else None
+            if waiting_row is not None and held_since(opened, waiting_row) is not None:
                 lock_copy(opened, copy_id)
                 deferred(opened, opened.get(PixelCopy, copy_id, populate_existing=True), now)
                 opened.commit()
