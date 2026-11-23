@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 from darkroom.domain import backfill, managed_metadata, xmp
 from darkroom.domain.ingest import place
 from darkroom.providers import exiftool
-from darkroom.storage.models import (Alert, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
+from darkroom.storage.models import (Alert, DuplicateRemoval, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
                                      ManagedImportReceipt, ManagedPixelSource, MediaItem, PixelCopy)
 from tests.fakes.immich import FakeAsset, extract
 from tests.import_world import NOW, tree
@@ -161,6 +161,30 @@ class BackfillTests(unittest.TestCase):
         world.opened.commit()
         world.backfill()
         self.assertEqual((world.report(), world.uploads()), ({"live_photo": sorted(renamed)}, []))
+
+    def test_pixel_copies_left_unconverted_are_converted_on_a_later_run_without_another_upload(self):
+        world = BackfillWorld(self)
+        world.seeded()
+        phone = world.item(f"jo/originals/{PHONE}")
+        removal = DuplicateRemoval(person_id=world.ids["jo"], kept_item_id=world.google_only_item("IMG_5001.JPG").id, removed_item_id=phone.id,
+                                   kept_path="jo/google-only/kept.jpg", kept_sha1="b" * 40, removed_path=phone.path, removed_sha1=phone.sha1,
+                                   removed_source="phone", rule="takeout_better", tier=2, state="pending", created_at=NOW)
+        for setting, pending, references, reason in ((False, False, 0, None), (True, True, 0, "pixel_refused"), (True, False, 1, None)):
+            with self.subTest(setting=setting, pending=pending):
+                world.settings = dataclasses.replace(world.settings, pixel_immich_source=setting)
+                if pending:
+                    world.opened.add(removal)
+                elif removal.id is not None:
+                    removal.state = "refused"
+                world.opened.commit()
+                uploads = len(world.uploads())
+                world.backfill()
+                world.opened.expire_all()
+                self.assertEqual(len(world.opened.execute(select(ManagedPixelSource.id)).all()), references)
+                self.assertEqual(world.opened.execute(select(ManagedBackfillItem.outcome, ManagedBackfillItem.reason)
+                                                      .where(ManagedBackfillItem.item_id == phone.id)).one(), ("mapped", reason))
+                if setting:
+                    self.assertEqual(len(world.uploads()), uploads)
 
     def test_running_again_uploads_nothing_more(self):
         world = BackfillWorld(self)

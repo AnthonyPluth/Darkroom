@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from sqlalchemy import Select, and_, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -75,9 +75,10 @@ def due(opened: Session) -> list[Person]:
 
 def copied(opened: Session, item_id: int) -> bool:
     mapped = select(ManagedBackfillItem.id).where(ManagedBackfillItem.item_id == item_id, ManagedBackfillItem.outcome == "mapped").limit(1)
-    never_sent = and_(ManagedImportReceipt.state == "prepared", ManagedImportReceipt.metadata_hold.in_(managed_metadata.HELD_BEFORE_UPLOAD))
+    may_be_sent = or_(ManagedImportReceipt.state != "prepared", ManagedImportReceipt.metadata_hold.is_(None),
+                      ManagedImportReceipt.metadata_hold.not_in(managed_metadata.HELD_BEFORE_UPLOAD))
     receipt = (select(ManagedImportReceipt.id).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id)
-               .where(ManagedImportIntent.kind == KIND, ManagedImportReceipt.resource_key == f"{KEY}{item_id}", ~never_sent).limit(1))
+               .where(ManagedImportIntent.kind == KIND, ManagedImportReceipt.resource_key == f"{KEY}{item_id}", may_be_sent).limit(1))
     return opened.execute(mapped).first() is not None or opened.execute(receipt).first() is not None
 
 
@@ -302,7 +303,27 @@ class Backfill:
         self.mapped(item, version, None if export is not None else "no_source_account", row.id, export is not None)
         return None
 
+    def convert_deferred(self) -> None:
+        if not self.settings.pixel_immich_source:
+            return
+        rows = self.opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.person_id == self.person.id, ManagedBackfillItem.outcome == "mapped",
+                                                                    ManagedBackfillItem.version_id.is_not(None),
+                                                                    or_(ManagedBackfillItem.reason.is_(None), ManagedBackfillItem.reason == "pixel_refused"))
+                                   .order_by(ManagedBackfillItem.item_id)).scalars().all()
+        for row in rows:
+            item_id, version_id, receipt_id, before = row.item_id, row.version_id, row.receipt_id, row.reason
+            copies = self.opened.execute(select(PixelCopy.id).where(PixelCopy.item_id == item_id)).scalars().all()
+            item = self.opened.get(MediaItem, item_id)
+            if item is None or version_id is None or all(pixel_source.converted(self.opened, copy_id) for copy_id in copies):
+                continue
+            refused = pixels(self.opened, self.settings, item, version_id, self.now, self.report)
+            if refused != before:
+                note(self.opened, self.person, item_id, refused, self.now, version_id, receipt_id)
+            if refused:
+                self.report.exceptions[refused] += 1
+
     def run(self, limit: int) -> Summary:
+        self.convert_deferred()
         done = settled(self.opened, self.person)
         phones = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", known_contents(),
                                                              MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
