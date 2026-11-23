@@ -46,6 +46,7 @@ UNNAMED_FAILURE: Final = "Exception"
 FINGERPRINT_WORKERS: Final = 4
 DECODE_FILE_SECONDS: Final = 120.0
 DECODE_BATCH_SECONDS: Final = 1800.0
+DECODE_ROUNDS: Final = 3
 
 
 def fingerprint_workers() -> int:
@@ -346,22 +347,45 @@ class Ingest:
 
     @contextlib.contextmanager
     def decoding(self, files: set[tuple[Path, Path]]) -> Iterator[Callable[[], dict[tuple[Path, Path], media.Decoded]]]:
-        futures: dict[tuple[Path, Path], Future[media.Decoded]] = {file: self.pool.submit(media.decode, *file) for file in sorted(files)}
-        deadline = time.monotonic() + decode_seconds(len(futures))
+        pending: dict[tuple[Path, Path], Future[media.Decoded]] = {file: self.pool.submit(media.decode, *file) for file in sorted(files)}
+        deadline = time.monotonic() + decode_seconds(len(pending))
 
         def left() -> float:
             return max(0.0, deadline - time.monotonic())
 
         def ready() -> dict[tuple[Path, Path], media.Decoded]:
-            done, _ = wait(futures.values(), timeout=left())
-            return {file: future.result() if future in done else timed_out() for file, future in futures.items()}
+            nonlocal pending, deadline
+            found: dict[tuple[Path, Path], media.Decoded] = {}
+            for round_number in range(DECODE_ROUNDS):
+                wait(pending.values(), timeout=left())
+                unstarted: list[tuple[Path, Path]] = []
+                stuck = 0
+                for file, future in pending.items():
+                    if future.done() and not future.cancelled():
+                        found[file] = future.result()
+                    elif future.cancel():
+                        unstarted.append(file)
+                    else:
+                        found[file] = timed_out()
+                        stuck += 1
+                pending = {}
+                if stuck:
+                    self.abandon_pool(stuck)
+                if not unstarted:
+                    break
+                if round_number == DECODE_ROUNDS - 1:
+                    found |= {file: timed_out() for file in unstarted}
+                    break
+                pending = {file: self.pool.submit(media.decode, *file) for file in unstarted}
+                deadline = time.monotonic() + decode_seconds(len(pending))
+            return {file: found[file] for file in sorted(files)}
 
         try:
             yield ready
         finally:
-            for future in futures.values():
+            for future in pending.values():
                 future.cancel()
-            _, running = wait(futures.values(), timeout=left())
+            _, running = wait(pending.values(), timeout=left())
             if running:
                 self.abandon_pool(len(running))
 

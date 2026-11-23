@@ -161,6 +161,21 @@ class StallWatch:
         self.seen: dict[tuple[int, int], tuple[int, float]] = {}
 
     def review(self, opened: Session, settings: config.Settings, beat: Heartbeat, now: float, notifier: alerts.Notifier | None = None) -> list[tuple[int, int]]:
+        stalled, open_keys = self.judge(opened, settings, beat, now)
+        if open_keys == {stalled_key(*key) for key in stalled}:
+            return stalled
+        db.write_lock(opened)
+        opened.expire_all()
+        stalled, open_keys = self.judge(opened, settings, beat, now)
+        wanted = {stalled_key(*key) for key in stalled}
+        for key in sorted(open_keys - wanted):
+            alerts.close(opened, key, now)
+        for export_id, number in stalled:
+            self.open(opened, settings, beat, export_id, number, now, notifier)
+        opened.commit()
+        return stalled
+
+    def judge(self, opened: Session, settings: config.Settings, beat: Heartbeat, now: float) -> tuple[list[tuple[int, int]], set[str]]:
         current = beat.snapshot().current
         watched = None if current is None else (current.export_id, current.part)
         part = None if watched is None else opened.execute(
@@ -177,17 +192,8 @@ class StallWatch:
                 self.seen[watched] = (count, now)
             elif now - last[1] >= stall_seconds(settings):
                 stalled.append(watched)
-        wanted = {stalled_key(*key) for key in stalled}
         open_keys = set(opened.execute(select(Alert.key).where(Alert.kind == STALLED_KIND, Alert.closed.is_(None))).scalars())
-        if open_keys == wanted:
-            return stalled
-        db.write_lock(opened)
-        for key in sorted(open_keys - wanted):
-            alerts.close(opened, key, now)
-        for export_id, number in stalled:
-            self.open(opened, settings, beat, export_id, number, now, notifier)
-        opened.commit()
-        return stalled
+        return stalled, open_keys
 
     def open(self, opened: Session, settings: config.Settings, beat: Heartbeat, export_id: int, number: int, now: float,
              notifier: alerts.Notifier | None) -> None:

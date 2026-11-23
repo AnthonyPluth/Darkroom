@@ -193,6 +193,31 @@ class DecodeBoundTests(unittest.TestCase):
         left = [kwargs for event, kwargs in logged_lines(log) if event == "fingerprint workers left behind"]
         self.assertEqual([(each["stuck"], each["part"]) for each in left], [(1, 1)])
 
+    def test_files_queued_behind_a_stuck_one_are_fingerprinted_on_a_fresh_worker_and_only_the_stuck_one_fails(self):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        release = threading.Event()
+        self.addCleanup(release.set)
+        real, guard, stuck = media.decode, threading.Lock(), []
+
+        def first_hangs(path, named=None):
+            with guard:
+                first = not stuck
+                if first:
+                    stuck.append(named.name)
+            if first:
+                release.wait(120)
+            return real(path, named)
+
+        with (mock.patch.object(media, "decode", side_effect=first_hangs), mock.patch.object(part_ingest, "fingerprint_workers", return_value=1),
+              mock.patch.object(part_ingest, "DECODE_FILE_SECONDS", 2.0), mock.patch.object(part_ingest, "DECODE_BATCH_SECONDS", 5.0)):
+            report = world.ingest(export, 1)
+        self.assertTrue(report.ingested)
+        failed = sorted(name for name, outcome in world.outcomes().items() if outcome == "failed")
+        self.assertEqual(failed, [f"Photos from 2019/{stuck[0]}"])
+        details = [row.detail for row in world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars()]
+        self.assertEqual(details, ["metadata: DecodeTimedOut"])
+
     def test_the_wait_for_each_batch_is_bounded(self):
         self.assertEqual(part_ingest.decode_seconds(1), part_ingest.DECODE_FILE_SECONDS)
         self.assertEqual(part_ingest.decode_seconds(0), part_ingest.DECODE_FILE_SECONDS)
@@ -349,6 +374,36 @@ class StallWatchTests(unittest.TestCase):
         self.assertEqual(self.review(NOW + 4 * self.limit + 60), [])
         self.assertEqual(self.open_alerts(), [])
         self.assertEqual(self.review(NOW + 10 * self.limit), [])
+
+    def test_a_count_that_moves_while_the_watch_waits_for_the_write_lock_opens_no_alert(self):
+        self.working()
+        self.review(NOW)
+        real = heartbeat.db.write_lock
+
+        def moved_meanwhile(opened):
+            real(opened)
+            part = self.world.part(self.export, 2)
+            part.entries_done = 2479
+            opened.flush()
+
+        with mock.patch.object(heartbeat.db, "write_lock", side_effect=moved_meanwhile) as locked:
+            self.assertEqual(self.review(NOW + self.limit), [])
+        self.assertEqual(locked.call_count, 1)
+        self.assertEqual(self.open_alerts(), [])
+        self.assertEqual(self.review(NOW + self.limit + 60), [])
+
+    def test_a_part_that_finishes_while_the_watch_waits_for_the_write_lock_opens_no_alert(self):
+        self.working()
+        self.review(NOW)
+
+        def finished_meanwhile(opened):
+            part = self.world.part(self.export, 2)
+            part.ingest_state, part.entries_done = "ingested", 9008
+            opened.flush()
+
+        with mock.patch.object(heartbeat.db, "write_lock", side_effect=finished_meanwhile):
+            self.assertEqual(self.review(NOW + self.limit), [])
+        self.assertEqual(self.open_alerts(), [])
 
     def test_the_stall_time_is_configurable_and_held_to_a_bounded_range(self):
         self.assertEqual(settings_from().import_stall_minutes, 30)
