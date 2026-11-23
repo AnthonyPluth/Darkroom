@@ -333,6 +333,19 @@ class PixelImmichSourceTests(unittest.TestCase):
             self.assertEqual(self.tend(at=NOW + 60).failed, 1)
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
 
+    def test_a_hold_whose_reason_changes_keeps_its_start_and_alerts_after_a_day(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.fake.mode("500")
+        self.assertEqual(self.tend(at=NOW + 20 * 3600).blocked, 1)
+        self.fake.mode("ok")
+        reasons = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held").order_by(Event.id)).scalars().all()
+        self.assertEqual([reason.rpartition(": ")[2] for reason in reasons], ["source_not_custody", "source_unavailable"])
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 25 * 3600, sends), 1)
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)

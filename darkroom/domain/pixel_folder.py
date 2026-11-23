@@ -250,9 +250,14 @@ def deferred(opened: Session, row: PixelCopy | None, now: float) -> None:
 
 def held_since(opened: Session, row: PixelCopy) -> tuple[float, str] | None:
     last = opened.execute(select(Event.type, Event.time, Event.detail).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
-    if last is None or last.type != "pixel_copy_source_held" or (row.placed_at is not None and row.placed_at >= last.time):
+    if last is None or last.type != "pixel_copy_source_held":
         return None
-    return last.time, str(last.detail).rpartition(": ")[2]
+    other = opened.execute(select(func.max(Event.id)).where(about_copy(row), Event.type != "pixel_copy_source_held")).scalar_one_or_none()
+    started = opened.execute(select(func.min(Event.time)).where(about_copy(row), Event.type == "pixel_copy_source_held",
+                                                                Event.id > (other if other is not None else 0))).scalar_one()
+    if row.placed_at is not None and row.placed_at >= started:
+        return None
+    return float(started), str(last.detail).rpartition(": ")[2]
 
 
 def alert_held(opened: Session, settings: config.Settings, now: float, notifier: alerts.Notifier | None = None) -> int:
