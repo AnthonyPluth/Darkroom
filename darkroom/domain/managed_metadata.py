@@ -16,6 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import managed_upload, media, xmp
+from darkroom.domain.ingest import metadata as ingest_metadata
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
 from darkroom.storage import db
@@ -23,12 +24,12 @@ from darkroom.storage.models import ManagedImportReceipt
 
 Role = Literal["single", "live_still", "live_video"]
 Kind = Literal["IMAGE", "VIDEO"]
-Source = Literal["media", "sidecar"]
+Source = Literal["media", "sidecar", "sidecar_offset"]
 Hold = Literal["unknown_offset", "no_instant", "unwritable", "mismatch", "not_enriched", "not_linked"]
 SCHEMA = 1
 ROLES = ("single", "live_still", "live_video")
 KINDS = ("IMAGE", "VIDEO")
-SOURCES = (None, "media", "sidecar")
+SOURCES = (None, "media", "sidecar", "sidecar_offset")
 HELD_BEFORE_UPLOAD = ("unknown_offset", "no_instant", "unwritable")
 KEYS = {"schema", "role", "kind", "taken_utc", "offset", "taken_from", "latitude", "longitude", "place_from", "description", "description_from", "sidecar", "hold"}
 POLLS = 5
@@ -71,7 +72,17 @@ class Resource:
     filename: str = field(repr=False)
 
 
-def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float | None, float | None]) -> tuple[float | None, int | None, Source | None, Hold | None]:
+def agreed_offset(local: str | None, google: xmp.GoogleMetadata, corrects: bool) -> int | None:
+    if local is None or google.taken_utc is None or not corrects:
+        return None
+    try:
+        return ingest_metadata.zone_offset(local, datetime.fromtimestamp(google.taken_utc, UTC))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float | None, float | None], google: xmp.GoogleMetadata,
+             corrects: bool) -> tuple[float | None, int | None, Source | None, Hold | None]:
     if xmp.CREATED in fields:
         parsed = media.parse_local(fields[xmp.CREATED])
         if parsed is None or parsed[1] is None:
@@ -82,6 +93,10 @@ def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float 
     utc, local, offset, source = media.capture(own, own_lat, own_lon)
     if source == "quicktime_utc" and utc is not None and offset is None:
         offset = media.wall_clock_at(utc, *place)[1]
+    if utc is None and (derived := agreed_offset(local, google, corrects)) is not None and local is not None:
+        agreed = media.utc_or_none(datetime.fromisoformat(local), derived)
+        if agreed is not None and media.wall_clock_at(agreed, *place)[1] == derived:
+            return agreed + media.seconds_fraction(own), derived, "sidecar_offset", None
     if utc is None and local is None:
         return None, None, None, "no_instant"
     if utc is None or offset is None:
@@ -100,7 +115,7 @@ def intend(own: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role:
     description_from: Source | None = None if description is None else "media"
     if xmp.DESCRIPTION in fields:
         description, description_from = fields[xmp.DESCRIPTION], "sidecar"
-    taken, offset, taken_from, hold = taken_of(own, fields, (lat, lon))
+    taken, offset, taken_from, hold = taken_of(own, fields, (lat, lon), google, corrects)
     try:
         xmp.upload_sidecar(fields)
     except ValueError:

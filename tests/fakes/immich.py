@@ -5,6 +5,7 @@ import base64
 import email.parser
 import email.policy
 import hashlib
+import html
 import io
 import json
 import re
@@ -16,7 +17,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from xml.sax.saxutils import unescape
 
 from PIL import ExifTags, Image
 
@@ -102,7 +102,7 @@ def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
         if value := re.search(rf'exif:{tag}="(\d+),([\d.]+)([NSEW])"', text):
             found[name] = (int(value.group(1)) + float(value.group(2)) / 60) * (-1 if value.group(3) in "SW" else 1)
     if description := re.search(r'<rdf:li xml:lang="x-default">([^<]*)</rdf:li>', text):
-        found["description"] = unescape(description.group(1), {"&#13;": "\r", "&quot;": '"', "&apos;": "'"})
+        found["description"] = html.unescape(description.group(1))
     return found
 
 

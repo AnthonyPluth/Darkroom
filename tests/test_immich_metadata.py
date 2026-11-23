@@ -189,6 +189,24 @@ class ManagedMetadataTests(unittest.TestCase):
         self.assertEqual((placed.taken_utc, placed.offset, placed.taken_from, placed.place_from, placed.hold), (SUMMER, 120, "media", "sidecar", None))
         self.assertEqual(intend(quicktime, xmp.GoogleMetadata(None, None, SUMMER, None), "VIDEO").hold, "unknown_offset")
 
+    def test_a_wall_clock_that_agrees_with_googles_instant_takes_their_difference_and_one_that_disagrees_stays_held(self):
+        data, tags = photo("agreed-clock", "2019:07:04 14:30:15")
+        intended = intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
+        self.assertEqual((intended.taken_utc, intended.offset, intended.taken_from, intended.place_from, intended.hold), (SUMMER, 120, "sidecar_offset", "sidecar", None))
+        self.assertEqual((managed_metadata.intended_of(snapshot(intended)), set(dict(intended.sidecar))), (intended, {xmp.LATITUDE, xmp.LONGITUDE}))
+        for google, corrects in ((xmp.GoogleMetadata(*ROME, SUMMER + 420, None), True), (xmp.GoogleMetadata(*ROME, SUMMER, None), False),
+                                 (xmp.GoogleMetadata(None, None, SUMMER, None), True), (xmp.GoogleMetadata(*ACCRA, SUMMER, None), True)):
+            with self.subTest(apart=google.taken_utc - SUMMER, corrects=corrects):
+                self.assertEqual(intend(tags, google, "IMAGE", corrects=corrects).hold, "unknown_offset")
+        item = self.resource("part/agreed-clock", data, intended)
+        self.fake.state.extraction_delay = 600
+        self.assertEqual(self.complete(item).outcome, "pending")
+        uploaded = self.asset(data)
+        uploaded.ready_at = 0.0
+        self.assertEqual(self.complete(item).reason, managed_metadata.REASONS["mismatch"])
+        uploaded.exif |= {"dateTimeOriginal": "2019-07-04T12:30:15.000Z", "timeZone": "Europe/Rome"}
+        self.assertEqual((self.complete(item).outcome, self.row(item)[:2]), ("verified", ("metadata_verified", None)))
+
     def test_a_missing_description_stays_missing_and_an_intended_one_must_be_extracted(self):
         data, tags = photo("plain", "2019:07:04 14:30:15", "+02:00", ROME)
         intended = intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
