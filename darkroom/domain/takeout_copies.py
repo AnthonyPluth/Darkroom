@@ -12,7 +12,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from darkroom.domain import dedupe, events, pixel_folder, xmp
+from darkroom.domain import dedupe, events, pixel_folder, pixel_source, xmp
 from darkroom.domain.ingest import pairing
 from darkroom.providers import exiftool
 from darkroom.storage import db, paths
@@ -141,10 +141,14 @@ def phone_may_go(opened: Session, person: Person, phone: MediaItem, takeout: Med
     return matched is None and sent is None and not phone.confirmed_in_google and export is not None and accounts <= {export.account_id}
 
 
+def loser_may_go(opened: Session, person: Person, loser: MediaItem, phone: MediaItem, takeout: MediaItem) -> bool:
+    return not pixel_source.referenced(opened, loser.id) and (loser is not phone or phone_may_go(opened, person, phone, takeout))
+
+
 def resolve(opened: Session, photos: Photos, person: Person, pair: Pair, now: float, resolved: Resolved, tools: Tools) -> None:
     rule = rule_for(pair.phone, pair.takeout)
     keeper, loser = (pair.takeout, pair.phone) if rule == "takeout_better" else (pair.phone, pair.takeout)
-    if loser is pair.phone and not phone_may_go(opened, person, pair.phone, pair.takeout):
+    if not loser_may_go(opened, person, loser, pair.phone, pair.takeout):
         resolved.kept_both += 1
         return
     row = DuplicateRemoval(
@@ -174,7 +178,7 @@ def still_a_pair(opened: Session, person: Person, keeper: MediaItem, loser: Medi
     takeout, phone = (keeper, loser) if loser.source == "phone" else (loser, keeper)
     if removable_takeout(opened, person, takeout) is None or not immich_originals(opened, person, phone.id):
         return False
-    return loser is not phone or phone_may_go(opened, person, phone, takeout)
+    return loser_may_go(opened, person, loser, phone, takeout)
 
 
 def neighbours(opened: Session, person: Person, source: str, item: MediaItem) -> list[MediaItem]:

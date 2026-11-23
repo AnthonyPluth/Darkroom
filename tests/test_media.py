@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from darkroom.domain import media
+from darkroom.domain import dedupe, media, near_duplicates
 from darkroom.providers import exiftool
 from tests.fixtures import media as fixtures
 
@@ -230,3 +230,101 @@ class FingerprintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def apart(mine, theirs):
+    return (int(mine, 16) ^ int(theirs, 16)).bit_count()
+
+
+class ReducedDecodeTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def photos(self):
+        return [fixtures.photo_jpeg(seed, self.folder / f"photo-{seed}.jpg", fixtures.PHONE_SIZES[seed % len(fixtures.PHONE_SIZES)]) for seed in range(12)]
+
+    def decoded_sizes(self, path):
+        sizes = []
+        real = media.imagehash.phash
+
+        def phash(image, *args, **kwargs):
+            sizes.append(image.size)
+            return real(image, *args, **kwargs)
+
+        with mock.patch.object(media.imagehash, "phash", side_effect=phash):
+            media.perceptual_hashes(path)
+        return sizes
+
+    def test_the_reduced_hashes_of_a_photo_stay_within_dedupes_tolerance_of_its_full_ones(self):
+        for path in self.photos():
+            with self.subTest(photo=path.name):
+                full, reduced = media.perceptual_hashes(path, draft=None), media.perceptual_hashes(path)
+                self.assertLessEqual(dedupe.phash_distance(full.phash, reduced.phash), dedupe.PHASH_MAX_DISTANCE)
+                self.assertLessEqual(apart(full.phash, reduced.phash), near_duplicates.PHASH_MAX_DISTANCE)
+                self.assertLessEqual(apart(full.dhash, reduced.dhash), near_duplicates.DHASH_MAX_DISTANCE)
+
+    def test_a_full_hash_stored_before_still_matches_a_copy_hashed_reduced_and_no_other_photo(self):
+        stored = [media.perceptual_hashes(path, draft=None).phash for path in self.photos()]
+        for seed, kept in enumerate(stored):
+            size = fixtures.PHONE_SIZES[seed % len(fixtures.PHONE_SIZES)]
+            copy = fixtures.save_jpeg(fixtures.photo(seed, size), self.folder / f"copy-{seed}.jpg", quality=60)
+            before, after = media.perceptual_hashes(copy, draft=None).phash, media.perceptual_hashes(copy).phash
+            with self.subTest(seed=seed):
+                self.assertLessEqual(dedupe.phash_distance(kept, before), dedupe.PHASH_MAX_DISTANCE)
+                self.assertLessEqual(dedupe.phash_distance(kept, after), dedupe.PHASH_MAX_DISTANCE)
+                for other in stored[:seed] + stored[seed + 1:]:
+                    self.assertGreater(dedupe.phash_distance(other, before), dedupe.PHASH_MAX_DISTANCE)
+                    self.assertGreater(dedupe.phash_distance(other, after), dedupe.PHASH_MAX_DISTANCE)
+
+    def test_a_large_jpeg_is_decoded_at_reduced_size_and_never_below_the_draft_size(self):
+        sizes = self.decoded_sizes(fixtures.photo_jpeg(1, self.folder / "large.jpg", (4032, 3024)))
+        self.assertEqual(len(sizes), 1)
+        self.assertLess(sizes[0][0], 4032)
+        self.assertGreaterEqual(min(sizes[0]), min(media.DRAFT_SIZE))
+
+    def test_a_small_jpeg_and_other_formats_are_decoded_whole(self):
+        small = fixtures.photo_jpeg(2, self.folder / "small.jpg", (320, 240))
+        picture = fixtures.photo(3, (1600, 1200))
+        png = self.folder / "picture.png"
+        picture.save(png, format="PNG")
+        heic = self.folder / "picture.heic"
+        picture.save(heic, format="HEIF")
+        self.assertEqual(self.decoded_sizes(small), [(320, 240)])
+        self.assertEqual(self.decoded_sizes(png), [(1600, 1200)])
+        self.assertEqual(self.decoded_sizes(heic), [(1600, 1200)])
+
+
+class DecodedTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def test_a_fingerprint_from_a_decoded_file_equals_one_made_in_place(self):
+        path = fixtures.make_jpeg(self.folder / "a.jpg", taken="2019:07:04 12:30:15", offset="-05:00", gps=NEW_YORK, make="Apple", model="iPhone 15")
+        tags = exiftool.read([path])[path]
+        decoded = media.decode(path, Path("IMG_1.JPG"))
+        self.assertEqual(media.fingerprint(path, tags, Path("IMG_1.JPG"), decoded), media.fingerprint(path, tags, Path("IMG_1.JPG")))
+        self.assertEqual(decoded.sha1(), media.sha1_of(path))
+
+    def test_a_file_that_cannot_be_read_raises_its_own_error_from_the_fingerprint(self):
+        missing = self.folder / "missing.jpg"
+        decoded = media.decode(missing)
+        with self.assertRaises(FileNotFoundError):
+            media.fingerprint(missing, {})
+        with self.assertRaises(FileNotFoundError):
+            media.fingerprint(missing, {}, decoded=decoded)
+        with self.assertRaises(FileNotFoundError):
+            decoded.perceptual()
+
+    def test_an_error_while_hashing_is_raised_from_the_fingerprint_after_the_digest(self):
+        path = fixtures.make_jpeg(self.folder / "a.jpg")
+        with mock.patch.object(media, "perceptual_hashes", side_effect=RuntimeError("made-up failure")):
+            decoded = media.decode(path)
+            with self.assertRaises(RuntimeError):
+                media.fingerprint(path, {})
+        self.assertEqual(decoded.sha1(), media.sha1_of(path))
+        with self.assertRaises(RuntimeError):
+            media.fingerprint(path, {}, decoded=decoded)

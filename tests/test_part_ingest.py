@@ -1,18 +1,20 @@
 import contextlib
 import dataclasses
+import io
 import json
 import os
 import sqlite3
+import threading
 import unittest
 import zipfile
 from pathlib import Path
 from typing import get_args
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import dedupe, exports
+from darkroom.domain import dedupe, exports, media
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
 from darkroom.server import contract
 from darkroom.storage import db, paths
@@ -23,6 +25,7 @@ from darkroom.storage.models import (
 from tests.import_world import DAY, NOW, World, tree
 from tests.shared import on_postgres, write_elsewhere
 from tests.privacy import no_leaks
+from tests.fixtures import media as fixtures
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder
 
 PREFIX = f"{GOOGLE_PHOTOS}/"
@@ -1376,6 +1379,120 @@ class FailureReasonTests(unittest.TestCase):
         found.inbox_dir = None
         self.world.opened.commit()
         self.assertFalse(self.view(export)["import_retry_allowed"])
+
+
+class ParallelFingerprintTests(unittest.TestCase):
+    def photos(self, world):
+        def build(builder):
+            world.scenario(builder)
+            for seed in range(6):
+                picture = io.BytesIO()
+                fixtures.photo(seed, fixtures.PHONE_SIZES[seed % len(fixtures.PHONE_SIZES)]).save(picture, format="JPEG", quality=80)
+                builder.photo(f"PXL_{seed}.JPG", data=picture.getvalue(), gps=(44.0 + seed, 11.0), part=seed % 3)
+        return build
+
+    def ingested_with(self, workers):
+        world = PartWorld(self)
+        export = world.create(self.photos(world))
+        with mock.patch.object(part_ingest, "fingerprint_workers", return_value=workers):
+            world.ingest_all(export)
+        world.opened.expire_all()
+        entries = [(row.part_number, row.name, row.outcome, row.sha1, row.phash, row.captured_utc, row.captured_local, row.width, row.height,
+                    row.duration_ms, row.make, row.model, row.is_video, row.is_edited, row.done_at)
+                   for row in world.opened.execute(select(TakeoutEntry).order_by(TakeoutEntry.id)).scalars()]
+        items = [(row.id, row.person_id, row.source, row.path, row.sha1, row.bytes, row.phash, row.dhash, row.captured_utc, row.captured_local,
+                  row.offset_minutes, row.time_source, row.width, row.height, row.lat, row.lon, row.gps_source)
+                 for row in world.opened.execute(select(MediaItem).order_by(MediaItem.id)).scalars()]
+        decisions = [(row.id, row.source_path, row.person_id, row.tier, row.reason, row.decided_by, row.matched_item_id, row.takeout_item_id)
+                     for row in world.opened.execute(select(DedupeDecision).order_by(DedupeDecision.id)).scalars()]
+        return world.state(), entries, items, decisions
+
+    def test_four_workers_give_the_one_thread_ledger_items_decisions_and_files_in_the_same_order(self):
+        serial, parallel = self.ingested_with(1), self.ingested_with(4)
+        self.assertEqual(parallel, serial)
+        self.assertEqual(sum(1 for entry in serial[1] if entry[1].endswith(".JPG") and "PXL_" in entry[1] and entry[4] is not None), 6)
+
+    def test_the_workers_are_capped_at_four_and_at_the_machines_cores(self):
+        for cores, workers in ((1, 1), (2, 2), (4, 4), (16, 4), (None, 1)):
+            with self.subTest(cores=cores), mock.patch.object(part_ingest.os, "cpu_count", return_value=cores):
+                self.assertEqual(part_ingest.fingerprint_workers(), workers)
+
+    def test_at_most_four_files_are_decoded_at_once(self):
+        world = PartWorld(self)
+        export = world.create(self.photos(world))
+        busy, high = [0], [0]
+        real = media.perceptual_hashes
+        guard = threading.Lock()
+
+        def counted(*args, **kwargs):
+            with guard:
+                busy[0] += 1
+                high[0] = max(high[0], busy[0])
+            try:
+                return real(*args, **kwargs)
+            finally:
+                with guard:
+                    busy[0] -= 1
+
+        with mock.patch.object(part_ingest.os, "cpu_count", return_value=16), mock.patch.object(media, "perceptual_hashes", side_effect=counted):
+            world.ingest_all(export)
+        self.assertGreaterEqual(high[0], 1)
+        self.assertLessEqual(high[0], part_ingest.FINGERPRINT_WORKERS)
+
+    def test_a_file_that_fails_while_fingerprinted_fails_alone_as_on_one_thread(self):
+        real = media.perceptual_hashes
+
+        def broken(path, named=None, *args, **kwargs):
+            if named is not None and named.name == "IMG_2001.JPG":
+                raise RuntimeError("IMG_2001.JPG-is-private")
+            return real(path, named, *args, **kwargs)
+
+        seen = []
+        for workers in (1, 4):
+            world = PartWorld(self)
+            export = world.create(world.scenario)
+            with (mock.patch.object(part_ingest, "fingerprint_workers", return_value=workers), mock.patch.object(media, "perceptual_hashes", side_effect=broken),
+                  no_leaks(self, "IMG_2001.JPG-is-private", database=world.engine)):
+                report = world.ingest(export, 1)
+            failed = [(row.subject, row.detail) for row in world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars()]
+            part = world.part(export, 1)
+            seen.append((report.ingested, world.outcomes(), failed, part.ingest_state, part.failed_items, part.entries_done))
+        self.assertEqual(seen[1], seen[0])
+        ingested, outcomes, failed, state, failed_items, _ = seen[0]
+        self.assertEqual((ingested, state, failed_items), (True, "ingested", 1))
+        self.assertEqual(outcomes["Photos from 2019/IMG_2001.JPG"], "failed")
+        self.assertEqual((outcomes["Photos from 2019/IMG_1001.JPG"], outcomes["Photos from 2019/IMG_1002.JPG"]), ("skipped", "skipped"))
+        self.assertEqual(failed, [("export 1", "metadata: RuntimeError")])
+
+
+class ExactProgressTests(unittest.TestCase):
+    ITEMS = 137
+
+    def test_the_count_shown_is_every_finished_item_after_each_one_and_never_more(self):
+        world = PartWorld(self)
+
+        def build(builder):
+            for number in range(self.ITEMS):
+                data = builder.image_bytes(".JPG")
+                world.original("jo", f"IMG_{5000 + number}.JPG", data)
+                builder.photo(f"IMG_{5000 + number}.JPG", data=data, form=None, part=0)
+
+        export = world.create(build, parts=1)
+        seen = []
+
+        def hook():
+            part = world.part(export, 1)
+            finished = world.opened.execute(select(func.count()).where(TakeoutEntry.export_id == export.id, TakeoutEntry.part_number == 1,
+                                                                       TakeoutEntry.outcome != "listed")).scalar_one()
+            seen.append((part.entries_done, finished))
+
+        with mock.patch.object(part_ingest, "COMMIT_HOOK", hook):
+            world.ingest(export, 1)
+        self.assertEqual([shown for shown, finished in seen if shown != finished], [])
+        self.assertEqual(sorted({shown for shown, _ in seen} - {0}), list(range(1, self.ITEMS + 1)))
+        part = world.part(export, 1)
+        self.assertEqual((part.ingest_state, part.entries, part.entries_done), ("ingested", self.ITEMS, self.ITEMS))
+        self.assertEqual(set(world.outcomes().values()), {"skipped"})
 
 
 if __name__ == "__main__":
